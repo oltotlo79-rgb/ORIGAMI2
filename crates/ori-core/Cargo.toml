@@ -7,3 +7,4 @@ repository.workspace = true
 
 [dependencies]
 ori-domain = { path = "../ori-domain" }
+thiserror.workspace = true

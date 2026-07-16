@@ -1,5 +1,9 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
+mod editor;
+
+pub use editor::{Command, CommandError, CommandResult, EditorState};
+
 #[must_use]
 pub fn benchmark_pattern(edge_count: usize) -> CreasePattern {
     if edge_count == 0 {

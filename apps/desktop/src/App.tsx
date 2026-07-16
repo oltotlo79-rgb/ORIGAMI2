@@ -11,6 +11,7 @@ import { FoldPreview } from './components/FoldPreview'
 import {
   addEdge,
   addVertex,
+  analyzeProjectTopology,
   connectEdgeIntersection,
   connectIntersectionCluster,
   connectTJunction,
@@ -32,10 +33,12 @@ import {
   undo,
   updatePaperProperties,
   type ProjectSnapshot,
+  type ProjectTopologyResponse,
   type RgbaColor,
   type ValidationSnapshot,
   validateProject,
 } from './lib/coreClient'
+import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
@@ -88,6 +91,10 @@ function App() {
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
+  const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
+  const [topologyStatus, setTopologyStatus] = useState(
+    isNativeCoreAvailable() ? '面・ヒンジ解析待ち' : '3D解析はデスクトップ版で利用できます',
+  )
   const [validation, setValidation] = useState<ValidationSnapshot | null>(null)
   const [coreStatus, setCoreStatus] = useState(
     isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
@@ -113,9 +120,13 @@ function App() {
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
   const angleInputRef = useRef<HTMLInputElement>(null)
   const benchmarkRequestIdRef = useRef(0)
+  const topologyRequestIdRef = useRef(0)
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
+    topologyRequestIdRef.current += 1
     latestSnapshotRef.current = snapshot
     setNativeSnapshot(snapshot)
+    setTopologyResponse(null)
+    setTopologyStatus('面・ヒンジ解析待ち')
   }, [])
   const nativeLines = useMemo<CreaseLine[]>(() => {
     if (!nativeSnapshot) return []
@@ -219,6 +230,18 @@ function App() {
     () => resolveRectangularPaperSize(nativeSnapshot),
     [nativeSnapshot],
   )
+  const foldPreviewModel = useMemo(
+    () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
+    [nativeSnapshot, topologyResponse],
+  )
+  const foldPreviewStatus = topologyResponse?.simulation_ready && !foldPreviewModel
+    ? '3D入力の整合性検証で遮断'
+    : topologyStatus
+  const foldPreviewStatusClass = foldPreviewModel
+    ? 'status-valid'
+    : topologyResponse
+      ? 'status-invalid'
+      : 'status-ready'
   const paperSizeLabel = paperBounds
     ? `${formatMillimetres(paperBounds.maxX - paperBounds.minX)} × ${formatMillimetres(paperBounds.maxY - paperBounds.minY)} mm`
     : '寸法不明'
@@ -255,6 +278,50 @@ function App() {
       })
       .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
   }, [applySnapshot])
+
+  useEffect(() => {
+    if (!isNativeCoreAvailable() || !nativeSnapshot) return
+    const requestId = ++topologyRequestIdRef.current
+    const expectedProjectId = nativeSnapshot.project_id
+    const expectedRevision = nativeSnapshot.revision
+    let disposed = false
+    setTopologyStatus('面・ヒンジ解析中…')
+
+    analyzeProjectTopology(expectedProjectId, expectedRevision)
+      .then((response) => {
+        const current = latestSnapshotRef.current
+        if (
+          disposed
+          || requestId !== topologyRequestIdRef.current
+          || !current
+          || current.project_id !== response.project_id
+          || current.revision !== response.revision
+        ) return
+        setTopologyResponse(response)
+        if (response.simulation_ready && response.snapshot) {
+          setTopologyStatus(
+            `${response.snapshot.faces.length}面・${response.snapshot.hinge_adjacency.length}ヒンジ`,
+          )
+        } else {
+          setTopologyStatus(`3D解析で遮断（${response.issues.length}件）`)
+        }
+      })
+      .catch((error: unknown) => {
+        if (disposed || requestId !== topologyRequestIdRef.current) return
+        const current = latestSnapshotRef.current
+        if (
+          !current
+          || current.project_id !== expectedProjectId
+          || current.revision !== expectedRevision
+        ) return
+        setTopologyResponse(null)
+        setTopologyStatus(`3D解析エラー: ${String(error)}`)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [nativeSnapshot])
 
   useEffect(() => {
     if (parallelReferenceEdgeId && !parallelReferenceLine) {
@@ -1027,28 +1094,24 @@ function App() {
           <article className="panel preview-panel">
             <div className="panel-heading">
               <span>3D プレビュー</span>
-              <span className={validation?.is_valid ? 'status-valid' : validation ? 'status-invalid' : 'status-ready'}>
-                {validation
-                  ? validation.is_valid
-                    ? '幾何検証 OK'
-                    : `${validation.issues.length}件の問題`
-                  : '検証前'}
-              </span>
+              <span className={foldPreviewStatusClass}>{foldPreviewStatus}</span>
             </div>
             <FoldPreview
               angle={foldAngle}
-              paperBounds={paperBounds}
+              model={foldPreviewModel}
+              statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
               backColor={nativeSnapshot?.paper.back.color}
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
             />
             <div className="fold-control">
-              <label htmlFor="fold-angle">折り角</label>
+              <label htmlFor="fold-angle">折り量</label>
               <input
                 id="fold-angle"
                 type="range"
-                min="-180"
+                min="0"
                 max="180"
+                disabled={foldPreviewModel?.kind !== 'single_fold'}
                 value={foldAngle}
                 onChange={(event) => setFoldAngle(Number(event.target.value))}
               />

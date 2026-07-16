@@ -184,6 +184,17 @@ button { color: inherit; }
 .crease-canvas.is-disabled { cursor: progress; }
 .fold-preview { position: relative; overflow: hidden; background: #eef2f5; }
 .fold-preview canvas { display: block; width: 100%; height: 100%; }
+.fold-preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: #667682;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
 .fold-preview-note {
   position: absolute;
   right: 8px;

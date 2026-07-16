@@ -13,6 +13,7 @@ type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
   tool?: string
+  selectedVertexId?: string | null
   selectedLineId: string | null
   onSelectLine: (id: string | null) => void
   onAddVertex?: (x: number, y: number) => void
@@ -30,6 +31,7 @@ export function CreaseCanvas({
   lines,
   vertices = [],
   tool = 'select',
+  selectedVertexId = null,
   selectedLineId,
   onSelectLine,
   onAddVertex,
@@ -80,6 +82,12 @@ export function CreaseCanvas({
     context.setLineDash([])
 
     for (const vertex of vertices) {
+      if (vertex.id === selectedVertexId) {
+        context.beginPath()
+        context.arc(mapX(vertex.x), mapY(vertex.y), 9, 0, Math.PI * 2)
+        context.fillStyle = 'rgba(23, 107, 135, 0.2)'
+        context.fill()
+      }
       context.beginPath()
       context.arc(mapX(vertex.x), mapY(vertex.y), 5, 0, Math.PI * 2)
       context.fillStyle = '#176b87'
@@ -88,7 +96,7 @@ export function CreaseCanvas({
       context.lineWidth = 2
       context.stroke()
     }
-  }, [lines, selectedLineId, vertices])
+  }, [lines, selectedLineId, selectedVertexId, vertices])
 
   function handleClick(event: React.MouseEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current

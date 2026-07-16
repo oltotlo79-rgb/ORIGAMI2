@@ -14,19 +14,8 @@ import {
 } from './lib/coreClient'
 import './App.css'
 
-const SAMPLE_LINES: CreaseLine[] = [
-  { id: 'v-1', x1: 20, y1: 20, x2: 20, y2: 380, kind: 'boundary' },
-  { id: 'v-2', x1: 20, y1: 20, x2: 380, y2: 20, kind: 'boundary' },
-  { id: 'v-3', x1: 380, y1: 20, x2: 380, y2: 380, kind: 'boundary' },
-  { id: 'v-4', x1: 20, y1: 380, x2: 380, y2: 380, kind: 'boundary' },
-  { id: 'm-1', x1: 20, y1: 200, x2: 380, y2: 200, kind: 'mountain' },
-  { id: 'm-2', x1: 200, y1: 20, x2: 200, y2: 380, kind: 'mountain' },
-  { id: 'v-5', x1: 20, y1: 20, x2: 380, y2: 380, kind: 'valley' },
-  { id: 'v-6', x1: 380, y1: 20, x2: 20, y2: 380, kind: 'valley' },
-]
-
 function App() {
-  const [selectedLineId, setSelectedLineId] = useState<string | null>('m-1')
+  const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [foldAngle, setFoldAngle] = useState(52)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
@@ -35,10 +24,6 @@ function App() {
     isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
   )
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
-  const selectedLine = useMemo(
-    () => SAMPLE_LINES.find((line) => line.id === selectedLineId),
-    [selectedLineId],
-  )
   const nativeLines = useMemo<CreaseLine[]>(() => {
     if (!nativeSnapshot) return []
     const positions = new Map(
@@ -58,6 +43,10 @@ function App() {
       }]
     })
   }, [nativeSnapshot])
+  const selectedLine = useMemo(
+    () => nativeLines.find((line) => line.id === selectedLineId),
+    [nativeLines, selectedLineId],
+  )
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -160,16 +149,19 @@ function App() {
           <article className="panel crease-panel">
             <div className="panel-heading">
               <span>2D 展開図</span>
-              <span className="panel-meta">400 × 400 mm · 8本</span>
+              <span className="panel-meta">
+                400 × 400 mm · {nativeLines.length.toLocaleString()}本
+              </span>
             </div>
             <CreaseCanvas
-              lines={[...SAMPLE_LINES, ...nativeLines]}
+              lines={nativeLines}
               vertices={nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
                 id: vertex.id,
                 x: vertex.position.x,
                 y: vertex.position.y,
               }))}
               tool={activeTool}
+              selectedVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
               onSelectLine={setSelectedLineId}
               onAddVertex={(x, y) =>

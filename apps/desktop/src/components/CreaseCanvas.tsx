@@ -11,9 +11,18 @@ export type CreaseLine = {
   kind: 'mountain' | 'valley' | 'boundary' | 'cut'
 }
 
+export type PaperBounds = {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
+  paperBounds?: PaperBounds
+  paperColor?: string
   tool?: string
   selectedVertexId?: string | null
   pendingVertexId?: string | null
@@ -28,6 +37,8 @@ type Props = {
 
 type Vertex = { id: string; x: number; y: number }
 
+type CanvasSize = { width: number; height: number }
+
 type DragState = {
   pointerId: number
   vertexId: string
@@ -39,9 +50,27 @@ type DragState = {
   y: number
 }
 
-const PAPER_SIZE = 400
+type ViewTransform = {
+  bounds: PaperBounds
+  left: number
+  top: number
+  width: number
+  height: number
+  scale: number
+}
+
+const DEFAULT_PAPER_BOUNDS: PaperBounds = {
+  minX: 0,
+  minY: 0,
+  maxX: 400,
+  maxY: 400,
+}
 const CANVAS_PADDING_X = 36
 const CANVAS_PADDING_Y = 28
+const VERTEX_HIT_RADIUS_PX = 10
+const LINE_HIT_RADIUS_PX = 7
+const DESIRED_GRID_INTERVALS = 20
+const MAX_GRID_LINES_PER_AXIS = 100
 
 const COLORS: Record<CreaseLine['kind'], string> = {
   mountain: '#d95252',
@@ -53,6 +82,8 @@ const COLORS: Record<CreaseLine['kind'], string> = {
 export function CreaseCanvas({
   lines,
   vertices = [],
+  paperBounds,
+  paperColor = '#fffdf9',
   tool = 'select',
   selectedVertexId = null,
   pendingVertexId = null,
@@ -64,10 +95,32 @@ export function CreaseCanvas({
   cancelInteractionToken = 0,
   disabled = false,
 }: Props) {
+  const resolvedPaperBounds = resolvePaperBounds(paperBounds)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const suppressClickRef = useRef(false)
   const [dragPreview, setDragPreview] = useState<DragState | null>(null)
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 })
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    function updateCanvasSize() {
+      if (!canvas) return
+      const rect = canvas.getBoundingClientRect()
+      setCanvasSize((current) => (
+        current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height }
+      ))
+    }
+
+    updateCanvasSize()
+    const observer = new ResizeObserver(updateCanvasSize)
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const drag = dragRef.current
@@ -86,45 +139,72 @@ export function CreaseCanvas({
     if (!canvas) return
     const context = canvas.getContext('2d')
     if (!context) return
-    const bounds = canvas.getBoundingClientRect()
-    const scale = window.devicePixelRatio || 1
-    canvas.width = Math.round(bounds.width * scale)
-    canvas.height = Math.round(bounds.height * scale)
-    context.scale(scale, scale)
-    context.clearRect(0, 0, bounds.width, bounds.height)
+    const canvasRect = canvas.getBoundingClientRect()
+    const pixelRatio = safePixelRatio(window.devicePixelRatio)
+    canvas.width = Math.max(1, Math.round(canvasRect.width * pixelRatio))
+    canvas.height = Math.max(1, Math.round(canvasRect.height * pixelRatio))
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+    context.clearRect(0, 0, canvasRect.width, canvasRect.height)
 
-    const mapX = (x: number) =>
-      CANVAS_PADDING_X + x * ((bounds.width - CANVAS_PADDING_X * 2) / PAPER_SIZE)
-    const mapY = (y: number) =>
-      CANVAS_PADDING_Y + y * ((bounds.height - CANVAS_PADDING_Y * 2) / PAPER_SIZE)
+    const transform = createViewTransform(canvasRect, resolvedPaperBounds)
+    const mapX = (x: number) => mapPaperX(transform, x)
+    const mapY = (y: number) => mapPaperY(transform, y)
 
+    context.fillStyle = paperColor
+    context.fillRect(transform.left, transform.top, transform.width, transform.height)
+
+    const gridStep = niceGridStep(
+      Math.max(
+        transform.bounds.maxX - transform.bounds.minX,
+        transform.bounds.maxY - transform.bounds.minY,
+      ) / DESIRED_GRID_INTERVALS,
+    )
     context.strokeStyle = '#dbe2ea'
     context.lineWidth = 1
-    for (let value = 0; value <= PAPER_SIZE; value += 20) {
-      context.beginPath()
-      context.moveTo(mapX(value), mapY(0))
-      context.lineTo(mapX(value), mapY(PAPER_SIZE))
-      context.stroke()
-      context.beginPath()
-      context.moveTo(mapX(0), mapY(value))
-      context.lineTo(mapX(PAPER_SIZE), mapY(value))
-      context.stroke()
-    }
-
-    context.fillStyle = '#fffdf9'
-    context.fillRect(
-      mapX(0),
-      mapY(0),
-      mapX(PAPER_SIZE) - mapX(0),
-      mapY(PAPER_SIZE) - mapY(0),
+    forEachGridValue(
+      transform.bounds.minX,
+      transform.bounds.maxX,
+      gridStep,
+      (value) => {
+        const x = mapX(value)
+        if (!Number.isFinite(x)) return
+        context.beginPath()
+        context.moveTo(x, transform.top)
+        context.lineTo(x, transform.top + transform.height)
+        context.stroke()
+      },
+    )
+    forEachGridValue(
+      transform.bounds.minY,
+      transform.bounds.maxY,
+      gridStep,
+      (value) => {
+        const y = mapY(value)
+        if (!Number.isFinite(y)) return
+        context.beginPath()
+        context.moveTo(transform.left, y)
+        context.lineTo(transform.left + transform.width, y)
+        context.stroke()
+      },
     )
 
     for (const line of lines) {
       const previewStart = line.startVertexId === dragPreview?.vertexId ? dragPreview : null
       const previewEnd = line.endVertexId === dragPreview?.vertexId ? dragPreview : null
+      const start = mapPaperPoint(
+        transform,
+        previewStart?.x ?? line.x1,
+        previewStart?.y ?? line.y1,
+      )
+      const end = mapPaperPoint(
+        transform,
+        previewEnd?.x ?? line.x2,
+        previewEnd?.y ?? line.y2,
+      )
+      if (!start || !end) continue
       context.beginPath()
-      context.moveTo(mapX(previewStart?.x ?? line.x1), mapY(previewStart?.y ?? line.y1))
-      context.lineTo(mapX(previewEnd?.x ?? line.x2), mapY(previewEnd?.y ?? line.y2))
+      context.moveTo(start.x, start.y)
+      context.lineTo(end.x, end.y)
       context.strokeStyle = COLORS[line.kind]
       context.lineWidth = line.id === selectedLineId ? 4 : line.kind === 'boundary' ? 2.5 : 1.8
       context.setLineDash(line.kind === 'valley' ? [7, 5] : line.kind === 'cut' ? [12, 4, 2, 4] : [])
@@ -136,23 +216,36 @@ export function CreaseCanvas({
       const preview = vertex.id === dragPreview?.vertexId ? dragPreview : null
       const x = preview?.x ?? vertex.x
       const y = preview?.y ?? vertex.y
+      const point = mapPaperPoint(transform, x, y)
+      if (!point) continue
       if (vertex.id === selectedVertexId || vertex.id === pendingVertexId) {
         context.beginPath()
-        context.arc(mapX(x), mapY(y), 9, 0, Math.PI * 2)
+        context.arc(point.x, point.y, 9, 0, Math.PI * 2)
         context.fillStyle = vertex.id === pendingVertexId
           ? 'rgba(229, 155, 53, 0.28)'
           : 'rgba(23, 107, 135, 0.2)'
         context.fill()
       }
       context.beginPath()
-      context.arc(mapX(x), mapY(y), 5, 0, Math.PI * 2)
+      context.arc(point.x, point.y, 5, 0, Math.PI * 2)
       context.fillStyle = '#176b87'
       context.fill()
       context.strokeStyle = '#ffffff'
       context.lineWidth = 2
       context.stroke()
     }
-  }, [dragPreview, lines, pendingVertexId, selectedLineId, selectedVertexId, vertices])
+  }, [
+    canvasSize.height,
+    canvasSize.width,
+    dragPreview,
+    lines,
+    paperColor,
+    pendingVertexId,
+    resolvedPaperBounds,
+    selectedLineId,
+    selectedVertexId,
+    vertices,
+  ])
 
   function handleClick(event: MouseEvent<HTMLCanvasElement>) {
     if (disabled) return
@@ -162,15 +255,18 @@ export function CreaseCanvas({
     }
     const canvas = canvasRef.current
     if (!canvas) return
-    const { x, y } = eventToPaperPosition(canvas, event)
-    const closestVertex = findClosestVertex(vertices, x, y)
+    const pointer = eventToPaperPosition(canvas, event, resolvedPaperBounds)
+    const { x, y } = pointer
+    const closestVertex = findClosestVertex(
+      vertices,
+      pointer.canvasX,
+      pointer.canvasY,
+      pointer.transform,
+    )
     if (
       tool === 'vertex' &&
       onAddVertex &&
-      x >= 0 &&
-      x <= PAPER_SIZE &&
-      y >= 0 &&
-      y <= PAPER_SIZE
+      isInsidePaper(pointer.canvasX, pointer.canvasY, pointer.transform)
     ) {
       onAddVertex(x, y)
       return
@@ -188,8 +284,21 @@ export function CreaseCanvas({
     }
     let best: { id: string; distance: number } | null = null
     for (const line of lines) {
-      const distance = pointSegmentDistance(x, y, line)
-      if (distance < 7 && (!best || distance < best.distance)) best = { id: line.id, distance }
+      const start = mapPaperPoint(pointer.transform, line.x1, line.y1)
+      const end = mapPaperPoint(pointer.transform, line.x2, line.y2)
+      if (!start || !end) continue
+      const distance = pointSegmentDistance(
+        pointer.canvasX,
+        pointer.canvasY,
+        start.x,
+        start.y,
+        end.x,
+        end.y,
+      )
+      if (
+        distance < LINE_HIT_RADIUS_PX &&
+        (!best || distance < best.distance)
+      ) best = { id: line.id, distance }
     }
     onSelectLine(best?.id ?? null)
   }
@@ -205,8 +314,13 @@ export function CreaseCanvas({
     ) return
 
     const canvas = event.currentTarget
-    const pointer = eventToPaperPosition(canvas, event)
-    const closestVertex = findClosestVertex(vertices, pointer.x, pointer.y)
+    const pointer = eventToPaperPosition(canvas, event, resolvedPaperBounds)
+    const closestVertex = findClosestVertex(
+      vertices,
+      pointer.canvasX,
+      pointer.canvasY,
+      pointer.transform,
+    )
     if (!closestVertex) return
 
     const vertex = vertices.find((candidate) => candidate.id === closestVertex.id)
@@ -236,11 +350,19 @@ export function CreaseCanvas({
     if (!drag || drag.pointerId !== event.pointerId) return
 
     event.preventDefault()
-    const pointer = eventToPaperPosition(event.currentTarget, event)
+    const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
     updateDragPreview({
       ...drag,
-      x: clampToPaper(pointer.x + drag.offsetX),
-      y: clampToPaper(pointer.y + drag.offsetY),
+      x: clampToRange(
+        pointer.x + drag.offsetX,
+        pointer.transform.bounds.minX,
+        pointer.transform.bounds.maxX,
+      ),
+      y: clampToRange(
+        pointer.y + drag.offsetY,
+        pointer.transform.bounds.minY,
+        pointer.transform.bounds.maxY,
+      ),
     })
   }
 
@@ -250,9 +372,17 @@ export function CreaseCanvas({
     if (!drag || drag.pointerId !== event.pointerId) return
 
     event.preventDefault()
-    const pointer = eventToPaperPosition(event.currentTarget, event)
-    const x = clampToPaper(pointer.x + drag.offsetX)
-    const y = clampToPaper(pointer.y + drag.offsetY)
+    const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
+    const x = clampToRange(
+      pointer.x + drag.offsetX,
+      pointer.transform.bounds.minX,
+      pointer.transform.bounds.maxX,
+    )
+    const y = clampToRange(
+      pointer.y + drag.offsetY,
+      pointer.transform.bounds.minY,
+      pointer.transform.bounds.maxY,
+    )
     const hasMoved = x !== drag.originX || y !== drag.originY
     dragRef.current = null
     setDragPreview(null)
@@ -315,39 +445,226 @@ function eventToPaperPosition(
     MouseEvent<HTMLCanvasElement> | PointerEvent<HTMLCanvasElement>,
     'clientX' | 'clientY'
   >,
+  paperBounds: PaperBounds,
 ) {
-  const bounds = canvas.getBoundingClientRect()
+  const canvasRect = canvas.getBoundingClientRect()
+  const transform = createViewTransform(canvasRect, paperBounds)
+  const canvasX = event.clientX - canvasRect.left
+  const canvasY = event.clientY - canvasRect.top
   return {
-    x: (event.clientX - bounds.left - CANVAS_PADDING_X) /
-      ((bounds.width - CANVAS_PADDING_X * 2) / PAPER_SIZE),
-    y: (event.clientY - bounds.top - CANVAS_PADDING_Y) /
-      ((bounds.height - CANVAS_PADDING_Y * 2) / PAPER_SIZE),
+    x: unmapCanvasCoordinate(
+      canvasX,
+      transform.left,
+      transform.bounds.minX,
+      transform.scale,
+    ),
+    y: unmapCanvasCoordinate(
+      canvasY,
+      transform.top,
+      transform.bounds.minY,
+      transform.scale,
+    ),
+    canvasX,
+    canvasY,
+    transform,
   }
 }
 
-function clampToPaper(value: number) {
-  return Math.max(0, Math.min(PAPER_SIZE, value))
+function resolvePaperBounds(bounds?: PaperBounds): PaperBounds {
+  if (!bounds) return DEFAULT_PAPER_BOUNDS
+  if (
+    !Number.isFinite(bounds.minX) ||
+    !Number.isFinite(bounds.minY) ||
+    !Number.isFinite(bounds.maxX) ||
+    !Number.isFinite(bounds.maxY) ||
+    bounds.minX >= bounds.maxX ||
+    bounds.minY >= bounds.maxY
+  ) return DEFAULT_PAPER_BOUNDS
+
+  const width = bounds.maxX - bounds.minX
+  const height = bounds.maxY - bounds.minY
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) return DEFAULT_PAPER_BOUNDS
+
+  return bounds
+}
+
+function createViewTransform(
+  canvasRect: Pick<DOMRect, 'width' | 'height'>,
+  requestedBounds: PaperBounds,
+): ViewTransform {
+  const bounds = resolvePaperBounds(requestedBounds)
+  return createTransform(canvasRect, bounds) ??
+    createTransform(canvasRect, DEFAULT_PAPER_BOUNDS) ?? {
+      bounds: DEFAULT_PAPER_BOUNDS,
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
+      scale: 1 / 400,
+    }
+}
+
+function createTransform(
+  canvasRect: Pick<DOMRect, 'width' | 'height'>,
+  bounds: PaperBounds,
+): ViewTransform | null {
+  const canvasWidth = Number.isFinite(canvasRect.width) && canvasRect.width > 0
+    ? canvasRect.width
+    : 1
+  const canvasHeight = Number.isFinite(canvasRect.height) && canvasRect.height > 0
+    ? canvasRect.height
+    : 1
+  const paddingX = Math.min(CANVAS_PADDING_X, Math.max(0, (canvasWidth - 1) / 2))
+  const paddingY = Math.min(CANVAS_PADDING_Y, Math.max(0, (canvasHeight - 1) / 2))
+  const availableWidth = Math.max(1, canvasWidth - paddingX * 2)
+  const availableHeight = Math.max(1, canvasHeight - paddingY * 2)
+  const paperWidth = bounds.maxX - bounds.minX
+  const paperHeight = bounds.maxY - bounds.minY
+  const scale = Math.min(availableWidth / paperWidth, availableHeight / paperHeight)
+  const width = paperWidth * scale
+  const height = paperHeight * scale
+  if (
+    !Number.isFinite(scale) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    scale <= 0 ||
+    width <= 0 ||
+    height <= 0
+  ) return null
+
+  const left = paddingX + (availableWidth - width) / 2
+  const top = paddingY + (availableHeight - height) / 2
+  if (!Number.isFinite(left) || !Number.isFinite(top)) return null
+
+  return { bounds, left, top, width, height, scale }
+}
+
+function mapPaperX(transform: ViewTransform, x: number) {
+  if (!Number.isFinite(x)) return Number.NaN
+  const mapped = transform.left + (x - transform.bounds.minX) * transform.scale
+  return Number.isFinite(mapped) ? mapped : Number.NaN
+}
+
+function mapPaperY(transform: ViewTransform, y: number) {
+  if (!Number.isFinite(y)) return Number.NaN
+  const mapped = transform.top + (y - transform.bounds.minY) * transform.scale
+  return Number.isFinite(mapped) ? mapped : Number.NaN
+}
+
+function mapPaperPoint(transform: ViewTransform, x: number, y: number) {
+  const mappedX = mapPaperX(transform, x)
+  const mappedY = mapPaperY(transform, y)
+  if (!Number.isFinite(mappedX) || !Number.isFinite(mappedY)) return null
+  return { x: mappedX, y: mappedY }
+}
+
+function unmapCanvasCoordinate(
+  value: number,
+  origin: number,
+  minimum: number,
+  scale: number,
+) {
+  if (!Number.isFinite(value)) return minimum
+  return minimum + (value - origin) / scale
+}
+
+function clampToRange(value: number, minimum: number, maximum: number) {
+  if (Number.isNaN(value)) return minimum
+  return Math.max(minimum, Math.min(maximum, value))
+}
+
+function isInsidePaper(x: number, y: number, transform: ViewTransform) {
+  return Number.isFinite(x) &&
+    Number.isFinite(y) &&
+    x >= transform.left &&
+    x <= transform.left + transform.width &&
+    y >= transform.top &&
+    y <= transform.top + transform.height
 }
 
 function findClosestVertex(
   vertices: Vertex[],
-  x: number,
-  y: number,
+  canvasX: number,
+  canvasY: number,
+  transform: ViewTransform,
 ) {
   let closest: { id: string; distance: number } | null = null
   for (const vertex of vertices) {
-    const distance = Math.hypot(x - vertex.x, y - vertex.y)
-    if (distance < 10 && (!closest || distance < closest.distance)) {
+    const point = mapPaperPoint(transform, vertex.x, vertex.y)
+    if (!point) continue
+    const distance = Math.hypot(canvasX - point.x, canvasY - point.y)
+    if (
+      distance < VERTEX_HIT_RADIUS_PX &&
+      (!closest || distance < closest.distance)
+    ) {
       closest = { id: vertex.id, distance }
     }
   }
   return closest
 }
 
-function pointSegmentDistance(px: number, py: number, line: CreaseLine) {
-  const dx = line.x2 - line.x1
-  const dy = line.y2 - line.y1
+function pointSegmentDistance(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+) {
+  const dx = x2 - x1
+  const dy = y2 - y1
   const lengthSquared = dx * dx + dy * dy
-  const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, ((px - line.x1) * dx + (py - line.y1) * dy) / lengthSquared))
-  return Math.hypot(px - (line.x1 + t * dx), py - (line.y1 + t * dy))
+  if (!Number.isFinite(lengthSquared)) return Number.POSITIVE_INFINITY
+  const t = lengthSquared === 0
+    ? 0
+    : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lengthSquared))
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+
+function niceGridStep(rawStep: number) {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1
+  const exponent = Math.floor(Math.log10(rawStep))
+  const magnitude = 10 ** exponent
+  if (!Number.isFinite(magnitude) || magnitude <= 0) return rawStep
+  const fraction = rawStep / magnitude
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10
+  const step = niceFraction * magnitude
+  return Number.isFinite(step) && step > 0 ? step : rawStep
+}
+
+function forEachGridValue(
+  minimum: number,
+  maximum: number,
+  requestedStep: number,
+  callback: (value: number) => void,
+) {
+  const span = maximum - minimum
+  if (!Number.isFinite(span) || span <= 0) return
+  const step = Number.isFinite(requestedStep) && requestedStep > 0
+    ? requestedStep
+    : span
+  const requestedIntervals = Math.ceil(span / step)
+  const intervalCount = Number.isFinite(requestedIntervals)
+    ? Math.max(1, Math.min(MAX_GRID_LINES_PER_AXIS - 1, requestedIntervals))
+    : MAX_GRID_LINES_PER_AXIS - 1
+  const effectiveStep = requestedIntervals > intervalCount
+    ? span / intervalCount
+    : step
+
+  for (let index = 0; index <= intervalCount; index += 1) {
+    const value = index === intervalCount
+      ? maximum
+      : minimum + Math.min(span, index * effectiveStep)
+    if (Number.isFinite(value)) callback(value)
+  }
+}
+
+function safePixelRatio(pixelRatio: number) {
+  if (!Number.isFinite(pixelRatio) || pixelRatio <= 0) return 1
+  return Math.min(pixelRatio, 4)
 }

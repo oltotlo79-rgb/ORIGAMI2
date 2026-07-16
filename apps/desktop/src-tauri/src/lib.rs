@@ -14,7 +14,7 @@ use ori_core::{
     BoundaryEdgeRef, Command, EditorSettings, EditorState, PaperValidationIssue, ValidationIssue,
     create_rectangular_sheet, validate_paper,
 };
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, RgbaColor, VertexId};
 use ori_formats::{
     CURRENT_FORMAT_VERSION, Ori2Limits, ProjectDocument, read_project_ori2_with_limits,
     write_project_ori2,
@@ -30,6 +30,7 @@ use tauri::menu::{
 
 const UNTITLED_PROJECT_NAME: &str = "Untitled";
 const DEFAULT_SHEET_SIZE_MM: f64 = 400.0;
+const MAX_PROJECT_NAME_CHARS: usize = 120;
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
@@ -71,10 +72,27 @@ impl ProjectState {
             saved_revision: None,
             saved_document: None,
         };
-        // A newly-created sheet is the clean baseline. It becomes dirty only
-        // after the user makes an edit, even though it has no file path yet.
+        // The built-in startup sheet is a clean baseline. In contrast, a
+        // user-created project uses `new_unsaved` and remains dirty until its
+        // first successful save.
         project.saved_document = Some(project.document());
         project
+    }
+
+    fn new_unsaved(name: String, pattern: CreasePattern, paper: Paper) -> Self {
+        let editor = EditorState::with_settings(
+            pattern,
+            EditorSettings::new().with_cutting_allowed(paper.cutting_allowed),
+        );
+        Self {
+            project_id: ProjectId::new(),
+            name,
+            current_path: None,
+            paper,
+            editor,
+            saved_revision: None,
+            saved_document: None,
+        }
     }
 
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
@@ -95,15 +113,19 @@ impl ProjectState {
     }
 
     fn document(&self) -> ProjectDocument {
-        let mut paper = self.paper.clone();
-        paper.cutting_allowed = self.editor.settings().cutting_allowed();
         ProjectDocument {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: self.project_id,
             name: self.name.clone(),
-            paper,
+            paper: self.current_paper(),
             crease_pattern: self.editor.pattern().clone(),
         }
+    }
+
+    fn current_paper(&self) -> Paper {
+        let mut paper = self.paper.clone();
+        paper.cutting_allowed = self.editor.settings().cutting_allowed();
+        paper
     }
 
     fn is_dirty(&self) -> bool {
@@ -143,6 +165,7 @@ struct ProjectSnapshot {
     revision: u64,
     saved_revision: Option<u64>,
     is_dirty: bool,
+    paper: Paper,
     crease_pattern: CreasePattern,
     can_undo: bool,
     can_redo: bool,
@@ -170,6 +193,16 @@ struct ValidationIssueSnapshot {
     edges: Vec<EdgeId>,
 }
 
+struct NewProjectParameters {
+    name: String,
+    width_mm: f64,
+    height_mm: f64,
+    thickness_mm: f64,
+    cutting_allowed: bool,
+    front_color: RgbaColor,
+    back_color: RgbaColor,
+}
+
 #[tauri::command]
 fn generate_benchmark_pattern(edge_count: usize) -> PatternResponse {
     let pattern = ori_core::benchmark_pattern(edge_count.min(100_000));
@@ -183,6 +216,37 @@ fn generate_benchmark_pattern(edge_count: usize) -> PatternResponse {
 fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, String> {
     let project = lock_project(&state)?;
     Ok(snapshot(&project))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn new_project(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    name: String,
+    width_mm: f64,
+    height_mm: f64,
+    thickness_mm: f64,
+    cutting_allowed: bool,
+    front_color: RgbaColor,
+    back_color: RgbaColor,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    replace_with_new_project(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        NewProjectParameters {
+            name,
+            width_mm,
+            height_mm,
+            thickness_mm,
+            cutting_allowed,
+            front_color,
+            back_color,
+        },
+    )
 }
 
 #[tauri::command]
@@ -421,6 +485,70 @@ fn execute_command(
     Ok(snapshot(project))
 }
 
+fn replace_with_new_project(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    parameters: NewProjectParameters,
+) -> Result<ProjectSnapshot, String> {
+    ensure_project_identity(project, expected_project_id)?;
+    if project.editor.revision() != expected_revision {
+        return Err(format!(
+            "expected revision {expected_revision}, but the current revision is {}",
+            project.editor.revision()
+        ));
+    }
+
+    let replacement = create_new_project_state(parameters)?;
+    *project = replacement;
+    Ok(snapshot(project))
+}
+
+fn create_new_project_state(parameters: NewProjectParameters) -> Result<ProjectState, String> {
+    let name = normalize_project_name(&parameters.name)?;
+    validate_paper_thickness(parameters.thickness_mm)?;
+    let sheet = create_rectangular_sheet(
+        parameters.width_mm,
+        parameters.height_mm,
+        parameters.cutting_allowed,
+    )
+    .map_err(|error| format!("failed to create the paper sheet: {error}"))?;
+    let (pattern, mut paper) = sheet.into_parts();
+    paper.thickness_mm = parameters.thickness_mm;
+    paper.front.color = parameters.front_color;
+    paper.back.color = parameters.back_color;
+
+    if !validate_paper(&paper, &pattern).is_valid() {
+        return Err("the generated paper failed final validation".to_owned());
+    }
+
+    Ok(ProjectState::new_unsaved(name, pattern, paper))
+}
+
+fn normalize_project_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    let character_count = trimmed.chars().count();
+    if !(1..=MAX_PROJECT_NAME_CHARS).contains(&character_count) {
+        return Err(format!(
+            "project name must contain between 1 and {MAX_PROJECT_NAME_CHARS} characters after trimming"
+        ));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("project name must not contain control characters".to_owned());
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn validate_paper_thickness(thickness_mm: f64) -> Result<(), String> {
+    if !thickness_mm.is_finite() {
+        return Err("paper thickness must be finite".to_owned());
+    }
+    if thickness_mm < 0.0 {
+        return Err("paper thickness must be zero or greater".to_owned());
+    }
+    Ok(())
+}
+
 fn ensure_project_identity(
     project: &ProjectState,
     expected_project_id: ProjectId,
@@ -456,6 +584,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         revision: project.editor.revision(),
         saved_revision: project.saved_revision,
         is_dirty: project.is_dirty(),
+        paper: project.current_paper(),
         crease_pattern: project.editor.pattern().clone(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -962,6 +1091,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
             project_snapshot,
+            new_project,
             validate_project,
             open_project,
             save_project,
@@ -1039,6 +1169,195 @@ mod tests {
     use ori_domain::{Edge, Vertex};
 
     use super::*;
+
+    fn new_project_parameters() -> NewProjectParameters {
+        NewProjectParameters {
+            name: "  Test sheet  ".to_owned(),
+            width_mm: 210.0,
+            height_mm: 297.0,
+            thickness_mm: 0.2,
+            cutting_allowed: true,
+            front_color: RgbaColor {
+                red: 10,
+                green: 20,
+                blue: 30,
+                alpha: 240,
+            },
+            back_color: RgbaColor {
+                red: 220,
+                green: 210,
+                blue: 200,
+                alpha: 230,
+            },
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct ProjectStateSignature {
+        project_id: ProjectId,
+        document: ProjectDocument,
+        current_path: Option<PathBuf>,
+        saved_revision: Option<u64>,
+        saved_document: Option<ProjectDocument>,
+        revision: u64,
+        can_undo: bool,
+        can_redo: bool,
+        is_dirty: bool,
+    }
+
+    fn project_state_signature(project: &ProjectState) -> ProjectStateSignature {
+        ProjectStateSignature {
+            project_id: project.project_id,
+            document: project.document(),
+            current_path: project.current_path.clone(),
+            saved_revision: project.saved_revision,
+            saved_document: project.saved_document.clone(),
+            revision: project.editor.revision(),
+            can_undo: project.editor.can_undo(),
+            can_redo: project.editor.can_redo(),
+            is_dirty: project.is_dirty(),
+        }
+    }
+
+    #[test]
+    fn project_name_is_trimmed_and_validated_by_unicode_character_count() {
+        assert_eq!(normalize_project_name("  Crane  "), Ok("Crane".to_owned()));
+        assert_eq!(
+            normalize_project_name("\n  Crane  \t"),
+            Ok("Crane".to_owned())
+        );
+        assert!(normalize_project_name("").is_err());
+        assert!(normalize_project_name(" \t\n ").is_err());
+        assert!(normalize_project_name("Crane\0draft").is_err());
+
+        let maximum = "鶴".repeat(MAX_PROJECT_NAME_CHARS);
+        assert_eq!(normalize_project_name(&maximum), Ok(maximum.clone()));
+        assert!(normalize_project_name(&format!("{maximum}鶴")).is_err());
+    }
+
+    #[test]
+    fn paper_thickness_accepts_zero_and_rejects_negative_or_non_finite_values() {
+        assert_eq!(validate_paper_thickness(0.0), Ok(()));
+        assert_eq!(validate_paper_thickness(-0.0), Ok(()));
+        for invalid in [-f64::MIN_POSITIVE, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(validate_paper_thickness(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn new_project_state_has_requested_paper_and_no_saved_baseline() {
+        let parameters = new_project_parameters();
+        let expected_front = parameters.front_color;
+        let expected_back = parameters.back_color;
+
+        let project = create_new_project_state(parameters).expect("valid new project");
+        let response = snapshot(&project);
+
+        assert_eq!(project.name, "Test sheet");
+        assert!(project.current_path.is_none());
+        assert!(project.saved_revision.is_none());
+        assert!(project.saved_document.is_none());
+        assert_eq!(project.editor.revision(), 0);
+        assert!(!project.editor.can_undo());
+        assert!(!project.editor.can_redo());
+        assert!(project.editor.cutting_allowed());
+        assert!(project.is_dirty());
+        assert_eq!(project.paper.thickness_mm, 0.2);
+        assert_eq!(project.paper.front.color, expected_front);
+        assert_eq!(project.paper.back.color, expected_back);
+        assert_eq!(project.paper.front.texture_asset, None);
+        assert_eq!(project.paper.back.texture_asset, None);
+        assert_eq!(
+            project.editor.pattern().vertices[2].position,
+            Point2::new(210.0, 297.0)
+        );
+        assert!(validate_paper(&project.paper, project.editor.pattern()).is_valid());
+
+        assert_eq!(response.project_id, project.project_id);
+        assert_eq!(response.name, "Test sheet");
+        assert!(response.current_path.is_none());
+        assert_eq!(response.revision, 0);
+        assert!(response.saved_revision.is_none());
+        assert!(response.is_dirty);
+        assert_eq!(response.paper, project.paper);
+        assert!(response.cutting_allowed);
+        assert!(!response.can_undo);
+        assert!(!response.can_redo);
+    }
+
+    #[test]
+    fn snapshot_paper_uses_the_current_editor_cutting_setting() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        assert!(!project.paper.cutting_allowed);
+
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::SetCuttingAllowed { allowed: true },
+        )
+        .expect("enable cutting");
+
+        assert!(response.cutting_allowed);
+        assert!(response.paper.cutting_allowed);
+        assert!(project.document().paper.cutting_allowed);
+    }
+
+    #[test]
+    fn new_project_replaces_only_the_expected_unchanged_project() {
+        let mut project = initial_project_state();
+        let old_project_id = project.project_id;
+
+        let response =
+            replace_with_new_project(&mut project, old_project_id, 0, new_project_parameters())
+                .expect("replace current project");
+
+        assert_ne!(response.project_id, old_project_id);
+        assert_eq!(response.project_id, project.project_id);
+        assert_eq!(response.name, "Test sheet");
+        assert!(response.current_path.is_none());
+        assert_eq!(response.revision, 0);
+        assert!(response.saved_revision.is_none());
+        assert!(response.is_dirty);
+        assert!(!response.can_undo);
+        assert!(!response.can_redo);
+        assert!(project.saved_document.is_none());
+    }
+
+    #[test]
+    fn new_project_errors_leave_existing_state_untouched() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        assert!(
+            replace_with_new_project(&mut project, ProjectId::new(), 0, new_project_parameters(),)
+                .is_err()
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        assert!(
+            replace_with_new_project(&mut project, project_id, 1, new_project_parameters())
+                .is_err()
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        let mut invalid_name = new_project_parameters();
+        invalid_name.name = " \0 ".to_owned();
+        assert!(replace_with_new_project(&mut project, project_id, 0, invalid_name).is_err());
+        assert_eq!(project_state_signature(&project), before);
+
+        let mut invalid_dimensions = new_project_parameters();
+        invalid_dimensions.width_mm = 0.0;
+        assert!(replace_with_new_project(&mut project, project_id, 0, invalid_dimensions).is_err());
+        assert_eq!(project_state_signature(&project), before);
+
+        let mut invalid_thickness = new_project_parameters();
+        invalid_thickness.thickness_mm = f64::NAN;
+        assert!(replace_with_new_project(&mut project, project_id, 0, invalid_thickness).is_err());
+        assert_eq!(project_state_signature(&project), before);
+    }
 
     #[test]
     fn move_vertex_returns_the_updated_revision_and_snapshot() {
@@ -1424,6 +1743,7 @@ mod tests {
         assert_eq!(response.name, "Loaded bird");
         assert_eq!(response.current_path.as_deref(), Some("bird.ori2"));
         assert!(!response.is_dirty);
+        assert_eq!(response.paper, document.paper);
         assert!(response.cutting_allowed);
         assert!(!response.can_undo);
         assert_eq!(project.document(), document);

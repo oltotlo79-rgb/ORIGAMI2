@@ -1,6 +1,10 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
+import {
+  CreaseCanvas,
+  type CreaseLine,
+  type PaperBounds,
+} from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
 import {
   addEdge,
@@ -9,6 +13,7 @@ import {
   getProjectSnapshot,
   isNativeCoreAvailable,
   moveVertex,
+  newProject,
   openProject,
   redo,
   removeEdge,
@@ -18,6 +23,7 @@ import {
   setCuttingAllowed,
   undo,
   type ProjectSnapshot,
+  type RgbaColor,
   type ValidationSnapshot,
   validateProject,
 } from './lib/coreClient'
@@ -38,6 +44,8 @@ function App() {
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
   const [fileOperation, setFileOperation] = useState<'open' | 'save' | 'save_as' | null>(null)
   const [coreBusy, setCoreBusy] = useState(false)
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
+  const [newProjectError, setNewProjectError] = useState<string | null>(null)
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
@@ -90,6 +98,20 @@ function App() {
   const selectedVertexIsBoundary = selectedVertex
     ? boundaryVertexIds.has(selectedVertex.id)
     : false
+  const paperBounds = useMemo(
+    () => resolvePaperBounds(nativeSnapshot),
+    [nativeSnapshot],
+  )
+  const paperSizeLabel = paperBounds
+    ? `${formatMillimetres(paperBounds.maxX - paperBounds.minX)} × ${formatMillimetres(paperBounds.maxY - paperBounds.minY)} mm`
+    : '寸法不明'
+  const paperCenter = paperBounds
+    ? {
+        x: (paperBounds.minX + paperBounds.maxX) / 2,
+        y: (paperBounds.minY + paperBounds.maxY) / 2,
+      }
+    : null
+  const paperFrontColor = rgbaToCss(nativeSnapshot?.paper.front.color)
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -100,6 +122,12 @@ function App() {
       })
       .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
   }, [applySnapshot])
+
+  useEffect(() => {
+    if (nativeSnapshot?.cutting_allowed || activeTool !== 'cut') return
+    setActiveTool('select')
+    setPendingEdgeStart(null)
+  }, [activeTool, nativeSnapshot?.cutting_allowed])
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -177,6 +205,14 @@ function App() {
 
   useEffect(() => {
     function handleKeyboardShortcut(event: KeyboardEvent) {
+      if (event.key.toLowerCase() === 'escape' && newProjectOpen) {
+        event.preventDefault()
+        if (coreBusy) return
+        setNewProjectOpen(false)
+        setNewProjectError(null)
+        return
+      }
+      if (newProjectOpen) return
       if (isEditingText(event.target)) return
 
       const key = event.key.toLowerCase()
@@ -212,7 +248,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyboardShortcut)
     return () => window.removeEventListener('keydown', handleKeyboardShortcut)
-  }, [deleteSelection, nativeSnapshot, runNativeEdit, selectedLine, selectedVertex])
+  }, [coreBusy, deleteSelection, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
     if (activeTool !== 'mountain' && activeTool !== 'valley' && activeTool !== 'cut') return
@@ -281,6 +317,80 @@ function App() {
     }
   }
 
+  async function submitNewProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+
+    const form = new FormData(event.currentTarget)
+    const name = String(form.get('name') ?? '').trim()
+    const widthMm = Number(form.get('width_mm'))
+    const heightMm = Number(form.get('height_mm'))
+    const thicknessMm = Number(form.get('thickness_mm'))
+    const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
+    const backColor = parseHexColor(String(form.get('back_color') ?? ''))
+
+    if (!name) {
+      setNewProjectError('作品名を入力してください。')
+      return
+    }
+    if ([...name].length > 120 || hasControlCharacter(name)) {
+      setNewProjectError('作品名は制御文字を含まない120文字以内にしてください。')
+      return
+    }
+    if (!Number.isFinite(widthMm) || widthMm <= 0) {
+      setNewProjectError('幅には0より大きい有限の数値を入力してください。')
+      return
+    }
+    if (!Number.isFinite(heightMm) || heightMm <= 0) {
+      setNewProjectError('高さには0より大きい有限の数値を入力してください。')
+      return
+    }
+    if (!Number.isFinite(thicknessMm) || thicknessMm < 0) {
+      setNewProjectError('紙厚には0以上の有限の数値を入力してください。')
+      return
+    }
+    if (!frontColor || !backColor) {
+      setNewProjectError('表色と裏色を選択してください。')
+      return
+    }
+    if (
+      current.is_dirty &&
+      !window.confirm('未保存の変更があります。保存せずに新しいプロジェクトを作成しますか？')
+    ) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setNewProjectError(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const snapshot = await newProject(current.project_id, current.revision, {
+        name,
+        widthMm,
+        heightMm,
+        thicknessMm,
+        cuttingAllowed: form.get('cutting_allowed') === 'on',
+        frontColor,
+        backColor,
+      })
+      applySnapshot(snapshot)
+      setValidation(null)
+      setSelectedLineId(null)
+      setSelectedVertexId(null)
+      setPendingEdgeStart(null)
+      setActiveTool('select')
+      setNewProjectOpen(false)
+      setCoreStatus(`「${snapshot.name}」を作成しました。保存先はまだ設定されていません。`)
+    } catch (error) {
+      const message = String(error)
+      setNewProjectError(`作成できませんでした: ${message}`)
+      setCoreStatus(`新規作成エラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function runFileOperation(operation: 'open' | 'save' | 'save_as') {
     const current = latestSnapshotRef.current
     if (!current || coreOperationRef.current) return
@@ -327,7 +437,7 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="titlebar">
+      <header className="titlebar" inert={newProjectOpen}>
         <div className="brand-mark" aria-hidden="true">◇</div>
         <strong>ORIGAMI2</strong>
         <span
@@ -338,6 +448,16 @@ function App() {
           {nativeSnapshot?.is_dirty ? ' *' : ''}
         </span>
         <nav className="top-actions" aria-label="プロジェクト操作">
+          <button
+            type="button"
+            disabled={coreBusy || !nativeSnapshot}
+            onClick={() => {
+              setNewProjectError(null)
+              setNewProjectOpen(true)
+            }}
+          >
+            新規
+          </button>
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot?.can_undo}
@@ -358,9 +478,12 @@ function App() {
           </button>
           <button
             type="button"
-            disabled={coreBusy || !nativeSnapshot}
-            onClick={() => runNativeEdit((projectId, revision) =>
-              addVertex(projectId, revision, 200, 200))}
+            disabled={coreBusy || !nativeSnapshot || !paperCenter}
+            onClick={() => {
+              if (!paperCenter) return
+              void runNativeEdit((projectId, revision) =>
+                addVertex(projectId, revision, paperCenter.x, paperCenter.y))
+            }}
           >
             中央に頂点
           </button>
@@ -396,7 +519,7 @@ function App() {
         </nav>
       </header>
 
-      <section className="workspace">
+      <section className="workspace" inert={newProjectOpen}>
         <aside className="tool-rail" aria-label="作図ツール">
           {[
             ['select', '↖', '選択'],
@@ -409,7 +532,7 @@ function App() {
             <button
               type="button"
               key={id}
-              disabled={coreBusy}
+              disabled={coreBusy || (id === 'cut' && !nativeSnapshot?.cutting_allowed)}
               className={activeTool === id ? 'active' : ''}
               onClick={() => {
                 setActiveTool(id)
@@ -428,11 +551,13 @@ function App() {
             <div className="panel-heading">
               <span>2D 展開図</span>
               <span className="panel-meta">
-                400 × 400 mm · {nativeLines.length.toLocaleString()}本
+                {paperSizeLabel} · {nativeLines.length.toLocaleString()}本
               </span>
             </div>
             <CreaseCanvas
               lines={nativeLines}
+              paperBounds={paperBounds}
+              paperColor={paperFrontColor}
               vertices={nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
                 id: vertex.id,
                 x: vertex.position.x,
@@ -607,7 +732,14 @@ function App() {
           )}
           <section>
             <h2>紙</h2>
-            <label className="field">厚さ <input defaultValue="0.10" /> mm</label>
+            <label className="field">
+              厚さ
+              <input
+                value={nativeSnapshot?.paper.thickness_mm ?? ''}
+                readOnly
+                aria-label="現在の紙厚"
+              /> mm
+            </label>
             <label className="check">
               <input
                 type="checkbox"
@@ -633,7 +765,7 @@ function App() {
         </aside>
       </section>
 
-      <section className="timeline panel">
+      <section className="timeline panel" inert={newProjectOpen}>
         <div className="timeline-controls">
           <button type="button" aria-label="先頭へ">|◀</button>
           <button type="button" aria-label="再生">▶</button>
@@ -647,7 +779,149 @@ function App() {
         </div>
       </section>
 
-      <footer className="statusbar">
+      {newProjectOpen && (
+        <div className="dialog-backdrop">
+          <section
+            className="new-project-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-project-title"
+          >
+            <header>
+              <div>
+                <span className="dialog-eyebrow">一枚紙から開始</span>
+                <h2 id="new-project-title">新しいプロジェクト</h2>
+              </div>
+              <button
+                type="button"
+                className="dialog-close"
+                disabled={coreBusy}
+                onClick={() => {
+                  setNewProjectOpen(false)
+                  setNewProjectError(null)
+                }}
+                aria-label="閉じる"
+              >
+                ×
+              </button>
+            </header>
+            <form onSubmit={submitNewProject}>
+              <label className="dialog-field dialog-field-wide">
+                <span>作品名</span>
+                <input
+                  name="name"
+                  defaultValue="無題の作品"
+                  maxLength={120}
+                  required
+                  autoFocus
+                  disabled={coreBusy}
+                />
+              </label>
+
+              <fieldset>
+                <legend>用紙サイズ</legend>
+                <div className="dialog-grid two-columns">
+                  <label className="dialog-field">
+                    <span>幅</span>
+                    <span className="number-with-unit">
+                      <input
+                        name="width_mm"
+                        type="number"
+                        defaultValue="400"
+                        min="0"
+                        step="any"
+                        required
+                        disabled={coreBusy}
+                      />
+                      mm
+                    </span>
+                  </label>
+                  <label className="dialog-field">
+                    <span>高さ</span>
+                    <span className="number-with-unit">
+                      <input
+                        name="height_mm"
+                        type="number"
+                        defaultValue="400"
+                        min="0"
+                        step="any"
+                        required
+                        disabled={coreBusy}
+                      />
+                      mm
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend>材料設定</legend>
+                <div className="dialog-grid three-columns">
+                  <label className="dialog-field">
+                    <span>紙厚</span>
+                    <span className="number-with-unit">
+                      <input
+                        name="thickness_mm"
+                        type="number"
+                        defaultValue="0.10"
+                        min="0"
+                        step="any"
+                        required
+                        disabled={coreBusy}
+                      />
+                      mm
+                    </span>
+                  </label>
+                  <label className="dialog-field color-field">
+                    <span>表色</span>
+                    <input
+                      name="front_color"
+                      type="color"
+                      defaultValue="#ffffff"
+                      disabled={coreBusy}
+                    />
+                  </label>
+                  <label className="dialog-field color-field">
+                    <span>裏色</span>
+                    <input
+                      name="back_color"
+                      type="color"
+                      defaultValue="#f8f8f5"
+                      disabled={coreBusy}
+                    />
+                  </label>
+                </div>
+                <label className="dialog-check">
+                  <input name="cutting_allowed" type="checkbox" disabled={coreBusy} />
+                  この作品で切断線の作成を許可する
+                </label>
+              </fieldset>
+
+              <p className="dialog-note">
+                左上を (0, 0) mm とする長方形の用紙と、4本の輪郭線を作成します。
+              </p>
+              {newProjectError && <p className="dialog-error" role="alert">{newProjectError}</p>}
+              <footer>
+                <button
+                  type="button"
+                  disabled={coreBusy}
+                  onClick={() => {
+                    setNewProjectOpen(false)
+                    setNewProjectError(null)
+                  }}
+                >
+                  キャンセル
+                </button>
+                <button type="submit" className="primary" disabled={coreBusy}>
+                  {coreBusy ? '作成中…' : '作成'}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+
+      <footer className="statusbar" inert={newProjectOpen}>
         <span>ツール: {toolLabel(activeTool)}</span>
         <span>{coreStatus}</span>
         <span>スナップ: 頂点・交点</span>
@@ -701,6 +975,62 @@ function validationIssueLabel(code: string) {
     zero_area_boundary: '紙の輪郭の面積が0です',
     boundary_area_calculation_failed: '紙の輪郭の面積計算に失敗しました',
   }[code] ?? code
+}
+
+function resolvePaperBounds(snapshot: ProjectSnapshot | null): PaperBounds | undefined {
+  if (!snapshot) return undefined
+  const positions = new Map(
+    snapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
+  )
+  const points = snapshot.paper.boundary_vertices.flatMap((id) => {
+    const point = positions.get(id)
+    return point ? [point] : []
+  })
+  if (points.length < 2) return undefined
+
+  const bounds = points.reduce<PaperBounds>((current, point) => ({
+    minX: Math.min(current.minX, point.x),
+    minY: Math.min(current.minY, point.y),
+    maxX: Math.max(current.maxX, point.x),
+    maxY: Math.max(current.maxY, point.y),
+  }), {
+    minX: Number.POSITIVE_INFINITY,
+    minY: Number.POSITIVE_INFINITY,
+    maxX: Number.NEGATIVE_INFINITY,
+    maxY: Number.NEGATIVE_INFINITY,
+  })
+  if (
+    !Object.values(bounds).every(Number.isFinite) ||
+    bounds.maxX <= bounds.minX ||
+    bounds.maxY <= bounds.minY
+  ) return undefined
+  return bounds
+}
+
+function formatMillimetres(value: number) {
+  return value.toLocaleString('ja-JP', { maximumFractionDigits: 3 })
+}
+
+function rgbaToCss(color: RgbaColor | undefined) {
+  if (!color) return '#fffdf9'
+  return `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha / 255})`
+}
+
+function parseHexColor(value: string): RgbaColor | null {
+  if (!/^#[0-9a-f]{6}$/iu.test(value)) return null
+  return {
+    red: Number.parseInt(value.slice(1, 3), 16),
+    green: Number.parseInt(value.slice(3, 5), 16),
+    blue: Number.parseInt(value.slice(5, 7), 16),
+    alpha: 255,
+  }
+}
+
+function hasControlCharacter(value: string) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
+  })
 }
 
 function isEditingText(target: EventTarget | null) {

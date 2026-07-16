@@ -5,6 +5,21 @@ export type PatternResponse = {
   edge_count: number
 }
 
+export type RgbaColor = {
+  red: number
+  green: number
+  blue: number
+  alpha: number
+}
+
+export type PaperSnapshot = {
+  boundary_vertices: string[]
+  thickness_mm: number
+  cutting_allowed: boolean
+  front: { color: RgbaColor; texture_asset: string | null }
+  back: { color: RgbaColor; texture_asset: string | null }
+}
+
 export type ProjectSnapshot = {
   project_id: string
   name: string
@@ -16,9 +31,20 @@ export type ProjectSnapshot = {
     vertices: Array<{ id: string; position: { x: number; y: number } }>
     edges: Array<{ id: string; start: string; end: string; kind: string }>
   }
+  paper: PaperSnapshot
   can_undo: boolean
   can_redo: boolean
   cutting_allowed: boolean
+}
+
+export type NewProjectSettings = {
+  name: string
+  widthMm: number
+  heightMm: number
+  thicknessMm: number
+  cuttingAllowed: boolean
+  frontColor: RgbaColor
+  backColor: RgbaColor
 }
 
 export type ProjectFileResponse = {
@@ -69,6 +95,24 @@ export function saveProject() {
 
 export function saveProjectAs() {
   return invoke<ProjectFileResponse>('save_project_as')
+}
+
+export function newProject(
+  expectedProjectId: string,
+  expectedRevision: number,
+  settings: NewProjectSettings,
+) {
+  return invoke<ProjectSnapshot>('new_project', {
+    expectedProjectId,
+    expectedRevision,
+    name: settings.name,
+    widthMm: settings.widthMm,
+    heightMm: settings.heightMm,
+    thicknessMm: settings.thicknessMm,
+    cuttingAllowed: settings.cuttingAllowed,
+    frontColor: settings.frontColor,
+    backColor: settings.backColor,
+  })
 }
 
 export function addVertex(expectedProjectId: string, expectedRevision: number, x: number, y: number) {

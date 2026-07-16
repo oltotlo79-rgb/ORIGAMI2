@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+#[cfg(not(target_os = "windows"))]
 use atomic_write_file::AtomicWriteFile;
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
@@ -23,6 +24,26 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+#[cfg(target_os = "windows")]
+use std::{
+    ffi::OsString,
+    fs::OpenOptions,
+    io::{Seek, SeekFrom},
+    mem::size_of,
+    os::windows::{
+        ffi::OsStrExt,
+        fs::OpenOptionsExt,
+        io::{AsRawHandle, RawHandle},
+    },
+    ptr,
+    sync::atomic::AtomicU64,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::FileSystem::{
+    DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_SHARE_READ,
+    FileRenameInfo, SetFileInformationByHandle,
+};
+
 #[cfg(target_os = "macos")]
 use tauri::menu::{
     AboutMetadata, HELP_SUBMENU_ID, Menu, MenuItem, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID,
@@ -32,6 +53,8 @@ const UNTITLED_PROJECT_NAME: &str = "Untitled";
 const DEFAULT_SHEET_SIZE_MM: f64 = 400.0;
 const MAX_PROJECT_NAME_CHARS: usize = 120;
 const MAX_BENCHMARK_EDGE_COUNT: usize = 100_000;
+#[cfg(target_os = "windows")]
+static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
@@ -171,6 +194,12 @@ struct ProjectSnapshot {
 struct ProjectFileResponse {
     canceled: bool,
     project: ProjectSnapshot,
+}
+
+#[derive(Debug)]
+struct LoadedProjectFile {
+    path: PathBuf,
+    document: ProjectDocument,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,15 +415,10 @@ async fn open_project(
         .simplified()
         .into_path()
         .map_err(|error| format!("the selected location is not a local file: {error}"))?;
-    let document = load_document_from_path(&path)?;
+    let loaded = load_project_file(path)?;
 
     let mut project = lock_project(&state)?;
-    ensure_expected_project(&project, expected_project_id, expected_revision)?;
-    *project = ProjectState::from_document(document, path);
-    Ok(ProjectFileResponse {
-        canceled: false,
-        project: snapshot(&project),
-    })
+    apply_loaded_project_file(&mut project, expected_project_id, expected_revision, loaded)
 }
 
 #[tauri::command]
@@ -405,7 +429,7 @@ async fn save_project(
     {
         let mut project = lock_project(&state)?;
         if let Some(path) = project.current_path.clone() {
-            return save_locked_project(&mut project, path);
+            return save_project_to_path(&mut project, path);
         }
     }
     save_project_with_dialog(&app, &state)
@@ -1031,14 +1055,21 @@ fn save_project_with_dialog(
         .simplified()
         .into_path()
         .map_err(|error| format!("the selected location is not a local file: {error}"))?;
-    let path = ensure_ori2_extension(path);
-
     let mut project = lock_project(state)?;
-    ensure_expected_project(&project, expected_project_id, expected_revision)?;
-    save_locked_project(&mut project, path)
+    save_project_as_selected_path(&mut project, expected_project_id, expected_revision, path)
 }
 
-fn save_locked_project(
+fn save_project_as_selected_path(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    selected_path: PathBuf,
+) -> Result<ProjectFileResponse, String> {
+    ensure_expected_project(project, expected_project_id, expected_revision)?;
+    save_project_to_path(project, ensure_ori2_extension(selected_path))
+}
+
+fn save_project_to_path(
     project: &mut ProjectState,
     path: PathBuf,
 ) -> Result<ProjectFileResponse, String> {
@@ -1047,6 +1078,25 @@ fn save_locked_project(
     project.current_path = Some(path);
     project.saved_revision = Some(project.editor.revision());
     project.saved_document = Some(document);
+    Ok(ProjectFileResponse {
+        canceled: false,
+        project: snapshot(project),
+    })
+}
+
+fn load_project_file(path: PathBuf) -> Result<LoadedProjectFile, String> {
+    let document = load_document_from_path(&path)?;
+    Ok(LoadedProjectFile { path, document })
+}
+
+fn apply_loaded_project_file(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    loaded: LoadedProjectFile,
+) -> Result<ProjectFileResponse, String> {
+    ensure_expected_project(project, expected_project_id, expected_revision)?;
+    *project = ProjectState::from_document(loaded.document, loaded.path);
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),
@@ -1096,13 +1146,22 @@ fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), Strin
 
     let bytes = write_project_ori2(document)
         .map_err(|error| format!("failed to create .ori2 data: {error}"))?;
+    persist_document_atomically(path, document, &bytes)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn persist_document_atomically(
+    path: &Path,
+    document: &ProjectDocument,
+    bytes: &[u8],
+) -> Result<(), String> {
     let mut atomic_file = AtomicWriteFile::open(path).map_err(|error| {
         format!(
             "failed to prepare atomic save for {}: {error}",
             path.display()
         )
     })?;
-    atomic_file.write_all(&bytes).map_err(|error| {
+    atomic_file.write_all(bytes).map_err(|error| {
         format!(
             "failed to write staged project data for {}: {error}",
             path.display()
@@ -1115,10 +1174,217 @@ fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), Strin
         )
     })?;
 
-    verify_generated_ori2(document, &bytes)?;
+    verify_generated_ori2(document, bytes)?;
     atomic_file
         .commit()
         .map_err(|error| format!("failed to commit {} atomically: {error}", path.display()))
+}
+
+#[cfg(target_os = "windows")]
+fn persist_document_atomically(
+    path: &Path,
+    document: &ProjectDocument,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut staged = create_windows_staged_file(path)?;
+    staged.file_mut().write_all(bytes).map_err(|error| {
+        format!(
+            "failed to write staged project data for {}: {error}",
+            path.display()
+        )
+    })?;
+    staged.file_mut().sync_all().map_err(|error| {
+        format!(
+            "failed to synchronize staged project data for {}: {error}",
+            path.display()
+        )
+    })?;
+
+    // Re-read the staged file through the same handle. Its share mode denies
+    // other writers, and the handle stays open until the rename completes, so
+    // the bytes checked here are the bytes committed below.
+    staged
+        .file_mut()
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| {
+            format!(
+                "failed to rewind staged project data for {}: {error}",
+                path.display()
+            )
+        })?;
+    let mut staged_bytes = Vec::with_capacity(bytes.len());
+    staged
+        .file_mut()
+        .read_to_end(&mut staged_bytes)
+        .map_err(|error| {
+            format!(
+                "failed to verify staged project data for {}: {error}",
+                path.display()
+            )
+        })?;
+    if staged_bytes != bytes {
+        return Err(format!(
+            "staged project data for {} changed before commit",
+            path.display()
+        ));
+    }
+    verify_generated_ori2(document, &staged_bytes)?;
+
+    rename_windows_staged_file(staged.file(), path)?;
+    staged.committed = true;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsStagedFile {
+    file: Option<File>,
+    path: PathBuf,
+    committed: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsStagedFile {
+    fn file(&self) -> &File {
+        self.file
+            .as_ref()
+            .expect("a staged file handle remains present until drop")
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.file
+            .as_mut()
+            .expect("a staged file handle remains present until drop")
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsStagedFile {
+    fn drop(&mut self) {
+        // Our share mode deliberately denies deletion while the handle is
+        // open. Close it before cleaning an uncommitted stage.
+        drop(self.file.take());
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn create_windows_staged_file(path: &Path) -> Result<WindowsStagedFile, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} is not a file path", path.display()))?;
+    path.file_name()
+        .ok_or_else(|| format!("{} is not a file path", path.display()))?;
+
+    for _ in 0..128 {
+        let id = NEXT_STAGED_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let mut staged_name = OsString::from(".origami2-");
+        staged_name.push(format!("{}-{id}.tmp", std::process::id()));
+        let staged_path = parent.join(staged_name);
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+            .share_mode(FILE_SHARE_READ)
+            .open(&staged_path)
+        {
+            Ok(file) => {
+                return Ok(WindowsStagedFile {
+                    file: Some(file),
+                    path: staged_path,
+                    committed: false,
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to prepare atomic save for {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to prepare atomic save for {}: could not allocate a unique staged file",
+        path.display()
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn rename_windows_staged_file(staged_file: &File, destination: &Path) -> Result<(), String> {
+    let destination_wide = destination.as_os_str().encode_wide().collect::<Vec<_>>();
+    if destination_wide.contains(&0) {
+        return Err(format!(
+            "failed to commit {} atomically: the path contains a NUL character",
+            destination.display()
+        ));
+    }
+
+    let file_name_bytes = destination_wide
+        .len()
+        .checked_mul(size_of::<u16>())
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or_else(|| {
+            format!(
+                "failed to commit {} atomically: the path is too long",
+                destination.display()
+            )
+        })?;
+    let buffer_size = size_of::<FILE_RENAME_INFO>()
+        .checked_add(file_name_bytes as usize)
+        .ok_or_else(|| {
+            format!(
+                "failed to commit {} atomically: the rename request is too large",
+                destination.display()
+            )
+        })?;
+    let buffer_size_u32 = u32::try_from(buffer_size).map_err(|_| {
+        format!(
+            "failed to commit {} atomically: the rename request is too large",
+            destination.display()
+        )
+    })?;
+    let word_size = size_of::<usize>();
+    let word_count = buffer_size
+        .checked_add(word_size - 1)
+        .map(|length| length / word_size)
+        .ok_or_else(|| {
+            format!(
+                "failed to commit {} atomically: the rename request is too large",
+                destination.display()
+            )
+        })?;
+    let mut buffer = vec![0usize; word_count];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+
+    // SAFETY: `buffer` is usize-aligned and large enough for the fixed header,
+    // destination UTF-16 units, and a trailing NUL. The handle remains owned
+    // by `staged_file` throughout the call. FileRenameInfo renames that exact
+    // open file, so a pathname swap cannot substitute unverified bytes.
+    let renamed = unsafe {
+        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).RootDirectory = ptr::null_mut();
+        (*info).FileNameLength = file_name_bytes;
+        let file_name = ptr::addr_of_mut!((*info).FileName).cast::<u16>();
+        ptr::copy_nonoverlapping(destination_wide.as_ptr(), file_name, destination_wide.len());
+        SetFileInformationByHandle(
+            staged_file.as_raw_handle() as RawHandle,
+            FileRenameInfo,
+            info.cast(),
+            buffer_size_u32,
+        )
+    };
+    if renamed == 0 {
+        return Err(format!(
+            "failed to commit {} atomically: {}",
+            destination.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 fn verify_generated_ori2(document: &ProjectDocument, bytes: &[u8]) -> Result<(), String> {
@@ -1570,9 +1836,47 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use ori_domain::{Edge, Vertex};
 
     use super::*;
+
+    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDirectory {
+        path: PathBuf,
+    }
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock must follow the Unix epoch")
+                .as_nanos();
+            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, AtomicOrdering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "origami2-native-file-tests-{}-{timestamp}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).expect("create isolated native-file test directory");
+            Self { path }
+        }
+
+        fn join(&self, name: impl AsRef<Path>) -> PathBuf {
+            self.path.join(name)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn new_project_parameters() -> NewProjectParameters {
         NewProjectParameters {
@@ -1621,6 +1925,38 @@ mod tests {
             can_redo: project.editor.can_redo(),
             is_dirty: project.is_dirty(),
         }
+    }
+
+    fn unsaved_project_with_redo_history(name: &str) -> ProjectState {
+        let mut project =
+            ProjectState::new_unsaved(name.to_owned(), CreasePattern::empty(), Paper::default());
+        let project_id = project.project_id;
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(12.0, 34.0),
+            },
+        )
+        .expect("add history fixture vertex");
+        project.editor.undo(1).expect("create redo history");
+        assert!(project.editor.can_redo());
+        project
+    }
+
+    fn file_document(name: &str, x: f64) -> ProjectDocument {
+        ProjectDocument::new(
+            name,
+            CreasePattern {
+                vertices: vec![Vertex {
+                    id: VertexId::new(),
+                    position: Point2::new(x, 5.0),
+                }],
+                edges: Vec::new(),
+            },
+        )
     }
 
     fn crossing_project() -> (ProjectState, Edge, Edge) {
@@ -3677,6 +4013,227 @@ mod tests {
             .expect("unexpected Boundary chord");
         assert_eq!(unexpected_issue.vertices, vec![boundary[0], boundary[2]]);
         assert_eq!(unexpected_issue.edges, vec![unexpected]);
+    }
+
+    #[test]
+    fn native_save_as_writes_a_loadable_file_and_preserves_editor_history() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.join("折り紙設計.backup");
+        let expected_path = directory.join("折り紙設計.ori2");
+        let mut project = unsaved_project_with_redo_history("First project");
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let document = project.document();
+        let can_undo = project.editor.can_undo();
+        let can_redo = project.editor.can_redo();
+
+        let response = save_project_as_selected_path(
+            &mut project,
+            expected_project_id,
+            expected_revision,
+            selected_path,
+        )
+        .expect("save project under a selected path");
+
+        assert!(!response.canceled);
+        assert_eq!(
+            project.current_path.as_deref(),
+            Some(expected_path.as_path())
+        );
+        assert_eq!(project.saved_revision, Some(expected_revision));
+        assert_eq!(project.saved_document.as_ref(), Some(&document));
+        assert!(!project.is_dirty());
+        assert_eq!(project.editor.revision(), expected_revision);
+        assert_eq!(project.editor.can_undo(), can_undo);
+        assert_eq!(project.editor.can_redo(), can_redo);
+        assert_eq!(load_document_from_path(&expected_path).unwrap(), document);
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn native_save_overwrites_atomically_and_keeps_undo_redo_history() {
+        let directory = TestDirectory::new();
+        let path = directory.join("overwrite.ori2");
+        fs::write(&path, b"pre-existing invalid project").expect("write overwrite sentinel");
+        let mut project = unsaved_project_with_redo_history("Overwrite project");
+
+        save_project_to_path(&mut project, path.clone()).expect("replace existing file");
+        let first_bytes = fs::read(&path).expect("read first native save");
+        let first_document = project.document();
+        assert_ne!(first_bytes, b"pre-existing invalid project");
+        assert_eq!(load_document_from_path(&path).unwrap(), first_document);
+        assert!(project.editor.can_redo());
+
+        let revision_before_redo = project.editor.revision();
+        project
+            .editor
+            .redo(revision_before_redo)
+            .expect("restore the saved redo command");
+        assert!(project.is_dirty());
+        let second_document = project.document();
+        let revision_before_save = project.editor.revision();
+        let can_undo = project.editor.can_undo();
+        let can_redo = project.editor.can_redo();
+
+        save_project_to_path(&mut project, path.clone()).expect("overwrite with edited project");
+        let second_bytes = fs::read(&path).expect("read overwritten native save");
+        assert_ne!(second_bytes, first_bytes);
+        assert_eq!(load_document_from_path(&path).unwrap(), second_document);
+        assert_eq!(project.editor.revision(), revision_before_save);
+        assert_eq!(project.editor.can_undo(), can_undo);
+        assert_eq!(project.editor.can_redo(), can_redo);
+        assert!(!project.is_dirty());
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_staged_save_denies_concurrent_writers_and_cleans_up() {
+        let directory = TestDirectory::new();
+        let path = directory.join("writer-sharing.ori2");
+        let staged = create_windows_staged_file(&path).expect("create protected staged file");
+
+        let writer_error = OpenOptions::new()
+            .write(true)
+            .open(&staged.path)
+            .expect_err("a concurrent writer must be denied while staging");
+        let rename_error = fs::rename(&staged.path, directory.join("swapped-stage"))
+            .expect_err("a concurrent rename must be denied while staging");
+
+        assert_eq!(writer_error.raw_os_error(), Some(32));
+        assert_eq!(rename_error.raw_os_error(), Some(32));
+        drop(staged);
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn native_open_replaces_the_project_only_after_loading_and_validation() {
+        let directory = TestDirectory::new();
+        let path = directory.join("opened.ori2");
+        let mut document = file_document("Opened project", 42.0);
+        document.paper.cutting_allowed = true;
+        persist_document(&path, &document).expect("write open fixture");
+
+        let mut project = unsaved_project_with_redo_history("Replaced project");
+        let replaced_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let loaded = load_project_file(path.clone()).expect("load native project");
+        let response =
+            apply_loaded_project_file(&mut project, replaced_project_id, expected_revision, loaded)
+                .expect("apply validated native project");
+
+        assert!(!response.canceled);
+        assert_ne!(project.project_id, replaced_project_id);
+        assert_eq!(project.document(), document);
+        assert_eq!(project.current_path.as_deref(), Some(path.as_path()));
+        assert_eq!(project.editor.revision(), 0);
+        assert!(!project.editor.can_undo());
+        assert!(!project.editor.can_redo());
+        assert!(!project.is_dirty());
+    }
+
+    #[test]
+    fn corrupt_native_open_preserves_project_state_and_history() {
+        let directory = TestDirectory::new();
+        let path = directory.join("corrupt.ori2");
+        fs::write(&path, b"not an ORIGAMI2 archive").expect("write corrupt fixture");
+        let project = unsaved_project_with_redo_history("Unaffected project");
+        let before = project_state_signature(&project);
+
+        let error = load_project_file(path).expect_err("corrupt project must fail validation");
+
+        assert!(error.contains("failed to validate"));
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn stale_native_open_is_rejected_without_replacing_newer_history() {
+        let directory = TestDirectory::new();
+        let path = directory.join("stale-open.ori2");
+        persist_document(&path, &file_document("Stale open", 17.0))
+            .expect("write stale-open fixture");
+        let mut project = unsaved_project_with_redo_history("Active project");
+        let expected_project_id = project.project_id;
+        let stale_revision = project.editor.revision();
+        let loaded = load_project_file(path).expect("prepare native open");
+        execute_command(
+            &mut project,
+            expected_project_id,
+            stale_revision,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(8.0, 9.0),
+            },
+        )
+        .expect("edit while the file dialog is open");
+        let before_apply = project_state_signature(&project);
+
+        let error =
+            apply_loaded_project_file(&mut project, expected_project_id, stale_revision, loaded)
+                .expect_err("stale open must not replace the active project");
+
+        assert_eq!(error, "the project changed while the file dialog was open");
+        assert_eq!(project_state_signature(&project), before_apply);
+    }
+
+    #[test]
+    fn native_save_failure_preserves_state_history_and_existing_target() {
+        let directory = TestDirectory::new();
+        let occupied_path = directory.join("occupied.ori2");
+        fs::create_dir(&occupied_path).expect("create an unreplaceable save target");
+        let sentinel = occupied_path.join("keep.txt");
+        fs::write(&sentinel, b"keep this directory").expect("write save-failure sentinel");
+        let mut project = unsaved_project_with_redo_history("Failed save");
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let before = project_state_signature(&project);
+
+        let error = save_project_as_selected_path(
+            &mut project,
+            expected_project_id,
+            expected_revision,
+            occupied_path.clone(),
+        )
+        .expect_err("a directory cannot be replaced by a project file");
+
+        assert!(error.contains("failed to"));
+        assert_eq!(project_state_signature(&project), before);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep this directory");
+        assert!(occupied_path.is_dir());
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn stale_native_save_as_is_rejected_before_touching_the_selected_path() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.join("stale-save");
+        let normalized_path = directory.join("stale-save.ori2");
+        let mut project = unsaved_project_with_redo_history("Stale save");
+        let expected_project_id = project.project_id;
+        let stale_revision = project.editor.revision();
+        execute_command(
+            &mut project,
+            expected_project_id,
+            stale_revision,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(99.0, 100.0),
+            },
+        )
+        .expect("edit before stale save-as is applied");
+        let before_save = project_state_signature(&project);
+
+        let error = save_project_as_selected_path(
+            &mut project,
+            expected_project_id,
+            stale_revision,
+            selected_path,
+        )
+        .expect_err("stale save-as must fail");
+
+        assert_eq!(error, "the project changed while the file dialog was open");
+        assert_eq!(project_state_signature(&project), before_save);
+        assert!(!normalized_path.exists());
     }
 
     #[test]

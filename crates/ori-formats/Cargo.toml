@@ -1,0 +1,12 @@
+[package]
+name = "ori-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ori-domain = { path = "../ori-domain" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -17,7 +17,11 @@ import {
   type SnapSegment,
   type SnapSettings,
 } from '../src/lib/snap.ts'
-import { createVertexPlacement } from '../src/lib/vertexPlacement.ts'
+import {
+  createVertexPlacement,
+  isSupportedIntersectionPlacement,
+  isSupportedIntersectionTarget,
+} from '../src/lib/vertexPlacement.ts'
 import {
   createIntersectionSnapIndex,
   type IntersectionSnapSegment,
@@ -2392,6 +2396,24 @@ test('proper intersection placement carries only validated canonical edge IDs', 
   assert.equal(createVertexPlacement(target.point, target, sharedVertexSegments), null)
 })
 
+test('boundary proper intersections stay unavailable until sheet-aware X repair exists', () => {
+  const segments = [
+    {
+      ...intersectionSegment('a-boundary', 'top-left', 'top-right', 0, 0, 10, 0),
+      kind: 'boundary' as const,
+    },
+    {
+      ...intersectionSegment('z-crossing', 'stem-start', 'stem-end', 5, -5, 5, 5),
+      kind: 'mountain' as const,
+    },
+  ]
+  const target = queryIntersection(segments, { x: 5, y: 0 }).target
+  assert.equal(target?.classification, 'proper')
+  assert.ok(target)
+  assert.equal(isSupportedIntersectionTarget(target, segments), false)
+  assert.equal(createVertexPlacement(target.point, target, segments), null)
+})
+
 test('T-junction placement validates the junction vertex and both canonical edge IDs', () => {
   const segments = [
     intersectionSegment('a-base', 'left', 'right', 0, 0, 10, 0),
@@ -2455,6 +2477,106 @@ test('T-junction placement validates the junction vertex and both canonical edge
     intersectionSegment('other', 'junction', 'other-tip', 6, 0, 7, 2),
   ]
   assert.equal(createVertexPlacement(target.point, target, inconsistentJunction), null)
+})
+
+test('boundary T-junction placement only accepts a strict-interior boundary edge', () => {
+  const boundaryInterior = [
+    {
+      ...intersectionSegment('a-boundary', 'left', 'right', 0, 0, 10, 0),
+      kind: 'boundary' as const,
+    },
+    {
+      ...intersectionSegment('z-branch', 'junction', 'tip', 5, 0, 5, 5),
+      kind: 'mountain' as const,
+    },
+  ]
+  const acceptedTarget = queryIntersection(boundaryInterior, { x: 5, y: 0 }).target
+  assert.equal(acceptedTarget?.classification, 't-junction')
+  assert.ok(acceptedTarget && acceptedTarget.classification === 't-junction')
+  assert.equal(isSupportedIntersectionTarget(acceptedTarget, boundaryInterior), true)
+  assert.deepEqual(createVertexPlacement(
+    acceptedTarget.point,
+    acceptedTarget,
+    boundaryInterior,
+  ), {
+    operation: 'connect-t-junction',
+    firstEdgeId: 'a-boundary',
+    secondEdgeId: 'z-branch',
+    junctionVertexId: 'junction',
+  })
+
+  const boundaryCarrier = [
+    {
+      ...intersectionSegment('a-base', 'left', 'right', 0, 0, 10, 0),
+      kind: 'mountain' as const,
+    },
+    {
+      ...intersectionSegment('z-boundary', 'corner', 'other-corner', 5, 0, 5, 5),
+      kind: 'boundary' as const,
+    },
+  ]
+  const carrierTarget = queryIntersection(boundaryCarrier, { x: 5, y: 0 }).target
+  assert.equal(carrierTarget?.classification, 't-junction')
+  assert.ok(carrierTarget && carrierTarget.classification === 't-junction')
+  assert.equal(isSupportedIntersectionTarget(carrierTarget, boundaryCarrier), false)
+  assert.equal(createVertexPlacement(carrierTarget.point, carrierTarget, boundaryCarrier), null)
+
+  const bothBoundary = boundaryInterior.map((segment) => ({
+    ...segment,
+    kind: 'boundary' as const,
+  }))
+  assert.equal(isSupportedIntersectionTarget(acceptedTarget, bothBoundary), false)
+  assert.equal(createVertexPlacement(acceptedTarget.point, acceptedTarget, bothBoundary), null)
+})
+
+test('dispatch policy revalidates ordinary and boundary intersection placements', () => {
+  const normalEdges = [
+    { id: 'a-base', start: 'left', end: 'right', kind: 'mountain' },
+    { id: 'z-branch', start: 'junction', end: 'tip', kind: 'valley' },
+  ]
+  const normalT = {
+    operation: 'connect-t-junction',
+    firstEdgeId: 'a-base',
+    secondEdgeId: 'z-branch',
+    junctionVertexId: 'junction',
+  } as const
+  const proper = {
+    operation: 'connect-intersection',
+    firstEdgeId: 'a-base',
+    secondEdgeId: 'z-branch',
+  } as const
+  assert.equal(isSupportedIntersectionPlacement(normalT, normalEdges), true)
+  assert.equal(isSupportedIntersectionPlacement(proper, normalEdges), true)
+
+  const boundaryInterior = [
+    { ...normalEdges[0], kind: 'boundary' },
+    normalEdges[1],
+  ]
+  assert.equal(isSupportedIntersectionPlacement(normalT, boundaryInterior), true)
+  assert.equal(isSupportedIntersectionPlacement(proper, boundaryInterior), false)
+
+  const boundaryCarrier = [
+    normalEdges[0],
+    { ...normalEdges[1], kind: 'boundary' },
+  ]
+  assert.equal(isSupportedIntersectionPlacement(normalT, boundaryCarrier), false)
+  assert.equal(isSupportedIntersectionPlacement(normalT, boundaryInterior.map((edge) => ({
+    ...edge,
+    kind: 'boundary',
+  }))), false)
+  assert.equal(isSupportedIntersectionPlacement({
+    ...normalT,
+    junctionVertexId: 'missing',
+  }, normalEdges), false)
+  assert.equal(isSupportedIntersectionPlacement({
+    ...normalT,
+    firstEdgeId: normalT.secondEdgeId,
+    secondEdgeId: normalT.firstEdgeId,
+  }, normalEdges), false)
+  assert.equal(isSupportedIntersectionPlacement(normalT, [
+    ...normalEdges,
+    { ...normalEdges[0] },
+  ]), false)
 })
 
 test('proper intersection output is deterministic across input order and reversed edges', () => {

@@ -14,7 +14,11 @@ import {
   type SnapSettings,
 } from '../lib/snap'
 import { createIntersectionSnapIndex } from '../lib/intersectionSnap'
-import { createVertexPlacement, type VertexPlacement } from '../lib/vertexPlacement'
+import {
+  createVertexPlacement,
+  isSupportedIntersectionTarget,
+  type VertexPlacement,
+} from '../lib/vertexPlacement'
 
 export type CreaseLine = {
   id: string
@@ -98,6 +102,7 @@ type ViewTransform = {
 type SnapGuide = {
   rawPoint: SnapPoint
   target: AdditionSnapTarget
+  label?: string
 }
 
 const DEFAULT_PAPER_BOUNDS: PaperBounds = {
@@ -186,11 +191,18 @@ export function CreaseCanvas({
   )
   const intersectionSnapIndex = useMemo(
     () => createIntersectionSnapIndex(
-      lines.filter(({ kind }) => kind !== 'boundary'),
+      lines,
       vertices,
     ),
     [lines, vertices],
   )
+  const intersectionLinesById = useMemo(() => {
+    const index = new Map<string, CreaseLine | null>()
+    for (const line of lines) {
+      index.set(line.id, index.has(line.id) ? null : line)
+    }
+    return index
+  }, [lines])
   const visibleGrid = useMemo(
     () => createVisibleGrid(
       resolvedPaperBounds,
@@ -444,7 +456,13 @@ export function CreaseCanvas({
     const intersectionTarget = intersectionSnapIndex.query({
       point,
       scale: transform.scale,
-      accept,
+      accept: (target) => {
+        if (!accept(target)) return false
+        const first = intersectionLinesById.get(target.sourceEdges[0].id)
+        const second = intersectionLinesById.get(target.sourceEdges[1].id)
+        if (!first || !second) return false
+        return isSupportedIntersectionTarget(target, [first, second])
+      },
     }).target
     return prioritizeAdditionSnapTargets(pointTarget, intersectionTarget)
   }
@@ -658,7 +676,17 @@ export function CreaseCanvas({
       const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
       const target = resolveAdditionSnap({ x: pointer.x, y: pointer.y }, pointer.transform)
       setSnapGuide(target
-        ? { rawPoint: { x: pointer.x, y: pointer.y }, target }
+        ? {
+            rawPoint: { x: pointer.x, y: pointer.y },
+            target,
+            label: target.kind === 'intersection'
+              && target.classification === 't-junction'
+              && target.sourceEdges.some(
+                ({ id }) => intersectionLinesById.get(id)?.kind === 'boundary',
+              )
+              ? '輪郭T字'
+              : undefined,
+          }
         : null)
       return
     }
@@ -1239,9 +1267,9 @@ function drawSnapGuide(
   context.lineTo(target.x, target.y + 10)
   context.stroke()
 
-  const label = guide.target.kind === 'angle'
+  const label = guide.label ?? (guide.target.kind === 'angle'
     ? `角度 ${guide.target.angleSide === 'counterclockwise' ? '+' : '-'}${formatGuideAngle(guide.target.angleDegrees)}°`
-    : SNAP_KIND_LABELS[guide.target.kind]
+    : SNAP_KIND_LABELS[guide.target.kind])
   context.font = '600 10px system-ui, sans-serif'
   context.textAlign = 'center'
   context.textBaseline = 'middle'

@@ -58,6 +58,7 @@ export type SnapSegment = Readonly<{
   y1: number
   x2: number
   y2: number
+  kind?: 'mountain' | 'valley' | 'auxiliary' | 'boundary' | 'cut'
 }>
 
 export type SnapGrid = Readonly<{

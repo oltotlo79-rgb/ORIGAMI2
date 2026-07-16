@@ -43,7 +43,10 @@ import {
   type AngleSnapReferenceKind,
   type SnapSettings,
 } from './lib/snap'
-import type { VertexPlacement } from './lib/vertexPlacement'
+import {
+  isSupportedIntersectionPlacement,
+  type VertexPlacement,
+} from './lib/vertexPlacement'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -365,20 +368,10 @@ function App() {
           ? await splitBoundaryEdge(projectId, revision, placement.edgeId, placement.fraction)
           : await splitEdge(projectId, revision, placement.edgeId, placement.fraction)
       } else {
-        const firstEdge = current.crease_pattern.edges.find(
-          ({ id }) => id === placement.firstEdgeId,
-        )
-        const secondEdge = current.crease_pattern.edges.find(
-          ({ id }) => id === placement.secondEdgeId,
-        )
-        if (!firstEdge || !secondEdge) {
-          throw new Error('交点を構成する辺が見つかりません')
-        }
-        if (
-          firstEdge.kind === 'boundary'
-          || secondEdge.kind === 'boundary'
-          || placement.firstEdgeId >= placement.secondEdgeId
-        ) throw new Error('交点接続の対象辺が不正です')
+        if (!isSupportedIntersectionPlacement(
+          placement,
+          current.crease_pattern.edges,
+        )) throw new Error('交点接続の対象辺が不正です')
         const response = placement.operation === 'connect-intersection'
           ? await connectEdgeIntersection(
               projectId,

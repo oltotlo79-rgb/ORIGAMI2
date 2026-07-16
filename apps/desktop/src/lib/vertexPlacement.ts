@@ -19,6 +19,18 @@ export type VertexPlacement = Readonly<{
   junctionVertexId: string
 }>
 
+type IntersectionConnectionPlacement = Extract<
+  VertexPlacement,
+  { operation: 'connect-intersection' | 'connect-t-junction' }
+>
+
+type PersistedIntersectionEdge = Readonly<{
+  id: string
+  start: string
+  end: string
+  kind: string
+}>
+
 export function createVertexPlacement(
   point: SnapPoint,
   target: AdditionSnapTarget | null,
@@ -601,6 +613,8 @@ function intersectionPlacement(
     || firstSegment.endVertexId === secondSegment.endVertexId
   ) return null
 
+  if (!isSupportedIntersectionTarget(target, segments)) return null
+
   if (target.classification === 'proper') {
     if (!isStrictInterior(first.fraction) || !isStrictInterior(second.fraction)) return null
     return {
@@ -646,6 +660,56 @@ function intersectionPlacement(
     secondEdgeId: second.id,
     junctionVertexId: target.junctionVertexId,
   }
+}
+
+export function isSupportedIntersectionTarget(
+  target: Extract<AdditionSnapTarget, { kind: 'intersection' }>,
+  segments: readonly SnapSegment[],
+) {
+  if (!Array.isArray(target.sourceEdges) || target.sourceEdges.length !== 2) return false
+  const [firstSource, secondSource] = target.sourceEdges
+  if (!firstSource || !secondSource) return false
+  const firstMatches = segments.filter(({ id }) => id === firstSource.id)
+  const secondMatches = segments.filter(({ id }) => id === secondSource.id)
+  if (firstMatches.length !== 1 || secondMatches.length !== 1) return false
+
+  const firstIsBoundary = firstMatches[0].kind === 'boundary'
+  const secondIsBoundary = secondMatches[0].kind === 'boundary'
+  if (target.classification === 'proper') {
+    return !firstIsBoundary && !secondIsBoundary
+  }
+  if (target.classification !== 't-junction') return false
+  if (firstIsBoundary && secondIsBoundary) return false
+  if (!firstIsBoundary && !secondIsBoundary) return true
+
+  const boundarySource = firstIsBoundary ? firstSource : secondSource
+  const otherSource = firstIsBoundary ? secondSource : firstSource
+  return isStrictInterior(boundarySource.fraction)
+    && exactEndpoint(otherSource.fraction) !== null
+}
+
+export function isSupportedIntersectionPlacement(
+  placement: IntersectionConnectionPlacement,
+  edges: readonly PersistedIntersectionEdge[],
+) {
+  if (placement.firstEdgeId >= placement.secondEdgeId) return false
+  const firstMatches = edges.filter(({ id }) => id === placement.firstEdgeId)
+  const secondMatches = edges.filter(({ id }) => id === placement.secondEdgeId)
+  if (firstMatches.length !== 1 || secondMatches.length !== 1) return false
+  const first = firstMatches[0]
+  const second = secondMatches[0]
+  const boundaryCount = Number(first.kind === 'boundary')
+    + Number(second.kind === 'boundary')
+  if (boundaryCount > 1) return false
+  if (placement.operation === 'connect-intersection') return boundaryCount === 0
+
+  const firstCarriesJunction = first.start === placement.junctionVertexId
+    || first.end === placement.junctionVertexId
+  const secondCarriesJunction = second.start === placement.junctionVertexId
+    || second.end === placement.junctionVertexId
+  if (firstCarriesJunction === secondCarriesJunction) return false
+  const interiorEdge = firstCarriesJunction ? second : first
+  return boundaryCount === 0 || interiorEdge.kind === 'boundary'
 }
 
 function isValidSegment(segment: SnapSegment) {

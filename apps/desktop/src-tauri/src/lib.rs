@@ -1533,6 +1533,37 @@ mod tests {
         )
     }
 
+    fn boundary_t_junction_project() -> (ProjectState, Edge, Edge, VertexId) {
+        let sheet = create_rectangular_sheet(100.0, 100.0, true).expect("valid test sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        let boundary = pattern.edges[0].clone();
+        let junction = VertexId::new();
+        let stem_other = VertexId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: junction,
+                position: Point2::new(40.0, 0.0),
+            },
+            Vertex {
+                id: stem_other,
+                position: Point2::new(40.0, 30.0),
+            },
+        ]);
+        let stem = Edge {
+            id: EdgeId::new(),
+            start: stem_other,
+            end: junction,
+            kind: EdgeKind::Mountain,
+        };
+        pattern.edges.push(stem.clone());
+        (
+            ProjectState::new_with_paper(pattern, paper),
+            boundary,
+            stem,
+            junction,
+        )
+    }
+
     #[test]
     fn project_name_is_trimmed_and_validated_by_unicode_character_count() {
         assert_eq!(normalize_project_name("  Crane  "), Ok("Crane".to_owned()));
@@ -2166,6 +2197,97 @@ mod tests {
     }
 
     #[test]
+    fn boundary_t_junction_api_splits_sheet_outline_with_reused_vertex_and_exact_history() {
+        let (mut project, boundary, stem, junction) = boundary_t_junction_project();
+        let project_id = project.project_id;
+        let original_document = project.document();
+        let original_vertex_count = original_document.crease_pattern.vertices.len();
+        let original_edge_ids = original_document
+            .crease_pattern
+            .edges
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<Vec<_>>();
+        let original_boundary_vertices = original_document.paper.boundary_vertices.clone();
+
+        let response =
+            execute_t_junction_connection(&mut project, project_id, 0, stem.id, boundary.id)
+                .expect("connect a crease endpoint to the strict interior of the sheet boundary");
+
+        assert_eq!(response.vertex_id, junction);
+        assert_eq!(response.snapshot.revision, 1);
+        assert!(response.snapshot.is_dirty);
+        assert!(response.snapshot.can_undo);
+        assert!(!response.snapshot.can_redo);
+        assert_eq!(
+            response.snapshot.crease_pattern.vertices.len(),
+            original_vertex_count
+        );
+        assert_eq!(
+            response.snapshot.crease_pattern.vertices,
+            original_document.crease_pattern.vertices
+        );
+        assert_eq!(
+            response.snapshot.paper.boundary_vertices,
+            vec![
+                original_boundary_vertices[0],
+                junction,
+                original_boundary_vertices[1],
+                original_boundary_vertices[2],
+                original_boundary_vertices[3],
+            ]
+        );
+
+        let split_original = response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.id == boundary.id)
+            .expect("original boundary segment");
+        assert_eq!(split_original.start, boundary.start);
+        assert_eq!(split_original.end, junction);
+        assert_eq!(split_original.kind, EdgeKind::Boundary);
+        let generated = response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .find(|edge| !original_edge_ids.contains(&edge.id))
+            .expect("generated boundary segment");
+        assert_eq!(generated.start, junction);
+        assert_eq!(generated.end, boundary.end);
+        assert_eq!(generated.kind, EdgeKind::Boundary);
+        assert!(
+            response
+                .snapshot
+                .crease_pattern
+                .edges
+                .iter()
+                .any(|edge| edge == &stem)
+        );
+        assert!(validation_snapshot(&project).is_valid);
+        let connected_document = project.document();
+
+        project
+            .editor
+            .undo(1)
+            .expect("undo boundary T-junction connection");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project
+            .editor
+            .redo(2)
+            .expect("redo boundary T-junction connection");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), connected_document);
+        assert!(project.is_dirty());
+        assert!(validation_snapshot(&project).is_valid);
+    }
+
+    #[test]
     fn t_junction_api_conflicts_and_wrong_geometry_preserve_project_state() {
         let (mut project, interior, stem, _) = t_junction_project();
         let project_id = project.project_id;
@@ -2186,8 +2308,11 @@ mod tests {
         let boundary = project.editor.pattern().edges[0].id;
         let boundary_error =
             execute_t_junction_connection(&mut project, project_id, 0, boundary, interior.id)
-                .expect_err("boundary target must fail");
-        assert!(boundary_error.contains("must not be a boundary edge"));
+                .expect_err("non-intersecting boundary target must fail");
+        assert_eq!(
+            boundary_error,
+            "the selected edges do not form exactly one strict T-junction"
+        );
         assert_eq!(project_state_signature(&project), before);
 
         let (mut crossing, first, second) = crossing_project();

@@ -25,6 +25,9 @@ pub enum Command {
     RemoveEdge {
         id: EdgeId,
     },
+    SetCuttingAllowed {
+        allowed: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +35,7 @@ pub struct CommandResult {
     pub revision: Revision,
     pub changed_vertices: Vec<VertexId>,
     pub changed_edges: Vec<EdgeId>,
+    pub settings_changed: bool,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -53,6 +57,8 @@ pub enum CommandError {
     DegenerateEdge(VertexId),
     #[error("vertex {vertex:?} is still used by edge {edge:?}")]
     VertexHasConnectedEdge { vertex: VertexId, edge: EdgeId },
+    #[error("cut edges are disabled for this project")]
+    CuttingDisabled,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +73,7 @@ pub struct EditorState {
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
+    cutting_allowed: bool,
 }
 
 impl EditorState {
@@ -77,6 +84,7 @@ impl EditorState {
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            cutting_allowed: false,
         }
     }
 
@@ -88,6 +96,11 @@ impl EditorState {
     #[must_use]
     pub const fn revision(&self) -> Revision {
         self.revision
+    }
+
+    #[must_use]
+    pub const fn cutting_allowed(&self) -> bool {
+        self.cutting_allowed
     }
 
     #[must_use]
@@ -188,6 +201,9 @@ impl EditorState {
                 end,
                 kind,
             } => {
+                if kind == EdgeKind::Cut && !self.cutting_allowed {
+                    return Err(CommandError::CuttingDisabled);
+                }
                 if self.edge_index(id).is_some() {
                     return Err(CommandError::EdgeAlreadyExists(id));
                 }
@@ -217,6 +233,11 @@ impl EditorState {
                     end: edge.end,
                     kind: edge.kind,
                 })
+            }
+            Command::SetCuttingAllowed { allowed } => {
+                let previous = self.cutting_allowed;
+                self.cutting_allowed = allowed;
+                Ok(Command::SetCuttingAllowed { allowed: previous })
             }
         }
     }
@@ -252,6 +273,7 @@ impl EditorState {
             revision: self.revision,
             changed_vertices: changes.vertices,
             changed_edges: changes.edges,
+            settings_changed: changes.settings,
         }
     }
 }
@@ -260,6 +282,7 @@ impl EditorState {
 struct Changes {
     vertices: Vec<VertexId>,
     edges: Vec<EdgeId>,
+    settings: bool,
 }
 
 impl Command {
@@ -270,14 +293,22 @@ impl Command {
             | Self::RemoveVertex { id } => Changes {
                 vertices: vec![id],
                 edges: Vec::new(),
+                settings: false,
             },
             Self::AddEdge { id, start, end, .. } => Changes {
                 vertices: vec![start, end],
                 edges: vec![id],
+                settings: false,
             },
             Self::RemoveEdge { id } => Changes {
                 vertices: Vec::new(),
                 edges: vec![id],
+                settings: false,
+            },
+            Self::SetCuttingAllowed { .. } => Changes {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                settings: true,
             },
         }
     }
@@ -413,5 +444,46 @@ mod tests {
                 edge
             }
         );
+    }
+
+    #[test]
+    fn cut_edges_require_an_undoable_project_setting() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: Vec::new(),
+        };
+        let mut editor = EditorState::new(pattern);
+        let cut = Command::AddEdge {
+            id: edge,
+            start,
+            end,
+            kind: EdgeKind::Cut,
+        };
+        assert_eq!(
+            editor
+                .execute(0, cut.clone())
+                .expect_err("cut must be disabled"),
+            CommandError::CuttingDisabled
+        );
+        editor
+            .execute(0, Command::SetCuttingAllowed { allowed: true })
+            .expect("enable cutting");
+        editor.execute(1, cut).expect("add cut");
+        assert_eq!(editor.pattern().edges.len(), 1);
+        editor.undo(2).expect("undo cut");
+        editor.undo(3).expect("undo setting");
+        assert!(!editor.cutting_allowed());
     }
 }

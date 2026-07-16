@@ -8,6 +8,7 @@ import {
   getProjectSnapshot,
   isNativeCoreAvailable,
   redo,
+  setCuttingAllowed,
   undo,
   type ProjectSnapshot,
 } from './lib/coreClient'
@@ -215,7 +216,19 @@ function App() {
           <section>
             <h2>紙</h2>
             <label className="field">厚さ <input defaultValue="0.10" /> mm</label>
-            <label className="check"><input type="checkbox" /> 切断を許可</label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={nativeSnapshot?.cutting_allowed ?? false}
+                disabled={!nativeSnapshot}
+                onChange={(event) =>
+                  runNativeEdit((revision) =>
+                    setCuttingAllowed(revision, event.target.checked),
+                  )
+                }
+              />{' '}
+              切断を許可
+            </label>
           </section>
           <section>
             <h2>スナップ</h2>

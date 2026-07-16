@@ -19,6 +19,7 @@ struct ProjectSnapshot {
     crease_pattern: CreasePattern,
     can_undo: bool,
     can_redo: bool,
+    cutting_allowed: bool,
 }
 
 #[tauri::command]
@@ -97,12 +98,26 @@ fn redo(state: State<'_, AppState>, expected_revision: u64) -> Result<ProjectSna
     Ok(snapshot(&editor))
 }
 
+#[tauri::command]
+fn set_cutting_allowed(
+    state: State<'_, AppState>,
+    expected_revision: u64,
+    allowed: bool,
+) -> Result<ProjectSnapshot, String> {
+    let mut editor = state.0.lock().map_err(|error| error.to_string())?;
+    editor
+        .execute(expected_revision, Command::SetCuttingAllowed { allowed })
+        .map_err(|error| error.to_string())?;
+    Ok(snapshot(&editor))
+}
+
 fn snapshot(editor: &EditorState) -> ProjectSnapshot {
     ProjectSnapshot {
         revision: editor.revision(),
         crease_pattern: editor.pattern().clone(),
         can_undo: editor.can_undo(),
         can_redo: editor.can_redo(),
+        cutting_allowed: editor.cutting_allowed(),
     }
 }
 
@@ -117,7 +132,8 @@ pub fn run() {
             add_vertex,
             add_edge,
             undo,
-            redo
+            redo,
+            set_cutting_allowed
         ])
         .run(tauri::generate_context!())
         .expect("failed to run ORIGAMI2 desktop application");

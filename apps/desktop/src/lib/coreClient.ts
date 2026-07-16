@@ -13,6 +13,7 @@ export type ProjectSnapshot = {
   }
   can_undo: boolean
   can_redo: boolean
+  cutting_allowed: boolean
 }
 
 export function isNativeCoreAvailable() {
@@ -57,4 +58,8 @@ export function undo(expectedRevision: number) {
 
 export function redo(expectedRevision: number) {
   return invoke<ProjectSnapshot>('redo', { expectedRevision })
+}
+
+export function setCuttingAllowed(expectedRevision: number, allowed: boolean) {
+  return invoke<ProjectSnapshot>('set_cutting_allowed', { expectedRevision, allowed })
 }

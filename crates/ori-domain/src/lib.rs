@@ -26,6 +26,7 @@ entity_id!(ProjectId);
 entity_id!(VertexId);
 entity_id!(EdgeId);
 entity_id!(FaceId);
+entity_id!(AssetId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point2 {
@@ -48,6 +49,41 @@ pub enum EdgeKind {
     Auxiliary,
     Boundary,
     Cut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RgbaColor {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
+impl RgbaColor {
+    #[must_use]
+    pub const fn opaque(red: u8, green: u8, blue: u8) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            alpha: 255,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaperAppearance {
+    pub color: RgbaColor,
+    pub texture_asset: Option<AssetId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Paper {
+    pub boundary_vertices: Vec<VertexId>,
+    pub thickness_mm: f64,
+    pub cutting_allowed: bool,
+    pub front: PaperAppearance,
+    pub back: PaperAppearance,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

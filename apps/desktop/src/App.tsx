@@ -50,6 +50,7 @@ const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> =
   { kind: 'midpoint', label: '中点' },
   { kind: 'horizontal', label: '水平' },
   { kind: 'vertical', label: '垂直' },
+  { kind: 'parallel', label: '平行' },
 ]
 
 function App() {
@@ -69,6 +70,7 @@ function App() {
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectError, setNewProjectError] = useState<string | null>(null)
+  const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
     ...DEFAULT_SNAP_SETTINGS,
   }))
@@ -118,6 +120,10 @@ function App() {
   const selectedLine = useMemo(
     () => nativeLines.find((line) => line.id === selectedLineId),
     [nativeLines, selectedLineId],
+  )
+  const parallelReferenceLine = useMemo(
+    () => resolveUniqueParallelReference(nativeLines, parallelReferenceEdgeId),
+    [nativeLines, parallelReferenceEdgeId],
   )
   const selectedLineMeasurement = selectedLine ? measureCreaseLine(selectedLine) : null
   const selectedVertex = useMemo(
@@ -181,6 +187,12 @@ function App() {
       })
       .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
   }, [applySnapshot])
+
+  useEffect(() => {
+    if (parallelReferenceEdgeId && !parallelReferenceLine) {
+      setParallelReferenceEdgeId(null)
+    }
+  }, [parallelReferenceEdgeId, parallelReferenceLine])
 
   useEffect(() => {
     if (nativeSnapshot?.cutting_allowed || activeTool !== 'cut') return
@@ -639,6 +651,7 @@ function App() {
       setSelectedLineId(null)
       setSelectedVertexId(null)
       setPendingEdgeStart(null)
+      setParallelReferenceEdgeId(null)
       setActiveTool('select')
       setNewProjectOpen(false)
       setCoreStatus(`「${snapshot.name}」を作成しました。保存先はまだ設定されていません。`)
@@ -683,6 +696,7 @@ function App() {
         setSelectedLineId(null)
         setSelectedVertexId(null)
         setPendingEdgeStart(null)
+        setParallelReferenceEdgeId(null)
       }
       setCoreStatus(operation === 'open'
         ? `「${response.project.name}」を開きました`
@@ -829,6 +843,7 @@ function App() {
               selectedLineId={selectedLineId}
               measurementLabel={formatLineMeasurementLabel(selectedLineMeasurement)}
               snapSettings={snapSettings}
+              parallelReference={parallelReferenceLine}
               cancelInteractionToken={cancelInteractionToken}
               disabled={coreBusy}
               onSelectLine={(lineId) => {
@@ -894,6 +909,18 @@ function App() {
                   <div><dt>角度</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.angleDegrees, '°', 2)}</dd></div>
                 </dl>
                 <div className="property-actions">
+                  <button
+                    type="button"
+                    aria-pressed={parallelReferenceEdgeId === selectedLine.id}
+                    disabled={coreBusy}
+                    onClick={() => setParallelReferenceEdgeId((current) => (
+                      current === selectedLine.id ? null : selectedLine.id
+                    ))}
+                  >
+                    {parallelReferenceEdgeId === selectedLine.id
+                      ? '平行参照を解除'
+                      : '平行参照に設定'}
+                  </button>
                   {selectedLine.kind === 'boundary' ? (
                     <button
                       type="button"
@@ -1144,6 +1171,22 @@ function App() {
                 </button>
               ))}
             </div>
+            {parallelReferenceLine ? (
+              <div className="property-actions">
+                <span className="muted" title={parallelReferenceLine.id}>
+                  平行参照: {lineKindLabel(parallelReferenceLine.kind)}
+                </span>
+                <button
+                  type="button"
+                  disabled={coreBusy}
+                  onClick={() => setParallelReferenceEdgeId(null)}
+                >
+                  参照を解除
+                </button>
+              </div>
+            ) : (
+              <p className="muted">線を選択して「平行参照に設定」を押すと、平行スナップを使えます。</p>
+            )}
           </section>
         </aside>
       </section>
@@ -1479,6 +1522,25 @@ type LineMeasurement = {
   deltaY: number
   length: number
   angleDegrees: number
+}
+
+function resolveUniqueParallelReference(
+  lines: readonly CreaseLine[],
+  referenceEdgeId: string | null,
+) {
+  if (!referenceEdgeId) return null
+  let reference: CreaseLine | null = null
+  for (const line of lines) {
+    if (line.id !== referenceEdgeId) continue
+    if (reference) return null
+    reference = line
+  }
+  if (
+    !reference
+    || ![reference.x1, reference.y1, reference.x2, reference.y2].every(Number.isFinite)
+    || (reference.x1 === reference.x2 && reference.y1 === reference.y2)
+  ) return null
+  return reference
 }
 
 function measureCreaseLine(

@@ -30,6 +30,7 @@ function only(...kinds: SnapKind[]): SnapSettings {
     midpoint: kinds.includes('midpoint'),
     horizontal: kinds.includes('horizontal'),
     vertical: kinds.includes('vertical'),
+    parallel: kinds.includes('parallel'),
     edge: kinds.includes('edge'),
     grid: kinds.includes('grid'),
   }
@@ -54,6 +55,7 @@ test('default settings enable every snap kind', () => {
     midpoint: true,
     horizontal: true,
     vertical: true,
+    parallel: true,
     edge: true,
     grid: true,
   })
@@ -65,7 +67,15 @@ test('intersection snapping is independently toggleable and defaults on', () => 
   assert.equal(DEFAULT_SNAP_SETTINGS.intersection, true)
   assert.equal(disabled.intersection, false)
   assert.deepEqual(toggleSnapSetting(disabled, 'intersection'), DEFAULT_SNAP_SETTINGS)
-  for (const kind of ['vertex', 'midpoint', 'horizontal', 'vertical', 'edge', 'grid'] as const) {
+  for (const kind of [
+    'vertex',
+    'midpoint',
+    'horizontal',
+    'vertical',
+    'parallel',
+    'edge',
+    'grid',
+  ] as const) {
     assert.equal(disabled[kind], true)
   }
 })
@@ -82,6 +92,13 @@ test('horizontal and vertical snapping are independently toggleable and default 
   assert.deepEqual(toggleSnapSetting(verticalOff, 'vertical'), DEFAULT_SNAP_SETTINGS)
 })
 
+test('parallel snapping is independently toggleable and defaults on', () => {
+  const disabled = toggleSnapSetting(DEFAULT_SNAP_SETTINGS, 'parallel')
+  assert.equal(DEFAULT_SNAP_SETTINGS.parallel, true)
+  assert.equal(disabled.parallel, false)
+  assert.deepEqual(toggleSnapSetting(disabled, 'parallel'), DEFAULT_SNAP_SETTINGS)
+})
+
 test('a drawing anchor requires one finite vertex record with the selected ID', () => {
   const selected = { id: 'selected', x: -0, y: 12 }
   assert.deepEqual(resolveUniqueSnapAnchor([selected], selected.id), selected)
@@ -96,7 +113,7 @@ test('a drawing anchor requires one finite vertex record with the selected ID', 
   ], selected.id), undefined)
 })
 
-test('kind priority is vertex, midpoint, direction, edge, then grid', () => {
+test('kind priority is vertex, midpoint, direction, parallel, edge, then grid', () => {
   const segment: SnapSegment = {
     id: 'segment',
     startVertexId: 'start',
@@ -111,17 +128,22 @@ test('kind priority is vertex, midpoint, direction, edge, then grid', () => {
     segments: [segment],
     grid: { xValues: [0], yValues: [0] },
     anchor: { id: 'anchor', x: 1, y: 1 },
+    parallelReference: { id: 'reference', x1: -2, y1: 0, x2: 2, y2: 0 },
   }
 
   assert.equal(resolve({ ...common })?.kind, 'vertex')
   assert.equal(resolve({
     ...common,
-    settings: only('midpoint', 'horizontal', 'vertical', 'edge', 'grid'),
+    settings: only('midpoint', 'horizontal', 'vertical', 'parallel', 'edge', 'grid'),
   })?.kind, 'midpoint')
   assert.equal(resolve({
     ...common,
-    settings: only('horizontal', 'vertical', 'edge', 'grid'),
+    settings: only('horizontal', 'vertical', 'parallel', 'edge', 'grid'),
   })?.kind, 'horizontal')
+  assert.equal(resolve({
+    ...common,
+    settings: only('parallel', 'edge', 'grid'),
+  })?.kind, 'parallel')
   assert.equal(resolve({ ...common, settings: only('edge', 'grid') })?.kind, 'edge')
   assert.equal(resolve({ ...common, settings: only('grid') })?.kind, 'grid')
 })
@@ -293,6 +315,248 @@ test('missing, empty, non-finite, and overflowing direction anchors are ignored'
     point: { x: -Number.MAX_VALUE, y: 0 },
     settings: only('vertical'),
     anchor: { id: 'overflow', x: Number.MAX_VALUE, y: 0 },
+  }), null)
+})
+
+test('parallel snapping projects onto an anchored slanted line with canonical metadata', () => {
+  const common = {
+    point: { x: 5, y: 3 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 1, y: 1 },
+  }
+  const forward = resolve({
+    ...common,
+    parallelReference: { id: 'reference', x1: 0, y1: 0, x2: 10, y2: 10 },
+  })
+  const reversed = resolve({
+    ...common,
+    parallelReference: { id: 'reference', x1: 10, y1: 10, x2: 0, y2: 0 },
+  })
+
+  assert.deepEqual(reversed, forward)
+  assert.ok(forward?.kind === 'parallel')
+  assert.deepEqual(forward.point, { x: 4, y: 4 })
+  assert.ok(Math.abs(forward.distancePx - Math.SQRT2) < Number.EPSILON * 8)
+  assert.equal(forward.key, 'parallel:["anchor","reference"]')
+  assert.equal(forward.sourceId, 'reference')
+  assert.equal(forward.anchorId, 'anchor')
+  assert.deepEqual(forward.anchorPoint, { x: 1, y: 1 })
+  assert.equal(forward.referenceEdgeId, 'reference')
+  assert.deepEqual(forward.referenceStartPoint, { x: 0, y: 0 })
+  assert.deepEqual(forward.referenceEndPoint, { x: 10, y: 10 })
+})
+
+test('parallel thresholds are inclusive and accept can fall back to an edge', () => {
+  const edge = {
+    id: 'edge',
+    startVertexId: 'left',
+    endVertexId: 'right',
+    x1: -5,
+    y1: 0,
+    x2: 5,
+    y2: 0,
+  }
+  const thresholdCommon = {
+    point: { x: 1, y: 0 },
+    scale: 2,
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 4 },
+    parallelReference: { id: 'reference', x1: -1, y1: 0, x2: 1, y2: 0 },
+  }
+  assert.equal(resolve(thresholdCommon)?.distancePx, 8)
+  assert.equal(resolve({
+    ...thresholdCommon,
+    thresholdsPx: { parallel: 7.999 },
+  }), null)
+
+  const fallbackCommon = {
+    point: { x: 1, y: 1 },
+    settings: only('parallel', 'edge'),
+    anchor: { id: 'anchor', x: 0, y: 2 },
+    parallelReference: { id: 'reference', x1: -1, y1: 0, x2: 1, y2: 0 },
+    segments: [edge],
+  }
+  assert.equal(resolve(fallbackCommon)?.kind, 'parallel')
+  assert.equal(resolve({
+    ...fallbackCommon,
+    accept: (target) => target.kind !== 'parallel',
+  })?.kind, 'edge')
+})
+
+test('parallel anchor and reference remain valid when connected to the excluded vertex', () => {
+  const target = resolve({
+    point: { x: 3, y: 1 },
+    settings: only('parallel'),
+    anchor: { id: 'moving', x: 0, y: 0 },
+    parallelReference: { id: 'connected', x1: 0, y1: 0, x2: 5, y2: 0 },
+    excludedVertexId: 'moving',
+    segments: [{
+      id: 'connected',
+      startVertexId: 'moving',
+      endVertexId: 'other',
+      x1: 0,
+      y1: 0,
+      x2: 5,
+      y2: 0,
+    }],
+  })
+
+  assert.equal(target?.kind, 'parallel')
+  assert.deepEqual(target?.point, { x: 3, y: 0 })
+})
+
+test('parallel projection handles maximum-component reference and offset normalization', () => {
+  const magnitude = Number.MAX_VALUE
+  const wideReference: SnapSegment = {
+    id: 'wide',
+    startVertexId: 'wide-start',
+    endVertexId: 'wide-end',
+    x1: -magnitude,
+    y1: 0,
+    x2: magnitude,
+    y2: 0,
+  }
+  const horizontal = resolve({
+    point: { x: 4, y: 1 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: wideReference,
+  })
+  assert.deepEqual(horizontal?.point, { x: 4, y: 0 })
+  assert.deepEqual(createVertexPlacement(
+    horizontal?.point ?? { x: Number.NaN, y: Number.NaN },
+    horizontal,
+    [wideReference],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'wide',
+    fraction: 0.5,
+  })
+
+  const diagonal = resolve({
+    point: { x: magnitude, y: magnitude },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: {
+      id: 'diagonal',
+      x1: -magnitude,
+      y1: -magnitude,
+      x2: magnitude,
+      y2: magnitude,
+    },
+  })
+  assert.deepEqual(diagonal?.point, { x: magnitude, y: magnitude })
+  assert.equal(diagonal?.distancePx, 0)
+})
+
+test('extreme and translated split arbitration distinguishes on-line and off-line points', () => {
+  const magnitude = Number.MAX_VALUE
+  const diagonal: SnapSegment = {
+    id: 'extreme-diagonal',
+    startVertexId: 'diagonal-start',
+    endVertexId: 'diagonal-end',
+    x1: -magnitude,
+    y1: -magnitude,
+    x2: magnitude,
+    y2: magnitude,
+  }
+  const onLine = resolve({
+    point: { x: 4, y: 5 },
+    settings: only('horizontal'),
+    anchor: { id: 'on-line-anchor', x: 0, y: 4 },
+  })
+  assert.ok(onLine?.kind === 'horizontal')
+  assert.deepEqual(onLine.point, { x: 4, y: 4 })
+  assert.deepEqual(createVertexPlacement(onLine.point, onLine, [diagonal]), {
+    operation: 'split-edge',
+    edgeId: 'extreme-diagonal',
+    fraction: 0.5,
+  })
+
+  const offLine = resolve({
+    point: { x: 4, y: 6 },
+    settings: only('horizontal'),
+    anchor: { id: 'off-line-anchor', x: 0, y: 5 },
+  })
+  assert.ok(offLine?.kind === 'horizontal')
+  assert.deepEqual(offLine.point, { x: 4, y: 5 })
+  assert.deepEqual(createVertexPlacement(offLine.point, offLine, [diagonal]), {
+    operation: 'add',
+    x: 4,
+    y: 5,
+  })
+
+  const translatedCoordinate = 1e16
+  const translated: SnapSegment = {
+    id: 'translated',
+    startVertexId: 'translated-start',
+    endVertexId: 'translated-end',
+    x1: translatedCoordinate - 10,
+    y1: translatedCoordinate,
+    x2: translatedCoordinate + 10,
+    y2: translatedCoordinate,
+  }
+  const translatedOnLine = resolve({
+    point: { x: translatedCoordinate, y: translatedCoordinate },
+    settings: only('horizontal'),
+    anchor: { id: 'translated-on', x: 0, y: translatedCoordinate },
+  })
+  assert.ok(translatedOnLine?.kind === 'horizontal')
+  assert.deepEqual(createVertexPlacement(
+    translatedOnLine.point,
+    translatedOnLine,
+    [translated],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'translated',
+    fraction: 0.5,
+  })
+
+  const translatedOffLine = resolve({
+    point: { x: translatedCoordinate, y: translatedCoordinate + 2 },
+    settings: only('horizontal'),
+    anchor: { id: 'translated-off', x: 0, y: translatedCoordinate + 2 },
+  })
+  assert.ok(translatedOffLine?.kind === 'horizontal')
+  assert.deepEqual(createVertexPlacement(
+    translatedOffLine.point,
+    translatedOffLine,
+    [translated],
+  ), {
+    operation: 'add',
+    x: translatedCoordinate,
+    y: translatedCoordinate + 2,
+  })
+})
+
+test('parallel snapping rejects missing, malformed, zero-length, and unrepresentable inputs', () => {
+  const common = {
+    point: { x: 1, y: 1 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+  }
+  assert.equal(resolve(common), null)
+  assert.equal(resolve({
+    ...common,
+    parallelReference: { id: '', x1: 0, y1: 0, x2: 1, y2: 1 },
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    parallelReference: { id: 7 as never, x1: 0, y1: 0, x2: 1, y2: 1 },
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    parallelReference: { id: 'nan', x1: 0, y1: 0, x2: Number.NaN, y2: 1 },
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    parallelReference: { id: 'zero', x1: 1, y1: 1, x2: 1, y2: 1 },
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    point: { x: Number.MAX_VALUE, y: 0 },
+    anchor: { id: 'anchor', x: -Number.MAX_VALUE, y: 0 },
+    parallelReference: { id: 'overflow', x1: 0, y1: 0, x2: 1, y2: 0 },
   }), null)
 })
 
@@ -598,6 +862,40 @@ test('direction-only snapping stays constant-time with 10,000 unrelated vertices
   assert.ok(elapsed < 2_000, `10,000 direction queries took ${elapsed}ms`)
 })
 
+test('parallel-only snapping stays constant-time with 10,000 unrelated elements', () => {
+  const vertices = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `v${index}`,
+    x: index,
+    y: -index,
+  }))
+  const segments = Array.from({ length: 10_000 }, (_, index): SnapSegment => ({
+    id: `s${index}`,
+    startVertexId: `a${index}`,
+    endVertexId: `b${index}`,
+    x1: index,
+    y1: 100,
+    x2: index + 1,
+    y2: 100,
+  }))
+  const options = {
+    point: { x: 3, y: 1 },
+    scale: 1,
+    settings: only('parallel'),
+    vertices,
+    segments,
+    grid: EMPTY_GRID,
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: { id: 'reference', x1: 0, y1: 0, x2: 1, y2: 1 },
+  } satisfies ResolveSnapTargetOptions
+
+  const started = performance.now()
+  for (let query = 0; query < 10_000; query += 1) {
+    assert.equal(resolveSnapTarget(options)?.kind, 'parallel')
+  }
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2_000, `10,000 parallel queries took ${elapsed}ms`)
+})
+
 test('raw and grid-snapped points remain ordinary vertex additions', () => {
   assert.deepEqual(createVertexPlacement({ x: 12, y: 34 }, null, []), {
     operation: 'add',
@@ -730,6 +1028,373 @@ test('direction placement rejects endpoint, multi-edge, duplicate-ID, and malfor
   })
   assert.ok(endpointTarget?.kind === 'horizontal')
   assert.equal(createVertexPlacement(endpointTarget.point, endpointTarget, [base]), null)
+})
+
+test('parallel placement adds normally or splits one coincident edge atomically', () => {
+  const roundingReference: SnapSegment = {
+    id: 'rounding-reference',
+    startVertexId: 'rounding-start',
+    endVertexId: 'rounding-end',
+    x1: 56898.64825358459,
+    y1: -142782.07882576698,
+    x2: 286346.09127739485,
+    y2: 139678.62073135463,
+  }
+  const roundingDirectionReference: SnapSegment = {
+    id: 'rounding-direction-reference',
+    startVertexId: 'rounding-direction-start',
+    endVertexId: 'rounding-direction-end',
+    x1: 0,
+    y1: 0,
+    x2: 229447.44302381025,
+    y2: 282460.6995571216,
+  }
+  const roundingTarget = resolve({
+    point: { x: 171459.1364651169, y: -1752.651742148934 },
+    settings: only('parallel'),
+    anchor: {
+      id: 'rounding-anchor',
+      x: roundingReference.x1,
+      y: roundingReference.y1,
+    },
+    parallelReference: roundingDirectionReference,
+  })
+  assert.ok(roundingTarget?.kind === 'parallel')
+  const roundingPlacement = createVertexPlacement(
+    roundingTarget.point,
+    roundingTarget,
+    [roundingDirectionReference, roundingReference],
+  )
+  assert.equal(roundingPlacement?.operation, 'split-edge')
+  assert.equal(
+    roundingPlacement?.operation === 'split-edge' ? roundingPlacement.edgeId : null,
+    roundingReference.id,
+  )
+
+  const coincidentReference: SnapSegment = {
+    id: 'coincident-reference',
+    startVertexId: 'coincident-start',
+    endVertexId: 'coincident-end',
+    x1: 0,
+    y1: 0,
+    x2: 10,
+    y2: 10,
+  }
+  const coincidentTarget = resolve({
+    point: { x: 5, y: 3 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: coincidentReference,
+  })
+  assert.ok(coincidentTarget?.kind === 'parallel')
+  assert.deepEqual(createVertexPlacement(
+    coincidentTarget.point,
+    coincidentTarget,
+    [coincidentReference],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'coincident-reference',
+    fraction: 0.4,
+  })
+
+  const offsetReference: SnapSegment = {
+    id: 'offset-reference',
+    startVertexId: 'offset-start',
+    endVertexId: 'offset-end',
+    x1: 0,
+    y1: 0,
+    x2: 10,
+    y2: 0,
+  }
+  const offsetTarget = resolve({
+    point: { x: 5, y: 3 },
+    settings: only('parallel'),
+    anchor: { id: 'offset-anchor', x: 0, y: 2 },
+    parallelReference: offsetReference,
+  })
+  assert.ok(offsetTarget?.kind === 'parallel')
+  assert.deepEqual(createVertexPlacement(
+    offsetTarget.point,
+    offsetTarget,
+    [offsetReference],
+  ), {
+    operation: 'add',
+    x: 5,
+    y: 2,
+  })
+
+  const reference: SnapSegment = {
+    id: 'reference',
+    startVertexId: 'reference-start',
+    endVertexId: 'reference-end',
+    x1: 100,
+    y1: 100,
+    x2: 110,
+    y2: 110,
+  }
+  const target = resolve({
+    point: { x: 5, y: 3 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: reference,
+  })
+  assert.ok(target?.kind === 'parallel')
+  assert.deepEqual(target.point, { x: 4, y: 4 })
+  assert.deepEqual(createVertexPlacement(target.point, target, [reference]), {
+    operation: 'add',
+    x: 4,
+    y: 4,
+  })
+
+  const crossing: SnapSegment = {
+    id: 'crossing',
+    startVertexId: 'left',
+    endVertexId: 'right',
+    x1: 0,
+    y1: 4,
+    x2: 8,
+    y2: 4,
+  }
+  assert.deepEqual(createVertexPlacement(target.point, target, [reference, crossing]), {
+    operation: 'split-edge',
+    edgeId: 'crossing',
+    fraction: 0.5,
+  })
+
+  const reversedCrossing = {
+    ...crossing,
+    startVertexId: crossing.endVertexId,
+    endVertexId: crossing.startVertexId,
+    x1: crossing.x2,
+    x2: crossing.x1,
+  }
+  const reversedReference = {
+    ...reference,
+    startVertexId: reference.endVertexId,
+    endVertexId: reference.startVertexId,
+    x1: reference.x2,
+    y1: reference.y2,
+    x2: reference.x1,
+    y2: reference.y1,
+  }
+  assert.deepEqual(createVertexPlacement(
+    target.point,
+    target,
+    [reversedReference, reversedCrossing],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'crossing',
+    fraction: 0.5,
+  })
+})
+
+test('parallel placement rejects reference and topology ambiguity or malformed metadata', () => {
+  const reference: SnapSegment = {
+    id: 'reference',
+    startVertexId: 'reference-start',
+    endVertexId: 'reference-end',
+    x1: 100,
+    y1: 100,
+    x2: 110,
+    y2: 110,
+  }
+  const target = resolve({
+    point: { x: 5, y: 3 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: reference,
+  })
+  assert.ok(target?.kind === 'parallel')
+  const crossing: SnapSegment = {
+    id: 'crossing',
+    startVertexId: 'left',
+    endVertexId: 'right',
+    x1: 0,
+    y1: 4,
+    x2: 8,
+    y2: 4,
+  }
+  const secondCrossing: SnapSegment = {
+    id: 'second-crossing',
+    startVertexId: 'bottom',
+    endVertexId: 'top',
+    x1: 4,
+    y1: 0,
+    x2: 4,
+    y2: 8,
+  }
+
+  assert.equal(createVertexPlacement(target.point, target, []), null)
+  assert.equal(createVertexPlacement(target.point, target, [
+    reference,
+    { ...reference, startVertexId: 'duplicate-start', endVertexId: 'duplicate-end' },
+  ]), null)
+  assert.equal(createVertexPlacement(target.point, target, [
+    reference,
+    crossing,
+    secondCrossing,
+  ]), null)
+  assert.equal(createVertexPlacement(target.point, target, [
+    reference,
+    crossing,
+    {
+      ...crossing,
+      x1: 20,
+      x2: 30,
+      startVertexId: 'far-left',
+      endVertexId: 'far-right',
+    },
+  ]), null)
+
+  const endpoint = { ...crossing, x1: 4, x2: 8 }
+  assert.equal(createVertexPlacement(target.point, target, [reference, endpoint]), null)
+
+  const malformed = [
+    { ...target, sourceId: 'wrong' },
+    { ...target, anchorId: 'wrong' },
+    { ...target, referenceEdgeId: 'wrong' },
+    { ...target, key: 'parallel:["wrong","key"]' },
+    { ...target, referenceStartPoint: target.referenceEndPoint },
+    { ...target, referenceEndPoint: { x: 111, y: 111 } },
+    { ...target, anchorPoint: { x: Number.NaN, y: 0 } },
+  ]
+  for (const invalid of malformed) {
+    assert.equal(createVertexPlacement(invalid.point, invalid, [reference]), null)
+  }
+  const offLine = { ...target, point: { x: 4, y: 4.01 } }
+  assert.equal(createVertexPlacement(offLine.point, offLine, [reference]), null)
+
+  const parallelReference: SnapSegment = {
+    id: 'parallel-reference',
+    startVertexId: 'parallel-reference-start',
+    endVertexId: 'parallel-reference-end',
+    x1: 0,
+    y1: 10,
+    x2: 10,
+    y2: 10,
+  }
+  const sharedAnchorTarget = resolve({
+    point: { x: 5, y: 1 },
+    settings: only('parallel'),
+    anchor: { id: 'shared-anchor', x: 0, y: 0 },
+    parallelReference,
+  })
+  assert.ok(sharedAnchorTarget?.kind === 'parallel')
+  assert.equal(createVertexPlacement(
+    sharedAnchorTarget.point,
+    sharedAnchorTarget,
+    [
+      parallelReference,
+      {
+        id: 'overlap-a',
+        startVertexId: 'shared-a',
+        endVertexId: 'right-a',
+        x1: 0,
+        y1: 0,
+        x2: 10,
+        y2: 0,
+      },
+      {
+        id: 'overlap-b',
+        startVertexId: 'shared-b',
+        endVertexId: 'right-b',
+        x1: 0,
+        y1: 0,
+        x2: 20,
+        y2: 0,
+      },
+    ],
+  ), null)
+})
+
+test('seeded parallel placement fuzz has no preferred-split leaks or off-line mis-splits', () => {
+  let state = 0x5eed1234
+  const random = () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+    return state / 0x1_0000_0000
+  }
+  let missingTargets = 0
+  let splitLeaks = 0
+  let offLineMisSplits = 0
+  const started = performance.now()
+
+  for (let sample = 0; sample < 100_000; sample += 1) {
+    const angle = random() * Math.PI * 2
+    const length = 10 + random() * 100_000
+    const unitX = Math.cos(angle)
+    const unitY = Math.sin(angle)
+    const x1 = (random() - 0.5) * 2_000_000
+    const y1 = (random() - 0.5) * 2_000_000
+    const dx = unitX * length
+    const dy = unitY * length
+    const targetEdge: SnapSegment = {
+      id: `fuzz-target-${sample}`,
+      startVertexId: `fuzz-start-${sample}`,
+      endVertexId: `fuzz-end-${sample}`,
+      x1,
+      y1,
+      x2: x1 + dx,
+      y2: y1 + dy,
+    }
+    const reference: SnapSegment = {
+      id: `fuzz-reference-${sample}`,
+      startVertexId: `fuzz-reference-start-${sample}`,
+      endVertexId: `fuzz-reference-end-${sample}`,
+      x1: 0,
+      y1: 0,
+      x2: targetEdge.x2 - targetEdge.x1,
+      y2: targetEdge.y2 - targetEdge.y1,
+    }
+    const alongFraction = 0.1 + random() * 0.8
+    const perpendicularOffset = (random() - 0.5) * 12
+    const rawPoint = {
+      x: x1 + dx * alongFraction - unitY * perpendicularOffset,
+      y: y1 + dy * alongFraction + unitX * perpendicularOffset,
+    }
+    const target = resolve({
+      point: rawPoint,
+      settings: only('parallel'),
+      anchor: { id: 'fuzz-anchor', x: x1, y: y1 },
+      parallelReference: reference,
+      segments: [reference, targetEdge],
+    })
+    if (target?.kind !== 'parallel') {
+      missingTargets += 1
+      continue
+    }
+    const placement = createVertexPlacement(target.point, target, [reference, targetEdge])
+    if (
+      placement?.operation !== 'split-edge'
+      || placement.edgeId !== targetEdge.id
+    ) {
+      splitLeaks += 1
+    }
+
+    const offLinePoint = {
+      x: target.point.x - unitY * 0.01,
+      y: target.point.y + unitX * 0.01,
+    }
+    const offLineTarget = resolve({
+      point: offLinePoint,
+      settings: only('horizontal'),
+      anchor: { id: 'fuzz-off-line-anchor', x: 0, y: offLinePoint.y },
+      segments: [reference, targetEdge],
+    })
+    if (
+      createVertexPlacement(
+        offLinePoint,
+        offLineTarget,
+        [reference, targetEdge],
+      )?.operation
+      === 'split-edge'
+    ) offLineMisSplits += 1
+  }
+
+  const elapsed = performance.now() - started
+  assert.equal(missingTargets, 0)
+  assert.equal(splitLeaks, 0)
+  assert.equal(offLineMisSplits, 0)
+  assert.ok(elapsed < 5_000, `100,000 placement fuzz cases took ${elapsed}ms`)
 })
 
 test('midpoint and edge targets become atomic edge splits', () => {
@@ -962,7 +1627,7 @@ test('T junctions expose the exact existing endpoint in every orientation', () =
   }
 })
 
-test('addition snap priority is T repair, vertex, proper, midpoint, direction, edge, then grid', () => {
+test('addition priority is T repair, vertex, proper, midpoint, direction, parallel, edge, grid', () => {
   const crossing = [
     intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
     intersectionSegment('b-edge', 'b1', 'b2', -2, 0, 2, 0),
@@ -1019,6 +1684,12 @@ test('addition snap priority is T repair, vertex, proper, midpoint, direction, e
     settings: only('horizontal'),
     anchor: { id: 'anchor', x: 2, y: 0 },
   })
+  const parallel = resolve({
+    point: { x: 0, y: 1 },
+    settings: only('parallel'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: { id: 'reference', x1: -1, y1: 0, x2: 1, y2: 0 },
+  })
 
   assert.equal(
     prioritizeAdditionSnapTargets(junctionVertex, tJunction)?.classification,
@@ -1026,7 +1697,7 @@ test('addition snap priority is T repair, vertex, proper, midpoint, direction, e
   )
   assert.equal(prioritizeAdditionSnapTargets(vertex, tJunction), vertex)
   assert.equal(prioritizeAdditionSnapTargets(vertex, proper), vertex)
-  for (const lowerPriority of [midpoint, direction, edge, grid]) {
+  for (const lowerPriority of [midpoint, direction, parallel, edge, grid]) {
     assert.equal(
       prioritizeAdditionSnapTargets(lowerPriority, proper)?.kind,
       'intersection',

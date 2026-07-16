@@ -6,12 +6,13 @@ export type SnapKind =
   | 'midpoint'
   | 'horizontal'
   | 'vertical'
+  | 'parallel'
   | 'edge'
   | 'grid'
 
 type PointSnapKind = Exclude<SnapKind, 'intersection'>
 type DirectionSnapKind = Extract<PointSnapKind, 'horizontal' | 'vertical'>
-type OrdinaryPointSnapKind = Exclude<PointSnapKind, DirectionSnapKind>
+type OrdinaryPointSnapKind = Exclude<PointSnapKind, DirectionSnapKind | 'parallel'>
 
 export type SnapSettings = Readonly<{
   vertex: boolean
@@ -19,6 +20,7 @@ export type SnapSettings = Readonly<{
   midpoint: boolean
   horizontal: boolean
   vertical: boolean
+  parallel: boolean
   edge: boolean
   grid: boolean
 }>
@@ -29,6 +31,7 @@ export const DEFAULT_SNAP_SETTINGS: SnapSettings = Object.freeze({
   midpoint: true,
   horizontal: true,
   vertical: true,
+  parallel: true,
   edge: true,
   grid: true,
 })
@@ -65,6 +68,14 @@ export type SnapAnchor = Readonly<{
   y: number
 }>
 
+export type ParallelSnapReference = Readonly<{
+  id: string
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}>
+
 export function resolveUniqueSnapAnchor(
   vertices: readonly SnapVertex[],
   selectedVertexId: string | null,
@@ -91,6 +102,9 @@ export type OrdinarySnapTarget = SnapTargetBase & Readonly<{
   kind: OrdinaryPointSnapKind
   anchorId?: never
   anchorPoint?: never
+  referenceEdgeId?: never
+  referenceStartPoint?: never
+  referenceEndPoint?: never
 }>
 
 export type DirectionSnapTarget = SnapTargetBase & Readonly<{
@@ -99,9 +113,23 @@ export type DirectionSnapTarget = SnapTargetBase & Readonly<{
   sourceFraction?: never
   anchorId: string
   anchorPoint: SnapPoint
+  referenceEdgeId?: never
+  referenceStartPoint?: never
+  referenceEndPoint?: never
 }>
 
-export type SnapTarget = OrdinarySnapTarget | DirectionSnapTarget
+export type ParallelSnapTarget = SnapTargetBase & Readonly<{
+  kind: 'parallel'
+  sourceId: string
+  sourceFraction?: never
+  anchorId: string
+  anchorPoint: SnapPoint
+  referenceEdgeId: string
+  referenceStartPoint: SnapPoint
+  referenceEndPoint: SnapPoint
+}>
+
+export type SnapTarget = OrdinarySnapTarget | DirectionSnapTarget | ParallelSnapTarget
 
 export type AdditionSnapTarget = SnapTarget | IntersectionSnapTarget
 
@@ -122,6 +150,7 @@ export type ResolveSnapTargetOptions = Readonly<{
   segments: readonly SnapSegment[]
   grid: SnapGrid
   anchor?: SnapAnchor
+  parallelReference?: ParallelSnapReference
   excludedVertexId?: string
   accept?: (target: SnapTarget) => boolean
   thresholdsPx?: SnapThresholdsPx
@@ -137,6 +166,7 @@ const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
   midpoint: 9,
   horizontal: 8,
   vertical: 8,
+  parallel: 8,
   edge: 7,
   grid: 7,
 })
@@ -189,6 +219,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
     && !settings.midpoint
     && !settings.horizontal
     && !settings.vertical
+    && !settings.parallel
     && !settings.edge
     && !settings.grid
   ) return null
@@ -243,6 +274,11 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
   if (settings.horizontal || settings.vertical) {
     const best = bestDirectionTarget(options)
     if (best) return best.target
+  }
+
+  if (settings.parallel) {
+    const target = parallelSnapTarget(options)
+    if (target && (!options.accept || options.accept(target))) return target
   }
 
   if (settings.edge) {
@@ -495,6 +531,130 @@ function considerDirectionTarget(
   return options.accept && !options.accept(candidate)
     ? best
     : { target: candidate, modelDistance }
+}
+
+function parallelSnapTarget(options: ResolveSnapTargetOptions): ParallelSnapTarget | null {
+  const anchor = options.anchor
+  const reference = options.parallelReference
+  if (
+    !anchor
+    || typeof anchor.id !== 'string'
+    || anchor.id.length === 0
+    || !isFinitePoint(anchor)
+    || !reference
+    || typeof reference.id !== 'string'
+    || reference.id.length === 0
+  ) return null
+
+  const endpoints = canonicalReferenceEndpoints(reference)
+  if (!endpoints) return null
+  const direction = stableDirectionComponents(endpoints.start, endpoints.end)
+  if (!direction) return null
+
+  const offsetX = options.point.x - anchor.x
+  const offsetY = options.point.y - anchor.y
+  if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null
+  const offsetScale = Math.max(Math.abs(offsetX), Math.abs(offsetY))
+  if (!Number.isFinite(offsetScale)) return null
+  const normalizedOffsetX = offsetScale === 0 ? 0 : offsetX / offsetScale
+  const normalizedOffsetY = offsetScale === 0 ? 0 : offsetY / offsetScale
+  const dotX = normalizedOffsetX * direction.x
+  const dotY = normalizedOffsetY * direction.y
+  if (!Number.isFinite(dotX) || !Number.isFinite(dotY)) return null
+  const normalizedNumerator = dotX + dotY
+  const denominator = direction.x * direction.x + direction.y * direction.y
+  if (
+    !Number.isFinite(normalizedNumerator)
+    || !Number.isFinite(denominator)
+    || denominator <= 0
+  ) return null
+  const normalizedFactor = normalizedNumerator / denominator
+  if (!Number.isFinite(normalizedFactor)) return null
+  const factor = normalizedFactor * offsetScale
+  if (!Number.isFinite(factor)) return null
+  const projectedOffsetX = factor * direction.x
+  const projectedOffsetY = factor * direction.y
+  if (!Number.isFinite(projectedOffsetX) || !Number.isFinite(projectedOffsetY)) return null
+  const projectedX = normalizeZero(anchor.x + projectedOffsetX)
+  const projectedY = normalizeZero(anchor.y + projectedOffsetY)
+  if (!Number.isFinite(projectedX) || !Number.isFinite(projectedY)) return null
+
+  const correctionX = projectedX - options.point.x
+  const correctionY = projectedY - options.point.y
+  if (!Number.isFinite(correctionX) || !Number.isFinite(correctionY)) return null
+  const modelDistance = stableHypot(correctionX, correctionY)
+  const distancePx = modelDistance * options.scale
+  if (
+    !Number.isFinite(modelDistance)
+    || !Number.isFinite(distancePx)
+    || distancePx > thresholdFor('parallel', options.thresholdsPx)
+  ) return null
+
+  return {
+    key: parallelKey(anchor.id, reference.id),
+    kind: 'parallel',
+    point: { x: projectedX, y: projectedY },
+    distancePx,
+    sourceId: reference.id,
+    anchorId: anchor.id,
+    anchorPoint: {
+      x: normalizeZero(anchor.x),
+      y: normalizeZero(anchor.y),
+    },
+    referenceEdgeId: reference.id,
+    referenceStartPoint: endpoints.start,
+    referenceEndPoint: endpoints.end,
+  }
+}
+
+function canonicalReferenceEndpoints(reference: ParallelSnapReference) {
+  if (![reference.x1, reference.y1, reference.x2, reference.y2].every(Number.isFinite)) {
+    return null
+  }
+  const first = { x: normalizeZero(reference.x1), y: normalizeZero(reference.y1) }
+  const second = { x: normalizeZero(reference.x2), y: normalizeZero(reference.y2) }
+  if (first.x === second.x && first.y === second.y) return null
+  return comparePoints(first, second) <= 0
+    ? { start: first, end: second }
+    : { start: second, end: first }
+}
+
+function stableDirectionComponents(start: SnapPoint, end: SnapPoint) {
+  let dx = end.x - start.x
+  let dy = end.y - start.y
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+    const coordinateScale = Math.max(
+      Math.abs(start.x),
+      Math.abs(start.y),
+      Math.abs(end.x),
+      Math.abs(end.y),
+    )
+    if (!Number.isFinite(coordinateScale) || coordinateScale <= 0) return null
+    dx = end.x / coordinateScale - start.x / coordinateScale
+    dy = end.y / coordinateScale - start.y / coordinateScale
+  }
+  const maximumComponent = Math.max(Math.abs(dx), Math.abs(dy))
+  if (!Number.isFinite(maximumComponent) || maximumComponent <= 0) return null
+  const x = dx / maximumComponent
+  const y = dy / maximumComponent
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+}
+
+function stableHypot(x: number, y: number) {
+  const maximumComponent = Math.max(Math.abs(x), Math.abs(y))
+  if (!Number.isFinite(maximumComponent)) return Number.POSITIVE_INFINITY
+  if (maximumComponent === 0) return 0
+  const normalized = Math.hypot(x / maximumComponent, y / maximumComponent)
+  const result = maximumComponent * normalized
+  return Number.isFinite(result) ? result : Number.POSITIVE_INFINITY
+}
+
+function comparePoints(first: SnapPoint, second: SnapPoint) {
+  return first.x < second.x || (first.x === second.x && first.y < second.y) ? -1 : 1
+}
+
+function parallelKey(anchorId: string, referenceEdgeId: string) {
+  return `parallel:${JSON.stringify([anchorId, referenceEdgeId])}`
 }
 
 function nearestGridTarget(options: ResolveSnapTargetOptions, thresholdPx: number) {

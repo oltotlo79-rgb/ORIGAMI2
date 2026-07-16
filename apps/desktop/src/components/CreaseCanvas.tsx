@@ -6,6 +6,7 @@ import {
   resolveUniqueSnapAnchor,
   resolveSnapTarget,
   type AdditionSnapTarget,
+  type ParallelSnapReference,
   type SnapKind,
   type SnapPoint,
   type SnapSettings,
@@ -49,6 +50,7 @@ type Props = {
   selectedLineId: string | null
   measurementLabel?: string
   snapSettings?: SnapSettings
+  parallelReference?: ParallelSnapReference | null
   onSelectLine: (id: string | null) => void
   onPlaceVertex?: (placement: VertexPlacement) => void
   onSelectVertex?: (id: string) => void
@@ -77,6 +79,7 @@ type DragState = {
   offsetY: number
   x: number
   y: number
+  parallelReference?: ParallelSnapReference
 }
 
 type ViewTransform = {
@@ -112,6 +115,7 @@ const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   midpoint: '中点',
   horizontal: '水平',
   vertical: '垂直',
+  parallel: '平行',
   edge: '辺',
   grid: 'グリッド',
 }
@@ -144,6 +148,7 @@ export function CreaseCanvas({
   selectedLineId,
   measurementLabel,
   snapSettings = DEFAULT_SNAP_SETTINGS,
+  parallelReference = null,
   onSelectLine,
   onPlaceVertex,
   onSelectVertex,
@@ -230,7 +235,7 @@ export function CreaseCanvas({
 
   useEffect(() => {
     setSnapGuide(null)
-  }, [snapSettings, tool])
+  }, [parallelReference, snapSettings, tool])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -318,6 +323,22 @@ export function CreaseCanvas({
     }
     context.setLineDash([])
 
+    if (parallelReference) {
+      const start = mapPaperPoint(transform, parallelReference.x1, parallelReference.y1)
+      const end = mapPaperPoint(transform, parallelReference.x2, parallelReference.y2)
+      if (start && end) {
+        context.save()
+        context.beginPath()
+        context.moveTo(start.x, start.y)
+        context.lineTo(end.x, end.y)
+        context.strokeStyle = '#8b4fb3'
+        context.lineWidth = 4.5
+        context.setLineDash([2, 5])
+        context.stroke()
+        context.restore()
+      }
+    }
+
     for (const vertex of vertices) {
       const preview = vertex.id === dragPreview?.vertexId ? dragPreview : null
       const x = preview?.x ?? vertex.x
@@ -379,6 +400,7 @@ export function CreaseCanvas({
     lines,
     measurementLabel,
     paperColor,
+    parallelReference,
     drawablePaperPolygon,
     pendingVertexId,
     resolvedPaperBounds,
@@ -407,6 +429,7 @@ export function CreaseCanvas({
       segments: lines,
       grid: visibleGrid,
       anchor: additionSnapAnchor,
+      parallelReference: parallelReference ?? undefined,
       accept,
     })
     if (!snapSettings.intersection) return pointTarget
@@ -452,6 +475,7 @@ export function CreaseCanvas({
         x: drag.originX,
         y: drag.originY,
       },
+      parallelReference: drag.parallelReference,
       excludedVertexId: drag.vertexId,
       accept: (candidate) => {
         if (
@@ -607,6 +631,7 @@ export function CreaseCanvas({
       offsetY: vertex.y - pointer.y,
       x: vertex.x,
       y: vertex.y,
+      parallelReference: parallelReference ?? undefined,
     }
     dragRef.current = drag
     setDragPreview(drag)
@@ -1157,6 +1182,7 @@ function drawSnapGuide(
   const directionAnchor = (
     guide.target.kind === 'horizontal'
     || guide.target.kind === 'vertical'
+    || guide.target.kind === 'parallel'
   )
     ? mapPaperPoint(
         transform,

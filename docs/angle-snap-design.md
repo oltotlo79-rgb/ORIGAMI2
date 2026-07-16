@@ -64,6 +64,7 @@ Q  = A + dot(P - A, u±) * u±
 
 - `kind: 'angle'`
 - `anchorId`, `anchorPoint`
+- 候補生成に使った有限な`rawPoint`（確定時に同じ射影を再計算する）
 - canonical化した`angleDegrees`
 - `angleSide: 'counterclockwise' | 'clockwise'`
 - `referenceKind: 'global-horizontal' | 'edge'`
@@ -119,6 +120,7 @@ edge:   angle:[anchorId,"edge",referenceEdgeId,degrees,side]
 - 参照辺が有限かつ非零長である
 - canonical端点が完全一致する
 - pointが再計算した角度直線上にある
+- rawPointから候補生成と同じ数式で再射影した点がpointと完全一致する
 
 検証後は既存の`splitOrAddPoint()`を使う。
 
@@ -146,8 +148,9 @@ edge:   angle:[anchorId,"edge",referenceEdgeId,degrees,side]
 - 基準線から角度線までの小さな円弧
 - `角度 +45°`または`角度 -30°`ラベル
 - 参照辺基準では既存の破線オーバーレイ
+- 射影係数が負の場合は基準rayと角度rayを同時に180°反転し、円弧を実際のanchor→target線へ接続する
 
-CanvasのY軸反転を考慮し、円弧は紙座標の符号を直接使わず、画面座標へ変換してから描画する。
+Canvasの現行変換は紙座標と画面座標でYの符号を反転しない。基準線と円弧は実際の`mapPaperPoint`と同じ向きへ変換し、将来Y軸規約を変更する場合も画面上の角度線と一致することを回帰確認する。
 
 ## 性能
 

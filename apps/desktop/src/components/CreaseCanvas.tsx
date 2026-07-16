@@ -6,6 +6,8 @@ import {
   resolveUniqueSnapAnchor,
   resolveSnapTarget,
   type AdditionSnapTarget,
+  type AngleSnapConfig,
+  type AngleSnapTarget,
   type ParallelSnapReference,
   type SnapKind,
   type SnapPoint,
@@ -51,6 +53,7 @@ type Props = {
   measurementLabel?: string
   snapSettings?: SnapSettings
   parallelReference?: ParallelSnapReference | null
+  angleConfig?: AngleSnapConfig
   onSelectLine: (id: string | null) => void
   onPlaceVertex?: (placement: VertexPlacement) => void
   onSelectVertex?: (id: string) => void
@@ -80,6 +83,7 @@ type DragState = {
   x: number
   y: number
   parallelReference?: ParallelSnapReference
+  angleConfig?: AngleSnapConfig
 }
 
 type ViewTransform = {
@@ -116,6 +120,7 @@ const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   horizontal: '水平',
   vertical: '垂直',
   parallel: '平行',
+  angle: '角度',
   edge: '辺',
   grid: 'グリッド',
 }
@@ -149,6 +154,7 @@ export function CreaseCanvas({
   measurementLabel,
   snapSettings = DEFAULT_SNAP_SETTINGS,
   parallelReference = null,
+  angleConfig,
   onSelectLine,
   onPlaceVertex,
   onSelectVertex,
@@ -235,7 +241,7 @@ export function CreaseCanvas({
 
   useEffect(() => {
     setSnapGuide(null)
-  }, [parallelReference, snapSettings, tool])
+  }, [additionSnapAnchor, angleConfig, parallelReference, snapSettings, tool])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -430,6 +436,7 @@ export function CreaseCanvas({
       grid: visibleGrid,
       anchor: additionSnapAnchor,
       parallelReference: parallelReference ?? undefined,
+      angleConfig,
       accept,
     })
     if (!snapSettings.intersection) return pointTarget
@@ -476,6 +483,7 @@ export function CreaseCanvas({
         y: drag.originY,
       },
       parallelReference: drag.parallelReference,
+      angleConfig: drag.angleConfig,
       excludedVertexId: drag.vertexId,
       accept: (candidate) => {
         if (
@@ -632,6 +640,7 @@ export function CreaseCanvas({
       x: vertex.x,
       y: vertex.y,
       parallelReference: parallelReference ?? undefined,
+      angleConfig,
     }
     dragRef.current = drag
     setDragPreview(drag)
@@ -1183,6 +1192,7 @@ function drawSnapGuide(
     guide.target.kind === 'horizontal'
     || guide.target.kind === 'vertical'
     || guide.target.kind === 'parallel'
+    || guide.target.kind === 'angle'
   )
     ? mapPaperPoint(
         transform,
@@ -1195,6 +1205,9 @@ function drawSnapGuide(
   context.strokeStyle = '#b14c83'
   context.fillStyle = '#b14c83'
   context.lineWidth = 1.5
+  if (directionAnchor && guide.target.kind === 'angle') {
+    drawAngleReferenceGuide(context, directionAnchor, target, guide.target)
+  }
   if (directionAnchor) {
     context.setLineDash([7, 4])
     context.beginPath()
@@ -1226,7 +1239,9 @@ function drawSnapGuide(
   context.lineTo(target.x, target.y + 10)
   context.stroke()
 
-  const label = SNAP_KIND_LABELS[guide.target.kind]
+  const label = guide.target.kind === 'angle'
+    ? `角度 ${guide.target.angleSide === 'counterclockwise' ? '+' : '-'}${formatGuideAngle(guide.target.angleDegrees)}°`
+    : SNAP_KIND_LABELS[guide.target.kind]
   context.font = '600 10px system-ui, sans-serif'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
@@ -1252,6 +1267,79 @@ function drawSnapGuide(
   context.fillStyle = '#ffffff'
   context.fillText(label, labelX, labelY)
   context.restore()
+}
+
+function formatGuideAngle(value: number) {
+  if (!Number.isFinite(value)) return '—'
+  if (value !== 0 && Math.abs(value) < 0.001) return value.toExponential(2)
+  return String(Number(value.toFixed(3)))
+}
+
+function drawAngleReferenceGuide(
+  context: CanvasRenderingContext2D,
+  anchor: { x: number; y: number },
+  snappedPoint: { x: number; y: number },
+  angleTarget: AngleSnapTarget,
+) {
+  const baseDirection = angleTarget.referenceKind === 'global-horizontal'
+    ? { x: 1, y: 0 }
+    : normalizedGuideDirection(
+        angleTarget.referenceStartPoint.x,
+        angleTarget.referenceStartPoint.y,
+        angleTarget.referenceEndPoint.x,
+        angleTarget.referenceEndPoint.y,
+      )
+  if (!baseDirection) return
+  const screenX = baseDirection.x
+  const screenY = baseDirection.y
+  const screenLength = Math.hypot(screenX, screenY)
+  if (!Number.isFinite(screenLength) || screenLength <= 0) return
+  const unitX = screenX / screenLength
+  const unitY = screenY / screenLength
+  const halfLength = 22
+  context.save()
+  context.strokeStyle = 'rgba(139, 79, 179, 0.8)'
+  context.lineWidth = 1.25
+  context.setLineDash([3, 3])
+  context.beginPath()
+  context.moveTo(anchor.x - unitX * halfLength, anchor.y - unitY * halfLength)
+  context.lineTo(anchor.x + unitX * halfLength, anchor.y + unitY * halfLength)
+  context.stroke()
+
+  let startAngle = Math.atan2(unitY, unitX)
+  const delta = angleTarget.angleDegrees * Math.PI / 180
+    * (angleTarget.angleSide === 'counterclockwise' ? 1 : -1)
+  const targetRayAngle = startAngle + delta
+  const targetOffsetX = snappedPoint.x - anchor.x
+  const targetOffsetY = snappedPoint.y - anchor.y
+  const targetRayDot = targetOffsetX * Math.cos(targetRayAngle)
+    + targetOffsetY * Math.sin(targetRayAngle)
+  if (Number.isFinite(targetRayDot) && targetRayDot < 0) startAngle += Math.PI
+  if (Number.isFinite(startAngle) && Number.isFinite(delta)) {
+    context.setLineDash([])
+    context.beginPath()
+    context.arc(anchor.x, anchor.y, 15, startAngle, startAngle + delta, delta < 0)
+    context.stroke()
+  }
+  context.restore()
+}
+
+function normalizedGuideDirection(x1: number, y1: number, x2: number, y2: number) {
+  let x = x2 - x1
+  let y = y2 - y1
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    const coordinateScale = Math.max(Math.abs(x1), Math.abs(y1), Math.abs(x2), Math.abs(y2))
+    if (!Number.isFinite(coordinateScale) || coordinateScale <= 0) return null
+    x = x2 / coordinateScale - x1 / coordinateScale
+    y = y2 / coordinateScale - y1 / coordinateScale
+  }
+  const maximumComponent = Math.max(Math.abs(x), Math.abs(y))
+  if (!Number.isFinite(maximumComponent) || maximumComponent <= 0) return null
+  const normalizedX = x / maximumComponent
+  const normalizedY = y / maximumComponent
+  return Number.isFinite(normalizedX) && Number.isFinite(normalizedY)
+    ? { x: normalizedX, y: normalizedY }
+    : null
 }
 
 function drawMeasurementLabel(

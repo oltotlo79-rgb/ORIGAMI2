@@ -3,7 +3,9 @@ import { performance } from 'node:perf_hooks'
 import test from 'node:test'
 
 import {
+  ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
+  DEFAULT_ANGLE_SNAP_CONFIG,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
   resolveUniqueSnapAnchor,
@@ -31,6 +33,7 @@ function only(...kinds: SnapKind[]): SnapSettings {
     horizontal: kinds.includes('horizontal'),
     vertical: kinds.includes('vertical'),
     parallel: kinds.includes('parallel'),
+    angle: kinds.includes('angle'),
     edge: kinds.includes('edge'),
     grid: kinds.includes('grid'),
   }
@@ -56,6 +59,7 @@ test('default settings enable every snap kind', () => {
     horizontal: true,
     vertical: true,
     parallel: true,
+    angle: true,
     edge: true,
     grid: true,
   })
@@ -73,6 +77,7 @@ test('intersection snapping is independently toggleable and defaults on', () => 
     'horizontal',
     'vertical',
     'parallel',
+    'angle',
     'edge',
     'grid',
   ] as const) {
@@ -99,6 +104,33 @@ test('parallel snapping is independently toggleable and defaults on', () => {
   assert.deepEqual(toggleSnapSetting(disabled, 'parallel'), DEFAULT_SNAP_SETTINGS)
 })
 
+test('angle snapping has immutable defaults, presets, and an independent toggle', () => {
+  assert.deepEqual(DEFAULT_ANGLE_SNAP_CONFIG, {
+    angleDegrees: 45,
+    referenceKind: 'global-horizontal',
+  })
+  assert.deepEqual(ANGLE_SNAP_PRESETS, [11.25, 15, 22.5, 30, 45, 60, 67.5, 90])
+  assert.equal(Object.isFrozen(DEFAULT_ANGLE_SNAP_CONFIG), true)
+  assert.equal(Object.isFrozen(ANGLE_SNAP_PRESETS), true)
+
+  const disabled = toggleSnapSetting(DEFAULT_SNAP_SETTINGS, 'angle')
+  assert.equal(DEFAULT_SNAP_SETTINGS.angle, true)
+  assert.equal(disabled.angle, false)
+  assert.deepEqual(toggleSnapSetting(disabled, 'angle'), DEFAULT_SNAP_SETTINGS)
+
+  for (const angleDegrees of [...ANGLE_SNAP_PRESETS, 12.345]) {
+    const radians = angleDegrees * Math.PI / 180
+    const target = resolve({
+      point: { x: 10 * Math.cos(radians), y: 10 * Math.sin(radians) },
+      settings: only('angle'),
+      anchor: { id: 'preset-anchor', x: 0, y: 0 },
+      angleConfig: { angleDegrees, referenceKind: 'global-horizontal' },
+    })
+    assert.equal(target?.kind, 'angle')
+    assert.equal(target?.kind === 'angle' ? target.angleDegrees : null, angleDegrees)
+  }
+})
+
 test('a drawing anchor requires one finite vertex record with the selected ID', () => {
   const selected = { id: 'selected', x: -0, y: 12 }
   assert.deepEqual(resolveUniqueSnapAnchor([selected], selected.id), selected)
@@ -113,7 +145,7 @@ test('a drawing anchor requires one finite vertex record with the selected ID', 
   ], selected.id), undefined)
 })
 
-test('kind priority is vertex, midpoint, direction, parallel, edge, then grid', () => {
+test('kind priority is vertex, midpoint, direction, parallel, angle, edge, then grid', () => {
   const segment: SnapSegment = {
     id: 'segment',
     startVertexId: 'start',
@@ -129,21 +161,26 @@ test('kind priority is vertex, midpoint, direction, parallel, edge, then grid', 
     grid: { xValues: [0], yValues: [0] },
     anchor: { id: 'anchor', x: 1, y: 1 },
     parallelReference: { id: 'reference', x1: -2, y1: 0, x2: 2, y2: 0 },
+    angleConfig: { angleDegrees: 45, referenceKind: 'global-horizontal' } as const,
   }
 
   assert.equal(resolve({ ...common })?.kind, 'vertex')
   assert.equal(resolve({
     ...common,
-    settings: only('midpoint', 'horizontal', 'vertical', 'parallel', 'edge', 'grid'),
+    settings: only('midpoint', 'horizontal', 'vertical', 'parallel', 'angle', 'edge', 'grid'),
   })?.kind, 'midpoint')
   assert.equal(resolve({
     ...common,
-    settings: only('horizontal', 'vertical', 'parallel', 'edge', 'grid'),
+    settings: only('horizontal', 'vertical', 'parallel', 'angle', 'edge', 'grid'),
   })?.kind, 'horizontal')
   assert.equal(resolve({
     ...common,
-    settings: only('parallel', 'edge', 'grid'),
+    settings: only('parallel', 'angle', 'edge', 'grid'),
   })?.kind, 'parallel')
+  assert.equal(resolve({
+    ...common,
+    settings: only('angle', 'edge', 'grid'),
+  })?.kind, 'angle')
   assert.equal(resolve({ ...common, settings: only('edge', 'grid') })?.kind, 'edge')
   assert.equal(resolve({ ...common, settings: only('grid') })?.kind, 'grid')
 })
@@ -560,6 +597,256 @@ test('parallel snapping rejects missing, malformed, zero-length, and unrepresent
   }), null)
 })
 
+test('angle snapping projects to both horizontal-reference sides with canonical metadata', () => {
+  const common = {
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 45, referenceKind: 'global-horizontal' } as const,
+  }
+  const counterclockwise = resolve({ ...common, point: { x: 10, y: 9 } })
+  assert.ok(counterclockwise?.kind === 'angle')
+  assert.ok(Math.abs(counterclockwise.point.x - 9.5) < 1e-12)
+  assert.ok(Math.abs(counterclockwise.point.y - 9.5) < 1e-12)
+  assert.equal(counterclockwise.angleSide, 'counterclockwise')
+  assert.equal(counterclockwise.angleDegrees, 45)
+  assert.equal(counterclockwise.referenceKind, 'global-horizontal')
+  assert.equal(counterclockwise.anchorId, 'anchor')
+  assert.deepEqual(counterclockwise.anchorPoint, { x: 0, y: 0 })
+  assert.deepEqual(counterclockwise.rawPoint, { x: 10, y: 9 })
+  assert.equal(
+    counterclockwise.key,
+    'angle:["anchor","global-horizontal",45,"counterclockwise"]',
+  )
+
+  const clockwise = resolve({ ...common, point: { x: 10, y: -9 } })
+  assert.ok(clockwise?.kind === 'angle')
+  assert.ok(Math.abs(clockwise.point.x - 9.5) < 1e-12)
+  assert.ok(Math.abs(clockwise.point.y + 9.5) < 1e-12)
+  assert.equal(clockwise.angleSide, 'clockwise')
+
+  const equalDistance = resolve({ ...common, point: { x: 10, y: 0 } })
+  assert.ok(equalDistance?.kind === 'angle')
+  assert.equal(equalDistance.angleSide, 'counterclockwise')
+  assert.ok(Math.abs(equalDistance.point.x - 5) < 1e-12)
+  assert.ok(Math.abs(equalDistance.point.y - 5) < 1e-12)
+})
+
+test('angle edge-reference results are invariant under endpoint reversal', () => {
+  const common = {
+    point: { x: 9, y: 1 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 45, referenceKind: 'edge' } as const,
+  }
+  const forward = resolve({
+    ...common,
+    parallelReference: { id: 'reference', x1: -5, y1: -5, x2: 5, y2: 5 },
+  })
+  const reversed = resolve({
+    ...common,
+    parallelReference: { id: 'reference', x1: 5, y1: 5, x2: -5, y2: -5 },
+  })
+
+  assert.deepEqual(reversed, forward)
+  assert.ok(forward?.kind === 'angle' && forward.referenceKind === 'edge')
+  assert.ok(Math.abs(forward.point.x - 9) < 1e-12)
+  assert.ok(Math.abs(forward.point.y) < 1e-12)
+  assert.equal(forward.angleSide, 'clockwise')
+  assert.equal(forward.referenceEdgeId, 'reference')
+  assert.deepEqual(forward.referenceStartPoint, { x: -5, y: -5 })
+  assert.deepEqual(forward.referenceEndPoint, { x: 5, y: 5 })
+  assert.equal(
+    forward.key,
+    'angle:["anchor","edge","reference",45,"clockwise"]',
+  )
+})
+
+test('angle thresholds, side retry, 90-degree deduplication, and lower fallback are deterministic', () => {
+  const thresholdCommon = {
+    point: { x: 4, y: 10 },
+    scale: 2,
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 90, referenceKind: 'global-horizontal' } as const,
+  }
+  const atThreshold = resolve(thresholdCommon)
+  assert.ok(atThreshold?.kind === 'angle')
+  assert.ok(Math.abs(atThreshold.distancePx - 8) < 1e-12)
+  assert.equal(resolve({
+    ...thresholdCommon,
+    thresholdsPx: { angle: 7.999 },
+  }), null)
+
+  let ninetyCandidateCount = 0
+  assert.equal(resolve({
+    ...thresholdCommon,
+    accept: () => {
+      ninetyCandidateCount += 1
+      return false
+    },
+  }), null)
+  assert.equal(ninetyCandidateCount, 1)
+  assert.equal(atThreshold.angleSide, 'counterclockwise')
+
+  const tied = {
+    point: { x: 10, y: 0 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 45, referenceKind: 'global-horizontal' } as const,
+  }
+  const opposite = resolve({
+    ...tied,
+    accept: (target) => target.kind !== 'angle'
+      || target.angleSide !== 'counterclockwise',
+  })
+  assert.ok(opposite?.kind === 'angle')
+  assert.equal(opposite.angleSide, 'clockwise')
+
+  const fallbackEdge: SnapSegment = {
+    id: 'fallback',
+    startVertexId: 'bottom',
+    endVertexId: 'top',
+    x1: 10,
+    y1: -5,
+    x2: 10,
+    y2: 5,
+  }
+  assert.equal(resolve({
+    ...tied,
+    settings: only('angle', 'edge'),
+    segments: [fallbackEdge],
+    accept: (target) => target.kind !== 'angle',
+  })?.kind, 'edge')
+})
+
+test('direction and parallel targets outrank angle, which outranks edge and grid', () => {
+  const edge: SnapSegment = {
+    id: 'edge',
+    startVertexId: 'start',
+    endVertexId: 'end',
+    x1: -10,
+    y1: 0,
+    x2: 10,
+    y2: 0,
+  }
+  const common = {
+    point: { x: 4, y: 0.25 },
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    parallelReference: { id: 'reference', x1: -1, y1: 0, x2: 1, y2: 0 },
+    angleConfig: { angleDegrees: 45, referenceKind: 'global-horizontal' } as const,
+    segments: [edge],
+    grid: { xValues: [4], yValues: [0] },
+  }
+  assert.equal(resolve({
+    ...common,
+    settings: only('horizontal', 'parallel', 'angle', 'edge', 'grid'),
+  })?.kind, 'horizontal')
+  assert.equal(resolve({
+    ...common,
+    settings: only('parallel', 'angle', 'edge', 'grid'),
+  })?.kind, 'parallel')
+  assert.equal(resolve({
+    ...common,
+    settings: only('angle', 'edge', 'grid'),
+  })?.kind, 'angle')
+  assert.equal(resolve({ ...common, settings: only('edge', 'grid') })?.kind, 'edge')
+})
+
+test('angle snapping rejects invalid configuration, anchors, references, and overflow', () => {
+  const common = {
+    point: { x: 4, y: 5 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+  }
+  assert.equal(resolve(common), null)
+  for (const angleDegrees of [
+    0,
+    -1,
+    90.001,
+    Number.MIN_VALUE,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ]) {
+    assert.equal(resolve({
+      ...common,
+      angleConfig: { angleDegrees, referenceKind: 'global-horizontal' },
+    }), null)
+  }
+  assert.equal(resolve({
+    ...common,
+    angleConfig: { angleDegrees: 45, referenceKind: 'invalid' as never },
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    anchor: { id: '', x: 0, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    anchor: { id: 'nan', x: Number.NaN, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    point: { x: 0, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  }), null)
+
+  const edgeMode = {
+    ...common,
+    angleConfig: { angleDegrees: 45, referenceKind: 'edge' } as const,
+  }
+  assert.equal(resolve(edgeMode), null)
+  assert.equal(resolve({
+    ...edgeMode,
+    parallelReference: { id: '', x1: 0, y1: 0, x2: 1, y2: 0 },
+  }), null)
+  assert.equal(resolve({
+    ...edgeMode,
+    parallelReference: { id: 'zero', x1: 1, y1: 1, x2: 1, y2: 1 },
+  }), null)
+  assert.equal(resolve({
+    ...edgeMode,
+    parallelReference: { id: 'nan', x1: 0, y1: 0, x2: Number.NaN, y2: 1 },
+  }), null)
+
+  const extremeReference = resolve({
+    ...edgeMode,
+    parallelReference: {
+      id: 'extreme',
+      x1: -Number.MAX_VALUE,
+      y1: 0,
+      x2: Number.MAX_VALUE,
+      y2: 0,
+    },
+  })
+  assert.equal(extremeReference?.kind, 'angle')
+  const extremeProjection = resolve({
+    ...common,
+    point: { x: Number.MAX_VALUE, y: Number.MAX_VALUE },
+    scale: Number.MIN_VALUE,
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  })
+  assert.ok(extremeProjection?.kind === 'angle')
+  assert.ok(Number.isFinite(extremeProjection.point.x))
+  assert.ok(Number.isFinite(extremeProjection.point.y))
+  assert.deepEqual(createVertexPlacement(
+    extremeProjection.point,
+    extremeProjection,
+    [],
+  ), {
+    operation: 'add',
+    x: extremeProjection.point.x,
+    y: extremeProjection.point.y,
+  })
+  assert.equal(resolve({
+    ...common,
+    point: { x: Number.MAX_VALUE, y: 0 },
+    anchor: { id: 'anchor', x: -Number.MAX_VALUE, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  }), null)
+})
+
 test('visible grid is origin-aligned across negative coordinates', () => {
   const grid = createVisibleGrid(
     { minX: -23, minY: -12, maxX: 27, maxY: 8 },
@@ -894,6 +1181,40 @@ test('parallel-only snapping stays constant-time with 10,000 unrelated elements'
   }
   const elapsed = performance.now() - started
   assert.ok(elapsed < 2_000, `10,000 parallel queries took ${elapsed}ms`)
+})
+
+test('angle-only snapping stays constant-time with 10,000 unrelated elements', () => {
+  const vertices = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `v${index}`,
+    x: index,
+    y: -index,
+  }))
+  const segments = Array.from({ length: 10_000 }, (_, index): SnapSegment => ({
+    id: `s${index}`,
+    startVertexId: `a${index}`,
+    endVertexId: `b${index}`,
+    x1: index,
+    y1: 100,
+    x2: index + 1,
+    y2: 100,
+  }))
+  const options = {
+    point: { x: 10, y: 9 },
+    scale: 1,
+    settings: only('angle'),
+    vertices,
+    segments,
+    grid: EMPTY_GRID,
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  } satisfies ResolveSnapTargetOptions
+
+  const started = performance.now()
+  for (let query = 0; query < 10_000; query += 1) {
+    assert.equal(resolveSnapTarget(options)?.kind, 'angle')
+  }
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2_000, `10,000 angle queries took ${elapsed}ms`)
 })
 
 test('raw and grid-snapped points remain ordinary vertex additions', () => {
@@ -1307,6 +1628,325 @@ test('parallel placement rejects reference and topology ambiguity or malformed m
   ), null)
 })
 
+test('angle placement adds normally or splits one coincident edge in either orientation', () => {
+  const vertical: SnapSegment = {
+    id: 'vertical',
+    startVertexId: 'bottom',
+    endVertexId: 'top',
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 10,
+  }
+  const target = resolve({
+    point: { x: 2, y: 5 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 90, referenceKind: 'global-horizontal' },
+  })
+  assert.ok(target?.kind === 'angle')
+  assert.deepEqual(target.point, { x: 0, y: 5 })
+  assert.deepEqual(createVertexPlacement(target.point, target, []), {
+    operation: 'add',
+    x: 0,
+    y: 5,
+  })
+  assert.deepEqual(createVertexPlacement(target.point, target, [vertical]), {
+    operation: 'split-edge',
+    edgeId: 'vertical',
+    fraction: 0.5,
+  })
+
+  const reversed = {
+    ...vertical,
+    startVertexId: vertical.endVertexId,
+    endVertexId: vertical.startVertexId,
+    y1: vertical.y2,
+    y2: vertical.y1,
+  }
+  assert.deepEqual(createVertexPlacement(target.point, target, [reversed]), {
+    operation: 'split-edge',
+    edgeId: 'vertical',
+    fraction: 0.5,
+  })
+
+  const endpointTarget = resolve({
+    point: { x: 2, y: 10 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 90, referenceKind: 'global-horizontal' },
+  })
+  assert.ok(endpointTarget?.kind === 'angle')
+  assert.equal(createVertexPlacement(endpointTarget.point, endpointTarget, [vertical]), null)
+})
+
+test('edge-referenced angle placement validates canonical reference geometry before splitting', () => {
+  const reference: SnapSegment = {
+    id: 'reference',
+    startVertexId: 'reference-left',
+    endVertexId: 'reference-right',
+    x1: 100,
+    y1: 100,
+    x2: 110,
+    y2: 100,
+  }
+  const vertical: SnapSegment = {
+    id: 'vertical',
+    startVertexId: 'bottom',
+    endVertexId: 'top',
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 10,
+  }
+  const target = resolve({
+    point: { x: 2, y: 5 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 90, referenceKind: 'edge' },
+    parallelReference: reference,
+  })
+  assert.ok(target?.kind === 'angle' && target.referenceKind === 'edge')
+  assert.deepEqual(createVertexPlacement(target.point, target, [reference, vertical]), {
+    operation: 'split-edge',
+    edgeId: 'vertical',
+    fraction: 0.5,
+  })
+
+  const reversedReference = {
+    ...reference,
+    startVertexId: reference.endVertexId,
+    endVertexId: reference.startVertexId,
+    x1: reference.x2,
+    x2: reference.x1,
+  }
+  assert.deepEqual(createVertexPlacement(
+    target.point,
+    target,
+    [reversedReference, vertical],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'vertical',
+    fraction: 0.5,
+  })
+  assert.equal(createVertexPlacement(target.point, target, [vertical]), null)
+  assert.equal(createVertexPlacement(target.point, target, [
+    reference,
+    { ...reference, startVertexId: 'duplicate-a', endVertexId: 'duplicate-b' },
+    vertical,
+  ]), null)
+  assert.equal(createVertexPlacement(target.point, {
+    ...target,
+    referenceEndPoint: { x: 111, y: 100 },
+  }, [reference, vertical]), null)
+})
+
+test('angle placement rejects ambiguous topology and forged metadata without near-line mis-splits', () => {
+  const vertical: SnapSegment = {
+    id: 'vertical',
+    startVertexId: 'bottom',
+    endVertexId: 'top',
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 10,
+  }
+  const target = resolve({
+    point: { x: 2, y: 5 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: { angleDegrees: 90, referenceKind: 'global-horizontal' },
+  })
+  assert.ok(target?.kind === 'angle')
+  assert.equal(createVertexPlacement(target.point, target, [
+    vertical,
+    { ...vertical, id: 'overlap', startVertexId: 'other-bottom', endVertexId: 'other-top' },
+  ]), null)
+  assert.equal(createVertexPlacement(target.point, target, [
+    vertical,
+    { ...vertical, x1: 20, x2: 20, startVertexId: 'far-bottom', endVertexId: 'far-top' },
+  ]), null)
+
+  const malformed = [
+    { ...target, anchorId: '' },
+    { ...target, anchorPoint: { x: Number.NaN, y: 0 } },
+    { ...target, rawPoint: { x: Number.NaN, y: 5 } },
+    { ...target, rawPoint: target.anchorPoint },
+    { ...target, rawPoint: { x: 3, y: 6 } },
+    { ...target, angleDegrees: 0 },
+    { ...target, angleDegrees: 91 },
+    { ...target, angleSide: 'clockwise' as const },
+    { ...target, key: 'angle:["forged"]' },
+    { ...target, distancePx: -1 },
+    { ...target, point: { x: 0.01, y: 5 } },
+    {
+      ...target,
+      referenceEdgeId: 'forged',
+      referenceStartPoint: { x: 0, y: 0 },
+      referenceEndPoint: { x: 1, y: 0 },
+    },
+  ]
+  for (const invalid of malformed) {
+    assert.equal(createVertexPlacement(invalid.point, invalid, [vertical]), null)
+  }
+  assert.equal(createVertexPlacement({ x: 1, y: 5 }, target, [vertical]), null)
+
+  const translatedCoordinate = 1e16
+  const translatedTarget = resolve({
+    point: { x: translatedCoordinate, y: 5 },
+    settings: only('angle'),
+    anchor: { id: 'translated-anchor', x: translatedCoordinate, y: 0 },
+    angleConfig: { angleDegrees: 90, referenceKind: 'global-horizontal' },
+  })
+  assert.ok(translatedTarget?.kind === 'angle')
+  const oneUlpOffsetEdge: SnapSegment = {
+    id: 'one-ulp-offset',
+    startVertexId: 'offset-bottom',
+    endVertexId: 'offset-top',
+    x1: translatedCoordinate + 2,
+    y1: 0,
+    x2: translatedCoordinate + 2,
+    y2: 10,
+  }
+  assert.deepEqual(createVertexPlacement(
+    translatedTarget.point,
+    translatedTarget,
+    [oneUlpOffsetEdge],
+  ), {
+    operation: 'add',
+    x: translatedCoordinate,
+    y: 5,
+  })
+})
+
+test('angle side metadata is rechecked against its recalculated line', () => {
+  const target = resolve({
+    point: { x: 10, y: 9 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  })
+  assert.ok(target?.kind === 'angle')
+  assert.deepEqual(createVertexPlacement(target.point, target, []), {
+    operation: 'add',
+    x: target.point.x,
+    y: target.point.y,
+  })
+  const forgedSide = {
+    ...target,
+    angleSide: 'clockwise' as const,
+    key: 'angle:["anchor","global-horizontal",45,"clockwise"]',
+  }
+  assert.equal(createVertexPlacement(forgedSide.point, forgedSide, []), null)
+})
+
+test('100,000 seeded angle placements preserve generated splits and reject nearby lines', () => {
+  let state = 0xa11ce123
+  const random = () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+    return state / 0x1_0000_0000
+  }
+  let missingTargets = 0
+  let splitLeaks = 0
+  let nearLineMisSplits = 0
+  const splitLeakSamples: unknown[] = []
+  const started = performance.now()
+
+  for (let sample = 0; sample < 100_000; sample += 1) {
+    const useEdgeReference = sample % 2 === 1
+    const referenceRadians = useEdgeReference
+      ? -Math.PI * 0.4 + random() * Math.PI * 0.8
+      : 0
+    const angleDegrees = 15 + random() * 45
+    const angleRadians = angleDegrees * Math.PI / 180
+    const counterclockwise = random() < 0.5
+    const targetRadians = referenceRadians + (counterclockwise ? angleRadians : -angleRadians)
+    const direction = { x: Math.cos(targetRadians), y: Math.sin(targetRadians) }
+    const normal = { x: -direction.y, y: direction.x }
+    const anchor = {
+      id: 'fuzz-anchor',
+      x: (random() - 0.5) * 200_000,
+      y: (random() - 0.5) * 200_000,
+    }
+    const length = 1_000 + random() * 100_000
+    const targetEdge: SnapSegment = {
+      id: `angle-target-${sample}`,
+      startVertexId: `angle-start-${sample}`,
+      endVertexId: `angle-end-${sample}`,
+      x1: anchor.x,
+      y1: anchor.y,
+      x2: anchor.x + direction.x * length,
+      y2: anchor.y + direction.y * length,
+    }
+    const fraction = 0.1 + random() * 0.8
+    const correction = (random() - 0.5) * 12
+    const onLinePoint = {
+      x: anchor.x + direction.x * length * fraction,
+      y: anchor.y + direction.y * length * fraction,
+    }
+    const point = {
+      x: onLinePoint.x + normal.x * correction,
+      y: onLinePoint.y + normal.y * correction,
+    }
+
+    const reference: SnapSegment = {
+      id: `angle-reference-${sample}`,
+      startVertexId: `reference-start-${sample}`,
+      endVertexId: `reference-end-${sample}`,
+      x1: 0,
+      y1: 0,
+      x2: Math.cos(referenceRadians) * 100,
+      y2: Math.sin(referenceRadians) * 100,
+    }
+    const segments = useEdgeReference ? [reference, targetEdge] : [targetEdge]
+    const target = resolve({
+      point,
+      settings: only('angle'),
+      anchor,
+      angleConfig: {
+        angleDegrees,
+        referenceKind: useEdgeReference ? 'edge' : 'global-horizontal',
+      },
+      parallelReference: useEdgeReference ? reference : undefined,
+      segments,
+    })
+    if (target?.kind !== 'angle') {
+      missingTargets += 1
+      continue
+    }
+    const placement = createVertexPlacement(target.point, target, segments)
+    if (
+      placement?.operation !== 'split-edge'
+      || placement.edgeId !== targetEdge.id
+    ) {
+      splitLeaks += 1
+      if (splitLeakSamples.length < 5) {
+        splitLeakSamples.push({ sample, target, targetEdge, placement, useEdgeReference })
+      }
+    }
+
+    const nearbyRadians = targetRadians + 1e-8
+    const nearbyEdge: SnapSegment = {
+      ...targetEdge,
+      id: `nearby-${sample}`,
+      endVertexId: `nearby-end-${sample}`,
+      x2: anchor.x + Math.cos(nearbyRadians) * length,
+      y2: anchor.y + Math.sin(nearbyRadians) * length,
+    }
+    const nearbySegments = useEdgeReference ? [reference, nearbyEdge] : [nearbyEdge]
+    if (
+      createVertexPlacement(target.point, target, nearbySegments)?.operation
+      === 'split-edge'
+    ) nearLineMisSplits += 1
+  }
+
+  const elapsed = performance.now() - started
+  assert.equal(missingTargets, 0)
+  assert.equal(splitLeaks, 0, JSON.stringify(splitLeakSamples))
+  assert.equal(nearLineMisSplits, 0)
+  assert.ok(elapsed < 5_000, `100,000 angle placement fuzz cases took ${elapsed}ms`)
+})
+
 test('seeded parallel placement fuzz has no preferred-split leaks or off-line mis-splits', () => {
   let state = 0x5eed1234
   const random = () => {
@@ -1627,7 +2267,7 @@ test('T junctions expose the exact existing endpoint in every orientation', () =
   }
 })
 
-test('addition priority is T repair, vertex, proper, midpoint, direction, parallel, edge, grid', () => {
+test('addition priority is T repair, vertex, proper, midpoint, direction, parallel, angle, edge, grid', () => {
   const crossing = [
     intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
     intersectionSegment('b-edge', 'b1', 'b2', -2, 0, 2, 0),
@@ -1690,6 +2330,12 @@ test('addition priority is T repair, vertex, proper, midpoint, direction, parall
     anchor: { id: 'anchor', x: 0, y: 0 },
     parallelReference: { id: 'reference', x1: -1, y1: 0, x2: 1, y2: 0 },
   })
+  const angle = resolve({
+    point: { x: 1, y: 1 },
+    settings: only('angle'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
+  })
 
   assert.equal(
     prioritizeAdditionSnapTargets(junctionVertex, tJunction)?.classification,
@@ -1697,7 +2343,7 @@ test('addition priority is T repair, vertex, proper, midpoint, direction, parall
   )
   assert.equal(prioritizeAdditionSnapTargets(vertex, tJunction), vertex)
   assert.equal(prioritizeAdditionSnapTargets(vertex, proper), vertex)
-  for (const lowerPriority of [midpoint, direction, parallel, edge, grid]) {
+  for (const lowerPriority of [midpoint, direction, parallel, angle, edge, grid]) {
     assert.equal(
       prioritizeAdditionSnapTargets(lowerPriority, proper)?.kind,
       'intersection',

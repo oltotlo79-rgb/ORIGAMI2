@@ -267,6 +267,25 @@ button { color: inherit; }
 .chip.active { color: #0c5a73; border-color: #86b6c5; background: var(--accent-soft); }
 .chip[aria-pressed="true"] { color: #0c5a73; border-color: #86b6c5; background: var(--accent-soft); }
 .chip:disabled { opacity: .5; cursor: not-allowed; }
+.angle-snap-settings { display: grid; gap: 7px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border); }
+.angle-snap-settings h3 { margin: 0; font-size: 12px; }
+.angle-snap-field { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.angle-snap-field select, .angle-snap-field input {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  padding: 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: inherit;
+}
+.angle-input-with-unit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px; }
+.angle-reference-setting { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.angle-snap-settings p { margin: 0; line-height: 1.45; }
+.field-error { color: #a73535; font-size: 11px; }
+.angle-snap-settings input[aria-invalid="true"] { border-color: #c85c5c; }
+.angle-snap-settings select:disabled, .angle-snap-settings input:disabled { opacity: .5; cursor: not-allowed; }
 .muted { color: var(--muted); font-size: 12px; }
 
 .timeline { margin: 0 6px 6px 54px; display: grid; grid-template-columns: 205px 1fr; }
@@ -286,6 +305,9 @@ button { color: inherit; }
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }
   .panel-heading, .statusbar { background: #20282f; }
   .top-actions button, .timeline button, .chip, .step, .property-actions button, .validation-report li button, .validation-report li > span { background: #303941; }
+  .chip.active, .chip[aria-pressed="true"] { color: #d1f3ff; border-color: #75bcd2; background: #174b5d; }
+  .field-error { color: #ffb4ab; }
+  .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }
   .dialog-error { background: #4a2929; color: #f1b7b7; }
   .crease-canvas { filter: brightness(.82); }
 }

@@ -7,12 +7,13 @@ export type SnapKind =
   | 'horizontal'
   | 'vertical'
   | 'parallel'
+  | 'angle'
   | 'edge'
   | 'grid'
 
 type PointSnapKind = Exclude<SnapKind, 'intersection'>
 type DirectionSnapKind = Extract<PointSnapKind, 'horizontal' | 'vertical'>
-type OrdinaryPointSnapKind = Exclude<PointSnapKind, DirectionSnapKind | 'parallel'>
+type OrdinaryPointSnapKind = Exclude<PointSnapKind, DirectionSnapKind | 'parallel' | 'angle'>
 
 export type SnapSettings = Readonly<{
   vertex: boolean
@@ -21,6 +22,7 @@ export type SnapSettings = Readonly<{
   horizontal: boolean
   vertical: boolean
   parallel: boolean
+  angle: boolean
   edge: boolean
   grid: boolean
 }>
@@ -32,6 +34,7 @@ export const DEFAULT_SNAP_SETTINGS: SnapSettings = Object.freeze({
   horizontal: true,
   vertical: true,
   parallel: true,
+  angle: true,
   edge: true,
   grid: true,
 })
@@ -75,6 +78,29 @@ export type ParallelSnapReference = Readonly<{
   x2: number
   y2: number
 }>
+
+export type AngleSnapReferenceKind = 'global-horizontal' | 'edge'
+
+export type AngleSnapConfig = Readonly<{
+  angleDegrees: number
+  referenceKind: AngleSnapReferenceKind
+}>
+
+export const ANGLE_SNAP_PRESETS: readonly number[] = Object.freeze([
+  11.25,
+  15,
+  22.5,
+  30,
+  45,
+  60,
+  67.5,
+  90,
+])
+
+export const DEFAULT_ANGLE_SNAP_CONFIG: AngleSnapConfig = Object.freeze({
+  angleDegrees: 45,
+  referenceKind: 'global-horizontal',
+})
 
 export function resolveUniqueSnapAnchor(
   vertices: readonly SnapVertex[],
@@ -129,7 +155,36 @@ export type ParallelSnapTarget = SnapTargetBase & Readonly<{
   referenceEndPoint: SnapPoint
 }>
 
-export type SnapTarget = OrdinarySnapTarget | DirectionSnapTarget | ParallelSnapTarget
+type AngleSnapTargetBase = SnapTargetBase & Readonly<{
+  kind: 'angle'
+  sourceFraction?: never
+  anchorId: string
+  anchorPoint: SnapPoint
+  rawPoint: SnapPoint
+  angleDegrees: number
+  angleSide: 'counterclockwise' | 'clockwise'
+}>
+
+export type AngleSnapTarget = AngleSnapTargetBase & (
+  Readonly<{
+    referenceKind: 'global-horizontal'
+    referenceEdgeId?: never
+    referenceStartPoint?: never
+    referenceEndPoint?: never
+  }>
+  | Readonly<{
+    referenceKind: 'edge'
+    referenceEdgeId: string
+    referenceStartPoint: SnapPoint
+    referenceEndPoint: SnapPoint
+  }>
+)
+
+export type SnapTarget =
+  | OrdinarySnapTarget
+  | DirectionSnapTarget
+  | ParallelSnapTarget
+  | AngleSnapTarget
 
 export type AdditionSnapTarget = SnapTarget | IntersectionSnapTarget
 
@@ -151,6 +206,7 @@ export type ResolveSnapTargetOptions = Readonly<{
   grid: SnapGrid
   anchor?: SnapAnchor
   parallelReference?: ParallelSnapReference
+  angleConfig?: AngleSnapConfig
   excludedVertexId?: string
   accept?: (target: SnapTarget) => boolean
   thresholdsPx?: SnapThresholdsPx
@@ -167,6 +223,7 @@ const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
   horizontal: 8,
   vertical: 8,
   parallel: 8,
+  angle: 8,
   edge: 7,
   grid: 7,
 })
@@ -220,6 +277,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
     && !settings.horizontal
     && !settings.vertical
     && !settings.parallel
+    && !settings.angle
     && !settings.edge
     && !settings.grid
   ) return null
@@ -279,6 +337,11 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
   if (settings.parallel) {
     const target = parallelSnapTarget(options)
     if (target && (!options.accept || options.accept(target))) return target
+  }
+
+  if (settings.angle) {
+    const target = angleSnapTarget(options)
+    if (target) return target
   }
 
   if (settings.edge) {
@@ -607,6 +670,194 @@ function parallelSnapTarget(options: ResolveSnapTargetOptions): ParallelSnapTarg
   }
 }
 
+function angleSnapTarget(options: ResolveSnapTargetOptions): AngleSnapTarget | null {
+  const anchor = options.anchor
+  const config = options.angleConfig
+  if (
+    !anchor
+    || typeof anchor.id !== 'string'
+    || anchor.id.length === 0
+    || !isFinitePoint(anchor)
+    || !config
+    || !Number.isFinite(config.angleDegrees)
+    || config.angleDegrees <= 0
+    || config.angleDegrees > 90
+    || (config.referenceKind !== 'global-horizontal' && config.referenceKind !== 'edge')
+    || (options.point.x === anchor.x && options.point.y === anchor.y)
+  ) return null
+
+  let referenceMetadata:
+    | Readonly<{
+      referenceKind: 'global-horizontal'
+    }>
+    | Readonly<{
+      referenceKind: 'edge'
+      referenceEdgeId: string
+      referenceStartPoint: SnapPoint
+      referenceEndPoint: SnapPoint
+    }>
+  let baseDirection: SnapPoint
+  if (config.referenceKind === 'global-horizontal') {
+    referenceMetadata = { referenceKind: 'global-horizontal' }
+    baseDirection = { x: 1, y: 0 }
+  } else {
+    const reference = options.parallelReference
+    if (
+      !reference
+      || typeof reference.id !== 'string'
+      || reference.id.length === 0
+    ) return null
+    const endpoints = canonicalReferenceEndpoints(reference)
+    if (!endpoints) return null
+    const direction = stableUnitDirection(endpoints.start, endpoints.end)
+    if (!direction) return null
+    referenceMetadata = {
+      referenceKind: 'edge',
+      referenceEdgeId: reference.id,
+      referenceStartPoint: endpoints.start,
+      referenceEndPoint: endpoints.end,
+    }
+    baseDirection = direction
+  }
+
+  const angleDegrees = normalizeZero(config.angleDegrees)
+  const angleRadians = angleDegrees * Math.PI / 180
+  const cosine = angleDegrees === 90 ? 0 : Math.cos(angleRadians)
+  const sine = angleDegrees === 90 ? 1 : Math.sin(angleRadians)
+  if (
+    ![angleRadians, cosine, sine].every(Number.isFinite)
+    || angleRadians <= 0
+    || sine <= 0
+  ) return null
+
+  const sides: readonly AngleSnapTarget['angleSide'][] = angleDegrees === 90
+    ? ['counterclockwise']
+    : ['counterclockwise', 'clockwise']
+  const candidates: RankedTarget[] = []
+  for (const angleSide of sides) {
+    const direction = rotatedUnitDirection(baseDirection, cosine, sine, angleSide)
+    if (!direction) continue
+    const projection = projectOntoAnchoredDirection(options.point, anchor, direction)
+    if (
+      !projection
+      || (projection.point.x === anchor.x && projection.point.y === anchor.y)
+    ) continue
+    const distancePx = projection.modelDistance * options.scale
+    if (
+      !Number.isFinite(distancePx)
+      || distancePx > thresholdFor('angle', options.thresholdsPx)
+    ) continue
+
+    const target: AngleSnapTarget = {
+      key: angleKey(
+        anchor.id,
+        referenceMetadata.referenceKind,
+        angleDegrees,
+        angleSide,
+        referenceMetadata.referenceKind === 'edge'
+          ? referenceMetadata.referenceEdgeId
+          : undefined,
+      ),
+      kind: 'angle',
+      point: projection.point,
+      distancePx,
+      anchorId: anchor.id,
+      anchorPoint: {
+        x: normalizeZero(anchor.x),
+        y: normalizeZero(anchor.y),
+      },
+      rawPoint: {
+        x: normalizeZero(options.point.x),
+        y: normalizeZero(options.point.y),
+      },
+      angleDegrees,
+      angleSide,
+      ...referenceMetadata,
+    }
+    candidates.push({ target, modelDistance: projection.modelDistance })
+  }
+
+  candidates.sort((first, second) => {
+    if (first.modelDistance < second.modelDistance) return -1
+    if (first.modelDistance > second.modelDistance) return 1
+    const firstSide = (first.target as AngleSnapTarget).angleSide
+    const secondSide = (second.target as AngleSnapTarget).angleSide
+    if (firstSide === secondSide) return 0
+    return firstSide === 'counterclockwise' ? -1 : 1
+  })
+  for (const candidate of candidates) {
+    if (!options.accept || options.accept(candidate.target)) return candidate.target as AngleSnapTarget
+  }
+  return null
+}
+
+function rotatedUnitDirection(
+  base: SnapPoint,
+  cosine: number,
+  sine: number,
+  side: AngleSnapTarget['angleSide'],
+) {
+  const signedSine = side === 'counterclockwise' ? sine : -sine
+  const x = base.x * cosine - base.y * signedSine
+  const y = base.x * signedSine + base.y * cosine
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  const length = Math.hypot(x, y)
+  if (!Number.isFinite(length) || length <= 0) return null
+  const unitX = x / length
+  const unitY = y / length
+  return Number.isFinite(unitX) && Number.isFinite(unitY)
+    ? { x: unitX, y: unitY }
+    : null
+}
+
+function projectOntoAnchoredDirection(
+  point: SnapPoint,
+  anchor: SnapPoint,
+  direction: SnapPoint,
+) {
+  // Keep the operation order in sync with vertexPlacement.ts: rawPoint lets
+  // placement re-run this projection exactly without a world-coordinate epsilon.
+  const offset = stableNormalizedDifference(anchor, point)
+  if (!offset) return null
+  const firstTerm = offset.x * direction.x
+  const secondTerm = offset.y * direction.y
+  const normalizedFactor = firstTerm + secondTerm
+  if (![firstTerm, secondTerm, normalizedFactor].every(Number.isFinite)) return null
+  const normalizedProjectedOffsetX = normalizedFactor * direction.x
+  const normalizedProjectedOffsetY = normalizedFactor * direction.y
+  if (
+    !Number.isFinite(normalizedProjectedOffsetX)
+    || !Number.isFinite(normalizedProjectedOffsetY)
+  ) return null
+  const projectedOffsetX = normalizedProjectedOffsetX * offset.scale
+  const projectedOffsetY = normalizedProjectedOffsetY * offset.scale
+  if (!Number.isFinite(projectedOffsetX) || !Number.isFinite(projectedOffsetY)) return null
+  const projectedX = normalizeZero(anchor.x + projectedOffsetX)
+  const projectedY = normalizeZero(anchor.y + projectedOffsetY)
+  if (!Number.isFinite(projectedX) || !Number.isFinite(projectedY)) return null
+
+  const correctionX = projectedX - point.x
+  const correctionY = projectedY - point.y
+  if (!Number.isFinite(correctionX) || !Number.isFinite(correctionY)) return null
+  const modelDistance = stableHypot(correctionX, correctionY)
+  if (!Number.isFinite(modelDistance)) return null
+  return {
+    point: { x: projectedX, y: projectedY },
+    modelDistance,
+  }
+}
+
+function stableNormalizedDifference(start: SnapPoint, end: SnapPoint) {
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null
+  const scale = Math.max(Math.abs(dx), Math.abs(dy))
+  if (!Number.isFinite(scale) || scale <= 0) return null
+  const x = dx / scale
+  const y = dy / scale
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y, scale } : null
+}
+
 function canonicalReferenceEndpoints(reference: ParallelSnapReference) {
   if (![reference.x1, reference.y1, reference.x2, reference.y2].every(Number.isFinite)) {
     return null
@@ -640,6 +891,16 @@ function stableDirectionComponents(start: SnapPoint, end: SnapPoint) {
   return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
 }
 
+function stableUnitDirection(start: SnapPoint, end: SnapPoint) {
+  const direction = stableDirectionComponents(start, end)
+  if (!direction) return null
+  const length = Math.hypot(direction.x, direction.y)
+  if (!Number.isFinite(length) || length <= 0) return null
+  const x = direction.x / length
+  const y = direction.y / length
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+}
+
 function stableHypot(x: number, y: number) {
   const maximumComponent = Math.max(Math.abs(x), Math.abs(y))
   if (!Number.isFinite(maximumComponent)) return Number.POSITIVE_INFINITY
@@ -655,6 +916,29 @@ function comparePoints(first: SnapPoint, second: SnapPoint) {
 
 function parallelKey(anchorId: string, referenceEdgeId: string) {
   return `parallel:${JSON.stringify([anchorId, referenceEdgeId])}`
+}
+
+function angleKey(
+  anchorId: string,
+  referenceKind: AngleSnapReferenceKind,
+  angleDegrees: number,
+  angleSide: AngleSnapTarget['angleSide'],
+  referenceEdgeId?: string,
+) {
+  return referenceKind === 'edge'
+    ? `angle:${JSON.stringify([
+      anchorId,
+      referenceKind,
+      referenceEdgeId,
+      normalizeZero(angleDegrees),
+      angleSide,
+    ])}`
+    : `angle:${JSON.stringify([
+      anchorId,
+      referenceKind,
+      normalizeZero(angleDegrees),
+      angleSide,
+    ])}`
 }
 
 function nearestGridTarget(options: ResolveSnapTargetOptions, thresholdPx: number) {

@@ -35,8 +35,12 @@ import {
   validateProject,
 } from './lib/coreClient'
 import {
+  ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
+  DEFAULT_ANGLE_SNAP_CONFIG,
   toggleSnapSetting,
+  type AngleSnapConfig,
+  type AngleSnapReferenceKind,
   type SnapSettings,
 } from './lib/snap'
 import type { VertexPlacement } from './lib/vertexPlacement'
@@ -51,6 +55,7 @@ const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> =
   { kind: 'horizontal', label: '水平' },
   { kind: 'vertical', label: '垂直' },
   { kind: 'parallel', label: '平行' },
+  { kind: 'angle', label: '角度' },
 ]
 
 function App() {
@@ -71,11 +76,19 @@ function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectError, setNewProjectError] = useState<string | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
+  const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
+  const [angleDegreesInput, setAngleDegreesInput] = useState(
+    String(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees),
+  )
+  const [angleReferenceKind, setAngleReferenceKind] = useState<AngleSnapReferenceKind>(
+    DEFAULT_ANGLE_SNAP_CONFIG.referenceKind,
+  )
   const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
     ...DEFAULT_SNAP_SETTINGS,
   }))
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
+  const angleInputRef = useRef<HTMLInputElement>(null)
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
     latestSnapshotRef.current = snapshot
     setNativeSnapshot(snapshot)
@@ -125,6 +138,19 @@ function App() {
     () => resolveUniqueParallelReference(nativeLines, parallelReferenceEdgeId),
     [nativeLines, parallelReferenceEdgeId],
   )
+  const angleSnapConfig = useMemo<AngleSnapConfig>(() => ({
+    angleDegrees,
+    referenceKind: angleReferenceKind,
+  }), [angleDegrees, angleReferenceKind])
+  const parsedAngleInput = Number(angleDegreesInput)
+  const angleInputIsValid = angleDegreesInput.trim().length > 0
+    && Number.isFinite(parsedAngleInput)
+    && parsedAngleInput > 0
+    && parsedAngleInput <= 90
+  const selectedAnglePreset = angleInputIsValid
+    && ANGLE_SNAP_PRESETS.some((preset) => preset === parsedAngleInput)
+    ? String(parsedAngleInput)
+    : 'custom'
   const selectedLineMeasurement = selectedLine ? measureCreaseLine(selectedLine) : null
   const selectedVertex = useMemo(
     () => nativeSnapshot?.crease_pattern.vertices.find(
@@ -844,6 +870,7 @@ function App() {
               measurementLabel={formatLineMeasurementLabel(selectedLineMeasurement)}
               snapSettings={snapSettings}
               parallelReference={parallelReferenceLine}
+              angleConfig={angleSnapConfig}
               cancelInteractionToken={cancelInteractionToken}
               disabled={coreBusy}
               onSelectLine={(lineId) => {
@@ -918,8 +945,8 @@ function App() {
                     ))}
                   >
                     {parallelReferenceEdgeId === selectedLine.id
-                      ? '平行参照を解除'
-                      : '平行参照に設定'}
+                      ? '方向参照を解除'
+                      : '方向参照に設定'}
                   </button>
                   {selectedLine.kind === 'boundary' ? (
                     <button
@@ -1171,10 +1198,100 @@ function App() {
                 </button>
               ))}
             </div>
+            <div className="angle-snap-settings">
+              <h3>角度スナップ</h3>
+              <label className="angle-snap-field">
+                <span>プリセット</span>
+                <select
+                  value={selectedAnglePreset}
+                  disabled={coreBusy}
+                  onChange={(event) => {
+                    if (event.target.value === 'custom') {
+                      angleInputRef.current?.focus()
+                      angleInputRef.current?.select()
+                      return
+                    }
+                    const nextDegrees = Number(event.target.value)
+                    setAngleDegrees(nextDegrees)
+                    setAngleDegreesInput(String(nextDegrees))
+                  }}
+                >
+                  {ANGLE_SNAP_PRESETS.map((preset) => (
+                    <option key={preset} value={preset}>{preset}°</option>
+                  ))}
+                  <option value="custom">任意角</option>
+                </select>
+              </label>
+              <label className="angle-snap-field">
+                <span>角度</span>
+                <span className="angle-input-with-unit">
+                  <input
+                    ref={angleInputRef}
+                    type="number"
+                    min="0"
+                    max="90"
+                    step="any"
+                    value={angleDegreesInput}
+                    disabled={coreBusy}
+                    aria-invalid={!angleInputIsValid}
+                    aria-describedby={!angleInputIsValid ? 'angle-snap-error' : undefined}
+                    onChange={(event) => {
+                      const nextInput = event.target.value
+                      const nextDegrees = Number(nextInput)
+                      setAngleDegreesInput(nextInput)
+                      if (
+                        nextInput.trim().length > 0
+                        && Number.isFinite(nextDegrees)
+                        && nextDegrees > 0
+                        && nextDegrees <= 90
+                      ) setAngleDegrees(nextDegrees)
+                    }}
+                  />
+                  <span>°</span>
+                </span>
+              </label>
+              {!angleInputIsValid && (
+                <p id="angle-snap-error" className="field-error" role="alert">
+                  角度は0より大きく90以下で入力してください。最後の正常値を使用します。
+                </p>
+              )}
+              <div className="angle-reference-setting">
+                <span>基準</span>
+                <div className="chip-row" role="group" aria-label="角度スナップの基準">
+                  <button
+                    type="button"
+                    className={`chip${angleReferenceKind === 'global-horizontal' ? ' active' : ''}`}
+                    aria-pressed={angleReferenceKind === 'global-horizontal'}
+                    disabled={coreBusy}
+                    onClick={() => setAngleReferenceKind('global-horizontal')}
+                  >
+                    水平
+                  </button>
+                  <button
+                    type="button"
+                    className={`chip${angleReferenceKind === 'edge' ? ' active' : ''}`}
+                    aria-pressed={angleReferenceKind === 'edge'}
+                    disabled={coreBusy}
+                    onClick={() => setAngleReferenceKind('edge')}
+                  >
+                    方向参照辺
+                  </button>
+                </div>
+              </div>
+              <p className="muted">
+                現在: {formatAngleDegrees(angleDegrees)}°・
+                {angleReferenceKind === 'global-horizontal' ? '水平基準' : '方向参照辺基準'}
+              </p>
+              {snapSettings.angle && angleReferenceKind === 'edge' && !parallelReferenceLine && (
+                <p className="field-error" role="status">
+                  線を選択して方向参照に設定してください。暗黙に水平基準へは切り替えません。
+                </p>
+              )}
+            </div>
             {parallelReferenceLine ? (
               <div className="property-actions">
                 <span className="muted" title={parallelReferenceLine.id}>
-                  平行参照: {lineKindLabel(parallelReferenceLine.kind)}
+                  方向参照（平行・角度）: {lineKindLabel(parallelReferenceLine.kind)}
                 </span>
                 <button
                   type="button"
@@ -1185,7 +1302,9 @@ function App() {
                 </button>
               </div>
             ) : (
-              <p className="muted">線を選択して「平行参照に設定」を押すと、平行スナップを使えます。</p>
+              <p className="muted">
+                線を選択して「方向参照に設定」を押すと、平行・角度スナップの基準にできます。
+              </p>
             )}
           </section>
         </aside>
@@ -1568,6 +1687,12 @@ function formatMeasurementValue(
   if (typeof value !== 'number' || !Number.isFinite(value)) return '計測不可'
   const normalized = Object.is(value, -0) ? 0 : value
   return `${normalized.toLocaleString('ja-JP', { maximumFractionDigits })}${unit}`
+}
+
+function formatAngleDegrees(value: number) {
+  if (!Number.isFinite(value)) return '—'
+  if (value !== 0 && Math.abs(value) < 0.000001) return value.toExponential(3)
+  return String(Number(value.toFixed(6)))
 }
 
 function formatLineMeasurementLabel(measurement: LineMeasurement | null) {

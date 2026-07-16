@@ -57,6 +57,11 @@ pub enum Command {
         first_new_edge: EdgeId,
         second_new_edge: EdgeId,
     },
+    ConnectTJunction {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+        new_edge: EdgeId,
+    },
     SplitBoundaryEdge {
         edge: EdgeId,
         new_vertex: VertexId,
@@ -224,6 +229,22 @@ pub enum CommandError {
     EdgeIntersectionNotProper,
     #[error("edge intersection position is already occupied by vertex {vertex:?}")]
     EdgeIntersectionPositionOccupied { vertex: VertexId },
+    #[error("the two T-junction edge IDs must be different")]
+    TJunctionTargetsNotDistinct,
+    #[error("T-junction target edge ID {edge:?} occurs more than once")]
+    TJunctionTargetEdgeIdAmbiguous { edge: EdgeId },
+    #[error("T-junction edge {0:?} must not be a boundary edge")]
+    TJunctionBoundaryEdge(EdgeId),
+    #[error("T-junction edge {edge:?} endpoint {vertex:?} has more than one vertex record")]
+    TJunctionEndpointVertexRecordAmbiguous { edge: EdgeId, vertex: VertexId },
+    #[error("T-junction edge {edge:?} endpoint {vertex:?} has a non-finite position")]
+    TJunctionEndpointPositionNotFinite { edge: EdgeId, vertex: VertexId },
+    #[error("T-junction geometry cannot be represented with finite coordinates")]
+    TJunctionGeometryNotRepresentable,
+    #[error("the selected edges do not form exactly one strict T-junction")]
+    NotTJunction,
+    #[error("T-junction position is also occupied by distinct vertex {vertex:?}")]
+    TJunctionPositionOccupied { vertex: VertexId },
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +296,14 @@ enum Inverse {
         new_vertex_index: usize,
         new_vertex: Vertex,
     },
+    RestoreTJunction {
+        original_edge_index: usize,
+        original_edge: Edge,
+        new_edge_index: usize,
+        new_edge: Edge,
+        changed_vertices: [VertexId; 4],
+        changed_edges: [EdgeId; 3],
+    },
     RestoreBoundaryVertexRemoval {
         boundary_index: usize,
         vertex_index: usize,
@@ -320,6 +349,20 @@ const fn orientations_are_opposite(first: Orientation, second: Orientation) -> b
         (Orientation::Clockwise, Orientation::CounterClockwise)
             | (Orientation::CounterClockwise, Orientation::Clockwise)
     )
+}
+
+fn point_is_strictly_inside_segment(
+    point: Point2,
+    start: Point2,
+    end: Point2,
+) -> Result<bool, GeometryError> {
+    if point == start || point == end || orientation(start, end, point)? != Orientation::Collinear {
+        return Ok(false);
+    }
+    Ok(point.x >= start.x.min(end.x)
+        && point.x <= start.x.max(end.x)
+        && point.y >= start.y.min(end.y)
+        && point.y <= start.y.max(end.y))
 }
 
 fn apply_boundary_vertex_removal(
@@ -571,6 +614,11 @@ impl EditorState {
                 first_new_edge,
                 second_new_edge,
             ),
+            Command::ConnectTJunction {
+                first_edge,
+                second_edge,
+                new_edge,
+            } => self.connect_t_junction(first_edge, second_edge, new_edge),
             Command::SplitBoundaryEdge {
                 edge,
                 new_vertex,
@@ -1052,6 +1100,161 @@ impl EditorState {
             ],
             new_vertex_index,
             new_vertex,
+        })
+    }
+
+    fn connect_t_junction(
+        &mut self,
+        first_edge_id: EdgeId,
+        second_edge_id: EdgeId,
+        new_edge_id: EdgeId,
+    ) -> Result<Inverse, CommandError> {
+        if first_edge_id == second_edge_id {
+            return Err(CommandError::TJunctionTargetsNotDistinct);
+        }
+        if self.edge_index(new_edge_id).is_some() {
+            return Err(CommandError::EdgeAlreadyExists(new_edge_id));
+        }
+
+        let unique_target = |edge_id| {
+            let mut matches = self
+                .pattern
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| edge.id == edge_id);
+            let Some((index, edge)) = matches.next() else {
+                return Err(CommandError::EdgeNotFound(edge_id));
+            };
+            if matches.next().is_some() {
+                return Err(CommandError::TJunctionTargetEdgeIdAmbiguous { edge: edge_id });
+            }
+            Ok((index, edge.clone()))
+        };
+        let (first_edge_index, first_edge) = unique_target(first_edge_id)?;
+        let (second_edge_index, second_edge) = unique_target(second_edge_id)?;
+        for edge in [&first_edge, &second_edge] {
+            if edge.kind == EdgeKind::Boundary {
+                return Err(CommandError::TJunctionBoundaryEdge(edge.id));
+            }
+        }
+
+        let unique_endpoint_position = |edge: &Edge, vertex_id| {
+            let mut matches = self
+                .pattern
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.id == vertex_id);
+            let Some(vertex) = matches.next() else {
+                return Err(CommandError::VertexNotFound(vertex_id));
+            };
+            if matches.next().is_some() {
+                return Err(CommandError::TJunctionEndpointVertexRecordAmbiguous {
+                    edge: edge.id,
+                    vertex: vertex_id,
+                });
+            }
+            if !vertex.position.x.is_finite() || !vertex.position.y.is_finite() {
+                return Err(CommandError::TJunctionEndpointPositionNotFinite {
+                    edge: edge.id,
+                    vertex: vertex_id,
+                });
+            }
+            Ok(vertex.position)
+        };
+        let first_start = unique_endpoint_position(&first_edge, first_edge.start)?;
+        let first_end = unique_endpoint_position(&first_edge, first_edge.end)?;
+        let second_start = unique_endpoint_position(&second_edge, second_edge.start)?;
+        let second_end = unique_endpoint_position(&second_edge, second_edge.end)?;
+
+        match segment_intersection(first_start, first_end, second_start, second_end) {
+            Ok(SegmentIntersection::Point(_)) => {}
+            Ok(SegmentIntersection::None | SegmentIntersection::CollinearOverlap) => {
+                return Err(CommandError::NotTJunction);
+            }
+            Err(GeometryError::NonFinitePoint { .. } | GeometryError::ArithmeticOverflow) => {
+                return Err(CommandError::TJunctionGeometryNotRepresentable);
+            }
+        }
+
+        let mut candidates = Vec::with_capacity(2);
+        for (junction_vertex, junction_position) in
+            [(first_edge.start, first_start), (first_edge.end, first_end)]
+        {
+            if point_is_strictly_inside_segment(junction_position, second_start, second_end)
+                .map_err(|_| CommandError::TJunctionGeometryNotRepresentable)?
+            {
+                candidates.push((
+                    junction_vertex,
+                    junction_position,
+                    second_edge_index,
+                    second_edge.clone(),
+                ));
+            }
+        }
+        for (junction_vertex, junction_position) in [
+            (second_edge.start, second_start),
+            (second_edge.end, second_end),
+        ] {
+            if point_is_strictly_inside_segment(junction_position, first_start, first_end)
+                .map_err(|_| CommandError::TJunctionGeometryNotRepresentable)?
+            {
+                candidates.push((
+                    junction_vertex,
+                    junction_position,
+                    first_edge_index,
+                    first_edge.clone(),
+                ));
+            }
+        }
+        let [candidate] = candidates.as_slice() else {
+            return Err(CommandError::NotTJunction);
+        };
+        let (junction_vertex, junction_position, interior_edge_index, interior_edge) = candidate;
+        if let Some(vertex) =
+            self.pattern.vertices.iter().find(|vertex| {
+                vertex.id != *junction_vertex && vertex.position == *junction_position
+            })
+        {
+            return Err(CommandError::TJunctionPositionOccupied { vertex: vertex.id });
+        }
+
+        let mut ordered_targets = [
+            (first_edge_index, &first_edge),
+            (second_edge_index, &second_edge),
+        ];
+        ordered_targets.sort_by_key(|(index, _)| *index);
+        let changed_vertices = [
+            ordered_targets[0].1.start,
+            ordered_targets[0].1.end,
+            ordered_targets[1].1.start,
+            ordered_targets[1].1.end,
+        ];
+        let changed_edges = [
+            ordered_targets[0].1.id,
+            ordered_targets[1].1.id,
+            new_edge_id,
+        ];
+        let original_edge_index = *interior_edge_index;
+        let original_edge = interior_edge.clone();
+        let new_edge_index = original_edge_index + 1;
+        let new_edge = Edge {
+            id: new_edge_id,
+            start: *junction_vertex,
+            end: original_edge.end,
+            kind: original_edge.kind,
+        };
+
+        self.pattern.edges[original_edge_index].end = *junction_vertex;
+        self.pattern.edges.insert(new_edge_index, new_edge.clone());
+
+        Ok(Inverse::RestoreTJunction {
+            original_edge_index,
+            original_edge,
+            new_edge_index,
+            new_edge,
+            changed_vertices,
+            changed_edges,
         })
     }
 
@@ -1593,6 +1796,27 @@ impl EditorState {
                 );
                 self.pattern.vertices.remove(*new_vertex_index);
             }
+            Inverse::RestoreTJunction {
+                original_edge_index,
+                original_edge,
+                new_edge_index,
+                new_edge,
+                ..
+            } => {
+                debug_assert_eq!(
+                    self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
+                    Some(new_edge.id)
+                );
+                self.pattern.edges.remove(*new_edge_index);
+                debug_assert_eq!(
+                    self.pattern
+                        .edges
+                        .get(*original_edge_index)
+                        .map(|edge| edge.id),
+                    Some(original_edge.id)
+                );
+                self.pattern.edges[*original_edge_index] = original_edge.clone();
+            }
             Inverse::RestoreBoundaryVertexRemoval {
                 boundary_index,
                 vertex_index,
@@ -1757,6 +1981,38 @@ impl Command {
                     settings: false,
                 }
             }
+            Self::ConnectTJunction {
+                first_edge,
+                second_edge,
+                new_edge,
+            } => {
+                let mut targets = [
+                    pattern
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .find(|(_, edge)| edge.id == first_edge),
+                    pattern
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .find(|(_, edge)| edge.id == second_edge),
+                ];
+                targets.sort_by_key(|entry| entry.map_or(usize::MAX, |(index, _)| index));
+                let mut vertices = Vec::with_capacity(4);
+                let mut edges = Vec::with_capacity(3);
+                for (_, edge) in targets.into_iter().flatten() {
+                    vertices.push(edge.start);
+                    vertices.push(edge.end);
+                    edges.push(edge.id);
+                }
+                edges.push(new_edge);
+                Changes {
+                    vertices,
+                    edges,
+                    settings: false,
+                }
+            }
             Self::SplitBoundaryEdge {
                 edge,
                 new_vertex,
@@ -1879,6 +2135,15 @@ impl Inverse {
                     settings: false,
                 }
             }
+            Self::RestoreTJunction {
+                changed_vertices,
+                changed_edges,
+                ..
+            } => Changes {
+                vertices: changed_vertices.to_vec(),
+                edges: changed_edges.to_vec(),
+                settings: false,
+            },
             Self::RestoreBoundaryVertexRemoval {
                 vertex,
                 kept_edge,
@@ -2073,6 +2338,63 @@ mod tests {
         (editor, first, second)
     }
 
+    fn t_junction_editor() -> (EditorState, CreasePattern, Paper, Edge, Edge, Edge) {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, true)
+            .expect("valid T-junction test sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        let interior_start = VertexId::new();
+        let interior_end = VertexId::new();
+        let stem_other = VertexId::new();
+        let junction = VertexId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: interior_start,
+                position: Point2::new(20.0, 50.0),
+            },
+            Vertex {
+                id: interior_end,
+                position: Point2::new(80.0, 50.0),
+            },
+            Vertex {
+                id: stem_other,
+                position: Point2::new(32.0, 20.0),
+            },
+            Vertex {
+                id: junction,
+                position: Point2::new(32.0, 50.0),
+            },
+        ]);
+        let interior = Edge {
+            id: EdgeId::new(),
+            start: interior_start,
+            end: interior_end,
+            kind: EdgeKind::Cut,
+        };
+        let unrelated = Edge {
+            id: EdgeId::new(),
+            start: interior_start,
+            end: stem_other,
+            kind: EdgeKind::Mountain,
+        };
+        let stem = Edge {
+            id: EdgeId::new(),
+            start: junction,
+            end: stem_other,
+            kind: EdgeKind::Auxiliary,
+        };
+        pattern
+            .edges
+            .extend([interior.clone(), unrelated.clone(), stem.clone()]);
+        (
+            EditorState::with_paper(pattern.clone(), paper.clone()),
+            pattern,
+            paper,
+            interior,
+            stem,
+            unrelated,
+        )
+    }
+
     fn collinear_after_removal_editor() -> (EditorState, CreasePattern, Paper, VertexId) {
         let previous = VertexId::new();
         let target = VertexId::new();
@@ -2162,6 +2484,26 @@ mod tests {
         let error = editor
             .execute(revision, command)
             .expect_err("edge intersection connection must fail");
+
+        assert_eq!(error, expected);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), revision);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    fn assert_t_junction_rejected(
+        editor: &mut EditorState,
+        command: Command,
+        expected: CommandError,
+    ) {
+        let pattern = editor.pattern().clone();
+        let paper = editor.paper().clone();
+        let revision = editor.revision();
+        let error = editor
+            .execute(revision, command)
+            .expect_err("T-junction connection must fail");
 
         assert_eq!(error, expected);
         assert_eq!(editor.pattern(), &pattern);
@@ -3917,6 +4259,400 @@ mod tests {
             error,
             CommandError::RevisionConflict {
                 expected: 9,
+                actual: 0,
+            }
+        );
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn t_junction_connection_reuses_endpoint_and_restores_nonadjacent_edges_exactly() {
+        let (mut editor, original_pattern, original_paper, interior, stem, unrelated) =
+            t_junction_editor();
+        let interior_index = original_pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == interior.id)
+            .expect("interior edge");
+        let unrelated_index = original_pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == unrelated.id)
+            .expect("unrelated edge");
+        let stem_index = original_pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == stem.id)
+            .expect("stem edge");
+        assert_eq!(unrelated_index, interior_index + 1);
+        assert_eq!(stem_index, interior_index + 2);
+        assert!(!validate_crease_pattern(&original_pattern).is_valid());
+        let original_vertex_count = original_pattern.vertices.len();
+        let new_edge = EdgeId::new();
+
+        // Reverse argument order: classification and document ordering must
+        // not depend on which target the caller names first.
+        let result = editor
+            .execute(
+                0,
+                Command::ConnectTJunction {
+                    first_edge: stem.id,
+                    second_edge: interior.id,
+                    new_edge,
+                },
+            )
+            .expect("connect strict asymmetric T-junction");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(
+            result.changed_vertices,
+            vec![interior.start, interior.end, stem.start, stem.end]
+        );
+        assert_eq!(result.changed_edges, vec![interior.id, stem.id, new_edge]);
+        assert!(!result.settings_changed);
+        assert_eq!(editor.paper(), &original_paper);
+        assert_eq!(editor.pattern().vertices.len(), original_vertex_count);
+        assert_eq!(editor.pattern().vertices, original_pattern.vertices);
+        assert_eq!(
+            editor.pattern().edges[interior_index],
+            Edge {
+                end: stem.start,
+                ..interior.clone()
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[interior_index + 1],
+            Edge {
+                id: new_edge,
+                start: stem.start,
+                end: interior.end,
+                kind: EdgeKind::Cut,
+            }
+        );
+        assert_eq!(editor.pattern().edges[unrelated_index + 1], unrelated);
+        assert_eq!(editor.pattern().edges[stem_index + 1], stem);
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+
+        let undo = editor.undo(1).expect("undo T-junction connection");
+        assert_eq!(undo.revision, 2);
+        assert_eq!(undo.changed_vertices, result.changed_vertices);
+        assert_eq!(undo.changed_edges, result.changed_edges);
+        assert!(!undo.settings_changed);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo T-junction connection");
+        assert_eq!(redo.revision, 3);
+        assert_eq!(redo.changed_vertices, result.changed_vertices);
+        assert_eq!(redo.changed_edges, result.changed_edges);
+        assert!(!redo.settings_changed);
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn t_junction_classifies_second_edge_endpoints_with_both_stem_orientations() {
+        for (junction_is_stem_start, reverse_interior, interior_kind, stem_kind) in [
+            (true, false, EdgeKind::Mountain, EdgeKind::Valley),
+            (false, true, EdgeKind::Cut, EdgeKind::Auxiliary),
+        ] {
+            let left = VertexId::new();
+            let right = VertexId::new();
+            let junction = VertexId::new();
+            let stem_other = VertexId::new();
+            let vertices = vec![
+                Vertex {
+                    id: left,
+                    position: Point2::new(0.0, 3.0),
+                },
+                Vertex {
+                    id: right,
+                    position: Point2::new(10.0, 3.0),
+                },
+                Vertex {
+                    id: junction,
+                    position: Point2::new(3.0, 3.0),
+                },
+                Vertex {
+                    id: stem_other,
+                    position: Point2::new(3.0, 8.0),
+                },
+            ];
+            let interior = Edge {
+                id: EdgeId::new(),
+                start: if reverse_interior { right } else { left },
+                end: if reverse_interior { left } else { right },
+                kind: interior_kind,
+            };
+            let spacer = Edge {
+                id: EdgeId::new(),
+                start: left,
+                end: stem_other,
+                kind: EdgeKind::Mountain,
+            };
+            let stem = Edge {
+                id: EdgeId::new(),
+                start: if junction_is_stem_start {
+                    junction
+                } else {
+                    stem_other
+                },
+                end: if junction_is_stem_start {
+                    stem_other
+                } else {
+                    junction
+                },
+                kind: stem_kind,
+            };
+            let original_pattern = CreasePattern {
+                vertices,
+                edges: vec![interior.clone(), spacer.clone(), stem.clone()],
+            };
+            let mut editor = EditorState::new(original_pattern.clone());
+            let new_edge = EdgeId::new();
+
+            // The stem is deliberately the second command target, so this
+            // exercises the second-edge endpoint-on-first-edge classifier.
+            let result = editor
+                .execute(
+                    0,
+                    Command::ConnectTJunction {
+                        first_edge: interior.id,
+                        second_edge: stem.id,
+                        new_edge,
+                    },
+                )
+                .expect("connect second-edge endpoint T-junction");
+
+            assert_eq!(result.changed_edges, vec![interior.id, stem.id, new_edge]);
+            assert_eq!(
+                editor.pattern().edges,
+                vec![
+                    Edge {
+                        end: junction,
+                        ..interior.clone()
+                    },
+                    Edge {
+                        id: new_edge,
+                        start: junction,
+                        end: interior.end,
+                        kind: interior.kind,
+                    },
+                    spacer,
+                    stem,
+                ]
+            );
+            assert!(validate_crease_pattern(editor.pattern()).is_valid());
+            let connected_pattern = editor.pattern().clone();
+
+            let undo = editor.undo(1).expect("undo classified T-junction");
+            assert_eq!(undo.changed_edges, result.changed_edges);
+            assert_eq!(editor.pattern(), &original_pattern);
+
+            let redo = editor.redo(2).expect("redo classified T-junction");
+            assert_eq!(redo.changed_edges, result.changed_edges);
+            assert_eq!(editor.pattern(), &connected_pattern);
+        }
+    }
+
+    #[test]
+    fn t_junction_connection_rejects_targets_ids_and_bad_endpoint_records_atomically() {
+        let (_, pattern, paper, interior, stem, _) = t_junction_editor();
+        let command = |first_edge, second_edge, new_edge| Command::ConnectTJunction {
+            first_edge,
+            second_edge,
+            new_edge,
+        };
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, interior.id, EdgeId::new()),
+            CommandError::TJunctionTargetsNotDistinct,
+        );
+
+        let missing_edge = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, missing_edge, EdgeId::new()),
+            CommandError::EdgeNotFound(missing_edge),
+        );
+
+        let mut ambiguous = pattern.clone();
+        ambiguous.edges.push(stem.clone());
+        let mut editor = EditorState::with_paper(ambiguous, paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, stem.id, EdgeId::new()),
+            CommandError::TJunctionTargetEdgeIdAmbiguous { edge: stem.id },
+        );
+
+        let boundary = pattern.edges[0].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(boundary, interior.id, EdgeId::new()),
+            CommandError::TJunctionBoundaryEdge(boundary),
+        );
+
+        let existing_edge = pattern.edges[1].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, stem.id, existing_edge),
+            CommandError::EdgeAlreadyExists(existing_edge),
+        );
+
+        let mut duplicate_endpoint = pattern.clone();
+        duplicate_endpoint.vertices.push(
+            duplicate_endpoint
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == stem.end)
+                .expect("junction endpoint")
+                .clone(),
+        );
+        let mut editor = EditorState::with_paper(duplicate_endpoint, paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, stem.id, EdgeId::new()),
+            CommandError::TJunctionEndpointVertexRecordAmbiguous {
+                edge: stem.id,
+                vertex: stem.end,
+            },
+        );
+
+        let mut missing_endpoint = pattern.clone();
+        missing_endpoint
+            .vertices
+            .retain(|vertex| vertex.id != interior.start);
+        let mut editor = EditorState::with_paper(missing_endpoint, paper.clone());
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, stem.id, EdgeId::new()),
+            CommandError::VertexNotFound(interior.start),
+        );
+
+        let mut non_finite = pattern;
+        non_finite
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == stem.start)
+            .expect("stem start")
+            .position
+            .y = f64::NEG_INFINITY;
+        let mut editor = EditorState::with_paper(non_finite, paper);
+        assert_t_junction_rejected(
+            &mut editor,
+            command(interior.id, stem.id, EdgeId::new()),
+            CommandError::TJunctionEndpointPositionNotFinite {
+                edge: stem.id,
+                vertex: stem.start,
+            },
+        );
+    }
+
+    #[test]
+    fn t_junction_connection_rejects_every_other_intersection_class_atomically() {
+        let cases = [
+            [
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(0.0, 2.0),
+                Point2::new(4.0, 2.0),
+            ],
+            [
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 4.0),
+                Point2::new(0.0, 4.0),
+                Point2::new(4.0, 0.0),
+            ],
+            [
+                Point2::new(0.0, 0.0),
+                Point2::new(2.0, 2.0),
+                Point2::new(2.0, 2.0),
+                Point2::new(4.0, 0.0),
+            ],
+            [
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(2.0, 0.0),
+                Point2::new(6.0, 0.0),
+            ],
+        ];
+        for points in cases {
+            let (mut editor, first, second) = two_edge_editor(points);
+            assert_t_junction_rejected(
+                &mut editor,
+                Command::ConnectTJunction {
+                    first_edge: first.id,
+                    second_edge: second.id,
+                    new_edge: EdgeId::new(),
+                },
+                CommandError::NotTJunction,
+            );
+        }
+
+        let (_, mut occupied_pattern, paper, interior, stem, _) = t_junction_editor();
+        let occupied_by = VertexId::new();
+        occupied_pattern.vertices.push(Vertex {
+            id: occupied_by,
+            position: Point2::new(32.0, 50.0),
+        });
+        let mut editor = EditorState::with_paper(occupied_pattern, paper);
+        assert_t_junction_rejected(
+            &mut editor,
+            Command::ConnectTJunction {
+                first_edge: interior.id,
+                second_edge: stem.id,
+                new_edge: EdgeId::new(),
+            },
+            CommandError::TJunctionPositionOccupied {
+                vertex: occupied_by,
+            },
+        );
+
+        let (mut editor, first, second) = two_edge_editor([
+            Point2::new(-f64::MAX, 0.0),
+            Point2::new(f64::MAX, 0.0),
+            Point2::new(0.0, -1.0),
+            Point2::new(0.0, 0.0),
+        ]);
+        assert_t_junction_rejected(
+            &mut editor,
+            Command::ConnectTJunction {
+                first_edge: first.id,
+                second_edge: second.id,
+                new_edge: EdgeId::new(),
+            },
+            CommandError::TJunctionGeometryNotRepresentable,
+        );
+    }
+
+    #[test]
+    fn stale_t_junction_connection_preserves_state_and_history() {
+        let (mut editor, pattern, paper, interior, stem, _) = t_junction_editor();
+        let error = editor
+            .execute(
+                5,
+                Command::ConnectTJunction {
+                    first_edge: interior.id,
+                    second_edge: stem.id,
+                    new_edge: EdgeId::new(),
+                },
+            )
+            .expect_err("stale T-junction command must fail");
+        assert_eq!(
+            error,
+            CommandError::RevisionConflict {
+                expected: 5,
                 actual: 0,
             }
         );

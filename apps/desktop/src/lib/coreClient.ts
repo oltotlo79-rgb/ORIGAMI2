@@ -267,3 +267,17 @@ export function connectEdgeIntersection(
     secondEdge,
   })
 }
+
+export function connectTJunction(
+  expectedProjectId: string,
+  expectedRevision: number,
+  firstEdge: string,
+  secondEdge: string,
+) {
+  return invoke<EdgeIntersectionResponse>('connect_t_junction', {
+    expectedProjectId,
+    expectedRevision,
+    firstEdge,
+    secondEdge,
+  })
+}

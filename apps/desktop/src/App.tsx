@@ -11,6 +11,7 @@ import {
   addEdge,
   addVertex,
   connectEdgeIntersection,
+  connectTJunction,
   generateBenchmarkPattern,
   getProjectSnapshot,
   isNativeCoreAvailable,
@@ -338,12 +339,19 @@ function App() {
           || secondEdge.kind === 'boundary'
           || placement.firstEdgeId >= placement.secondEdgeId
         ) throw new Error('交点接続の対象辺が不正です')
-        const response = await connectEdgeIntersection(
-          projectId,
-          revision,
-          placement.firstEdgeId,
-          placement.secondEdgeId,
-        )
+        const response = placement.operation === 'connect-intersection'
+          ? await connectEdgeIntersection(
+              projectId,
+              revision,
+              placement.firstEdgeId,
+              placement.secondEdgeId,
+            )
+          : await connectTJunction(
+              projectId,
+              revision,
+              placement.firstEdgeId,
+              placement.secondEdgeId,
+            )
         snapshot = response.snapshot
         result.connectedVertexId = response.vertex_id
       }
@@ -352,20 +360,29 @@ function App() {
     })
     if (!succeeded || !result.snapshot) return
 
-    if (placement.operation === 'connect-intersection') {
+    if (
+      placement.operation === 'connect-intersection'
+      || placement.operation === 'connect-t-junction'
+    ) {
       if (
         !result.connectedVertexId
         || !result.snapshot.crease_pattern.vertices.some(
           ({ id }) => id === result.connectedVertexId,
         )
+        || (
+          placement.operation === 'connect-t-junction'
+          && result.connectedVertexId !== placement.junctionVertexId
+        )
       ) {
-        setCoreStatus('交点を接続しましたが、作成された頂点を確認できませんでした')
+        setCoreStatus('交点を接続しましたが、接続頂点を確認できませんでした')
         return
       }
       setSelectedLineId(null)
       setPendingEdgeStart(null)
       setSelectedVertexId(result.connectedVertexId)
-      setCoreStatus('交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）')
+      setCoreStatus(placement.operation === 'connect-t-junction'
+        ? 'T字交点を接続しました（元に戻す1回で復元できます）'
+        : '交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）')
       return
     }
 

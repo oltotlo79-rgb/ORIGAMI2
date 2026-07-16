@@ -162,6 +162,12 @@ struct EdgeIntersectionResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct TJunctionResponse {
+    snapshot: ProjectSnapshot,
+    vertex_id: VertexId,
+}
+
+#[derive(Debug, Serialize)]
 struct ValidationSnapshot {
     project_id: ProjectId,
     revision: u64,
@@ -568,6 +574,55 @@ fn execute_edge_intersection_connection(
         },
     )?;
     Ok(EdgeIntersectionResponse {
+        snapshot,
+        vertex_id,
+    })
+}
+
+#[tauri::command]
+fn connect_t_junction(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    first_edge: EdgeId,
+    second_edge: EdgeId,
+) -> Result<TJunctionResponse, String> {
+    let mut project = lock_project(&state)?;
+    execute_t_junction_connection(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        first_edge,
+        second_edge,
+    )
+}
+
+fn execute_t_junction_connection(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    first_edge: EdgeId,
+    second_edge: EdgeId,
+) -> Result<TJunctionResponse, String> {
+    let new_edge = EdgeId::new();
+    let snapshot = execute_command(
+        project,
+        expected_project_id,
+        expected_revision,
+        Command::ConnectTJunction {
+            first_edge,
+            second_edge,
+            new_edge,
+        },
+    )?;
+    let vertex_id = snapshot
+        .crease_pattern
+        .edges
+        .iter()
+        .find(|edge| edge.id == new_edge)
+        .map(|edge| edge.start)
+        .expect("a successful T-junction command must create its requested edge");
+    Ok(TJunctionResponse {
         snapshot,
         vertex_id,
     })
@@ -1271,6 +1326,7 @@ pub fn run() {
             resize_rectangular_paper,
             split_edge,
             connect_edge_intersection,
+            connect_t_junction,
             split_boundary_edge,
             remove_boundary_vertex
         ])
@@ -1429,6 +1485,52 @@ mod tests {
         };
         pattern.edges.extend([first.clone(), second.clone()]);
         (ProjectState::new_with_paper(pattern, paper), first, second)
+    }
+
+    fn t_junction_project() -> (ProjectState, Edge, Edge, VertexId) {
+        let sheet = create_rectangular_sheet(100.0, 100.0, true).expect("valid test sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        let interior_start = VertexId::new();
+        let interior_end = VertexId::new();
+        let stem_other = VertexId::new();
+        let junction = VertexId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: interior_start,
+                position: Point2::new(10.0, 40.0),
+            },
+            Vertex {
+                id: interior_end,
+                position: Point2::new(90.0, 40.0),
+            },
+            Vertex {
+                id: stem_other,
+                position: Point2::new(34.0, 10.0),
+            },
+            Vertex {
+                id: junction,
+                position: Point2::new(34.0, 40.0),
+            },
+        ]);
+        let interior = Edge {
+            id: EdgeId::new(),
+            start: interior_start,
+            end: interior_end,
+            kind: EdgeKind::Mountain,
+        };
+        let stem = Edge {
+            id: EdgeId::new(),
+            start: stem_other,
+            end: junction,
+            kind: EdgeKind::Valley,
+        };
+        pattern.edges.extend([interior.clone(), stem.clone()]);
+        (
+            ProjectState::new_with_paper(pattern, paper),
+            interior,
+            stem,
+            junction,
+        )
     }
 
     #[test]
@@ -1988,6 +2090,122 @@ mod tests {
             "the selected edges must intersect strictly inside both edges"
         );
         assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn t_junction_connection_returns_reused_vertex_and_undoable_dirty_snapshot() {
+        let (mut project, interior, stem, junction) = t_junction_project();
+        let project_id = project.project_id;
+        let original_document = project.document();
+        let original_vertex_count = original_document.crease_pattern.vertices.len();
+        let original_edge_ids = original_document
+            .crease_pattern
+            .edges
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<Vec<_>>();
+
+        let response =
+            execute_t_junction_connection(&mut project, project_id, 0, stem.id, interior.id)
+                .expect("connect T-junction with reverse arguments");
+
+        assert_eq!(response.vertex_id, junction);
+        assert_eq!(response.snapshot.revision, 1);
+        assert!(response.snapshot.is_dirty);
+        assert!(response.snapshot.can_undo);
+        assert!(!response.snapshot.can_redo);
+        assert_eq!(
+            response.snapshot.crease_pattern.vertices.len(),
+            original_vertex_count
+        );
+        assert_eq!(
+            response.snapshot.crease_pattern.vertices,
+            original_document.crease_pattern.vertices
+        );
+        let split_original = response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.id == interior.id)
+            .expect("split original edge");
+        assert_eq!(split_original.start, interior.start);
+        assert_eq!(split_original.end, junction);
+        assert_eq!(split_original.kind, EdgeKind::Mountain);
+        let generated = response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .find(|edge| !original_edge_ids.contains(&edge.id))
+            .expect("generated T-junction edge");
+        assert_eq!(generated.start, junction);
+        assert_eq!(generated.end, interior.end);
+        assert_eq!(generated.kind, EdgeKind::Mountain);
+        assert!(
+            response
+                .snapshot
+                .crease_pattern
+                .edges
+                .iter()
+                .any(|edge| edge == &stem)
+        );
+        assert!(validation_snapshot(&project).is_valid);
+        let connected_document = project.document();
+
+        project.editor.undo(1).expect("undo T-junction connection");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project.editor.redo(2).expect("redo T-junction connection");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), connected_document);
+        assert!(project.is_dirty());
+        assert!(validation_snapshot(&project).is_valid);
+    }
+
+    #[test]
+    fn t_junction_api_conflicts_and_wrong_geometry_preserve_project_state() {
+        let (mut project, interior, stem, _) = t_junction_project();
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        let wrong_project =
+            execute_t_junction_connection(&mut project, ProjectId::new(), 0, interior.id, stem.id)
+                .expect_err("wrong project must fail");
+        assert!(wrong_project.contains("active project changed"));
+        assert_eq!(project_state_signature(&project), before);
+
+        let stale =
+            execute_t_junction_connection(&mut project, project_id, 3, interior.id, stem.id)
+                .expect_err("stale revision must fail");
+        assert_eq!(stale, "expected revision 3, but the current revision is 0");
+        assert_eq!(project_state_signature(&project), before);
+
+        let boundary = project.editor.pattern().edges[0].id;
+        let boundary_error =
+            execute_t_junction_connection(&mut project, project_id, 0, boundary, interior.id)
+                .expect_err("boundary target must fail");
+        assert!(boundary_error.contains("must not be a boundary edge"));
+        assert_eq!(project_state_signature(&project), before);
+
+        let (mut crossing, first, second) = crossing_project();
+        let crossing_project_id = crossing.project_id;
+        let crossing_before = project_state_signature(&crossing);
+        let proper_x = execute_t_junction_connection(
+            &mut crossing,
+            crossing_project_id,
+            0,
+            first.id,
+            second.id,
+        )
+        .expect_err("proper X must not be accepted as T-junction");
+        assert_eq!(
+            proper_x,
+            "the selected edges do not form exactly one strict T-junction"
+        );
+        assert_eq!(project_state_signature(&crossing), crossing_before);
     }
 
     #[test]

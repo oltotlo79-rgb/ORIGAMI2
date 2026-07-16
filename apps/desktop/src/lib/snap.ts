@@ -1,4 +1,4 @@
-import type { ProperIntersectionSnapTarget } from './intersectionSnap'
+import type { IntersectionSnapTarget } from './intersectionSnap'
 
 export type SnapKind = 'vertex' | 'intersection' | 'midpoint' | 'edge' | 'grid'
 
@@ -55,7 +55,7 @@ export type SnapTarget = Readonly<{
   sourceFraction?: number
 }>
 
-export type AdditionSnapTarget = SnapTarget | ProperIntersectionSnapTarget
+export type AdditionSnapTarget = SnapTarget | IntersectionSnapTarget
 
 export type SnapBounds = Readonly<{
   minX: number
@@ -233,9 +233,17 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
 
 export function prioritizeAdditionSnapTargets(
   pointTarget: SnapTarget | null,
-  intersectionTarget: ProperIntersectionSnapTarget | null,
+  intersectionTarget: IntersectionSnapTarget | null,
 ): AdditionSnapTarget | null {
-  if (pointTarget?.kind === 'vertex') return pointTarget
+  if (pointTarget?.kind === 'vertex') {
+    if (
+      intersectionTarget?.classification === 't-junction'
+      && pointTarget.sourceId === intersectionTarget.junctionVertexId
+      && pointTarget.point.x === intersectionTarget.point.x
+      && pointTarget.point.y === intersectionTarget.point.y
+    ) return intersectionTarget
+    return pointTarget
+  }
   return intersectionTarget ?? pointTarget
 }
 

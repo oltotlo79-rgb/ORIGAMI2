@@ -167,8 +167,11 @@ export function CreaseCanvas({
     [vertices],
   )
   const intersectionSnapIndex = useMemo(
-    () => createIntersectionSnapIndex(lines.filter(({ kind }) => kind !== 'boundary')),
-    [lines],
+    () => createIntersectionSnapIndex(
+      lines.filter(({ kind }) => kind !== 'boundary'),
+      vertices,
+    ),
+    [lines, vertices],
   )
   const visibleGrid = useMemo(
     () => createVisibleGrid(
@@ -398,7 +401,7 @@ export function CreaseCanvas({
       grid: visibleGrid,
       accept,
     })
-    if (pointTarget?.kind === 'vertex' || !snapSettings.intersection) return pointTarget
+    if (!snapSettings.intersection) return pointTarget
 
     const intersectionTarget = intersectionSnapIndex.query({
       point,
@@ -482,6 +485,26 @@ export function CreaseCanvas({
       const point = target?.point ?? { x, y }
       const existingVertex = lookupExactVertex(exactVertexIndex, point)
       if (existingVertex) {
+        if (
+          target?.kind === 'intersection'
+          && target.classification === 't-junction'
+          && target.junctionVertexId === existingVertex.id
+          && lookupExactVertex(exactVertexIndex, point, existingVertex.id) === null
+          && isInsidePaper(
+            point.x,
+            point.y,
+            pointer.transform,
+            pointTestPaperPolygon,
+            useLegacyRectangularPaper,
+          )
+        ) {
+          const placement = createVertexPlacement(point, target, lines)
+          if (placement?.operation === 'connect-t-junction') {
+            setSnapGuide(null)
+            onPlaceVertex(placement)
+            return
+          }
+        }
         setSnapGuide(null)
         onSelectVertex?.(existingVertex.id)
         onSelectLine(null)

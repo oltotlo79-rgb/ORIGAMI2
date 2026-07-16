@@ -588,16 +588,87 @@ test('proper intersections expose canonical edge IDs, fractions, point, and key'
   })
 })
 
-test('addition snap priority is vertex, intersection, midpoint, edge, then grid', () => {
+test('T junctions expose the exact existing endpoint in every orientation', () => {
+  const cases = [
+    {
+      branch: intersectionSegment('a-branch', 'junction-start-a', 'tip-a', 5, 0, 5, 5),
+      base: intersectionSegment('m-base', 'left-a', 'right-a', 0, 0, 10, 0),
+      junctionVertexId: 'junction-start-a',
+      sourceEdges: [
+        { id: 'a-branch', fraction: 0 },
+        { id: 'm-base', fraction: 0.5 },
+      ],
+    },
+    {
+      branch: intersectionSegment('a-branch', 'tip-b', 'junction-end-a', 5, 5, 5, 0),
+      base: intersectionSegment('m-base', 'right-b', 'left-b', 10, 0, 0, 0),
+      junctionVertexId: 'junction-end-a',
+      sourceEdges: [
+        { id: 'a-branch', fraction: 1 },
+        { id: 'm-base', fraction: 0.5 },
+      ],
+    },
+    {
+      branch: intersectionSegment('z-branch', 'junction-start-z', 'tip-c', 5, 0, 5, -5),
+      base: intersectionSegment('m-base', 'right-c', 'left-c', 10, 0, 0, 0),
+      junctionVertexId: 'junction-start-z',
+      sourceEdges: [
+        { id: 'm-base', fraction: 0.5 },
+        { id: 'z-branch', fraction: 0 },
+      ],
+    },
+    {
+      branch: intersectionSegment('z-branch', 'tip-d', 'junction-end-z', 5, -5, 5, 0),
+      base: intersectionSegment('m-base', 'left-d', 'right-d', 0, 0, 10, 0),
+      junctionVertexId: 'junction-end-z',
+      sourceEdges: [
+        { id: 'm-base', fraction: 0.5 },
+        { id: 'z-branch', fraction: 1 },
+      ],
+    },
+  ] as const
+
+  for (const entry of cases) {
+    const forward = queryIntersection([entry.branch, entry.base], { x: 5, y: 0 })
+    const reversedInput = queryIntersection([entry.base, entry.branch], { x: 5, y: 0 })
+    assert.deepEqual(reversedInput, forward)
+    assert.deepEqual(forward.target, {
+      kind: 'intersection',
+      classification: 't-junction',
+      key: `intersection:${JSON.stringify([
+        entry.sourceEdges[0].id,
+        entry.sourceEdges[1].id,
+      ])}`,
+      point: { x: 5, y: 0 },
+      distancePx: 0,
+      sourceEdges: entry.sourceEdges,
+      junctionVertexId: entry.junctionVertexId,
+    })
+  }
+})
+
+test('addition snap priority is same-vertex T repair, vertex, proper, midpoint, edge, then grid', () => {
   const crossing = [
     intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
     intersectionSegment('b-edge', 'b1', 'b2', -2, 0, 2, 0),
   ]
-  const intersection = queryIntersection(crossing).target
-  assert.ok(intersection)
+  const proper = queryIntersection(crossing).target
+  assert.equal(proper?.classification, 'proper')
+  assert.ok(proper)
+  const tJunctionSegments = [
+    intersectionSegment('c-base', 'left', 'right', -2, 0, 2, 0),
+    intersectionSegment('d-branch', 'junction', 'tip', 0, 0, 0, 2),
+  ]
+  const tJunction = queryIntersection(tJunctionSegments).target
+  assert.equal(tJunction?.classification, 't-junction')
+  assert.ok(tJunction)
   const vertex = resolve({
     settings: only('vertex'),
     vertices: [{ id: 'vertex', x: 0, y: 0 }],
+  })
+  const junctionVertex = resolve({
+    settings: only('vertex'),
+    vertices: [{ id: 'junction', x: 0, y: 0 }],
   })
   const midpoint = resolve({
     settings: only('midpoint'),
@@ -629,15 +700,20 @@ test('addition snap priority is vertex, intersection, midpoint, edge, then grid'
     grid: { xValues: [0], yValues: [0] },
   })
 
-  assert.equal(prioritizeAdditionSnapTargets(vertex, intersection)?.kind, 'vertex')
+  assert.equal(
+    prioritizeAdditionSnapTargets(junctionVertex, tJunction)?.classification,
+    't-junction',
+  )
+  assert.equal(prioritizeAdditionSnapTargets(vertex, tJunction), vertex)
+  assert.equal(prioritizeAdditionSnapTargets(vertex, proper), vertex)
   for (const lowerPriority of [midpoint, edge, grid]) {
     assert.equal(
-      prioritizeAdditionSnapTargets(lowerPriority, intersection)?.kind,
+      prioritizeAdditionSnapTargets(lowerPriority, proper)?.kind,
       'intersection',
     )
     assert.equal(prioritizeAdditionSnapTargets(lowerPriority, null), lowerPriority)
   }
-  assert.equal(prioritizeAdditionSnapTargets(null, intersection), intersection)
+  assert.equal(prioritizeAdditionSnapTargets(null, proper), proper)
   assert.equal(prioritizeAdditionSnapTargets(null, null), null)
 })
 
@@ -679,6 +755,71 @@ test('proper intersection placement carries only validated canonical edge IDs', 
   assert.equal(createVertexPlacement(target.point, target, sharedVertexSegments), null)
 })
 
+test('T-junction placement validates the junction vertex and both canonical edge IDs', () => {
+  const segments = [
+    intersectionSegment('a-base', 'left', 'right', 0, 0, 10, 0),
+    intersectionSegment('z-branch', 'junction', 'tip', 5, 0, 5, 5),
+  ]
+  const target = queryIntersection(segments, { x: 5, y: 0 }).target
+  assert.equal(target?.classification, 't-junction')
+  assert.ok(target && target.classification === 't-junction')
+  assert.deepEqual(createVertexPlacement(target.point, target, segments), {
+    operation: 'connect-t-junction',
+    firstEdgeId: 'a-base',
+    secondEdgeId: 'z-branch',
+    junctionVertexId: 'junction',
+  })
+
+  const malformed = [
+    { ...target, junctionVertexId: 'tip' },
+    { ...target, key: 'intersection:["wrong","key"]' },
+    { ...target, distancePx: Number.NaN },
+    { ...target, sourceEdges: [target.sourceEdges[1], target.sourceEdges[0]] },
+    {
+      ...target,
+      sourceEdges: [
+        target.sourceEdges[0],
+        { ...target.sourceEdges[1], fraction: 0.25 },
+      ],
+    },
+    {
+      ...target,
+      sourceEdges: [
+        { ...target.sourceEdges[0], fraction: 0 },
+        target.sourceEdges[1],
+      ],
+    },
+    { ...target, point: { x: 5, y: 0.25 } },
+  ]
+  for (const invalid of malformed) {
+    assert.equal(createVertexPlacement(invalid.point, invalid, segments), null)
+  }
+  assert.equal(createVertexPlacement(
+    target.point,
+    { ...target, classification: 'unknown' } as never,
+    segments,
+  ), null)
+  assert.equal(createVertexPlacement(target.point, target, segments.slice(0, 1)), null)
+
+  const alreadyConnected = [
+    { ...segments[0], endVertexId: 'junction' },
+    segments[1],
+  ]
+  assert.equal(createVertexPlacement(target.point, target, alreadyConnected), null)
+
+  const duplicatePosition = [
+    ...segments,
+    intersectionSegment('other', 'different-id', 'other-tip', 5, 0, 7, 2),
+  ]
+  assert.equal(createVertexPlacement(target.point, target, duplicatePosition), null)
+
+  const inconsistentJunction = [
+    ...segments,
+    intersectionSegment('other', 'junction', 'other-tip', 6, 0, 7, 2),
+  ]
+  assert.equal(createVertexPlacement(target.point, target, inconsistentJunction), null)
+})
+
 test('proper intersection output is deterministic across input order and reversed edges', () => {
   const horizontal = intersectionSegment('z-edge', 'h2', 'h1', 10, 0, 0, 0)
   const vertical = intersectionSegment('a-edge', 'v2', 'v1', 2, 5, 2, -5)
@@ -706,10 +847,24 @@ test('equal-distance proper intersections use the canonical key as a stable tie-
   assert.deepEqual(second, first)
 })
 
+test('equal-distance T repairs outrank proper intersections deterministically', () => {
+  const segments = [
+    intersectionSegment('p-horizontal', 'h1', 'h2', -2, 0, 2, 0),
+    intersectionSegment('p-vertical', 'v1', 'v2', 0, -2, 0, 2),
+    intersectionSegment('a-branch', 'junction', 'tip', 0, 0, 1, 1),
+  ]
+  const forward = queryIntersection(segments)
+  const reversed = queryIntersection([...segments].reverse())
+
+  assert.equal(forward.target?.classification, 't-junction')
+  assert.equal(forward.target?.key, 'intersection:["a-branch","p-horizontal"]')
+  assert.deepEqual(reversed, forward)
+})
+
 test('intersection accept filters choose the next ranked candidate deterministically', () => {
   const segments = [
     intersectionSegment('left-horizontal', 'lh1', 'lh2', -1.5, 0, -0.5, 0),
-    intersectionSegment('left-vertical', 'lv1', 'lv2', -1, -1, -1, 1),
+    intersectionSegment('left-vertical', 'left-junction', 'lv2', -1, 0, -1, 1),
     intersectionSegment('right-horizontal', 'rh1', 'rh2', 1.5, 0, 2.5, 0),
     intersectionSegment('right-vertical', 'rv1', 'rv2', 2, -1, 2, 1),
   ]
@@ -727,8 +882,10 @@ test('intersection accept filters choose the next ranked candidate deterministic
   })
 
   assert.equal(unfiltered.target?.point.x, -1)
+  assert.equal(unfiltered.target?.classification, 't-junction')
   assert.deepEqual(acceptAll, unfiltered)
   assert.equal(paperInteriorOnly.target?.point.x, 2)
+  assert.equal(paperInteriorOnly.target?.classification, 'proper')
   assert.equal(paperInteriorOnly.truncated, false)
   assert.deepEqual(
     index.query({ ...common, accept: () => false }),
@@ -736,12 +893,8 @@ test('intersection accept filters choose the next ranked candidate deterministic
   )
 })
 
-test('T junctions, endpoints, shared vertices, parallel lines, and overlaps are excluded', () => {
+test('endpoint-endpoint, shared vertices, parallel lines, and overlaps are excluded', () => {
   const excludedPairs: readonly (readonly [IntersectionSnapSegment, IntersectionSnapSegment])[] = [
-    [
-      intersectionSegment('t-base', 'a', 'b', 0, 0, 10, 0),
-      intersectionSegment('t-stem', 'c', 'd', 5, 0, 5, 5),
-    ],
     [
       intersectionSegment('endpoint-a', 'a', 'b', 0, 0, 5, 0),
       intersectionSegment('endpoint-b', 'c', 'd', 5, 0, 5, 5),
@@ -763,6 +916,33 @@ test('T junctions, endpoints, shared vertices, parallel lines, and overlaps are 
   for (const pair of excludedPairs) {
     assert.equal(queryIntersection(pair, { x: 5, y: 0 }, 20).target, null)
   }
+})
+
+test('already-connected T topology and same-position vertex ambiguity are excluded', () => {
+  const alreadyConnected = [
+    intersectionSegment('left', 'left-tip', 'junction', 0, 0, 5, 0),
+    intersectionSegment('right', 'junction', 'right-tip', 5, 0, 10, 0),
+    intersectionSegment('branch', 'junction', 'branch-tip', 5, 0, 5, 5),
+  ]
+  assert.equal(queryIntersection(alreadyConnected, { x: 5, y: 0 }).target, null)
+
+  const ambiguousEndpoints = [
+    intersectionSegment('base', 'base-left', 'base-right', 0, 0, 10, 0),
+    intersectionSegment('branch-a', 'junction-a', 'tip-a', 5, 0, 5, 5),
+    intersectionSegment('branch-b', 'junction-b', 'tip-b', 5, 0, 6, -5),
+  ]
+  assert.equal(queryIntersection(ambiguousEndpoints, { x: 5, y: 0 }).target, null)
+
+  const base = intersectionSegment('base', 'base-left', 'base-right', 0, 0, 10, 0)
+  const branch = intersectionSegment('branch', 'junction', 'tip', 5, 0, 5, 5)
+  const isolatedAmbiguity = createIntersectionSnapIndex(
+    [base, branch],
+    [
+      { id: 'junction', x: 5, y: 0 },
+      { id: 'isolated-duplicate', x: 5, y: 0 },
+    ],
+  ).query({ point: { x: 5, y: 0 }, scale: 1 })
+  assert.equal(isolatedAmbiguity.target, null)
 })
 
 test('invalid, zero-length, duplicate-ID, and overflowing segments are safely ignored', () => {

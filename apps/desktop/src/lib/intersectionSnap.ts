@@ -13,6 +13,12 @@ export type IntersectionSnapSegment = Readonly<{
   y2: number
 }>
 
+export type IntersectionSnapVertex = Readonly<{
+  id: string
+  x: number
+  y: number
+}>
+
 export type IntersectionSourceEdge = Readonly<{
   id: string
   fraction: number
@@ -27,16 +33,30 @@ export type ProperIntersectionSnapTarget = Readonly<{
   sourceEdges: readonly [IntersectionSourceEdge, IntersectionSourceEdge]
 }>
 
+export type TJunctionIntersectionSnapTarget = Readonly<{
+  kind: 'intersection'
+  classification: 't-junction'
+  key: string
+  point: IntersectionSnapPoint
+  distancePx: number
+  sourceEdges: readonly [IntersectionSourceEdge, IntersectionSourceEdge]
+  junctionVertexId: string
+}>
+
+export type IntersectionSnapTarget =
+  | ProperIntersectionSnapTarget
+  | TJunctionIntersectionSnapTarget
+
 export type IntersectionSnapQuery = Readonly<{
   point: IntersectionSnapPoint
   scale: number
   thresholdPx?: number
   maxPairTests?: number
-  accept?: (target: ProperIntersectionSnapTarget) => boolean
+  accept?: (target: IntersectionSnapTarget) => boolean
 }>
 
 export type IntersectionSnapQueryResult = Readonly<{
-  target: ProperIntersectionSnapTarget | null
+  target: IntersectionSnapTarget | null
   candidateSegmentCount: number
   testedPairCount: number
   truncated: boolean
@@ -69,9 +89,33 @@ type SpatialNode = Readonly<{
 }>
 
 type RankedTarget = Readonly<{
-  target: ProperIntersectionSnapTarget
+  target: IntersectionSnapTarget
   modelDistance: number
 }>
+
+type EndpointPositionIndex = Readonly<{
+  byPosition: ReadonlyMap<number, ReadonlyMap<number, string | null>>
+  byVertex: ReadonlyMap<string, IntersectionSnapPoint | null>
+}>
+
+type ProperClassifiedIntersection = Readonly<{
+  classification: 'proper'
+  point: IntersectionSnapPoint
+  firstFraction: number
+  secondFraction: number
+}>
+
+type TJunctionClassifiedIntersection = Readonly<{
+  classification: 't-junction'
+  point: IntersectionSnapPoint
+  firstFraction: number
+  secondFraction: number
+  junctionVertexId: string
+}>
+
+type ClassifiedIntersection =
+  | ProperClassifiedIntersection
+  | TJunctionClassifiedIntersection
 
 const DEFAULT_THRESHOLD_PX = 8
 export const DEFAULT_INTERSECTION_PAIR_LIMIT = 4096
@@ -79,7 +123,12 @@ const LEAF_SIZE = 8
 
 export function createIntersectionSnapIndex(
   sourceSegments: readonly IntersectionSnapSegment[],
+  sourceVertices: readonly IntersectionSnapVertex[] = [],
 ): IntersectionSnapIndex {
+  // Passing the complete vertex snapshot also makes isolated same-position IDs
+  // visible to T-junction ambiguity checks. Segment endpoints remain indexed as
+  // a conservative fallback for callers that only need proper intersections.
+  const endpointPositions = buildEndpointPositionIndex(sourceSegments, sourceVertices)
   const idCounts = new Map<string, number>()
   for (const segment of sourceSegments) {
     idCounts.set(segment.id, (idCounts.get(segment.id) ?? 0) + 1)
@@ -94,12 +143,13 @@ export function createIntersectionSnapIndex(
 
   return Object.freeze({
     segmentCount: entries.length,
-    query: (options: IntersectionSnapQuery) => queryIndex(root, options),
+    query: (options: IntersectionSnapQuery) => queryIndex(root, endpointPositions, options),
   })
 }
 
 function queryIndex(
   root: SpatialNode | null,
+  endpointPositions: EndpointPositionIndex,
   options: IntersectionSnapQuery,
 ): IntersectionSnapQueryResult {
   const thresholdPx = options.thresholdPx ?? DEFAULT_THRESHOLD_PX
@@ -143,7 +193,11 @@ function queryIndex(
         !boundsOverlap(first.bounds, second.bounds)
         || sharesVertexId(first.segment, second.segment)
       ) continue
-      const intersection = properIntersection(first.segment, second.segment)
+      const intersection = classifyIntersection(
+        first.segment,
+        second.segment,
+        endpointPositions,
+      )
       if (!intersection) continue
 
       const modelDistance = Math.hypot(
@@ -158,9 +212,8 @@ function queryIndex(
       ) continue
 
       const key = intersectionKey(first.segment.id, second.segment.id)
-      const candidate: ProperIntersectionSnapTarget = {
+      const common = {
         kind: 'intersection',
-        classification: 'proper',
         key,
         point: intersection.point,
         distancePx,
@@ -168,12 +221,20 @@ function queryIndex(
           { id: first.segment.id, fraction: intersection.firstFraction },
           { id: second.segment.id, fraction: intersection.secondFraction },
         ],
-      }
+      } as const
+      const candidate: IntersectionSnapTarget = intersection.classification === 'proper'
+        ? { ...common, classification: 'proper' }
+        : {
+            ...common,
+            classification: 't-junction',
+            junctionVertexId: intersection.junctionVertexId,
+          }
       if (options.accept && !options.accept(candidate)) continue
       if (
         best
         && (modelDistance > best.modelDistance
-          || (modelDistance === best.modelDistance && key >= best.target.key))
+          || (modelDistance === best.modelDistance
+            && compareIntersectionTargets(candidate, best.target) >= 0))
       ) continue
 
       best = {
@@ -209,6 +270,8 @@ function normalizePairLimit(value: number | undefined) {
 function indexSegment(segment: IntersectionSnapSegment): IndexedSegment | null {
   if (
     !segment.id
+    || !segment.startVertexId
+    || !segment.endVertexId
     || segment.startVertexId === segment.endVertexId
     || ![segment.x1, segment.y1, segment.x2, segment.y2].every(Number.isFinite)
     || (segment.x1 === segment.x2 && segment.y1 === segment.y2)
@@ -290,10 +353,11 @@ function boundsOverlap(first: Bounds, second: Bounds) {
     && second.minY <= first.maxY
 }
 
-function properIntersection(
+function classifyIntersection(
   first: IntersectionSnapSegment,
   second: IntersectionSnapSegment,
-) {
+  endpointPositions: EndpointPositionIndex,
+): ClassifiedIntersection | null {
   const firstDirection = {
     x: first.x2 - first.x1,
     y: first.y2 - first.y1,
@@ -322,19 +386,80 @@ function properIntersection(
   if (
     !Number.isFinite(firstFraction)
     || !Number.isFinite(secondFraction)
-    || firstFraction <= 0
-    || firstFraction >= 1
-    || secondFraction <= 0
-    || secondFraction >= 1
   ) return null
 
-  const point = {
-    x: stableConvexCombination(first.x1, first.x2, firstFraction),
-    y: stableConvexCombination(first.y1, first.y2, firstFraction),
+  const firstIsInterior = isStrictInteriorFraction(firstFraction)
+  const secondIsInterior = isStrictInteriorFraction(secondFraction)
+  if (firstIsInterior && secondIsInterior) {
+    const point = {
+      x: stableConvexCombination(first.x1, first.x2, firstFraction),
+      y: stableConvexCombination(first.y1, first.y2, firstFraction),
+    }
+    return isFinitePoint(point)
+      ? { classification: 'proper', point, firstFraction, secondFraction }
+      : null
   }
-  return isFinitePoint(point)
-    ? { point, firstFraction, secondFraction }
-    : null
+
+  const firstEndpointFraction = exactEndpointFraction(firstFraction)
+  const secondEndpointFraction = exactEndpointFraction(secondFraction)
+  if (firstEndpointFraction !== null && secondIsInterior) {
+    return tJunctionIntersection(
+      first,
+      firstEndpointFraction,
+      firstEndpointFraction,
+      secondFraction,
+      endpointPositions,
+    )
+  }
+  if (secondEndpointFraction !== null && firstIsInterior) {
+    return tJunctionIntersection(
+      second,
+      secondEndpointFraction,
+      firstFraction,
+      secondEndpointFraction,
+      endpointPositions,
+    )
+  }
+  return null
+}
+
+function tJunctionIntersection(
+  endpointSegment: IntersectionSnapSegment,
+  endpointFraction: 0 | 1,
+  firstFraction: number,
+  secondFraction: number,
+  endpointPositions: EndpointPositionIndex,
+): ClassifiedIntersection | null {
+  const atStart = endpointFraction === 0
+  const point = {
+    x: atStart ? endpointSegment.x1 : endpointSegment.x2,
+    y: atStart ? endpointSegment.y1 : endpointSegment.y2,
+  }
+  const junctionVertexId = atStart
+    ? endpointSegment.startVertexId
+    : endpointSegment.endVertexId
+  if (
+    !junctionVertexId
+    || !isFinitePoint(point)
+    || !isUnambiguousEndpoint(endpointPositions, point, junctionVertexId)
+  ) return null
+  return {
+    classification: 't-junction',
+    point,
+    firstFraction,
+    secondFraction,
+    junctionVertexId,
+  }
+}
+
+function isStrictInteriorFraction(fraction: number) {
+  return fraction > 0 && fraction < 1
+}
+
+function exactEndpointFraction(fraction: number): 0 | 1 | null {
+  if (fraction === 0) return 0
+  if (fraction === 1) return 1
+  return null
 }
 
 function checkedCross(first: IntersectionSnapPoint, second: IntersectionSnapPoint) {
@@ -374,6 +499,74 @@ function compareIds(first: string, second: string) {
   return first < second ? -1 : first > second ? 1 : 0
 }
 
+function compareIntersectionTargets(
+  first: IntersectionSnapTarget,
+  second: IntersectionSnapTarget,
+) {
+  const classificationOrder = intersectionClassificationOrder(first)
+    - intersectionClassificationOrder(second)
+  return classificationOrder || compareIds(first.key, second.key)
+}
+
+function intersectionClassificationOrder(target: IntersectionSnapTarget) {
+  return target.classification === 't-junction' ? 0 : 1
+}
+
 function intersectionKey(firstId: string, secondId: string) {
   return `intersection:${JSON.stringify([firstId, secondId])}`
+}
+
+function buildEndpointPositionIndex(
+  segments: readonly IntersectionSnapSegment[],
+  vertices: readonly IntersectionSnapVertex[],
+): EndpointPositionIndex {
+  const byPosition = new Map<number, Map<number, string | null>>()
+  const byVertex = new Map<string, IntersectionSnapPoint | null>()
+  for (const vertex of vertices) {
+    registerEndpoint(byPosition, byVertex, vertex.id, vertex.x, vertex.y)
+  }
+  for (const segment of segments) {
+    registerEndpoint(byPosition, byVertex, segment.startVertexId, segment.x1, segment.y1)
+    registerEndpoint(byPosition, byVertex, segment.endVertexId, segment.x2, segment.y2)
+  }
+  return { byPosition, byVertex }
+}
+
+function registerEndpoint(
+  byPosition: Map<number, Map<number, string | null>>,
+  byVertex: Map<string, IntersectionSnapPoint | null>,
+  vertexId: string,
+  x: number,
+  y: number,
+) {
+  if (!vertexId || !Number.isFinite(x) || !Number.isFinite(y)) return
+
+  let byY = byPosition.get(x)
+  if (!byY) {
+    byY = new Map()
+    byPosition.set(x, byY)
+  }
+  if (!byY.has(y)) byY.set(y, vertexId)
+  else if (byY.get(y) !== vertexId) byY.set(y, null)
+
+  if (!byVertex.has(vertexId)) {
+    byVertex.set(vertexId, { x, y })
+    return
+  }
+  const current = byVertex.get(vertexId)
+  if (!current || current.x !== x || current.y !== y) byVertex.set(vertexId, null)
+}
+
+function isUnambiguousEndpoint(
+  index: EndpointPositionIndex,
+  point: IntersectionSnapPoint,
+  vertexId: string,
+) {
+  const positionVertex = index.byPosition.get(point.x)?.get(point.y)
+  const vertexPosition = index.byVertex.get(vertexId)
+  return positionVertex === vertexId
+    && vertexPosition !== null
+    && vertexPosition !== undefined
+    && vertexPosition.x === point.x
+    && vertexPosition.y === point.y
 }

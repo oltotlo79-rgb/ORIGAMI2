@@ -2034,6 +2034,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ori-formats"
+version = "0.1.0"
+dependencies = [
+ "ori-domain",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ori-geometry"
 version = "0.1.0"
 dependencies = [
@@ -2045,6 +2055,7 @@ name = "origami2-desktop"
 version = "0.1.0"
 dependencies = [
  "ori-core",
+ "ori-domain",
  "serde",
  "tauri",
  "tauri-build",

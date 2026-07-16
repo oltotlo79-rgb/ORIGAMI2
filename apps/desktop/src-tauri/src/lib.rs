@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use ori_core::{Command, EditorState};
-use ori_domain::{CreasePattern, Point2, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, Point2, VertexId};
 use serde::Serialize;
 use tauri::State;
 
@@ -57,6 +57,29 @@ fn add_vertex(
 }
 
 #[tauri::command]
+fn add_edge(
+    state: State<'_, AppState>,
+    expected_revision: u64,
+    start: VertexId,
+    end: VertexId,
+    kind: EdgeKind,
+) -> Result<ProjectSnapshot, String> {
+    let mut editor = state.0.lock().map_err(|error| error.to_string())?;
+    editor
+        .execute(
+            expected_revision,
+            Command::AddEdge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(snapshot(&editor))
+}
+
+#[tauri::command]
 fn undo(state: State<'_, AppState>, expected_revision: u64) -> Result<ProjectSnapshot, String> {
     let mut editor = state.0.lock().map_err(|error| error.to_string())?;
     editor
@@ -92,6 +115,7 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             add_vertex,
+            add_edge,
             undo,
             redo
         ])

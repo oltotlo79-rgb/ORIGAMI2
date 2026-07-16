@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
 import {
+  addEdge,
   addVertex,
   generateBenchmarkPattern,
   getProjectSnapshot,
@@ -32,10 +33,30 @@ function App() {
   const [coreStatus, setCoreStatus] = useState(
     isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
   )
+  const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const selectedLine = useMemo(
     () => SAMPLE_LINES.find((line) => line.id === selectedLineId),
     [selectedLineId],
   )
+  const nativeLines = useMemo<CreaseLine[]>(() => {
+    if (!nativeSnapshot) return []
+    const positions = new Map(
+      nativeSnapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
+    )
+    return nativeSnapshot.crease_pattern.edges.flatMap((edge) => {
+      const start = positions.get(edge.start)
+      const end = positions.get(edge.end)
+      if (!start || !end || (edge.kind !== 'mountain' && edge.kind !== 'valley')) return []
+      return [{
+        id: edge.id,
+        x1: start.x,
+        y1: start.y,
+        x2: end.x,
+        y2: end.y,
+        kind: edge.kind,
+      }]
+    })
+  }, [nativeSnapshot])
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -56,6 +77,22 @@ function App() {
     } catch (error) {
       setCoreStatus(`コアエラー: ${String(error)}`)
     }
+  }
+
+  function selectVertexForEdge(vertexId: string) {
+    if (activeTool !== 'mountain' && activeTool !== 'valley') return
+    if (!pendingEdgeStart) {
+      setPendingEdgeStart(vertexId)
+      setCoreStatus('折り線の終点を選択してください')
+      return
+    }
+    if (pendingEdgeStart === vertexId) {
+      setCoreStatus('始点とは異なる頂点を選択してください')
+      return
+    }
+    const start = pendingEdgeStart
+    setPendingEdgeStart(null)
+    void runNativeEdit((revision) => addEdge(revision, start, vertexId, activeTool))
   }
 
   return (
@@ -106,7 +143,10 @@ function App() {
               type="button"
               key={id}
               className={activeTool === id ? 'active' : ''}
-              onClick={() => setActiveTool(id)}
+              onClick={() => {
+                setActiveTool(id)
+                setPendingEdgeStart(null)
+              }}
               title={label}
               aria-label={label}
             >
@@ -122,7 +162,7 @@ function App() {
               <span className="panel-meta">400 × 400 mm · 8本</span>
             </div>
             <CreaseCanvas
-              lines={SAMPLE_LINES}
+              lines={[...SAMPLE_LINES, ...nativeLines]}
               vertices={nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
                 id: vertex.id,
                 x: vertex.position.x,
@@ -134,6 +174,7 @@ function App() {
               onAddVertex={(x, y) =>
                 runNativeEdit((revision) => addVertex(revision, x, y))
               }
+              onSelectVertex={selectVertexForEdge}
             />
           </article>
 

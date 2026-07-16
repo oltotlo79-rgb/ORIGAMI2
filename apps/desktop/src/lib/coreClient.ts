@@ -37,6 +37,20 @@ export function addVertex(expectedRevision: number, x: number, y: number) {
   return invoke<ProjectSnapshot>('add_vertex', { expectedRevision, x, y })
 }
 
+export function addEdge(
+  expectedRevision: number,
+  start: string,
+  end: string,
+  kind: 'mountain' | 'valley',
+) {
+  return invoke<ProjectSnapshot>('add_edge', {
+    expectedRevision,
+    start,
+    end,
+    kind,
+  })
+}
+
 export function undo(expectedRevision: number) {
   return invoke<ProjectSnapshot>('undo', { expectedRevision })
 }

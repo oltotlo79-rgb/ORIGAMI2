@@ -16,6 +16,7 @@ type Props = {
   selectedLineId: string | null
   onSelectLine: (id: string | null) => void
   onAddVertex?: (x: number, y: number) => void
+  onSelectVertex?: (id: string) => void
 }
 
 const COLORS: Record<CreaseLine['kind'], string> = {
@@ -32,6 +33,7 @@ export function CreaseCanvas({
   selectedLineId,
   onSelectLine,
   onAddVertex,
+  onSelectVertex,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -97,6 +99,19 @@ export function CreaseCanvas({
     if (tool === 'vertex' && onAddVertex && x >= 0 && x <= 400 && y >= 0 && y <= 400) {
       onAddVertex(x, y)
       return
+    }
+    if ((tool === 'mountain' || tool === 'valley') && onSelectVertex) {
+      let closest: { id: string; distance: number } | null = null
+      for (const vertex of vertices) {
+        const distance = Math.hypot(x - vertex.x, y - vertex.y)
+        if (distance < 10 && (!closest || distance < closest.distance)) {
+          closest = { id: vertex.id, distance }
+        }
+      }
+      if (closest) {
+        onSelectVertex(closest.id)
+        return
+      }
     }
     let best: { id: string; distance: number } | null = null
     for (const line of lines) {

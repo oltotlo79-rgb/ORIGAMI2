@@ -35,5 +35,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo test --workspace
+      - name: Rust tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee cargo-test.log; then
+            details=$(tail -n 30 cargo-test.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Rust tests failed::$details"
+            exit 1
+          fi
       - run: cargo clippy --workspace --all-targets -- -D warnings

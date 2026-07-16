@@ -1,19 +1,37 @@
-use ori_domain::{CreasePattern, Point2, Vertex, VertexId};
+use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 use thiserror::Error;
 
 pub type Revision = u64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    AddVertex { id: VertexId, position: Point2 },
-    MoveVertex { id: VertexId, position: Point2 },
-    RemoveVertex { id: VertexId },
+    AddVertex {
+        id: VertexId,
+        position: Point2,
+    },
+    MoveVertex {
+        id: VertexId,
+        position: Point2,
+    },
+    RemoveVertex {
+        id: VertexId,
+    },
+    AddEdge {
+        id: EdgeId,
+        start: VertexId,
+        end: VertexId,
+        kind: EdgeKind,
+    },
+    RemoveEdge {
+        id: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandResult {
     pub revision: Revision,
     pub changed_vertices: Vec<VertexId>,
+    pub changed_edges: Vec<EdgeId>,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -27,6 +45,14 @@ pub enum CommandError {
     VertexAlreadyExists(VertexId),
     #[error("vertex {0:?} was not found")]
     VertexNotFound(VertexId),
+    #[error("edge {0:?} already exists")]
+    EdgeAlreadyExists(EdgeId),
+    #[error("edge {0:?} was not found")]
+    EdgeNotFound(EdgeId),
+    #[error("an edge cannot connect vertex {0:?} to itself")]
+    DegenerateEdge(VertexId),
+    #[error("vertex {vertex:?} is still used by edge {edge:?}")]
+    VertexHasConnectedEdge { vertex: VertexId, edge: EdgeId },
 }
 
 #[derive(Debug, Clone)]
@@ -81,38 +107,38 @@ impl EditorState {
     ) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let inverse = self.apply(&command)?;
-        let changed_vertices = command.changed_vertices();
+        let result = command.changes();
         self.undo_stack.push(HistoryEntry {
             forward: command,
             inverse,
         });
         self.redo_stack.clear();
         self.advance_revision();
-        Ok(self.result(changed_vertices))
+        Ok(self.result(result))
     }
 
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let Some(entry) = self.undo_stack.pop() else {
-            return Ok(self.result(Vec::new()));
+            return Ok(self.result(Changes::default()));
         };
-        let changed_vertices = entry.inverse.changed_vertices();
+        let result = entry.inverse.changes();
         self.apply(&entry.inverse)?;
         self.redo_stack.push(entry);
         self.advance_revision();
-        Ok(self.result(changed_vertices))
+        Ok(self.result(result))
     }
 
     pub fn redo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let Some(entry) = self.redo_stack.pop() else {
-            return Ok(self.result(Vec::new()));
+            return Ok(self.result(Changes::default()));
         };
-        let changed_vertices = entry.forward.changed_vertices();
+        let result = entry.forward.changes();
         self.apply(&entry.forward)?;
         self.undo_stack.push(entry);
         self.advance_revision();
-        Ok(self.result(changed_vertices))
+        Ok(self.result(result))
     }
 
     fn apply(&mut self, command: &Command) -> Result<Command, CommandError> {
@@ -136,6 +162,17 @@ impl EditorState {
                 })
             }
             Command::RemoveVertex { id } => {
+                if let Some(edge) = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.start == id || edge.end == id)
+                {
+                    return Err(CommandError::VertexHasConnectedEdge {
+                        vertex: id,
+                        edge: edge.id,
+                    });
+                }
                 let index = self
                     .vertex_index(id)
                     .ok_or(CommandError::VertexNotFound(id))?;
@@ -143,6 +180,42 @@ impl EditorState {
                 Ok(Command::AddVertex {
                     id: vertex.id,
                     position: vertex.position,
+                })
+            }
+            Command::AddEdge {
+                id,
+                start,
+                end,
+                kind,
+            } => {
+                if self.edge_index(id).is_some() {
+                    return Err(CommandError::EdgeAlreadyExists(id));
+                }
+                if start == end {
+                    return Err(CommandError::DegenerateEdge(start));
+                }
+                if self.vertex_index(start).is_none() {
+                    return Err(CommandError::VertexNotFound(start));
+                }
+                if self.vertex_index(end).is_none() {
+                    return Err(CommandError::VertexNotFound(end));
+                }
+                self.pattern.edges.push(Edge {
+                    id,
+                    start,
+                    end,
+                    kind,
+                });
+                Ok(Command::RemoveEdge { id })
+            }
+            Command::RemoveEdge { id } => {
+                let index = self.edge_index(id).ok_or(CommandError::EdgeNotFound(id))?;
+                let edge = self.pattern.edges.remove(index);
+                Ok(Command::AddEdge {
+                    id: edge.id,
+                    start: edge.start,
+                    end: edge.end,
+                    kind: edge.kind,
                 })
             }
         }
@@ -153,6 +226,10 @@ impl EditorState {
             .vertices
             .iter()
             .position(|vertex| vertex.id == id)
+    }
+
+    fn edge_index(&self, id: EdgeId) -> Option<usize> {
+        self.pattern.edges.iter().position(|edge| edge.id == id)
     }
 
     const fn ensure_revision(&self, expected: Revision) -> Result<(), CommandError> {
@@ -170,21 +247,39 @@ impl EditorState {
         self.revision = self.revision.saturating_add(1);
     }
 
-    fn result(&self, changed_vertices: Vec<VertexId>) -> CommandResult {
+    fn result(&self, changes: Changes) -> CommandResult {
         CommandResult {
             revision: self.revision,
-            changed_vertices,
+            changed_vertices: changes.vertices,
+            changed_edges: changes.edges,
         }
     }
 }
 
+#[derive(Default)]
+struct Changes {
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+}
+
 impl Command {
-    fn changed_vertices(&self) -> Vec<VertexId> {
-        vec![match *self {
+    fn changes(&self) -> Changes {
+        match *self {
             Self::AddVertex { id, .. }
             | Self::MoveVertex { id, .. }
-            | Self::RemoveVertex { id } => id,
-        }]
+            | Self::RemoveVertex { id } => Changes {
+                vertices: vec![id],
+                edges: Vec::new(),
+            },
+            Self::AddEdge { id, start, end, .. } => Changes {
+                vertices: vec![start, end],
+                edges: vec![id],
+            },
+            Self::RemoveEdge { id } => Changes {
+                vertices: Vec::new(),
+                edges: vec![id],
+            },
+        }
     }
 }
 
@@ -241,5 +336,82 @@ mod tests {
             }
         );
         assert!(editor.pattern().vertices.is_empty());
+    }
+
+    #[test]
+    fn edge_is_undoable_and_keeps_its_id() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("add start");
+        editor
+            .execute(
+                1,
+                Command::AddVertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            )
+            .expect("add end");
+        editor
+            .execute(
+                2,
+                Command::AddEdge {
+                    id: edge,
+                    start,
+                    end,
+                    kind: EdgeKind::Mountain,
+                },
+            )
+            .expect("add edge");
+        editor.undo(3).expect("undo edge");
+        assert!(editor.pattern().edges.is_empty());
+        editor.redo(4).expect("redo edge");
+        assert_eq!(editor.pattern().edges[0].id, edge);
+    }
+
+    #[test]
+    fn connected_vertex_cannot_be_removed() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: edge,
+                start,
+                end,
+                kind: EdgeKind::Valley,
+            }],
+        };
+        let mut editor = EditorState::new(pattern);
+        let error = editor
+            .execute(0, Command::RemoveVertex { id: start })
+            .expect_err("connected vertex removal must fail");
+        assert_eq!(
+            error,
+            CommandError::VertexHasConnectedEdge {
+                vertex: start,
+                edge
+            }
+        );
     }
 }

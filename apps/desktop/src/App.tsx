@@ -11,6 +11,7 @@ import {
   addEdge,
   addVertex,
   connectEdgeIntersection,
+  connectIntersectionCluster,
   connectTJunction,
   generateBenchmarkPattern,
   getProjectSnapshot,
@@ -379,12 +380,19 @@ function App() {
               placement.firstEdgeId,
               placement.secondEdgeId,
             )
-          : await connectTJunction(
-              projectId,
-              revision,
-              placement.firstEdgeId,
-              placement.secondEdgeId,
-            )
+          : placement.operation === 'connect-t-junction'
+            ? await connectTJunction(
+                projectId,
+                revision,
+                placement.firstEdgeId,
+                placement.secondEdgeId,
+              )
+            : await connectIntersectionCluster(
+                projectId,
+                revision,
+                placement.targets,
+                placement.junctionVertexId,
+              )
         snapshot = response.snapshot
         result.connectedVertexId = response.vertex_id
       }
@@ -396,6 +404,7 @@ function App() {
     if (
       placement.operation === 'connect-intersection'
       || placement.operation === 'connect-t-junction'
+      || placement.operation === 'connect-intersection-cluster'
     ) {
       if (
         !result.connectedVertexId
@@ -404,6 +413,11 @@ function App() {
         )
         || (
           placement.operation === 'connect-t-junction'
+          && result.connectedVertexId !== placement.junctionVertexId
+        )
+        || (
+          placement.operation === 'connect-intersection-cluster'
+          && placement.junctionVertexId !== undefined
           && result.connectedVertexId !== placement.junctionVertexId
         )
       ) {
@@ -415,7 +429,9 @@ function App() {
       setSelectedVertexId(result.connectedVertexId)
       setCoreStatus(placement.operation === 'connect-t-junction'
         ? 'T字交点を接続しました（元に戻す1回で復元できます）'
-        : '交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）')
+        : placement.operation === 'connect-intersection-cluster'
+          ? `${placement.targets.length}本の辺を交点クラスタとして接続しました（元に戻す1回で復元できます）`
+          : '交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）')
       return
     }
 
@@ -871,6 +887,13 @@ function App() {
                 if (lineId) setSelectedVertexId(null)
               }}
               onPlaceVertex={(placement) => void placeCanvasVertex(placement)}
+              onPlacementBlocked={(reason) => {
+                if (reason === 'intersection-truncated') {
+                  setCoreStatus('交点候補が過密なため配置できません。拡大して再試行してください')
+                } else if (reason === 'intersection-blocked') {
+                  setCoreStatus('未対応または曖昧な交点クラスタのため配置できません。辺や頂点の重複を確認してください')
+                }
+              }}
               onSelectVertex={selectCanvasVertex}
               onMoveVertex={(vertexId, x, y) => {
                 void runNativeEdit((projectId, revision) =>

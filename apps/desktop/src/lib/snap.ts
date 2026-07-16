@@ -395,7 +395,11 @@ export function prioritizeAdditionSnapTargets(
 ): AdditionSnapTarget | null {
   if (pointTarget?.kind === 'vertex') {
     if (
-      intersectionTarget?.classification === 't-junction'
+      intersectionTarget
+      && (
+        intersectionTarget.classification === 't-junction'
+        || intersectionTarget.classification === 'cluster'
+      )
       && pointTarget.sourceId === intersectionTarget.junctionVertexId
       && pointTarget.point.x === intersectionTarget.point.x
       && pointTarget.point.y === intersectionTarget.point.y
@@ -403,6 +407,19 @@ export function prioritizeAdditionSnapTargets(
     return pointTarget
   }
   return intersectionTarget ?? pointTarget
+}
+
+export function vertexSnapOutranksBlockedIntersection(
+  pointTarget: SnapTarget | null,
+  blockedDistancePx: number | null,
+) {
+  return pointTarget?.kind === 'vertex'
+    && Number.isFinite(pointTarget.distancePx)
+    && pointTarget.distancePx >= 0
+    && blockedDistancePx !== null
+    && Number.isFinite(blockedDistancePx)
+    && blockedDistancePx >= 0
+    && pointTarget.distancePx < blockedDistancePx
 }
 
 export function toggleSnapSetting(settings: SnapSettings, kind: SnapKind): SnapSettings {

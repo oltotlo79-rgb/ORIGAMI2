@@ -64,6 +64,11 @@ export type EdgeIntersectionResponse = {
   vertex_id: string
 }
 
+export type IntersectionClusterTarget = Readonly<{
+  edgeId: string
+  relation: 'interior' | 'endpoint'
+}>
+
 export type ValidationSnapshot = {
   project_id: string
   revision: number
@@ -265,6 +270,20 @@ export function connectEdgeIntersection(
     expectedRevision,
     firstEdge,
     secondEdge,
+  })
+}
+
+export function connectIntersectionCluster(
+  expectedProjectId: string,
+  expectedRevision: number,
+  targets: readonly IntersectionClusterTarget[],
+  junctionVertexId?: string,
+) {
+  return invoke<EdgeIntersectionResponse>('connect_intersection_cluster', {
+    expectedProjectId,
+    expectedRevision,
+    targets,
+    junctionVertexId: junctionVertexId ?? null,
   })
 }
 

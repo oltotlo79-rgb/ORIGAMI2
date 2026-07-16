@@ -1,4 +1,5 @@
-import type { AdditionSnapTarget, SnapPoint, SnapSegment } from './snap'
+import type { AdditionSnapTarget, SnapPoint, SnapSegment, SnapVertex } from './snap'
+import { clusterPointLiesOnSegment } from './intersectionClusterNumerics.ts'
 
 export type VertexPlacement = Readonly<{
   operation: 'add'
@@ -17,11 +18,23 @@ export type VertexPlacement = Readonly<{
   firstEdgeId: string
   secondEdgeId: string
   junctionVertexId: string
+}> | Readonly<{
+  operation: 'connect-intersection-cluster'
+  targets: readonly Readonly<{
+    edgeId: string
+    relation: 'interior' | 'endpoint'
+  }>[]
+  junctionVertexId?: string
 }>
 
 type IntersectionConnectionPlacement = Extract<
   VertexPlacement,
-  { operation: 'connect-intersection' | 'connect-t-junction' }
+  {
+    operation:
+      | 'connect-intersection'
+      | 'connect-t-junction'
+      | 'connect-intersection-cluster'
+  }
 >
 
 type PersistedIntersectionEdge = Readonly<{
@@ -35,9 +48,10 @@ export function createVertexPlacement(
   point: SnapPoint,
   target: AdditionSnapTarget | null,
   segments: readonly SnapSegment[],
+  vertices: readonly SnapVertex[] = [],
 ): VertexPlacement | null {
   if (target?.kind === 'intersection') {
-    return intersectionPlacement(point, target, segments)
+    return intersectionPlacement(point, target, segments, vertices)
   }
   if (
     target?.kind === 'horizontal'
@@ -572,6 +586,7 @@ function intersectionPlacement(
   point: SnapPoint,
   target: Extract<AdditionSnapTarget, { kind: 'intersection' }>,
   segments: readonly SnapSegment[],
+  vertices: readonly SnapVertex[],
 ): VertexPlacement | null {
   if (
     !Number.isFinite(point.x)
@@ -583,8 +598,12 @@ function intersectionPlacement(
     || point.x !== target.point.x
     || point.y !== target.point.y
     || !Array.isArray(target.sourceEdges)
-    || target.sourceEdges.length !== 2
   ) return null
+
+  if (target.classification === 'cluster') {
+    return clusterIntersectionPlacement(target, segments, vertices)
+  }
+  if (target.sourceEdges.length !== 2) return null
 
   const [first, second] = target.sourceEdges
   if (
@@ -662,11 +681,313 @@ function intersectionPlacement(
   }
 }
 
+function clusterIntersectionPlacement(
+  target: Extract<AdditionSnapTarget, { classification: 'cluster' }>,
+  segments: readonly SnapSegment[],
+  vertices: readonly SnapVertex[],
+): VertexPlacement | null {
+  if (
+    target.sourceEdges.length < 3
+    || target.sourceEdges.length > 64
+  ) return null
+
+  const sourceIds = target.sourceEdges.map(({ id }) => id)
+  if (
+    sourceIds.some((id, index) => !id || (index > 0 && sourceIds[index - 1] >= id))
+    || target.key !== intersectionKey(...sourceIds)
+  ) return null
+
+  const sourceIdSet = new Set(sourceIds)
+  const segmentIdCounts = new Map<string, number>()
+  for (const segment of segments) {
+    segmentIdCounts.set(segment.id, (segmentIdCounts.get(segment.id) ?? 0) + 1)
+  }
+
+  const matchedSegments: SnapSegment[] = []
+  const endpointIds = new Set<string>()
+  let interiorCount = 0
+  for (const source of target.sourceEdges) {
+    const matches = segments.filter(({ id }) => id === source.id)
+    if (matches.length !== 1) return null
+    const segment = matches[0]
+    if (
+      !isValidSegment(segment)
+      || segment.kind === 'boundary'
+      || (
+        (source.kind !== undefined || segment.kind !== undefined)
+        && source.kind !== segment.kind
+      )
+    ) return null
+    if (source.relation === 'interior') {
+      if (
+        !isStrictInterior(source.fraction)
+        || (target.point.x === segment.x1 && target.point.y === segment.y1)
+        || (target.point.x === segment.x2 && target.point.y === segment.y2)
+      ) return null
+      interiorCount += 1
+    } else if (
+      source.relation !== 'endpoint'
+      || (source.fraction !== 0 && source.fraction !== 1)
+      || source.endpointVertexId !== (source.fraction === 0
+        ? segment.startVertexId
+        : segment.endVertexId)
+      || target.point.x !== (source.fraction === 0 ? segment.x1 : segment.x2)
+      || target.point.y !== (source.fraction === 0 ? segment.y1 : segment.y2)
+    ) return null
+    if (source.relation === 'endpoint') endpointIds.add(source.endpointVertexId)
+    matchedSegments.push(segment)
+  }
+  if (endpointIds.size > 1 || interiorCount === 0) return null
+
+  for (let index = 0; index < target.sourceEdges.length; index += 1) {
+    const source = target.sourceEdges[index]
+    if (source.relation !== 'interior') continue
+    const segment = matchedSegments[index]
+    const fractionIsConfirmed = matchedSegments.some((other, otherIndex) => {
+      if (otherIndex === index) return false
+      const forward = singlePointIntersection(segment, other)
+      if (
+        forward
+        && clusterPointLiesOnSegment(target.point, segment)
+        && clusterPointLiesOnSegment(target.point, other)
+        && forward.firstFraction === source.fraction
+      ) return true
+      const reverse = singlePointIntersection(other, segment)
+      return Boolean(
+        reverse
+        && clusterPointLiesOnSegment(target.point, segment)
+        && clusterPointLiesOnSegment(target.point, other)
+        && reverse.secondFraction === source.fraction,
+      )
+    })
+    if (!fractionIsConfirmed) return null
+  }
+
+  for (let first = 0; first < matchedSegments.length; first += 1) {
+    for (let second = first + 1; second < matchedSegments.length; second += 1) {
+      const overlap = hasPositiveCollinearOverlap(
+        matchedSegments[first],
+        matchedSegments[second],
+      )
+      if (
+        overlap === null
+        || overlap
+        || !segmentsMeetAtClusterPoint(
+          matchedSegments[first],
+          matchedSegments[second],
+          target.point,
+        )
+      ) return null
+    }
+  }
+
+  for (const segment of segments) {
+    if (!isValidSegment(segment)) continue
+    if (!segmentContainsClusterPoint(segment, target.point, matchedSegments)) continue
+    if (
+      segment.kind === 'boundary'
+      || segmentIdCounts.get(segment.id) !== 1
+      || !sourceIdSet.has(segment.id)
+    ) return null
+  }
+
+  const endpointJunctionId = endpointIds.values().next().value as string | undefined
+  if (endpointJunctionId && target.junctionVertexId !== endpointJunctionId) return null
+  const occupiedVertexId = uniqueVertexAtPoint(vertices, segments, target.point)
+  if (occupiedVertexId === null) return null
+  if (target.junctionVertexId !== undefined) {
+    if (occupiedVertexId !== target.junctionVertexId) return null
+  } else if (occupiedVertexId !== undefined) {
+    return null
+  }
+
+  return {
+    operation: 'connect-intersection-cluster',
+    targets: target.sourceEdges.map(({ id, relation }) => ({
+      edgeId: id,
+      relation,
+    })),
+    ...(target.junctionVertexId
+      ? { junctionVertexId: target.junctionVertexId }
+      : {}),
+  }
+}
+
+function segmentContainsClusterPoint(
+  segment: SnapSegment,
+  point: SnapPoint,
+  references: readonly SnapSegment[],
+) {
+  if (
+    (point.x === segment.x1 && point.y === segment.y1)
+    || (point.x === segment.x2 && point.y === segment.y2)
+  ) return true
+  return references.some((reference) => {
+    if (reference === segment) return true
+    const forward = singlePointIntersection(reference, segment)
+    if (
+      forward
+      && clusterPointLiesOnSegment(point, reference)
+      && clusterPointLiesOnSegment(point, segment)
+    ) return true
+    const reverse = singlePointIntersection(segment, reference)
+    return Boolean(
+      reverse
+      && clusterPointLiesOnSegment(point, reference)
+      && clusterPointLiesOnSegment(point, segment),
+    )
+  })
+}
+
+function singlePointIntersection(
+  first: SnapSegment,
+  second: SnapSegment,
+): Readonly<{
+  point: SnapPoint
+  firstFraction: number
+  secondFraction: number
+}> | null {
+  const firstDirection = { x: first.x2 - first.x1, y: first.y2 - first.y1 }
+  const secondDirection = { x: second.x2 - second.x1, y: second.y2 - second.y1 }
+  const secondOffset = { x: second.x1 - first.x1, y: second.y1 - first.y1 }
+  if (
+    !isFinitePoint(firstDirection)
+    || !isFinitePoint(secondDirection)
+    || !isFinitePoint(secondOffset)
+  ) return null
+  const denominator = checkedFiniteCross(firstDirection, secondDirection)
+  if (denominator === null || denominator === 0) return null
+  const firstNumerator = checkedFiniteCross(secondOffset, secondDirection)
+  const secondNumerator = checkedFiniteCross(secondOffset, firstDirection)
+  if (firstNumerator === null || secondNumerator === null) return null
+  const firstFraction = firstNumerator / denominator
+  const secondFraction = secondNumerator / denominator
+  if (
+    !isSegmentFraction(firstFraction)
+    || !isSegmentFraction(secondFraction)
+  ) return null
+  const point = {
+    x: stableConvexCombination(first.x1, first.x2, firstFraction),
+    y: stableConvexCombination(first.y1, first.y2, firstFraction),
+  }
+  return isFinitePoint(point)
+    ? { point, firstFraction, secondFraction }
+    : null
+}
+
+function isSegmentFraction(fraction: number) {
+  return Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
+}
+
+function hasPositiveCollinearOverlap(
+  first: SnapSegment,
+  second: SnapSegment,
+): boolean | null {
+  const firstDirection = { x: first.x2 - first.x1, y: first.y2 - first.y1 }
+  const secondDirection = { x: second.x2 - second.x1, y: second.y2 - second.y1 }
+  const offset = { x: second.x1 - first.x1, y: second.y1 - first.y1 }
+  const directionCross = checkedFiniteCross(firstDirection, secondDirection)
+  const offsetCross = checkedFiniteCross(firstDirection, offset)
+  if (directionCross === null || offsetCross === null) return null
+  if (directionCross !== 0 || offsetCross !== 0) return false
+  const useX = Math.abs(firstDirection.x) >= Math.abs(firstDirection.y)
+  const firstStart = useX ? first.x1 : first.y1
+  const firstEnd = useX ? first.x2 : first.y2
+  const secondStart = useX ? second.x1 : second.y1
+  const secondEnd = useX ? second.x2 : second.y2
+  return Math.max(Math.min(firstStart, firstEnd), Math.min(secondStart, secondEnd))
+    < Math.min(Math.max(firstStart, firstEnd), Math.max(secondStart, secondEnd))
+}
+
+function segmentsMeetAtClusterPoint(
+  first: SnapSegment,
+  second: SnapSegment,
+  point: SnapPoint,
+) {
+  const intersection = singlePointIntersection(first, second)
+  if (intersection) {
+    return clusterPointLiesOnSegment(point, first)
+      && clusterPointLiesOnSegment(point, second)
+  }
+  return segmentHasExactEndpoint(first, point)
+    && segmentHasExactEndpoint(second, point)
+}
+
+function segmentHasExactEndpoint(segment: SnapSegment, point: SnapPoint) {
+  return (segment.x1 === point.x && segment.y1 === point.y)
+    || (segment.x2 === point.x && segment.y2 === point.y)
+}
+
+function checkedFiniteCross(first: SnapPoint, second: SnapPoint) {
+  const value = first.x * second.y - first.y * second.x
+  return Number.isFinite(value) ? value : null
+}
+
+function uniqueVertexAtPoint(
+  vertices: readonly SnapVertex[],
+  segments: readonly SnapSegment[],
+  point: SnapPoint,
+): string | null | undefined {
+  const positionsById = new Map<string, SnapPoint[]>()
+  const vertexRecordCounts = new Map<string, number>()
+  const add = (id: string, candidate: SnapPoint) => {
+    if (!id || !isFinitePoint(candidate)) return
+    const positions = positionsById.get(id)
+    if (positions) positions.push(candidate)
+    else positionsById.set(id, [candidate])
+  }
+  for (const vertex of vertices) {
+    vertexRecordCounts.set(vertex.id, (vertexRecordCounts.get(vertex.id) ?? 0) + 1)
+    add(vertex.id, vertex)
+  }
+  for (const segment of segments) {
+    add(segment.startVertexId, { x: segment.x1, y: segment.y1 })
+    add(segment.endVertexId, { x: segment.x2, y: segment.y2 })
+  }
+  const occupants: string[] = []
+  for (const [id, positions] of positionsById) {
+    if (positions.some((position) => position.x === point.x && position.y === point.y)) {
+      occupants.push(id)
+    }
+  }
+  if (occupants.length > 1) return null
+  const occupant = occupants[0]
+  if (
+    occupant
+    && (
+      (vertexRecordCounts.get(occupant) ?? 0) > 1
+      || positionsById.get(occupant)?.some(
+        (position) => position.x !== point.x || position.y !== point.y,
+      )
+    )
+  ) return null
+  return occupant
+}
+
 export function isSupportedIntersectionTarget(
   target: Extract<AdditionSnapTarget, { kind: 'intersection' }>,
   segments: readonly SnapSegment[],
 ) {
-  if (!Array.isArray(target.sourceEdges) || target.sourceEdges.length !== 2) return false
+  if (!Array.isArray(target.sourceEdges)) return false
+  if (target.classification === 'cluster') {
+    if (target.sourceEdges.length < 3 || target.sourceEdges.length > 64) return false
+    const sourceIds = target.sourceEdges.map(({ id }) => id)
+    if (
+      sourceIds.some(
+        (id, index) => !id || (index > 0 && sourceIds[index - 1] >= id),
+      )
+      || target.key !== intersectionKey(...sourceIds)
+    ) return false
+
+    return target.sourceEdges.every((source) => {
+      const matches = segments.filter(({ id }) => id === source.id)
+      if (matches.length !== 1) return false
+      const segment = matches[0]
+      return segment.kind !== 'boundary'
+        && (source.kind === undefined || source.kind === segment.kind)
+    })
+  }
+  if (target.sourceEdges.length !== 2) return false
   const [firstSource, secondSource] = target.sourceEdges
   if (!firstSource || !secondSource) return false
   const firstMatches = segments.filter(({ id }) => id === firstSource.id)
@@ -692,6 +1013,47 @@ export function isSupportedIntersectionPlacement(
   placement: IntersectionConnectionPlacement,
   edges: readonly PersistedIntersectionEdge[],
 ) {
+  if (placement.operation === 'connect-intersection-cluster') {
+    if (placement.targets.length < 3 || placement.targets.length > 64) return false
+    const edgeById = new Map<string, PersistedIntersectionEdge | null>()
+    for (const edge of edges) {
+      edgeById.set(edge.id, edgeById.has(edge.id) ? null : edge)
+    }
+    let interiorCount = 0
+    let previousId: string | undefined
+    for (const target of placement.targets) {
+      if (
+        !target.edgeId
+        || (previousId !== undefined && previousId >= target.edgeId)
+        || (target.relation !== 'interior' && target.relation !== 'endpoint')
+      ) return false
+      previousId = target.edgeId
+      const edge = edgeById.get(target.edgeId)
+      if (
+        !edge
+        || edge.kind === 'boundary'
+        || !['mountain', 'valley', 'auxiliary', 'cut'].includes(edge.kind)
+      ) return false
+      if (target.relation === 'interior') {
+        interiorCount += 1
+        if (
+          placement.junctionVertexId
+          && (edge.start === placement.junctionVertexId
+            || edge.end === placement.junctionVertexId)
+        ) return false
+      } else if (
+        !placement.junctionVertexId
+        || (edge.start !== placement.junctionVertexId
+          && edge.end !== placement.junctionVertexId)
+      ) return false
+    }
+    return interiorCount > 0
+      && (placement.junctionVertexId === undefined
+        || placement.junctionVertexId.length > 0)
+      && (placement.junctionVertexId !== undefined
+        || interiorCount === placement.targets.length)
+  }
+
   if (placement.firstEdgeId >= placement.secondEdgeId) return false
   const firstMatches = edges.filter(({ id }) => id === placement.firstEdgeId)
   const secondMatches = edges.filter(({ id }) => id === placement.secondEdgeId)
@@ -754,8 +1116,8 @@ function junctionIdentityIsUnambiguous(
   return foundJunction
 }
 
-function intersectionKey(firstId: string, secondId: string) {
-  return `intersection:${JSON.stringify([firstId, secondId])}`
+function intersectionKey(...edgeIds: readonly string[]) {
+  return `intersection:${JSON.stringify(edgeIds)}`
 }
 
 function finitePointPlacement(point: SnapPoint): VertexPlacement | null {

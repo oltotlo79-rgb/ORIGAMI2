@@ -4,7 +4,10 @@ mod editor;
 mod sheet;
 mod validation;
 
-pub use editor::{Command, CommandError, CommandResult, EditorState, Revision};
+pub use editor::{
+    Command, CommandError, CommandResult, EditorState, IntersectionEdgeTarget,
+    JunctionVertexIntent, Revision,
+};
 pub use ori_geometry::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
     SegmentIntersection, ValidationIssue, validate_paper,

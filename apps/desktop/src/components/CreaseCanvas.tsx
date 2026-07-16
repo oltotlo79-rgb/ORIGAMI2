@@ -5,6 +5,7 @@ import {
   prioritizeAdditionSnapTargets,
   resolveUniqueSnapAnchor,
   resolveSnapTarget,
+  vertexSnapOutranksBlockedIntersection,
   type AdditionSnapTarget,
   type AngleSnapConfig,
   type AngleSnapTarget,
@@ -60,6 +61,9 @@ type Props = {
   angleConfig?: AngleSnapConfig
   onSelectLine: (id: string | null) => void
   onPlaceVertex?: (placement: VertexPlacement) => void
+  onPlacementBlocked?: (
+    reason: 'intersection-truncated' | 'intersection-blocked'
+  ) => void
   onSelectVertex?: (id: string) => void
   onMoveVertex?: (id: string, x: number, y: number) => void
   cancelInteractionToken?: number
@@ -104,6 +108,16 @@ type SnapGuide = {
   target: AdditionSnapTarget
   label?: string
 }
+
+type AdditionSnapResolution =
+  | Readonly<{
+      status: 'ready'
+      target: AdditionSnapTarget | null
+    }>
+  | Readonly<{
+      status: 'blocked'
+      reason: 'intersection-truncated' | 'intersection-blocked'
+    }>
 
 const DEFAULT_PAPER_BOUNDS: PaperBounds = {
   minX: 0,
@@ -162,6 +176,7 @@ export function CreaseCanvas({
   angleConfig,
   onSelectLine,
   onPlaceVertex,
+  onPlacementBlocked,
   onSelectVertex,
   onMoveVertex,
   cancelInteractionToken = 0,
@@ -431,7 +446,10 @@ export function CreaseCanvas({
     visibleGrid,
   ])
 
-  function resolveAdditionSnap(point: SnapPoint, transform: ViewTransform) {
+  function resolveAdditionSnap(
+    point: SnapPoint,
+    transform: ViewTransform,
+  ): AdditionSnapResolution {
     const accept = (target: { point: SnapPoint }) => isInsidePaper(
       target.point.x,
       target.point.y,
@@ -451,20 +469,39 @@ export function CreaseCanvas({
       angleConfig,
       accept,
     })
-    if (!snapSettings.intersection) return pointTarget
+    if (!snapSettings.intersection) return { status: 'ready', target: pointTarget }
 
-    const intersectionTarget = intersectionSnapIndex.query({
+    const intersectionResult = intersectionSnapIndex.query({
       point,
       scale: transform.scale,
-      accept: (target) => {
-        if (!accept(target)) return false
-        const first = intersectionLinesById.get(target.sourceEdges[0].id)
-        const second = intersectionLinesById.get(target.sourceEdges[1].id)
-        if (!first || !second) return false
-        return isSupportedIntersectionTarget(target, [first, second])
-      },
-    }).target
-    return prioritizeAdditionSnapTargets(pointTarget, intersectionTarget)
+      accept,
+    })
+    if (intersectionResult.truncated) {
+      return { status: 'blocked', reason: 'intersection-truncated' }
+    }
+    if (intersectionResult.blocked) {
+      if (vertexSnapOutranksBlockedIntersection(
+        pointTarget,
+        intersectionResult.blockedDistancePx,
+      )) return { status: 'ready', target: pointTarget }
+      return { status: 'blocked', reason: 'intersection-blocked' }
+    }
+    const intersectionTarget = intersectionResult.target
+    if (intersectionTarget) {
+      const sourceLines: CreaseLine[] = []
+      for (const source of intersectionTarget.sourceEdges) {
+        const line = intersectionLinesById.get(source.id)
+        if (!line) return { status: 'blocked', reason: 'intersection-blocked' }
+        sourceLines.push(line)
+      }
+      if (!isSupportedIntersectionTarget(intersectionTarget, sourceLines)) {
+        return { status: 'blocked', reason: 'intersection-blocked' }
+      }
+    }
+    return {
+      status: 'ready',
+      target: prioritizeAdditionSnapTargets(pointTarget, intersectionTarget),
+    }
   }
 
   function resolveDraggedPosition(
@@ -544,13 +581,21 @@ export function CreaseCanvas({
       pointer.transform,
     )
     if (tool === 'vertex' && onPlaceVertex) {
-      const target = resolveAdditionSnap({ x, y }, pointer.transform)
+      const resolvedSnap = resolveAdditionSnap({ x, y }, pointer.transform)
+      if (resolvedSnap.status === 'blocked') {
+        onPlacementBlocked?.(resolvedSnap.reason)
+        return
+      }
+      const { target } = resolvedSnap
       const point = target?.point ?? { x, y }
       const existingVertex = lookupExactVertex(exactVertexIndex, point)
       if (existingVertex) {
         if (
           target?.kind === 'intersection'
-          && target.classification === 't-junction'
+          && (
+            target.classification === 't-junction'
+            || target.classification === 'cluster'
+          )
           && target.junctionVertexId === existingVertex.id
           && lookupExactVertex(exactVertexIndex, point, existingVertex.id) === null
           && isInsidePaper(
@@ -561,8 +606,11 @@ export function CreaseCanvas({
             useLegacyRectangularPaper,
           )
         ) {
-          const placement = createVertexPlacement(point, target, lines)
-          if (placement?.operation === 'connect-t-junction') {
+          const placement = createVertexPlacement(point, target, lines, vertices)
+          if (
+            placement?.operation === 'connect-t-junction'
+            || placement?.operation === 'connect-intersection-cluster'
+          ) {
             setSnapGuide(null)
             onPlaceVertex(placement)
             return
@@ -581,7 +629,7 @@ export function CreaseCanvas({
         useLegacyRectangularPaper,
       )) {
         setSnapGuide(null)
-        const placement = createVertexPlacement(point, target, lines)
+        const placement = createVertexPlacement(point, target, lines, vertices)
         if (placement) onPlaceVertex(placement)
         return
       }
@@ -674,18 +722,29 @@ export function CreaseCanvas({
         return
       }
       const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
-      const target = resolveAdditionSnap({ x: pointer.x, y: pointer.y }, pointer.transform)
+      const resolvedSnap = resolveAdditionSnap(
+        { x: pointer.x, y: pointer.y },
+        pointer.transform,
+      )
+      if (resolvedSnap.status === 'blocked') {
+        setSnapGuide(null)
+        return
+      }
+      const { target } = resolvedSnap
       setSnapGuide(target
         ? {
             rawPoint: { x: pointer.x, y: pointer.y },
             target,
             label: target.kind === 'intersection'
-              && target.classification === 't-junction'
-              && target.sourceEdges.some(
-                ({ id }) => intersectionLinesById.get(id)?.kind === 'boundary',
-              )
-              ? '輪郭T字'
-              : undefined,
+              && target.classification === 'cluster'
+              ? '交点クラスタ'
+              : target.kind === 'intersection'
+                && target.classification === 't-junction'
+                && target.sourceEdges.some(
+                  ({ id }) => intersectionLinesById.get(id)?.kind === 'boundary',
+                )
+                ? '輪郭T字'
+                : undefined,
           }
         : null)
       return

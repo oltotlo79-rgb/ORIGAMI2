@@ -11,6 +11,7 @@ import {
   resolveUniqueSnapAnchor,
   resolveSnapTarget,
   toggleSnapSetting,
+  vertexSnapOutranksBlockedIntersection,
   type ResolveSnapTargetOptions,
   type SnapGrid,
   type SnapKind,
@@ -2271,6 +2272,862 @@ test('T junctions expose the exact existing endpoint in every orientation', () =
   }
 })
 
+test('three and four proper edges expand to one canonical intersection cluster', () => {
+  const three = [
+    intersectionSegment('z-vertical', 'z1', 'z2', 0, -2, 0, 2),
+    intersectionSegment('a-horizontal', 'a1', 'a2', -2, 0, 2, 0),
+    intersectionSegment('m-diagonal', 'm1', 'm2', -2, -2, 2, 2),
+  ]
+  const threeResult = queryIntersection(three)
+  assert.equal(threeResult.truncated, false)
+  assert.deepEqual(threeResult.target, {
+    kind: 'intersection',
+    classification: 'cluster',
+    key: 'intersection:["a-horizontal","m-diagonal","z-vertical"]',
+    point: { x: 0, y: 0 },
+    distancePx: 0,
+    sourceEdges: [
+      { id: 'a-horizontal', fraction: 0.5, relation: 'interior' },
+      { id: 'm-diagonal', fraction: 0.5, relation: 'interior' },
+      { id: 'z-vertical', fraction: 0.5, relation: 'interior' },
+    ],
+  })
+
+  const fourResult = queryIntersection([
+    ...three,
+    intersectionSegment('b-anti-diagonal', 'b1', 'b2', -2, 2, 2, -2),
+  ])
+  assert.equal(fourResult.target?.classification, 'cluster')
+  assert.deepEqual(fourResult.target?.sourceEdges.map(({ id }) => id), [
+    'a-horizontal',
+    'b-anti-diagonal',
+    'm-diagonal',
+    'z-vertical',
+  ])
+})
+
+test('proper and endpoint members share one unambiguous cluster junction', () => {
+  const segments = [
+    intersectionSegment('a-base', 'left', 'right', -2, 0, 2, 0),
+    intersectionSegment('m-branch', 'junction', 'tip', 0, 0, 2, 2),
+    intersectionSegment('z-crossing', 'bottom', 'top', 0, -2, 0, 2),
+  ]
+  const target = queryIntersection(segments).target
+
+  assert.deepEqual(target, {
+    kind: 'intersection',
+    classification: 'cluster',
+    key: 'intersection:["a-base","m-branch","z-crossing"]',
+    point: { x: 0, y: 0 },
+    distancePx: 0,
+    sourceEdges: [
+      { id: 'a-base', fraction: 0.5, relation: 'interior' },
+      {
+        id: 'm-branch',
+        fraction: 0,
+        relation: 'endpoint',
+        endpointVertexId: 'junction',
+      },
+      { id: 'z-crossing', fraction: 0.5, relation: 'interior' },
+    ],
+    junctionVertexId: 'junction',
+  })
+})
+
+test('a unique isolated source vertex is reused by an all-interior cluster', () => {
+  const segments = [
+    intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0),
+    intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2),
+    intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2),
+  ]
+  const result = createIntersectionSnapIndex(
+    segments,
+    [{ id: 'isolated-junction', x: 0, y: 0 }],
+  ).query({ point: { x: 0, y: 0 }, scale: 1 })
+
+  assert.equal(result.target?.classification, 'cluster')
+  assert.equal(
+    result.target?.classification === 'cluster'
+      ? result.target.junctionVertexId
+      : undefined,
+    'isolated-junction',
+  )
+})
+
+test('rounded decimal clusters canonicalize to exact endpoint and isolated vertices', () => {
+  const endpointPoint = {
+    x: -26.315692230127752,
+    y: -4.00255611166358,
+  }
+  const endpointSegments = [
+    intersectionSegment(
+      'a', 'a1', 'a2',
+      -57.89375245140291, -25.311092583739896,
+      4.230775667472102, 16.609872920648613,
+    ),
+    intersectionSegment(
+      'b', 'b1', 'b2',
+      -36.848648021819244, -8.067151586169771,
+      -3.3492984520289113, 4.8600178953233755,
+    ),
+    intersectionSegment(
+      'c', 'endpoint-junction', 'c2',
+      endpointPoint.x, endpointPoint.y,
+      -29.150637367138586, 31.71985592015487,
+    ),
+  ]
+  const endpointVertices = [{ id: 'endpoint-junction', ...endpointPoint }]
+  const endpointResult = createIntersectionSnapIndex(
+    endpointSegments,
+    endpointVertices,
+  ).query({ point: endpointPoint, scale: 1 })
+  assert.ok(
+    endpointResult.target
+    && endpointResult.target.classification === 'cluster',
+  )
+  assert.deepEqual(endpointResult.target.point, endpointPoint)
+  assert.equal(endpointResult.target.junctionVertexId, 'endpoint-junction')
+  assert.deepEqual(endpointResult.target.sourceEdges[2], {
+    id: 'c',
+    fraction: 0,
+    relation: 'endpoint',
+    endpointVertexId: 'endpoint-junction',
+  })
+  assert.equal(createVertexPlacement(
+    endpointResult.target.point,
+    endpointResult.target,
+    endpointSegments,
+    endpointVertices,
+  )?.operation, 'connect-intersection-cluster')
+
+  const endpointFirst = [
+    { ...endpointSegments[2], id: 'a' },
+    { ...endpointSegments[1], id: 'b' },
+    { ...endpointSegments[0], id: 'c' },
+  ]
+  for (const reverseEndpoint of [false, true]) {
+    for (const reverseInput of [false, true]) {
+      const variant = endpointFirst.map((segment, index) => {
+        if (index !== 0 || !reverseEndpoint) return segment
+        return {
+          ...segment,
+          startVertexId: segment.endVertexId,
+          endVertexId: segment.startVertexId,
+          x1: segment.x2,
+          y1: segment.y2,
+          x2: segment.x1,
+          y2: segment.y1,
+        }
+      })
+      if (reverseInput) variant.reverse()
+      const result = createIntersectionSnapIndex(
+        variant,
+        endpointVertices,
+      ).query({ point: endpointPoint, scale: 1 })
+      assert.ok(result.target && result.target.classification === 'cluster')
+      assert.deepEqual(result.target.point, endpointPoint)
+      assert.equal(result.target.junctionVertexId, 'endpoint-junction')
+      assert.deepEqual(result.target.sourceEdges[0], {
+        id: 'a',
+        fraction: reverseEndpoint ? 1 : 0,
+        relation: 'endpoint',
+        endpointVertexId: 'endpoint-junction',
+      })
+    }
+  }
+
+  const isolatedPoint = {
+    x: -26.121916016563773,
+    y: 41.34932646993548,
+  }
+  const isolatedSegments = [
+    intersectionSegment(
+      'a', 'a1', 'a2',
+      -9.734757258724827, -3.0735925891217875,
+      -27.321839031042426, 44.602122377815896,
+    ),
+    intersectionSegment(
+      'b', 'b1', 'b2',
+      -8.994579446256676, 33.010947429528926,
+      -29.408440156119795, 42.94935831893725,
+    ),
+    intersectionSegment(
+      'c', 'c1', 'c2',
+      -75.15133592688133, 30.58643937376763,
+      22.363850251037057, 51.99287128576056,
+    ),
+  ]
+  const isolatedVertices = [{ id: 'isolated-junction', ...isolatedPoint }]
+  const isolatedResult = createIntersectionSnapIndex(
+    isolatedSegments,
+    isolatedVertices,
+  ).query({ point: isolatedPoint, scale: 1 })
+  assert.ok(
+    isolatedResult.target
+    && isolatedResult.target.classification === 'cluster',
+  )
+  assert.deepEqual(isolatedResult.target.point, isolatedPoint)
+  assert.equal(isolatedResult.target.junctionVertexId, 'isolated-junction')
+  assert.equal(createVertexPlacement(
+    isolatedResult.target.point,
+    isolatedResult.target,
+    isolatedSegments,
+    isolatedVertices,
+  )?.operation, 'connect-intersection-cluster')
+})
+
+test('rounded canonical vertices remain unique and consume bounded work', () => {
+  const point = {
+    x: -26.121916016563773,
+    y: 41.34932646993548,
+  }
+  const segments = [
+    intersectionSegment(
+      'a', 'a1', 'a2',
+      -9.734757258724827, -3.0735925891217875,
+      -27.321839031042426, 44.602122377815896,
+    ),
+    intersectionSegment(
+      'b', 'b1', 'b2',
+      -8.994579446256676, 33.010947429528926,
+      -29.408440156119795, 42.94935831893725,
+    ),
+    intersectionSegment(
+      'c', 'c1', 'c2',
+      -75.15133592688133, 30.58643937376763,
+      22.363850251037057, 51.99287128576056,
+    ),
+  ]
+  for (const ambiguousVertices of [
+    [
+      { id: 'first', ...point },
+      { id: 'second', ...point },
+    ],
+    [
+      { id: 'duplicate', ...point },
+      { id: 'duplicate', ...point },
+    ],
+  ]) {
+    const result = createIntersectionSnapIndex(
+      segments,
+      ambiguousVertices,
+    ).query({ point, scale: 1 })
+    assert.equal(result.target, null)
+    assert.equal(result.blocked, true)
+  }
+
+  const sameXNoise = Array.from({ length: 100 }, (_, index) => ({
+    id: `noise-${index}`,
+    x: point.x,
+    y: point.y + 1_000 + index,
+  }))
+  const limited = createIntersectionSnapIndex(
+    segments,
+    [{ id: 'junction', ...point }, ...sameXNoise],
+  ).query({ point, scale: 1, maxClusterTests: 64 })
+  assert.equal(limited.target, null)
+  assert.equal(limited.truncated, true)
+})
+
+test('duplicate isolated vertex records block cluster Reuse even at one position', () => {
+  const segments = [
+    intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0),
+    intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2),
+    intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2),
+  ]
+  const vertices = [
+    { id: 'duplicate-junction', x: 0, y: 0 },
+    { id: 'duplicate-junction', x: 0, y: 0 },
+  ]
+  const result = createIntersectionSnapIndex(segments, vertices).query({
+    point: { x: 0, y: 0 },
+    scale: 1,
+  })
+  assert.equal(result.target, null)
+  assert.equal(result.blocked, true)
+
+  const uniqueTarget = createIntersectionSnapIndex(
+    segments,
+    vertices.slice(0, 1),
+  ).query({ point: { x: 0, y: 0 }, scale: 1 }).target
+  assert.ok(uniqueTarget && uniqueTarget.classification === 'cluster')
+  assert.equal(createVertexPlacement(
+    uniqueTarget.point,
+    uniqueTarget,
+    segments,
+    vertices,
+  ), null)
+})
+
+test('cluster output is invariant across every input order and edge reversal', () => {
+  const original = [
+    intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2),
+    intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0),
+    intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2),
+  ]
+  const expected = queryIntersection(original)
+  const permutations = [
+    [0, 1, 2], [0, 2, 1], [1, 0, 2],
+    [1, 2, 0], [2, 0, 1], [2, 1, 0],
+  ] as const
+  for (const permutation of permutations) {
+    for (let reversalMask = 0; reversalMask < 8; reversalMask += 1) {
+      const variant = permutation.map((sourceIndex, outputIndex) => {
+        const segment = original[sourceIndex]
+        if ((reversalMask & (1 << outputIndex)) === 0) return segment
+        return {
+          ...segment,
+          startVertexId: segment.endVertexId,
+          endVertexId: segment.startVertexId,
+          x1: segment.x2,
+          y1: segment.y2,
+          x2: segment.x1,
+          y2: segment.y1,
+        }
+      })
+      assert.deepEqual(queryIntersection(variant), expected)
+    }
+  }
+})
+
+test('cluster expansion keeps one-ULP pair intersections together', () => {
+  const segments = [
+    intersectionSegment(
+      'a', 'a1', 'a2',
+      -12.584386984463626, 21.039323719721033,
+      -43.359052991644845, 52.885536962503934,
+    ),
+    intersectionSegment(
+      'b', 'b1', 'b2',
+      -21.723817553057426, 17.17053126025418,
+      -34.904792302147435, 56.4642916519142,
+    ),
+    intersectionSegment(
+      'c', 'c1', 'c2',
+      -44.334953344521736, 26.574497381575306,
+      -13.988780628120699, 47.76532725712443,
+    ),
+  ]
+  const result = queryIntersection(segments, {
+    x: -28.57096530497074,
+    y: 37.582540861330926,
+  })
+  assert.equal(result.target?.classification, 'cluster')
+  assert.equal(result.blocked, false)
+})
+
+test('cluster Create survives pair interpolation FMA disagreement', () => {
+  const segments = [
+    intersectionSegment(
+      'a', 'a1', 'a2',
+      -761.6238217708569, 358.3305812537483,
+      -67.42483397026956, 649.4029881962348,
+    ),
+    intersectionSegment(
+      'b', 'b1', 'b2',
+      -482.92748512729344, 475.6081546439962,
+      -134.2414665987278, 607.9754595950404,
+    ),
+    intersectionSegment(
+      'c', 'c1', 'c2',
+      -520.4852242823567, 85.03606537939055,
+      -425.8068100384997, 860.1397882516304,
+    ),
+  ]
+  const result = queryIntersection(segments, {
+    x: -472.2835381980984,
+    y: 479.6487828716636,
+  })
+  assert.equal(result.blocked, false)
+  assert.ok(result.target && result.target.classification === 'cluster')
+  assert.equal(result.target.sourceEdges.length, 3)
+  assert.deepEqual(createVertexPlacement(
+    result.target.point,
+    result.target,
+    segments,
+  ), {
+    operation: 'connect-intersection-cluster',
+    targets: [
+      { edgeId: 'a', relation: 'interior' },
+      { edgeId: 'b', relation: 'interior' },
+      { edgeId: 'c', relation: 'interior' },
+    ],
+  })
+})
+
+test('cluster Create remains compatible when only reverse document interpolation is stable', () => {
+  const segments = [
+    intersectionSegment(
+      'b', 'b1', 'b2',
+      1244.6740584037207, 192.04027142069572,
+      -35.10840974525854, 937.7761247925646,
+    ),
+    intersectionSegment(
+      'c', 'c1', 'c2',
+      1186.7878486119257, 183.0718879233308,
+      300.887521406075, 756.4467701217807,
+    ),
+    intersectionSegment(
+      'a', 'a1', 'a2',
+      528.9518373283253, 586.240607350301,
+      388.36943464413514, 1474.8760422947796,
+    ),
+  ]
+  const result = queryIntersection(segments, {
+    x: 524.9690688215196,
+    y: 611.4160856232047,
+  })
+  assert.equal(result.blocked, false)
+  assert.ok(result.target && result.target.classification === 'cluster')
+  assert.deepEqual(createVertexPlacement(
+    result.target.point,
+    result.target,
+    segments,
+  ), {
+    operation: 'connect-intersection-cluster',
+    targets: [
+      { edgeId: 'a', relation: 'interior' },
+      { edgeId: 'b', relation: 'interior' },
+      { edgeId: 'c', relation: 'interior' },
+    ],
+  })
+})
+
+test('cluster roundoff stays translation-stable and rejects parallel members', () => {
+  const translatedUlp = 0.125
+  for (const [base, offset, expectedBlocked] of [
+    [1e12, 0.01, false],
+    ...[1, 2, 4].map((ulps) => [1e15, translatedUlp * ulps, true] as const),
+    ...[8, 16].map((ulps) => [1e15, translatedUlp * ulps, false] as const),
+  ] as const) {
+    const segments = [
+      intersectionSegment('a', 'a1', 'a2', base - 100, 0, base + 100, 0),
+      intersectionSegment('b', 'b1', 'b2', base, -10, base, 10),
+      intersectionSegment('c', 'c1', 'c2', base + offset, -10, base + offset, 10),
+    ]
+    const result = queryIntersection(segments, { x: base, y: 0 })
+    assert.notEqual(result.target?.classification, 'cluster')
+    assert.equal(result.blocked, expectedBlocked)
+  }
+})
+
+test('cluster roundoff blocks a translated four-ULP triangle', () => {
+  const base = 1e15
+  const segments = [
+    intersectionSegment('a', 'a1', 'a2', base - 100, base, base + 100, base),
+    intersectionSegment('b', 'b1', 'b2', base, base - 100, base, base + 100),
+    intersectionSegment(
+      'c',
+      'c1',
+      'c2',
+      base - 100,
+      base + 100.5,
+      base + 100,
+      base - 99.5,
+    ),
+  ]
+  const result = queryIntersection(segments, { x: base, y: base })
+  assert.equal(result.target, null)
+  assert.equal(result.blocked, true)
+})
+
+test('cluster expansion keeps Cut and canonical kinds but blocks Boundary', () => {
+  const ordinary = [
+    { ...intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0), kind: 'mountain' as const },
+    { ...intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2), kind: 'cut' as const },
+    { ...intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2), kind: 'valley' as const },
+  ]
+  const cutTarget = queryIntersection(ordinary).target
+  assert.equal(cutTarget?.classification, 'cluster')
+  assert.deepEqual(cutTarget?.sourceEdges, [
+    { id: 'a', fraction: 0.5, relation: 'interior', kind: 'mountain' },
+    { id: 'b', fraction: 0.5, relation: 'interior', kind: 'cut' },
+    { id: 'c', fraction: 0.5, relation: 'interior', kind: 'valley' },
+  ])
+
+  const withBoundary = ordinary.map((segment, index) => index === 0
+    ? { ...segment, kind: 'boundary' as const }
+    : segment)
+  const boundaryResult = queryIntersection(withBoundary)
+  assert.equal(boundaryResult.target, null)
+  assert.equal(boundaryResult.blocked, true)
+})
+
+test('near misses stay two-edge while overlap, ambiguity, and duplicate IDs block clusters', () => {
+  const horizontal = intersectionSegment('a-horizontal', 'a1', 'a2', -2, 0, 2, 0)
+  const vertical = intersectionSegment('b-vertical', 'b1', 'b2', 0, -2, 0, 2)
+  const nearMiss = intersectionSegment('c-near', 'c1', 'c2', -2, 2.001, 2, -1.999)
+  const nearResult = queryIntersection([horizontal, vertical, nearMiss], { x: 0, y: 0 })
+  assert.equal(nearResult.target?.classification, 'proper')
+  assert.equal(nearResult.target?.key, 'intersection:["a-horizontal","b-vertical"]')
+
+  const overlap = intersectionSegment('c-overlap', 'c1', 'c2', -1, 0, 1, 0)
+  const diagonal = intersectionSegment('d-diagonal', 'd1', 'd2', -2, -2, 2, 2)
+  assert.equal(queryIntersection([horizontal, vertical, overlap, diagonal]).target, null)
+
+  const ambiguous = createIntersectionSnapIndex(
+    [horizontal, vertical, diagonal],
+    [
+      { id: 'isolated-a', x: 0, y: 0 },
+      { id: 'isolated-b', x: 0, y: 0 },
+    ],
+  ).query({ point: { x: 0, y: 0 }, scale: 1 })
+  assert.equal(ambiguous.target, null)
+
+  const duplicateContamination = [
+    vertical,
+    diagonal,
+    intersectionSegment('duplicate', 'd-a1', 'd-a2', -2, 0, 2, 0),
+    intersectionSegment('duplicate', 'd-b1', 'd-b2', -1, 0, 1, 0),
+  ]
+  const duplicateResult = queryIntersection(duplicateContamination)
+  assert.equal(duplicateResult.target, null)
+  assert.equal(duplicateResult.blocked, true)
+
+  const duplicateOnlySeed = [
+    intersectionSegment('duplicate-only', 'h1', 'h2', -2, 0, 2, 0),
+    intersectionSegment('duplicate-only', 'v1', 'v2', 0, -2, 0, 2),
+    intersectionSegment('unique-only', 'd1', 'd2', -2, -2, 2, 2),
+  ]
+  const duplicateOnlyResult = queryIntersection(duplicateOnlySeed)
+  assert.equal(duplicateOnlyResult.target, null)
+  assert.equal(duplicateOnlyResult.blocked, true)
+})
+
+test('cluster queries remain all-or-nothing when truncated or over 64 members', () => {
+  const cluster = [
+    intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0),
+    intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2),
+    intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2),
+  ]
+  const truncated = createIntersectionSnapIndex(cluster).query({
+    point: { x: 0, y: 0 },
+    scale: 1,
+    maxPairTests: 1,
+  })
+  assert.equal(truncated.truncated, true)
+  assert.equal(truncated.target, null)
+  assert.equal(truncated.blocked, false)
+
+  const oversized = Array.from({ length: 65 }, (_, index) =>
+    intersectionSegment(
+      `edge-${String(index).padStart(2, '0')}`,
+      `start-${index}`,
+      `end-${index}`,
+      -1,
+      -index,
+      1,
+      index,
+    ))
+  const oversizedResult = queryIntersection(oversized)
+  assert.equal(oversizedResult.truncated, false)
+  assert.equal(oversizedResult.testedPairCount, 2_080)
+  assert.equal(oversizedResult.target, null)
+  assert.equal(oversizedResult.blocked, true)
+
+  const duplicateNoise = Array.from({ length: 5_000 }, (_, index) =>
+    intersectionSegment(
+      'duplicate-noise',
+      `noise-start-${index}`,
+      `noise-end-${index}`,
+      -2,
+      0.5,
+      2,
+      0.5,
+    ))
+  const membershipLimited = createIntersectionSnapIndex([
+    ...cluster,
+    ...duplicateNoise,
+  ]).query({
+    point: { x: 0, y: 0 },
+    scale: 1,
+    maxClusterTests: 64,
+  })
+  assert.equal(membershipLimited.truncated, true)
+  assert.equal(membershipLimited.target, null)
+})
+
+test('64-way decimal clusters reuse one expansion within the default work budget', () => {
+  const point = { x: 0.1, y: 0.3 }
+  const segments = Array.from({ length: 64 }, (_, index) => {
+    const angle = (index + 0.5) * Math.PI / 64
+    const dx = Math.cos(angle) * 100
+    const dy = Math.sin(angle) * 100
+    return intersectionSegment(
+      `edge-${String(index).padStart(2, '0')}`,
+      `start-${index}`,
+      `end-${index}`,
+      point.x - dx,
+      point.y - dy,
+      point.x + dx,
+      point.y + dy,
+    )
+  })
+  const result = queryIntersection(segments, point)
+  assert.equal(result.truncated, false)
+  assert.equal(result.blocked, false)
+  assert.equal(result.target?.classification, 'cluster')
+  assert.equal(result.target?.sourceEdges.length, 64)
+})
+
+test('new clusters and proper intersections share distance and canonical-key priority', () => {
+  const segments = [
+    intersectionSegment('m-cluster', 'm1', 'm2', -2, 0, 0, 0),
+    intersectionSegment('n-cluster', 'n1', 'n2', -1, -1, -1, 1),
+    intersectionSegment('o-cluster', 'o1', 'o2', -2, -1, 0, 1),
+    intersectionSegment('a-proper', 'a1', 'a2', 0, 0, 2, 0),
+    intersectionSegment('b-proper', 'b1', 'b2', 1, -1, 1, 1),
+  ]
+  const result = queryIntersection(segments, { x: 0, y: 0 }, 2)
+  assert.equal(result.blocked, false)
+  assert.equal(result.target?.classification, 'proper')
+  assert.equal(result.target?.key, 'intersection:["a-proper","b-proper"]')
+})
+
+test('blocked clusters only suppress accepted candidates that outrank a valid target', () => {
+  const blocked = [
+    { ...intersectionSegment('a-blocked', 'a1', 'a2', -2, 0, 2, 0), kind: 'mountain' as const },
+    { ...intersectionSegment('b-blocked', 'b1', 'b2', 0, -2, 0, 2), kind: 'boundary' as const },
+    { ...intersectionSegment('c-blocked', 'c1', 'c2', -2, -2, 2, 2), kind: 'valley' as const },
+  ]
+  const valid = [
+    intersectionSegment('y-valid', 'y1', 'y2', 6, -2, 6, 2),
+    intersectionSegment('z-valid', 'z1', 'z2', 4, 0, 8, 0),
+  ]
+  const index = createIntersectionSnapIndex([...blocked, ...valid])
+  const acceptedValid = index.query({
+    point: { x: 0, y: 0 },
+    scale: 1,
+    thresholdPx: 8,
+    accept: (target) => target.point.x > 1,
+  })
+  assert.equal(acceptedValid.target?.key, 'intersection:["y-valid","z-valid"]')
+  assert.equal(acceptedValid.blocked, false)
+
+  const allAccepted = index.query({
+    point: { x: 0, y: 0 },
+    scale: 1,
+    thresholdPx: 8,
+  })
+  assert.equal(allAccepted.target?.key, 'intersection:["y-valid","z-valid"]')
+  assert.equal(allAccepted.blocked, true)
+
+  const boundaryAtOrigin = createIntersectionSnapIndex([
+    { ...intersectionSegment('a-boundary', 'a1', 'a2', -2, 0, 2, 0), kind: 'boundary' },
+    intersectionSegment('b-crossing', 'b1', 'b2', 0, -2, 0, 2),
+    intersectionSegment('c-crossing', 'c1', 'c2', -2, -2, 2, 2),
+  ])
+  const distantBlocked = boundaryAtOrigin.query({
+    point: { x: 6, y: 0 },
+    scale: 1,
+  })
+  assert.equal(distantBlocked.target, null)
+  assert.equal(distantBlocked.blocked, true)
+  assert.equal(distantBlocked.blockedDistancePx, 6)
+  const rejectedBlocked = boundaryAtOrigin.query({
+    point: { x: 6, y: 0 },
+    scale: 1,
+    accept: () => false,
+  })
+  assert.equal(rejectedBlocked.blocked, false)
+  assert.equal(rejectedBlocked.blockedDistancePx, null)
+})
+
+test('cluster placement emits canonical Create targets and supports Cut', () => {
+  const segments = [
+    { ...intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0), kind: 'mountain' as const },
+    { ...intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2), kind: 'cut' as const },
+    { ...intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2), kind: 'valley' as const },
+  ]
+  const target = queryIntersection(segments).target
+  assert.ok(target && target.classification === 'cluster')
+  assert.equal(isSupportedIntersectionTarget(target, segments), true)
+
+  const placement = createVertexPlacement(target.point, target, segments)
+  assert.deepEqual(placement, {
+    operation: 'connect-intersection-cluster',
+    targets: [
+      { edgeId: 'a', relation: 'interior' },
+      { edgeId: 'b', relation: 'interior' },
+      { edgeId: 'c', relation: 'interior' },
+    ],
+  })
+  assert.ok(placement?.operation === 'connect-intersection-cluster')
+  assert.equal(isSupportedIntersectionPlacement(placement, segments.map((segment) => ({
+    id: segment.id,
+    start: segment.startVertexId,
+    end: segment.endVertexId,
+    kind: segment.kind,
+  }))), true)
+})
+
+test('cluster placement preserves valid decimal intersections with roundoff cross products', () => {
+  const segments = [
+    intersectionSegment(
+      'a', 's0', 'e0',
+      -0.6813186813186812, -8.192513368983956,
+      2.1758241758241756, 13.171122994652405,
+    ),
+    intersectionSegment(
+      'b', 's1', 'e1',
+      -0.967032967032967, -2.648331550802139,
+      2.6043956043956045, 4.854850267379678,
+    ),
+    intersectionSegment(
+      'c', 's2', 'e2',
+      -1.2527472527472527, -15.831422459893046,
+      3.032967032967033, 24.62948663101604,
+    ),
+  ]
+  const target = queryIntersection(
+    segments,
+    { x: 0.46153846153846156, y: 0.35294117647058826 },
+  ).target
+  assert.ok(target && target.classification === 'cluster')
+  assert.equal(
+    createVertexPlacement(target.point, target, segments)?.operation,
+    'connect-intersection-cluster',
+  )
+})
+
+test('cluster placement supports endpoint and isolated-vertex Reuse', () => {
+  const mixedSegments = [
+    { ...intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0), kind: 'mountain' as const },
+    { ...intersectionSegment('b', 'junction', 'b2', 0, 0, 2, 2), kind: 'valley' as const },
+    { ...intersectionSegment('c', 'c1', 'c2', 0, -2, 0, 2), kind: 'auxiliary' as const },
+  ]
+  const mixedTarget = queryIntersection(mixedSegments).target
+  assert.ok(mixedTarget && mixedTarget.classification === 'cluster')
+  const mixedPlacement = createVertexPlacement(
+    mixedTarget.point,
+    mixedTarget,
+    mixedSegments,
+  )
+  assert.deepEqual(mixedPlacement, {
+    operation: 'connect-intersection-cluster',
+    targets: [
+      { edgeId: 'a', relation: 'interior' },
+      { edgeId: 'b', relation: 'endpoint' },
+      { edgeId: 'c', relation: 'interior' },
+    ],
+    junctionVertexId: 'junction',
+  })
+
+  const allInterior = mixedSegments.map((segment, index) => ({
+    ...segment,
+    id: `i-${index}`,
+    startVertexId: `i-${index}-start`,
+    endVertexId: `i-${index}-end`,
+    ...(index === 1 ? { x1: -2, y1: -2 } : {}),
+  }))
+  const isolatedVertex = { id: 'isolated', x: 0, y: 0 }
+  const isolatedTarget = createIntersectionSnapIndex(
+    allInterior,
+    [isolatedVertex],
+  ).query({ point: isolatedVertex, scale: 1 }).target
+  assert.ok(isolatedTarget && isolatedTarget.classification === 'cluster')
+  assert.equal(isolatedTarget.junctionVertexId, 'isolated')
+  assert.equal(
+    createVertexPlacement(
+      isolatedTarget.point,
+      isolatedTarget,
+      allInterior,
+      [isolatedVertex],
+    )?.operation,
+    'connect-intersection-cluster',
+  )
+  assert.equal(createVertexPlacement(
+    isolatedTarget.point,
+    isolatedTarget,
+    allInterior,
+  ), null)
+})
+
+test('cluster placement blocks forged, incomplete, ambiguous, and Boundary targets', () => {
+  const segments = [
+    { ...intersectionSegment('a', 'a1', 'a2', -2, 0, 2, 0), kind: 'mountain' as const },
+    { ...intersectionSegment('b', 'b1', 'b2', 0, -2, 0, 2), kind: 'valley' as const },
+    { ...intersectionSegment('c', 'c1', 'c2', -2, -2, 2, 2), kind: 'auxiliary' as const },
+  ]
+  const target = queryIntersection(segments).target
+  assert.ok(target && target.classification === 'cluster')
+  const forgedTargets = [
+    { ...target, sourceEdges: [...target.sourceEdges].reverse() },
+    { ...target, key: 'intersection:["a","b"]' },
+    {
+      ...target,
+      sourceEdges: target.sourceEdges.map((source, index) => index === 0
+        ? { ...source, kind: 'cut' as const }
+        : source),
+    },
+    { ...target, junctionVertexId: 'missing' },
+  ]
+  for (const forged of forgedTargets) {
+    assert.equal(createVertexPlacement(target.point, forged, segments), null)
+  }
+
+  const omittedEdge = {
+    ...intersectionSegment('d', 'd1', 'd2', -2, 2, 2, -2),
+    kind: 'mountain' as const,
+  }
+  assert.equal(createVertexPlacement(
+    target.point,
+    target,
+    [...segments, omittedEdge],
+  ), null)
+  assert.equal(createVertexPlacement(
+    target.point,
+    target,
+    segments,
+    [
+      { id: 'one', x: 0, y: 0 },
+      { id: 'two', x: 0, y: 0 },
+    ],
+  ), null)
+
+  const boundarySegments = segments.map((segment, index) => index === 0
+    ? { ...segment, kind: 'boundary' as const }
+    : segment)
+  assert.equal(isSupportedIntersectionTarget(target, boundarySegments), false)
+  assert.equal(createVertexPlacement(target.point, target, boundarySegments), null)
+})
+
+test('cluster dispatch policy rejects malformed target records atomically', () => {
+  const edges = [
+    { id: 'a', start: 'a1', end: 'a2', kind: 'mountain' },
+    { id: 'b', start: 'junction', end: 'b2', kind: 'valley' },
+    { id: 'c', start: 'c1', end: 'c2', kind: 'cut' },
+  ]
+  const placement = {
+    operation: 'connect-intersection-cluster',
+    targets: [
+      { edgeId: 'a', relation: 'interior' },
+      { edgeId: 'b', relation: 'endpoint' },
+      { edgeId: 'c', relation: 'interior' },
+    ],
+    junctionVertexId: 'junction',
+  } as const
+  assert.equal(isSupportedIntersectionPlacement(placement, edges), true)
+  assert.equal(isSupportedIntersectionPlacement({
+    ...placement,
+    targets: [...placement.targets].reverse(),
+  }, edges), false)
+  assert.equal(isSupportedIntersectionPlacement({
+    ...placement,
+    targets: placement.targets.slice(0, 2),
+  }, edges), false)
+  assert.equal(isSupportedIntersectionPlacement({
+    ...placement,
+    junctionVertexId: undefined,
+  }, edges), false)
+  assert.equal(isSupportedIntersectionPlacement(placement, [
+    ...edges,
+    { ...edges[0] },
+  ]), false)
+  assert.equal(isSupportedIntersectionPlacement(placement, edges.map((edge, index) =>
+    index === 0 ? { ...edge, kind: 'boundary' } : edge)), false)
+})
+
 test('addition priority is T repair, vertex, proper, midpoint, direction, parallel, angle, edge, grid', () => {
   const crossing = [
     intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
@@ -2286,6 +3143,12 @@ test('addition priority is T repair, vertex, proper, midpoint, direction, parall
   const tJunction = queryIntersection(tJunctionSegments).target
   assert.equal(tJunction?.classification, 't-junction')
   assert.ok(tJunction)
+  const cluster = queryIntersection([
+    ...tJunctionSegments,
+    intersectionSegment('e-crossing', 'bottom', 'top', -2, -2, 2, 2),
+  ]).target
+  assert.equal(cluster?.classification, 'cluster')
+  assert.ok(cluster)
   const vertex = resolve({
     settings: only('vertex'),
     vertices: [{ id: 'vertex', x: 0, y: 0 }],
@@ -2345,6 +3208,10 @@ test('addition priority is T repair, vertex, proper, midpoint, direction, parall
     prioritizeAdditionSnapTargets(junctionVertex, tJunction)?.classification,
     't-junction',
   )
+  assert.equal(
+    prioritizeAdditionSnapTargets(junctionVertex, cluster)?.classification,
+    'cluster',
+  )
   assert.equal(prioritizeAdditionSnapTargets(vertex, tJunction), vertex)
   assert.equal(prioritizeAdditionSnapTargets(vertex, proper), vertex)
   for (const lowerPriority of [midpoint, direction, parallel, angle, edge, grid]) {
@@ -2356,6 +3223,29 @@ test('addition priority is T repair, vertex, proper, midpoint, direction, parall
   }
   assert.equal(prioritizeAdditionSnapTargets(null, proper), proper)
   assert.equal(prioritizeAdditionSnapTargets(null, null), null)
+})
+
+test('only a strictly nearer vertex bypasses a blocked intersection', () => {
+  const vertex = (distancePx: number) => ({
+    key: 'vertex:safe',
+    kind: 'vertex' as const,
+    point: { x: 6, y: 0 },
+    distancePx,
+    sourceId: 'safe',
+  })
+  const midpoint = {
+    key: 'midpoint:edge',
+    kind: 'midpoint' as const,
+    point: { x: 6, y: 0 },
+    distancePx: 0,
+    sourceId: 'edge',
+    sourceFraction: 0.5,
+  }
+  assert.equal(vertexSnapOutranksBlockedIntersection(vertex(0), 6), true)
+  assert.equal(vertexSnapOutranksBlockedIntersection(vertex(6), 6), false)
+  assert.equal(vertexSnapOutranksBlockedIntersection(vertex(7), 6), false)
+  assert.equal(vertexSnapOutranksBlockedIntersection(midpoint, 6), false)
+  assert.equal(vertexSnapOutranksBlockedIntersection(vertex(0), null), false)
 })
 
 test('proper intersection placement carries only validated canonical edge IDs', () => {
@@ -2606,7 +3496,7 @@ test('equal-distance proper intersections use the canonical key as a stable tie-
   assert.deepEqual(second, first)
 })
 
-test('equal-distance T repairs outrank proper intersections deterministically', () => {
+test('coincident T and proper seeds expand to one deterministic cluster', () => {
   const segments = [
     intersectionSegment('p-horizontal', 'h1', 'h2', -2, 0, 2, 0),
     intersectionSegment('p-vertical', 'v1', 'v2', 0, -2, 0, 2),
@@ -2615,8 +3505,17 @@ test('equal-distance T repairs outrank proper intersections deterministically', 
   const forward = queryIntersection(segments)
   const reversed = queryIntersection([...segments].reverse())
 
-  assert.equal(forward.target?.classification, 't-junction')
-  assert.equal(forward.target?.key, 'intersection:["a-branch","p-horizontal"]')
+  assert.equal(forward.target?.classification, 'cluster')
+  assert.equal(
+    forward.target?.key,
+    'intersection:["a-branch","p-horizontal","p-vertical"]',
+  )
+  assert.equal(
+    forward.target?.classification === 'cluster'
+      ? forward.target.junctionVertexId
+      : undefined,
+    'junction',
+  )
   assert.deepEqual(reversed, forward)
 })
 
@@ -2648,7 +3547,14 @@ test('intersection accept filters choose the next ranked candidate deterministic
   assert.equal(paperInteriorOnly.truncated, false)
   assert.deepEqual(
     index.query({ ...common, accept: () => false }),
-    { target: null, candidateSegmentCount: 4, testedPairCount: 6, truncated: false },
+    {
+      target: null,
+      candidateSegmentCount: 4,
+      testedPairCount: 6,
+      truncated: false,
+      blocked: false,
+      blockedDistancePx: null,
+    },
   )
 })
 
@@ -2810,12 +3716,24 @@ test('10,000 sparse segments use local AABB queries within a bounded time', () =
       intersectionSegment(`v-${id}`, `vb-${id}`, `vt-${id}`, x, -1, x, 1),
     )
   }
+  const clusterX = 60_000
+  for (let index = 0; index < 8; index += 1) {
+    segments.push(intersectionSegment(
+      `cluster-${index}`,
+      `cluster-start-${index}`,
+      `cluster-end-${index}`,
+      clusterX - 1,
+      -index,
+      clusterX + 1,
+      index,
+    ))
+  }
 
   const buildStarted = performance.now()
   const index = createIntersectionSnapIndex(segments)
   const buildElapsed = performance.now() - buildStarted
-  assert.equal(index.segmentCount, 10_000)
-  assert.ok(buildElapsed < 5_000, `10,000-segment index build took ${buildElapsed}ms`)
+  assert.equal(index.segmentCount, 10_008)
+  assert.ok(buildElapsed < 5_000, `10,008-segment index build took ${buildElapsed}ms`)
 
   const queryStarted = performance.now()
   for (let sample = 0; sample < 250; sample += 1) {
@@ -2830,6 +3748,15 @@ test('10,000 sparse segments use local AABB queries within a bounded time', () =
     assert.equal(result.truncated, false)
     assert.equal(result.target?.classification, 'proper')
   }
+  const clusterResult = index.query({
+    point: { x: clusterX, y: 0 },
+    scale: 1,
+    thresholdPx: 0.1,
+  })
+  assert.equal(clusterResult.candidateSegmentCount, 8)
+  assert.equal(clusterResult.testedPairCount, 28)
+  assert.equal(clusterResult.target?.classification, 'cluster')
+  assert.equal(clusterResult.target?.sourceEdges.length, 8)
   const queryElapsed = performance.now() - queryStarted
-  assert.ok(queryElapsed < 2_000, `250 local intersection queries took ${queryElapsed}ms`)
+  assert.ok(queryElapsed < 2_000, `251 local intersection queries took ${queryElapsed}ms`)
 })

@@ -1,13 +1,41 @@
+use std::collections::{HashMap, HashSet, hash_map::Entry};
+
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, RgbaColor, Vertex, VertexId,
 };
 use ori_geometry::{
-    GeometryError, Orientation, SegmentIntersection, orientation, segment_intersection,
-    validate_crease_pattern, validate_paper,
+    GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, orientation,
+    point_segment_relation, segment_intersection, validate_crease_pattern, validate_paper,
 };
 use thiserror::Error;
 
 pub type Revision = u64;
+
+/// Chooses whether a cluster creates its common vertex or reuses one already
+/// stored in the crease pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JunctionVertexIntent {
+    Create { id: VertexId },
+    Reuse { id: VertexId },
+}
+
+impl JunctionVertexIntent {
+    const fn id(self) -> VertexId {
+        match self {
+            Self::Create { id } | Self::Reuse { id } => id,
+        }
+    }
+}
+
+/// Associates one source edge with the ID for its optional second half.
+///
+/// `new_edge` is required for a strict-interior split and must be absent when
+/// the source edge already has the cluster junction as an endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntersectionEdgeTarget {
+    pub edge: EdgeId,
+    pub new_edge: Option<EdgeId>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -61,6 +89,10 @@ pub enum Command {
         first_edge: EdgeId,
         second_edge: EdgeId,
         new_edge: EdgeId,
+    },
+    ConnectIntersectionCluster {
+        junction: JunctionVertexIntent,
+        targets: Vec<IntersectionEdgeTarget>,
     },
     SplitBoundaryEdge {
         edge: EdgeId,
@@ -251,6 +283,61 @@ pub enum CommandError {
     NotTJunction,
     #[error("T-junction position is also occupied by distinct vertex {vertex:?}")]
     TJunctionPositionOccupied { vertex: VertexId },
+    #[error("an intersection cluster requires at least three target edges, found {actual}")]
+    IntersectionClusterNeedsThreeTargets { actual: usize },
+    #[error("an intersection cluster supports at most {maximum} target edges, found {actual}")]
+    IntersectionClusterTooManyTargets { actual: usize, maximum: usize },
+    #[error("intersection cluster target edge {edge:?} was supplied more than once")]
+    IntersectionClusterTargetDuplicate { edge: EdgeId },
+    #[error("intersection cluster target edge ID {edge:?} occurs more than once")]
+    IntersectionClusterTargetEdgeIdAmbiguous { edge: EdgeId },
+    #[error("intersection cluster does not yet support boundary edge {0:?}")]
+    IntersectionClusterBoundaryEdge(EdgeId),
+    #[error(
+        "intersection cluster edge {edge:?} endpoint {vertex:?} has more than one vertex record"
+    )]
+    IntersectionClusterEndpointVertexRecordAmbiguous { edge: EdgeId, vertex: VertexId },
+    #[error("intersection cluster edge {edge:?} endpoint {vertex:?} has a non-finite position")]
+    IntersectionClusterEndpointPositionNotFinite { edge: EdgeId, vertex: VertexId },
+    #[error("intersection cluster edge {edge:?} has zero geometric length")]
+    IntersectionClusterZeroLengthEdge { edge: EdgeId },
+    #[error("intersection cluster generated edge ID {new_edge:?} was supplied more than once")]
+    IntersectionClusterGeneratedEdgeIdDuplicate { new_edge: EdgeId },
+    #[error("intersection cluster edge {edge:?} requires a generated edge ID")]
+    IntersectionClusterNewEdgeRequired { edge: EdgeId },
+    #[error("intersection cluster edge {edge:?} already has the junction as an endpoint")]
+    IntersectionClusterNewEdgeUnexpected { edge: EdgeId },
+    #[error("intersection cluster geometry cannot be represented with finite coordinates")]
+    IntersectionClusterGeometryNotRepresentable,
+    #[error("the first two intersection cluster edges do not meet at one point")]
+    IntersectionClusterNoSingleIntersection,
+    #[error("intersection cluster edges {first_edge:?} and {second_edge:?} overlap collinearly")]
+    IntersectionClusterCollinearOverlap {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+    },
+    #[error("intersection cluster edge {edge:?} does not contain the common junction")]
+    IntersectionClusterDifferentIntersection { edge: EdgeId },
+    #[error("intersection cluster junction vertex ID {vertex:?} has more than one record")]
+    IntersectionClusterJunctionVertexRecordAmbiguous { vertex: VertexId },
+    #[error("intersection cluster junction vertex {vertex:?} has a non-finite position")]
+    IntersectionClusterJunctionPositionNotFinite { vertex: VertexId },
+    #[error("intersection cluster junction position is occupied by vertex {vertex:?}")]
+    IntersectionClusterJunctionPositionOccupied { vertex: VertexId },
+    #[error("intersection cluster junction position has more than one vertex record")]
+    IntersectionClusterJunctionPositionAmbiguous,
+    #[error(
+        "intersection cluster endpoint on edge {edge:?} is vertex {actual:?}, not {expected:?}"
+    )]
+    IntersectionClusterEndpointVertexMismatch {
+        edge: EdgeId,
+        expected: VertexId,
+        actual: VertexId,
+    },
+    #[error("an intersection cluster must split at least one edge")]
+    IntersectionClusterNeedsSplit,
+    #[error("edge {edge:?} also passes through the intersection cluster but was omitted")]
+    IncompleteIntersectionCluster { edge: EdgeId },
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +398,15 @@ enum Inverse {
         changed_vertices: [VertexId; 4],
         changed_edges: [EdgeId; 3],
     },
+    RestoreIntersectionCluster {
+        original_boundary_vertices: Option<Vec<VertexId>>,
+        original_edges: Vec<(usize, Edge)>,
+        inserted_edges: Vec<(usize, Edge)>,
+        created_vertex: Option<(usize, Vertex)>,
+        junction_vertex: VertexId,
+        changed_vertices: Vec<VertexId>,
+        changed_edges: Vec<EdgeId>,
+    },
     RestoreBoundaryVertexRemoval {
         boundary_index: usize,
         vertex_index: usize,
@@ -322,6 +418,604 @@ enum Inverse {
         previous_vertex: VertexId,
         next_vertex: VertexId,
     },
+}
+
+const MAX_INTERSECTION_CLUSTER_TARGETS: usize = 64;
+const INTERSECTION_CLUSTER_ROUNDOFF_FACTOR: f64 = 16.0;
+
+#[derive(Debug, Clone, Copy)]
+enum VertexRecordState {
+    Unique(Point2),
+    Ambiguous,
+}
+
+#[derive(Debug, Clone)]
+enum EdgeRecordState {
+    Unique { index: usize, edge: Edge },
+    Ambiguous,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedIntersectionTarget {
+    original_index: usize,
+    original_edge: Edge,
+    start_position: Point2,
+    end_position: Point2,
+    new_edge_id: Option<EdgeId>,
+}
+
+#[derive(Debug, Clone)]
+struct IntersectionClusterPlan {
+    junction_vertex: Vertex,
+    create_vertex: bool,
+    targets: Vec<PlannedIntersectionTarget>,
+    changed_vertices: Vec<VertexId>,
+    changed_edges: Vec<EdgeId>,
+}
+
+fn intersection_cluster_vertex_records(
+    pattern: &CreasePattern,
+) -> HashMap<VertexId, VertexRecordState> {
+    let mut records = HashMap::with_capacity(pattern.vertices.len());
+    for vertex in &pattern.vertices {
+        match records.entry(vertex.id) {
+            Entry::Vacant(entry) => {
+                entry.insert(VertexRecordState::Unique(vertex.position));
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(VertexRecordState::Ambiguous);
+            }
+        }
+    }
+    records
+}
+
+fn intersection_cluster_edge_records(pattern: &CreasePattern) -> HashMap<EdgeId, EdgeRecordState> {
+    let mut records = HashMap::with_capacity(pattern.edges.len());
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        match records.entry(edge.id) {
+            Entry::Vacant(entry) => {
+                entry.insert(EdgeRecordState::Unique {
+                    index,
+                    edge: edge.clone(),
+                });
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(EdgeRecordState::Ambiguous);
+            }
+        }
+    }
+    records
+}
+
+fn intersection_cluster_endpoint_position(
+    records: &HashMap<VertexId, VertexRecordState>,
+    edge: &Edge,
+    vertex: VertexId,
+) -> Result<Point2, CommandError> {
+    let position = match records.get(&vertex) {
+        None => return Err(CommandError::VertexNotFound(vertex)),
+        Some(VertexRecordState::Ambiguous) => {
+            return Err(
+                CommandError::IntersectionClusterEndpointVertexRecordAmbiguous {
+                    edge: edge.id,
+                    vertex,
+                },
+            );
+        }
+        Some(VertexRecordState::Unique(position)) => *position,
+    };
+    if !position.x.is_finite() || !position.y.is_finite() {
+        return Err(CommandError::IntersectionClusterEndpointPositionNotFinite {
+            edge: edge.id,
+            vertex,
+        });
+    }
+    Ok(position)
+}
+
+fn intersection_cluster_point_segment_relation(
+    point: Point2,
+    start: Point2,
+    end: Point2,
+) -> Result<PointSegmentRelation, GeometryError> {
+    let exact = point_segment_relation(point, start, end)?;
+    if exact != PointSegmentRelation::Outside {
+        return Ok(exact);
+    }
+
+    // `point` may have been produced by segment-intersection interpolation.
+    // Its exact mathematical determinant can therefore round to a small
+    // non-zero value even against either source edge. Bound only that fixed
+    // arithmetic depth: four subtractions, two products, the determinant
+    // subtraction, and the preceding interpolation/division. The tolerance
+    // scales with the two determinant products, never with an arbitrary world
+    // coordinate epsilon, so a translated one-ULP near miss remains visible.
+    let direction_x = end.x - start.x;
+    let direction_y = end.y - start.y;
+    let offset_x = point.x - start.x;
+    let offset_y = point.y - start.y;
+    if !direction_x.is_finite()
+        || !direction_y.is_finite()
+        || !offset_x.is_finite()
+        || !offset_y.is_finite()
+    {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+    let first_product = direction_x * offset_y;
+    let second_product = direction_y * offset_x;
+    let determinant = first_product - second_product;
+    if !first_product.is_finite() || !second_product.is_finite() || !determinant.is_finite() {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+    let product_magnitude = first_product.abs() + second_product.abs();
+    if !product_magnitude.is_finite() {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+    let error_bound = INTERSECTION_CLUSTER_ROUNDOFF_FACTOR * f64::EPSILON * product_magnitude;
+    if determinant.abs() > error_bound
+        || point.x < start.x.min(end.x)
+        || point.x > start.x.max(end.x)
+        || point.y < start.y.min(end.y)
+        || point.y > start.y.max(end.y)
+    {
+        return Ok(PointSegmentRelation::Outside);
+    }
+    Ok(PointSegmentRelation::StrictInterior)
+}
+
+fn first_strict_intersection_cluster_candidate(
+    targets: &[PlannedIntersectionTarget],
+) -> Option<Point2> {
+    for first_index in 0..targets.len() {
+        let first = &targets[first_index];
+        for second in &targets[first_index + 1..] {
+            // Stable interpolation is directed and can differ by a few bits
+            // when the segment authority is reversed. Keep both candidates
+            // in a fixed document-order sequence, matching the frontend's
+            // cluster arithmetic without making public geometry tolerant.
+            for (candidate_first, candidate_second) in [(first, second), (second, first)] {
+                let Some(position) = intersection_cluster_pair_candidate(
+                    candidate_first.start_position,
+                    candidate_first.end_position,
+                    candidate_second.start_position,
+                    candidate_second.end_position,
+                ) else {
+                    continue;
+                };
+                if targets.iter().all(|target| {
+                    intersection_cluster_point_segment_relation(
+                        position,
+                        target.start_position,
+                        target.end_position,
+                    ) == Ok(PointSegmentRelation::StrictInterior)
+                }) {
+                    return Some(position);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn intersection_cluster_pair_candidate(
+    first_start: Point2,
+    first_end: Point2,
+    second_start: Point2,
+    second_end: Point2,
+) -> Option<Point2> {
+    // Mirror the frontend's singlePointIntersection operation order. In
+    // particular, round both cross products before subtraction and avoid the
+    // FMA interpolation used by the public geometry intersection point.
+    let first_direction = Point2::new(first_end.x - first_start.x, first_end.y - first_start.y);
+    let second_direction =
+        Point2::new(second_end.x - second_start.x, second_end.y - second_start.y);
+    let second_offset = Point2::new(
+        second_start.x - first_start.x,
+        second_start.y - first_start.y,
+    );
+    if [first_direction, second_direction, second_offset]
+        .into_iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return None;
+    }
+    let checked_cross = |first: Point2, second: Point2| {
+        let first_product = first.x * second.y;
+        let second_product = first.y * second.x;
+        let value = first_product - second_product;
+        if first_product.is_finite() && second_product.is_finite() && value.is_finite() {
+            Some(value)
+        } else {
+            None
+        }
+    };
+    let denominator = checked_cross(first_direction, second_direction)?;
+    if denominator == 0.0 {
+        return None;
+    }
+    let first_fraction = checked_cross(second_offset, second_direction)? / denominator;
+    let second_fraction = checked_cross(second_offset, first_direction)? / denominator;
+    if !first_fraction.is_finite()
+        || !second_fraction.is_finite()
+        || !(0.0..=1.0).contains(&first_fraction)
+        || !(0.0..=1.0).contains(&second_fraction)
+    {
+        return None;
+    }
+    let position = if first_fraction == 0.0 {
+        first_start
+    } else if first_fraction == 1.0 {
+        first_end
+    } else if second_fraction == 0.0 {
+        second_start
+    } else if second_fraction == 1.0 {
+        second_end
+    } else {
+        Point2::new(
+            stable_convex_combination(first_start.x, first_end.x, first_fraction),
+            stable_convex_combination(first_start.y, first_end.y, first_fraction),
+        )
+    };
+    if position.x.is_finite() && position.y.is_finite() {
+        Some(position)
+    } else {
+        None
+    }
+}
+
+fn plan_intersection_cluster(
+    pattern: &CreasePattern,
+    paper: &Paper,
+    junction: JunctionVertexIntent,
+    targets: &[IntersectionEdgeTarget],
+) -> Result<IntersectionClusterPlan, CommandError> {
+    if targets.len() < 3 {
+        return Err(CommandError::IntersectionClusterNeedsThreeTargets {
+            actual: targets.len(),
+        });
+    }
+    if targets.len() > MAX_INTERSECTION_CLUSTER_TARGETS {
+        return Err(CommandError::IntersectionClusterTooManyTargets {
+            actual: targets.len(),
+            maximum: MAX_INTERSECTION_CLUSTER_TARGETS,
+        });
+    }
+
+    let vertex_records = intersection_cluster_vertex_records(pattern);
+    let edge_records = intersection_cluster_edge_records(pattern);
+    let mut target_ids = HashSet::with_capacity(targets.len());
+    let mut generated_ids = HashSet::with_capacity(targets.len());
+    let mut planned_targets = Vec::with_capacity(targets.len());
+
+    for target in targets {
+        if !target_ids.insert(target.edge) {
+            return Err(CommandError::IntersectionClusterTargetDuplicate { edge: target.edge });
+        }
+        let (original_index, original_edge) = match edge_records.get(&target.edge) {
+            None => return Err(CommandError::EdgeNotFound(target.edge)),
+            Some(EdgeRecordState::Ambiguous) => {
+                return Err(CommandError::IntersectionClusterTargetEdgeIdAmbiguous {
+                    edge: target.edge,
+                });
+            }
+            Some(EdgeRecordState::Unique { index, edge }) => (*index, edge.clone()),
+        };
+        if original_edge.kind == EdgeKind::Boundary {
+            return Err(CommandError::IntersectionClusterBoundaryEdge(
+                original_edge.id,
+            ));
+        }
+        if let Some(new_edge) = target.new_edge {
+            if !generated_ids.insert(new_edge) {
+                return Err(CommandError::IntersectionClusterGeneratedEdgeIdDuplicate { new_edge });
+            }
+            if edge_records.contains_key(&new_edge) {
+                return Err(CommandError::EdgeAlreadyExists(new_edge));
+            }
+        }
+        let start_position = intersection_cluster_endpoint_position(
+            &vertex_records,
+            &original_edge,
+            original_edge.start,
+        )?;
+        let end_position = intersection_cluster_endpoint_position(
+            &vertex_records,
+            &original_edge,
+            original_edge.end,
+        )?;
+        if start_position == end_position {
+            return Err(CommandError::IntersectionClusterZeroLengthEdge {
+                edge: original_edge.id,
+            });
+        }
+        planned_targets.push(PlannedIntersectionTarget {
+            original_index,
+            original_edge,
+            start_position,
+            end_position,
+            new_edge_id: target.new_edge,
+        });
+    }
+    planned_targets.sort_by_key(|target| target.original_index);
+
+    let junction_id = junction.id();
+    let junction_position = match junction {
+        JunctionVertexIntent::Create { id } => {
+            if vertex_records.contains_key(&id)
+                || paper.boundary_vertices.contains(&id)
+                || pattern
+                    .edges
+                    .iter()
+                    .any(|edge| edge.start == id || edge.end == id)
+            {
+                return Err(CommandError::VertexAlreadyExists(id));
+            }
+            let first = &planned_targets[0];
+            let second = &planned_targets[1];
+            // The original first-pair result remains the fallback and error
+            // authority. A later pair can replace only its rounded point when
+            // that point is strictly contained by every target.
+            let fallback_position = match segment_intersection(
+                first.start_position,
+                first.end_position,
+                second.start_position,
+                second.end_position,
+            ) {
+                Ok(SegmentIntersection::Point(position)) => position,
+                Ok(SegmentIntersection::CollinearOverlap) => {
+                    return Err(CommandError::IntersectionClusterCollinearOverlap {
+                        first_edge: first.original_edge.id,
+                        second_edge: second.original_edge.id,
+                    });
+                }
+                Ok(SegmentIntersection::None) => {
+                    return Err(CommandError::IntersectionClusterNoSingleIntersection);
+                }
+                Err(GeometryError::NonFinitePoint { .. } | GeometryError::ArithmeticOverflow) => {
+                    return Err(CommandError::IntersectionClusterGeometryNotRepresentable);
+                }
+            };
+            first_strict_intersection_cluster_candidate(&planned_targets)
+                .unwrap_or(fallback_position)
+        }
+        JunctionVertexIntent::Reuse { id } => match vertex_records.get(&id) {
+            None => return Err(CommandError::VertexNotFound(id)),
+            Some(VertexRecordState::Ambiguous) => {
+                return Err(
+                    CommandError::IntersectionClusterJunctionVertexRecordAmbiguous { vertex: id },
+                );
+            }
+            Some(VertexRecordState::Unique(position)) => {
+                if !position.x.is_finite() || !position.y.is_finite() {
+                    return Err(CommandError::IntersectionClusterJunctionPositionNotFinite {
+                        vertex: id,
+                    });
+                }
+                *position
+            }
+        },
+    };
+
+    let occupants = pattern
+        .vertices
+        .iter()
+        .filter(|vertex| vertex.position == junction_position)
+        .collect::<Vec<_>>();
+    match junction {
+        JunctionVertexIntent::Create { .. } => match occupants.as_slice() {
+            [] => {}
+            [vertex] => {
+                return Err(CommandError::IntersectionClusterJunctionPositionOccupied {
+                    vertex: vertex.id,
+                });
+            }
+            _ => return Err(CommandError::IntersectionClusterJunctionPositionAmbiguous),
+        },
+        JunctionVertexIntent::Reuse { id } => match occupants.as_slice() {
+            [vertex] if vertex.id == id => {}
+            [_] => unreachable!("the unique reused vertex must occupy its own position"),
+            _ => return Err(CommandError::IntersectionClusterJunctionPositionAmbiguous),
+        },
+    }
+
+    let mut split_count = 0;
+    for target in &planned_targets {
+        let relation = intersection_cluster_point_segment_relation(
+            junction_position,
+            target.start_position,
+            target.end_position,
+        )
+        .map_err(|_| CommandError::IntersectionClusterGeometryNotRepresentable)?;
+        match relation {
+            PointSegmentRelation::Outside => {
+                return Err(CommandError::IntersectionClusterDifferentIntersection {
+                    edge: target.original_edge.id,
+                });
+            }
+            PointSegmentRelation::StrictInterior => {
+                if target.new_edge_id.is_none() {
+                    return Err(CommandError::IntersectionClusterNewEdgeRequired {
+                        edge: target.original_edge.id,
+                    });
+                }
+                split_count += 1;
+            }
+            PointSegmentRelation::Start | PointSegmentRelation::End => {
+                let endpoint = if relation == PointSegmentRelation::Start {
+                    target.original_edge.start
+                } else {
+                    target.original_edge.end
+                };
+                if endpoint != junction_id {
+                    return Err(CommandError::IntersectionClusterEndpointVertexMismatch {
+                        edge: target.original_edge.id,
+                        expected: junction_id,
+                        actual: endpoint,
+                    });
+                }
+                if target.new_edge_id.is_some() {
+                    return Err(CommandError::IntersectionClusterNewEdgeUnexpected {
+                        edge: target.original_edge.id,
+                    });
+                }
+            }
+        }
+    }
+    if split_count == 0 {
+        return Err(CommandError::IntersectionClusterNeedsSplit);
+    }
+
+    for first_index in 0..planned_targets.len() {
+        let first = &planned_targets[first_index];
+        for second in &planned_targets[first_index + 1..] {
+            match segment_intersection(
+                first.start_position,
+                first.end_position,
+                second.start_position,
+                second.end_position,
+            ) {
+                Ok(SegmentIntersection::Point(_)) => {}
+                Ok(SegmentIntersection::None) => {
+                    return Err(CommandError::IntersectionClusterDifferentIntersection {
+                        edge: second.original_edge.id,
+                    });
+                }
+                Ok(SegmentIntersection::CollinearOverlap) => {
+                    return Err(CommandError::IntersectionClusterCollinearOverlap {
+                        first_edge: first.original_edge.id,
+                        second_edge: second.original_edge.id,
+                    });
+                }
+                Err(GeometryError::NonFinitePoint { .. } | GeometryError::ArithmeticOverflow) => {
+                    return Err(CommandError::IntersectionClusterGeometryNotRepresentable);
+                }
+            }
+        }
+    }
+
+    for edge in &pattern.edges {
+        if target_ids.contains(&edge.id) {
+            continue;
+        }
+        let Some(VertexRecordState::Unique(start_position)) = vertex_records.get(&edge.start)
+        else {
+            continue;
+        };
+        let Some(VertexRecordState::Unique(end_position)) = vertex_records.get(&edge.end) else {
+            continue;
+        };
+        if !start_position.x.is_finite()
+            || !start_position.y.is_finite()
+            || !end_position.x.is_finite()
+            || !end_position.y.is_finite()
+            || start_position == end_position
+        {
+            continue;
+        }
+        let relation = intersection_cluster_point_segment_relation(
+            junction_position,
+            *start_position,
+            *end_position,
+        )
+        .map_err(|_| CommandError::IntersectionClusterGeometryNotRepresentable)?;
+        if relation == PointSegmentRelation::Outside {
+            continue;
+        }
+        if edge.kind == EdgeKind::Boundary {
+            return Err(CommandError::IntersectionClusterBoundaryEdge(edge.id));
+        }
+        return Err(CommandError::IncompleteIntersectionCluster { edge: edge.id });
+    }
+
+    let mut affected_vertices = HashSet::with_capacity(planned_targets.len() * 2 + 1);
+    affected_vertices.insert(junction_id);
+    for target in &planned_targets {
+        affected_vertices.insert(target.original_edge.start);
+        affected_vertices.insert(target.original_edge.end);
+    }
+    let mut changed_vertices = Vec::with_capacity(affected_vertices.len());
+    for vertex in &pattern.vertices {
+        if affected_vertices.remove(&vertex.id) {
+            changed_vertices.push(vertex.id);
+        }
+    }
+    if matches!(junction, JunctionVertexIntent::Create { .. }) {
+        changed_vertices.push(junction_id);
+    }
+
+    let mut changed_edges = Vec::with_capacity(planned_targets.len() + split_count);
+    for target in &planned_targets {
+        changed_edges.push(target.original_edge.id);
+        if let Some(new_edge) = target.new_edge_id {
+            changed_edges.push(new_edge);
+        }
+    }
+
+    Ok(IntersectionClusterPlan {
+        junction_vertex: Vertex {
+            id: junction_id,
+            position: junction_position,
+        },
+        create_vertex: matches!(junction, JunctionVertexIntent::Create { .. }),
+        targets: planned_targets,
+        changed_vertices,
+        changed_edges,
+    })
+}
+
+fn intersection_cluster_changes(
+    pattern: &CreasePattern,
+    junction: JunctionVertexIntent,
+    targets: &[IntersectionEdgeTarget],
+) -> Changes {
+    let mut canonical_targets = targets
+        .iter()
+        .filter_map(|target| {
+            pattern
+                .edges
+                .iter()
+                .enumerate()
+                .find(|(_, edge)| edge.id == target.edge)
+                .map(|(index, edge)| (index, edge, target.new_edge))
+        })
+        .collect::<Vec<_>>();
+    canonical_targets.sort_by_key(|(index, _, _)| *index);
+
+    let mut affected_vertices = HashSet::with_capacity(canonical_targets.len() * 2 + 1);
+    affected_vertices.insert(junction.id());
+    for (_, edge, _) in &canonical_targets {
+        affected_vertices.insert(edge.start);
+        affected_vertices.insert(edge.end);
+    }
+    let mut vertices = Vec::with_capacity(affected_vertices.len());
+    for vertex in &pattern.vertices {
+        if affected_vertices.remove(&vertex.id) {
+            vertices.push(vertex.id);
+        }
+    }
+    if matches!(junction, JunctionVertexIntent::Create { .. }) && !vertices.contains(&junction.id())
+    {
+        vertices.push(junction.id());
+    }
+
+    let mut edges = Vec::with_capacity(canonical_targets.len() * 2);
+    let mut seen_edges = HashSet::with_capacity(canonical_targets.len() * 2);
+    for (_, edge, new_edge) in canonical_targets {
+        if seen_edges.insert(edge.id) {
+            edges.push(edge.id);
+        }
+        if let Some(new_edge) = new_edge
+            && seen_edges.insert(new_edge)
+        {
+            edges.push(new_edge);
+        }
+    }
+    Changes {
+        vertices,
+        edges,
+        settings: false,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -626,6 +1320,10 @@ impl EditorState {
                 second_edge,
                 new_edge,
             } => self.connect_t_junction(first_edge, second_edge, new_edge),
+            Command::ConnectIntersectionCluster {
+                junction,
+                ref targets,
+            } => self.connect_intersection_cluster(junction, targets),
             Command::SplitBoundaryEdge {
                 edge,
                 new_vertex,
@@ -1339,6 +2037,66 @@ impl EditorState {
         })
     }
 
+    fn connect_intersection_cluster(
+        &mut self,
+        junction: JunctionVertexIntent,
+        targets: &[IntersectionEdgeTarget],
+    ) -> Result<Inverse, CommandError> {
+        let plan = plan_intersection_cluster(&self.pattern, &self.paper, junction, targets)?;
+        let junction_id = plan.junction_vertex.id;
+        let mut split_edges = Vec::new();
+        for target in &plan.targets {
+            if let Some(new_edge_id) = target.new_edge_id {
+                split_edges.push((
+                    target.original_index,
+                    target.original_edge.clone(),
+                    Edge {
+                        id: new_edge_id,
+                        start: junction_id,
+                        end: target.original_edge.end,
+                        kind: target.original_edge.kind,
+                    },
+                ));
+            }
+        }
+        let original_edges = split_edges
+            .iter()
+            .map(|(index, edge, _)| (*index, edge.clone()))
+            .collect::<Vec<_>>();
+        let inserted_edges = split_edges
+            .iter()
+            .enumerate()
+            .map(|(lower_split_count, (original_index, _, edge))| {
+                (*original_index + lower_split_count + 1, edge.clone())
+            })
+            .collect::<Vec<_>>();
+        let created_vertex = if plan.create_vertex {
+            Some((self.pattern.vertices.len(), plan.junction_vertex.clone()))
+        } else {
+            None
+        };
+
+        if let Some((_, vertex)) = &created_vertex {
+            self.pattern.vertices.push(vertex.clone());
+        }
+        for (original_index, _, new_edge) in split_edges.iter().rev() {
+            self.pattern.edges[*original_index].end = junction_id;
+            self.pattern
+                .edges
+                .insert(*original_index + 1, new_edge.clone());
+        }
+
+        Ok(Inverse::RestoreIntersectionCluster {
+            original_boundary_vertices: None,
+            original_edges,
+            inserted_edges,
+            created_vertex,
+            junction_vertex: junction_id,
+            changed_vertices: plan.changed_vertices,
+            changed_edges: plan.changed_edges,
+        })
+    }
+
     fn split_boundary_edge(
         &mut self,
         edge_id: EdgeId,
@@ -1902,6 +2660,48 @@ impl EditorState {
                     self.paper.boundary_vertices = boundary_vertices.clone();
                 }
             }
+            Inverse::RestoreIntersectionCluster {
+                original_boundary_vertices,
+                original_edges,
+                inserted_edges,
+                created_vertex,
+                junction_vertex,
+                ..
+            } => {
+                debug_assert!(
+                    self.pattern
+                        .vertices
+                        .iter()
+                        .any(|vertex| vertex.id == *junction_vertex)
+                );
+                for (inserted_index, inserted_edge) in inserted_edges.iter().rev() {
+                    debug_assert_eq!(
+                        self.pattern.edges.get(*inserted_index).map(|edge| edge.id),
+                        Some(inserted_edge.id)
+                    );
+                    self.pattern.edges.remove(*inserted_index);
+                }
+                for (original_index, original_edge) in original_edges {
+                    debug_assert_eq!(
+                        self.pattern.edges.get(*original_index).map(|edge| edge.id),
+                        Some(original_edge.id)
+                    );
+                    self.pattern.edges[*original_index] = original_edge.clone();
+                }
+                if let Some((vertex_index, vertex)) = created_vertex {
+                    debug_assert_eq!(
+                        self.pattern
+                            .vertices
+                            .get(*vertex_index)
+                            .map(|candidate| candidate.id),
+                        Some(vertex.id)
+                    );
+                    self.pattern.vertices.remove(*vertex_index);
+                }
+                if let Some(boundary_vertices) = original_boundary_vertices {
+                    self.paper.boundary_vertices = boundary_vertices.clone();
+                }
+            }
             Inverse::RestoreBoundaryVertexRemoval {
                 boundary_index,
                 vertex_index,
@@ -2101,6 +2901,10 @@ impl Command {
                         .any(|(_, edge)| edge.kind == EdgeKind::Boundary),
                 }
             }
+            Self::ConnectIntersectionCluster {
+                junction,
+                ref targets,
+            } => intersection_cluster_changes(pattern, junction, targets),
             Self::SplitBoundaryEdge {
                 edge,
                 new_vertex,
@@ -2232,6 +3036,16 @@ impl Inverse {
                 vertices: changed_vertices.to_vec(),
                 edges: changed_edges.to_vec(),
                 settings: boundary_vertices.is_some(),
+            },
+            Self::RestoreIntersectionCluster {
+                original_boundary_vertices,
+                changed_vertices,
+                changed_edges,
+                ..
+            } => Changes {
+                vertices: changed_vertices.clone(),
+                edges: changed_edges.clone(),
+                settings: original_boundary_vertices.is_some(),
             },
             Self::RestoreBoundaryVertexRemoval {
                 vertex,
@@ -2525,6 +3339,395 @@ mod tests {
         )
     }
 
+    fn three_way_create_cluster() -> (CreasePattern, Paper, [Edge; 3], Edge) {
+        let horizontal_start = VertexId::new();
+        let horizontal_end = VertexId::new();
+        let vertical_start = VertexId::new();
+        let vertical_end = VertexId::new();
+        let diagonal_start = VertexId::new();
+        let diagonal_end = VertexId::new();
+        let unrelated_start = VertexId::new();
+        let unrelated_end = VertexId::new();
+        let vertices = vec![
+            Vertex {
+                id: horizontal_start,
+                position: Point2::new(-10.0, 0.0),
+            },
+            Vertex {
+                id: unrelated_start,
+                position: Point2::new(30.0, 40.0),
+            },
+            Vertex {
+                id: vertical_end,
+                position: Point2::new(0.0, 10.0),
+            },
+            Vertex {
+                id: diagonal_start,
+                position: Point2::new(-10.0, -10.0),
+            },
+            Vertex {
+                id: horizontal_end,
+                position: Point2::new(10.0, 0.0),
+            },
+            Vertex {
+                id: vertical_start,
+                position: Point2::new(0.0, -10.0),
+            },
+            Vertex {
+                id: unrelated_end,
+                position: Point2::new(40.0, 40.0),
+            },
+            Vertex {
+                id: diagonal_end,
+                position: Point2::new(10.0, 10.0),
+            },
+        ];
+        let horizontal = Edge {
+            id: EdgeId::new(),
+            start: horizontal_start,
+            end: horizontal_end,
+            kind: EdgeKind::Mountain,
+        };
+        let vertical = Edge {
+            id: EdgeId::new(),
+            start: vertical_start,
+            end: vertical_end,
+            kind: EdgeKind::Valley,
+        };
+        let diagonal = Edge {
+            id: EdgeId::new(),
+            start: diagonal_start,
+            end: diagonal_end,
+            kind: EdgeKind::Cut,
+        };
+        let unrelated = Edge {
+            id: EdgeId::new(),
+            start: unrelated_start,
+            end: unrelated_end,
+            kind: EdgeKind::Auxiliary,
+        };
+        (
+            CreasePattern {
+                vertices,
+                edges: vec![
+                    vertical.clone(),
+                    unrelated.clone(),
+                    horizontal.clone(),
+                    diagonal.clone(),
+                ],
+            },
+            Paper::default(),
+            [horizontal, vertical, diagonal],
+            unrelated,
+        )
+    }
+
+    fn maximum_size_create_cluster() -> (CreasePattern, Vec<Edge>) {
+        let mut pattern = CreasePattern::empty();
+        let mut edges = Vec::with_capacity(MAX_INTERSECTION_CLUSTER_TARGETS);
+        for index in 0..MAX_INTERSECTION_CLUSTER_TARGETS {
+            let offset = index as f64 - 32.0;
+            let start = VertexId::new();
+            let end = VertexId::new();
+            pattern.vertices.extend([
+                Vertex {
+                    id: start,
+                    position: Point2::new(-100.0, -offset),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(100.0, offset),
+                },
+            ]);
+            let edge = Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: match index % 4 {
+                    0 => EdgeKind::Mountain,
+                    1 => EdgeKind::Valley,
+                    2 => EdgeKind::Auxiliary,
+                    _ => EdgeKind::Cut,
+                },
+            };
+            pattern.edges.push(edge.clone());
+            edges.push(edge);
+        }
+        (pattern, edges)
+    }
+
+    fn mixed_reuse_cluster() -> (CreasePattern, Paper, VertexId, [Edge; 4], Edge) {
+        let junction = VertexId::new();
+        let diagonal_start = VertexId::new();
+        let diagonal_end = VertexId::new();
+        let vertical_end = VertexId::new();
+        let horizontal_start = VertexId::new();
+        let horizontal_end = VertexId::new();
+        let auxiliary_start = VertexId::new();
+        let unrelated_start = VertexId::new();
+        let unrelated_end = VertexId::new();
+        let vertices = vec![
+            Vertex {
+                id: diagonal_start,
+                position: Point2::new(-10.0, -10.0),
+            },
+            Vertex {
+                id: vertical_end,
+                position: Point2::new(0.0, 10.0),
+            },
+            Vertex {
+                id: junction,
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: horizontal_end,
+                position: Point2::new(10.0, 0.0),
+            },
+            Vertex {
+                id: unrelated_start,
+                position: Point2::new(30.0, 30.0),
+            },
+            Vertex {
+                id: auxiliary_start,
+                position: Point2::new(10.0, 5.0),
+            },
+            Vertex {
+                id: diagonal_end,
+                position: Point2::new(10.0, 10.0),
+            },
+            Vertex {
+                id: horizontal_start,
+                position: Point2::new(-10.0, 0.0),
+            },
+            Vertex {
+                id: unrelated_end,
+                position: Point2::new(40.0, 30.0),
+            },
+        ];
+        let diagonal = Edge {
+            id: EdgeId::new(),
+            start: diagonal_start,
+            end: diagonal_end,
+            kind: EdgeKind::Cut,
+        };
+        let endpoint_start = Edge {
+            id: EdgeId::new(),
+            start: junction,
+            end: vertical_end,
+            kind: EdgeKind::Valley,
+        };
+        let horizontal = Edge {
+            id: EdgeId::new(),
+            start: horizontal_start,
+            end: horizontal_end,
+            kind: EdgeKind::Mountain,
+        };
+        let endpoint_end = Edge {
+            id: EdgeId::new(),
+            start: auxiliary_start,
+            end: junction,
+            kind: EdgeKind::Auxiliary,
+        };
+        let unrelated = Edge {
+            id: EdgeId::new(),
+            start: unrelated_start,
+            end: unrelated_end,
+            kind: EdgeKind::Mountain,
+        };
+        (
+            CreasePattern {
+                vertices,
+                edges: vec![
+                    diagonal.clone(),
+                    endpoint_start.clone(),
+                    unrelated.clone(),
+                    horizontal.clone(),
+                    endpoint_end.clone(),
+                ],
+            },
+            Paper::default(),
+            junction,
+            [diagonal, endpoint_start, horizontal, endpoint_end],
+            unrelated,
+        )
+    }
+
+    fn decimal_roundoff_cluster() -> (CreasePattern, [Edge; 3]) {
+        let points = [
+            Point2::new(-0.6813186813186812, -8.192513368983956),
+            Point2::new(2.1758241758241756, 13.171122994652405),
+            Point2::new(-0.967032967032967, -2.648331550802139),
+            Point2::new(2.6043956043956045, 4.854850267379678),
+            Point2::new(-1.2527472527472527, -15.831422459893046),
+            Point2::new(3.032967032967033, 24.62948663101604),
+        ];
+        let ids = points.map(|_| VertexId::new());
+        let vertices = ids
+            .into_iter()
+            .zip(points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect();
+        let edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: ids[0],
+                end: ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[2],
+                end: ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[4],
+                end: ids[5],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        (
+            CreasePattern {
+                vertices,
+                edges: edges.to_vec(),
+            },
+            edges,
+        )
+    }
+
+    fn intersection_candidate_authority_fixture() -> (CreasePattern, [Edge; 3]) {
+        let points = [
+            Point2::new(173.07621414592302, 91.66043241538091),
+            Point2::new(569.9014920216193, 386.3713463650028),
+            Point2::new(663.6958618662285, 139.55388677767561),
+            Point2::new(174.18088943020507, 622.95489315637),
+            Point2::new(506.91442317040105, 315.5937659528375),
+            Point2::new(288.44553146386033, 353.9680334718498),
+        ];
+        let ids = points.map(|_| VertexId::new());
+        let vertices = ids
+            .into_iter()
+            .zip(points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect();
+        let edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: ids[0],
+                end: ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[2],
+                end: ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[4],
+                end: ids[5],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        (
+            CreasePattern {
+                vertices,
+                edges: edges.to_vec(),
+            },
+            edges,
+        )
+    }
+
+    fn fma_intersection_candidate_fixture() -> (CreasePattern, [Edge; 3]) {
+        let points = [
+            Point2::new(-761.6238217708569, 358.3305812537483),
+            Point2::new(-67.42483397026956, 649.4029881962348),
+            Point2::new(-482.92748512729344, 475.6081546439962),
+            Point2::new(-134.2414665987278, 607.9754595950404),
+            Point2::new(-520.4852242823567, 85.03606537939055),
+            Point2::new(-425.8068100384997, 860.1397882516304),
+        ];
+        let ids = points.map(|_| VertexId::new());
+        let vertices = ids
+            .into_iter()
+            .zip(points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect();
+        let edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: ids[0],
+                end: ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[2],
+                end: ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[4],
+                end: ids[5],
+                kind: EdgeKind::Cut,
+            },
+        ];
+        (
+            CreasePattern {
+                vertices,
+                edges: edges.to_vec(),
+            },
+            edges,
+        )
+    }
+
+    fn reverse_only_intersection_candidate_fixture() -> (CreasePattern, [Edge; 3]) {
+        let points = [
+            Point2::new(1244.6740584037207, 192.04027142069572),
+            Point2::new(-35.10840974525854, 937.7761247925646),
+            Point2::new(1186.7878486119257, 183.0718879233308),
+            Point2::new(300.887521406075, 756.4467701217807),
+            Point2::new(528.9518373283253, 586.240607350301),
+            Point2::new(388.36943464413514, 1474.8760422947796),
+        ];
+        let ids = points.map(|_| VertexId::new());
+        let vertices = ids
+            .into_iter()
+            .zip(points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect();
+        let edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: ids[0],
+                end: ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[2],
+                end: ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[4],
+                end: ids[5],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        (
+            CreasePattern {
+                vertices,
+                edges: edges.to_vec(),
+            },
+            edges,
+        )
+    }
+
     fn collinear_after_removal_editor() -> (EditorState, CreasePattern, Paper, VertexId) {
         let previous = VertexId::new();
         let target = VertexId::new();
@@ -2614,6 +3817,22 @@ mod tests {
         let error = editor
             .execute(revision, command)
             .expect_err("edge intersection connection must fail");
+
+        assert_eq!(error, expected);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), revision);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    fn assert_cluster_rejected(editor: &mut EditorState, command: Command, expected: CommandError) {
+        let pattern = editor.pattern().clone();
+        let paper = editor.paper().clone();
+        let revision = editor.revision();
+        let error = editor
+            .execute(revision, command)
+            .expect_err("intersection cluster must fail");
 
         assert_eq!(error, expected);
         assert_eq!(editor.pattern(), &pattern);
@@ -4397,6 +5616,1717 @@ mod tests {
         assert_eq!(editor.revision(), 0);
         assert!(!editor.can_undo());
         assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn create_intersection_cluster_is_canonical_atomic_and_exact_through_history() {
+        let (original_pattern, original_paper, [horizontal, vertical, diagonal], unrelated) =
+            three_way_create_cluster();
+        assert!(!validate_crease_pattern(&original_pattern).is_valid());
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let junction = VertexId::new();
+        let horizontal_new = EdgeId::new();
+        let vertical_new = EdgeId::new();
+        let diagonal_new = EdgeId::new();
+
+        let result = editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets: vec![
+                        IntersectionEdgeTarget {
+                            edge: horizontal.id,
+                            new_edge: Some(horizontal_new),
+                        },
+                        IntersectionEdgeTarget {
+                            edge: diagonal.id,
+                            new_edge: Some(diagonal_new),
+                        },
+                        IntersectionEdgeTarget {
+                            edge: vertical.id,
+                            new_edge: Some(vertical_new),
+                        },
+                    ],
+                },
+            )
+            .expect("connect three strict-interior edges");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(
+            result.changed_vertices,
+            vec![
+                horizontal.start,
+                vertical.end,
+                diagonal.start,
+                horizontal.end,
+                vertical.start,
+                diagonal.end,
+                junction,
+            ]
+        );
+        assert_eq!(
+            result.changed_edges,
+            vec![
+                vertical.id,
+                vertical_new,
+                horizontal.id,
+                horizontal_new,
+                diagonal.id,
+                diagonal_new,
+            ]
+        );
+        assert!(!result.settings_changed);
+        assert_eq!(
+            editor.pattern().vertices.len(),
+            original_pattern.vertices.len() + 1
+        );
+        assert_eq!(
+            editor.pattern().vertices.last(),
+            Some(&Vertex {
+                id: junction,
+                position: Point2::new(0.0, 0.0),
+            })
+        );
+        assert_eq!(
+            editor.pattern().edges,
+            vec![
+                Edge {
+                    end: junction,
+                    ..vertical.clone()
+                },
+                Edge {
+                    id: vertical_new,
+                    start: junction,
+                    end: vertical.end,
+                    kind: vertical.kind,
+                },
+                unrelated,
+                Edge {
+                    end: junction,
+                    ..horizontal.clone()
+                },
+                Edge {
+                    id: horizontal_new,
+                    start: junction,
+                    end: horizontal.end,
+                    kind: horizontal.kind,
+                },
+                Edge {
+                    end: junction,
+                    ..diagonal.clone()
+                },
+                Edge {
+                    id: diagonal_new,
+                    start: junction,
+                    end: diagonal.end,
+                    kind: diagonal.kind,
+                },
+            ]
+        );
+        assert_eq!(editor.paper(), &original_paper);
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+
+        let undo = editor.undo(1).expect("undo intersection cluster");
+        assert_eq!(undo.revision, 2);
+        assert_eq!(undo.changed_vertices, result.changed_vertices);
+        assert_eq!(undo.changed_edges, result.changed_edges);
+        assert!(!undo.settings_changed);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo intersection cluster");
+        assert_eq!(redo.revision, 3);
+        assert_eq!(redo.changed_vertices, result.changed_vertices);
+        assert_eq!(redo.changed_edges, result.changed_edges);
+        assert!(!redo.settings_changed);
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn maximum_size_create_intersection_cluster_is_exact_through_history() {
+        let (original_pattern, source_edges) = maximum_size_create_cluster();
+        assert_eq!(source_edges.len(), MAX_INTERSECTION_CLUSTER_TARGETS);
+        let original_paper = Paper::default();
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let junction = VertexId::new();
+        let targets = source_edges
+            .iter()
+            .map(|edge| IntersectionEdgeTarget {
+                edge: edge.id,
+                new_edge: Some(EdgeId::new()),
+            })
+            .collect();
+
+        let result = editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets,
+                },
+            )
+            .expect("the inclusive 64-edge cluster limit must connect");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(
+            result.changed_vertices.len(),
+            MAX_INTERSECTION_CLUSTER_TARGETS * 2 + 1
+        );
+        assert_eq!(
+            result.changed_edges.len(),
+            MAX_INTERSECTION_CLUSTER_TARGETS * 2
+        );
+        assert!(!result.settings_changed);
+        assert_eq!(
+            editor.pattern().vertices.len(),
+            original_pattern.vertices.len() + 1
+        );
+        assert_eq!(
+            editor.pattern().edges.len(),
+            original_pattern.edges.len() + MAX_INTERSECTION_CLUSTER_TARGETS
+        );
+        assert_eq!(
+            editor.pattern().vertices.last(),
+            Some(&Vertex {
+                id: junction,
+                position: Point2::new(0.0, 0.0),
+            })
+        );
+        for source in &source_edges {
+            let split_original = editor
+                .pattern()
+                .edges
+                .iter()
+                .find(|edge| edge.id == source.id)
+                .expect("each original edge remains at the maximum cluster");
+            assert_eq!(split_original.start, source.start);
+            assert_eq!(split_original.end, junction);
+            assert_eq!(split_original.kind, source.kind);
+            let generated = editor
+                .pattern()
+                .edges
+                .iter()
+                .find(|edge| {
+                    !source_edges.iter().any(|source| source.id == edge.id)
+                        && edge.start == junction
+                        && edge.end == source.end
+                })
+                .expect("each maximum-cluster source gets one generated half");
+            assert_eq!(generated.kind, source.kind);
+        }
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        assert_eq!(editor.paper(), &original_paper);
+        let connected_pattern = editor.pattern().clone();
+
+        let undo = editor.undo(1).expect("undo maximum intersection cluster");
+        assert_eq!(undo.revision, 2);
+        assert_eq!(undo.changed_vertices, result.changed_vertices);
+        assert_eq!(undo.changed_edges, result.changed_edges);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo maximum intersection cluster");
+        assert_eq!(redo.revision, 3);
+        assert_eq!(redo.changed_vertices, result.changed_vertices);
+        assert_eq!(redo.changed_edges, result.changed_edges);
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn create_intersection_cluster_is_identical_for_all_target_permutations() {
+        let (pattern, paper, [horizontal, vertical, diagonal], _) = three_way_create_cluster();
+        let junction = VertexId::new();
+        let targets = [
+            IntersectionEdgeTarget {
+                edge: horizontal.id,
+                new_edge: Some(EdgeId::new()),
+            },
+            IntersectionEdgeTarget {
+                edge: vertical.id,
+                new_edge: Some(EdgeId::new()),
+            },
+            IntersectionEdgeTarget {
+                edge: diagonal.id,
+                new_edge: Some(EdgeId::new()),
+            },
+        ];
+        let permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        let mut expected = None;
+
+        for permutation in permutations {
+            let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+            let result = editor
+                .execute(
+                    0,
+                    Command::ConnectIntersectionCluster {
+                        junction: JunctionVertexIntent::Create { id: junction },
+                        targets: permutation
+                            .into_iter()
+                            .map(|index| targets[index])
+                            .collect(),
+                    },
+                )
+                .expect("each target permutation must connect");
+            if let Some((expected_pattern, expected_result)) = &expected {
+                assert_eq!(editor.pattern(), expected_pattern);
+                assert_eq!(&result, expected_result);
+            } else {
+                expected = Some((editor.pattern().clone(), result));
+            }
+        }
+    }
+
+    #[test]
+    fn reuse_intersection_cluster_mixes_endpoint_and_interior_targets_exactly() {
+        let (
+            original_pattern,
+            original_paper,
+            junction,
+            [diagonal, endpoint_start, horizontal, endpoint_end],
+            unrelated,
+        ) = mixed_reuse_cluster();
+        assert!(!validate_crease_pattern(&original_pattern).is_valid());
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let diagonal_new = EdgeId::new();
+        let horizontal_new = EdgeId::new();
+
+        let result = editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Reuse { id: junction },
+                    targets: vec![
+                        IntersectionEdgeTarget {
+                            edge: endpoint_end.id,
+                            new_edge: None,
+                        },
+                        IntersectionEdgeTarget {
+                            edge: horizontal.id,
+                            new_edge: Some(horizontal_new),
+                        },
+                        IntersectionEdgeTarget {
+                            edge: diagonal.id,
+                            new_edge: Some(diagonal_new),
+                        },
+                        IntersectionEdgeTarget {
+                            edge: endpoint_start.id,
+                            new_edge: None,
+                        },
+                    ],
+                },
+            )
+            .expect("reuse the unique existing junction");
+
+        assert_eq!(editor.pattern().vertices, original_pattern.vertices);
+        assert_eq!(
+            result.changed_vertices,
+            vec![
+                diagonal.start,
+                endpoint_start.end,
+                junction,
+                horizontal.end,
+                endpoint_end.start,
+                diagonal.end,
+                horizontal.start,
+            ]
+        );
+        assert_eq!(
+            result.changed_edges,
+            vec![
+                diagonal.id,
+                diagonal_new,
+                endpoint_start.id,
+                horizontal.id,
+                horizontal_new,
+                endpoint_end.id,
+            ]
+        );
+        assert!(!result.settings_changed);
+        assert_eq!(
+            editor.pattern().edges,
+            vec![
+                Edge {
+                    end: junction,
+                    ..diagonal.clone()
+                },
+                Edge {
+                    id: diagonal_new,
+                    start: junction,
+                    end: diagonal.end,
+                    kind: diagonal.kind,
+                },
+                endpoint_start,
+                unrelated,
+                Edge {
+                    end: junction,
+                    ..horizontal.clone()
+                },
+                Edge {
+                    id: horizontal_new,
+                    start: junction,
+                    end: horizontal.end,
+                    kind: horizontal.kind,
+                },
+                endpoint_end,
+            ]
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+
+        let undo = editor.undo(1).expect("undo reused intersection cluster");
+        assert_eq!(undo.changed_vertices, result.changed_vertices);
+        assert_eq!(undo.changed_edges, result.changed_edges);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        let redo = editor.redo(2).expect("redo reused intersection cluster");
+        assert_eq!(redo.changed_vertices, result.changed_vertices);
+        assert_eq!(redo.changed_edges, result.changed_edges);
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn intersection_cluster_rejects_target_and_generated_id_errors_atomically() {
+        let (pattern, paper, [horizontal, vertical, diagonal], unrelated) =
+            three_way_create_cluster();
+        let junction = VertexId::new();
+        let command = |targets| Command::ConnectIntersectionCluster {
+            junction: JunctionVertexIntent::Create { id: junction },
+            targets,
+        };
+        let target = |edge| IntersectionEdgeTarget {
+            edge,
+            new_edge: Some(EdgeId::new()),
+        };
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![target(horizontal.id), target(vertical.id)]),
+            CommandError::IntersectionClusterNeedsThreeTargets { actual: 2 },
+        );
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                target(horizontal.id);
+                MAX_INTERSECTION_CLUSTER_TARGETS + 1
+            ]),
+            CommandError::IntersectionClusterTooManyTargets {
+                actual: MAX_INTERSECTION_CLUSTER_TARGETS + 1,
+                maximum: MAX_INTERSECTION_CLUSTER_TARGETS,
+            },
+        );
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                target(horizontal.id),
+                target(vertical.id),
+                target(horizontal.id),
+            ]),
+            CommandError::IntersectionClusterTargetDuplicate {
+                edge: horizontal.id,
+            },
+        );
+
+        let missing = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                target(horizontal.id),
+                target(vertical.id),
+                target(missing),
+            ]),
+            CommandError::EdgeNotFound(missing),
+        );
+
+        let mut ambiguous_pattern = pattern.clone();
+        ambiguous_pattern.edges.push(horizontal.clone());
+        let mut editor = EditorState::with_paper(ambiguous_pattern, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                target(horizontal.id),
+                target(vertical.id),
+                target(diagonal.id),
+            ]),
+            CommandError::IntersectionClusterTargetEdgeIdAmbiguous {
+                edge: horizontal.id,
+            },
+        );
+
+        let mut boundary_pattern = pattern.clone();
+        boundary_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == horizontal.id)
+            .expect("horizontal edge")
+            .kind = EdgeKind::Boundary;
+        let mut editor = EditorState::with_paper(boundary_pattern, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                target(horizontal.id),
+                target(vertical.id),
+                target(diagonal.id),
+            ]),
+            CommandError::IntersectionClusterBoundaryEdge(horizontal.id),
+        );
+
+        let duplicate_new = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                IntersectionEdgeTarget {
+                    edge: horizontal.id,
+                    new_edge: Some(duplicate_new),
+                },
+                IntersectionEdgeTarget {
+                    edge: vertical.id,
+                    new_edge: Some(duplicate_new),
+                },
+                target(diagonal.id),
+            ]),
+            CommandError::IntersectionClusterGeneratedEdgeIdDuplicate {
+                new_edge: duplicate_new,
+            },
+        );
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(vec![
+                IntersectionEdgeTarget {
+                    edge: horizontal.id,
+                    new_edge: Some(unrelated.id),
+                },
+                target(vertical.id),
+                target(diagonal.id),
+            ]),
+            CommandError::EdgeAlreadyExists(unrelated.id),
+        );
+
+        let existing_vertex = pattern.vertices[0].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper);
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Create {
+                    id: existing_vertex,
+                },
+                targets: vec![
+                    target(horizontal.id),
+                    target(vertical.id),
+                    target(diagonal.id),
+                ],
+            },
+            CommandError::VertexAlreadyExists(existing_vertex),
+        );
+    }
+
+    #[test]
+    fn intersection_cluster_rejects_invalid_endpoint_and_junction_records_atomically() {
+        let (pattern, paper, [horizontal, vertical, diagonal], _) = three_way_create_cluster();
+        let junction = VertexId::new();
+        let targets = || {
+            vec![
+                IntersectionEdgeTarget {
+                    edge: horizontal.id,
+                    new_edge: Some(EdgeId::new()),
+                },
+                IntersectionEdgeTarget {
+                    edge: vertical.id,
+                    new_edge: Some(EdgeId::new()),
+                },
+                IntersectionEdgeTarget {
+                    edge: diagonal.id,
+                    new_edge: Some(EdgeId::new()),
+                },
+            ]
+        };
+        let command = |junction, targets| Command::ConnectIntersectionCluster { junction, targets };
+
+        let mut missing_endpoint = pattern.clone();
+        missing_endpoint
+            .vertices
+            .retain(|vertex| vertex.id != horizontal.start);
+        let mut editor = EditorState::with_paper(missing_endpoint, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(JunctionVertexIntent::Create { id: junction }, targets()),
+            CommandError::VertexNotFound(horizontal.start),
+        );
+
+        let mut duplicate_endpoint = pattern.clone();
+        duplicate_endpoint.vertices.push(
+            duplicate_endpoint
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == horizontal.start)
+                .expect("horizontal start")
+                .clone(),
+        );
+        let mut editor = EditorState::with_paper(duplicate_endpoint, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(JunctionVertexIntent::Create { id: junction }, targets()),
+            CommandError::IntersectionClusterEndpointVertexRecordAmbiguous {
+                edge: horizontal.id,
+                vertex: horizontal.start,
+            },
+        );
+
+        let mut non_finite_endpoint = pattern.clone();
+        non_finite_endpoint
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == horizontal.start)
+            .expect("horizontal start")
+            .position
+            .x = f64::INFINITY;
+        let mut editor = EditorState::with_paper(non_finite_endpoint, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(JunctionVertexIntent::Create { id: junction }, targets()),
+            CommandError::IntersectionClusterEndpointPositionNotFinite {
+                edge: horizontal.id,
+                vertex: horizontal.start,
+            },
+        );
+
+        let horizontal_start_position = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == horizontal.start)
+            .expect("horizontal start")
+            .position;
+        let mut zero_length = pattern.clone();
+        zero_length
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == horizontal.end)
+            .expect("horizontal end")
+            .position = horizontal_start_position;
+        let mut editor = EditorState::with_paper(zero_length, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(JunctionVertexIntent::Create { id: junction }, targets()),
+            CommandError::IntersectionClusterZeroLengthEdge {
+                edge: horizontal.id,
+            },
+        );
+
+        let occupied_by = VertexId::new();
+        let mut occupied = pattern.clone();
+        occupied.vertices.push(Vertex {
+            id: occupied_by,
+            position: Point2::new(0.0, 0.0),
+        });
+        let mut editor = EditorState::with_paper(occupied, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(JunctionVertexIntent::Create { id: junction }, targets()),
+            CommandError::IntersectionClusterJunctionPositionOccupied {
+                vertex: occupied_by,
+            },
+        );
+
+        let mut ambiguous_position = pattern.clone();
+        ambiguous_position.vertices.extend([
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 0.0),
+            },
+        ]);
+        let mut editor = EditorState::with_paper(ambiguous_position, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(JunctionVertexIntent::Create { id: junction }, targets()),
+            CommandError::IntersectionClusterJunctionPositionAmbiguous,
+        );
+
+        let missing_junction = VertexId::new();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(
+                JunctionVertexIntent::Reuse {
+                    id: missing_junction,
+                },
+                targets(),
+            ),
+            CommandError::VertexNotFound(missing_junction),
+        );
+
+        let ambiguous_junction = VertexId::new();
+        let mut duplicate_junction = pattern.clone();
+        duplicate_junction.vertices.extend([
+            Vertex {
+                id: ambiguous_junction,
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: ambiguous_junction,
+                position: Point2::new(0.0, 0.0),
+            },
+        ]);
+        let mut editor = EditorState::with_paper(duplicate_junction, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            command(
+                JunctionVertexIntent::Reuse {
+                    id: ambiguous_junction,
+                },
+                targets(),
+            ),
+            CommandError::IntersectionClusterJunctionVertexRecordAmbiguous {
+                vertex: ambiguous_junction,
+            },
+        );
+
+        let non_finite_junction = VertexId::new();
+        let mut non_finite = pattern;
+        non_finite.vertices.push(Vertex {
+            id: non_finite_junction,
+            position: Point2::new(f64::INFINITY, 0.0),
+        });
+        let mut editor = EditorState::with_paper(non_finite, paper);
+        assert_cluster_rejected(
+            &mut editor,
+            command(
+                JunctionVertexIntent::Reuse {
+                    id: non_finite_junction,
+                },
+                targets(),
+            ),
+            CommandError::IntersectionClusterJunctionPositionNotFinite {
+                vertex: non_finite_junction,
+            },
+        );
+    }
+
+    #[test]
+    fn intersection_cluster_rejects_misclassification_and_incomplete_sets_atomically() {
+        let (pattern, paper, [horizontal, vertical, diagonal], _) = three_way_create_cluster();
+        let junction = VertexId::new();
+        let create_target = |edge| IntersectionEdgeTarget {
+            edge,
+            new_edge: Some(EdgeId::new()),
+        };
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Create { id: junction },
+                targets: vec![
+                    IntersectionEdgeTarget {
+                        edge: horizontal.id,
+                        new_edge: None,
+                    },
+                    create_target(vertical.id),
+                    create_target(diagonal.id),
+                ],
+            },
+            CommandError::IntersectionClusterNewEdgeRequired {
+                edge: horizontal.id,
+            },
+        );
+
+        let (
+            reuse_pattern,
+            reuse_paper,
+            reused,
+            [
+                reuse_diagonal,
+                endpoint_start,
+                reuse_horizontal,
+                endpoint_end,
+            ],
+            _,
+        ) = mixed_reuse_cluster();
+        let valid_reuse_targets = || {
+            vec![
+                IntersectionEdgeTarget {
+                    edge: reuse_diagonal.id,
+                    new_edge: Some(EdgeId::new()),
+                },
+                IntersectionEdgeTarget {
+                    edge: endpoint_start.id,
+                    new_edge: None,
+                },
+                IntersectionEdgeTarget {
+                    edge: reuse_horizontal.id,
+                    new_edge: Some(EdgeId::new()),
+                },
+                IntersectionEdgeTarget {
+                    edge: endpoint_end.id,
+                    new_edge: None,
+                },
+            ]
+        };
+        let mut unexpected_new_targets = valid_reuse_targets();
+        unexpected_new_targets[1].new_edge = Some(EdgeId::new());
+        let mut editor = EditorState::with_paper(reuse_pattern.clone(), reuse_paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Reuse { id: reused },
+                targets: unexpected_new_targets,
+            },
+            CommandError::IntersectionClusterNewEdgeUnexpected {
+                edge: endpoint_start.id,
+            },
+        );
+
+        let mut missing_new_targets = valid_reuse_targets();
+        missing_new_targets[0].new_edge = None;
+        let mut editor = EditorState::with_paper(reuse_pattern.clone(), reuse_paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Reuse { id: reused },
+                targets: missing_new_targets,
+            },
+            CommandError::IntersectionClusterNewEdgeRequired {
+                edge: reuse_diagonal.id,
+            },
+        );
+
+        let spoke_points = [
+            Point2::new(10.0, 0.0),
+            Point2::new(0.0, 10.0),
+            Point2::new(-10.0, -10.0),
+        ];
+        let mut spoke_pattern = CreasePattern {
+            vertices: vec![Vertex {
+                id: reused,
+                position: Point2::new(0.0, 0.0),
+            }],
+            edges: Vec::new(),
+        };
+        for position in spoke_points {
+            let endpoint = VertexId::new();
+            spoke_pattern.vertices.push(Vertex {
+                id: endpoint,
+                position,
+            });
+            spoke_pattern.edges.push(Edge {
+                id: EdgeId::new(),
+                start: reused,
+                end: endpoint,
+                kind: EdgeKind::Mountain,
+            });
+        }
+        let spoke_targets = spoke_pattern
+            .edges
+            .iter()
+            .map(|edge| IntersectionEdgeTarget {
+                edge: edge.id,
+                new_edge: None,
+            })
+            .collect();
+        let mut editor = EditorState::new(spoke_pattern);
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Reuse { id: reused },
+                targets: spoke_targets,
+            },
+            CommandError::IntersectionClusterNeedsSplit,
+        );
+
+        let extra_start = VertexId::new();
+        let extra_end = VertexId::new();
+        let extra_edge = Edge {
+            id: EdgeId::new(),
+            start: extra_start,
+            end: extra_end,
+            kind: EdgeKind::Auxiliary,
+        };
+        let mut incomplete = pattern.clone();
+        incomplete.vertices.extend([
+            Vertex {
+                id: extra_start,
+                position: Point2::new(-10.0, 10.0),
+            },
+            Vertex {
+                id: extra_end,
+                position: Point2::new(10.0, -10.0),
+            },
+        ]);
+        incomplete.edges.push(extra_edge.clone());
+        let valid_create_targets = || {
+            vec![
+                create_target(horizontal.id),
+                create_target(vertical.id),
+                create_target(diagonal.id),
+            ]
+        };
+        let mut editor = EditorState::with_paper(incomplete.clone(), paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Create { id: junction },
+                targets: valid_create_targets(),
+            },
+            CommandError::IncompleteIntersectionCluster {
+                edge: extra_edge.id,
+            },
+        );
+
+        incomplete.edges.last_mut().expect("extra edge").kind = EdgeKind::Boundary;
+        let mut editor = EditorState::with_paper(incomplete, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Create { id: junction },
+                targets: valid_create_targets(),
+            },
+            CommandError::IntersectionClusterBoundaryEdge(extra_edge.id),
+        );
+
+        let mut different_intersection = pattern.clone();
+        different_intersection
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == diagonal.start)
+            .expect("diagonal start")
+            .position = Point2::new(-10.0, -9.0);
+        different_intersection
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == diagonal.end)
+            .expect("diagonal end")
+            .position = Point2::new(10.0, 11.0);
+        let mut editor = EditorState::with_paper(different_intersection, paper.clone());
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Create { id: junction },
+                targets: valid_create_targets(),
+            },
+            CommandError::IntersectionClusterDifferentIntersection { edge: diagonal.id },
+        );
+
+        let mut overlap = reuse_pattern;
+        overlap
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == endpoint_end.start)
+            .expect("auxiliary start")
+            .position = Point2::new(0.0, 5.0);
+        let mut editor = EditorState::with_paper(overlap, reuse_paper);
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Reuse { id: reused },
+                targets: valid_reuse_targets(),
+            },
+            CommandError::IntersectionClusterCollinearOverlap {
+                first_edge: endpoint_start.id,
+                second_edge: endpoint_end.id,
+            },
+        );
+    }
+
+    #[test]
+    fn isolated_vertex_can_be_reused_for_an_all_interior_cluster() {
+        let (mut pattern, paper, [horizontal, vertical, diagonal], _) = three_way_create_cluster();
+        let junction = VertexId::new();
+        pattern.vertices.push(Vertex {
+            id: junction,
+            position: Point2::new(0.0, 0.0),
+        });
+        let original_pattern = pattern.clone();
+        let mut editor = EditorState::with_paper(pattern, paper.clone());
+
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Reuse { id: junction },
+                    targets: [horizontal, vertical, diagonal]
+                        .into_iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("reuse isolated vertex");
+
+        assert_eq!(editor.pattern().vertices, original_pattern.vertices);
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.id == junction)
+                .count(),
+            1
+        );
+        editor.undo(1).expect("undo isolated reuse");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &paper);
+    }
+
+    #[test]
+    fn intersection_cluster_handles_large_finite_geometry_and_rejects_overflow_atomically() {
+        let center = 1.0e150;
+        let radius = 1.0e140;
+        let points = [
+            Point2::new(center - radius, center),
+            Point2::new(center + radius, center),
+            Point2::new(center, center - radius),
+            Point2::new(center, center + radius),
+            Point2::new(center - radius, center - radius),
+            Point2::new(center + radius, center + radius),
+        ];
+        let ids = points.map(|_| VertexId::new());
+        let vertices = ids
+            .into_iter()
+            .zip(points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect::<Vec<_>>();
+        let edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: ids[0],
+                end: ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[2],
+                end: ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: ids[4],
+                end: ids[5],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        let mut editor = EditorState::new(CreasePattern {
+            vertices,
+            edges: edges.to_vec(),
+        });
+        let junction = VertexId::new();
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets: edges
+                        .iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("large finite cluster must remain representable");
+        let created = editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == junction)
+            .expect("created large junction");
+        assert_eq!(created.position, Point2::new(center, center));
+
+        let overflow_points = [
+            Point2::new(-f64::MAX, 0.0),
+            Point2::new(f64::MAX, 0.0),
+            Point2::new(0.0, -1.0),
+            Point2::new(0.0, 1.0),
+            Point2::new(-1.0, -1.0),
+            Point2::new(1.0, 1.0),
+        ];
+        let overflow_ids = overflow_points.map(|_| VertexId::new());
+        let overflow_vertices = overflow_ids
+            .into_iter()
+            .zip(overflow_points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect::<Vec<_>>();
+        let overflow_edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: overflow_ids[0],
+                end: overflow_ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: overflow_ids[2],
+                end: overflow_ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: overflow_ids[4],
+                end: overflow_ids[5],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: overflow_vertices,
+            edges: overflow_edges.to_vec(),
+        });
+        assert_cluster_rejected(
+            &mut editor,
+            Command::ConnectIntersectionCluster {
+                junction: JunctionVertexIntent::Create {
+                    id: VertexId::new(),
+                },
+                targets: overflow_edges
+                    .iter()
+                    .map(|edge| IntersectionEdgeTarget {
+                        edge: edge.id,
+                        new_edge: Some(EdgeId::new()),
+                    })
+                    .collect(),
+            },
+            CommandError::IntersectionClusterGeometryNotRepresentable,
+        );
+    }
+
+    #[test]
+    fn create_cluster_chooses_the_first_all_target_pair_candidate_and_restores_exactly() {
+        let (original_pattern, edges) = intersection_candidate_authority_fixture();
+        let position = |vertex_id| {
+            original_pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == vertex_id)
+                .expect("authority fixture endpoint")
+                .position
+        };
+        let pair_intersection = |first: &Edge, second: &Edge| match segment_intersection(
+            position(first.start),
+            position(first.end),
+            position(second.start),
+            position(second.end),
+        )
+        .expect("finite authority fixture")
+        {
+            SegmentIntersection::Point(point) => point,
+            intersection => panic!("expected point intersection, got {intersection:?}"),
+        };
+        let pair_candidate = |first: &Edge, second: &Edge| {
+            intersection_cluster_pair_candidate(
+                position(first.start),
+                position(first.end),
+                position(second.start),
+                position(second.end),
+            )
+            .expect("finite planner pair candidate")
+        };
+        let first_pair_position = pair_intersection(&edges[0], &edges[1]);
+        assert_eq!(
+            intersection_cluster_point_segment_relation(
+                first_pair_position,
+                position(edges[2].start),
+                position(edges[2].end),
+            ),
+            Ok(PointSegmentRelation::Outside),
+            "the document-first pair is not authoritative for every target"
+        );
+        let first_contained_position = pair_candidate(&edges[0], &edges[2]);
+        let second_contained_position = pair_candidate(&edges[1], &edges[2]);
+        for candidate in [first_contained_position, second_contained_position] {
+            for edge in &edges {
+                assert_eq!(
+                    intersection_cluster_point_segment_relation(
+                        candidate,
+                        position(edge.start),
+                        position(edge.end),
+                    ),
+                    Ok(PointSegmentRelation::StrictInterior)
+                );
+            }
+        }
+
+        let original_paper = Paper::default();
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let junction = VertexId::new();
+        let result = editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets: [edges[2].id, edges[1].id, edges[0].id]
+                        .into_iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("a later document-order pair supplies the authoritative junction");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == junction)
+                .expect("created authority fixture junction")
+                .position,
+            first_contained_position
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+
+        let undo = editor.undo(1).expect("undo authority fixture cluster");
+        assert_eq!(undo.changed_vertices, result.changed_vertices);
+        assert_eq!(undo.changed_edges, result.changed_edges);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo authority fixture cluster");
+        assert_eq!(redo.changed_vertices, result.changed_vertices);
+        assert_eq!(redo.changed_edges, result.changed_edges);
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn create_cluster_uses_non_fma_pair_candidate_and_restores_exactly() {
+        let (original_pattern, edges) = fma_intersection_candidate_fixture();
+        let position = |vertex_id| {
+            original_pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == vertex_id)
+                .expect("FMA fixture endpoint")
+                .position
+        };
+        let candidate_is_strict = |candidate| {
+            edges.iter().all(|edge| {
+                intersection_cluster_point_segment_relation(
+                    candidate,
+                    position(edge.start),
+                    position(edge.end),
+                ) == Ok(PointSegmentRelation::StrictInterior)
+            })
+        };
+
+        for first_index in 0..edges.len() {
+            for second in &edges[first_index + 1..] {
+                let public_candidate = match segment_intersection(
+                    position(edges[first_index].start),
+                    position(edges[first_index].end),
+                    position(second.start),
+                    position(second.end),
+                )
+                .expect("finite FMA fixture")
+                {
+                    SegmentIntersection::Point(point) => point,
+                    intersection => {
+                        panic!("expected public point intersection, got {intersection:?}")
+                    }
+                };
+                assert!(
+                    !candidate_is_strict(public_candidate),
+                    "the public FMA-interpolated candidate must expose this regression"
+                );
+            }
+        }
+
+        let mut expected_position = None;
+        'pairs: for first_index in 0..edges.len() {
+            let first = &edges[first_index];
+            for second in &edges[first_index + 1..] {
+                for (candidate_first, candidate_second) in [(first, second), (second, first)] {
+                    let candidate = intersection_cluster_pair_candidate(
+                        position(candidate_first.start),
+                        position(candidate_first.end),
+                        position(candidate_second.start),
+                        position(candidate_second.end),
+                    )
+                    .expect("finite ordered planner candidate");
+                    if candidate_is_strict(candidate) {
+                        expected_position = Some(candidate);
+                        break 'pairs;
+                    }
+                }
+            }
+        }
+        let expected_position =
+            expected_position.expect("one non-FMA pair candidate must contain every target");
+
+        let original_paper = Paper::default();
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let junction = VertexId::new();
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets: edges
+                        .iter()
+                        .rev()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("the non-FMA pair candidate must connect the FMA fixture");
+
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == junction)
+                .expect("created FMA fixture junction")
+                .position,
+            expected_position
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+
+        editor.undo(1).expect("undo FMA fixture cluster");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        editor.redo(2).expect("redo FMA fixture cluster");
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn create_cluster_checks_reverse_pair_authority_deterministically() {
+        let (original_pattern, edges) = reverse_only_intersection_candidate_fixture();
+        let position = |vertex_id| {
+            original_pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == vertex_id)
+                .expect("reverse-only fixture endpoint")
+                .position
+        };
+        let candidate = |first: &Edge, second: &Edge| {
+            intersection_cluster_pair_candidate(
+                position(first.start),
+                position(first.end),
+                position(second.start),
+                position(second.end),
+            )
+            .expect("finite reverse-only planner candidate")
+        };
+        let is_strict = |point| {
+            edges.iter().all(|edge| {
+                intersection_cluster_point_segment_relation(
+                    point,
+                    position(edge.start),
+                    position(edge.end),
+                ) == Ok(PointSegmentRelation::StrictInterior)
+            })
+        };
+
+        for first_index in 0..edges.len() {
+            for second in &edges[first_index + 1..] {
+                assert!(
+                    !is_strict(candidate(&edges[first_index], second)),
+                    "every document-forward pair candidate must fail this fixture"
+                );
+            }
+        }
+        assert!(
+            !is_strict(candidate(&edges[1], &edges[0])),
+            "the earlier 1 -> 0 reverse candidate must not preempt 2 -> 0"
+        );
+        let expected_position = candidate(&edges[2], &edges[0]);
+        assert_eq!(
+            expected_position,
+            Point2::new(524.9690688215196, 611.4160856232047)
+        );
+        assert!(is_strict(expected_position));
+
+        let original_paper = Paper::default();
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let junction = VertexId::new();
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets: [edges[1].id, edges[2].id, edges[0].id]
+                        .into_iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("the 2 -> 0 reverse candidate must connect the cluster");
+
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == junction)
+                .expect("created reverse-only junction")
+                .position,
+            expected_position
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+        editor.undo(1).expect("undo reverse-only cluster");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        editor.redo(2).expect("redo reverse-only cluster");
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn decimal_roundoff_cluster_supports_create_reuse_and_exact_history() {
+        let (original_pattern, edges) = decimal_roundoff_cluster();
+        let position = |vertex_id| {
+            original_pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == vertex_id)
+                .expect("decimal endpoint")
+                .position
+        };
+        let junction_position = match segment_intersection(
+            position(edges[0].start),
+            position(edges[0].end),
+            position(edges[1].start),
+            position(edges[1].end),
+        )
+        .expect("representable decimal intersection")
+        {
+            SegmentIntersection::Point(point) => point,
+            intersection => panic!("expected point intersection, got {intersection:?}"),
+        };
+        assert_eq!(
+            point_segment_relation(
+                junction_position,
+                position(edges[0].start),
+                position(edges[0].end),
+            ),
+            Ok(PointSegmentRelation::Outside),
+            "the public exact predicate intentionally exposes the original roundoff"
+        );
+        for edge in &edges {
+            assert_eq!(
+                intersection_cluster_point_segment_relation(
+                    junction_position,
+                    position(edge.start),
+                    position(edge.end),
+                ),
+                Ok(PointSegmentRelation::StrictInterior)
+            );
+        }
+        let create_junction_position = intersection_cluster_pair_candidate(
+            position(edges[0].start),
+            position(edges[0].end),
+            position(edges[1].start),
+            position(edges[1].end),
+        )
+        .expect("representable decimal planner candidate");
+        for edge in &edges {
+            assert_eq!(
+                intersection_cluster_point_segment_relation(
+                    create_junction_position,
+                    position(edge.start),
+                    position(edge.end),
+                ),
+                Ok(PointSegmentRelation::StrictInterior)
+            );
+        }
+
+        let paper = Paper::default();
+        let junction = VertexId::new();
+        let targets = edges
+            .iter()
+            .map(|edge| IntersectionEdgeTarget {
+                edge: edge.id,
+                new_edge: Some(EdgeId::new()),
+            })
+            .collect::<Vec<_>>();
+        let mut editor = EditorState::with_paper(original_pattern.clone(), paper.clone());
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create { id: junction },
+                    targets,
+                },
+            )
+            .expect("create decimal roundoff cluster");
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == junction)
+                .expect("created decimal junction")
+                .position,
+            create_junction_position
+        );
+        let connected_pattern = editor.pattern().clone();
+        editor.undo(1).expect("undo decimal cluster creation");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &paper);
+        editor.redo(2).expect("redo decimal cluster creation");
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &paper);
+
+        let reused = VertexId::new();
+        let mut reuse_pattern = original_pattern.clone();
+        reuse_pattern.vertices.push(Vertex {
+            id: reused,
+            position: junction_position,
+        });
+        let original_reuse_pattern = reuse_pattern.clone();
+        let mut reuse_editor = EditorState::with_paper(reuse_pattern, paper.clone());
+        reuse_editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Reuse { id: reused },
+                    targets: edges
+                        .iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("reuse decimal roundoff junction");
+        assert_eq!(
+            reuse_editor.pattern().vertices,
+            original_reuse_pattern.vertices
+        );
+        reuse_editor.undo(1).expect("undo decimal cluster reuse");
+        assert_eq!(reuse_editor.pattern(), &original_reuse_pattern);
+        assert_eq!(reuse_editor.paper(), &paper);
+    }
+
+    #[test]
+    fn cluster_roundoff_bound_separates_adjacent_floats_and_preserves_endpoints() {
+        let (pattern, edges) = decimal_roundoff_cluster();
+        let position = |vertex_id| {
+            pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == vertex_id)
+                .expect("decimal endpoint")
+                .position
+        };
+        let start = position(edges[0].start);
+        let end = position(edges[0].end);
+        let mut last_inside = match segment_intersection(
+            start,
+            end,
+            position(edges[1].start),
+            position(edges[1].end),
+        )
+        .expect("decimal seed")
+        {
+            SegmentIntersection::Point(point) => point,
+            intersection => panic!("expected point intersection, got {intersection:?}"),
+        };
+        assert_eq!(
+            intersection_cluster_point_segment_relation(last_inside, start, end),
+            Ok(PointSegmentRelation::StrictInterior)
+        );
+
+        let first_outside = (0..100_000)
+            .find_map(|_| {
+                let candidate =
+                    Point2::new(last_inside.x, f64::from_bits(last_inside.y.to_bits() + 1));
+                match intersection_cluster_point_segment_relation(candidate, start, end) {
+                    Ok(PointSegmentRelation::StrictInterior) => {
+                        last_inside = candidate;
+                        None
+                    }
+                    Ok(PointSegmentRelation::Outside) => Some(candidate),
+                    relation => panic!("unexpected perturbed relation: {relation:?}"),
+                }
+            })
+            .expect("finite roundoff boundary");
+        assert_eq!(first_outside.y.to_bits(), last_inside.y.to_bits() + 1);
+        assert_eq!(
+            intersection_cluster_point_segment_relation(
+                Point2::new(last_inside.x, last_inside.y + 1.0e-9),
+                start,
+                end,
+            ),
+            Ok(PointSegmentRelation::Outside)
+        );
+
+        let unit_start = Point2::new(0.0, 0.0);
+        let unit_end = Point2::new(1.0, 0.0);
+        assert_eq!(
+            intersection_cluster_point_segment_relation(unit_end, unit_start, unit_end),
+            Ok(PointSegmentRelation::End)
+        );
+        assert_eq!(
+            intersection_cluster_point_segment_relation(
+                Point2::new(f64::from_bits(1.0f64.to_bits() + 1), 0.0),
+                unit_start,
+                unit_end,
+            ),
+            Ok(PointSegmentRelation::Outside),
+            "one representable step beyond an endpoint must not become an interior split"
+        );
+    }
+
+    #[test]
+    fn completeness_scan_rejects_unrepresentable_unlisted_edges_and_stale_commands() {
+        let (mut pattern, paper, [horizontal, vertical, diagonal], _) = three_way_create_cluster();
+        let extreme_start = VertexId::new();
+        let extreme_end = VertexId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: extreme_start,
+                position: Point2::new(-f64::MAX, f64::MAX),
+            },
+            Vertex {
+                id: extreme_end,
+                position: Point2::new(f64::MAX, f64::MAX),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: EdgeId::new(),
+            start: extreme_start,
+            end: extreme_end,
+            kind: EdgeKind::Auxiliary,
+        });
+        let command = Command::ConnectIntersectionCluster {
+            junction: JunctionVertexIntent::Create {
+                id: VertexId::new(),
+            },
+            targets: [horizontal, vertical, diagonal]
+                .into_iter()
+                .map(|edge| IntersectionEdgeTarget {
+                    edge: edge.id,
+                    new_edge: Some(EdgeId::new()),
+                })
+                .collect(),
+        };
+        let mut editor = EditorState::with_paper(pattern, paper);
+        assert_cluster_rejected(
+            &mut editor,
+            command,
+            CommandError::IntersectionClusterGeometryNotRepresentable,
+        );
+
+        let (pattern, paper, edges, _) = three_way_create_cluster();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        let error = editor
+            .execute(
+                12,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create {
+                        id: VertexId::new(),
+                    },
+                    targets: edges
+                        .into_iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect_err("stale cluster must fail before planning");
+        assert_eq!(
+            error,
+            CommandError::RevisionConflict {
+                expected: 12,
+                actual: 0,
+            }
+        );
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn intersection_cluster_completeness_scan_handles_ten_thousand_sparse_edges() {
+        let (mut pattern, paper, target_edges, _) = three_way_create_cluster();
+        for index in 0..10_000 {
+            let start = VertexId::new();
+            let end = VertexId::new();
+            let x = 100.0 + index as f64 * 3.0;
+            pattern.vertices.extend([
+                Vertex {
+                    id: start,
+                    position: Point2::new(x, 1_000.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(x + 1.0, 1_000.0),
+                },
+            ]);
+            pattern.edges.push(Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Auxiliary,
+            });
+        }
+        let original_edge_count = pattern.edges.len();
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create {
+                        id: VertexId::new(),
+                    },
+                    targets: target_edges
+                        .into_iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("sparse completeness scan must remain practical");
+
+        assert_eq!(editor.pattern().edges.len(), original_edge_count + 3);
     }
 
     #[test]

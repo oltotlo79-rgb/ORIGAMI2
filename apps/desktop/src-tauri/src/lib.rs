@@ -10,7 +10,10 @@ use std::{
 };
 
 use atomic_write_file::AtomicWriteFile;
-use ori_core::{Command, EditorSettings, EditorState, ValidationIssue, create_rectangular_sheet};
+use ori_core::{
+    BoundaryEdgeRef, Command, EditorSettings, EditorState, PaperValidationIssue, ValidationIssue,
+    create_rectangular_sheet, validate_paper,
+};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, VertexId};
 use ori_formats::{
     CURRENT_FORMAT_VERSION, Ori2Limits, ProjectDocument, read_project_ori2_with_limits,
@@ -49,6 +52,7 @@ struct ProjectState {
 }
 
 impl ProjectState {
+    #[cfg(test)]
     fn new(pattern: CreasePattern) -> Self {
         Self::new_with_paper(pattern, Paper::default())
     }
@@ -636,16 +640,26 @@ fn suggested_file_name(project_name: &str) -> String {
 }
 
 fn validation_snapshot(project: &ProjectState) -> ValidationSnapshot {
-    let validation = project.editor.validation();
-    let issues = validation
-        .issues()
-        .iter()
-        .map(validation_issue_snapshot)
-        .collect();
+    let crease_validation = project.editor.validation();
+    let paper_validation = validate_paper(&project.paper, project.editor.pattern());
+    let mut issues =
+        Vec::with_capacity(crease_validation.issues().len() + paper_validation.issues.len());
+    issues.extend(
+        crease_validation
+            .issues()
+            .iter()
+            .map(validation_issue_snapshot),
+    );
+    issues.extend(
+        paper_validation
+            .issues
+            .iter()
+            .map(|issue| paper_validation_issue_snapshot(issue, project)),
+    );
     ValidationSnapshot {
         project_id: project.project_id,
-        revision: validation.revision(),
-        is_valid: validation.is_valid(),
+        revision: crease_validation.revision(),
+        is_valid: issues.is_empty(),
         issues,
     }
 }
@@ -693,6 +707,150 @@ fn validation_issue_snapshot(issue: &ValidationIssue) -> ValidationIssueSnapshot
             edges: vec![*first_edge, *second_edge],
         },
     }
+}
+
+fn paper_validation_issue_snapshot(
+    issue: &PaperValidationIssue,
+    project: &ProjectState,
+) -> ValidationIssueSnapshot {
+    let pattern = project.editor.pattern();
+    match issue {
+        PaperValidationIssue::NonFiniteThickness { .. } => ValidationIssueSnapshot {
+            code: "non_finite_thickness",
+            vertices: Vec::new(),
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::NegativeThickness { .. } => ValidationIssueSnapshot {
+            code: "negative_thickness",
+            vertices: Vec::new(),
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::TooFewBoundaryVertices { .. } => ValidationIssueSnapshot {
+            code: "too_few_boundary_vertices",
+            vertices: unique_vertex_ids(project.paper.boundary_vertices.iter().copied()),
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::DuplicateBoundaryVertex { vertex, .. } => ValidationIssueSnapshot {
+            code: "duplicate_boundary_vertex",
+            vertices: vec![*vertex],
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::MissingBoundaryVertex { vertex, .. } => ValidationIssueSnapshot {
+            code: "missing_boundary_vertex",
+            vertices: vec![*vertex],
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::NonFiniteBoundaryVertex { vertex, .. } => ValidationIssueSnapshot {
+            code: "non_finite_boundary_vertex",
+            vertices: vec![*vertex],
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::MissingBoundaryEdge { boundary_edge } => ValidationIssueSnapshot {
+            code: "missing_boundary_edge",
+            vertices: boundary_vertices(&[*boundary_edge]),
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::DuplicateBoundaryEdge {
+            boundary_edge,
+            first_edge,
+            duplicate_edge,
+        } => ValidationIssueSnapshot {
+            code: "duplicate_boundary_edge",
+            vertices: boundary_vertices(&[*boundary_edge]),
+            edges: unique_edge_ids([*first_edge, *duplicate_edge]),
+        },
+        PaperValidationIssue::UnexpectedBoundaryEdge { edge, start, end } => {
+            ValidationIssueSnapshot {
+                code: "unexpected_boundary_edge",
+                vertices: unique_vertex_ids([*start, *end]),
+                edges: vec![*edge],
+            }
+        }
+        PaperValidationIssue::ZeroLengthBoundaryEdge { edge } => ValidationIssueSnapshot {
+            code: "zero_length_boundary_edge",
+            vertices: boundary_vertices(&[*edge]),
+            edges: boundary_edge_ids(pattern, &[*edge]),
+        },
+        PaperValidationIssue::SelfIntersection {
+            first_edge,
+            second_edge,
+            ..
+        } => {
+            let boundary_edges = [*first_edge, *second_edge];
+            ValidationIssueSnapshot {
+                code: "boundary_self_intersection",
+                vertices: boundary_vertices(&boundary_edges),
+                edges: boundary_edge_ids(pattern, &boundary_edges),
+            }
+        }
+        PaperValidationIssue::IntersectionCalculationFailed {
+            first_edge,
+            second_edge,
+            ..
+        } => {
+            let boundary_edges = [*first_edge, *second_edge];
+            ValidationIssueSnapshot {
+                code: "boundary_intersection_calculation_failed",
+                vertices: boundary_vertices(&boundary_edges),
+                edges: boundary_edge_ids(pattern, &boundary_edges),
+            }
+        }
+        PaperValidationIssue::ZeroArea { boundary_vertices } => ValidationIssueSnapshot {
+            code: "zero_area_boundary",
+            vertices: unique_vertex_ids(boundary_vertices.iter().copied()),
+            edges: Vec::new(),
+        },
+        PaperValidationIssue::AreaCalculationFailed {
+            boundary_vertices, ..
+        } => ValidationIssueSnapshot {
+            code: "boundary_area_calculation_failed",
+            vertices: unique_vertex_ids(boundary_vertices.iter().copied()),
+            edges: Vec::new(),
+        },
+    }
+}
+
+fn boundary_vertices(boundary_edges: &[BoundaryEdgeRef]) -> Vec<VertexId> {
+    unique_vertex_ids(
+        boundary_edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end]),
+    )
+}
+
+fn unique_vertex_ids(vertices: impl IntoIterator<Item = VertexId>) -> Vec<VertexId> {
+    let mut unique = Vec::new();
+    for vertex in vertices {
+        if !unique.contains(&vertex) {
+            unique.push(vertex);
+        }
+    }
+    unique
+}
+
+fn unique_edge_ids(edges: impl IntoIterator<Item = EdgeId>) -> Vec<EdgeId> {
+    let mut unique = Vec::new();
+    for edge in edges {
+        if !unique.contains(&edge) {
+            unique.push(edge);
+        }
+    }
+    unique
+}
+
+fn boundary_edge_ids(pattern: &CreasePattern, boundary_edges: &[BoundaryEdgeRef]) -> Vec<EdgeId> {
+    let mut matching = Vec::new();
+    for boundary_edge in boundary_edges {
+        for edge in &pattern.edges {
+            let endpoints_match = (edge.start == boundary_edge.start
+                && edge.end == boundary_edge.end)
+                || (edge.start == boundary_edge.end && edge.end == boundary_edge.start);
+            if edge.kind == EdgeKind::Boundary && endpoints_match && !matching.contains(&edge.id) {
+                matching.push(edge.id);
+            }
+        }
+    }
+    matching
 }
 
 #[cfg(target_os = "macos")]
@@ -1045,9 +1203,177 @@ mod tests {
         assert!(!response.is_valid);
         assert_eq!(response.project_id, project.project_id);
         assert_eq!(response.revision, 0);
+        assert_eq!(response.issues.len(), 2);
+        let crossing = response
+            .issues
+            .iter()
+            .find(|issue| issue.code == "unsplit_intersection")
+            .expect("crease-pattern issue");
+        assert_eq!(crossing.edges, vec![first_edge, second_edge]);
+        assert!(
+            response
+                .issues
+                .iter()
+                .any(|issue| issue.code == "too_few_boundary_vertices")
+        );
+    }
+
+    #[test]
+    fn valid_initial_sheet_has_no_combined_validation_issues() {
+        let project = initial_project_state();
+
+        let response = validation_snapshot(&project);
+
+        assert!(response.is_valid);
+        assert!(response.issues.is_empty());
+    }
+
+    #[test]
+    fn paper_thickness_issues_are_included_without_highlight_targets() {
+        let mut project = initial_project_state();
+        project.paper.thickness_mm = -0.01;
+
+        let response = validation_snapshot(&project);
+
+        assert!(!response.is_valid);
         assert_eq!(response.issues.len(), 1);
-        assert_eq!(response.issues[0].code, "unsplit_intersection");
-        assert_eq!(response.issues[0].edges, vec![first_edge, second_edge]);
+        assert_eq!(response.issues[0].code, "negative_thickness");
+        assert!(response.issues[0].vertices.is_empty());
+        assert!(response.issues[0].edges.is_empty());
+
+        project.paper.thickness_mm = 0.0;
+        let zero_thickness = validation_snapshot(&project);
+        assert!(zero_thickness.is_valid);
+        assert!(zero_thickness.issues.is_empty());
+    }
+
+    #[test]
+    fn paper_intersection_maps_boundary_references_to_domain_edges() {
+        let vertices = [
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(2.0, 2.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 2.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(2.0, 0.0),
+            },
+        ];
+        let boundary_edges = [EdgeId::new(), EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        let pattern = CreasePattern {
+            vertices: vertices.to_vec(),
+            edges: vec![
+                Edge {
+                    id: boundary_edges[0],
+                    start: vertices[0].id,
+                    end: vertices[1].id,
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: boundary_edges[1],
+                    start: vertices[1].id,
+                    end: vertices[2].id,
+                    kind: EdgeKind::Boundary,
+                },
+                // Domain edges are undirected for boundary highlighting, so
+                // mapping also accepts the reverse of the paper's order.
+                Edge {
+                    id: boundary_edges[2],
+                    start: vertices[3].id,
+                    end: vertices[2].id,
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: boundary_edges[3],
+                    start: vertices[3].id,
+                    end: vertices[0].id,
+                    kind: EdgeKind::Boundary,
+                },
+            ],
+        };
+        let mut project = ProjectState::new(pattern);
+        project.paper.boundary_vertices = vertices.iter().map(|vertex| vertex.id).collect();
+
+        let response = validation_snapshot(&project);
+        let intersection = response
+            .issues
+            .iter()
+            .find(|issue| issue.code == "boundary_self_intersection")
+            .expect("paper self-intersection issue");
+
+        assert_eq!(
+            intersection.vertices,
+            vec![
+                vertices[0].id,
+                vertices[1].id,
+                vertices[2].id,
+                vertices[3].id
+            ]
+        );
+        assert_eq!(
+            intersection.edges,
+            vec![boundary_edges[0], boundary_edges[2]]
+        );
+    }
+
+    #[test]
+    fn paper_boundary_topology_issues_include_actionable_targets() {
+        let sheet = create_rectangular_sheet(20.0, 20.0, false).expect("valid square");
+        let (mut pattern, paper) = sheet.into_parts();
+        let boundary = paper.boundary_vertices.clone();
+
+        pattern.edges[0].kind = EdgeKind::Mountain;
+        let first_duplicate = pattern.edges[1].id;
+        let duplicate_edge = Edge {
+            id: EdgeId::new(),
+            start: pattern.edges[1].end,
+            end: pattern.edges[1].start,
+            kind: EdgeKind::Boundary,
+        };
+        let duplicate = duplicate_edge.id;
+        pattern.edges.push(duplicate_edge);
+        let unexpected_edge = Edge {
+            id: EdgeId::new(),
+            start: boundary[0],
+            end: boundary[2],
+            kind: EdgeKind::Boundary,
+        };
+        let unexpected = unexpected_edge.id;
+        pattern.edges.push(unexpected_edge);
+        let project = ProjectState::new_with_paper(pattern, paper);
+
+        let response = validation_snapshot(&project);
+        let missing = response
+            .issues
+            .iter()
+            .find(|issue| issue.code == "missing_boundary_edge")
+            .expect("wrong-kind edge is missing from the Boundary set");
+        assert_eq!(missing.vertices, vec![boundary[0], boundary[1]]);
+        assert!(missing.edges.is_empty());
+
+        let duplicate_issue = response
+            .issues
+            .iter()
+            .find(|issue| issue.code == "duplicate_boundary_edge")
+            .expect("duplicate Boundary record");
+        assert_eq!(duplicate_issue.vertices, vec![boundary[1], boundary[2]]);
+        assert_eq!(duplicate_issue.edges, vec![first_duplicate, duplicate]);
+
+        let unexpected_issue = response
+            .issues
+            .iter()
+            .find(|issue| issue.code == "unexpected_boundary_edge")
+            .expect("unexpected Boundary chord");
+        assert_eq!(unexpected_issue.vertices, vec![boundary[0], boundary[2]]);
+        assert_eq!(unexpected_issue.edges, vec![unexpected]);
     }
 
     #[test]

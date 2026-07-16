@@ -573,26 +573,33 @@ function App() {
                 <>
                   <p>{validation.issues.length}件の問題が見つかりました。</p>
                   <ul>
-                    {validation.issues.slice(0, 20).map((issue, index) => (
-                      <li key={`${issue.code}:${index}`}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const edgeId = issue.edges[0]
-                            const vertexId = issue.vertices[0]
-                            if (edgeId) {
-                              setSelectedLineId(edgeId)
-                              setSelectedVertexId(null)
-                            } else if (vertexId) {
-                              setSelectedVertexId(vertexId)
-                              setSelectedLineId(null)
-                            }
-                          }}
-                        >
-                          {validationIssueLabel(issue.code)}
-                        </button>
-                      </li>
-                    ))}
+                    {validation.issues.slice(0, 20).map((issue, index) => {
+                      const edgeId = issue.edges.find((id) =>
+                        nativeLines.some((line) => line.id === id))
+                      const vertexId = issue.vertices.find((id) =>
+                        nativeSnapshot?.crease_pattern.vertices.some((vertex) => vertex.id === id))
+                      const label = validationIssueLabel(issue.code)
+                      return (
+                        <li key={`${issue.code}:${index}`}>
+                          {edgeId || vertexId ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (edgeId) {
+                                  setSelectedLineId(edgeId)
+                                  setSelectedVertexId(null)
+                                } else if (vertexId) {
+                                  setSelectedVertexId(vertexId)
+                                  setSelectedLineId(null)
+                                }
+                              }}
+                            >
+                              {label}
+                            </button>
+                          ) : <span>{label}</span>}
+                        </li>
+                      )
+                    })}
                   </ul>
                 </>
               )}
@@ -679,6 +686,20 @@ function validationIssueLabel(code: string) {
     zero_length_edge: '長さ0の線',
     unsplit_intersection: '分割されていない交差・重なり',
     intersection_calculation_failed: '交差計算に失敗',
+    non_finite_thickness: '紙の厚さが有限値ではありません',
+    negative_thickness: '紙の厚さは0 mm以上にする必要があります',
+    too_few_boundary_vertices: '紙の輪郭には3つ以上の頂点が必要です',
+    duplicate_boundary_vertex: '紙の輪郭に同じ頂点が重複しています',
+    missing_boundary_vertex: '紙の輪郭が存在しない頂点を参照しています',
+    non_finite_boundary_vertex: '紙の輪郭頂点の座標が有限値ではありません',
+    missing_boundary_edge: '紙の輪郭線が不足しています',
+    duplicate_boundary_edge: '紙の輪郭線が重複しています',
+    unexpected_boundary_edge: '紙の輪郭に余分な輪郭線があります',
+    zero_length_boundary_edge: '紙の輪郭に長さ0の辺があります',
+    boundary_self_intersection: '紙の輪郭が自己交差しています',
+    boundary_intersection_calculation_failed: '紙の輪郭の交差判定に失敗しました',
+    zero_area_boundary: '紙の輪郭の面積が0です',
+    boundary_area_calculation_failed: '紙の輪郭の面積計算に失敗しました',
   }[code] ?? code
 }
 

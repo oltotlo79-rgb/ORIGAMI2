@@ -123,7 +123,8 @@ button { color: inherit; }
 .validation-report.valid { border-left: 3px solid #4f9a6d; }
 .validation-report.invalid { border-left: 3px solid #c85c5c; }
 .validation-report ul { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
-.validation-report li button {
+.validation-report li button, .validation-report li > span {
+  display: block;
   width: 100%;
   border: 1px solid var(--border);
   background: white;
@@ -132,6 +133,7 @@ button { color: inherit; }
   text-align: left;
   font-size: 11px;
 }
+.validation-report li > span { color: var(--muted); }
 .check { display: block; margin-top: 10px; font-size: 12px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip { border: 1px solid var(--border); background: white; border-radius: 12px; font-size: 11px; padding: 3px 8px; }
@@ -154,6 +156,6 @@ button { color: inherit; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }
   .panel-heading, .statusbar { background: #20282f; }
-  .top-actions button, .timeline button, .chip, .step, .property-actions button, .validation-report li button { background: #303941; }
+  .top-actions button, .timeline button, .chip, .step, .property-actions button, .validation-report li button, .validation-report li > span { background: #303941; }
   .crease-canvas { filter: brightness(.82); }
 }

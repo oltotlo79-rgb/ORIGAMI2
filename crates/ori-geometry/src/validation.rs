@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use ori_domain::{CreasePattern, EdgeId, Paper, Point2, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 
 use crate::{GeometryError, SegmentIntersection, checked_cross, segment_intersection, subtract};
 
@@ -79,8 +79,9 @@ pub struct BoundaryEdgeRef {
 pub enum PaperValidationIssue {
     /// Paper thickness is `NaN` or positive/negative infinity.
     NonFiniteThickness { thickness_mm: f64 },
-    /// A finite paper thickness is zero or negative.
-    NonPositiveThickness { thickness_mm: f64 },
+    /// A finite paper thickness is negative. Zero represents an ideal sheet
+    /// without physical thickness and is a supported simulation setting.
+    NegativeThickness { thickness_mm: f64 },
     /// A closed polygon needs at least three boundary vertex references.
     TooFewBoundaryVertices { count: usize },
     /// The same vertex ID occurs more than once in the boundary order.
@@ -99,6 +100,22 @@ pub enum PaperValidationIssue {
         boundary_index: usize,
         vertex: VertexId,
         position: Point2,
+    },
+    /// No `Boundary` edge record matches an edge required by the ordered
+    /// paper boundary. An edge of another kind does not satisfy this rule.
+    MissingBoundaryEdge { boundary_edge: BoundaryEdgeRef },
+    /// More `Boundary` edge records match an undirected paper-boundary pair
+    /// than the boundary's multiplicity requires.
+    DuplicateBoundaryEdge {
+        boundary_edge: BoundaryEdgeRef,
+        first_edge: EdgeId,
+        duplicate_edge: EdgeId,
+    },
+    /// A `Boundary` edge record does not occur in the paper boundary.
+    UnexpectedBoundaryEdge {
+        edge: EdgeId,
+        start: VertexId,
+        end: VertexId,
     },
     /// Consecutive boundary entries, including the closing pair, have the same
     /// position and therefore do not form an edge.
@@ -149,6 +166,10 @@ impl PaperValidation {
 /// Validates paper thickness and the closed polygon described by the paper's
 /// ordered boundary vertex IDs.
 ///
+/// The undirected multiset of consecutive boundary pairs must exactly match
+/// the pattern's `Boundary` edge records; other edge kinds never satisfy a
+/// required boundary pair.
+///
 /// Boundary coordinates are resolved from `pattern`. Both clockwise and
 /// counter-clockwise simple polygons are accepted, including concave ones.
 #[must_use]
@@ -159,8 +180,8 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
         issues.push(PaperValidationIssue::NonFiniteThickness {
             thickness_mm: paper.thickness_mm,
         });
-    } else if paper.thickness_mm <= 0.0 {
-        issues.push(PaperValidationIssue::NonPositiveThickness {
+    } else if paper.thickness_mm < 0.0 {
+        issues.push(PaperValidationIssue::NegativeThickness {
             thickness_mm: paper.thickness_mm,
         });
     }
@@ -184,6 +205,8 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
             first_boundary_indices.insert(vertex, index);
         }
     }
+
+    validate_boundary_edge_topology(boundary, pattern, &mut issues);
 
     let mut pattern_vertices = HashMap::with_capacity(pattern.vertices.len());
     for vertex in &pattern.vertices {
@@ -395,10 +418,6 @@ impl Bounds {
     fn overlaps_y(self, other: Self) -> bool {
         self.min_y <= other.max_y && other.min_y <= self.max_y
     }
-
-    fn overlaps(self, other: Self) -> bool {
-        self.min_x <= other.max_x && other.min_x <= self.max_x && self.overlaps_y(other)
-    }
 }
 
 fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIssue>) {
@@ -463,6 +482,92 @@ fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIss
     issues.extend(found.into_iter().map(|(_, _, issue)| issue));
 }
 
+#[derive(Debug)]
+struct BoundaryEdgeGroup {
+    expected: Vec<BoundaryEdgeRef>,
+    actual: Vec<EdgeId>,
+}
+
+fn validate_boundary_edge_topology(
+    boundary: &[VertexId],
+    pattern: &CreasePattern,
+    issues: &mut Vec<PaperValidationIssue>,
+) {
+    // Both directions point to one group, allowing undirected lookup without
+    // requiring an ordering operation on opaque entity IDs. Group and record
+    // vectors retain source order for deterministic multiset diagnostics.
+    let mut group_by_direction: HashMap<(VertexId, VertexId), usize> =
+        HashMap::with_capacity(boundary.len().saturating_mul(2));
+    let mut groups: Vec<BoundaryEdgeGroup> = Vec::with_capacity(boundary.len());
+    if !boundary.is_empty() {
+        for index in 0..boundary.len() {
+            let boundary_edge = BoundaryEdgeRef {
+                index,
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+            };
+            if let Some(group_index) = group_by_direction
+                .get(&(boundary_edge.start, boundary_edge.end))
+                .copied()
+            {
+                groups[group_index].expected.push(boundary_edge);
+                continue;
+            }
+
+            let group_index = groups.len();
+            groups.push(BoundaryEdgeGroup {
+                expected: vec![boundary_edge],
+                actual: Vec::new(),
+            });
+            group_by_direction.insert((boundary_edge.start, boundary_edge.end), group_index);
+            group_by_direction.insert((boundary_edge.end, boundary_edge.start), group_index);
+        }
+    }
+
+    let mut unexpected = Vec::new();
+    for edge in pattern
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Boundary)
+    {
+        if let Some(group_index) = group_by_direction.get(&(edge.start, edge.end)).copied() {
+            groups[group_index].actual.push(edge.id);
+        } else {
+            unexpected.push(PaperValidationIssue::UnexpectedBoundaryEdge {
+                edge: edge.id,
+                start: edge.start,
+                end: edge.end,
+            });
+        }
+    }
+
+    for group in groups {
+        if group.actual.len() < group.expected.len() {
+            issues.extend(
+                group
+                    .expected
+                    .iter()
+                    .skip(group.actual.len())
+                    .copied()
+                    .map(|boundary_edge| PaperValidationIssue::MissingBoundaryEdge {
+                        boundary_edge,
+                    }),
+            );
+        } else if group.actual.len() > group.expected.len() {
+            let first_edge = group.actual[0];
+            let boundary_edge = group.expected[0];
+            issues.extend(group.actual.iter().skip(group.expected.len()).copied().map(
+                |duplicate_edge| PaperValidationIssue::DuplicateBoundaryEdge {
+                    boundary_edge,
+                    first_edge,
+                    duplicate_edge,
+                },
+            ));
+        }
+    }
+    issues.extend(unexpected);
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ResolvedBoundaryEdge {
     edge: BoundaryEdgeRef,
@@ -476,32 +581,62 @@ fn validate_boundary_intersections(
     boundary_length: usize,
     issues: &mut Vec<PaperValidationIssue>,
 ) {
-    for (position, first) in edges.iter().copied().enumerate() {
-        for second in edges.iter().copied().skip(position + 1) {
-            if !first.bounds.overlaps(second.bounds) {
+    let mut by_min_x: Vec<_> = (0..edges.len()).collect();
+    by_min_x.sort_unstable_by(|left, right| {
+        edges[*left]
+            .bounds
+            .min_x
+            .total_cmp(&edges[*right].bounds.min_x)
+            .then_with(|| edges[*left].edge.index.cmp(&edges[*right].edge.index))
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut found = Vec::new();
+    for (position, left_index) in by_min_x.iter().copied().enumerate() {
+        let left = edges[left_index];
+        for right_index in by_min_x.iter().copied().skip(position + 1) {
+            let right = edges[right_index];
+            if right.bounds.min_x > left.bounds.max_x {
+                break;
+            }
+            if !left.bounds.overlaps_y(right.bounds) {
                 continue;
             }
 
+            let (first, second) = if left.edge.index < right.edge.index {
+                (left, right)
+            } else {
+                (right, left)
+            };
             let adjacent =
                 boundary_edges_are_adjacent(first.edge.index, second.edge.index, boundary_length);
             match segment_intersection(first.start, first.end, second.start, second.end) {
                 Ok(SegmentIntersection::None) => {}
                 Ok(SegmentIntersection::Point(_)) if adjacent => {}
-                Ok(intersection) => issues.push(PaperValidationIssue::SelfIntersection {
-                    first_edge: first.edge,
-                    second_edge: second.edge,
-                    intersection,
-                }),
-                Err(error) => {
-                    issues.push(PaperValidationIssue::IntersectionCalculationFailed {
+                Ok(intersection) => found.push((
+                    first.edge.index,
+                    second.edge.index,
+                    PaperValidationIssue::SelfIntersection {
+                        first_edge: first.edge,
+                        second_edge: second.edge,
+                        intersection,
+                    },
+                )),
+                Err(error) => found.push((
+                    first.edge.index,
+                    second.edge.index,
+                    PaperValidationIssue::IntersectionCalculationFailed {
                         first_edge: first.edge,
                         second_edge: second.edge,
                         error,
-                    });
-                }
+                    },
+                )),
             }
         }
     }
+
+    found.sort_unstable_by_key(|(first, second, _)| (*first, *second));
+    issues.extend(found.into_iter().map(|(_, _, issue)| issue));
 }
 
 fn boundary_edges_are_adjacent(first: usize, second: usize, boundary_length: usize) -> bool {
@@ -574,9 +709,21 @@ mod tests {
     }
 
     fn pattern(vertices: &[Vertex]) -> CreasePattern {
+        let edges = if vertices.is_empty() {
+            Vec::new()
+        } else {
+            (0..vertices.len())
+                .map(|index| Edge {
+                    id: EdgeId::new(),
+                    start: vertices[index].id,
+                    end: vertices[(index + 1) % vertices.len()].id,
+                    kind: EdgeKind::Boundary,
+                })
+                .collect()
+        };
         CreasePattern {
             vertices: vertices.to_vec(),
-            edges: Vec::new(),
+            edges,
         }
     }
 
@@ -798,6 +945,166 @@ mod tests {
     }
 
     #[test]
+    fn reports_missing_duplicate_and_unexpected_boundary_edge_records() {
+        let vertices = vec![
+            vertex(0.0, 0.0),
+            vertex(2.0, 0.0),
+            vertex(2.0, 2.0),
+            vertex(0.0, 2.0),
+        ];
+        let wrong_kind = edge(&vertices[0], &vertices[1]);
+        let first_duplicate = Edge {
+            id: EdgeId::new(),
+            start: vertices[1].id,
+            end: vertices[2].id,
+            kind: EdgeKind::Boundary,
+        };
+        let second_duplicate = Edge {
+            id: EdgeId::new(),
+            start: vertices[2].id,
+            end: vertices[1].id,
+            kind: EdgeKind::Boundary,
+        };
+        let third_side = Edge {
+            id: EdgeId::new(),
+            start: vertices[2].id,
+            end: vertices[3].id,
+            kind: EdgeKind::Boundary,
+        };
+        let fourth_side = Edge {
+            id: EdgeId::new(),
+            start: vertices[3].id,
+            end: vertices[0].id,
+            kind: EdgeKind::Boundary,
+        };
+        let unexpected_chord = Edge {
+            id: EdgeId::new(),
+            start: vertices[0].id,
+            end: vertices[2].id,
+            kind: EdgeKind::Boundary,
+        };
+        let pattern = CreasePattern {
+            vertices: vertices.clone(),
+            edges: vec![
+                wrong_kind,
+                first_duplicate.clone(),
+                second_duplicate.clone(),
+                third_side,
+                fourth_side,
+                unexpected_chord.clone(),
+            ],
+        };
+
+        let report = validate_paper(&paper(&vertices), &pattern);
+
+        assert_eq!(
+            report.issues,
+            vec![
+                PaperValidationIssue::MissingBoundaryEdge {
+                    boundary_edge: BoundaryEdgeRef {
+                        index: 0,
+                        start: vertices[0].id,
+                        end: vertices[1].id,
+                    },
+                },
+                PaperValidationIssue::DuplicateBoundaryEdge {
+                    boundary_edge: BoundaryEdgeRef {
+                        index: 1,
+                        start: vertices[1].id,
+                        end: vertices[2].id,
+                    },
+                    first_edge: first_duplicate.id,
+                    duplicate_edge: second_duplicate.id,
+                },
+                PaperValidationIssue::UnexpectedBoundaryEdge {
+                    edge: unexpected_chord.id,
+                    start: vertices[0].id,
+                    end: vertices[2].id,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn boundary_edge_topology_uses_literal_multiset_multiplicity() {
+        let vertices = vec![vertex(0.0, 0.0), vertex(2.0, 0.0)];
+        let report = validate_paper(&paper(&vertices), &pattern(&vertices));
+
+        assert!(!report.issues.iter().any(|issue| matches!(
+            issue,
+            PaperValidationIssue::MissingBoundaryEdge { .. }
+                | PaperValidationIssue::DuplicateBoundaryEdge { .. }
+                | PaperValidationIssue::UnexpectedBoundaryEdge { .. }
+        )));
+    }
+
+    #[test]
+    fn boundary_intersection_sweep_restores_boundary_index_order() {
+        let ids: Vec<_> = (0..8).map(|_| VertexId::new()).collect();
+        let resolved = [
+            ResolvedBoundaryEdge {
+                edge: BoundaryEdgeRef {
+                    index: 0,
+                    start: ids[0],
+                    end: ids[1],
+                },
+                start: Point2::new(10.0, 0.0),
+                end: Point2::new(12.0, 2.0),
+                bounds: Bounds::from_points(Point2::new(10.0, 0.0), Point2::new(12.0, 2.0)),
+            },
+            ResolvedBoundaryEdge {
+                edge: BoundaryEdgeRef {
+                    index: 1,
+                    start: ids[2],
+                    end: ids[3],
+                },
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(2.0, 2.0),
+                bounds: Bounds::from_points(Point2::new(0.0, 0.0), Point2::new(2.0, 2.0)),
+            },
+            ResolvedBoundaryEdge {
+                edge: BoundaryEdgeRef {
+                    index: 3,
+                    start: ids[4],
+                    end: ids[5],
+                },
+                start: Point2::new(10.0, 2.0),
+                end: Point2::new(12.0, 0.0),
+                bounds: Bounds::from_points(Point2::new(10.0, 2.0), Point2::new(12.0, 0.0)),
+            },
+            ResolvedBoundaryEdge {
+                edge: BoundaryEdgeRef {
+                    index: 4,
+                    start: ids[6],
+                    end: ids[7],
+                },
+                start: Point2::new(0.0, 2.0),
+                end: Point2::new(2.0, 0.0),
+                bounds: Bounds::from_points(Point2::new(0.0, 2.0), Point2::new(2.0, 0.0)),
+            },
+        ];
+        let mut issues = Vec::new();
+
+        validate_boundary_intersections(&resolved, 8, &mut issues);
+
+        assert!(matches!(
+            issues.as_slice(),
+            [
+                PaperValidationIssue::SelfIntersection {
+                    first_edge: BoundaryEdgeRef { index: 0, .. },
+                    second_edge: BoundaryEdgeRef { index: 3, .. },
+                    ..
+                },
+                PaperValidationIssue::SelfIntersection {
+                    first_edge: BoundaryEdgeRef { index: 1, .. },
+                    second_edge: BoundaryEdgeRef { index: 4, .. },
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
     fn reports_bow_tie_intersection_and_zero_area() {
         let vertices = vec![
             vertex(0.0, 0.0),
@@ -854,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_non_finite_and_non_positive_thickness() {
+    fn reports_non_finite_and_negative_thickness_while_accepting_zero() {
         let vertices = vec![vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(0.0, 1.0)];
         let pattern = pattern(&vertices);
 
@@ -869,13 +1176,19 @@ mod tests {
             ));
         }
 
-        for invalid in [0.0, -0.0, -0.1] {
+        for valid in [0.0, -0.0] {
+            let mut paper = paper(&vertices);
+            paper.thickness_mm = valid;
+            assert!(validate_paper(&paper, &pattern).is_valid());
+        }
+
+        for invalid in [-0.1, -f64::MIN_POSITIVE] {
             let mut paper = paper(&vertices);
             paper.thickness_mm = invalid;
             let report = validate_paper(&paper, &pattern);
             assert_eq!(
                 report.issues,
-                vec![PaperValidationIssue::NonPositiveThickness {
+                vec![PaperValidationIssue::NegativeThickness {
                     thickness_mm: invalid,
                 }]
             );

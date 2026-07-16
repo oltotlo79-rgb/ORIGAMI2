@@ -6,7 +6,8 @@ mod validation;
 
 pub use editor::{Command, CommandError, CommandResult, EditorSettings, EditorState, Revision};
 pub use ori_geometry::{
-    CreasePatternValidation, EdgeEndpoint, GeometryError, SegmentIntersection, ValidationIssue,
+    BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
+    SegmentIntersection, ValidationIssue, validate_paper,
 };
 pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
 pub use validation::EditorValidation;

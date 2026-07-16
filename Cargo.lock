@@ -2021,6 +2021,7 @@ name = "ori-core"
 version = "0.1.0"
 dependencies = [
  "ori-domain",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -486,6 +486,44 @@ fn resize_rectangular_paper(
 }
 
 #[tauri::command]
+fn split_edge(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    fraction: f64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_edge_split(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        edge,
+        fraction,
+    )
+}
+
+fn execute_edge_split(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    fraction: f64,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_id,
+        expected_revision,
+        Command::SplitEdge {
+            edge,
+            new_vertex: VertexId::new(),
+            new_edge: EdgeId::new(),
+            fraction,
+        },
+    )
+}
+
+#[tauri::command]
 fn split_boundary_edge(
     state: State<'_, AppState>,
     expected_project_id: ProjectId,
@@ -1181,6 +1219,7 @@ pub fn run() {
             set_cutting_allowed,
             update_paper_properties,
             resize_rectangular_paper,
+            split_edge,
             split_boundary_edge,
             remove_boundary_vertex
         ])
@@ -1607,6 +1646,110 @@ mod tests {
             overflow,
             "target paper area is too large to represent safely"
         );
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn generated_id_edge_split_updates_snapshot_document_and_history() {
+        let sheet = create_rectangular_sheet(100.0, 80.0, false).expect("valid rectangle");
+        let (mut pattern, paper) = sheet.into_parts();
+        let crease = Edge {
+            id: EdgeId::new(),
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Valley,
+        };
+        pattern.edges.push(crease.clone());
+        let original_vertex_ids = pattern
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let original_edge_ids = pattern.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        let original_edge_index = pattern.edges.len() - 1;
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        let project_id = project.project_id;
+        let original_document = project.document();
+
+        let response = execute_edge_split(&mut project, project_id, 0, crease.id, 0.5)
+            .expect("split crease edge");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert!(response.can_undo);
+        assert!(!response.can_redo);
+        assert_eq!(response.paper, original_document.paper);
+        assert_eq!(response.crease_pattern.vertices.len(), 5);
+        let generated_vertices = response
+            .crease_pattern
+            .vertices
+            .iter()
+            .filter(|vertex| !original_vertex_ids.contains(&vertex.id))
+            .collect::<Vec<_>>();
+        assert_eq!(generated_vertices.len(), 1);
+        let generated_vertex = generated_vertices[0];
+        assert_eq!(generated_vertex.position, Point2::new(50.0, 40.0));
+        assert_eq!(response.crease_pattern.edges.len(), 6);
+        assert_eq!(
+            response.crease_pattern.edges[original_edge_index],
+            Edge {
+                end: generated_vertex.id,
+                ..crease.clone()
+            }
+        );
+        let generated_edge = &response.crease_pattern.edges[original_edge_index + 1];
+        assert!(!original_edge_ids.contains(&generated_edge.id));
+        assert_eq!(generated_edge.start, generated_vertex.id);
+        assert_eq!(generated_edge.end, crease.end);
+        assert_eq!(generated_edge.kind, EdgeKind::Valley);
+        assert!(validation_snapshot(&project).is_valid);
+        let split_document = project.document();
+        assert_ne!(split_document, original_document);
+
+        project.editor.undo(1).expect("undo edge split");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project.editor.redo(2).expect("redo edge split");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), split_document);
+        assert!(project.is_dirty());
+        assert!(validation_snapshot(&project).is_valid);
+    }
+
+    #[test]
+    fn edge_split_conflicts_invalid_fractions_and_boundary_targets_preserve_project_state() {
+        let sheet = create_rectangular_sheet(100.0, 80.0, false).expect("valid rectangle");
+        let (mut pattern, paper) = sheet.into_parts();
+        let boundary_edge = pattern.edges[0].id;
+        let crease = Edge {
+            id: EdgeId::new(),
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Mountain,
+        };
+        pattern.edges.push(crease.clone());
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        let conflict = execute_edge_split(&mut project, project_id, 1, crease.id, 0.5)
+            .expect_err("stale split must fail");
+        assert_eq!(
+            conflict,
+            "expected revision 1, but the current revision is 0"
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        let invalid = execute_edge_split(&mut project, project_id, 0, crease.id, f64::NAN)
+            .expect_err("non-finite split must fail");
+        assert_eq!(invalid, "edge split fraction must be finite");
+        assert_eq!(project_state_signature(&project), before);
+
+        let boundary = execute_edge_split(&mut project, project_id, 0, boundary_edge, 0.5)
+            .expect_err("boundary split must use the sheet command");
+        assert!(boundary.contains("must be changed through a sheet-boundary operation"));
         assert_eq!(project_state_signature(&project), before);
     }
 

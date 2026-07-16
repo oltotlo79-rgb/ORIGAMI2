@@ -234,3 +234,17 @@ export function splitBoundaryEdge(
     fraction,
   })
 }
+
+export function splitEdge(
+  expectedProjectId: string,
+  expectedRevision: number,
+  edge: string,
+  fraction: number,
+) {
+  return invoke<ProjectSnapshot>('split_edge', {
+    expectedProjectId,
+    expectedRevision,
+    edge,
+    fraction,
+  })
+}

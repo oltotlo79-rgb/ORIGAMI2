@@ -8,6 +8,7 @@ import {
   type SnapSettings,
   type SnapTarget,
 } from '../lib/snap'
+import { createVertexPlacement, type VertexPlacement } from '../lib/vertexPlacement'
 
 export type CreaseLine = {
   id: string
@@ -46,7 +47,7 @@ type Props = {
   measurementLabel?: string
   snapSettings?: SnapSettings
   onSelectLine: (id: string | null) => void
-  onAddVertex?: (x: number, y: number) => void
+  onPlaceVertex?: (placement: VertexPlacement) => void
   onSelectVertex?: (id: string) => void
   onMoveVertex?: (id: string, x: number, y: number) => void
   cancelInteractionToken?: number
@@ -129,7 +130,7 @@ export function CreaseCanvas({
   measurementLabel,
   snapSettings = DEFAULT_SNAP_SETTINGS,
   onSelectLine,
-  onAddVertex,
+  onPlaceVertex,
   onSelectVertex,
   onMoveVertex,
   cancelInteractionToken = 0,
@@ -451,7 +452,7 @@ export function CreaseCanvas({
       pointer.canvasY,
       pointer.transform,
     )
-    if (tool === 'vertex' && onAddVertex) {
+    if (tool === 'vertex' && onPlaceVertex) {
       const target = resolveAdditionSnap({ x, y }, pointer.transform)
       const point = target?.point ?? { x, y }
       const existingVertex = lookupExactVertex(exactVertexIndex, point)
@@ -469,7 +470,8 @@ export function CreaseCanvas({
         useLegacyRectangularPaper,
       )) {
         setSnapGuide(null)
-        onAddVertex(point.x, point.y)
+        const placement = createVertexPlacement(point, target, lines)
+        if (placement) onPlaceVertex(placement)
         return
       }
     }

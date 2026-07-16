@@ -11,6 +11,7 @@ import {
   type SnapSegment,
   type SnapSettings,
 } from '../src/lib/snap.ts'
+import { createVertexPlacement } from '../src/lib/vertexPlacement.ts'
 
 const EMPTY_GRID: SnapGrid = { xValues: [], yValues: [] }
 
@@ -126,6 +127,7 @@ test('edge projection uses only a strict segment interior', () => {
   })
   assert.deepEqual(interior?.point, { x: 4, y: 0 })
   assert.equal(interior?.distancePx, 3)
+  assert.equal(interior?.sourceFraction, 0.4)
 
   assert.equal(resolve({
     point: { x: 15, y: 3 },
@@ -372,4 +374,152 @@ test('large vertex and segment sets resolve without candidate arrays', () => {
     settings: only('edge'),
     segments,
   })?.sourceId, 's0')
+})
+
+test('raw and grid-snapped points remain ordinary vertex additions', () => {
+  assert.deepEqual(createVertexPlacement({ x: 12, y: 34 }, null, []), {
+    operation: 'add',
+    x: 12,
+    y: 34,
+  })
+  assert.deepEqual(createVertexPlacement(
+    { x: 20, y: 40 },
+    {
+      key: 'grid:20:40',
+      kind: 'grid',
+      point: { x: 20, y: 40 },
+      distancePx: 2,
+    },
+    [],
+  ), {
+    operation: 'add',
+    x: 20,
+    y: 40,
+  })
+})
+
+test('midpoint and edge targets become atomic edge splits', () => {
+  const horizontal: SnapSegment = {
+    id: 'horizontal',
+    startVertexId: 'a',
+    endVertexId: 'b',
+    x1: 10,
+    y1: 20,
+    x2: 30,
+    y2: 20,
+  }
+  const vertical: SnapSegment = {
+    id: 'vertical',
+    startVertexId: 'c',
+    endVertexId: 'd',
+    x1: -4,
+    y1: 10,
+    x2: -4,
+    y2: 50,
+  }
+
+  assert.deepEqual(createVertexPlacement(
+    { x: 20, y: 20 },
+    {
+      key: 'midpoint:horizontal',
+      kind: 'midpoint',
+      point: { x: 20, y: 20 },
+      distancePx: 1,
+      sourceId: 'horizontal',
+      sourceFraction: 0.5,
+    },
+    [horizontal, vertical],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'horizontal',
+    fraction: 0.5,
+  })
+  assert.deepEqual(createVertexPlacement(
+    { x: -4, y: 40 },
+    {
+      key: 'edge:vertical',
+      kind: 'edge',
+      point: { x: -4, y: 40 },
+      distancePx: 1,
+      sourceId: 'vertical',
+      sourceFraction: 0.75,
+    },
+    [horizontal, vertical],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'vertical',
+    fraction: 0.75,
+  })
+
+  const reversedTarget = resolve({
+    point: { x: 2, y: 1 },
+    settings: only('edge'),
+    segments: [{
+      id: 'reversed',
+      startVertexId: 'end',
+      endVertexId: 'start',
+      x1: 10,
+      y1: 0,
+      x2: 0,
+      y2: 0,
+    }],
+  })
+  assert.equal(reversedTarget?.sourceFraction, 0.8)
+  assert.deepEqual(createVertexPlacement(
+    reversedTarget?.point ?? { x: Number.NaN, y: Number.NaN },
+    reversedTarget,
+    [{
+      id: 'reversed',
+      startVertexId: 'end',
+      endVertexId: 'start',
+      x1: 10,
+      y1: 0,
+      x2: 0,
+      y2: 0,
+    }],
+  ), {
+    operation: 'split-edge',
+    edgeId: 'reversed',
+    fraction: 0.8,
+  })
+})
+
+test('malformed edge snap metadata never degrades to an overlapping free vertex', () => {
+  const segment: SnapSegment = {
+    id: 'edge',
+    startVertexId: 'a',
+    endVertexId: 'b',
+    x1: 0,
+    y1: 0,
+    x2: 10,
+    y2: 0,
+  }
+  assert.equal(createVertexPlacement(
+    { x: 5, y: 0 },
+    { key: 'edge:missing', kind: 'edge', point: { x: 5, y: 0 }, distancePx: 0 },
+    [segment],
+  ), null)
+  assert.equal(createVertexPlacement(
+    { x: 5, y: 0 },
+    {
+      key: 'edge:edge',
+      kind: 'edge',
+      point: { x: 5, y: 0 },
+      distancePx: 0,
+      sourceId: 'edge',
+    },
+    [segment],
+  ), null)
+  assert.equal(createVertexPlacement(
+    { x: 0, y: 0 },
+    {
+      key: 'edge:edge',
+      kind: 'edge',
+      point: { x: 0, y: 0 },
+      distancePx: 0,
+      sourceId: 'edge',
+      sourceFraction: 0,
+    },
+    [segment],
+  ), null)
 })

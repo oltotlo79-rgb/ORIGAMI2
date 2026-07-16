@@ -24,6 +24,7 @@ import {
   saveProject,
   saveProjectAs,
   splitBoundaryEdge,
+  splitEdge,
   undo,
   updatePaperProperties,
   type ProjectSnapshot,
@@ -36,6 +37,7 @@ import {
   type SnapKind,
   type SnapSettings,
 } from './lib/snap'
+import type { VertexPlacement } from './lib/vertexPlacement'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: SnapKind; label: string }> = [
@@ -296,6 +298,45 @@ function App() {
     setSelectedVertexId(addedVertex.id)
     setActiveTool('select')
     setCoreStatus('輪郭辺を中点で分割し、新しい頂点を選択しました')
+  }
+
+  async function placeCanvasVertex(placement: VertexPlacement) {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    const previousVertexIds = new Set(
+      current.crease_pattern.vertices.map((vertex) => vertex.id),
+    )
+    const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
+    const succeeded = await runNativeEdit(async (projectId, revision) => {
+      let snapshot: ProjectSnapshot
+      if (placement.operation === 'add') {
+        snapshot = await addVertex(projectId, revision, placement.x, placement.y)
+      } else {
+        const edge = current.crease_pattern.edges.find(({ id }) => id === placement.edgeId)
+        if (!edge) throw new Error(`分割対象の辺が見つかりません: ${placement.edgeId}`)
+        snapshot = edge.kind === 'boundary'
+          ? await splitBoundaryEdge(projectId, revision, placement.edgeId, placement.fraction)
+          : await splitEdge(projectId, revision, placement.edgeId, placement.fraction)
+      }
+      result.snapshot = snapshot
+      return snapshot
+    })
+    if (!succeeded || !result.snapshot) return
+
+    const addedVertices = result.snapshot.crease_pattern.vertices.filter(
+      ({ id }) => !previousVertexIds.has(id),
+    )
+    setSelectedLineId(null)
+    setPendingEdgeStart(null)
+    if (addedVertices.length !== 1) {
+      setSelectedVertexId(null)
+      setCoreStatus('頂点を作成しましたが、新しい頂点を一意に特定できませんでした')
+      return
+    }
+    setSelectedVertexId(addedVertices[0].id)
+    setCoreStatus(placement.operation === 'split-edge'
+      ? '辺を分割し、新しい頂点を選択しました（元に戻すで復元できます）'
+      : '頂点を追加して選択しました（元に戻すで復元できます）')
   }
 
   useEffect(() => {
@@ -722,10 +763,7 @@ function App() {
                 setSelectedLineId(lineId)
                 if (lineId) setSelectedVertexId(null)
               }}
-              onAddVertex={(x, y) =>
-                runNativeEdit((projectId, revision) =>
-                  addVertex(projectId, revision, x, y))
-              }
+              onPlaceVertex={(placement) => void placeCanvasVertex(placement)}
               onSelectVertex={selectCanvasVertex}
               onMoveVertex={(vertexId, x, y) => {
                 void runNativeEdit((projectId, revision) =>

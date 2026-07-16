@@ -46,6 +46,7 @@ export type SnapTarget = Readonly<{
   point: SnapPoint
   distancePx: number
   sourceId?: string
+  sourceFraction?: number
 }>
 
 export type SnapBounds = Readonly<{
@@ -166,6 +167,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
         threshold,
         segment.id,
         options.accept,
+        0.5,
       )
     }
     if (best) return best.target
@@ -198,6 +200,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
         threshold,
         segment.id,
         options.accept,
+        fraction,
       )
     }
     if (best) return best.target
@@ -309,6 +312,7 @@ function considerTargetPoint(
   thresholdPx: number,
   sourceId: string | undefined,
   accept?: (target: SnapTarget) => boolean,
+  sourceFraction?: number,
 ) {
   const modelDistance = Math.hypot(x - inputPoint.x, y - inputPoint.y)
   const distancePx = modelDistance * scale
@@ -324,7 +328,9 @@ function considerTargetPoint(
   }
   const candidate: SnapTarget = sourceId === undefined
     ? { key, kind, point: { x, y }, distancePx }
-    : { key, kind, point: { x, y }, distancePx, sourceId }
+    : sourceFraction === undefined
+      ? { key, kind, point: { x, y }, distancePx, sourceId }
+      : { key, kind, point: { x, y }, distancePx, sourceId, sourceFraction }
   return accept && !accept(candidate) ? best : { target: candidate, modelDistance }
 }
 

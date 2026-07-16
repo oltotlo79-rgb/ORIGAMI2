@@ -6,13 +6,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId};
-use ori_geometry::{polygon_signed_double_area, validate_paper};
+use ori_domain::{
+    CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId,
+};
+use ori_geometry::{polygon_signed_double_area, validate_crease_pattern, validate_paper};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const FACE_KEY_DOMAIN: &[u8] = b"ORIGAMI2_FACE_KEY_V1";
+
+mod single_fold;
+
+use single_fold::{SingleFoldError, extract_single_fold_faces};
 
 /// Immutable input used to derive a topology snapshot.
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +35,7 @@ pub struct FaceExtractionInput<'a> {
 pub struct FaceKey(pub [u8; 32]);
 
 /// One directed occurrence of a source edge in a face boundary walk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HalfEdgeRef {
     pub edge: EdgeId,
     pub origin: VertexId,
@@ -52,12 +58,40 @@ pub struct Face {
     pub area: f64,
 }
 
+/// Mountain/valley meaning carried by a hinge without affecting face identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldAssignment {
+    Mountain,
+    Valley,
+}
+
 /// The relation of a source edge to the extracted material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EdgeIncidence {
-    Boundary { material: FaceId },
+    Boundary {
+        material: FaceId,
+    },
+    Hinge {
+        /// Material on the left of the edge's canonical VertexId direction.
+        left: FaceId,
+        /// Material on the right of the edge's canonical VertexId direction.
+        right: FaceId,
+        assignment: FoldAssignment,
+    },
     AuxiliaryIgnored,
+}
+
+/// One fold hinge connecting two distinct material faces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaceAdjacency {
+    pub edge: EdgeId,
+    /// The incident face with the smaller canonical [`FaceKey`].
+    pub first: FaceId,
+    /// The incident face with the larger canonical [`FaceKey`].
+    pub second: FaceId,
+    pub assignment: FoldAssignment,
 }
 
 /// Canonical, revision-labelled output of face extraction.
@@ -66,6 +100,8 @@ pub struct TopologySnapshot {
     pub source_revision: u64,
     pub faces: Vec<Face>,
     pub edge_incidence: Vec<(EdgeId, EdgeIncidence)>,
+    #[serde(default)]
+    pub hinge_adjacency: Vec<FaceAdjacency>,
 }
 
 /// Whether a topology issue permits downstream simulation.
@@ -84,7 +120,13 @@ pub enum TopologyIssueKind {
     DuplicateVertexId { vertex: VertexId },
     DuplicateEdgeId { edge: EdgeId },
     InvalidPaper { issue_count: usize },
+    InvalidCreasePattern { issue_count: usize },
     UnsupportedActiveEdge { edge: EdgeId, edge_kind: EdgeKind },
+    TooManyActiveFoldEdges { edges: Vec<EdgeId> },
+    FoldEndpointNotOnBoundary { edge: EdgeId, vertex: VertexId },
+    UnsupportedAdjacentBoundaryFold { edge: EdgeId },
+    UnsupportedNonConvexFoldSheet { edge: EdgeId, vertex: VertexId },
+    DegenerateFoldFace { edge: EdgeId },
     UnrepresentableFaceArea,
     InternalBoundaryResolution,
 }
@@ -120,10 +162,10 @@ impl FaceExtractionRejected {
 
 /// Analyzes the document without mutating it.
 ///
-/// Mountain, valley, and cut edges are rejected explicitly in this first
-/// boundary-only slice. They will be enabled when the DCEL walk grouping is
-/// implemented; silently treating them as auxiliary would create unsafe 3D
-/// input.
+/// The accepted fold subset currently contains either no active edge, or one
+/// mountain/valley chord between non-adjacent vertices of a convex boundary.
+/// All broader fold graphs and every cut remain explicitly blocked; silently
+/// treating them as auxiliary would create unsafe 3D input.
 #[must_use]
 pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
     let mut vertex_ids = HashSet::with_capacity(input.pattern.vertices.len());
@@ -175,7 +217,7 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
         .pattern
         .edges
         .iter()
-        .filter(|edge| !matches!(edge.kind, EdgeKind::Boundary | EdgeKind::Auxiliary))
+        .filter(|edge| edge.kind == EdgeKind::Cut)
         .min_by_key(|edge| edge.id.canonical_bytes())
     {
         return rejected(
@@ -187,12 +229,56 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
         );
     }
 
-    match extract_boundary_face(input) {
+    let mut fold_edges = input
+        .pattern
+        .edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .collect::<Vec<_>>();
+    fold_edges.sort_by_key(|edge| edge.id.canonical_bytes());
+    if !fold_edges.is_empty() {
+        let issue_count = validate_fold_participants(input.pattern);
+        if issue_count != 0 {
+            return rejected(
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InvalidCreasePattern { issue_count },
+            );
+        }
+    }
+    if fold_edges.len() > 1 {
+        return rejected(
+            TopologyIssueSeverity::BlocksSimulation,
+            TopologyIssueKind::TooManyActiveFoldEdges {
+                edges: fold_edges.iter().map(|edge| edge.id).collect(),
+            },
+        );
+    }
+
+    let extracted = if let Some(fold) = fold_edges.first() {
+        let mut endpoints = [fold.start, fold.end];
+        endpoints.sort_by_key(VertexId::canonical_bytes);
+        for vertex in endpoints {
+            if !input.paper.boundary_vertices.contains(&vertex) {
+                return rejected(
+                    TopologyIssueSeverity::BlocksSimulation,
+                    TopologyIssueKind::FoldEndpointNotOnBoundary {
+                        edge: fold.id,
+                        vertex,
+                    },
+                );
+            }
+        }
+        extract_single_fold_snapshot(input, fold)
+    } else {
+        extract_boundary_face(input).map_err(|kind| (TopologyIssueSeverity::Fatal, kind))
+    };
+
+    match extracted {
         Ok(snapshot) => FaceExtractionReport {
             snapshot: Some(snapshot),
             issues: Vec::new(),
         },
-        Err(kind) => rejected(TopologyIssueSeverity::Fatal, kind),
+        Err((severity, kind)) => rejected(severity, kind),
     }
 }
 
@@ -226,6 +312,206 @@ fn rejected(severity: TopologyIssueSeverity, kind: TopologyIssueKind) -> FaceExt
         snapshot: None,
         issues: vec![TopologyIssue { severity, kind }],
     }
+}
+
+/// Validates only records that can affect material topology.
+///
+/// Auxiliary construction geometry is deliberately excluded: it may cross,
+/// overlap, or reference incomplete draft vertices without changing a face.
+/// Global record-ID uniqueness is checked before this function, so excluding
+/// auxiliary records cannot hide an identity collision.
+fn validate_fold_participants(pattern: &CreasePattern) -> usize {
+    let participant_edges = pattern
+        .edges
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.kind,
+                EdgeKind::Boundary | EdgeKind::Mountain | EdgeKind::Valley
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let participant_vertices = participant_edges
+        .iter()
+        .flat_map(|edge| [edge.start, edge.end])
+        .collect::<HashSet<_>>();
+    let vertices = pattern
+        .vertices
+        .iter()
+        .filter(|vertex| participant_vertices.contains(&vertex.id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    validate_crease_pattern(&CreasePattern {
+        vertices,
+        edges: participant_edges,
+    })
+    .issues
+    .len()
+}
+
+fn extract_single_fold_snapshot(
+    input: FaceExtractionInput<'_>,
+    fold: &Edge,
+) -> Result<TopologySnapshot, (TopologyIssueSeverity, TopologyIssueKind)> {
+    let extracted = extract_single_fold_faces(input.paper, input.pattern, fold).map_err(
+        |error| match error {
+            SingleFoldError::NonConvex { vertex } => (
+                TopologyIssueSeverity::BlocksSimulation,
+                TopologyIssueKind::UnsupportedNonConvexFoldSheet {
+                    edge: fold.id,
+                    vertex,
+                },
+            ),
+            SingleFoldError::AdjacentEndpoints { .. } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::UnsupportedAdjacentBoundaryFold { edge: fold.id },
+            ),
+            SingleFoldError::DegenerateFace { .. } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::DegenerateFoldFace { edge: fold.id },
+            ),
+            SingleFoldError::UnresolvedEdge { .. } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InternalBoundaryResolution,
+            ),
+        },
+    )?;
+    if extracted.fold != fold.id
+        || extracted.canonical_start.canonical_bytes() >= extracted.canonical_end.canonical_bytes()
+    {
+        return Err((
+            TopologyIssueSeverity::Fatal,
+            TopologyIssueKind::InternalBoundaryResolution,
+        ));
+    }
+
+    let left_face = face_from_walk(input.identity_namespace, extracted.left)
+        .map_err(|kind| (TopologyIssueSeverity::Fatal, kind))?;
+    let right_face = face_from_walk(input.identity_namespace, extracted.right)
+        .map_err(|kind| (TopologyIssueSeverity::Fatal, kind))?;
+    if left_face.key == right_face.key || left_face.id == right_face.id {
+        return Err((
+            TopologyIssueSeverity::Fatal,
+            TopologyIssueKind::InternalBoundaryResolution,
+        ));
+    }
+
+    let left = left_face.id;
+    let right = right_face.id;
+    if !walk_has_directed_edge(
+        &left_face.outer,
+        fold.id,
+        extracted.canonical_start,
+        extracted.canonical_end,
+    ) || !walk_has_directed_edge(
+        &right_face.outer,
+        fold.id,
+        extracted.canonical_end,
+        extracted.canonical_start,
+    ) {
+        return Err((
+            TopologyIssueSeverity::Fatal,
+            TopologyIssueKind::InternalBoundaryResolution,
+        ));
+    }
+
+    let assignment = match fold.kind {
+        EdgeKind::Mountain => FoldAssignment::Mountain,
+        EdgeKind::Valley => FoldAssignment::Valley,
+        _ => {
+            return Err((
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InternalBoundaryResolution,
+            ));
+        }
+    };
+
+    let mut faces = vec![left_face, right_face];
+    faces.sort_by_key(|face| face.key);
+    let mut edge_incidence = Vec::with_capacity(input.pattern.edges.len());
+    for edge in &input.pattern.edges {
+        let incidence = match edge.kind {
+            EdgeKind::Boundary => {
+                let mut materials = faces.iter().filter_map(|face| {
+                    face.outer
+                        .half_edges
+                        .iter()
+                        .any(|half_edge| half_edge.edge == edge.id)
+                        .then_some(face.id)
+                });
+                let Some(material) = materials.next() else {
+                    return Err((
+                        TopologyIssueSeverity::Fatal,
+                        TopologyIssueKind::InternalBoundaryResolution,
+                    ));
+                };
+                if materials.next().is_some() {
+                    return Err((
+                        TopologyIssueSeverity::Fatal,
+                        TopologyIssueKind::InternalBoundaryResolution,
+                    ));
+                }
+                EdgeIncidence::Boundary { material }
+            }
+            EdgeKind::Mountain | EdgeKind::Valley if edge.id == fold.id => EdgeIncidence::Hinge {
+                left,
+                right,
+                assignment,
+            },
+            EdgeKind::Auxiliary => EdgeIncidence::AuxiliaryIgnored,
+            EdgeKind::Mountain | EdgeKind::Valley | EdgeKind::Cut => {
+                return Err((
+                    TopologyIssueSeverity::Fatal,
+                    TopologyIssueKind::InternalBoundaryResolution,
+                ));
+            }
+        };
+        edge_incidence.push((edge.id, incidence));
+    }
+    edge_incidence.sort_by_key(|(edge, _)| edge.canonical_bytes());
+
+    let hinge_adjacency = vec![FaceAdjacency {
+        edge: fold.id,
+        first: faces[0].id,
+        second: faces[1].id,
+        assignment,
+    }];
+    Ok(TopologySnapshot {
+        source_revision: input.source_revision,
+        faces,
+        edge_incidence,
+        hinge_adjacency,
+    })
+}
+
+fn face_from_walk(
+    identity_namespace: ProjectId,
+    outer: BoundaryWalk,
+) -> Result<Face, TopologyIssueKind> {
+    let area = outer.signed_double_area * 0.5;
+    if area <= 0.0 || !area.is_finite() {
+        return Err(TopologyIssueKind::UnrepresentableFaceArea);
+    }
+    let key = face_key(&outer.half_edges);
+    Ok(Face {
+        id: FaceId::derive_v5(identity_namespace, &key.0),
+        key,
+        outer,
+        area,
+    })
+}
+
+fn walk_has_directed_edge(
+    walk: &BoundaryWalk,
+    edge: EdgeId,
+    origin: VertexId,
+    destination: VertexId,
+) -> bool {
+    walk.half_edges.iter().any(|half_edge| {
+        half_edge.edge == edge && half_edge.origin == origin && half_edge.destination == destination
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -371,6 +657,7 @@ fn extract_boundary_face(
         source_revision: input.source_revision,
         faces: vec![face],
         edge_incidence,
+        hinge_adjacency: Vec::new(),
     })
 }
 
@@ -794,43 +1081,41 @@ mod tests {
     }
 
     #[test]
-    fn active_fold_and_cut_edges_are_explicitly_blocked() {
-        for kind in [EdgeKind::Mountain, EdgeKind::Valley, EdgeKind::Cut] {
-            let (namespace, mut paper, mut pattern) = polygon_fixture(&[
-                Point2::new(0.0, 0.0),
-                Point2::new(5.0, 0.0),
-                Point2::new(5.0, 5.0),
-                Point2::new(0.0, 5.0),
-            ]);
-            paper.cutting_allowed = true;
-            let edge_id = EdgeId::new();
-            pattern.edges.push(Edge {
-                id: edge_id,
-                start: pattern.vertices[0].id,
-                end: pattern.vertices[2].id,
-                kind,
-            });
+    fn cut_edges_remain_explicitly_blocked() {
+        let (namespace, mut paper, mut pattern) = polygon_fixture(&[
+            Point2::new(0.0, 0.0),
+            Point2::new(5.0, 0.0),
+            Point2::new(5.0, 5.0),
+            Point2::new(0.0, 5.0),
+        ]);
+        paper.cutting_allowed = true;
+        let edge_id = EdgeId::new();
+        pattern.edges.push(Edge {
+            id: edge_id,
+            start: pattern.vertices[0].id,
+            end: pattern.vertices[2].id,
+            kind: EdgeKind::Cut,
+        });
 
-            let error = extract_faces_strict(FaceExtractionInput {
-                identity_namespace: namespace,
-                source_revision: 0,
-                paper: &paper,
-                pattern: &pattern,
-            })
-            .expect_err("active edges are not implemented in the first slice");
+        let error = extract_faces_strict(FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: 0,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .expect_err("cut topology is not implemented in this slice");
 
-            assert_eq!(error.issue_count(), 1);
-            assert_eq!(
-                error.issues[0],
-                TopologyIssue {
-                    severity: TopologyIssueSeverity::BlocksSimulation,
-                    kind: TopologyIssueKind::UnsupportedActiveEdge {
-                        edge: edge_id,
-                        edge_kind: kind,
-                    },
-                }
-            );
-        }
+        assert_eq!(error.issue_count(), 1);
+        assert_eq!(
+            error.issues[0],
+            TopologyIssue {
+                severity: TopologyIssueSeverity::BlocksSimulation,
+                kind: TopologyIssueKind::UnsupportedActiveEdge {
+                    edge: edge_id,
+                    edge_kind: EdgeKind::Cut,
+                },
+            }
+        );
     }
 
     #[test]

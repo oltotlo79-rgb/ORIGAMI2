@@ -2,6 +2,7 @@ use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId
 
 mod editor;
 mod sheet;
+mod topology;
 mod validation;
 
 pub use editor::{
@@ -12,7 +13,11 @@ pub use ori_geometry::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
     SegmentIntersection, ValidationIssue, validate_paper,
 };
+pub use ori_topology::{
+    FaceExtractionReport, TopologyIssue, TopologyIssueKind, TopologyIssueSeverity, TopologySnapshot,
+};
 pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
+pub use topology::{EditorTopology, TopologyAnalysisInput};
 pub use validation::EditorValidation;
 
 #[must_use]

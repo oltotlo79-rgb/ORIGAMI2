@@ -11,7 +11,8 @@ use std::{
 
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
-    PaperValidationIssue, ValidationIssue, create_rectangular_sheet, validate_paper,
+    PaperValidationIssue, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
+    create_rectangular_sheet, validate_paper,
 };
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, RgbaColor, VertexId};
 use ori_formats::{
@@ -239,6 +240,17 @@ struct ValidationIssueSnapshot {
     edges: Vec<EdgeId>,
 }
 
+#[derive(Debug, Serialize)]
+struct ProjectTopologyResponse {
+    project_id: ProjectId,
+    revision: u64,
+    /// Strict gate for folding consumers. A false response never carries a
+    /// snapshot, even if analysis later gains partial diagnostic snapshots.
+    simulation_ready: bool,
+    snapshot: Option<TopologySnapshot>,
+    issues: Vec<TopologyIssue>,
+}
+
 struct NewProjectParameters {
     name: String,
     width_mm: f64,
@@ -372,6 +384,32 @@ fn new_project(
 fn validate_project(state: State<'_, AppState>) -> Result<ValidationSnapshot, String> {
     let project = lock_project(&state)?;
     Ok(validation_snapshot(&project))
+}
+
+/// Analyzes immutable topology input away from the project-state lock.
+///
+/// Unsupported or invalid folding geometry is a successful command response
+/// with structured issues. Operational failures and stale results are command
+/// errors, so the UI cannot accidentally display topology from another edit.
+#[tauri::command]
+async fn analyze_project_topology(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<ProjectTopologyResponse, String> {
+    let input = {
+        let project = lock_project(&state)?;
+        capture_topology_input(&project, expected_project_id, expected_revision)?
+    };
+    let (input, topology) = tauri::async_runtime::spawn_blocking(move || {
+        let topology = input.analyze();
+        (input, topology)
+    })
+    .await
+    .map_err(|error| format!("topology analysis task failed: {error}"))?;
+
+    let project = lock_project(&state)?;
+    finish_topology_response(&project, &input, topology)
 }
 
 #[tauri::command]
@@ -984,6 +1022,51 @@ fn ensure_expected_project(
     } else {
         Err("the project changed while the file dialog was open".to_owned())
     }
+}
+
+fn capture_topology_input(
+    project: &ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<TopologyAnalysisInput, String> {
+    ensure_project_identity(project, expected_project_id)?;
+    if project.editor.revision() != expected_revision {
+        return Err(format!(
+            "expected revision {expected_revision}, but the current revision is {}",
+            project.editor.revision()
+        ));
+    }
+    Ok(project.editor.topology_analysis_input(project.project_id))
+}
+
+fn finish_topology_response(
+    project: &ProjectState,
+    input: &TopologyAnalysisInput,
+    topology: ori_core::EditorTopology,
+) -> Result<ProjectTopologyResponse, String> {
+    if !input.is_current_for(project.project_id, &project.editor) {
+        return Err("the project changed while topology was being analyzed".to_owned());
+    }
+    if topology.revision() != input.revision() {
+        return Err("topology analysis returned an unexpected revision".to_owned());
+    }
+
+    let simulation_ready = topology.is_simulation_ready();
+    let report = topology.into_report();
+    if report
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.source_revision != input.revision())
+    {
+        return Err("topology snapshot returned an unexpected source revision".to_owned());
+    }
+    Ok(ProjectTopologyResponse {
+        project_id: project.project_id,
+        revision: input.revision(),
+        simulation_ready,
+        snapshot: simulation_ready.then_some(report.snapshot).flatten(),
+        issues: report.issues,
+    })
 }
 
 fn snapshot(project: &ProjectState) -> ProjectSnapshot {
@@ -1774,6 +1857,7 @@ pub fn run() {
             project_snapshot,
             new_project,
             validate_project,
+            analyze_project_topology,
             open_project,
             save_project,
             save_project_as,
@@ -1944,6 +2028,130 @@ mod tests {
             can_redo: project.editor.can_redo(),
             is_dirty: project.is_dirty(),
         }
+    }
+
+    #[test]
+    fn topology_bridge_returns_revision_bound_boundary_snapshot_without_mutation() {
+        let project = initial_project_state();
+        let before = project_state_signature(&project);
+        let input =
+            capture_topology_input(&project, project.project_id, 0).expect("capture initial sheet");
+        let topology = input.analyze();
+
+        let response =
+            finish_topology_response(&project, &input, topology).expect("finish current topology");
+
+        assert_eq!(response.project_id, project.project_id);
+        assert_eq!(response.revision, 0);
+        assert!(response.simulation_ready);
+        assert!(response.issues.is_empty());
+        let snapshot = response.snapshot.expect("boundary snapshot");
+        assert_eq!(snapshot.source_revision, response.revision);
+        assert_eq!(snapshot.faces.len(), 1);
+        assert!(snapshot.hinge_adjacency.is_empty());
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn topology_bridge_returns_two_faces_and_one_hinge_for_one_fold() {
+        let mut project = initial_project_state();
+        let fold = EdgeId::new();
+        let endpoints = [
+            project.editor.paper().boundary_vertices[0],
+            project.editor.paper().boundary_vertices[2],
+        ];
+        let project_id = project.project_id;
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddEdge {
+                id: fold,
+                start: endpoints[0],
+                end: endpoints[1],
+                kind: EdgeKind::Mountain,
+            },
+        )
+        .expect("add one fold");
+        let before = project_state_signature(&project);
+        let input = capture_topology_input(&project, project_id, 1).expect("capture fold");
+
+        let response = finish_topology_response(&project, &input, input.analyze())
+            .expect("finish fold topology");
+
+        assert!(response.simulation_ready);
+        assert!(response.issues.is_empty());
+        let snapshot = response.snapshot.expect("fold snapshot");
+        assert_eq!(snapshot.source_revision, 1);
+        assert_eq!(snapshot.faces.len(), 2);
+        assert_eq!(snapshot.hinge_adjacency.len(), 1);
+        assert_eq!(snapshot.hinge_adjacency[0].edge, fold);
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn topology_bridge_preserves_structured_unsupported_diagnostics() {
+        let sheet = create_rectangular_sheet(100.0, 100.0, true).expect("cut-enabled sheet");
+        let (pattern, paper) = sheet.into_parts();
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        let boundary = project.editor.paper().boundary_vertices.clone();
+        let cut = EdgeId::new();
+        let project_id = project.project_id;
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddEdge {
+                id: cut,
+                start: boundary[0],
+                end: boundary[2],
+                kind: EdgeKind::Cut,
+            },
+        )
+        .expect("add supported editor cut");
+        let input =
+            capture_topology_input(&project, project_id, 1).expect("capture unsupported graph");
+
+        let response = finish_topology_response(&project, &input, input.analyze())
+            .expect("unsupported topology is a diagnostic response");
+
+        assert!(!response.simulation_ready);
+        assert!(response.snapshot.is_none());
+        assert!(matches!(
+            response.issues.as_slice(),
+            [TopologyIssue {
+                kind: ori_core::TopologyIssueKind::UnsupportedActiveEdge {
+                    edge,
+                    edge_kind: EdgeKind::Cut,
+                },
+                ..
+            }] if *edge == cut
+        ));
+    }
+
+    #[test]
+    fn topology_bridge_rejects_stale_capture_and_delayed_aba_result() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        assert_eq!(
+            capture_topology_input(&project, project_id, 1).expect_err("stale requested revision"),
+            "expected revision 1, but the current revision is 0"
+        );
+        assert!(capture_topology_input(&project, ProjectId::new(), 0).is_err());
+
+        let input = capture_topology_input(&project, project_id, 0).expect("capture old input");
+        let topology = input.analyze();
+        let replacement =
+            create_rectangular_sheet(210.0, 297.0, false).expect("replacement rectangle");
+        let (pattern, paper) = replacement.into_parts();
+        project.editor = EditorState::with_paper(pattern, paper);
+        assert_eq!(project.editor.revision(), 0, "ABA revision fixture");
+
+        assert_eq!(
+            finish_topology_response(&project, &input, topology)
+                .expect_err("same identity/revision with different content is stale"),
+            "the project changed while topology was being analyzed"
+        );
     }
 
     fn unsaved_project_with_redo_history(name: &str) -> ProjectState {

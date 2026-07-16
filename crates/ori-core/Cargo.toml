@@ -8,4 +8,5 @@ repository.workspace = true
 [dependencies]
 ori-domain = { path = "../ori-domain" }
 ori-geometry = { path = "../ori-geometry" }
+ori-topology = { path = "../ori-topology" }
 thiserror.workspace = true

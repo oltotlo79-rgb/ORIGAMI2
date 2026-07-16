@@ -93,6 +93,76 @@ export type ValidationSnapshot = {
   }>
 }
 
+export type FoldAssignment = 'mountain' | 'valley'
+
+export type TopologyHalfEdge = {
+  edge: string
+  origin: string
+  destination: string
+}
+
+export type TopologyBoundaryWalk = {
+  half_edges: TopologyHalfEdge[]
+  signed_double_area: number
+}
+
+export type TopologyFace = {
+  id: string
+  /** Canonical SHA-256 digest serialized as exactly 32 bytes. */
+  key: number[]
+  outer: TopologyBoundaryWalk
+  area: number
+}
+
+export type TopologyEdgeIncidence =
+  | { kind: 'boundary'; material: string }
+  | {
+    kind: 'hinge'
+    left: string
+    right: string
+    assignment: FoldAssignment
+  }
+  | { kind: 'auxiliary_ignored' }
+
+export type TopologyFaceAdjacency = {
+  edge: string
+  first: string
+  second: string
+  assignment: FoldAssignment
+}
+
+export type TopologySnapshot = {
+  source_revision: number
+  faces: TopologyFace[]
+  edge_incidence: Array<[string, TopologyEdgeIncidence]>
+  hinge_adjacency: TopologyFaceAdjacency[]
+}
+
+export type TopologyIssueKind =
+  | { kind: 'duplicate_vertex_id'; vertex: string }
+  | { kind: 'duplicate_edge_id'; edge: string }
+  | { kind: 'invalid_paper'; issue_count: number }
+  | { kind: 'invalid_crease_pattern'; issue_count: number }
+  | { kind: 'unsupported_active_edge'; edge: string; edge_kind: string }
+  | { kind: 'too_many_active_fold_edges'; edges: string[] }
+  | { kind: 'fold_endpoint_not_on_boundary'; edge: string; vertex: string }
+  | { kind: 'unsupported_adjacent_boundary_fold'; edge: string }
+  | { kind: 'unsupported_non_convex_fold_sheet'; edge: string; vertex: string }
+  | { kind: 'degenerate_fold_face'; edge: string }
+  | { kind: 'unrepresentable_face_area' }
+  | { kind: 'internal_boundary_resolution' }
+
+export type ProjectTopologyResponse = {
+  project_id: string
+  revision: number
+  simulation_ready: boolean
+  snapshot: TopologySnapshot | null
+  issues: Array<{
+    severity: 'warning' | 'blocks_simulation' | 'fatal'
+    kind: TopologyIssueKind
+  }>
+}
+
 export function isNativeCoreAvailable() {
   return '__TAURI_INTERNALS__' in window
 }
@@ -183,6 +253,13 @@ export function getProjectSnapshot() {
 
 export function validateProject() {
   return invoke<ValidationSnapshot>('validate_project')
+}
+
+export function analyzeProjectTopology(expectedProjectId: string, expectedRevision: number) {
+  return invoke<ProjectTopologyResponse>('analyze_project_topology', {
+    expectedProjectId,
+    expectedRevision,
+  })
 }
 
 export function openProject() {

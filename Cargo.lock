@@ -2043,6 +2043,7 @@ version = "0.1.0"
 dependencies = [
  "ori-domain",
  "ori-geometry",
+ "ori-topology",
  "thiserror 2.0.18",
 ]
 

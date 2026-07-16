@@ -14,6 +14,7 @@ type Props = {
   vertices?: Array<{ id: string; x: number; y: number }>
   tool?: string
   selectedVertexId?: string | null
+  pendingVertexId?: string | null
   selectedLineId: string | null
   onSelectLine: (id: string | null) => void
   onAddVertex?: (x: number, y: number) => void
@@ -32,6 +33,7 @@ export function CreaseCanvas({
   vertices = [],
   tool = 'select',
   selectedVertexId = null,
+  pendingVertexId = null,
   selectedLineId,
   onSelectLine,
   onAddVertex,
@@ -82,10 +84,12 @@ export function CreaseCanvas({
     context.setLineDash([])
 
     for (const vertex of vertices) {
-      if (vertex.id === selectedVertexId) {
+      if (vertex.id === selectedVertexId || vertex.id === pendingVertexId) {
         context.beginPath()
         context.arc(mapX(vertex.x), mapY(vertex.y), 9, 0, Math.PI * 2)
-        context.fillStyle = 'rgba(23, 107, 135, 0.2)'
+        context.fillStyle = vertex.id === pendingVertexId
+          ? 'rgba(229, 155, 53, 0.28)'
+          : 'rgba(23, 107, 135, 0.2)'
         context.fill()
       }
       context.beginPath()
@@ -96,7 +100,7 @@ export function CreaseCanvas({
       context.lineWidth = 2
       context.stroke()
     }
-  }, [lines, selectedLineId, selectedVertexId, vertices])
+  }, [lines, pendingVertexId, selectedLineId, selectedVertexId, vertices])
 
   function handleClick(event: React.MouseEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current
@@ -104,22 +108,21 @@ export function CreaseCanvas({
     const bounds = canvas.getBoundingClientRect()
     const x = (event.clientX - bounds.left - 36) / ((bounds.width - 72) / 400)
     const y = (event.clientY - bounds.top - 28) / ((bounds.height - 56) / 400)
+    const closestVertex = findClosestVertex(vertices, x, y)
     if (tool === 'vertex' && onAddVertex && x >= 0 && x <= 400 && y >= 0 && y <= 400) {
       onAddVertex(x, y)
       return
     }
     if ((tool === 'mountain' || tool === 'valley' || tool === 'cut') && onSelectVertex) {
-      let closest: { id: string; distance: number } | null = null
-      for (const vertex of vertices) {
-        const distance = Math.hypot(x - vertex.x, y - vertex.y)
-        if (distance < 10 && (!closest || distance < closest.distance)) {
-          closest = { id: vertex.id, distance }
-        }
-      }
-      if (closest) {
-        onSelectVertex(closest.id)
+      if (closestVertex) {
+        onSelectVertex(closestVertex.id)
         return
       }
+    }
+    if (tool === 'select' && closestVertex && onSelectVertex) {
+      onSelectVertex(closestVertex.id)
+      onSelectLine(null)
+      return
     }
     let best: { id: string; distance: number } | null = null
     for (const line of lines) {
@@ -136,6 +139,21 @@ export function CreaseCanvas({
       onClick={handleClick}
     />
   )
+}
+
+function findClosestVertex(
+  vertices: Array<{ id: string; x: number; y: number }>,
+  x: number,
+  y: number,
+) {
+  let closest: { id: string; distance: number } | null = null
+  for (const vertex of vertices) {
+    const distance = Math.hypot(x - vertex.x, y - vertex.y)
+    if (distance < 10 && (!closest || distance < closest.distance)) {
+      closest = { id: vertex.id, distance }
+    }
+  }
+  return closest
 }
 
 function pointSegmentDistance(px: number, py: number, line: CreaseLine) {

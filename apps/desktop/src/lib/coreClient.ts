@@ -52,6 +52,23 @@ export function addEdge(
   })
 }
 
+export function moveVertex(
+  expectedRevision: number,
+  id: string,
+  x: number,
+  y: number,
+) {
+  return invoke<ProjectSnapshot>('move_vertex', { expectedRevision, id, x, y })
+}
+
+export function removeVertex(expectedRevision: number, id: string) {
+  return invoke<ProjectSnapshot>('remove_vertex', { expectedRevision, id })
+}
+
+export function removeEdge(expectedRevision: number, id: string) {
+  return invoke<ProjectSnapshot>('remove_edge', { expectedRevision, id })
+}
+
 export function undo(expectedRevision: number) {
   return invoke<ProjectSnapshot>('undo', { expectedRevision })
 }

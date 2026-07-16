@@ -105,6 +105,16 @@ button { color: inherit; }
 .inspector dd { margin: 0; font-family: ui-monospace, monospace; }
 .field { display: flex; align-items: center; gap: 5px; font-size: 12px; }
 .field input { width: 72px; margin-left: auto; padding: 4px 5px; border: 1px solid var(--border); border-radius: 4px; }
+.coordinate-form { display: grid; gap: 7px; margin-top: 9px; }
+.property-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.property-actions button {
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.property-actions button.danger { color: #a73535; border-color: #d9a7a7; }
 .check { display: block; margin-top: 10px; font-size: 12px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip { border: 1px solid var(--border); background: white; border-radius: 12px; font-size: 11px; padding: 3px 8px; }
@@ -127,6 +137,6 @@ button { color: inherit; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }
   .panel-heading, .statusbar { background: #20282f; }
-  .top-actions button, .timeline button, .chip, .step { background: #303941; }
+  .top-actions button, .timeline button, .chip, .step, .property-actions button { background: #303941; }
   .crease-canvas { filter: brightness(.82); }
 }

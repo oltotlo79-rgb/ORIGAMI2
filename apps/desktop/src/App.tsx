@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
 import {
@@ -7,7 +7,10 @@ import {
   generateBenchmarkPattern,
   getProjectSnapshot,
   isNativeCoreAvailable,
+  moveVertex,
   redo,
+  removeEdge,
+  removeVertex,
   setCuttingAllowed,
   undo,
   type ProjectSnapshot,
@@ -16,6 +19,7 @@ import './App.css'
 
 function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
+  const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [foldAngle, setFoldAngle] = useState(52)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
@@ -51,6 +55,12 @@ function App() {
     () => nativeLines.find((line) => line.id === selectedLineId),
     [nativeLines, selectedLineId],
   )
+  const selectedVertex = useMemo(
+    () => nativeSnapshot?.crease_pattern.vertices.find(
+      (vertex) => vertex.id === selectedVertexId,
+    ),
+    [nativeSnapshot, selectedVertexId],
+  )
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -63,13 +73,15 @@ function App() {
   }, [])
 
   async function runNativeEdit(action: (revision: number) => Promise<ProjectSnapshot>) {
-    if (!nativeSnapshot) return
+    if (!nativeSnapshot) return false
     try {
       const snapshot = await action(nativeSnapshot.revision)
       setNativeSnapshot(snapshot)
       setCoreStatus(`Rustコア revision ${snapshot.revision}`)
+      return true
     } catch (error) {
       setCoreStatus(`コアエラー: ${String(error)}`)
+      return false
     }
   }
 
@@ -87,6 +99,28 @@ function App() {
     const start = pendingEdgeStart
     setPendingEdgeStart(null)
     void runNativeEdit((revision) => addEdge(revision, start, vertexId, activeTool))
+  }
+
+  function selectCanvasVertex(vertexId: string) {
+    if (activeTool === 'select') {
+      setSelectedVertexId(vertexId)
+      setSelectedLineId(null)
+      return
+    }
+    selectVertexForEdge(vertexId)
+  }
+
+  function submitVertexPosition(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedVertex) return
+    const form = new FormData(event.currentTarget)
+    const x = Number(form.get('x'))
+    const y = Number(form.get('y'))
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      setCoreStatus('座標には有限の数値を入力してください')
+      return
+    }
+    void runNativeEdit((revision) => moveVertex(revision, selectedVertex.id, x, y))
   }
 
   return (
@@ -165,13 +199,17 @@ function App() {
                 y: vertex.position.y,
               }))}
               tool={activeTool}
-              selectedVertexId={pendingEdgeStart}
+              selectedVertexId={selectedVertexId}
+              pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
-              onSelectLine={setSelectedLineId}
+              onSelectLine={(lineId) => {
+                setSelectedLineId(lineId)
+                if (lineId) setSelectedVertexId(null)
+              }}
               onAddVertex={(x, y) =>
                 runNativeEdit((revision) => addVertex(revision, x, y))
               }
-              onSelectVertex={selectVertexForEdge}
+              onSelectVertex={selectCanvasVertex}
             />
           </article>
 
@@ -201,13 +239,76 @@ function App() {
           <section>
             <h2>選択要素</h2>
             {selectedLine ? (
-              <dl>
-                <div><dt>ID</dt><dd>{selectedLine.id}</dd></div>
-                <div><dt>種類</dt><dd>{lineKindLabel(selectedLine.kind)}</dd></div>
-                <div><dt>始点</dt><dd>{selectedLine.x1}, {selectedLine.y1}</dd></div>
-                <div><dt>終点</dt><dd>{selectedLine.x2}, {selectedLine.y2}</dd></div>
-              </dl>
-            ) : <p className="muted">線を選択してください</p>}
+              <>
+                <dl>
+                  <div><dt>ID</dt><dd>{selectedLine.id}</dd></div>
+                  <div><dt>種類</dt><dd>{lineKindLabel(selectedLine.kind)}</dd></div>
+                  <div><dt>始点</dt><dd>{selectedLine.x1}, {selectedLine.y1}</dd></div>
+                  <div><dt>終点</dt><dd>{selectedLine.x2}, {selectedLine.y2}</dd></div>
+                </dl>
+                <div className="property-actions">
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      void runNativeEdit((revision) => removeEdge(revision, selectedLine.id))
+                        .then((removed) => {
+                          if (removed) setSelectedLineId(null)
+                        })
+                    }}
+                  >
+                    線を削除
+                  </button>
+                </div>
+              </>
+            ) : selectedVertex ? (
+              <>
+                <dl>
+                  <div><dt>ID</dt><dd>{selectedVertex.id}</dd></div>
+                  <div><dt>種類</dt><dd>頂点</dd></div>
+                </dl>
+                <form
+                  key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}`}
+                  className="coordinate-form"
+                  onSubmit={submitVertexPosition}
+                >
+                  <label className="field">
+                    X
+                    <input
+                      name="x"
+                      type="number"
+                      step="any"
+                      defaultValue={selectedVertex.position.x}
+                    />
+                  </label>
+                  <label className="field">
+                    Y
+                    <input
+                      name="y"
+                      type="number"
+                      step="any"
+                      defaultValue={selectedVertex.position.y}
+                    />
+                  </label>
+                  <div className="property-actions">
+                    <button type="submit">座標を更新</button>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => {
+                        void runNativeEdit((revision) => removeVertex(revision, selectedVertex.id))
+                          .then((removed) => {
+                            if (removed) setSelectedVertexId(null)
+                          })
+                      }}
+                    >
+                      頂点を削除
+                    </button>
+                  </div>
+                  <p className="muted">接続線がある頂点は、線を削除してから削除します。</p>
+                </form>
+              </>
+            ) : <p className="muted">線または頂点を選択してください</p>}
           </section>
           <section>
             <h2>紙</h2>

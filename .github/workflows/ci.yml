@@ -59,7 +59,18 @@ jobs:
           name: rust-test-log-${{ matrix.os }}
           path: cargo-test.log
           if-no-files-found: ignore
-      - run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - name: Rust Clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --locked --all-targets --all-features -- -D warnings 2>&1 | tee cargo-clippy.log
+      - name: Upload Rust Clippy log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-clippy-log-${{ matrix.os }}
+          path: cargo-clippy.log
+          if-no-files-found: ignore
       - uses: actions/setup-node@v5
         if: runner.os == 'macOS'
         with:

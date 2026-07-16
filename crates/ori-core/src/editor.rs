@@ -1,6 +1,7 @@
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, RgbaColor, Vertex, VertexId,
 };
+use ori_geometry::{validate_crease_pattern, validate_paper};
 use thiserror::Error;
 
 pub type Revision = u64;
@@ -45,6 +46,9 @@ pub enum Command {
         new_vertex: VertexId,
         new_edge: EdgeId,
         fraction: f64,
+    },
+    RemoveBoundaryVertex {
+        vertex: VertexId,
     },
 }
 
@@ -135,6 +139,37 @@ pub enum CommandError {
     BoundarySplitPositionNotDistinct,
     #[error("boundary split position is already occupied by vertex {vertex:?}")]
     BoundarySplitPositionOccupied { vertex: VertexId },
+    #[error("removing a boundary vertex requires at least four boundary entries, found {actual}")]
+    BoundaryVertexRemovalNeedsFourVertices { actual: usize },
+    #[error("vertex {0:?} is not in the paper boundary")]
+    VertexNotInPaperBoundary(VertexId),
+    #[error("vertex {vertex:?} occurs more than once in the paper boundary")]
+    BoundaryVertexOccursMultipleTimes { vertex: VertexId },
+    #[error("vertex ID {vertex:?} has more than one pattern vertex record")]
+    BoundaryVertexRecordAmbiguous { vertex: VertexId },
+    #[error("boundary vertex {vertex:?} has the same previous and next vertex {neighbor:?}")]
+    BoundaryVertexNeighborsNotDistinct {
+        vertex: VertexId,
+        neighbor: VertexId,
+    },
+    #[error("vertex {vertex:?} has no unique preceding boundary edge")]
+    BoundaryVertexPrecedingEdgeMissing { vertex: VertexId },
+    #[error("vertex {vertex:?} has multiple preceding boundary edges")]
+    BoundaryVertexPrecedingEdgeAmbiguous { vertex: VertexId },
+    #[error("vertex {vertex:?} has no unique following boundary edge")]
+    BoundaryVertexFollowingEdgeMissing { vertex: VertexId },
+    #[error("vertex {vertex:?} has multiple following boundary edges")]
+    BoundaryVertexFollowingEdgeAmbiguous { vertex: VertexId },
+    #[error("vertex {vertex:?} must have two distinct adjacent boundary edge records")]
+    BoundaryVertexAdjacentEdgesNotDistinct { vertex: VertexId },
+    #[error("adjacent boundary edge ID {edge:?} for vertex {vertex:?} occurs more than once")]
+    BoundaryVertexAdjacentEdgeIdAmbiguous { vertex: VertexId, edge: EdgeId },
+    #[error("vertex {vertex:?} is connected to additional edge {edge:?}")]
+    BoundaryVertexHasAdditionalEdge { vertex: VertexId, edge: EdgeId },
+    #[error("edge {edge:?} already connects the neighbors of boundary vertex {vertex:?}")]
+    BoundaryVertexNeighborEdgeAlreadyExists { vertex: VertexId, edge: EdgeId },
+    #[error("removing the boundary vertex would invalidate a currently valid paper")]
+    BoundaryVertexRemovalWouldInvalidatePaper,
     #[error("boundary edge {0:?} must be changed through a sheet-boundary operation")]
     BoundaryEdgeRequiresSheetOperation(EdgeId),
 }
@@ -174,6 +209,17 @@ enum Inverse {
         new_edge_index: usize,
         new_edge: Edge,
     },
+    RestoreBoundaryVertexRemoval {
+        boundary_index: usize,
+        vertex_index: usize,
+        vertex: Vertex,
+        kept_edge_index: usize,
+        kept_edge: Edge,
+        removed_edge_index: usize,
+        removed_edge: Edge,
+        previous_vertex: VertexId,
+        next_vertex: VertexId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -200,6 +246,21 @@ fn stable_convex_combination(start: f64, end: f64, fraction: f64) -> f64 {
     } else {
         start * (1.0 - fraction) + end * fraction
     }
+}
+
+fn apply_boundary_vertex_removal(
+    pattern: &mut CreasePattern,
+    paper: &mut Paper,
+    boundary_index: usize,
+    vertex_index: usize,
+    kept_edge_index: usize,
+    removed_edge_index: usize,
+    merged_edge: &Edge,
+) {
+    paper.boundary_vertices.remove(boundary_index);
+    pattern.vertices.remove(vertex_index);
+    pattern.edges[kept_edge_index] = merged_edge.clone();
+    pattern.edges.remove(removed_edge_index);
 }
 
 #[derive(Debug, Clone)]
@@ -269,7 +330,7 @@ impl EditorState {
         command: Command,
     ) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
-        let result = command.changes(&self.pattern);
+        let result = command.changes(&self.pattern, &self.paper);
         let inverse = self.apply(&command)?;
         self.undo_stack.push(HistoryEntry {
             forward: command,
@@ -285,7 +346,7 @@ impl EditorState {
         let Some(entry) = self.undo_stack.pop() else {
             return Ok(self.result(Changes::default()));
         };
-        let result = entry.inverse.changes(&self.pattern);
+        let result = entry.inverse.changes(&self.pattern, &self.paper);
         self.apply_inverse(&entry.inverse)?;
         self.redo_stack.push(entry);
         self.advance_revision();
@@ -297,7 +358,7 @@ impl EditorState {
         let Some(entry) = self.redo_stack.pop() else {
             return Ok(self.result(Changes::default()));
         };
-        let result = entry.forward.changes(&self.pattern);
+        let result = entry.forward.changes(&self.pattern, &self.paper);
         self.apply(&entry.forward)?;
         self.undo_stack.push(entry);
         self.advance_revision();
@@ -423,7 +484,190 @@ impl EditorState {
                 new_edge,
                 fraction,
             } => self.split_boundary_edge(edge, new_vertex, new_edge, fraction),
+            Command::RemoveBoundaryVertex { vertex } => self.remove_boundary_vertex(vertex),
         }
+    }
+
+    fn remove_boundary_vertex(&mut self, vertex_id: VertexId) -> Result<Inverse, CommandError> {
+        let boundary_len = self.paper.boundary_vertices.len();
+        if boundary_len < 4 {
+            return Err(CommandError::BoundaryVertexRemovalNeedsFourVertices {
+                actual: boundary_len,
+            });
+        }
+
+        let mut boundary_occurrences = self
+            .paper
+            .boundary_vertices
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| **candidate == vertex_id);
+        let Some((boundary_index, _)) = boundary_occurrences.next() else {
+            return Err(CommandError::VertexNotInPaperBoundary(vertex_id));
+        };
+        if boundary_occurrences.next().is_some() {
+            return Err(CommandError::BoundaryVertexOccursMultipleTimes { vertex: vertex_id });
+        }
+
+        let mut vertex_records = self
+            .pattern
+            .vertices
+            .iter()
+            .enumerate()
+            .filter(|(_, vertex)| vertex.id == vertex_id);
+        let Some((vertex_index, vertex)) = vertex_records
+            .next()
+            .map(|(index, vertex)| (index, vertex.clone()))
+        else {
+            return Err(CommandError::VertexNotFound(vertex_id));
+        };
+        if vertex_records.next().is_some() {
+            return Err(CommandError::BoundaryVertexRecordAmbiguous { vertex: vertex_id });
+        }
+
+        let previous_vertex =
+            self.paper.boundary_vertices[(boundary_index + boundary_len - 1) % boundary_len];
+        let next_vertex = self.paper.boundary_vertices[(boundary_index + 1) % boundary_len];
+        if previous_vertex == next_vertex {
+            return Err(CommandError::BoundaryVertexNeighborsNotDistinct {
+                vertex: vertex_id,
+                neighbor: previous_vertex,
+            });
+        }
+        let preceding_edges = self.matching_boundary_edge_indices(previous_vertex, vertex_id);
+        let kept_edge_index = match preceding_edges.as_slice() {
+            [] => {
+                return Err(CommandError::BoundaryVertexPrecedingEdgeMissing { vertex: vertex_id });
+            }
+            [index] => *index,
+            _ => {
+                return Err(CommandError::BoundaryVertexPrecedingEdgeAmbiguous {
+                    vertex: vertex_id,
+                });
+            }
+        };
+        let following_edges = self.matching_boundary_edge_indices(vertex_id, next_vertex);
+        let removed_edge_index = match following_edges.as_slice() {
+            [] => {
+                return Err(CommandError::BoundaryVertexFollowingEdgeMissing { vertex: vertex_id });
+            }
+            [index] => *index,
+            _ => {
+                return Err(CommandError::BoundaryVertexFollowingEdgeAmbiguous {
+                    vertex: vertex_id,
+                });
+            }
+        };
+        let kept_edge = self.pattern.edges[kept_edge_index].clone();
+        let removed_edge = self.pattern.edges[removed_edge_index].clone();
+        if kept_edge_index == removed_edge_index || kept_edge.id == removed_edge.id {
+            return Err(CommandError::BoundaryVertexAdjacentEdgesNotDistinct { vertex: vertex_id });
+        }
+        for edge in [&kept_edge, &removed_edge] {
+            if self
+                .pattern
+                .edges
+                .iter()
+                .filter(|candidate| candidate.id == edge.id)
+                .count()
+                != 1
+            {
+                return Err(CommandError::BoundaryVertexAdjacentEdgeIdAmbiguous {
+                    vertex: vertex_id,
+                    edge: edge.id,
+                });
+            }
+        }
+
+        if let Some(edge) = self
+            .pattern
+            .edges
+            .iter()
+            .enumerate()
+            .find(|(index, edge)| {
+                *index != kept_edge_index
+                    && *index != removed_edge_index
+                    && (edge.start == vertex_id || edge.end == vertex_id)
+            })
+            .map(|(_, edge)| edge)
+        {
+            return Err(CommandError::BoundaryVertexHasAdditionalEdge {
+                vertex: vertex_id,
+                edge: edge.id,
+            });
+        }
+        if let Some(edge) = self.pattern.edges.iter().find(|edge| {
+            undirected_endpoints_match(edge.start, edge.end, previous_vertex, next_vertex)
+        }) {
+            return Err(CommandError::BoundaryVertexNeighborEdgeAlreadyExists {
+                vertex: vertex_id,
+                edge: edge.id,
+            });
+        }
+
+        let mut merged_edge = kept_edge.clone();
+        if merged_edge.start == vertex_id {
+            merged_edge.start = next_vertex;
+        } else {
+            debug_assert_eq!(merged_edge.end, vertex_id);
+            merged_edge.end = next_vertex;
+        }
+
+        let current_crease_is_valid = validate_crease_pattern(&self.pattern).is_valid();
+        let current_paper_is_valid = validate_paper(&self.paper, &self.pattern).is_valid();
+        if current_crease_is_valid && current_paper_is_valid {
+            let mut candidate_pattern = self.pattern.clone();
+            let mut candidate_paper = self.paper.clone();
+            apply_boundary_vertex_removal(
+                &mut candidate_pattern,
+                &mut candidate_paper,
+                boundary_index,
+                vertex_index,
+                kept_edge_index,
+                removed_edge_index,
+                &merged_edge,
+            );
+            if !validate_crease_pattern(&candidate_pattern).is_valid()
+                || !validate_paper(&candidate_paper, &candidate_pattern).is_valid()
+            {
+                return Err(CommandError::BoundaryVertexRemovalWouldInvalidatePaper);
+            }
+        }
+
+        apply_boundary_vertex_removal(
+            &mut self.pattern,
+            &mut self.paper,
+            boundary_index,
+            vertex_index,
+            kept_edge_index,
+            removed_edge_index,
+            &merged_edge,
+        );
+
+        Ok(Inverse::RestoreBoundaryVertexRemoval {
+            boundary_index,
+            vertex_index,
+            vertex,
+            kept_edge_index,
+            kept_edge,
+            removed_edge_index,
+            removed_edge,
+            previous_vertex,
+            next_vertex,
+        })
+    }
+
+    fn matching_boundary_edge_indices(&self, start: VertexId, end: VertexId) -> Vec<usize> {
+        self.pattern
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| {
+                edge.kind == EdgeKind::Boundary
+                    && undirected_endpoints_match(edge.start, edge.end, start, end)
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     fn split_boundary_edge(
@@ -902,6 +1146,37 @@ impl EditorState {
                 self.pattern.vertices.remove(*new_vertex_index);
                 self.paper.boundary_vertices = boundary_vertices.clone();
             }
+            Inverse::RestoreBoundaryVertexRemoval {
+                boundary_index,
+                vertex_index,
+                vertex,
+                kept_edge_index,
+                kept_edge,
+                removed_edge_index,
+                removed_edge,
+                ..
+            } => {
+                let current_kept_index = if removed_edge_index < kept_edge_index {
+                    *kept_edge_index - 1
+                } else {
+                    *kept_edge_index
+                };
+                debug_assert_eq!(
+                    self.pattern
+                        .edges
+                        .get(current_kept_index)
+                        .map(|edge| edge.id),
+                    Some(kept_edge.id)
+                );
+                self.pattern
+                    .edges
+                    .insert(*removed_edge_index, removed_edge.clone());
+                self.pattern.edges[*kept_edge_index] = kept_edge.clone();
+                self.pattern.vertices.insert(*vertex_index, vertex.clone());
+                self.paper
+                    .boundary_vertices
+                    .insert(*boundary_index, vertex.id);
+            }
         }
         Ok(())
     }
@@ -950,7 +1225,7 @@ struct Changes {
 }
 
 impl Command {
-    fn changes(&self, pattern: &CreasePattern) -> Changes {
+    fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match *self {
             Self::AddVertex { id, .. }
             | Self::MoveVertex { id, .. }
@@ -998,14 +1273,47 @@ impl Command {
                     settings: true,
                 }
             }
+            Self::RemoveBoundaryVertex { vertex } => {
+                let mut vertices = vec![vertex];
+                let mut edges = Vec::new();
+                if let Some(boundary_index) = paper
+                    .boundary_vertices
+                    .iter()
+                    .position(|candidate| *candidate == vertex)
+                {
+                    let boundary_len = paper.boundary_vertices.len();
+                    let previous =
+                        paper.boundary_vertices[(boundary_index + boundary_len - 1) % boundary_len];
+                    let next = paper.boundary_vertices[(boundary_index + 1) % boundary_len];
+                    vertices.push(previous);
+                    vertices.push(next);
+                    if let Some(edge) = pattern.edges.iter().find(|edge| {
+                        edge.kind == EdgeKind::Boundary
+                            && undirected_endpoints_match(edge.start, edge.end, previous, vertex)
+                    }) {
+                        edges.push(edge.id);
+                    }
+                    if let Some(edge) = pattern.edges.iter().find(|edge| {
+                        edge.kind == EdgeKind::Boundary
+                            && undirected_endpoints_match(edge.start, edge.end, vertex, next)
+                    }) {
+                        edges.push(edge.id);
+                    }
+                }
+                Changes {
+                    vertices,
+                    edges,
+                    settings: true,
+                }
+            }
         }
     }
 }
 
 impl Inverse {
-    fn changes(&self, pattern: &CreasePattern) -> Changes {
+    fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match self {
-            Self::Command(command) => command.changes(pattern),
+            Self::Command(command) => command.changes(pattern, paper),
             Self::RestoreVertex { vertex, .. } => Changes {
                 vertices: vec![vertex.id],
                 edges: Vec::new(),
@@ -1034,6 +1342,18 @@ impl Inverse {
             } => Changes {
                 vertices: vec![new_vertex.id, original_edge.start, original_edge.end],
                 edges: vec![original_edge.id, new_edge.id],
+                settings: true,
+            },
+            Self::RestoreBoundaryVertexRemoval {
+                vertex,
+                kept_edge,
+                removed_edge,
+                previous_vertex,
+                next_vertex,
+                ..
+            } => Changes {
+                vertices: vec![vertex.id, *previous_vertex, *next_vertex],
+                edges: vec![kept_edge.id, removed_edge.id],
                 settings: true,
             },
         }
@@ -1126,12 +1446,105 @@ mod tests {
         )
     }
 
+    fn simple_rectangular_editor() -> (EditorState, CreasePattern, Paper) {
+        let sheet =
+            crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid simple rectangle");
+        let (pattern, paper) = sheet.into_parts();
+        (
+            EditorState::with_paper(pattern.clone(), paper.clone()),
+            pattern,
+            paper,
+        )
+    }
+
+    fn collinear_after_removal_editor() -> (EditorState, CreasePattern, Paper, VertexId) {
+        let previous = VertexId::new();
+        let target = VertexId::new();
+        let next = VertexId::new();
+        let middle = VertexId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: previous,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: target,
+                    position: Point2::new(1.0, 1.0),
+                },
+                Vertex {
+                    id: next,
+                    position: Point2::new(2.0, 0.0),
+                },
+                Vertex {
+                    id: middle,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    id: EdgeId::new(),
+                    start: previous,
+                    end: target,
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: EdgeId::new(),
+                    start: target,
+                    end: next,
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: EdgeId::new(),
+                    start: next,
+                    end: middle,
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: EdgeId::new(),
+                    start: middle,
+                    end: previous,
+                    kind: EdgeKind::Boundary,
+                },
+            ],
+        };
+        let paper = Paper {
+            boundary_vertices: vec![previous, target, next, middle],
+            ..Paper::default()
+        };
+        (
+            EditorState::with_paper(pattern.clone(), paper.clone()),
+            pattern,
+            paper,
+            target,
+        )
+    }
+
     fn assert_split_rejected(editor: &mut EditorState, command: Command, expected: CommandError) {
         let pattern = editor.pattern().clone();
         let paper = editor.paper().clone();
         let error = editor
             .execute(editor.revision(), command)
             .expect_err("boundary split must fail");
+
+        assert_eq!(error, expected);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    fn assert_boundary_removal_rejected(
+        editor: &mut EditorState,
+        vertex: VertexId,
+        expected: CommandError,
+    ) {
+        let pattern = editor.pattern().clone();
+        let paper = editor.paper().clone();
+        let error = editor
+            .execute(editor.revision(), Command::RemoveBoundaryVertex { vertex })
+            .expect_err("boundary vertex removal must fail");
 
         assert_eq!(error, expected);
         assert_eq!(editor.pattern(), &pattern);
@@ -2295,6 +2708,366 @@ mod tests {
         assert_eq!(editor.paper(), &original_paper);
         assert_eq!(editor.revision(), 0);
         assert!(!editor.can_undo());
+    }
+
+    #[test]
+    fn boundary_vertex_removal_merges_edges_and_restores_exactly() {
+        let (mut editor, original_pattern, original_paper) = simple_rectangular_editor();
+        let target = original_paper.boundary_vertices[1];
+        let previous = original_paper.boundary_vertices[0];
+        let next = original_paper.boundary_vertices[2];
+        let kept_edge = original_pattern.edges[0].clone();
+        let removed_edge = original_pattern.edges[1].clone();
+
+        let result = editor
+            .execute(0, Command::RemoveBoundaryVertex { vertex: target })
+            .expect("remove boundary vertex");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(result.changed_vertices, vec![target, previous, next]);
+        assert_eq!(result.changed_edges, vec![kept_edge.id, removed_edge.id]);
+        assert!(result.settings_changed);
+        let mut expected_pattern = original_pattern.clone();
+        expected_pattern
+            .vertices
+            .retain(|vertex| vertex.id != target);
+        expected_pattern.edges[0].end = next;
+        expected_pattern.edges.remove(1);
+        let mut expected_paper = original_paper.clone();
+        expected_paper.boundary_vertices.remove(1);
+        assert_eq!(editor.pattern(), &expected_pattern);
+        assert_eq!(editor.paper(), &expected_paper);
+        assert_eq!(editor.pattern().edges[0].id, kept_edge.id);
+        assert_eq!(editor.pattern().edges[0].start, kept_edge.start);
+        assert_eq!(editor.pattern().edges[0].end, next);
+        assert_eq!(editor.pattern().edges[1..], original_pattern.edges[2..]);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+
+        let undo = editor.undo(1).expect("undo boundary vertex removal");
+        assert_eq!(undo.revision, 2);
+        assert_eq!(undo.changed_vertices, vec![target, previous, next]);
+        assert_eq!(undo.changed_edges, vec![kept_edge.id, removed_edge.id]);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo boundary vertex removal");
+        assert_eq!(redo.revision, 3);
+        assert_eq!(redo.changed_vertices, vec![target, previous, next]);
+        assert_eq!(editor.pattern(), &expected_pattern);
+        assert_eq!(editor.paper(), &expected_paper);
+    }
+
+    #[test]
+    fn boundary_vertex_removal_preserves_reversed_kept_edge_orientation() {
+        let (_, mut pattern, paper) = simple_rectangular_editor();
+        let target = paper.boundary_vertices[1];
+        let previous = paper.boundary_vertices[0];
+        let next = paper.boundary_vertices[2];
+        let preceding = pattern.edges[0].clone();
+        pattern.edges[0] = Edge {
+            start: preceding.end,
+            end: preceding.start,
+            ..preceding
+        };
+        let following = pattern.edges[1].clone();
+        pattern.edges[1] = Edge {
+            start: following.end,
+            end: following.start,
+            ..following
+        };
+        let kept_id = pattern.edges[0].id;
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        editor
+            .execute(0, Command::RemoveBoundaryVertex { vertex: target })
+            .expect("remove vertex with reverse edges");
+
+        assert_eq!(editor.pattern().edges[0].id, kept_id);
+        assert_eq!(editor.pattern().edges[0].start, next);
+        assert_eq!(editor.pattern().edges[0].end, previous);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+    }
+
+    #[test]
+    fn boundary_vertex_removal_handles_closing_predecessor_before_exact_undo() {
+        let (mut editor, original_pattern, original_paper) = simple_rectangular_editor();
+        let target = original_paper.boundary_vertices[0];
+        let previous = original_paper.boundary_vertices[3];
+        let next = original_paper.boundary_vertices[1];
+        let kept_edge = original_pattern.edges[3].clone();
+        let removed_edge = original_pattern.edges[0].clone();
+
+        editor
+            .execute(0, Command::RemoveBoundaryVertex { vertex: target })
+            .expect("remove vertex at closing boundary junction");
+
+        assert_eq!(
+            editor.paper().boundary_vertices,
+            original_paper.boundary_vertices[1..]
+        );
+        assert_eq!(editor.pattern().edges[0], original_pattern.edges[1]);
+        assert_eq!(editor.pattern().edges[1], original_pattern.edges[2]);
+        assert_eq!(editor.pattern().edges[2].id, kept_edge.id);
+        assert_eq!(editor.pattern().edges[2].start, previous);
+        assert_eq!(editor.pattern().edges[2].end, next);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+
+        editor.undo(1).expect("undo closing vertex removal");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        editor.redo(2).expect("redo closing vertex removal");
+        assert_eq!(editor.pattern().edges[2].id, kept_edge.id);
+        assert!(
+            !editor
+                .pattern()
+                .edges
+                .iter()
+                .any(|edge| edge.id == removed_edge.id)
+        );
+    }
+
+    #[test]
+    fn boundary_vertex_removal_rejects_a_collinear_candidate_from_a_valid_state() {
+        let (mut editor, original_pattern, original_paper, target) =
+            collinear_after_removal_editor();
+        assert!(validate_crease_pattern(&original_pattern).is_valid());
+        assert!(validate_paper(&original_paper, &original_pattern).is_valid());
+
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexRemovalWouldInvalidatePaper,
+        );
+    }
+
+    #[test]
+    fn boundary_vertex_removal_rejects_a_new_edge_through_existing_geometry() {
+        let (mut editor, original_pattern, original_paper) = rectangular_editor();
+        let target = original_paper.boundary_vertices[1];
+        assert!(validate_crease_pattern(&original_pattern).is_valid());
+        assert!(validate_paper(&original_paper, &original_pattern).is_valid());
+
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexRemovalWouldInvalidatePaper,
+        );
+    }
+
+    #[test]
+    fn boundary_vertex_removal_can_edit_an_already_invalid_state() {
+        let (_, pattern, mut paper, target) = collinear_after_removal_editor();
+        paper.thickness_mm = -0.1;
+        assert!(validate_crease_pattern(&pattern).is_valid());
+        assert!(!validate_paper(&paper, &pattern).is_valid());
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        let result = editor
+            .execute(0, Command::RemoveBoundaryVertex { vertex: target })
+            .expect("an already invalid project remains editable");
+
+        assert_eq!(result.revision, 1);
+        assert!(
+            !editor
+                .pattern()
+                .vertices
+                .iter()
+                .any(|vertex| vertex.id == target)
+        );
+        assert_eq!(editor.paper().boundary_vertices.len(), 3);
+    }
+
+    #[test]
+    fn boundary_vertex_removal_rejects_invalid_boundary_and_vertex_identity() {
+        let (_, pattern, paper) = rectangular_editor();
+        let target = paper.boundary_vertices[1];
+
+        let mut triangle_paper = paper.clone();
+        triangle_paper.boundary_vertices.pop();
+        let mut editor = EditorState::with_paper(pattern.clone(), triangle_paper);
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexRemovalNeedsFourVertices { actual: 3 },
+        );
+
+        let not_boundary = pattern.vertices[0].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            not_boundary,
+            CommandError::VertexNotInPaperBoundary(not_boundary),
+        );
+
+        let mut duplicate_boundary_paper = paper.clone();
+        duplicate_boundary_paper.boundary_vertices[3] = target;
+        let mut editor = EditorState::with_paper(pattern.clone(), duplicate_boundary_paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexOccursMultipleTimes { vertex: target },
+        );
+
+        let mut missing_pattern = pattern.clone();
+        missing_pattern
+            .vertices
+            .retain(|vertex| vertex.id != target);
+        let mut editor = EditorState::with_paper(missing_pattern, paper.clone());
+        assert_boundary_removal_rejected(&mut editor, target, CommandError::VertexNotFound(target));
+
+        let mut duplicate_pattern = pattern.clone();
+        let duplicate_record = duplicate_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == target)
+            .expect("target vertex")
+            .clone();
+        duplicate_pattern.vertices.push(duplicate_record);
+        let mut editor = EditorState::with_paper(duplicate_pattern, paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexRecordAmbiguous { vertex: target },
+        );
+
+        let previous = paper.boundary_vertices[0];
+        let other = paper.boundary_vertices[2];
+        let malformed_paper = Paper {
+            boundary_vertices: vec![previous, target, previous, other],
+            ..paper
+        };
+        let mut editor = EditorState::with_paper(pattern, malformed_paper);
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexNeighborsNotDistinct {
+                vertex: target,
+                neighbor: previous,
+            },
+        );
+    }
+
+    #[test]
+    fn boundary_vertex_removal_rejects_invalid_adjacent_edge_topology() {
+        let (_, pattern, paper) = rectangular_editor();
+        let target = paper.boundary_vertices[1];
+        let previous = paper.boundary_vertices[0];
+        let next = paper.boundary_vertices[2];
+
+        let mut missing_preceding = pattern.clone();
+        missing_preceding.edges[0].kind = EdgeKind::Auxiliary;
+        let mut editor = EditorState::with_paper(missing_preceding, paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexPrecedingEdgeMissing { vertex: target },
+        );
+
+        let mut ambiguous_preceding = pattern.clone();
+        let mut duplicate_preceding = ambiguous_preceding.edges[0].clone();
+        duplicate_preceding.id = EdgeId::new();
+        ambiguous_preceding.edges.push(duplicate_preceding);
+        let mut editor = EditorState::with_paper(ambiguous_preceding, paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexPrecedingEdgeAmbiguous { vertex: target },
+        );
+
+        let mut missing_following = pattern.clone();
+        missing_following.edges[1].kind = EdgeKind::Valley;
+        let mut editor = EditorState::with_paper(missing_following, paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexFollowingEdgeMissing { vertex: target },
+        );
+
+        let mut duplicate_edge_ids = pattern.clone();
+        duplicate_edge_ids.edges[1].id = duplicate_edge_ids.edges[0].id;
+        let mut editor = EditorState::with_paper(duplicate_edge_ids, paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexAdjacentEdgesNotDistinct { vertex: target },
+        );
+
+        for adjacent_edge_id in [pattern.edges[0].id, pattern.edges[1].id] {
+            let mut ambiguous_edge_id_pattern = pattern.clone();
+            let mut unrelated_record = ambiguous_edge_id_pattern.edges[4].clone();
+            unrelated_record.id = adjacent_edge_id;
+            ambiguous_edge_id_pattern.edges.push(unrelated_record);
+            let mut editor = EditorState::with_paper(ambiguous_edge_id_pattern, paper.clone());
+            assert_boundary_removal_rejected(
+                &mut editor,
+                target,
+                CommandError::BoundaryVertexAdjacentEdgeIdAmbiguous {
+                    vertex: target,
+                    edge: adjacent_edge_id,
+                },
+            );
+        }
+
+        let additional_edge = Edge {
+            id: EdgeId::new(),
+            start: target,
+            end: pattern.vertices[0].id,
+            kind: EdgeKind::Mountain,
+        };
+        let mut additionally_connected = pattern.clone();
+        additionally_connected.edges.push(additional_edge.clone());
+        let mut editor = EditorState::with_paper(additionally_connected, paper.clone());
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexHasAdditionalEdge {
+                vertex: target,
+                edge: additional_edge.id,
+            },
+        );
+
+        let neighbor_edge = Edge {
+            id: EdgeId::new(),
+            start: previous,
+            end: next,
+            kind: EdgeKind::Auxiliary,
+        };
+        let mut already_connected_neighbors = pattern.clone();
+        already_connected_neighbors
+            .edges
+            .push(neighbor_edge.clone());
+        let mut editor = EditorState::with_paper(already_connected_neighbors, paper);
+        assert_boundary_removal_rejected(
+            &mut editor,
+            target,
+            CommandError::BoundaryVertexNeighborEdgeAlreadyExists {
+                vertex: target,
+                edge: neighbor_edge.id,
+            },
+        );
+    }
+
+    #[test]
+    fn stale_boundary_vertex_removal_preserves_state_and_history() {
+        let (mut editor, original_pattern, original_paper) = rectangular_editor();
+        let target = original_paper.boundary_vertices[1];
+
+        let error = editor
+            .execute(8, Command::RemoveBoundaryVertex { vertex: target })
+            .expect_err("stale boundary removal must fail");
+
+        assert_eq!(
+            error,
+            CommandError::RevisionConflict {
+                expected: 8,
+                actual: 0,
+            }
+        );
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
     }
 
     #[test]

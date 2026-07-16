@@ -523,6 +523,22 @@ fn execute_boundary_split(
     )
 }
 
+#[tauri::command]
+fn remove_boundary_vertex(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    vertex: VertexId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::RemoveBoundaryVertex { vertex },
+    )
+}
+
 fn lock_project(state: &AppState) -> Result<MutexGuard<'_, ProjectState>, String> {
     state
         .0
@@ -1165,7 +1181,8 @@ pub fn run() {
             set_cutting_allowed,
             update_paper_properties,
             resize_rectangular_paper,
-            split_boundary_edge
+            split_boundary_edge,
+            remove_boundary_vertex
         ])
         .build(tauri::generate_context!())
         .expect("failed to build ORIGAMI2 desktop application");
@@ -1675,6 +1692,86 @@ mod tests {
         let invalid = execute_boundary_split(&mut project, project_id, 0, edge, f64::NAN)
             .expect_err("non-finite split must fail");
         assert_eq!(invalid, "boundary split fraction must be finite");
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn boundary_vertex_removal_updates_document_dirty_state_and_history() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let original_document = project.document();
+        let target = project.editor.paper().boundary_vertices[1];
+        let previous = project.editor.paper().boundary_vertices[0];
+        let next = project.editor.paper().boundary_vertices[2];
+        let remaining = project.editor.paper().boundary_vertices[3];
+        let kept_edge = project.editor.pattern().edges[0].clone();
+        let removed_edge = project.editor.pattern().edges[1].clone();
+
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::RemoveBoundaryVertex { vertex: target },
+        )
+        .expect("remove boundary vertex");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert!(response.can_undo);
+        assert!(!response.can_redo);
+        assert_eq!(
+            response.paper.boundary_vertices,
+            vec![previous, next, remaining]
+        );
+        assert!(
+            !response
+                .crease_pattern
+                .vertices
+                .iter()
+                .any(|vertex| vertex.id == target)
+        );
+        assert_eq!(response.crease_pattern.edges[0].id, kept_edge.id);
+        assert_eq!(response.crease_pattern.edges[0].start, previous);
+        assert_eq!(response.crease_pattern.edges[0].end, next);
+        assert!(
+            !response
+                .crease_pattern
+                .edges
+                .iter()
+                .any(|edge| edge.id == removed_edge.id)
+        );
+        assert!(validation_snapshot(&project).is_valid);
+        let removed_document = project.document();
+        assert_ne!(removed_document, original_document);
+
+        project.editor.undo(1).expect("undo boundary removal");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project.editor.redo(2).expect("redo boundary removal");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), removed_document);
+        assert!(project.is_dirty());
+        assert!(validation_snapshot(&project).is_valid);
+    }
+
+    #[test]
+    fn boundary_vertex_removal_conflict_preserves_project_state() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let target = project.editor.paper().boundary_vertices[1];
+        let before = project_state_signature(&project);
+
+        let error = execute_command(
+            &mut project,
+            project_id,
+            1,
+            Command::RemoveBoundaryVertex { vertex: target },
+        )
+        .expect_err("stale boundary removal must fail");
+
+        assert_eq!(error, "expected revision 1, but the current revision is 0");
         assert_eq!(project_state_signature(&project), before);
     }
 

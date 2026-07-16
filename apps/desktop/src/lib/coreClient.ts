@@ -156,6 +156,18 @@ export function removeVertex(expectedProjectId: string, expectedRevision: number
   return invoke<ProjectSnapshot>('remove_vertex', { expectedProjectId, expectedRevision, id })
 }
 
+export function removeBoundaryVertex(
+  expectedProjectId: string,
+  expectedRevision: number,
+  vertex: string,
+) {
+  return invoke<ProjectSnapshot>('remove_boundary_vertex', {
+    expectedProjectId,
+    expectedRevision,
+    vertex,
+  })
+}
+
 export function removeEdge(expectedProjectId: string, expectedRevision: number, id: string) {
   return invoke<ProjectSnapshot>('remove_edge', { expectedProjectId, expectedRevision, id })
 }

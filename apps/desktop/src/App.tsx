@@ -17,6 +17,7 @@ import {
   newProject,
   openProject,
   redo,
+  removeBoundaryVertex,
   removeEdge,
   removeVertex,
   resizeRectangularPaper,
@@ -95,10 +96,9 @@ function App() {
     [nativeSnapshot, selectedVertexId],
   )
   const boundaryVertexIds = useMemo(() => new Set(
-    nativeSnapshot?.crease_pattern.edges
-      .filter((edge) => edge.kind === 'boundary')
-      .flatMap((edge) => [edge.start, edge.end]) ?? [],
+    nativeSnapshot?.paper.boundary_vertices ?? [],
   ), [nativeSnapshot])
+  const paperBoundaryVertexCount = boundaryVertexIds.size
   const selectedVertexIsBoundary = selectedVertex
     ? boundaryVertexIds.has(selectedVertex.id)
     : false
@@ -217,15 +217,30 @@ function App() {
       return
     }
     if (selectedVertex) {
-      if (selectedVertexIsBoundary) {
-        setCoreStatus('輪郭頂点の削除は紙形状編集から行います')
+      if (selectedVertexIsBoundary && paperBoundaryVertexCount <= 3) {
+        setCoreStatus('輪郭は最低3点必要なため、この輪郭頂点は削除できません')
         return
       }
       const removed = await runNativeEdit((projectId, revision) =>
-        removeVertex(projectId, revision, selectedVertex.id))
-      if (removed) setSelectedVertexId(null)
+        selectedVertexIsBoundary
+          ? removeBoundaryVertex(projectId, revision, selectedVertex.id)
+          : removeVertex(projectId, revision, selectedVertex.id))
+      if (!removed) return
+      setSelectedVertexId(null)
+      setSelectedLineId(null)
+      setPendingEdgeStart(null)
+      setActiveTool('select')
+      setCoreStatus(selectedVertexIsBoundary
+        ? '輪郭頂点を削除し、隣接する輪郭辺を統合しました（元に戻すで復元できます）'
+        : '頂点を削除しました（元に戻すで復元できます）')
     }
-  }, [runNativeEdit, selectedLine, selectedVertex, selectedVertexIsBoundary])
+  }, [
+    paperBoundaryVertexCount,
+    runNativeEdit,
+    selectedLine,
+    selectedVertex,
+    selectedVertexIsBoundary,
+  ])
 
   async function splitSelectedBoundaryEdge() {
     const current = latestSnapshotRef.current
@@ -804,15 +819,20 @@ function App() {
                     <button
                       type="button"
                       className="danger"
-                      disabled={coreBusy || selectedVertexIsBoundary}
+                      disabled={
+                        coreBusy ||
+                        (selectedVertexIsBoundary && paperBoundaryVertexCount <= 3)
+                      }
                       onClick={() => void deleteSelection()}
                     >
-                      頂点を削除
+                      {selectedVertexIsBoundary
+                        ? '輪郭頂点を削除して辺を統合'
+                        : '頂点を削除'}
                     </button>
                   </div>
                   <p className="muted">
                     {selectedVertexIsBoundary
-                      ? '輪郭頂点の構成変更は、今後追加する紙形状編集から行います。'
+                      ? `輪郭は最低3点必要です（現在${paperBoundaryVertexCount}点）。この操作は元に戻せます。接続線がある場合など、安全に統合できない削除は拒否されます。`
                       : '接続線がある頂点は、線を削除してから削除します。'}
                   </p>
                 </form>

@@ -48,6 +48,8 @@ const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> =
   { kind: 'intersection', label: '交点' },
   { kind: 'edge', label: '辺' },
   { kind: 'midpoint', label: '中点' },
+  { kind: 'horizontal', label: '水平' },
+  { kind: 'vertical', label: '垂直' },
 ]
 
 function App() {

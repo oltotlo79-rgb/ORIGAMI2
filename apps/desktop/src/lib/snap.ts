@@ -1,13 +1,24 @@
 import type { IntersectionSnapTarget } from './intersectionSnap'
 
-export type SnapKind = 'vertex' | 'intersection' | 'midpoint' | 'edge' | 'grid'
+export type SnapKind =
+  | 'vertex'
+  | 'intersection'
+  | 'midpoint'
+  | 'horizontal'
+  | 'vertical'
+  | 'edge'
+  | 'grid'
 
 type PointSnapKind = Exclude<SnapKind, 'intersection'>
+type DirectionSnapKind = Extract<PointSnapKind, 'horizontal' | 'vertical'>
+type OrdinaryPointSnapKind = Exclude<PointSnapKind, DirectionSnapKind>
 
 export type SnapSettings = Readonly<{
   vertex: boolean
   intersection: boolean
   midpoint: boolean
+  horizontal: boolean
+  vertical: boolean
   edge: boolean
   grid: boolean
 }>
@@ -16,6 +27,8 @@ export const DEFAULT_SNAP_SETTINGS: SnapSettings = Object.freeze({
   vertex: true,
   intersection: true,
   midpoint: true,
+  horizontal: true,
+  vertical: true,
   edge: true,
   grid: true,
 })
@@ -46,14 +59,49 @@ export type SnapGrid = Readonly<{
   yValues: readonly number[]
 }>
 
-export type SnapTarget = Readonly<{
+export type SnapAnchor = Readonly<{
+  id: string
+  x: number
+  y: number
+}>
+
+export function resolveUniqueSnapAnchor(
+  vertices: readonly SnapVertex[],
+  selectedVertexId: string | null,
+): SnapAnchor | undefined {
+  if (!selectedVertexId) return undefined
+  let anchor: SnapAnchor | undefined
+  for (const vertex of vertices) {
+    if (vertex.id !== selectedVertexId) continue
+    if (anchor || !isFinitePoint(vertex)) return undefined
+    anchor = { id: vertex.id, x: vertex.x, y: vertex.y }
+  }
+  return anchor
+}
+
+type SnapTargetBase = Readonly<{
   key: string
-  kind: PointSnapKind
   point: SnapPoint
   distancePx: number
   sourceId?: string
   sourceFraction?: number
 }>
+
+export type OrdinarySnapTarget = SnapTargetBase & Readonly<{
+  kind: OrdinaryPointSnapKind
+  anchorId?: never
+  anchorPoint?: never
+}>
+
+export type DirectionSnapTarget = SnapTargetBase & Readonly<{
+  kind: DirectionSnapKind
+  sourceId: string
+  sourceFraction?: never
+  anchorId: string
+  anchorPoint: SnapPoint
+}>
+
+export type SnapTarget = OrdinarySnapTarget | DirectionSnapTarget
 
 export type AdditionSnapTarget = SnapTarget | IntersectionSnapTarget
 
@@ -73,6 +121,7 @@ export type ResolveSnapTargetOptions = Readonly<{
   vertices: readonly SnapVertex[]
   segments: readonly SnapSegment[]
   grid: SnapGrid
+  anchor?: SnapAnchor
   excludedVertexId?: string
   accept?: (target: SnapTarget) => boolean
   thresholdsPx?: SnapThresholdsPx
@@ -86,6 +135,8 @@ type RankedTarget = Readonly<{
 const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.freeze({
   vertex: 10,
   midpoint: 9,
+  horizontal: 8,
+  vertical: 8,
   edge: 7,
   grid: 7,
 })
@@ -136,6 +187,8 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
     !settings.vertex
     && !settings.intersection
     && !settings.midpoint
+    && !settings.horizontal
+    && !settings.vertical
     && !settings.edge
     && !settings.grid
   ) return null
@@ -184,6 +237,11 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
         0.5,
       )
     }
+    if (best) return best.target
+  }
+
+  if (settings.horizontal || settings.vertical) {
+    const best = bestDirectionTarget(options)
     if (best) return best.target
   }
 
@@ -338,7 +396,7 @@ function stableAverage(first: number, second: number) {
 function considerTargetPoint(
   best: RankedTarget | null,
   key: string,
-  kind: PointSnapKind,
+  kind: OrdinaryPointSnapKind,
   x: number,
   y: number,
   inputPoint: SnapPoint,
@@ -366,6 +424,77 @@ function considerTargetPoint(
       ? { key, kind, point: { x, y }, distancePx, sourceId }
       : { key, kind, point: { x, y }, distancePx, sourceId, sourceFraction }
   return accept && !accept(candidate) ? best : { target: candidate, modelDistance }
+}
+
+function bestDirectionTarget(options: ResolveSnapTargetOptions) {
+  const anchor = options.anchor
+  if (
+    !anchor
+    || typeof anchor.id !== 'string'
+    || anchor.id.length === 0
+    || !isFinitePoint(anchor)
+  ) return null
+
+  let best: RankedTarget | null = null
+  if (options.settings.horizontal) {
+    best = considerDirectionTarget(
+      best,
+      'horizontal',
+      { x: normalizeZero(options.point.x), y: normalizeZero(anchor.y) },
+      options,
+      anchor,
+    )
+  }
+  if (options.settings.vertical) {
+    best = considerDirectionTarget(
+      best,
+      'vertical',
+      { x: normalizeZero(anchor.x), y: normalizeZero(options.point.y) },
+      options,
+      anchor,
+    )
+  }
+  return best
+}
+
+function considerDirectionTarget(
+  best: RankedTarget | null,
+  kind: DirectionSnapKind,
+  point: SnapPoint,
+  options: ResolveSnapTargetOptions,
+  anchor: SnapAnchor,
+) {
+  const modelDistance = Math.hypot(
+    point.x - options.point.x,
+    point.y - options.point.y,
+  )
+  const distancePx = modelDistance * options.scale
+  const thresholdPx = thresholdFor(kind, options.thresholdsPx)
+  const key = `${kind}:${JSON.stringify(anchor.id)}`
+  if (
+    !Number.isFinite(modelDistance)
+    || !Number.isFinite(distancePx)
+    || distancePx > thresholdPx
+    || (best !== null
+      && (modelDistance > best.modelDistance
+        || (modelDistance === best.modelDistance && key >= best.target.key)))
+  ) return best
+
+  const candidate: DirectionSnapTarget = {
+    key,
+    kind,
+    point,
+    distancePx,
+    sourceId: anchor.id,
+    anchorId: anchor.id,
+    anchorPoint: {
+      x: normalizeZero(anchor.x),
+      y: normalizeZero(anchor.y),
+    },
+  }
+  return options.accept && !options.accept(candidate)
+    ? best
+    : { target: candidate, modelDistance }
 }
 
 function nearestGridTarget(options: ResolveSnapTargetOptions, thresholdPx: number) {

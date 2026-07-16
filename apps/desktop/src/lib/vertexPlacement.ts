@@ -27,6 +27,9 @@ export function createVertexPlacement(
   if (target?.kind === 'intersection') {
     return intersectionPlacement(point, target, segments)
   }
+  if (target?.kind === 'horizontal' || target?.kind === 'vertical') {
+    return directionPlacement(point, target, segments)
+  }
   if (target?.kind !== 'edge' && target?.kind !== 'midpoint') {
     return finitePointPlacement(point)
   }
@@ -48,6 +51,72 @@ export function createVertexPlacement(
     edgeId: segment.id,
     fraction,
   }
+}
+
+function directionPlacement(
+  point: SnapPoint,
+  target: Extract<AdditionSnapTarget, { kind: 'horizontal' | 'vertical' }>,
+  segments: readonly SnapSegment[],
+): VertexPlacement | null {
+  if (
+    !Number.isFinite(point.x)
+    || !Number.isFinite(point.y)
+    || point.x !== target.point.x
+    || point.y !== target.point.y
+    || !Number.isFinite(target.distancePx)
+    || target.distancePx < 0
+    || typeof target.anchorId !== 'string'
+    || target.anchorId.length === 0
+    || target.sourceId !== target.anchorId
+    || target.key !== `${target.kind}:${JSON.stringify(target.anchorId)}`
+    || !Number.isFinite(target.anchorPoint.x)
+    || !Number.isFinite(target.anchorPoint.y)
+    || (target.kind === 'horizontal' && point.y !== target.anchorPoint.y)
+    || (target.kind === 'vertical' && point.x !== target.anchorPoint.x)
+  ) return null
+
+  let split: Extract<VertexPlacement, { operation: 'split-edge' }> | null = null
+  for (const segment of segments) {
+    if (
+      (point.x === segment.x1 && point.y === segment.y1)
+      || (point.x === segment.x2 && point.y === segment.y2)
+    ) return null
+
+    const fraction = strictSegmentFractionAtPoint(segment, point)
+    if (fraction === null) continue
+    if (
+      split
+      || segments.filter(({ id }) => id === segment.id).length !== 1
+    ) return null
+    split = {
+      operation: 'split-edge',
+      edgeId: segment.id,
+      fraction,
+    }
+  }
+  return split ?? finitePointPlacement(point)
+}
+
+function strictSegmentFractionAtPoint(segment: SnapSegment, point: SnapPoint) {
+  if (!isValidSegment(segment)) return null
+  const dx = segment.x2 - segment.x1
+  const dy = segment.y2 - segment.y1
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null
+  const fraction = Math.abs(dx) >= Math.abs(dy)
+    ? (point.x - segment.x1) / dx
+    : (point.y - segment.y1) / dy
+  if (!Number.isFinite(fraction) || !isStrictInterior(fraction)) return null
+  const projectedX = stableConvexCombination(segment.x1, segment.x2, fraction)
+  const projectedY = stableConvexCombination(segment.y1, segment.y2, fraction)
+  return projectedX === point.x && projectedY === point.y ? fraction : null
+}
+
+function stableConvexCombination(start: number, end: number, fraction: number) {
+  const startIsNegative = start < 0 || Object.is(start, -0)
+  const endIsNegative = end < 0 || Object.is(end, -0)
+  return startIsNegative === endIsNegative
+    ? start + (end - start) * fraction
+    : start * (1 - fraction) + end * fraction
 }
 
 function intersectionPlacement(

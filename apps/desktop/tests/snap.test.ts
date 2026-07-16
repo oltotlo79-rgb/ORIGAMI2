@@ -6,6 +6,7 @@ import {
   DEFAULT_SNAP_SETTINGS,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
+  resolveUniqueSnapAnchor,
   resolveSnapTarget,
   toggleSnapSetting,
   type ResolveSnapTargetOptions,
@@ -27,6 +28,8 @@ function only(...kinds: SnapKind[]): SnapSettings {
     vertex: kinds.includes('vertex'),
     intersection: kinds.includes('intersection'),
     midpoint: kinds.includes('midpoint'),
+    horizontal: kinds.includes('horizontal'),
+    vertical: kinds.includes('vertical'),
     edge: kinds.includes('edge'),
     grid: kinds.includes('grid'),
   }
@@ -49,6 +52,8 @@ test('default settings enable every snap kind', () => {
     vertex: true,
     intersection: true,
     midpoint: true,
+    horizontal: true,
+    vertical: true,
     edge: true,
     grid: true,
   })
@@ -60,12 +65,38 @@ test('intersection snapping is independently toggleable and defaults on', () => 
   assert.equal(DEFAULT_SNAP_SETTINGS.intersection, true)
   assert.equal(disabled.intersection, false)
   assert.deepEqual(toggleSnapSetting(disabled, 'intersection'), DEFAULT_SNAP_SETTINGS)
-  for (const kind of ['vertex', 'midpoint', 'edge', 'grid'] as const) {
+  for (const kind of ['vertex', 'midpoint', 'horizontal', 'vertical', 'edge', 'grid'] as const) {
     assert.equal(disabled[kind], true)
   }
 })
 
-test('kind priority is vertex, midpoint, edge, then grid', () => {
+test('horizontal and vertical snapping are independently toggleable and default on', () => {
+  const horizontalOff = toggleSnapSetting(DEFAULT_SNAP_SETTINGS, 'horizontal')
+  const verticalOff = toggleSnapSetting(DEFAULT_SNAP_SETTINGS, 'vertical')
+
+  assert.equal(horizontalOff.horizontal, false)
+  assert.equal(horizontalOff.vertical, true)
+  assert.equal(verticalOff.horizontal, true)
+  assert.equal(verticalOff.vertical, false)
+  assert.deepEqual(toggleSnapSetting(horizontalOff, 'horizontal'), DEFAULT_SNAP_SETTINGS)
+  assert.deepEqual(toggleSnapSetting(verticalOff, 'vertical'), DEFAULT_SNAP_SETTINGS)
+})
+
+test('a drawing anchor requires one finite vertex record with the selected ID', () => {
+  const selected = { id: 'selected', x: -0, y: 12 }
+  assert.deepEqual(resolveUniqueSnapAnchor([selected], selected.id), selected)
+  assert.equal(resolveUniqueSnapAnchor([selected], null), undefined)
+  assert.equal(resolveUniqueSnapAnchor([selected], 'missing'), undefined)
+  assert.equal(resolveUniqueSnapAnchor([
+    selected,
+    { ...selected },
+  ], selected.id), undefined)
+  assert.equal(resolveUniqueSnapAnchor([
+    { ...selected, x: Number.NaN },
+  ], selected.id), undefined)
+})
+
+test('kind priority is vertex, midpoint, direction, edge, then grid', () => {
   const segment: SnapSegment = {
     id: 'segment',
     startVertexId: 'start',
@@ -79,10 +110,18 @@ test('kind priority is vertex, midpoint, edge, then grid', () => {
     vertices: [{ id: 'vertex', x: 9, y: 0 }],
     segments: [segment],
     grid: { xValues: [0], yValues: [0] },
+    anchor: { id: 'anchor', x: 1, y: 1 },
   }
 
   assert.equal(resolve({ ...common })?.kind, 'vertex')
-  assert.equal(resolve({ ...common, settings: only('midpoint', 'edge', 'grid') })?.kind, 'midpoint')
+  assert.equal(resolve({
+    ...common,
+    settings: only('midpoint', 'horizontal', 'vertical', 'edge', 'grid'),
+  })?.kind, 'midpoint')
+  assert.equal(resolve({
+    ...common,
+    settings: only('horizontal', 'vertical', 'edge', 'grid'),
+  })?.kind, 'horizontal')
   assert.equal(resolve({ ...common, settings: only('edge', 'grid') })?.kind, 'edge')
   assert.equal(resolve({ ...common, settings: only('grid') })?.kind, 'grid')
 })
@@ -115,6 +154,146 @@ test('pixel thresholds are inclusive and can be overridden', () => {
     vertices: [{ id: 'custom', x: 3, y: 0 }],
     thresholdsPx: { vertex: 3 },
   })?.sourceId, 'custom')
+})
+
+test('direction targets carry a deterministic anchor guide and preserve the free coordinate', () => {
+  const anchor = { id: 'anchor:one', x: 1, y: 5 }
+  const horizontal = resolve({
+    point: { x: 4, y: 7 },
+    settings: only('horizontal', 'vertical'),
+    anchor,
+  })
+  assert.deepEqual(horizontal, {
+    key: 'horizontal:"anchor:one"',
+    kind: 'horizontal',
+    point: { x: 4, y: 5 },
+    distancePx: 2,
+    sourceId: 'anchor:one',
+    anchorId: 'anchor:one',
+    anchorPoint: { x: 1, y: 5 },
+  })
+
+  const vertical = resolve({
+    point: { x: 3, y: 10 },
+    settings: only('vertical'),
+    anchor,
+  })
+  assert.deepEqual(vertical, {
+    key: 'vertical:"anchor:one"',
+    kind: 'vertical',
+    point: { x: 1, y: 10 },
+    distancePx: 2,
+    sourceId: 'anchor:one',
+    anchorId: 'anchor:one',
+    anchorPoint: { x: 1, y: 5 },
+  })
+})
+
+test('equal direction corrections prefer horizontal deterministically', () => {
+  const common = {
+    point: { x: 4, y: 8 },
+    anchor: { id: 'anchor', x: 1, y: 5 },
+  }
+
+  assert.equal(resolve({
+    ...common,
+    settings: only('horizontal', 'vertical'),
+  })?.kind, 'horizontal')
+  assert.equal(resolve({
+    ...common,
+    settings: only('vertical'),
+  })?.kind, 'vertical')
+})
+
+test('horizontal and vertical use independent inclusive pixel thresholds', () => {
+  const anchor = { id: 'anchor', x: 4, y: 4 }
+  assert.equal(resolve({
+    point: { x: 0, y: 0 },
+    scale: 2,
+    settings: only('horizontal'),
+    anchor,
+  })?.distancePx, 8)
+  assert.equal(resolve({
+    point: { x: 0, y: 0 },
+    scale: 2,
+    settings: only('horizontal'),
+    anchor,
+    thresholdsPx: { horizontal: 7.999 },
+  }), null)
+  assert.equal(resolve({
+    point: { x: 0, y: 0 },
+    scale: 2,
+    settings: only('vertical'),
+    anchor,
+    thresholdsPx: { vertical: 8 },
+  })?.distancePx, 8)
+  assert.equal(resolve({
+    point: { x: 0, y: 0 },
+    scale: 2,
+    settings: only('vertical'),
+    anchor,
+    thresholdsPx: { vertical: 7.999 },
+  }), null)
+})
+
+test('direction accept filters fall back to the other axis and then lower priorities', () => {
+  const common = {
+    point: { x: 1, y: 2 },
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    settings: only('horizontal', 'vertical', 'edge'),
+    segments: [{
+      id: 'edge',
+      startVertexId: 'left',
+      endVertexId: 'right',
+      x1: -5,
+      y1: 0,
+      x2: 5,
+      y2: 0,
+    }],
+  }
+
+  assert.equal(resolve(common)?.kind, 'vertical')
+  assert.equal(resolve({
+    ...common,
+    accept: (target) => target.kind !== 'vertical',
+  })?.kind, 'horizontal')
+  assert.equal(resolve({
+    ...common,
+    accept: (target) => target.kind !== 'horizontal' && target.kind !== 'vertical',
+  })?.kind, 'edge')
+})
+
+test('explicit drag-origin anchors remain valid when their vertex is excluded', () => {
+  const target = resolve({
+    point: { x: 4, y: 1 },
+    settings: only('horizontal'),
+    anchor: { id: 'moving', x: 0, y: 0 },
+    excludedVertexId: 'moving',
+    vertices: [{ id: 'moving', x: 0, y: 0 }],
+  })
+
+  assert.equal(target?.kind, 'horizontal')
+  assert.deepEqual(target?.point, { x: 4, y: 0 })
+  assert.equal(target?.anchorId, 'moving')
+})
+
+test('missing, empty, non-finite, and overflowing direction anchors are ignored', () => {
+  const common = { settings: only('horizontal', 'vertical') }
+  assert.equal(resolve(common), null)
+  assert.equal(resolve({ ...common, anchor: { id: '', x: 0, y: 0 } }), null)
+  assert.equal(resolve({
+    ...common,
+    anchor: { id: 42 as never, x: 0, y: 0 },
+  }), null)
+  assert.equal(resolve({
+    ...common,
+    anchor: { id: 'nan', x: Number.NaN, y: 0 },
+  }), null)
+  assert.equal(resolve({
+    point: { x: -Number.MAX_VALUE, y: 0 },
+    settings: only('vertical'),
+    anchor: { id: 'overflow', x: Number.MAX_VALUE, y: 0 },
+  }), null)
 })
 
 test('visible grid is origin-aligned across negative coordinates', () => {
@@ -395,6 +574,30 @@ test('large vertex and segment sets resolve without candidate arrays', () => {
   })?.sourceId, 's0')
 })
 
+test('direction-only snapping stays constant-time with 10,000 unrelated vertices', () => {
+  const vertices = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `v${index}`,
+    x: index,
+    y: -index,
+  }))
+  const options = {
+    point: { x: 2, y: 3 },
+    scale: 1,
+    settings: only('horizontal', 'vertical'),
+    vertices,
+    segments: [],
+    grid: EMPTY_GRID,
+    anchor: { id: 'anchor', x: 0, y: 0 },
+  } satisfies ResolveSnapTargetOptions
+
+  const started = performance.now()
+  for (let query = 0; query < 10_000; query += 1) {
+    assert.equal(resolveSnapTarget(options)?.kind, 'vertical')
+  }
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2_000, `10,000 direction queries took ${elapsed}ms`)
+})
+
 test('raw and grid-snapped points remain ordinary vertex additions', () => {
   assert.deepEqual(createVertexPlacement({ x: 12, y: 34 }, null, []), {
     operation: 'add',
@@ -415,6 +618,118 @@ test('raw and grid-snapped points remain ordinary vertex additions', () => {
     x: 20,
     y: 40,
   })
+
+  const horizontal = resolve({
+    point: { x: 12, y: 42 },
+    settings: only('horizontal'),
+    anchor: { id: 'anchor', x: 5, y: 40 },
+  })
+  assert.deepEqual(createVertexPlacement(
+    horizontal?.point ?? { x: Number.NaN, y: Number.NaN },
+    horizontal,
+    [],
+  ), {
+    operation: 'add',
+    x: 12,
+    y: 40,
+  })
+})
+
+test('direction snaps split one coincident edge instead of adding an overlapping vertex', () => {
+  const forward = {
+    id: 'boundary-edge',
+    startVertexId: 'left',
+    endVertexId: 'right',
+    x1: 0,
+    y1: 0,
+    x2: 100,
+    y2: 0,
+  }
+  const target = resolve({
+    point: { x: 25, y: 2 },
+    settings: only('horizontal'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+    segments: [forward],
+  })
+  assert.equal(target?.kind, 'horizontal')
+  assert.deepEqual(createVertexPlacement(target?.point ?? { x: 25, y: 0 }, target, [forward]), {
+    operation: 'split-edge',
+    edgeId: forward.id,
+    fraction: 0.25,
+  })
+
+  const reversed = {
+    ...forward,
+    id: 'reversed-edge',
+    startVertexId: forward.endVertexId,
+    endVertexId: forward.startVertexId,
+    x1: forward.x2,
+    x2: forward.x1,
+  }
+  assert.deepEqual(createVertexPlacement(target?.point ?? { x: 25, y: 0 }, target, [reversed]), {
+    operation: 'split-edge',
+    edgeId: reversed.id,
+    fraction: 0.75,
+  })
+
+  const verticalEdge = {
+    id: 'vertical-edge',
+    startVertexId: 'top',
+    endVertexId: 'bottom',
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 100,
+  }
+  const verticalTarget = resolve({
+    point: { x: 2, y: 25 },
+    settings: only('vertical'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+  })
+  assert.ok(verticalTarget?.kind === 'vertical')
+  assert.deepEqual(createVertexPlacement(verticalTarget.point, verticalTarget, [verticalEdge]), {
+    operation: 'split-edge',
+    edgeId: verticalEdge.id,
+    fraction: 0.25,
+  })
+})
+
+test('direction placement rejects endpoint, multi-edge, duplicate-ID, and malformed ambiguity', () => {
+  const base = {
+    id: 'base',
+    startVertexId: 'left',
+    endVertexId: 'right',
+    x1: 0,
+    y1: 0,
+    x2: 100,
+    y2: 0,
+  }
+  const target = resolve({
+    point: { x: 25, y: 2 },
+    settings: only('horizontal'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+  })
+  assert.ok(target?.kind === 'horizontal')
+  assert.equal(createVertexPlacement(target.point, target, [
+    base,
+    { ...base, id: 'overlap', startVertexId: 'other-left', endVertexId: 'other-right' },
+  ]), null)
+  assert.equal(createVertexPlacement(target.point, target, [
+    base,
+    { ...base, x1: 200, x2: 300, startVertexId: 'far-left', endVertexId: 'far-right' },
+  ]), null)
+  assert.equal(createVertexPlacement(target.point, {
+    ...target,
+    anchorId: 'wrong-anchor',
+  }, [base]), null)
+
+  const endpointTarget = resolve({
+    point: { x: 0, y: 2 },
+    settings: only('horizontal'),
+    anchor: { id: 'anchor', x: 0, y: 0 },
+  })
+  assert.ok(endpointTarget?.kind === 'horizontal')
+  assert.equal(createVertexPlacement(endpointTarget.point, endpointTarget, [base]), null)
 })
 
 test('midpoint and edge targets become atomic edge splits', () => {
@@ -647,7 +962,7 @@ test('T junctions expose the exact existing endpoint in every orientation', () =
   }
 })
 
-test('addition snap priority is same-vertex T repair, vertex, proper, midpoint, edge, then grid', () => {
+test('addition snap priority is T repair, vertex, proper, midpoint, direction, edge, then grid', () => {
   const crossing = [
     intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
     intersectionSegment('b-edge', 'b1', 'b2', -2, 0, 2, 0),
@@ -699,6 +1014,11 @@ test('addition snap priority is same-vertex T repair, vertex, proper, midpoint, 
     settings: only('grid'),
     grid: { xValues: [0], yValues: [0] },
   })
+  const direction = resolve({
+    point: { x: 0, y: 1 },
+    settings: only('horizontal'),
+    anchor: { id: 'anchor', x: 2, y: 0 },
+  })
 
   assert.equal(
     prioritizeAdditionSnapTargets(junctionVertex, tJunction)?.classification,
@@ -706,7 +1026,7 @@ test('addition snap priority is same-vertex T repair, vertex, proper, midpoint, 
   )
   assert.equal(prioritizeAdditionSnapTargets(vertex, tJunction), vertex)
   assert.equal(prioritizeAdditionSnapTargets(vertex, proper), vertex)
-  for (const lowerPriority of [midpoint, edge, grid]) {
+  for (const lowerPriority of [midpoint, direction, edge, grid]) {
     assert.equal(
       prioritizeAdditionSnapTargets(lowerPriority, proper)?.kind,
       'intersection',

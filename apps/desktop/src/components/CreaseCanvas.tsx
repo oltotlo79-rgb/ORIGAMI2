@@ -3,6 +3,7 @@ import {
   DEFAULT_SNAP_SETTINGS,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
+  resolveUniqueSnapAnchor,
   resolveSnapTarget,
   type AdditionSnapTarget,
   type SnapKind,
@@ -109,6 +110,8 @@ const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   vertex: '頂点',
   intersection: '交点',
   midpoint: '中点',
+  horizontal: '水平',
+  vertical: '垂直',
   edge: '辺',
   grid: 'グリッド',
 }
@@ -165,6 +168,10 @@ export function CreaseCanvas({
   const exactVertexIndex = useMemo(
     () => createExactVertexIndex(vertices),
     [vertices],
+  )
+  const additionSnapAnchor = useMemo(
+    () => resolveUniqueSnapAnchor(vertices, selectedVertexId),
+    [selectedVertexId, vertices],
   )
   const intersectionSnapIndex = useMemo(
     () => createIntersectionSnapIndex(
@@ -399,6 +406,7 @@ export function CreaseCanvas({
       vertices,
       segments: lines,
       grid: visibleGrid,
+      anchor: additionSnapAnchor,
       accept,
     })
     if (!snapSettings.intersection) return pointTarget
@@ -439,6 +447,11 @@ export function CreaseCanvas({
       vertices,
       segments: lines,
       grid: visibleGrid,
+      anchor: {
+        id: drag.vertexId,
+        x: drag.originX,
+        y: drag.originY,
+      },
       excludedVertexId: drag.vertexId,
       accept: (candidate) => {
         if (
@@ -1141,11 +1154,32 @@ function drawSnapGuide(
     target.y > canvasHeight + 20
   ) return
   const raw = mapPaperPoint(transform, guide.rawPoint.x, guide.rawPoint.y)
+  const directionAnchor = (
+    guide.target.kind === 'horizontal'
+    || guide.target.kind === 'vertical'
+  )
+    ? mapPaperPoint(
+        transform,
+        guide.target.anchorPoint.x,
+        guide.target.anchorPoint.y,
+      )
+    : null
 
   context.save()
   context.strokeStyle = '#b14c83'
   context.fillStyle = '#b14c83'
   context.lineWidth = 1.5
+  if (directionAnchor) {
+    context.setLineDash([7, 4])
+    context.beginPath()
+    context.moveTo(directionAnchor.x, directionAnchor.y)
+    context.lineTo(target.x, target.y)
+    context.stroke()
+    context.setLineDash([])
+    context.beginPath()
+    context.arc(directionAnchor.x, directionAnchor.y, 3.5, 0, Math.PI * 2)
+    context.fill()
+  }
   if (raw && Math.hypot(raw.x - target.x, raw.y - target.y) > 1) {
     context.setLineDash([3, 3])
     context.beginPath()

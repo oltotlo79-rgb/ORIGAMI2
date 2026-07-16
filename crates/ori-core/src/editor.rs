@@ -40,6 +40,12 @@ pub enum Command {
         width_mm: f64,
         height_mm: f64,
     },
+    SplitBoundaryEdge {
+        edge: EdgeId,
+        new_vertex: VertexId,
+        new_edge: EdgeId,
+        fraction: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +115,26 @@ pub enum CommandError {
     PaperResizeVertexPositionNotFinite { vertex: VertexId },
     #[error("requested paper dimensions cannot be represented at the current boundary origin")]
     PaperResizeBoundaryNotRepresentable,
+    #[error("edge {0:?} is not a boundary edge")]
+    EdgeIsNotBoundary(EdgeId),
+    #[error("target boundary edge ID {edge:?} occurs more than once")]
+    BoundarySplitTargetEdgeIdAmbiguous { edge: EdgeId },
+    #[error("boundary edge {0:?} does not match a consecutive paper-boundary pair")]
+    BoundaryEdgeNotInPaperBoundary(EdgeId),
+    #[error("boundary edge {edge:?} matches more than one paper-boundary pair")]
+    BoundaryEdgeMatchesMultiplePaperSegments { edge: EdgeId },
+    #[error("boundary split fraction must be finite")]
+    BoundarySplitFractionNotFinite,
+    #[error("boundary split fraction must be strictly between zero and one")]
+    BoundarySplitFractionOutOfRange,
+    #[error("boundary edge {edge:?} endpoint {vertex:?} has a non-finite position")]
+    BoundarySplitEndpointPositionNotFinite { edge: EdgeId, vertex: VertexId },
+    #[error("boundary split position is not finite")]
+    BoundarySplitPositionNotFinite,
+    #[error("boundary split position must be distinct from both edge endpoints")]
+    BoundarySplitPositionNotDistinct,
+    #[error("boundary split position is already occupied by vertex {vertex:?}")]
+    BoundarySplitPositionOccupied { vertex: VertexId },
     #[error("boundary edge {0:?} must be changed through a sheet-boundary operation")]
     BoundaryEdgeRequiresSheetOperation(EdgeId),
 }
@@ -139,6 +165,15 @@ enum Inverse {
     RestoreVertexPositions {
         vertices: Vec<(VertexId, Point2)>,
     },
+    RestoreBoundarySplit {
+        boundary_vertices: Vec<VertexId>,
+        original_edge_index: usize,
+        original_edge: Edge,
+        new_vertex_index: usize,
+        new_vertex: Vertex,
+        new_edge_index: usize,
+        new_edge: Edge,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -147,6 +182,24 @@ struct RectangularBoundary {
     min_y: f64,
     max_x: f64,
     max_y: f64,
+}
+
+fn undirected_endpoints_match(
+    first_start: VertexId,
+    first_end: VertexId,
+    second_start: VertexId,
+    second_end: VertexId,
+) -> bool {
+    (first_start == second_start && first_end == second_end)
+        || (first_start == second_end && first_end == second_start)
+}
+
+fn stable_convex_combination(start: f64, end: f64, fraction: f64) -> f64 {
+    if start.is_sign_negative() == end.is_sign_negative() {
+        start + (end - start) * fraction
+    } else {
+        start * (1.0 - fraction) + end * fraction
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -216,8 +269,8 @@ impl EditorState {
         command: Command,
     ) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
-        let inverse = self.apply(&command)?;
         let result = command.changes(&self.pattern);
+        let inverse = self.apply(&command)?;
         self.undo_stack.push(HistoryEntry {
             forward: command,
             inverse,
@@ -244,8 +297,8 @@ impl EditorState {
         let Some(entry) = self.redo_stack.pop() else {
             return Ok(self.result(Changes::default()));
         };
-        self.apply(&entry.forward)?;
         let result = entry.forward.changes(&self.pattern);
+        self.apply(&entry.forward)?;
         self.undo_stack.push(entry);
         self.advance_revision();
         Ok(self.result(result))
@@ -364,7 +417,150 @@ impl EditorState {
                 width_mm,
                 height_mm,
             } => self.resize_rectangular_paper(width_mm, height_mm),
+            Command::SplitBoundaryEdge {
+                edge,
+                new_vertex,
+                new_edge,
+                fraction,
+            } => self.split_boundary_edge(edge, new_vertex, new_edge, fraction),
         }
+    }
+
+    fn split_boundary_edge(
+        &mut self,
+        edge_id: EdgeId,
+        new_vertex_id: VertexId,
+        new_edge_id: EdgeId,
+        fraction: f64,
+    ) -> Result<Inverse, CommandError> {
+        if !fraction.is_finite() {
+            return Err(CommandError::BoundarySplitFractionNotFinite);
+        }
+        if fraction <= 0.0 || fraction >= 1.0 {
+            return Err(CommandError::BoundarySplitFractionOutOfRange);
+        }
+        if self.vertex_index(new_vertex_id).is_some()
+            || self.paper.boundary_vertices.contains(&new_vertex_id)
+            || self
+                .pattern
+                .edges
+                .iter()
+                .any(|edge| edge.start == new_vertex_id || edge.end == new_vertex_id)
+        {
+            return Err(CommandError::VertexAlreadyExists(new_vertex_id));
+        }
+        if self.edge_index(new_edge_id).is_some() {
+            return Err(CommandError::EdgeAlreadyExists(new_edge_id));
+        }
+
+        let mut target_edges = self
+            .pattern
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| edge.id == edge_id);
+        let Some((original_edge_index, original_edge)) = target_edges
+            .next()
+            .map(|(index, edge)| (index, edge.clone()))
+        else {
+            return Err(CommandError::EdgeNotFound(edge_id));
+        };
+        if target_edges.next().is_some() {
+            return Err(CommandError::BoundarySplitTargetEdgeIdAmbiguous { edge: edge_id });
+        }
+        if original_edge.kind != EdgeKind::Boundary {
+            return Err(CommandError::EdgeIsNotBoundary(edge_id));
+        }
+
+        let mut matching_boundary_indices = Vec::new();
+        if !self.paper.boundary_vertices.is_empty() {
+            for (index, start) in self.paper.boundary_vertices.iter().copied().enumerate() {
+                let end =
+                    self.paper.boundary_vertices[(index + 1) % self.paper.boundary_vertices.len()];
+                if undirected_endpoints_match(original_edge.start, original_edge.end, start, end) {
+                    matching_boundary_indices.push(index);
+                }
+            }
+        }
+        let boundary_index = match matching_boundary_indices.as_slice() {
+            [] => return Err(CommandError::BoundaryEdgeNotInPaperBoundary(edge_id)),
+            [index] => *index,
+            _ => {
+                return Err(CommandError::BoundaryEdgeMatchesMultiplePaperSegments {
+                    edge: edge_id,
+                });
+            }
+        };
+
+        let start_index = self
+            .vertex_index(original_edge.start)
+            .ok_or(CommandError::VertexNotFound(original_edge.start))?;
+        let end_index = self
+            .vertex_index(original_edge.end)
+            .ok_or(CommandError::VertexNotFound(original_edge.end))?;
+        let start_position = self.pattern.vertices[start_index].position;
+        let end_position = self.pattern.vertices[end_index].position;
+        if !start_position.x.is_finite() || !start_position.y.is_finite() {
+            return Err(CommandError::BoundarySplitEndpointPositionNotFinite {
+                edge: edge_id,
+                vertex: original_edge.start,
+            });
+        }
+        if !end_position.x.is_finite() || !end_position.y.is_finite() {
+            return Err(CommandError::BoundarySplitEndpointPositionNotFinite {
+                edge: edge_id,
+                vertex: original_edge.end,
+            });
+        }
+        let position = Point2::new(
+            stable_convex_combination(start_position.x, end_position.x, fraction),
+            stable_convex_combination(start_position.y, end_position.y, fraction),
+        );
+        if !position.x.is_finite() || !position.y.is_finite() {
+            return Err(CommandError::BoundarySplitPositionNotFinite);
+        }
+        if position == start_position || position == end_position {
+            return Err(CommandError::BoundarySplitPositionNotDistinct);
+        }
+        if let Some(vertex) = self
+            .pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.position == position)
+        {
+            return Err(CommandError::BoundarySplitPositionOccupied { vertex: vertex.id });
+        }
+
+        let boundary_vertices = self.paper.boundary_vertices.clone();
+        let new_vertex_index = self.pattern.vertices.len();
+        let new_edge_index = original_edge_index + 1;
+        let new_vertex = Vertex {
+            id: new_vertex_id,
+            position,
+        };
+        let new_edge = Edge {
+            id: new_edge_id,
+            start: new_vertex_id,
+            end: original_edge.end,
+            kind: EdgeKind::Boundary,
+        };
+
+        self.paper
+            .boundary_vertices
+            .insert(boundary_index + 1, new_vertex_id);
+        self.pattern.vertices.push(new_vertex.clone());
+        self.pattern.edges[original_edge_index].end = new_vertex_id;
+        self.pattern.edges.insert(new_edge_index, new_edge.clone());
+
+        Ok(Inverse::RestoreBoundarySplit {
+            boundary_vertices,
+            original_edge_index,
+            original_edge,
+            new_vertex_index,
+            new_vertex,
+            new_edge_index,
+            new_edge,
+        })
     }
 
     fn resize_rectangular_paper(
@@ -674,6 +870,38 @@ impl EditorState {
                     vertex.position = *position;
                 }
             }
+            Inverse::RestoreBoundarySplit {
+                boundary_vertices,
+                original_edge_index,
+                original_edge,
+                new_vertex_index,
+                new_vertex,
+                new_edge_index,
+                new_edge,
+            } => {
+                debug_assert_eq!(
+                    self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
+                    Some(new_edge.id)
+                );
+                self.pattern.edges.remove(*new_edge_index);
+                debug_assert_eq!(
+                    self.pattern
+                        .edges
+                        .get(*original_edge_index)
+                        .map(|edge| edge.id),
+                    Some(original_edge.id)
+                );
+                self.pattern.edges[*original_edge_index] = original_edge.clone();
+                debug_assert_eq!(
+                    self.pattern
+                        .vertices
+                        .get(*new_vertex_index)
+                        .map(|vertex| vertex.id),
+                    Some(new_vertex.id)
+                );
+                self.pattern.vertices.remove(*new_vertex_index);
+                self.paper.boundary_vertices = boundary_vertices.clone();
+            }
         }
         Ok(())
     }
@@ -751,6 +979,25 @@ impl Command {
                 edges: Vec::new(),
                 settings: false,
             },
+            Self::SplitBoundaryEdge {
+                edge,
+                new_vertex,
+                new_edge,
+                ..
+            } => {
+                let mut vertices = vec![new_vertex];
+                if let Some(original_edge) =
+                    pattern.edges.iter().find(|candidate| candidate.id == edge)
+                {
+                    vertices.push(original_edge.start);
+                    vertices.push(original_edge.end);
+                }
+                Changes {
+                    vertices,
+                    edges: vec![edge, new_edge],
+                    settings: true,
+                }
+            }
         }
     }
 }
@@ -778,6 +1025,16 @@ impl Inverse {
                 vertices: vertices.iter().map(|(id, _)| *id).collect(),
                 edges: Vec::new(),
                 settings: false,
+            },
+            Self::RestoreBoundarySplit {
+                original_edge,
+                new_vertex,
+                new_edge,
+                ..
+            } => Changes {
+                vertices: vec![new_vertex.id, original_edge.start, original_edge.end],
+                edges: vec![original_edge.id, new_edge.id],
+                settings: true,
             },
         }
     }
@@ -867,6 +1124,21 @@ mod tests {
             pattern,
             paper,
         )
+    }
+
+    fn assert_split_rejected(editor: &mut EditorState, command: Command, expected: CommandError) {
+        let pattern = editor.pattern().clone();
+        let paper = editor.paper().clone();
+        let error = editor
+            .execute(editor.revision(), command)
+            .expect_err("boundary split must fail");
+
+        assert_eq!(error, expected);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
     }
 
     #[test]
@@ -1508,6 +1780,519 @@ mod tests {
         );
         assert_eq!(editor.pattern(), &pattern);
         assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+    }
+
+    #[test]
+    fn boundary_split_preserves_ids_order_and_validation_through_undo_redo() {
+        let (mut editor, original_pattern, original_paper) = rectangular_editor();
+        let original_edge = original_pattern.edges[0].clone();
+        let new_vertex_id = VertexId::new();
+        let new_edge_id = EdgeId::new();
+        assert!(crate::validate_paper(&original_paper, &original_pattern).is_valid());
+
+        let result = editor
+            .execute(
+                0,
+                Command::SplitBoundaryEdge {
+                    edge: original_edge.id,
+                    new_vertex: new_vertex_id,
+                    new_edge: new_edge_id,
+                    fraction: 0.25,
+                },
+            )
+            .expect("split boundary edge");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(
+            result.changed_vertices,
+            vec![new_vertex_id, original_edge.start, original_edge.end]
+        );
+        assert_eq!(result.changed_edges, vec![original_edge.id, new_edge_id]);
+        assert!(result.settings_changed);
+        assert_eq!(
+            editor.paper().boundary_vertices,
+            vec![
+                original_paper.boundary_vertices[0],
+                new_vertex_id,
+                original_paper.boundary_vertices[1],
+                original_paper.boundary_vertices[2],
+                original_paper.boundary_vertices[3],
+            ]
+        );
+        assert_eq!(
+            editor.pattern().vertices.last(),
+            Some(&Vertex {
+                id: new_vertex_id,
+                position: Point2::new(10.0, 32.5),
+            })
+        );
+        assert_eq!(editor.pattern().edges[0].id, original_edge.id);
+        assert_eq!(editor.pattern().edges[0].start, original_edge.start);
+        assert_eq!(editor.pattern().edges[0].end, new_vertex_id);
+        assert_eq!(
+            editor.pattern().edges[1],
+            Edge {
+                id: new_edge_id,
+                start: new_vertex_id,
+                end: original_edge.end,
+                kind: EdgeKind::Boundary,
+            }
+        );
+        assert_eq!(editor.pattern().edges[2..], original_pattern.edges[1..]);
+        assert_eq!(editor.paper().thickness_mm, original_paper.thickness_mm);
+        assert_eq!(
+            editor.paper().cutting_allowed,
+            original_paper.cutting_allowed
+        );
+        assert_eq!(editor.paper().front, original_paper.front);
+        assert_eq!(editor.paper().back, original_paper.back);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+        let split_pattern = editor.pattern().clone();
+        let split_paper = editor.paper().clone();
+
+        let undo = editor.undo(1).expect("undo boundary split");
+        assert_eq!(undo.revision, 2);
+        assert_eq!(
+            undo.changed_vertices,
+            vec![new_vertex_id, original_edge.start, original_edge.end]
+        );
+        assert_eq!(undo.changed_edges, vec![original_edge.id, new_edge_id]);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo boundary split");
+        assert_eq!(redo.revision, 3);
+        assert_eq!(
+            redo.changed_vertices,
+            vec![new_vertex_id, original_edge.start, original_edge.end]
+        );
+        assert_eq!(editor.pattern(), &split_pattern);
+        assert_eq!(editor.paper(), &split_paper);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+    }
+
+    #[test]
+    fn boundary_split_handles_an_edge_opposite_to_the_paper_order() {
+        let (_, mut pattern, paper) = rectangular_editor();
+        let forward_edge = pattern.edges[0].clone();
+        pattern.edges[0] = Edge {
+            start: forward_edge.end,
+            end: forward_edge.start,
+            ..forward_edge
+        };
+        let original_edge = pattern.edges[0].clone();
+        let new_vertex_id = VertexId::new();
+        let new_edge_id = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        editor
+            .execute(
+                0,
+                Command::SplitBoundaryEdge {
+                    edge: original_edge.id,
+                    new_vertex: new_vertex_id,
+                    new_edge: new_edge_id,
+                    fraction: 0.25,
+                },
+            )
+            .expect("split reverse boundary edge");
+
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .last()
+                .map(|vertex| vertex.position),
+            Some(Point2::new(10.0, 57.5))
+        );
+        assert_eq!(editor.pattern().edges[0].start, original_edge.start);
+        assert_eq!(editor.pattern().edges[0].end, new_vertex_id);
+        assert_eq!(editor.pattern().edges[1].start, new_vertex_id);
+        assert_eq!(editor.pattern().edges[1].end, original_edge.end);
+        assert_eq!(editor.paper().boundary_vertices[1], new_vertex_id);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+    }
+
+    #[test]
+    fn boundary_split_handles_the_closing_paper_edge() {
+        let (mut editor, original_pattern, original_paper) = rectangular_editor();
+        let original_edge = original_pattern.edges[3].clone();
+        let new_vertex_id = VertexId::new();
+        let new_edge_id = EdgeId::new();
+
+        editor
+            .execute(
+                0,
+                Command::SplitBoundaryEdge {
+                    edge: original_edge.id,
+                    new_vertex: new_vertex_id,
+                    new_edge: new_edge_id,
+                    fraction: 0.5,
+                },
+            )
+            .expect("split closing edge");
+
+        assert_eq!(editor.paper().boundary_vertices.len(), 5);
+        assert_eq!(editor.paper().boundary_vertices[4], new_vertex_id);
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .last()
+                .map(|vertex| vertex.position),
+            Some(Point2::new(60.0, 20.0))
+        );
+        assert_eq!(editor.pattern().edges[3].id, original_edge.id);
+        assert_eq!(editor.pattern().edges[3].start, original_edge.start);
+        assert_eq!(editor.pattern().edges[3].end, new_vertex_id);
+        assert_eq!(editor.pattern().edges[4].id, new_edge_id);
+        assert_eq!(editor.pattern().edges[5], original_pattern.edges[4]);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+
+        editor.undo(1).expect("undo closing split");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        editor.redo(2).expect("redo closing split");
+        assert_eq!(editor.paper().boundary_vertices[4], new_vertex_id);
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+    }
+
+    #[test]
+    fn boundary_split_uses_a_stable_convex_combination_for_extreme_endpoints() {
+        let ids = [VertexId::new(), VertexId::new(), VertexId::new()];
+        let edge = Edge {
+            id: EdgeId::new(),
+            start: ids[0],
+            end: ids[1],
+            kind: EdgeKind::Boundary,
+        };
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: ids[0],
+                    position: Point2::new(-f64::MAX, 0.0),
+                },
+                Vertex {
+                    id: ids[1],
+                    position: Point2::new(f64::MAX, 0.0),
+                },
+                Vertex {
+                    id: ids[2],
+                    position: Point2::new(0.0, 1.0),
+                },
+            ],
+            edges: vec![edge.clone()],
+        };
+        let paper = Paper {
+            boundary_vertices: ids.to_vec(),
+            ..Paper::default()
+        };
+        let new_vertex = VertexId::new();
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        editor
+            .execute(
+                0,
+                Command::SplitBoundaryEdge {
+                    edge: edge.id,
+                    new_vertex,
+                    new_edge: EdgeId::new(),
+                    fraction: 0.5,
+                },
+            )
+            .expect("extreme finite endpoints must interpolate safely");
+
+        assert_eq!(
+            editor.pattern().vertices.last(),
+            Some(&Vertex {
+                id: new_vertex,
+                position: Point2::new(0.0, 0.0),
+            })
+        );
+    }
+
+    #[test]
+    fn boundary_split_rejects_an_existing_third_vertex_at_the_new_position() {
+        let (_, mut pattern, paper) = rectangular_editor();
+        let edge = pattern.edges[0].clone();
+        let occupied_by = VertexId::new();
+        pattern.vertices.push(Vertex {
+            id: occupied_by,
+            position: Point2::new(10.0, 45.0),
+        });
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::BoundarySplitPositionOccupied {
+                vertex: occupied_by,
+            },
+        );
+    }
+
+    #[test]
+    fn boundary_split_checks_duplicate_id_vertex_records_for_occupied_positions() {
+        let (_, mut pattern, paper) = rectangular_editor();
+        let edge = pattern.edges[0].clone();
+        pattern.vertices.push(Vertex {
+            id: edge.start,
+            position: Point2::new(10.0, 45.0),
+        });
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::BoundarySplitPositionOccupied { vertex: edge.start },
+        );
+    }
+
+    #[test]
+    fn invalid_boundary_split_targets_and_ids_are_atomic() {
+        let (_, pattern, paper) = rectangular_editor();
+        let boundary_edge = pattern.edges[0].clone();
+        let mountain_edge = pattern.edges[4].clone();
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: mountain_edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::EdgeIsNotBoundary(mountain_edge.id),
+        );
+
+        let diagonal = Edge {
+            id: EdgeId::new(),
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Boundary,
+        };
+        let mut diagonal_pattern = pattern.clone();
+        diagonal_pattern.edges.push(diagonal.clone());
+        let mut editor = EditorState::with_paper(diagonal_pattern, paper.clone());
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: diagonal.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::BoundaryEdgeNotInPaperBoundary(diagonal.id),
+        );
+
+        let mut duplicate_edge_pattern = pattern.clone();
+        duplicate_edge_pattern.edges.push(boundary_edge.clone());
+        let mut editor = EditorState::with_paper(duplicate_edge_pattern, paper.clone());
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: boundary_edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::BoundarySplitTargetEdgeIdAmbiguous {
+                edge: boundary_edge.id,
+            },
+        );
+
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let ambiguous_edge = Edge {
+            id: EdgeId::new(),
+            start: first,
+            end: second,
+            kind: EdgeKind::Boundary,
+        };
+        let ambiguous_pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: second,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![ambiguous_edge.clone()],
+        };
+        let ambiguous_paper = Paper {
+            boundary_vertices: vec![first, second, first],
+            ..Paper::default()
+        };
+        let mut editor = EditorState::with_paper(ambiguous_pattern, ambiguous_paper);
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: ambiguous_edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::BoundaryEdgeMatchesMultiplePaperSegments {
+                edge: ambiguous_edge.id,
+            },
+        );
+
+        let existing_vertex = pattern.vertices[0].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: boundary_edge.id,
+                new_vertex: existing_vertex,
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::VertexAlreadyExists(existing_vertex),
+        );
+
+        let existing_edge = pattern.edges[1].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: boundary_edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: existing_edge,
+                fraction: 0.5,
+            },
+            CommandError::EdgeAlreadyExists(existing_edge),
+        );
+    }
+
+    #[test]
+    fn invalid_boundary_split_fractions_positions_and_conflicts_are_atomic() {
+        let (_, pattern, paper) = rectangular_editor();
+        let boundary_edge = pattern.edges[0].clone();
+        for (fraction, expected) in [
+            (f64::NAN, CommandError::BoundarySplitFractionNotFinite),
+            (f64::INFINITY, CommandError::BoundarySplitFractionNotFinite),
+            (0.0, CommandError::BoundarySplitFractionOutOfRange),
+            (
+                -f64::MIN_POSITIVE,
+                CommandError::BoundarySplitFractionOutOfRange,
+            ),
+            (1.0, CommandError::BoundarySplitFractionOutOfRange),
+        ] {
+            let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+            assert_split_rejected(
+                &mut editor,
+                Command::SplitBoundaryEdge {
+                    edge: boundary_edge.id,
+                    new_vertex: VertexId::new(),
+                    new_edge: EdgeId::new(),
+                    fraction,
+                },
+                expected,
+            );
+        }
+
+        let mut non_finite_pattern = pattern.clone();
+        non_finite_pattern
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == boundary_edge.start)
+            .expect("boundary start")
+            .position
+            .x = f64::INFINITY;
+        let mut editor = EditorState::with_paper(non_finite_pattern, paper.clone());
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: boundary_edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: 0.5,
+            },
+            CommandError::BoundarySplitEndpointPositionNotFinite {
+                edge: boundary_edge.id,
+                vertex: boundary_edge.start,
+            },
+        );
+
+        let close_ids = [VertexId::new(), VertexId::new(), VertexId::new()];
+        let close_edge = Edge {
+            id: EdgeId::new(),
+            start: close_ids[0],
+            end: close_ids[1],
+            kind: EdgeKind::Boundary,
+        };
+        let close_pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: close_ids[0],
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: close_ids[1],
+                    position: Point2::new(2.0, 0.0),
+                },
+                Vertex {
+                    id: close_ids[2],
+                    position: Point2::new(0.0, 1.0),
+                },
+            ],
+            edges: vec![close_edge.clone()],
+        };
+        let close_paper = Paper {
+            boundary_vertices: close_ids.to_vec(),
+            ..Paper::default()
+        };
+        let mut editor = EditorState::with_paper(close_pattern, close_paper);
+        assert_split_rejected(
+            &mut editor,
+            Command::SplitBoundaryEdge {
+                edge: close_edge.id,
+                new_vertex: VertexId::new(),
+                new_edge: EdgeId::new(),
+                fraction: f64::MIN_POSITIVE,
+            },
+            CommandError::BoundarySplitPositionNotDistinct,
+        );
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        let original_pattern = editor.pattern().clone();
+        let original_paper = editor.paper().clone();
+        let error = editor
+            .execute(
+                9,
+                Command::SplitBoundaryEdge {
+                    edge: boundary_edge.id,
+                    new_vertex: VertexId::new(),
+                    new_edge: EdgeId::new(),
+                    fraction: 0.5,
+                },
+            )
+            .expect_err("stale split must fail");
+        assert_eq!(
+            error,
+            CommandError::RevisionConflict {
+                expected: 9,
+                actual: 0,
+            }
+        );
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
         assert_eq!(editor.revision(), 0);
         assert!(!editor.can_undo());
     }

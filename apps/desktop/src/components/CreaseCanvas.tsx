@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
 
 export type CreaseLine = {
   id: string
@@ -18,10 +18,17 @@ export type PaperBounds = {
   maxY: number
 }
 
+export type PaperPolygonPoint = {
+  id: string
+  x: number
+  y: number
+}
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
   paperBounds?: PaperBounds
+  paperPolygon?: PaperPolygonPoint[]
   paperColor?: string
   tool?: string
   selectedVertexId?: string | null
@@ -84,6 +91,7 @@ export function CreaseCanvas({
   lines,
   vertices = [],
   paperBounds,
+  paperPolygon,
   paperColor = '#fffdf9',
   tool = 'select',
   selectedVertexId = null,
@@ -98,6 +106,19 @@ export function CreaseCanvas({
   disabled = false,
 }: Props) {
   const resolvedPaperBounds = resolvePaperBounds(paperBounds)
+  const drawablePaperPolygon = useMemo(
+    () => resolveDrawablePaperPolygon(paperPolygon),
+    [paperPolygon],
+  )
+  const pointTestPaperPolygon = useMemo(
+    () => resolvePointTestPaperPolygon(drawablePaperPolygon),
+    [drawablePaperPolygon],
+  )
+  const useLegacyRectangularPaper = paperPolygon === undefined
+  const paperBoundaryVertexIds = useMemo(
+    () => new Set(paperPolygon?.map((point) => point.id) ?? []),
+    [paperPolygon],
+  )
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const suppressClickRef = useRef(false)
@@ -151,9 +172,17 @@ export function CreaseCanvas({
     const transform = createViewTransform(canvasRect, resolvedPaperBounds)
     const mapX = (x: number) => mapPaperX(transform, x)
     const mapY = (y: number) => mapPaperY(transform, y)
+    const displayPaperPolygon = drawablePaperPolygon?.map((point) =>
+      point.id === dragPreview?.vertexId
+        ? { ...point, x: dragPreview.x, y: dragPreview.y }
+        : point)
 
     context.fillStyle = paperColor
-    context.fillRect(transform.left, transform.top, transform.width, transform.height)
+    if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
+      context.fill('evenodd')
+    } else if (useLegacyRectangularPaper) {
+      context.fillRect(transform.left, transform.top, transform.width, transform.height)
+    }
 
     const gridStep = niceGridStep(
       Math.max(
@@ -161,34 +190,50 @@ export function CreaseCanvas({
         transform.bounds.maxY - transform.bounds.minY,
       ) / DESIRED_GRID_INTERVALS,
     )
-    context.strokeStyle = '#dbe2ea'
-    context.lineWidth = 1
-    forEachGridValue(
-      transform.bounds.minX,
-      transform.bounds.maxX,
-      gridStep,
-      (value) => {
-        const x = mapX(value)
-        if (!Number.isFinite(x)) return
-        context.beginPath()
-        context.moveTo(x, transform.top)
-        context.lineTo(x, transform.top + transform.height)
-        context.stroke()
-      },
-    )
-    forEachGridValue(
-      transform.bounds.minY,
-      transform.bounds.maxY,
-      gridStep,
-      (value) => {
-        const y = mapY(value)
-        if (!Number.isFinite(y)) return
-        context.beginPath()
-        context.moveTo(transform.left, y)
-        context.lineTo(transform.left + transform.width, y)
-        context.stroke()
-      },
-    )
+    context.save()
+    let shouldDrawGrid = useLegacyRectangularPaper
+    if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
+      context.clip('evenodd')
+      shouldDrawGrid = true
+    }
+    if (shouldDrawGrid) {
+      context.strokeStyle = '#dbe2ea'
+      context.lineWidth = 1
+      forEachGridValue(
+        transform.bounds.minX,
+        transform.bounds.maxX,
+        gridStep,
+        (value) => {
+          const x = mapX(value)
+          if (!Number.isFinite(x)) return
+          context.beginPath()
+          context.moveTo(x, transform.top)
+          context.lineTo(x, transform.top + transform.height)
+          context.stroke()
+        },
+      )
+      forEachGridValue(
+        transform.bounds.minY,
+        transform.bounds.maxY,
+        gridStep,
+        (value) => {
+          const y = mapY(value)
+          if (!Number.isFinite(y)) return
+          context.beginPath()
+          context.moveTo(transform.left, y)
+          context.lineTo(transform.left + transform.width, y)
+          context.stroke()
+        },
+      )
+    }
+    context.restore()
+
+    if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
+      context.strokeStyle = COLORS.boundary
+      context.lineWidth = 1.2
+      context.setLineDash([])
+      context.stroke()
+    }
 
     for (const line of lines) {
       const previewStart = line.startVertexId === dragPreview?.vertexId ? dragPreview : null
@@ -265,11 +310,13 @@ export function CreaseCanvas({
     lines,
     measurementLabel,
     paperColor,
+    drawablePaperPolygon,
     pendingVertexId,
     resolvedPaperBounds,
     selectedLineId,
     selectedVertexId,
     tool,
+    useLegacyRectangularPaper,
     vertices,
   ])
 
@@ -292,7 +339,13 @@ export function CreaseCanvas({
     if (
       tool === 'vertex' &&
       onAddVertex &&
-      isInsidePaper(pointer.canvasX, pointer.canvasY, pointer.transform)
+      isInsidePaper(
+        pointer.x,
+        pointer.y,
+        pointer.transform,
+        pointTestPaperPolygon,
+        useLegacyRectangularPaper,
+      )
     ) {
       onAddVertex(x, y)
       return
@@ -377,17 +430,22 @@ export function CreaseCanvas({
 
     event.preventDefault()
     const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
+    const boundaryDrag = paperBoundaryVertexIds.has(drag.vertexId)
     updateDragPreview({
       ...drag,
-      x: clampToRange(
+      x: resolveDragCoordinate(
         pointer.x + drag.offsetX,
         pointer.transform.bounds.minX,
         pointer.transform.bounds.maxX,
+        boundaryDrag,
+        drag.x,
       ),
-      y: clampToRange(
+      y: resolveDragCoordinate(
         pointer.y + drag.offsetY,
         pointer.transform.bounds.minY,
         pointer.transform.bounds.maxY,
+        boundaryDrag,
+        drag.y,
       ),
     })
   }
@@ -399,15 +457,20 @@ export function CreaseCanvas({
 
     event.preventDefault()
     const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
-    const x = clampToRange(
+    const boundaryDrag = paperBoundaryVertexIds.has(drag.vertexId)
+    const x = resolveDragCoordinate(
       pointer.x + drag.offsetX,
       pointer.transform.bounds.minX,
       pointer.transform.bounds.maxX,
+      boundaryDrag,
+      drag.x,
     )
-    const y = clampToRange(
+    const y = resolveDragCoordinate(
       pointer.y + drag.offsetY,
       pointer.transform.bounds.minY,
       pointer.transform.bounds.maxY,
+      boundaryDrag,
+      drag.y,
     )
     const hasMoved = x !== drag.originX || y !== drag.originY
     dragRef.current = null
@@ -519,6 +582,138 @@ function resolvePaperBounds(bounds?: PaperBounds): PaperBounds {
   return bounds
 }
 
+function resolveDrawablePaperPolygon(
+  polygon?: PaperPolygonPoint[],
+): PaperPolygonPoint[] | null {
+  if (!polygon || polygon.length < 3) return null
+  if (new Set(polygon.map((point) => point.id)).size !== polygon.length) return null
+  if (!polygon.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+    return null
+  }
+  return polygon
+}
+
+function resolvePointTestPaperPolygon(
+  polygon: PaperPolygonPoint[] | null,
+): PaperPolygonPoint[] | null {
+  if (!polygon) return null
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (let index = 0; index < polygon.length; index += 1) {
+    const point = polygon[index]
+    minX = Math.min(minX, point.x)
+    minY = Math.min(minY, point.y)
+    maxX = Math.max(maxX, point.x)
+    maxY = Math.max(maxY, point.y)
+    for (let previous = 0; previous < index; previous += 1) {
+      if (point.x === polygon[previous].x && point.y === polygon[previous].y) return null
+    }
+  }
+
+  const width = maxX - minX
+  const height = maxY - minY
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null
+  }
+
+  let twiceArea = 0
+  for (let index = 0; index < polygon.length; index += 1) {
+    const current = polygon[index]
+    const next = polygon[(index + 1) % polygon.length]
+    const areaTerm = current.x * next.y - next.x * current.y
+    if (!Number.isFinite(areaTerm)) return null
+    twiceArea += areaTerm
+    if (!Number.isFinite(twiceArea)) return null
+  }
+  if (twiceArea === 0 || polygonSelfIntersects(polygon)) return null
+  return polygon
+}
+
+function polygonSelfIntersects(polygon: PaperPolygonPoint[]) {
+  for (let first = 0; first < polygon.length; first += 1) {
+    const firstNext = (first + 1) % polygon.length
+    for (let second = first + 1; second < polygon.length; second += 1) {
+      const secondNext = (second + 1) % polygon.length
+      if (first === second || firstNext === second || secondNext === first) continue
+      if (segmentsIntersectOrAreInvalid(
+        polygon[first],
+        polygon[firstNext],
+        polygon[second],
+        polygon[secondNext],
+      )) return true
+    }
+  }
+  return false
+}
+
+function segmentsIntersectOrAreInvalid(
+  firstStart: PaperPolygonPoint,
+  firstEnd: PaperPolygonPoint,
+  secondStart: PaperPolygonPoint,
+  secondEnd: PaperPolygonPoint,
+) {
+  const firstSideStart = crossProduct(firstStart, firstEnd, secondStart)
+  const firstSideEnd = crossProduct(firstStart, firstEnd, secondEnd)
+  const secondSideStart = crossProduct(secondStart, secondEnd, firstStart)
+  const secondSideEnd = crossProduct(secondStart, secondEnd, firstEnd)
+  if (
+    firstSideStart === null ||
+    firstSideEnd === null ||
+    secondSideStart === null ||
+    secondSideEnd === null
+  ) return true
+  if (firstSideStart === 0 && pointIsOnSegment(secondStart, firstStart, firstEnd)) return true
+  if (firstSideEnd === 0 && pointIsOnSegment(secondEnd, firstStart, firstEnd)) return true
+  if (secondSideStart === 0 && pointIsOnSegment(firstStart, secondStart, secondEnd)) return true
+  if (secondSideEnd === 0 && pointIsOnSegment(firstEnd, secondStart, secondEnd)) return true
+  return (firstSideStart > 0) !== (firstSideEnd > 0) &&
+    (secondSideStart > 0) !== (secondSideEnd > 0)
+}
+
+function crossProduct(
+  start: PaperPolygonPoint,
+  end: PaperPolygonPoint,
+  point: PaperPolygonPoint,
+) {
+  const value = (end.x - start.x) * (point.y - start.y) -
+    (end.y - start.y) * (point.x - start.x)
+  return Number.isFinite(value) ? value : null
+}
+
+function pointIsOnSegment(
+  point: PaperPolygonPoint,
+  start: PaperPolygonPoint,
+  end: PaperPolygonPoint,
+) {
+  return point.x >= Math.min(start.x, end.x) &&
+    point.x <= Math.max(start.x, end.x) &&
+    point.y >= Math.min(start.y, end.y) &&
+    point.y <= Math.max(start.y, end.y)
+}
+
+function tracePolygonPath(
+  context: CanvasRenderingContext2D,
+  transform: ViewTransform,
+  polygon: PaperPolygonPoint[],
+) {
+  const first = mapPaperPoint(transform, polygon[0].x, polygon[0].y)
+  if (!first) return false
+  context.beginPath()
+  context.moveTo(first.x, first.y)
+  for (let index = 1; index < polygon.length; index += 1) {
+    const point = mapPaperPoint(transform, polygon[index].x, polygon[index].y)
+    if (!point) {
+      context.beginPath()
+      return false
+    }
+    context.lineTo(point.x, point.y)
+  }
+  context.closePath()
+  return true
+}
+
 function createViewTransform(
   canvasRect: Pick<DOMRect, 'width' | 'height'>,
   requestedBounds: PaperBounds,
@@ -604,13 +799,67 @@ function clampToRange(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value))
 }
 
-function isInsidePaper(x: number, y: number, transform: ViewTransform) {
+function resolveDragCoordinate(
+  value: number,
+  minimum: number,
+  maximum: number,
+  allowOutside: boolean,
+  fallback: number,
+) {
+  if (!Number.isFinite(value)) return fallback
+  return allowOutside ? value : clampToRange(value, minimum, maximum)
+}
+
+function isInsidePaper(
+  x: number,
+  y: number,
+  transform: ViewTransform,
+  polygon: PaperPolygonPoint[] | null,
+  useLegacyRectangle: boolean,
+) {
+  if (polygon) return pointInPolygonInclusive(x, y, polygon)
+  if (!useLegacyRectangle) return false
   return Number.isFinite(x) &&
     Number.isFinite(y) &&
-    x >= transform.left &&
-    x <= transform.left + transform.width &&
-    y >= transform.top &&
-    y <= transform.top + transform.height
+    x >= transform.bounds.minX &&
+    x <= transform.bounds.maxX &&
+    y >= transform.bounds.minY &&
+    y <= transform.bounds.maxY
+}
+
+function pointInPolygonInclusive(
+  x: number,
+  y: number,
+  polygon: PaperPolygonPoint[],
+) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const point of polygon) {
+    minX = Math.min(minX, point.x)
+    minY = Math.min(minY, point.y)
+    maxX = Math.max(maxX, point.x)
+    maxY = Math.max(maxY, point.y)
+  }
+  const scale = Math.max(1, maxX - minX, maxY - minY)
+  const boundaryTolerance = Number.isFinite(scale) ? scale * 1e-9 : 1e-9
+
+  let inside = false
+  for (let index = 0; index < polygon.length; index += 1) {
+    const current = polygon[index]
+    const next = polygon[(index + 1) % polygon.length]
+    if (pointSegmentDistance(x, y, current.x, current.y, next.x, next.y) <= boundaryTolerance) {
+      return true
+    }
+    if ((current.y > y) === (next.y > y)) continue
+    const intersectionX = current.x +
+      (next.x - current.x) * (y - current.y) / (next.y - current.y)
+    if (!Number.isFinite(intersectionX)) return false
+    if (x < intersectionX) inside = !inside
+  }
+  return inside
 }
 
 function findClosestVertex(

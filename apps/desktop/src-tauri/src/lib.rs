@@ -485,6 +485,44 @@ fn resize_rectangular_paper(
     )
 }
 
+#[tauri::command]
+fn split_boundary_edge(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    fraction: f64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_boundary_split(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        edge,
+        fraction,
+    )
+}
+
+fn execute_boundary_split(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    fraction: f64,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_id,
+        expected_revision,
+        Command::SplitBoundaryEdge {
+            edge,
+            new_vertex: VertexId::new(),
+            new_edge: EdgeId::new(),
+            fraction,
+        },
+    )
+}
+
 fn lock_project(state: &AppState) -> Result<MutexGuard<'_, ProjectState>, String> {
     state
         .0
@@ -1126,7 +1164,8 @@ pub fn run() {
             redo,
             set_cutting_allowed,
             update_paper_properties,
-            resize_rectangular_paper
+            resize_rectangular_paper,
+            split_boundary_edge
         ])
         .build(tauri::generate_context!())
         .expect("failed to build ORIGAMI2 desktop application");
@@ -1551,6 +1590,91 @@ mod tests {
             overflow,
             "target paper area is too large to represent safely"
         );
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn generated_id_boundary_split_handles_reverse_closing_edge_and_document_history() {
+        let sheet = create_rectangular_sheet(100.0, 80.0, false).expect("valid rectangle");
+        let (mut pattern, paper) = sheet.into_parts();
+        let forward_closing_edge = pattern.edges[3].clone();
+        pattern.edges[3] = Edge {
+            start: forward_closing_edge.end,
+            end: forward_closing_edge.start,
+            ..forward_closing_edge
+        };
+        let target_edge = pattern.edges[3].clone();
+        let original_vertex_ids = pattern
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let original_edge_ids = pattern.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        let project_id = project.project_id;
+        let original_document = project.document();
+
+        let response = execute_boundary_split(&mut project, project_id, 0, target_edge.id, 0.25)
+            .expect("split reverse closing edge");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert!(response.can_undo);
+        assert!(!response.can_redo);
+        assert_eq!(response.paper.boundary_vertices.len(), 5);
+        let new_vertex = response.paper.boundary_vertices[4];
+        assert!(!original_vertex_ids.contains(&new_vertex));
+        assert_eq!(response.crease_pattern.vertices.len(), 5);
+        assert_eq!(
+            response.crease_pattern.vertices[4],
+            Vertex {
+                id: new_vertex,
+                position: Point2::new(0.0, 20.0),
+            }
+        );
+        assert_eq!(response.crease_pattern.edges.len(), 5);
+        assert_eq!(response.crease_pattern.edges[3].id, target_edge.id);
+        assert_eq!(response.crease_pattern.edges[3].start, target_edge.start);
+        assert_eq!(response.crease_pattern.edges[3].end, new_vertex);
+        let generated_edge = &response.crease_pattern.edges[4];
+        assert!(!original_edge_ids.contains(&generated_edge.id));
+        assert_eq!(generated_edge.start, new_vertex);
+        assert_eq!(generated_edge.end, target_edge.end);
+        assert_eq!(generated_edge.kind, EdgeKind::Boundary);
+        assert!(validation_snapshot(&project).is_valid);
+        let split_document = project.document();
+        assert_ne!(split_document, original_document);
+
+        project.editor.undo(1).expect("undo boundary split");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project.editor.redo(2).expect("redo boundary split");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), split_document);
+        assert!(project.is_dirty());
+        assert!(validation_snapshot(&project).is_valid);
+    }
+
+    #[test]
+    fn boundary_split_conflict_and_invalid_fraction_preserve_project_state() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let edge = project.editor.pattern().edges[0].id;
+        let before = project_state_signature(&project);
+
+        let conflict = execute_boundary_split(&mut project, project_id, 1, edge, 0.5)
+            .expect_err("stale split must fail");
+        assert_eq!(
+            conflict,
+            "expected revision 1, but the current revision is 0"
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        let invalid = execute_boundary_split(&mut project, project_id, 0, edge, f64::NAN)
+            .expect_err("non-finite split must fail");
+        assert_eq!(invalid, "boundary split fraction must be finite");
         assert_eq!(project_state_signature(&project), before);
     }
 

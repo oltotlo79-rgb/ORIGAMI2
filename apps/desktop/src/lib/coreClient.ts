@@ -208,3 +208,17 @@ export function resizeRectangularPaper(
     heightMm,
   })
 }
+
+export function splitBoundaryEdge(
+  expectedProjectId: string,
+  expectedRevision: number,
+  edge: string,
+  fraction: number,
+) {
+  return invoke<ProjectSnapshot>('split_boundary_edge', {
+    expectedProjectId,
+    expectedRevision,
+    edge,
+    fraction,
+  })
+}

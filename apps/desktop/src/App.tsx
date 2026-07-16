@@ -4,6 +4,7 @@ import {
   CreaseCanvas,
   type CreaseLine,
   type PaperBounds,
+  type PaperPolygonPoint,
 } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
 import {
@@ -21,6 +22,7 @@ import {
   resizeRectangularPaper,
   saveProject,
   saveProjectAs,
+  splitBoundaryEdge,
   undo,
   updatePaperProperties,
   type ProjectSnapshot,
@@ -102,6 +104,10 @@ function App() {
     : false
   const paperBounds = useMemo(
     () => resolvePaperBounds(nativeSnapshot),
+    [nativeSnapshot],
+  )
+  const paperPolygon = useMemo(
+    () => resolvePaperPolygon(nativeSnapshot),
     [nativeSnapshot],
   )
   const rectangularPaperSize = useMemo(
@@ -220,6 +226,35 @@ function App() {
       if (removed) setSelectedVertexId(null)
     }
   }, [runNativeEdit, selectedLine, selectedVertex, selectedVertexIsBoundary])
+
+  async function splitSelectedBoundaryEdge() {
+    const current = latestSnapshotRef.current
+    if (!current || selectedLine?.kind !== 'boundary' || coreOperationRef.current) return
+    const previousVertexIds = new Set(
+      current.crease_pattern.vertices.map((vertex) => vertex.id),
+    )
+    const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
+    const succeeded = await runNativeEdit(async (projectId, revision) => {
+      const snapshot = await splitBoundaryEdge(projectId, revision, selectedLine.id, 0.5)
+      result.snapshot = snapshot
+      return snapshot
+    })
+    if (!succeeded || !result.snapshot) return
+
+    const boundaryIds = new Set(result.snapshot.paper.boundary_vertices)
+    const addedVertex = result.snapshot.crease_pattern.vertices.find((vertex) =>
+      !previousVertexIds.has(vertex.id) && boundaryIds.has(vertex.id))
+    setSelectedLineId(null)
+    setPendingEdgeStart(null)
+    if (!addedVertex) {
+      setSelectedVertexId(null)
+      setCoreStatus('輪郭辺を分割しましたが、新しい頂点を特定できませんでした')
+      return
+    }
+    setSelectedVertexId(addedVertex.id)
+    setActiveTool('select')
+    setCoreStatus('輪郭辺を中点で分割し、新しい頂点を選択しました')
+  }
 
   useEffect(() => {
     function handleKeyboardShortcut(event: KeyboardEvent) {
@@ -630,6 +665,7 @@ function App() {
             <CreaseCanvas
               lines={nativeLines}
               paperBounds={paperBounds}
+              paperPolygon={paperPolygon}
               paperColor={paperFrontColor}
               vertices={nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
                 id: vertex.id,
@@ -709,17 +745,27 @@ function App() {
                   <div><dt>角度</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.angleDegrees, '°', 2)}</dd></div>
                 </dl>
                 <div className="property-actions">
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={coreBusy || selectedLine.kind === 'boundary'}
-                    onClick={() => void deleteSelection()}
-                  >
-                    線を削除
-                  </button>
+                  {selectedLine.kind === 'boundary' ? (
+                    <button
+                      type="button"
+                      disabled={coreBusy}
+                      onClick={() => void splitSelectedBoundaryEdge()}
+                    >
+                      輪郭辺を中点で分割
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={coreBusy}
+                      onClick={() => void deleteSelection()}
+                    >
+                      線を削除
+                    </button>
+                  )}
                 </div>
                 {selectedLine.kind === 'boundary' && (
-                  <p className="muted">輪郭線の構成変更は、今後追加する紙形状編集から行います。</p>
+                  <p className="muted">分割後に選択される新しい頂点を移動して、紙の輪郭を編集できます。</p>
                 )}
               </>
             ) : selectedVertex ? (
@@ -1179,6 +1225,20 @@ function resolvePaperBounds(snapshot: ProjectSnapshot | null): PaperBounds | und
     bounds.maxY <= bounds.minY
   ) return undefined
   return bounds
+}
+
+function resolvePaperPolygon(snapshot: ProjectSnapshot | null): PaperPolygonPoint[] {
+  if (!snapshot) return []
+  const positions = new Map(
+    snapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
+  )
+  const points: PaperPolygonPoint[] = []
+  for (const id of snapshot.paper.boundary_vertices) {
+    const position = positions.get(id)
+    if (!position) return []
+    points.push({ id, x: position.x, y: position.y })
+  }
+  return points
 }
 
 type RectangularPaperSize = {

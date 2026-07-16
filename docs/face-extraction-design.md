@@ -75,7 +75,7 @@ ori-core        （revision、コマンド、属性の引継ぎ、UI 向け faca
 
 ### 3.4 数値判定
 
-トポロジーを変える符号判定は、f64 の生の determinant を無条件に採用しない。まず演算誤差境界付き f64 filter で符号を確定し、境界内なら adaptive exact predicate へ昇格する。exact backend が未実装の段階では、境界内を `PredicateIndeterminate` として fail closed してよく、ID 順や固定 epsilon で正負を推測してはならない。
+トポロジーを変える符号判定は、f64 の生の determinant を無条件に採用しない。まず演算誤差境界付き f64 filter で符号を確定し、境界内なら adaptive exact predicate へ昇格する。現在は`ori-geometry`に厳密な`exact_orientation`と多角形符号付き面積を実装済みである。線分交差や包含などexact backendが未接続の述語は、境界内を`PredicateIndeterminate`としてfail closedとし、ID順や固定epsilonで正負を推測してはならない。
 
 この規則を orientation、ray の角度順、線分交差、point-on-segment、polygon containment、符号付き面積へ共通適用する。表示や距離スナップの許容誤差は、この位相規則とは別である。
 

@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use num_bigint::{BigInt, BigUint, Sign};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 
-use crate::{GeometryError, SegmentIntersection, ensure_finite, segment_intersection};
+use crate::{GeometryError, Orientation, SegmentIntersection, ensure_finite, segment_intersection};
+
+// The smallest binary64 value is 2^-1074, so every coordinate product can be
+// represented as one integer multiple of this shared exponent.
+const EXACT_PRODUCT_EXPONENT: i32 = -2148;
 
 /// Identifies which endpoint of an edge references a missing vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -657,14 +661,28 @@ fn boundary_edges_are_adjacent(first: usize, second: usize, boundary_length: usi
 /// Values too small to represent round to signed zero; values too large to
 /// represent return [`GeometryError::ArithmeticOverflow`].
 pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryError> {
-    const COMMON_PRODUCT_EXPONENT: i32 = -2148;
+    for point in points {
+        ensure_finite("polygon point", *point)?;
+    }
+    scaled_bigint_to_f64(exact_polygon_double_area(points), EXACT_PRODUCT_EXPONENT)
+}
 
+pub(super) fn exact_triangle_orientation(a: Point2, b: Point2, c: Point2) -> Orientation {
+    debug_assert!(a.x.is_finite() && a.y.is_finite());
+    debug_assert!(b.x.is_finite() && b.y.is_finite());
+    debug_assert!(c.x.is_finite() && c.y.is_finite());
+    match exact_polygon_double_area(&[a, b, c]).sign() {
+        Sign::Minus => Orientation::Clockwise,
+        Sign::NoSign => Orientation::Collinear,
+        Sign::Plus => Orientation::CounterClockwise,
+    }
+}
+
+fn exact_polygon_double_area(points: &[Point2]) -> BigInt {
     let mut exact_area = BigInt::from(0_u8);
     for index in 0..points.len() {
         let current = points[index];
         let next = points[(index + 1) % points.len()];
-        ensure_finite("polygon point", current)?;
-        ensure_finite("polygon point", next)?;
 
         let (current_x, current_x_exponent) = decompose_f64(current.x);
         let (current_y, current_y_exponent) = decompose_f64(current.y);
@@ -676,7 +694,7 @@ pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryErro
             current_x_exponent,
             next_y,
             next_y_exponent,
-            COMMON_PRODUCT_EXPONENT,
+            EXACT_PRODUCT_EXPONENT,
         );
         add_exact_product(
             &mut exact_area,
@@ -684,11 +702,11 @@ pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryErro
             current_y_exponent,
             next_x,
             next_x_exponent,
-            COMMON_PRODUCT_EXPONENT,
+            EXACT_PRODUCT_EXPONENT,
         );
     }
 
-    scaled_bigint_to_f64(exact_area, COMMON_PRODUCT_EXPONENT)
+    exact_area
 }
 
 fn decompose_f64(value: f64) -> (i64, i32) {

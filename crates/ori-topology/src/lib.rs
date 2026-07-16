@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, FaceId, Paper, ProjectId, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId};
 use ori_geometry::{polygon_signed_double_area, validate_paper};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -228,19 +228,87 @@ fn rejected(severity: TopologyIssueSeverity, kind: TopologyIssueKind) -> FaceExt
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct UndirectedEndpoints {
+    first: VertexId,
+    second: VertexId,
+}
+
+impl UndirectedEndpoints {
+    fn new(first: VertexId, second: VertexId) -> Self {
+        if first.canonical_bytes() <= second.canonical_bytes() {
+            Self { first, second }
+        } else {
+            Self {
+                first: second,
+                second: first,
+            }
+        }
+    }
+}
+
+/// Read-only resolution indexes for the boundary-only extraction stage.
+///
+/// Construction happens only after the public validation stages. The
+/// collision checks remain fail-closed so a future caller cannot accidentally
+/// make face identity depend on whichever duplicate record was inserted first.
+#[derive(Debug)]
+struct BoundaryIndex {
+    positions: HashMap<VertexId, Point2>,
+    boundary_edges: HashMap<UndirectedEndpoints, EdgeId>,
+}
+
+impl BoundaryIndex {
+    fn build(pattern: &CreasePattern) -> Result<Self, TopologyIssueKind> {
+        let mut positions = HashMap::with_capacity(pattern.vertices.len());
+        for vertex in &pattern.vertices {
+            if positions.insert(vertex.id, vertex.position).is_some() {
+                return Err(TopologyIssueKind::InternalBoundaryResolution);
+            }
+        }
+
+        let boundary_count = pattern
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Boundary)
+            .count();
+        let mut boundary_edges = HashMap::with_capacity(boundary_count);
+        for edge in pattern
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Boundary)
+        {
+            let endpoints = UndirectedEndpoints::new(edge.start, edge.end);
+            if boundary_edges.insert(endpoints, edge.id).is_some() {
+                return Err(TopologyIssueKind::InternalBoundaryResolution);
+            }
+        }
+
+        Ok(Self {
+            positions,
+            boundary_edges,
+        })
+    }
+
+    fn position(&self, vertex: VertexId) -> Option<Point2> {
+        self.positions.get(&vertex).copied()
+    }
+
+    fn boundary_edge(&self, first: VertexId, second: VertexId) -> Option<EdgeId> {
+        self.boundary_edges
+            .get(&UndirectedEndpoints::new(first, second))
+            .copied()
+    }
+}
+
 fn extract_boundary_face(
     input: FaceExtractionInput<'_>,
 ) -> Result<TopologySnapshot, TopologyIssueKind> {
-    let positions = input
-        .pattern
-        .vertices
-        .iter()
-        .map(|vertex| (vertex.id, vertex.position))
-        .collect::<HashMap<_, _>>();
+    let boundary_index = BoundaryIndex::build(input.pattern)?;
     let mut boundary_vertices = input.paper.boundary_vertices.clone();
     let boundary_positions = boundary_vertices
         .iter()
-        .map(|vertex| positions.get(vertex).copied())
+        .map(|vertex| boundary_index.position(*vertex))
         .collect::<Option<Vec<_>>>()
         .ok_or(TopologyIssueKind::InternalBoundaryResolution)?;
     let signed_double_area = polygon_signed_double_area(&boundary_positions)
@@ -253,21 +321,14 @@ fn extract_boundary_face(
     }
 
     let mut half_edges = Vec::with_capacity(boundary_vertices.len());
-    for index in 0..boundary_vertices.len() {
-        let origin = boundary_vertices[index];
-        let destination = boundary_vertices[(index + 1) % boundary_vertices.len()];
-        let edge = input
-            .pattern
-            .edges
-            .iter()
-            .find(|edge| {
-                edge.kind == EdgeKind::Boundary
-                    && ((edge.start == origin && edge.end == destination)
-                        || (edge.start == destination && edge.end == origin))
-            })
+    for vertex_index in 0..boundary_vertices.len() {
+        let origin = boundary_vertices[vertex_index];
+        let destination = boundary_vertices[(vertex_index + 1) % boundary_vertices.len()];
+        let edge = boundary_index
+            .boundary_edge(origin, destination)
             .ok_or(TopologyIssueKind::InternalBoundaryResolution)?;
         half_edges.push(HalfEdgeRef {
-            edge: edge.id,
+            edge,
             origin,
             destination,
         });
@@ -314,15 +375,16 @@ fn extract_boundary_face(
 }
 
 fn canonicalize_cycle(half_edges: &mut [HalfEdgeRef]) {
-    let tokens = half_edges.iter().map(half_edge_token).collect::<Vec<_>>();
-    let best = (1..tokens.len()).fold(0, |best, candidate| {
-        if rotation_is_less(&tokens, candidate, best) {
-            candidate
-        } else {
-            best
-        }
-    });
-    half_edges.rotate_left(best);
+    // Each directed source edge occurs at most once in a valid DCEL walk, so
+    // every token is unique. The rotation beginning with the minimum token is
+    // therefore the lexicographically minimum cyclic rotation.
+    if let Some((best, _)) = half_edges
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, half_edge)| half_edge_token(half_edge))
+    {
+        half_edges.rotate_left(best);
+    }
 }
 
 fn half_edge_token(half_edge: &HalfEdgeRef) -> [u8; 48] {
@@ -331,18 +393,6 @@ fn half_edge_token(half_edge: &HalfEdgeRef) -> [u8; 48] {
     token[16..32].copy_from_slice(&half_edge.origin.canonical_bytes());
     token[32..].copy_from_slice(&half_edge.destination.canonical_bytes());
     token
-}
-
-fn rotation_is_less(tokens: &[[u8; 48]], candidate: usize, current: usize) -> bool {
-    (0..tokens.len())
-        .map(|offset| {
-            (
-                &tokens[(candidate + offset) % tokens.len()],
-                &tokens[(current + offset) % tokens.len()],
-            )
-        })
-        .find_map(|(left, right)| (left != right).then_some(left < right))
-        .unwrap_or(false)
 }
 
 fn face_key(half_edges: &[HalfEdgeRef]) -> FaceKey {
@@ -390,6 +440,49 @@ mod tests {
     fn fixed_id<T: DeserializeOwned>(suffix: u64) -> T {
         serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012x}\""))
             .expect("fixed UUID fixture")
+    }
+
+    fn subdivided_rectangle_fixture(edge_count: usize) -> (ProjectId, Paper, CreasePattern) {
+        assert!(edge_count >= 4 && edge_count.is_multiple_of(2));
+        let width = (edge_count - 2) / 2;
+        let mut points = Vec::with_capacity(edge_count);
+        points.extend((0..width).map(|x| Point2::new(x as f64, 0.0)));
+        points.push(Point2::new(width as f64, 0.0));
+        points.push(Point2::new(width as f64, 1.0));
+        points.extend((1..width).rev().map(|x| Point2::new(x as f64, 1.0)));
+        points.push(Point2::new(0.0, 1.0));
+        assert_eq!(points.len(), edge_count);
+
+        let vertices = points
+            .into_iter()
+            .enumerate()
+            .map(|(index, position)| Vertex {
+                id: fixed_id(0x10_0000 + index as u64),
+                position,
+            })
+            .collect::<Vec<_>>();
+        let boundary_vertices = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..edge_count)
+            .map(|index| Edge {
+                id: fixed_id(0x20_0000 + index as u64),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % edge_count].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for edge in edges.iter_mut().step_by(2) {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        edges.reverse();
+
+        (
+            fixed_id(0x30_0000),
+            Paper {
+                boundary_vertices,
+                ..Paper::default()
+            },
+            CreasePattern { vertices, edges },
+        )
     }
 
     fn strict(namespace: ProjectId, paper: &Paper, pattern: &CreasePattern) -> TopologySnapshot {
@@ -483,6 +576,85 @@ mod tests {
                 ],
             )
         );
+    }
+
+    #[test]
+    fn undirected_boundary_keys_ignore_endpoint_direction() {
+        let first = fixed_id(0x401);
+        let second = fixed_id(0x402);
+
+        assert_eq!(
+            UndirectedEndpoints::new(first, second),
+            UndirectedEndpoints::new(second, first)
+        );
+    }
+
+    #[test]
+    fn boundary_index_rejects_pair_collisions_in_every_record_order() {
+        let vertices = vec![
+            Vertex {
+                id: fixed_id(0x501),
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: fixed_id(0x502),
+                position: Point2::new(1.0, 0.0),
+            },
+        ];
+        let first = Edge {
+            id: fixed_id(0x601),
+            start: vertices[0].id,
+            end: vertices[1].id,
+            kind: EdgeKind::Boundary,
+        };
+        let second = Edge {
+            id: fixed_id(0x602),
+            start: vertices[1].id,
+            end: vertices[0].id,
+            kind: EdgeKind::Boundary,
+        };
+
+        for edges in [vec![first.clone(), second.clone()], vec![second, first]] {
+            let result = BoundaryIndex::build(&CreasePattern {
+                vertices: vertices.clone(),
+                edges,
+            });
+            assert!(matches!(
+                result,
+                Err(TopologyIssueKind::InternalBoundaryResolution)
+            ));
+        }
+    }
+
+    #[test]
+    fn cycle_normalization_begins_with_the_unique_minimum_token() {
+        let vertices = [fixed_id(0x701), fixed_id(0x702), fixed_id(0x703)];
+        let mut half_edges = vec![
+            HalfEdgeRef {
+                edge: fixed_id(0x803),
+                origin: vertices[0],
+                destination: vertices[1],
+            },
+            HalfEdgeRef {
+                edge: fixed_id(0x801),
+                origin: vertices[1],
+                destination: vertices[2],
+            },
+            HalfEdgeRef {
+                edge: fixed_id(0x802),
+                origin: vertices[2],
+                destination: vertices[0],
+            },
+        ];
+        let expected = half_edges
+            .iter()
+            .map(half_edge_token)
+            .min()
+            .expect("non-empty cycle");
+
+        canonicalize_cycle(&mut half_edges);
+
+        assert_eq!(half_edge_token(&half_edges[0]), expected);
     }
 
     #[test]
@@ -586,12 +758,15 @@ mod tests {
         ]);
         let baseline = strict(namespace, &paper, &pattern);
         let auxiliary_id = EdgeId::new();
-        pattern.edges.push(Edge {
-            id: auxiliary_id,
-            start: pattern.vertices[0].id,
-            end: pattern.vertices[2].id,
-            kind: EdgeKind::Auxiliary,
-        });
+        pattern.edges.insert(
+            0,
+            Edge {
+                id: auxiliary_id,
+                start: pattern.vertices[1].id,
+                end: pattern.vertices[0].id,
+                kind: EdgeKind::Auxiliary,
+            },
+        );
 
         let with_auxiliary = strict(namespace, &paper, &pattern);
 
@@ -604,6 +779,18 @@ mod tests {
                 .map(|(_, value)| value),
             Some(&EdgeIncidence::AuxiliaryIgnored)
         );
+    }
+
+    #[test]
+    fn ten_thousand_edge_boundary_uses_indexed_resolution() {
+        const EDGE_COUNT: usize = 10_000;
+        let (namespace, paper, pattern) = subdivided_rectangle_fixture(EDGE_COUNT);
+
+        let snapshot = strict(namespace, &paper, &pattern);
+
+        assert_eq!(snapshot.faces[0].outer.half_edges.len(), EDGE_COUNT);
+        assert_eq!(snapshot.edge_incidence.len(), EDGE_COUNT);
+        assert_eq!(snapshot.faces[0].area, 4_999.0);
     }
 
     #[test]

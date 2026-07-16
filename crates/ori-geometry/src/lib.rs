@@ -25,10 +25,10 @@ pub enum Orientation {
 /// [`FilteredOrientation::Indeterminate`] means that ordinary `f64`
 /// arithmetic cannot certify either sign. It includes exactly collinear
 /// inputs as well as non-collinear inputs whose determinant lies inside the
-/// rounding-error bound. This crate does not yet provide an adaptive exact
-/// backend, so callers must fail closed or hand an indeterminate result to an
-/// exact predicate. It is not safe to resolve it with an epsilon or an ID
-/// tie-break.
+/// rounding-error bound. This filter does not invoke the arbitrary-precision
+/// backend automatically; callers may fail closed or retry with
+/// [`exact_orientation`]. It is not safe to resolve an indeterminate result
+/// with an epsilon or an ID tie-break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilteredOrientation {
     Clockwise,
@@ -89,6 +89,24 @@ pub fn orientation(a: Point2, b: Point2, c: Point2) -> Result<Orientation, Geome
     })
 }
 
+/// Classifies three finite binary64 points using an exact determinant sign.
+///
+/// Unlike [`orientation`] and [`filtered_orientation`], this function expands
+/// every coordinate into its exact integer significand and binary exponent,
+/// then evaluates the determinant with arbitrary-precision integers. It can
+/// therefore distinguish a non-zero orientation even when the determinant is
+/// too small or cancellation-prone for `f64`. It is intended as the
+/// correctness fallback for topology-changing decisions, not as the first
+/// stage of every high-volume query.
+/// For finite inputs the exact integer calculation cannot overflow; the error
+/// result is reserved for non-finite coordinates.
+pub fn exact_orientation(a: Point2, b: Point2, c: Point2) -> Result<Orientation, GeometryError> {
+    ensure_finite("a", a)?;
+    ensure_finite("b", b)?;
+    ensure_finite("c", c)?;
+    Ok(validation::exact_triangle_orientation(a, b, c))
+}
+
 /// Certifies the orientation sign of the ordered triplet `(a, b, c)` when a
 /// fast `f64` determinant is far enough from its rounding-error boundary.
 ///
@@ -101,9 +119,10 @@ pub fn orientation(a: Point2, b: Point2, c: Point2) -> Result<Orientation, Geome
 /// than relying on an underflowed error estimate.
 ///
 /// Non-finite coordinates and overflowing intermediate arithmetic are
-/// rejected. No adaptive exact fallback is implemented yet; therefore
-/// [`FilteredOrientation::Indeterminate`] must never be guessed into a
-/// topological sign with an epsilon or an unrelated stable ID.
+/// rejected. This first-stage API does not call [`exact_orientation`]
+/// automatically; [`FilteredOrientation::Indeterminate`] must be passed to
+/// that fallback or rejected, never guessed into a topological sign with an
+/// epsilon or an unrelated stable ID.
 ///
 /// Only a returned direction is certified. Because binary64 subtraction and
 /// overflow depend on which argument is chosen as the local origin, permuting
@@ -539,6 +558,92 @@ mod tests {
             ),
             Ok(FilteredOrientation::Indeterminate)
         );
+        assert_eq!(
+            exact_orientation(
+                cancellation_points[0],
+                cancellation_points[1],
+                cancellation_points[2],
+            ),
+            Ok(Orientation::CounterClockwise)
+        );
+    }
+
+    #[test]
+    fn exact_orientation_resolves_determinants_below_binary64_range() {
+        let minimum = f64::from_bits(1);
+        let a = Point2::new(0.0, 0.0);
+        let b = Point2::new(minimum, 0.0);
+        let c = Point2::new(0.0, minimum);
+
+        assert_eq!(orientation(a, b, c), Ok(Orientation::Collinear));
+        assert_eq!(
+            filtered_orientation(a, b, c),
+            Ok(FilteredOrientation::Indeterminate)
+        );
+        assert_eq!(
+            exact_orientation(a, b, c),
+            Ok(Orientation::CounterClockwise)
+        );
+        assert_eq!(exact_orientation(a, c, b), Ok(Orientation::Clockwise));
+        assert_eq!(
+            exact_orientation(c, a, b),
+            Ok(Orientation::CounterClockwise)
+        );
+
+        let huge_a = Point2::new(-f64::MAX, 0.0);
+        let huge_b = Point2::new(f64::MAX, 0.0);
+        let huge_c = Point2::new(0.0, f64::MAX);
+        assert_eq!(
+            orientation(huge_a, huge_b, huge_c),
+            Err(GeometryError::ArithmeticOverflow)
+        );
+        assert_eq!(
+            filtered_orientation(huge_a, huge_b, huge_c),
+            Err(GeometryError::ArithmeticOverflow)
+        );
+        assert_eq!(
+            exact_orientation(huge_a, huge_b, huge_c),
+            Ok(Orientation::CounterClockwise)
+        );
+        assert_eq!(
+            exact_orientation(
+                Point2::new(-0.0, 0.0),
+                Point2::new(1.0, 1.0),
+                Point2::new(2.0, 2.0),
+            ),
+            Ok(Orientation::Collinear)
+        );
+        assert_eq!(exact_orientation(a, a, c), Ok(Orientation::Collinear));
+    }
+
+    #[test]
+    fn exact_orientation_rejects_each_non_finite_argument() {
+        for (a, b, c, expected_argument) in [
+            (
+                Point2::new(f64::NAN, 0.0),
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 1.0),
+                "a",
+            ),
+            (
+                Point2::new(0.0, 0.0),
+                Point2::new(f64::INFINITY, 0.0),
+                Point2::new(1.0, 1.0),
+                "b",
+            ),
+            (
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 0.0),
+                Point2::new(1.0, f64::NEG_INFINITY),
+                "c",
+            ),
+        ] {
+            assert!(matches!(
+                exact_orientation(a, b, c),
+                Err(GeometryError::NonFinitePoint { argument, .. })
+                    if argument == expected_argument
+            ));
+        }
     }
 
     #[test]

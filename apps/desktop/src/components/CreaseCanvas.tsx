@@ -11,8 +11,11 @@ export type CreaseLine = {
 
 type Props = {
   lines: CreaseLine[]
+  vertices?: Array<{ id: string; x: number; y: number }>
+  tool?: string
   selectedLineId: string | null
   onSelectLine: (id: string | null) => void
+  onAddVertex?: (x: number, y: number) => void
 }
 
 const COLORS: Record<CreaseLine['kind'], string> = {
@@ -22,7 +25,14 @@ const COLORS: Record<CreaseLine['kind'], string> = {
   cut: '#e59b35',
 }
 
-export function CreaseCanvas({ lines, selectedLineId, onSelectLine }: Props) {
+export function CreaseCanvas({
+  lines,
+  vertices = [],
+  tool = 'select',
+  selectedLineId,
+  onSelectLine,
+  onAddVertex,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -66,7 +76,17 @@ export function CreaseCanvas({ lines, selectedLineId, onSelectLine }: Props) {
       context.stroke()
     }
     context.setLineDash([])
-  }, [lines, selectedLineId])
+
+    for (const vertex of vertices) {
+      context.beginPath()
+      context.arc(mapX(vertex.x), mapY(vertex.y), 5, 0, Math.PI * 2)
+      context.fillStyle = '#176b87'
+      context.fill()
+      context.strokeStyle = '#ffffff'
+      context.lineWidth = 2
+      context.stroke()
+    }
+  }, [lines, selectedLineId, vertices])
 
   function handleClick(event: React.MouseEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current
@@ -74,6 +94,10 @@ export function CreaseCanvas({ lines, selectedLineId, onSelectLine }: Props) {
     const bounds = canvas.getBoundingClientRect()
     const x = (event.clientX - bounds.left - 36) / ((bounds.width - 72) / 400)
     const y = (event.clientY - bounds.top - 28) / ((bounds.height - 56) / 400)
+    if (tool === 'vertex' && onAddVertex && x >= 0 && x <= 400 && y >= 0 && y <= 400) {
+      onAddVertex(x, y)
+      return
+    }
     let best: { id: string; distance: number } | null = null
     for (const line of lines) {
       const distance = pointSegmentDistance(x, y, line)
@@ -82,7 +106,13 @@ export function CreaseCanvas({ lines, selectedLineId, onSelectLine }: Props) {
     onSelectLine(best?.id ?? null)
   }
 
-  return <canvas ref={canvasRef} className="crease-canvas" onClick={handleClick} />
+  return (
+    <canvas
+      ref={canvasRef}
+      className={`crease-canvas tool-${tool}`}
+      onClick={handleClick}
+    />
+  )
 }
 
 function pointSegmentDistance(px: number, py: number, line: CreaseLine) {

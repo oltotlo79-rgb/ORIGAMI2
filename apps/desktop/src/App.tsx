@@ -123,8 +123,17 @@ function App() {
             </div>
             <CreaseCanvas
               lines={SAMPLE_LINES}
+              vertices={nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
+                id: vertex.id,
+                x: vertex.position.x,
+                y: vertex.position.y,
+              }))}
+              tool={activeTool}
               selectedLineId={selectedLineId}
               onSelectLine={setSelectedLineId}
+              onAddVertex={(x, y) =>
+                runNativeEdit((revision) => addVertex(revision, x, y))
+              }
             />
           </article>
 

@@ -679,8 +679,10 @@ mod tests {
     #[test]
     fn rejects_archive_larger_than_configured_limit() {
         let bytes = write_project_ori2(&sample_document()).expect("write .ori2");
-        let mut limits = Ori2Limits::default();
-        limits.max_archive_size = bytes.len() as u64 - 1;
+        let limits = Ori2Limits {
+            max_archive_size: bytes.len() as u64 - 1,
+            ..Ori2Limits::default()
+        };
         let error =
             read_project_ori2_with_limits(&bytes, limits).expect_err("oversized archive must fail");
         assert!(matches!(error, FormatError::ContainerTooLarge { .. }));
@@ -688,8 +690,10 @@ mod tests {
 
     #[test]
     fn writer_rejects_project_larger_than_configured_limit() {
-        let mut limits = Ori2Limits::default();
-        limits.max_project_size = 1;
+        let limits = Ori2Limits {
+            max_project_size: 1,
+            ..Ori2Limits::default()
+        };
         let error = write_project_ori2_with_limits(&sample_document(), limits)
             .expect_err("writer must enforce project limit");
         assert!(matches!(
@@ -701,8 +705,10 @@ mod tests {
     #[test]
     fn rejects_uncompressed_entry_larger_than_configured_limit() {
         let bytes = write_project_ori2(&sample_document()).expect("write .ori2");
-        let mut limits = Ori2Limits::default();
-        limits.max_entry_uncompressed_size = 8;
+        let limits = Ori2Limits {
+            max_entry_uncompressed_size: 8,
+            ..Ori2Limits::default()
+        };
         let error = read_project_ori2_with_limits(&bytes, limits)
             .expect_err("oversized expanded entry must fail");
         assert!(matches!(error, FormatError::EntryTooLarge { .. }));
@@ -711,8 +717,10 @@ mod tests {
     #[test]
     fn rejects_total_uncompressed_size_larger_than_configured_limit() {
         let bytes = write_project_ori2(&sample_document()).expect("write .ori2");
-        let mut limits = Ori2Limits::default();
-        limits.max_total_uncompressed_size = 1;
+        let limits = Ori2Limits {
+            max_total_uncompressed_size: 1,
+            ..Ori2Limits::default()
+        };
         let error = read_project_ori2_with_limits(&bytes, limits)
             .expect_err("oversized expanded archive must fail");
         assert!(matches!(error, FormatError::ExpandedArchiveTooLarge { .. }));

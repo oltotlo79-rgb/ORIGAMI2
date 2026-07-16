@@ -265,6 +265,8 @@ button { color: inherit; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip { border: 1px solid var(--border); background: white; border-radius: 12px; font-size: 11px; padding: 3px 8px; }
 .chip.active { color: #0c5a73; border-color: #86b6c5; background: var(--accent-soft); }
+.chip[aria-pressed="true"] { color: #0c5a73; border-color: #86b6c5; background: var(--accent-soft); }
+.chip:disabled { opacity: .5; cursor: not-allowed; }
 .muted { color: var(--muted); font-size: 12px; }
 
 .timeline { margin: 0 6px 6px 54px; display: grid; grid-template-columns: 205px 1fr; }

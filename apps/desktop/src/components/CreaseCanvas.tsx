@@ -1,4 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
+import {
+  DEFAULT_SNAP_SETTINGS,
+  createVisibleGrid,
+  resolveSnapTarget,
+  type SnapKind,
+  type SnapPoint,
+  type SnapSettings,
+  type SnapTarget,
+} from '../lib/snap'
 
 export type CreaseLine = {
   id: string
@@ -35,6 +44,7 @@ type Props = {
   pendingVertexId?: string | null
   selectedLineId: string | null
   measurementLabel?: string
+  snapSettings?: SnapSettings
   onSelectLine: (id: string | null) => void
   onAddVertex?: (x: number, y: number) => void
   onSelectVertex?: (id: string) => void
@@ -44,6 +54,13 @@ type Props = {
 }
 
 type Vertex = { id: string; x: number; y: number }
+
+type ExactVertexBucket = {
+  minimum: Vertex
+  next: Vertex | null
+}
+
+type ExactVertexIndex = Map<number, Map<number, ExactVertexBucket>>
 
 type CanvasSize = { width: number; height: number }
 
@@ -67,6 +84,11 @@ type ViewTransform = {
   scale: number
 }
 
+type SnapGuide = {
+  rawPoint: SnapPoint
+  target: SnapTarget
+}
+
 const DEFAULT_PAPER_BOUNDS: PaperBounds = {
   minX: 0,
   minY: 0,
@@ -79,6 +101,13 @@ const VERTEX_HIT_RADIUS_PX = 10
 const LINE_HIT_RADIUS_PX = 7
 const DESIRED_GRID_INTERVALS = 20
 const MAX_GRID_LINES_PER_AXIS = 100
+
+const SNAP_KIND_LABELS: Record<SnapKind, string> = {
+  vertex: '頂点',
+  midpoint: '中点',
+  edge: '辺',
+  grid: 'グリッド',
+}
 
 const COLORS: Record<CreaseLine['kind'], string> = {
   mountain: '#d95252',
@@ -98,6 +127,7 @@ export function CreaseCanvas({
   pendingVertexId = null,
   selectedLineId,
   measurementLabel,
+  snapSettings = DEFAULT_SNAP_SETTINGS,
   onSelectLine,
   onAddVertex,
   onSelectVertex,
@@ -119,10 +149,23 @@ export function CreaseCanvas({
     () => new Set(paperPolygon?.map((point) => point.id) ?? []),
     [paperPolygon],
   )
+  const exactVertexIndex = useMemo(
+    () => createExactVertexIndex(vertices),
+    [vertices],
+  )
+  const visibleGrid = useMemo(
+    () => createVisibleGrid(
+      resolvedPaperBounds,
+      DESIRED_GRID_INTERVALS,
+      MAX_GRID_LINES_PER_AXIS,
+    ),
+    [resolvedPaperBounds],
+  )
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const suppressClickRef = useRef(false)
   const [dragPreview, setDragPreview] = useState<DragState | null>(null)
+  const [snapGuide, setSnapGuide] = useState<SnapGuide | null>(null)
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 })
 
   useEffect(() => {
@@ -146,6 +189,7 @@ export function CreaseCanvas({
   }, [])
 
   useEffect(() => {
+    setSnapGuide(null)
     const drag = dragRef.current
     if (!drag) return
 
@@ -156,6 +200,10 @@ export function CreaseCanvas({
       canvas.releasePointerCapture(drag.pointerId)
     }
   }, [cancelInteractionToken])
+
+  useEffect(() => {
+    setSnapGuide(null)
+  }, [snapSettings, tool])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -184,12 +232,6 @@ export function CreaseCanvas({
       context.fillRect(transform.left, transform.top, transform.width, transform.height)
     }
 
-    const gridStep = niceGridStep(
-      Math.max(
-        transform.bounds.maxX - transform.bounds.minX,
-        transform.bounds.maxY - transform.bounds.minY,
-      ) / DESIRED_GRID_INTERVALS,
-    )
     context.save()
     let shouldDrawGrid = useLegacyRectangularPaper
     if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
@@ -199,32 +241,22 @@ export function CreaseCanvas({
     if (shouldDrawGrid) {
       context.strokeStyle = '#dbe2ea'
       context.lineWidth = 1
-      forEachGridValue(
-        transform.bounds.minX,
-        transform.bounds.maxX,
-        gridStep,
-        (value) => {
-          const x = mapX(value)
-          if (!Number.isFinite(x)) return
-          context.beginPath()
-          context.moveTo(x, transform.top)
-          context.lineTo(x, transform.top + transform.height)
-          context.stroke()
-        },
-      )
-      forEachGridValue(
-        transform.bounds.minY,
-        transform.bounds.maxY,
-        gridStep,
-        (value) => {
-          const y = mapY(value)
-          if (!Number.isFinite(y)) return
-          context.beginPath()
-          context.moveTo(transform.left, y)
-          context.lineTo(transform.left + transform.width, y)
-          context.stroke()
-        },
-      )
+      for (const value of visibleGrid.xValues) {
+        const x = mapX(value)
+        if (!Number.isFinite(x)) continue
+        context.beginPath()
+        context.moveTo(x, transform.top)
+        context.lineTo(x, transform.top + transform.height)
+        context.stroke()
+      }
+      for (const value of visibleGrid.yValues) {
+        const y = mapY(value)
+        if (!Number.isFinite(y)) continue
+        context.beginPath()
+        context.moveTo(transform.left, y)
+        context.lineTo(transform.left + transform.width, y)
+        context.stroke()
+      }
     }
     context.restore()
 
@@ -303,6 +335,16 @@ export function CreaseCanvas({
         )
       }
     }
+
+    if (snapGuide) {
+      drawSnapGuide(
+        context,
+        transform,
+        snapGuide,
+        canvasRect.width,
+        canvasRect.height,
+      )
+    }
   }, [
     canvasSize.height,
     canvasSize.width,
@@ -315,10 +357,82 @@ export function CreaseCanvas({
     resolvedPaperBounds,
     selectedLineId,
     selectedVertexId,
+    snapGuide,
     tool,
     useLegacyRectangularPaper,
     vertices,
+    visibleGrid,
   ])
+
+  function resolveAdditionSnap(point: SnapPoint, transform: ViewTransform) {
+    return resolveSnapTarget({
+      point,
+      scale: transform.scale,
+      settings: snapSettings,
+      vertices,
+      segments: lines,
+      grid: visibleGrid,
+      accept: (target) => isInsidePaper(
+        target.point.x,
+        target.point.y,
+        transform,
+        pointTestPaperPolygon,
+        useLegacyRectangularPaper,
+      ),
+    })
+  }
+
+  function resolveDraggedPosition(
+    drag: DragState,
+    pointer: { x: number; y: number; transform: ViewTransform },
+  ) {
+    const boundaryDrag = paperBoundaryVertexIds.has(drag.vertexId)
+    const rawPoint = {
+      x: resolveDragCoordinate(
+        pointer.x + drag.offsetX,
+        pointer.transform.bounds.minX,
+        pointer.transform.bounds.maxX,
+        boundaryDrag,
+        drag.x,
+      ),
+      y: resolveDragCoordinate(
+        pointer.y + drag.offsetY,
+        pointer.transform.bounds.minY,
+        pointer.transform.bounds.maxY,
+        boundaryDrag,
+        drag.y,
+      ),
+    }
+    const target = resolveSnapTarget({
+      point: rawPoint,
+      scale: pointer.transform.scale,
+      settings: snapSettings,
+      vertices,
+      segments: lines,
+      grid: visibleGrid,
+      excludedVertexId: drag.vertexId,
+      accept: (candidate) => {
+        if (
+          !isFiniteSnapPoint(candidate.point) ||
+          lookupExactVertex(exactVertexIndex, candidate.point, drag.vertexId)
+        ) return false
+        return boundaryDrag || isInsidePaper(
+          candidate.point.x,
+          candidate.point.y,
+          pointer.transform,
+          pointTestPaperPolygon,
+          useLegacyRectangularPaper,
+        )
+      },
+    })
+    const overlapsOtherVertex = !target &&
+      lookupExactVertex(exactVertexIndex, rawPoint, drag.vertexId) !== null
+    return {
+      point: target?.point ?? (overlapsOtherVertex ? { x: drag.x, y: drag.y } : rawPoint),
+      rawPoint,
+      target,
+    }
+  }
 
   function handleClick(event: MouseEvent<HTMLCanvasElement>) {
     if (disabled) return
@@ -326,6 +440,7 @@ export function CreaseCanvas({
       suppressClickRef.current = false
       return
     }
+    setSnapGuide(null)
     const canvas = canvasRef.current
     if (!canvas) return
     const pointer = eventToPaperPosition(canvas, event, resolvedPaperBounds)
@@ -336,19 +451,27 @@ export function CreaseCanvas({
       pointer.canvasY,
       pointer.transform,
     )
-    if (
-      tool === 'vertex' &&
-      onAddVertex &&
-      isInsidePaper(
-        pointer.x,
-        pointer.y,
+    if (tool === 'vertex' && onAddVertex) {
+      const target = resolveAdditionSnap({ x, y }, pointer.transform)
+      const point = target?.point ?? { x, y }
+      const existingVertex = lookupExactVertex(exactVertexIndex, point)
+      if (existingVertex) {
+        setSnapGuide(null)
+        onSelectVertex?.(existingVertex.id)
+        onSelectLine(null)
+        return
+      }
+      if (isInsidePaper(
+        point.x,
+        point.y,
         pointer.transform,
         pointTestPaperPolygon,
         useLegacyRectangularPaper,
-      )
-    ) {
-      onAddVertex(x, y)
-      return
+      )) {
+        setSnapGuide(null)
+        onAddVertex(point.x, point.y)
+        return
+      }
     }
     if ((tool === 'mountain' || tool === 'valley' || tool === 'cut') && onSelectVertex) {
       if (closestVertex) {
@@ -408,6 +531,7 @@ export function CreaseCanvas({
     event.preventDefault()
     onSelectVertex(vertex.id)
     onSelectLine(null)
+    setSnapGuide(null)
     const drag: DragState = {
       pointerId: event.pointerId,
       vertexId: vertex.id,
@@ -426,27 +550,30 @@ export function CreaseCanvas({
   function handlePointerMove(event: PointerEvent<HTMLCanvasElement>) {
     if (disabled) return
     const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
+    if (!drag) {
+      if (tool !== 'vertex') {
+        setSnapGuide(null)
+        return
+      }
+      const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
+      const target = resolveAdditionSnap({ x: pointer.x, y: pointer.y }, pointer.transform)
+      setSnapGuide(target
+        ? { rawPoint: { x: pointer.x, y: pointer.y }, target }
+        : null)
+      return
+    }
+    if (drag.pointerId !== event.pointerId) return
 
     event.preventDefault()
     const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
-    const boundaryDrag = paperBoundaryVertexIds.has(drag.vertexId)
+    const resolved = resolveDraggedPosition(drag, pointer)
+    setSnapGuide(resolved.target
+      ? { rawPoint: resolved.rawPoint, target: resolved.target }
+      : null)
     updateDragPreview({
       ...drag,
-      x: resolveDragCoordinate(
-        pointer.x + drag.offsetX,
-        pointer.transform.bounds.minX,
-        pointer.transform.bounds.maxX,
-        boundaryDrag,
-        drag.x,
-      ),
-      y: resolveDragCoordinate(
-        pointer.y + drag.offsetY,
-        pointer.transform.bounds.minY,
-        pointer.transform.bounds.maxY,
-        boundaryDrag,
-        drag.y,
-      ),
+      x: resolved.point.x,
+      y: resolved.point.y,
     })
   }
 
@@ -457,24 +584,12 @@ export function CreaseCanvas({
 
     event.preventDefault()
     const pointer = eventToPaperPosition(event.currentTarget, event, resolvedPaperBounds)
-    const boundaryDrag = paperBoundaryVertexIds.has(drag.vertexId)
-    const x = resolveDragCoordinate(
-      pointer.x + drag.offsetX,
-      pointer.transform.bounds.minX,
-      pointer.transform.bounds.maxX,
-      boundaryDrag,
-      drag.x,
-    )
-    const y = resolveDragCoordinate(
-      pointer.y + drag.offsetY,
-      pointer.transform.bounds.minY,
-      pointer.transform.bounds.maxY,
-      boundaryDrag,
-      drag.y,
-    )
+    const resolved = resolveDraggedPosition(drag, pointer)
+    const { x, y } = resolved.point
     const hasMoved = x !== drag.originX || y !== drag.originY
     dragRef.current = null
     setDragPreview(null)
+    setSnapGuide(null)
     suppressClickRef.current = hasMoved
     if (hasMoved) {
       window.setTimeout(() => {
@@ -493,6 +608,7 @@ export function CreaseCanvas({
 
     dragRef.current = null
     setDragPreview(null)
+    setSnapGuide(null)
     suppressClickRef.current = false
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
@@ -503,6 +619,11 @@ export function CreaseCanvas({
     if (dragRef.current?.pointerId !== event.pointerId) return
     dragRef.current = null
     setDragPreview(null)
+    setSnapGuide(null)
+  }
+
+  function handlePointerLeave() {
+    if (!dragRef.current) setSnapGuide(null)
   }
 
   function updateDragPreview(drag: DragState) {
@@ -522,6 +643,7 @@ export function CreaseCanvas({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       onLostPointerCapture={handleLostPointerCapture}
+      onPointerLeave={handlePointerLeave}
     >
       展開図。選択ツールでは頂点をドラッグして移動できます。
     </canvas>
@@ -827,6 +949,49 @@ function isInsidePaper(
     y <= transform.bounds.maxY
 }
 
+function isFiniteSnapPoint(point: SnapPoint) {
+  return Number.isFinite(point.x) && Number.isFinite(point.y)
+}
+
+function createExactVertexIndex(
+  vertices: readonly Vertex[],
+) {
+  const index: ExactVertexIndex = new Map()
+  for (const vertex of vertices) {
+    if (!Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)) continue
+
+    let byY = index.get(vertex.x)
+    if (!byY) {
+      byY = new Map()
+      index.set(vertex.x, byY)
+    }
+    const bucket = byY.get(vertex.y)
+    if (!bucket) {
+      byY.set(vertex.y, { minimum: vertex, next: null })
+      continue
+    }
+    if (vertex.id === bucket.minimum.id || vertex.id === bucket.next?.id) continue
+    if (vertex.id < bucket.minimum.id) {
+      bucket.next = bucket.minimum
+      bucket.minimum = vertex
+    } else if (!bucket.next || vertex.id < bucket.next.id) {
+      bucket.next = vertex
+    }
+  }
+  return index
+}
+
+function lookupExactVertex(
+  index: ExactVertexIndex,
+  point: SnapPoint,
+  excludedVertexId?: string,
+) {
+  if (!isFiniteSnapPoint(point)) return null
+  const bucket = index.get(point.x)?.get(point.y)
+  if (!bucket) return null
+  return bucket.minimum.id === excludedVertexId ? bucket.next : bucket.minimum
+}
+
 function pointInPolygonInclusive(
   x: number,
   y: number,
@@ -901,47 +1066,79 @@ function pointSegmentDistance(
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 }
 
-function niceGridStep(rawStep: number) {
-  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1
-  const exponent = Math.floor(Math.log10(rawStep))
-  const magnitude = 10 ** exponent
-  if (!Number.isFinite(magnitude) || magnitude <= 0) return rawStep
-  const fraction = rawStep / magnitude
-  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10
-  const step = niceFraction * magnitude
-  return Number.isFinite(step) && step > 0 ? step : rawStep
-}
-
-function forEachGridValue(
-  minimum: number,
-  maximum: number,
-  requestedStep: number,
-  callback: (value: number) => void,
-) {
-  const span = maximum - minimum
-  if (!Number.isFinite(span) || span <= 0) return
-  const step = Number.isFinite(requestedStep) && requestedStep > 0
-    ? requestedStep
-    : span
-  const requestedIntervals = Math.ceil(span / step)
-  const intervalCount = Number.isFinite(requestedIntervals)
-    ? Math.max(1, Math.min(MAX_GRID_LINES_PER_AXIS - 1, requestedIntervals))
-    : MAX_GRID_LINES_PER_AXIS - 1
-  const effectiveStep = requestedIntervals > intervalCount
-    ? span / intervalCount
-    : step
-
-  for (let index = 0; index <= intervalCount; index += 1) {
-    const value = index === intervalCount
-      ? maximum
-      : minimum + Math.min(span, index * effectiveStep)
-    if (Number.isFinite(value)) callback(value)
-  }
-}
-
 function safePixelRatio(pixelRatio: number) {
   if (!Number.isFinite(pixelRatio) || pixelRatio <= 0) return 1
   return Math.min(pixelRatio, 4)
+}
+
+function drawSnapGuide(
+  context: CanvasRenderingContext2D,
+  transform: ViewTransform,
+  guide: SnapGuide,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  if (!Number.isFinite(canvasWidth) || !Number.isFinite(canvasHeight)) return
+  const target = mapPaperPoint(transform, guide.target.point.x, guide.target.point.y)
+  if (
+    !target ||
+    target.x < -20 ||
+    target.y < -20 ||
+    target.x > canvasWidth + 20 ||
+    target.y > canvasHeight + 20
+  ) return
+  const raw = mapPaperPoint(transform, guide.rawPoint.x, guide.rawPoint.y)
+
+  context.save()
+  context.strokeStyle = '#b14c83'
+  context.fillStyle = '#b14c83'
+  context.lineWidth = 1.5
+  if (raw && Math.hypot(raw.x - target.x, raw.y - target.y) > 1) {
+    context.setLineDash([3, 3])
+    context.beginPath()
+    context.moveTo(raw.x, raw.y)
+    context.lineTo(target.x, target.y)
+    context.stroke()
+  }
+  context.setLineDash([])
+  context.beginPath()
+  context.arc(target.x, target.y, 7, 0, Math.PI * 2)
+  context.fillStyle = 'rgba(255, 255, 255, 0.9)'
+  context.fill()
+  context.stroke()
+  context.beginPath()
+  context.moveTo(target.x - 10, target.y)
+  context.lineTo(target.x + 10, target.y)
+  context.moveTo(target.x, target.y - 10)
+  context.lineTo(target.x, target.y + 10)
+  context.stroke()
+
+  const label = SNAP_KIND_LABELS[guide.target.kind]
+  context.font = '600 10px system-ui, sans-serif'
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  const labelWidth = Math.max(32, context.measureText(label).width + 10)
+  const labelHeight = 18
+  const labelX = clampToRange(
+    target.x + 14 + labelWidth / 2,
+    labelWidth / 2 + 3,
+    Math.max(labelWidth / 2 + 3, canvasWidth - labelWidth / 2 - 3),
+  )
+  const labelY = clampToRange(
+    target.y - 13,
+    labelHeight / 2 + 3,
+    Math.max(labelHeight / 2 + 3, canvasHeight - labelHeight / 2 - 3),
+  )
+  context.fillStyle = 'rgba(38, 49, 59, 0.92)'
+  context.fillRect(
+    labelX - labelWidth / 2,
+    labelY - labelHeight / 2,
+    labelWidth,
+    labelHeight,
+  )
+  context.fillStyle = '#ffffff'
+  context.fillText(label, labelX, labelY)
+  context.restore()
 }
 
 function drawMeasurementLabel(

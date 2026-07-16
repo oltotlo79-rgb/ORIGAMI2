@@ -31,7 +31,19 @@ import {
   type ValidationSnapshot,
   validateProject,
 } from './lib/coreClient'
+import {
+  DEFAULT_SNAP_SETTINGS,
+  type SnapKind,
+  type SnapSettings,
+} from './lib/snap'
 import './App.css'
+
+const SNAP_OPTIONS: ReadonlyArray<{ kind: SnapKind; label: string }> = [
+  { kind: 'grid', label: 'グリッド' },
+  { kind: 'vertex', label: '頂点' },
+  { kind: 'edge', label: '辺' },
+  { kind: 'midpoint', label: '中点' },
+]
 
 function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
@@ -50,6 +62,9 @@ function App() {
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectError, setNewProjectError] = useState<string | null>(null)
+  const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
+    ...DEFAULT_SNAP_SETTINGS,
+  }))
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
@@ -84,6 +99,14 @@ function App() {
       }]
     })
   }, [nativeSnapshot])
+  const nativeVertices = useMemo(
+    () => nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
+      id: vertex.id,
+      x: vertex.position.x,
+      y: vertex.position.y,
+    })) ?? [],
+    [nativeSnapshot],
+  )
   const selectedLine = useMemo(
     () => nativeLines.find((line) => line.id === selectedLineId),
     [nativeLines, selectedLineId],
@@ -136,6 +159,10 @@ function App() {
   const paperResizeFormKey = nativeSnapshot && rectangularPaperSize
     ? `${nativeSnapshot.project_id}:${rectangularPaperSize.width}:${rectangularPaperSize.height}`
     : `${nativeSnapshot?.project_id ?? 'paper-unavailable'}:not-rectangular`
+  const snapStatusLabel = SNAP_OPTIONS
+    .filter(({ kind }) => snapSettings[kind])
+    .map(({ label }) => label)
+    .join('・') || 'なし'
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -336,7 +363,7 @@ function App() {
   }
 
   function selectCanvasVertex(vertexId: string) {
-    if (activeTool === 'select') {
+    if (activeTool === 'select' || activeTool === 'vertex') {
       setSelectedVertexId(vertexId)
       setSelectedLineId(null)
       return
@@ -682,16 +709,13 @@ function App() {
               paperBounds={paperBounds}
               paperPolygon={paperPolygon}
               paperColor={paperFrontColor}
-              vertices={nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
-                id: vertex.id,
-                x: vertex.position.x,
-                y: vertex.position.y,
-              }))}
+              vertices={nativeVertices}
               tool={activeTool}
               selectedVertexId={selectedVertexId}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
               measurementLabel={formatLineMeasurementLabel(selectedLineMeasurement)}
+              snapSettings={snapSettings}
               cancelInteractionToken={cancelInteractionToken}
               disabled={coreBusy}
               onSelectLine={(lineId) => {
@@ -996,10 +1020,22 @@ function App() {
           </section>
           <section>
             <h2>スナップ</h2>
-            <div className="chip-row">
-              <button type="button" className="chip active">頂点</button>
-              <button type="button" className="chip active">交点</button>
-              <button type="button" className="chip">中点</button>
+            <div className="chip-row" aria-label="スナップ設定">
+              {SNAP_OPTIONS.map(({ kind, label }) => (
+                <button
+                  key={kind}
+                  type="button"
+                  className={`chip${snapSettings[kind] ? ' active' : ''}`}
+                  aria-pressed={snapSettings[kind]}
+                  disabled={coreBusy}
+                  onClick={() => setSnapSettings((current) => ({
+                    ...current,
+                    [kind]: !current[kind],
+                  }))}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </section>
         </aside>
@@ -1164,7 +1200,7 @@ function App() {
       <footer className="statusbar" inert={newProjectOpen}>
         <span>ツール: {toolLabel(activeTool)}</span>
         <span>{coreStatus}</span>
-        <span>スナップ: 頂点・交点</span>
+        <span>スナップ: {snapStatusLabel}</span>
         <span className="status-spacer" />
         <button
           type="button"

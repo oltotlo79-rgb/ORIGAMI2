@@ -465,6 +465,26 @@ fn update_paper_properties(
     )
 }
 
+#[tauri::command]
+fn resize_rectangular_paper(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    width_mm: f64,
+    height_mm: f64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::ResizeRectangularPaper {
+            width_mm,
+            height_mm,
+        },
+    )
+}
+
 fn lock_project(state: &AppState) -> Result<MutexGuard<'_, ProjectState>, String> {
     state
         .0
@@ -1105,7 +1125,8 @@ pub fn run() {
             undo,
             redo,
             set_cutting_allowed,
-            update_paper_properties
+            update_paper_properties,
+            resize_rectangular_paper
         ])
         .build(tauri::generate_context!())
         .expect("failed to build ORIGAMI2 desktop application");
@@ -1391,6 +1412,145 @@ mod tests {
         .expect_err("invalid thickness must fail");
 
         assert_eq!(error, "paper thickness must be finite");
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn rectangular_resize_updates_document_dirty_state_and_undo_redo() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let original_document = project.document();
+        let original_vertex_ids = project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let original_edges = project.editor.pattern().edges.clone();
+        let original_paper = project.editor.paper().clone();
+
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::ResizeRectangularPaper {
+                width_mm: 210.0,
+                height_mm: 297.0,
+            },
+        )
+        .expect("resize paper");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert!(response.can_undo);
+        assert!(!response.can_redo);
+        assert_eq!(response.paper, original_paper);
+        assert_eq!(
+            response
+                .crease_pattern
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>(),
+            original_vertex_ids
+        );
+        assert_eq!(response.crease_pattern.edges, original_edges);
+        assert!(
+            response
+                .crease_pattern
+                .vertices
+                .iter()
+                .any(|vertex| vertex.position == Point2::new(210.0, 297.0))
+        );
+        assert!(validation_snapshot(&project).is_valid);
+        let resized_document = project.document();
+        assert_ne!(resized_document, original_document);
+        assert_eq!(resized_document.paper, original_paper);
+
+        project.editor.undo(1).expect("undo resize");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project.editor.redo(2).expect("redo resize");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), resized_document);
+        assert!(project.is_dirty());
+    }
+
+    #[test]
+    fn same_size_resize_has_history_without_making_the_document_dirty() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let original_document = project.document();
+
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::ResizeRectangularPaper {
+                width_mm: DEFAULT_SHEET_SIZE_MM,
+                height_mm: DEFAULT_SHEET_SIZE_MM,
+            },
+        )
+        .expect("same-size resize");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.can_undo);
+        assert!(!response.is_dirty);
+        assert_eq!(project.document(), original_document);
+    }
+
+    #[test]
+    fn resize_conflicts_invalid_dimensions_and_overflow_preserve_project_state() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        let conflict = execute_command(
+            &mut project,
+            project_id,
+            1,
+            Command::ResizeRectangularPaper {
+                width_mm: 210.0,
+                height_mm: 297.0,
+            },
+        )
+        .expect_err("stale resize must fail");
+        assert_eq!(
+            conflict,
+            "expected revision 1, but the current revision is 0"
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        let invalid = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::ResizeRectangularPaper {
+                width_mm: 0.0,
+                height_mm: 297.0,
+            },
+        )
+        .expect_err("zero width must fail");
+        assert_eq!(invalid, "paper width must be greater than zero");
+        assert_eq!(project_state_signature(&project), before);
+
+        let overflow = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::ResizeRectangularPaper {
+                width_mm: f64::MAX,
+                height_mm: 2.0,
+            },
+        )
+        .expect_err("unrepresentable area must fail");
+        assert_eq!(
+            overflow,
+            "target paper area is too large to represent safely"
+        );
         assert_eq!(project_state_signature(&project), before);
     }
 

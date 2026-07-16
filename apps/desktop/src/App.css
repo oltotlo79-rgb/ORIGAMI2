@@ -228,6 +228,15 @@ button { color: inherit; }
 .paper-properties-form .check, .paper-properties-form .property-actions { margin-top: 0; }
 .paper-properties-form .property-actions button { width: 100%; }
 .paper-properties-form input:disabled, .paper-properties-form button:disabled { opacity: .5; cursor: not-allowed; }
+.paper-size-editor { margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--border); }
+.paper-size-editor h3 { margin: 0 0 8px; font-size: 12px; }
+.paper-size-form, .paper-size-fields { display: grid; gap: 7px; }
+.paper-size-form .field { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; }
+.paper-size-form .field input { width: 100%; margin-left: 0; }
+.paper-size-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.paper-size-form .property-actions { margin-top: 0; }
+.paper-size-form .property-actions button { width: 100%; }
+.paper-size-form input:disabled, .paper-size-form button:disabled { opacity: .5; cursor: not-allowed; }
 .property-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .property-actions button {
   border: 1px solid var(--border);

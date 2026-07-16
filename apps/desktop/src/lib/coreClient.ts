@@ -194,3 +194,17 @@ export function updatePaperProperties(
     cuttingAllowed: settings.cuttingAllowed,
   })
 }
+
+export function resizeRectangularPaper(
+  expectedProjectId: string,
+  expectedRevision: number,
+  widthMm: number,
+  heightMm: number,
+) {
+  return invoke<ProjectSnapshot>('resize_rectangular_paper', {
+    expectedProjectId,
+    expectedRevision,
+    widthMm,
+    heightMm,
+  })
+}

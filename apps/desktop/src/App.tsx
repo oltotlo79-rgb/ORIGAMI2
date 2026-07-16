@@ -18,6 +18,7 @@ import {
   redo,
   removeEdge,
   removeVertex,
+  resizeRectangularPaper,
   saveProject,
   saveProjectAs,
   undo,
@@ -103,6 +104,10 @@ function App() {
     () => resolvePaperBounds(nativeSnapshot),
     [nativeSnapshot],
   )
+  const rectangularPaperSize = useMemo(
+    () => resolveRectangularPaperSize(nativeSnapshot),
+    [nativeSnapshot],
+  )
   const paperSizeLabel = paperBounds
     ? `${formatMillimetres(paperBounds.maxX - paperBounds.minX)} × ${formatMillimetres(paperBounds.maxY - paperBounds.minY)} mm`
     : '寸法不明'
@@ -122,6 +127,9 @@ function App() {
         nativeSnapshot.paper.cutting_allowed,
       ].join(':')
     : 'paper-unavailable'
+  const paperResizeFormKey = nativeSnapshot && rectangularPaperSize
+    ? `${nativeSnapshot.project_id}:${rectangularPaperSize.width}:${rectangularPaperSize.height}`
+    : `${nativeSnapshot?.project_id ?? 'paper-unavailable'}:not-rectangular`
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -326,6 +334,33 @@ function App() {
         backColor: { ...backColor, alpha: current.paper.back.color.alpha },
         cuttingAllowed: form.get('cutting_allowed') === 'on',
       }))
+  }
+
+  function submitPaperResize(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    if (!resolveRectangularPaperSize(current)) {
+      setCoreStatus('現在の紙は軸平行な長方形ではないため、サイズを変更できません')
+      return
+    }
+
+    const form = new FormData(event.currentTarget)
+    const widthInput = String(form.get('width_mm') ?? '').trim()
+    const heightInput = String(form.get('height_mm') ?? '').trim()
+    const widthMm = Number(widthInput)
+    const heightMm = Number(heightInput)
+    if (!widthInput || !Number.isFinite(widthMm) || widthMm <= 0) {
+      setCoreStatus('用紙の幅には0より大きい有限の数値を入力してください')
+      return
+    }
+    if (!heightInput || !Number.isFinite(heightMm) || heightMm <= 0) {
+      setCoreStatus('用紙の高さには0より大きい有限の数値を入力してください')
+      return
+    }
+
+    void runNativeEdit((projectId, revision) =>
+      resizeRectangularPaper(projectId, revision, widthMm, heightMm))
   }
 
   async function runValidation() {
@@ -836,6 +871,62 @@ function App() {
                 </button>
               </div>
             </form>
+            <div className="paper-size-editor">
+              <h3>用紙サイズ</h3>
+              <form
+                key={paperResizeFormKey}
+                className="paper-size-form"
+                onSubmit={submitPaperResize}
+                noValidate
+              >
+                <div className="paper-size-fields">
+                  <label className="field">
+                    <span>幅</span>
+                    <input
+                      name="width_mm"
+                      type="number"
+                      min="0"
+                      step="any"
+                      defaultValue={rectangularPaperSize?.width ?? ''}
+                      required
+                      disabled={coreBusy || !rectangularPaperSize}
+                      aria-label="用紙の幅"
+                    />
+                    <span>mm</span>
+                  </label>
+                  <label className="field">
+                    <span>高さ</span>
+                    <input
+                      name="height_mm"
+                      type="number"
+                      min="0"
+                      step="any"
+                      defaultValue={rectangularPaperSize?.height ?? ''}
+                      required
+                      disabled={coreBusy || !rectangularPaperSize}
+                      aria-label="用紙の高さ"
+                    />
+                    <span>mm</span>
+                  </label>
+                </div>
+                {!rectangularPaperSize && (
+                  <p className="paper-size-note">
+                    軸平行な長方形として判定できない紙は、この画面ではサイズ変更できません。
+                  </p>
+                )}
+                <p className="paper-size-note">
+                  サイズ変更時は、折り線を含むすべての頂点を左上基準で比例変換します。
+                </p>
+                <div className="property-actions">
+                  <button
+                    type="submit"
+                    disabled={coreBusy || !nativeSnapshot || !rectangularPaperSize}
+                  >
+                    用紙サイズを変更
+                  </button>
+                </div>
+              </form>
+            </div>
           </section>
           <section>
             <h2>スナップ</h2>
@@ -1088,6 +1179,58 @@ function resolvePaperBounds(snapshot: ProjectSnapshot | null): PaperBounds | und
     bounds.maxY <= bounds.minY
   ) return undefined
   return bounds
+}
+
+type RectangularPaperSize = {
+  width: number
+  height: number
+}
+
+function resolveRectangularPaperSize(
+  snapshot: ProjectSnapshot | null,
+): RectangularPaperSize | null {
+  if (!snapshot) return null
+  const boundaryIds = snapshot.paper.boundary_vertices
+  if (boundaryIds.length !== 4 || new Set(boundaryIds).size !== 4) return null
+
+  const positions = new Map(
+    snapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
+  )
+  const points: Array<{ x: number; y: number }> = []
+  for (const id of boundaryIds) {
+    const point = positions.get(id)
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null
+    points.push(point)
+  }
+
+  const minX = Math.min(...points.map((point) => point.x))
+  const minY = Math.min(...points.map((point) => point.y))
+  const maxX = Math.max(...points.map((point) => point.x))
+  const maxY = Math.max(...points.map((point) => point.y))
+  const width = maxX - minX
+  const height = maxY - minY
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null
+  }
+
+  const corners = new Set<string>()
+  for (const point of points) {
+    const horizontalSide = point.x === minX ? 'left' : point.x === maxX ? 'right' : null
+    const verticalSide = point.y === minY ? 'top' : point.y === maxY ? 'bottom' : null
+    if (!horizontalSide || !verticalSide) return null
+    corners.add(`${horizontalSide}:${verticalSide}`)
+  }
+  if (corners.size !== 4) return null
+
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index]
+    const next = points[(index + 1) % points.length]
+    const sharesX = current.x === next.x
+    const sharesY = current.y === next.y
+    if (sharesX === sharesY) return null
+  }
+
+  return { width, height }
 }
 
 function formatMillimetres(value: number) {

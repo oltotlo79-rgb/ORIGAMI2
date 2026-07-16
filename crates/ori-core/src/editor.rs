@@ -59,6 +59,8 @@ pub enum CommandError {
     VertexHasConnectedEdge { vertex: VertexId, edge: EdgeId },
     #[error("cut edges are disabled for this project")]
     CuttingDisabled,
+    #[error("boundary edge {0:?} must be changed through a sheet-boundary operation")]
+    BoundaryEdgeRequiresSheetOperation(EdgeId),
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +260,9 @@ impl EditorState {
                 end,
                 kind,
             } => {
+                if kind == EdgeKind::Boundary {
+                    return Err(CommandError::BoundaryEdgeRequiresSheetOperation(id));
+                }
                 if kind == EdgeKind::Cut && !self.settings.cutting_allowed {
                     return Err(CommandError::CuttingDisabled);
                 }
@@ -283,6 +288,9 @@ impl EditorState {
             }
             Command::RemoveEdge { id } => {
                 let index = self.edge_index(id).ok_or(CommandError::EdgeNotFound(id))?;
+                if self.pattern.edges[index].kind == EdgeKind::Boundary {
+                    return Err(CommandError::BoundaryEdgeRequiresSheetOperation(id));
+                }
                 let edge = self.pattern.edges.remove(index);
                 Ok(Inverse::RestoreEdge { index, edge })
             }
@@ -535,6 +543,88 @@ mod tests {
                 edge
             }
         );
+    }
+
+    #[test]
+    fn boundary_edge_cannot_be_added_by_a_generic_command() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: Vec::new(),
+        };
+        let mut editor = EditorState::new(pattern);
+
+        let error = editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: edge,
+                    start,
+                    end,
+                    kind: EdgeKind::Boundary,
+                },
+            )
+            .expect_err("generic boundary creation must fail");
+
+        assert_eq!(
+            error,
+            CommandError::BoundaryEdgeRequiresSheetOperation(edge)
+        );
+        assert!(editor.pattern().edges.is_empty());
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn boundary_edge_cannot_be_removed_by_a_generic_command() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let boundary = Edge {
+            id: edge,
+            start,
+            end,
+            kind: EdgeKind::Boundary,
+        };
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![boundary.clone()],
+        };
+        let mut editor = EditorState::new(pattern);
+
+        let error = editor
+            .execute(0, Command::RemoveEdge { id: edge })
+            .expect_err("generic boundary removal must fail");
+
+        assert_eq!(
+            error,
+            CommandError::BoundaryEdgeRequiresSheetOperation(edge)
+        );
+        assert_eq!(editor.pattern().edges, vec![boundary]);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
     }
 
     #[test]

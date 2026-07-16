@@ -16,6 +16,10 @@ use thiserror::Error;
 
 const FACE_KEY_DOMAIN: &[u8] = b"ORIGAMI2_FACE_KEY_V1";
 
+// The deterministic embedding is intentionally kept behind the existing
+// boundary/single-fold public paths until walk classification is implemented.
+#[allow(dead_code)]
+mod dcel;
 mod single_fold;
 
 use single_fold::{SingleFoldError, extract_single_fold_faces};

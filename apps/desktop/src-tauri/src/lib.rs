@@ -11,7 +11,7 @@ use std::{
 
 use atomic_write_file::AtomicWriteFile;
 use ori_core::{
-    BoundaryEdgeRef, Command, EditorSettings, EditorState, PaperValidationIssue, ValidationIssue,
+    BoundaryEdgeRef, Command, EditorState, PaperValidationIssue, ValidationIssue,
     create_rectangular_sheet, validate_paper,
 };
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, RgbaColor, VertexId};
@@ -46,7 +46,6 @@ struct ProjectState {
     project_id: ProjectId,
     name: String,
     current_path: Option<PathBuf>,
-    paper: Paper,
     editor: EditorState,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
@@ -59,15 +58,11 @@ impl ProjectState {
     }
 
     fn new_with_paper(pattern: CreasePattern, paper: Paper) -> Self {
-        let editor = EditorState::with_settings(
-            pattern,
-            EditorSettings::new().with_cutting_allowed(paper.cutting_allowed),
-        );
+        let editor = EditorState::with_paper(pattern, paper);
         let mut project = Self {
             project_id: ProjectId::new(),
             name: UNTITLED_PROJECT_NAME.to_owned(),
             current_path: None,
-            paper,
             editor,
             saved_revision: None,
             saved_document: None,
@@ -80,15 +75,11 @@ impl ProjectState {
     }
 
     fn new_unsaved(name: String, pattern: CreasePattern, paper: Paper) -> Self {
-        let editor = EditorState::with_settings(
-            pattern,
-            EditorSettings::new().with_cutting_allowed(paper.cutting_allowed),
-        );
+        let editor = EditorState::with_paper(pattern, paper);
         Self {
             project_id: ProjectId::new(),
             name,
             current_path: None,
-            paper,
             editor,
             saved_revision: None,
             saved_document: None,
@@ -97,15 +88,11 @@ impl ProjectState {
 
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
         let saved_document = document.clone();
-        let editor = EditorState::with_settings(
-            document.crease_pattern,
-            EditorSettings::new().with_cutting_allowed(document.paper.cutting_allowed),
-        );
+        let editor = EditorState::with_paper(document.crease_pattern, document.paper);
         Self {
             project_id: document.project_id,
             name: document.name,
             current_path: Some(current_path),
-            paper: document.paper,
             saved_revision: Some(editor.revision()),
             saved_document: Some(saved_document),
             editor,
@@ -117,15 +104,9 @@ impl ProjectState {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: self.project_id,
             name: self.name.clone(),
-            paper: self.current_paper(),
+            paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
         }
-    }
-
-    fn current_paper(&self) -> Paper {
-        let mut paper = self.paper.clone();
-        paper.cutting_allowed = self.editor.settings().cutting_allowed();
-        paper
     }
 
     fn is_dirty(&self) -> bool {
@@ -135,11 +116,7 @@ impl ProjectState {
         saved.format_version != CURRENT_FORMAT_VERSION
             || saved.project_id != self.project_id
             || saved.name != self.name
-            || saved.paper.boundary_vertices != self.paper.boundary_vertices
-            || saved.paper.thickness_mm != self.paper.thickness_mm
-            || saved.paper.cutting_allowed != self.editor.cutting_allowed()
-            || saved.paper.front != self.paper.front
-            || saved.paper.back != self.paper.back
+            || saved.paper != *self.editor.paper()
             || saved.crease_pattern != *self.editor.pattern()
     }
 }
@@ -464,6 +441,30 @@ fn set_cutting_allowed(
     )
 }
 
+#[tauri::command]
+fn update_paper_properties(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    thickness_mm: f64,
+    front_color: RgbaColor,
+    back_color: RgbaColor,
+    cutting_allowed: bool,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::UpdatePaperProperties {
+            thickness_mm,
+            front_color,
+            back_color,
+            cutting_allowed,
+        },
+    )
+}
+
 fn lock_project(state: &AppState) -> Result<MutexGuard<'_, ProjectState>, String> {
     state
         .0
@@ -584,7 +585,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         revision: project.editor.revision(),
         saved_revision: project.saved_revision,
         is_dirty: project.is_dirty(),
-        paper: project.current_paper(),
+        paper: project.editor.paper().clone(),
         crease_pattern: project.editor.pattern().clone(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -770,7 +771,7 @@ fn suggested_file_name(project_name: &str) -> String {
 
 fn validation_snapshot(project: &ProjectState) -> ValidationSnapshot {
     let crease_validation = project.editor.validation();
-    let paper_validation = validate_paper(&project.paper, project.editor.pattern());
+    let paper_validation = validate_paper(project.editor.paper(), project.editor.pattern());
     let mut issues =
         Vec::with_capacity(crease_validation.issues().len() + paper_validation.issues.len());
     issues.extend(
@@ -856,7 +857,7 @@ fn paper_validation_issue_snapshot(
         },
         PaperValidationIssue::TooFewBoundaryVertices { .. } => ValidationIssueSnapshot {
             code: "too_few_boundary_vertices",
-            vertices: unique_vertex_ids(project.paper.boundary_vertices.iter().copied()),
+            vertices: unique_vertex_ids(project.editor.paper().boundary_vertices.iter().copied()),
             edges: Vec::new(),
         },
         PaperValidationIssue::DuplicateBoundaryVertex { vertex, .. } => ValidationIssueSnapshot {
@@ -1103,7 +1104,8 @@ pub fn run() {
             remove_edge,
             undo,
             redo,
-            set_cutting_allowed
+            set_cutting_allowed,
+            update_paper_properties
         ])
         .build(tauri::generate_context!())
         .expect("failed to build ORIGAMI2 desktop application");
@@ -1262,16 +1264,16 @@ mod tests {
         assert!(!project.editor.can_redo());
         assert!(project.editor.cutting_allowed());
         assert!(project.is_dirty());
-        assert_eq!(project.paper.thickness_mm, 0.2);
-        assert_eq!(project.paper.front.color, expected_front);
-        assert_eq!(project.paper.back.color, expected_back);
-        assert_eq!(project.paper.front.texture_asset, None);
-        assert_eq!(project.paper.back.texture_asset, None);
+        assert_eq!(project.editor.paper().thickness_mm, 0.2);
+        assert_eq!(project.editor.paper().front.color, expected_front);
+        assert_eq!(project.editor.paper().back.color, expected_back);
+        assert_eq!(project.editor.paper().front.texture_asset, None);
+        assert_eq!(project.editor.paper().back.texture_asset, None);
         assert_eq!(
             project.editor.pattern().vertices[2].position,
             Point2::new(210.0, 297.0)
         );
-        assert!(validate_paper(&project.paper, project.editor.pattern()).is_valid());
+        assert!(validate_paper(project.editor.paper(), project.editor.pattern()).is_valid());
 
         assert_eq!(response.project_id, project.project_id);
         assert_eq!(response.name, "Test sheet");
@@ -1279,7 +1281,7 @@ mod tests {
         assert_eq!(response.revision, 0);
         assert!(response.saved_revision.is_none());
         assert!(response.is_dirty);
-        assert_eq!(response.paper, project.paper);
+        assert_eq!(&response.paper, project.editor.paper());
         assert!(response.cutting_allowed);
         assert!(!response.can_undo);
         assert!(!response.can_redo);
@@ -1289,7 +1291,7 @@ mod tests {
     fn snapshot_paper_uses_the_current_editor_cutting_setting() {
         let mut project = initial_project_state();
         let project_id = project.project_id;
-        assert!(!project.paper.cutting_allowed);
+        assert!(!project.editor.paper().cutting_allowed);
 
         let response = execute_command(
             &mut project,
@@ -1302,6 +1304,94 @@ mod tests {
         assert!(response.cutting_allowed);
         assert!(response.paper.cutting_allowed);
         assert!(project.document().paper.cutting_allowed);
+    }
+
+    #[test]
+    fn paper_properties_follow_undo_redo_dirty_save_and_validation() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let original = project.editor.paper().clone();
+        let front_color = RgbaColor::opaque(15, 35, 55);
+        let back_color = RgbaColor::opaque(205, 185, 165);
+
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::UpdatePaperProperties {
+                thickness_mm: 0.0,
+                front_color,
+                back_color,
+                cutting_allowed: true,
+            },
+        )
+        .expect("update paper properties");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert_eq!(response.paper.thickness_mm, 0.0);
+        assert_eq!(response.paper.front.color, front_color);
+        assert_eq!(response.paper.back.color, back_color);
+        assert!(response.paper.cutting_allowed);
+        assert!(validation_snapshot(&project).is_valid);
+
+        project.editor.undo(1).expect("undo properties");
+        assert_eq!(project.editor.paper(), &original);
+        assert!(!project.is_dirty());
+
+        project.editor.redo(2).expect("redo properties");
+        assert!(project.is_dirty());
+        let saved_document = project.document();
+        project.saved_revision = Some(project.editor.revision());
+        project.saved_document = Some(saved_document.clone());
+        assert!(!project.is_dirty());
+        assert_eq!(project.document(), saved_document);
+
+        project.editor.undo(3).expect("undo after save");
+        assert!(project.is_dirty());
+        project.editor.redo(4).expect("redo to saved content");
+        assert!(!project.is_dirty());
+    }
+
+    #[test]
+    fn invalid_paper_property_command_preserves_project_state() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        let conflict = execute_command(
+            &mut project,
+            project_id,
+            1,
+            Command::UpdatePaperProperties {
+                thickness_mm: 0.3,
+                front_color: RgbaColor::opaque(1, 2, 3),
+                back_color: RgbaColor::opaque(4, 5, 6),
+                cutting_allowed: true,
+            },
+        )
+        .expect_err("stale property update must fail");
+        assert_eq!(
+            conflict,
+            "expected revision 1, but the current revision is 0"
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        let error = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::UpdatePaperProperties {
+                thickness_mm: f64::NAN,
+                front_color: RgbaColor::opaque(1, 2, 3),
+                back_color: RgbaColor::opaque(4, 5, 6),
+                cutting_allowed: true,
+            },
+        )
+        .expect_err("invalid thickness must fail");
+
+        assert_eq!(error, "paper thickness must be finite");
+        assert_eq!(project_state_signature(&project), before);
     }
 
     #[test]
@@ -1399,7 +1489,7 @@ mod tests {
 
         assert!(!snapshot.is_dirty);
         assert_eq!(snapshot.revision, 0);
-        assert_eq!(project.paper.boundary_vertices.len(), 4);
+        assert_eq!(project.editor.paper().boundary_vertices.len(), 4);
         assert_eq!(snapshot.crease_pattern.vertices.len(), 4);
         assert_eq!(snapshot.crease_pattern.edges.len(), 4);
         assert!(
@@ -1549,8 +1639,10 @@ mod tests {
 
     #[test]
     fn paper_thickness_issues_are_included_without_highlight_targets() {
-        let mut project = initial_project_state();
-        project.paper.thickness_mm = -0.01;
+        let sheet = create_rectangular_sheet(20.0, 20.0, false).expect("valid square");
+        let (pattern, mut paper) = sheet.into_parts();
+        paper.thickness_mm = -0.01;
+        let project = ProjectState::new_with_paper(pattern.clone(), paper);
 
         let response = validation_snapshot(&project);
 
@@ -1560,8 +1652,10 @@ mod tests {
         assert!(response.issues[0].vertices.is_empty());
         assert!(response.issues[0].edges.is_empty());
 
-        project.paper.thickness_mm = 0.0;
-        let zero_thickness = validation_snapshot(&project);
+        let mut zero_paper = project.editor.paper().clone();
+        zero_paper.thickness_mm = 0.0;
+        let zero_project = ProjectState::new_with_paper(pattern, zero_paper);
+        let zero_thickness = validation_snapshot(&zero_project);
         assert!(zero_thickness.is_valid);
         assert!(zero_thickness.issues.is_empty());
     }
@@ -1618,8 +1712,11 @@ mod tests {
                 },
             ],
         };
-        let mut project = ProjectState::new(pattern);
-        project.paper.boundary_vertices = vertices.iter().map(|vertex| vertex.id).collect();
+        let paper = Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..Paper::default()
+        };
+        let project = ProjectState::new_with_paper(pattern, paper);
 
         let response = validation_snapshot(&project);
         let intersection = response

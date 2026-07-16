@@ -211,6 +211,22 @@ button { color: inherit; }
 .field { display: flex; align-items: center; gap: 5px; font-size: 12px; }
 .field input { width: 72px; margin-left: auto; padding: 4px 5px; border: 1px solid var(--border); border-radius: 4px; }
 .coordinate-form { display: grid; gap: 7px; margin-top: 9px; }
+.paper-properties-form { display: grid; gap: 9px; }
+.paper-properties-form .field { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; }
+.paper-properties-form .field input { width: 100%; margin-left: 0; }
+.paper-color-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.paper-color-field { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.paper-color-field input {
+  width: 100%;
+  min-height: 30px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-strong);
+}
+.paper-properties-form .check, .paper-properties-form .property-actions { margin-top: 0; }
+.paper-properties-form .property-actions button { width: 100%; }
+.paper-properties-form input:disabled, .paper-properties-form button:disabled { opacity: .5; cursor: not-allowed; }
 .property-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .property-actions button {
   border: 1px solid var(--border);

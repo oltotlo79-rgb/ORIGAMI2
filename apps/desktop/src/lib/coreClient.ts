@@ -47,6 +47,13 @@ export type NewProjectSettings = {
   backColor: RgbaColor
 }
 
+export type PaperPropertySettings = {
+  thicknessMm: number
+  frontColor: RgbaColor
+  backColor: RgbaColor
+  cuttingAllowed: boolean
+}
+
 export type ProjectFileResponse = {
   canceled: boolean
   project: ProjectSnapshot
@@ -170,5 +177,20 @@ export function setCuttingAllowed(
     expectedProjectId,
     expectedRevision,
     allowed,
+  })
+}
+
+export function updatePaperProperties(
+  expectedProjectId: string,
+  expectedRevision: number,
+  settings: PaperPropertySettings,
+) {
+  return invoke<ProjectSnapshot>('update_paper_properties', {
+    expectedProjectId,
+    expectedRevision,
+    thicknessMm: settings.thicknessMm,
+    frontColor: settings.frontColor,
+    backColor: settings.backColor,
+    cuttingAllowed: settings.cuttingAllowed,
   })
 }

@@ -1,4 +1,6 @@
-use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
+use ori_domain::{
+    CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, RgbaColor, Vertex, VertexId,
+};
 use thiserror::Error;
 
 pub type Revision = u64;
@@ -27,6 +29,12 @@ pub enum Command {
     },
     SetCuttingAllowed {
         allowed: bool,
+    },
+    UpdatePaperProperties {
+        thickness_mm: f64,
+        front_color: RgbaColor,
+        back_color: RgbaColor,
+        cutting_allowed: bool,
     },
 }
 
@@ -59,6 +67,12 @@ pub enum CommandError {
     VertexHasConnectedEdge { vertex: VertexId, edge: EdgeId },
     #[error("cut edges are disabled for this project")]
     CuttingDisabled,
+    #[error("paper thickness must be finite")]
+    PaperThicknessNotFinite,
+    #[error("paper thickness must be zero or greater")]
+    PaperThicknessNegative,
+    #[error("cutting cannot be disabled while cut edge {edge:?} exists")]
+    CutEdgesPreventDisabling { edge: EdgeId },
     #[error("boundary edge {0:?} must be changed through a sheet-boundary operation")]
     BoundaryEdgeRequiresSheetOperation(EdgeId),
 }
@@ -72,76 +86,50 @@ struct HistoryEntry {
 #[derive(Debug, Clone)]
 enum Inverse {
     Command(Command),
-    RestoreVertex { index: usize, vertex: Vertex },
-    RestoreEdge { index: usize, edge: Edge },
-}
-
-/// Project-level editor settings that are persisted alongside the pattern.
-///
-/// Settings are supplied when restoring a saved project so that the editor can
-/// start from the persisted state without creating undo history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EditorSettings {
-    cutting_allowed: bool,
-}
-
-impl EditorSettings {
-    /// Creates settings with the same defaults used by [`EditorState::new`].
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            cutting_allowed: false,
-        }
-    }
-
-    /// Sets whether cut edges may be added to the project.
-    #[must_use]
-    pub const fn with_cutting_allowed(mut self, allowed: bool) -> Self {
-        self.cutting_allowed = allowed;
-        self
-    }
-
-    /// Returns whether cut edges may be added to the project.
-    #[must_use]
-    pub const fn cutting_allowed(&self) -> bool {
-        self.cutting_allowed
-    }
-}
-
-impl Default for EditorSettings {
-    fn default() -> Self {
-        Self::new()
-    }
+    RestoreVertex {
+        index: usize,
+        vertex: Vertex,
+    },
+    RestoreEdge {
+        index: usize,
+        edge: Edge,
+    },
+    RestorePaperProperties {
+        thickness_mm: f64,
+        front_color: RgbaColor,
+        back_color: RgbaColor,
+        cutting_allowed: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct EditorState {
     pattern: CreasePattern,
+    paper: Paper,
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
-    settings: EditorSettings,
 }
 
 impl EditorState {
     #[must_use]
-    pub const fn new(pattern: CreasePattern) -> Self {
-        Self::with_settings(pattern, EditorSettings::new())
+    pub fn new(pattern: CreasePattern) -> Self {
+        Self::with_paper(pattern, Paper::default())
     }
 
-    /// Restores an editor from a pattern and its persisted project settings.
+    /// Restores an editor from a pattern and its persisted paper definition.
     ///
     /// The restored state starts at revision zero with empty undo and redo
-    /// histories. Loading persisted settings therefore cannot be undone as an
+    /// histories. Loading persisted paper data therefore cannot be undone as an
     /// editing operation.
     #[must_use]
-    pub const fn with_settings(pattern: CreasePattern, settings: EditorSettings) -> Self {
+    pub const fn with_paper(pattern: CreasePattern, paper: Paper) -> Self {
         Self {
             pattern,
+            paper,
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            settings,
         }
     }
 
@@ -156,13 +144,13 @@ impl EditorState {
     }
 
     #[must_use]
-    pub const fn settings(&self) -> &EditorSettings {
-        &self.settings
+    pub const fn paper(&self) -> &Paper {
+        &self.paper
     }
 
     #[must_use]
     pub const fn cutting_allowed(&self) -> bool {
-        self.settings.cutting_allowed()
+        self.paper.cutting_allowed
     }
 
     #[must_use]
@@ -263,7 +251,7 @@ impl EditorState {
                 if kind == EdgeKind::Boundary {
                     return Err(CommandError::BoundaryEdgeRequiresSheetOperation(id));
                 }
-                if kind == EdgeKind::Cut && !self.settings.cutting_allowed {
+                if kind == EdgeKind::Cut && !self.paper.cutting_allowed {
                     return Err(CommandError::CuttingDisabled);
                 }
                 if self.edge_index(id).is_some() {
@@ -295,13 +283,61 @@ impl EditorState {
                 Ok(Inverse::RestoreEdge { index, edge })
             }
             Command::SetCuttingAllowed { allowed } => {
-                let previous = self.settings.cutting_allowed;
-                self.settings.cutting_allowed = allowed;
-                Ok(Inverse::Command(Command::SetCuttingAllowed {
-                    allowed: previous,
-                }))
+                self.ensure_cutting_can_be_set(allowed)?;
+                let previous = self.paper.cutting_allowed;
+                self.paper.cutting_allowed = allowed;
+                Ok(Inverse::RestorePaperProperties {
+                    thickness_mm: self.paper.thickness_mm,
+                    front_color: self.paper.front.color,
+                    back_color: self.paper.back.color,
+                    cutting_allowed: previous,
+                })
+            }
+            Command::UpdatePaperProperties {
+                thickness_mm,
+                front_color,
+                back_color,
+                cutting_allowed,
+            } => {
+                Self::validate_paper_thickness(thickness_mm)?;
+                self.ensure_cutting_can_be_set(cutting_allowed)?;
+                let inverse = Inverse::RestorePaperProperties {
+                    thickness_mm: self.paper.thickness_mm,
+                    front_color: self.paper.front.color,
+                    back_color: self.paper.back.color,
+                    cutting_allowed: self.paper.cutting_allowed,
+                };
+                self.paper.thickness_mm = thickness_mm;
+                self.paper.front.color = front_color;
+                self.paper.back.color = back_color;
+                self.paper.cutting_allowed = cutting_allowed;
+                Ok(inverse)
             }
         }
+    }
+
+    fn validate_paper_thickness(thickness_mm: f64) -> Result<(), CommandError> {
+        if !thickness_mm.is_finite() {
+            return Err(CommandError::PaperThicknessNotFinite);
+        }
+        if thickness_mm < 0.0 {
+            return Err(CommandError::PaperThicknessNegative);
+        }
+        Ok(())
+    }
+
+    fn ensure_cutting_can_be_set(&self, allowed: bool) -> Result<(), CommandError> {
+        if self.paper.cutting_allowed && !allowed {
+            if let Some(edge) = self
+                .pattern
+                .edges
+                .iter()
+                .find(|edge| edge.kind == EdgeKind::Cut)
+            {
+                return Err(CommandError::CutEdgesPreventDisabling { edge: edge.id });
+            }
+        }
+        Ok(())
     }
 
     fn apply_inverse(&mut self, inverse: &Inverse) -> Result<(), CommandError> {
@@ -318,6 +354,17 @@ impl EditorState {
                 debug_assert!(self.edge_index(edge.id).is_none());
                 debug_assert!(*index <= self.pattern.edges.len());
                 self.pattern.edges.insert(*index, edge.clone());
+            }
+            Inverse::RestorePaperProperties {
+                thickness_mm,
+                front_color,
+                back_color,
+                cutting_allowed,
+            } => {
+                self.paper.thickness_mm = *thickness_mm;
+                self.paper.front.color = *front_color;
+                self.paper.back.color = *back_color;
+                self.paper.cutting_allowed = *cutting_allowed;
             }
         }
         Ok(())
@@ -386,7 +433,7 @@ impl Command {
                 edges: vec![id],
                 settings: false,
             },
-            Self::SetCuttingAllowed { .. } => Changes {
+            Self::SetCuttingAllowed { .. } | Self::UpdatePaperProperties { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
@@ -409,6 +456,11 @@ impl Inverse {
                 edges: vec![edge.id],
                 settings: false,
             },
+            Self::RestorePaperProperties { .. } => Changes {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                settings: true,
+            },
         }
     }
 }
@@ -416,6 +468,16 @@ impl Inverse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pattern_only_constructor_uses_default_paper_without_history() {
+        let editor = EditorState::new(CreasePattern::empty());
+
+        assert_eq!(editor.paper(), &Paper::default());
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
 
     #[test]
     fn add_move_undo_redo_preserves_vertex_id() {
@@ -669,13 +731,189 @@ mod tests {
     }
 
     #[test]
-    fn persisted_settings_restore_without_creating_history() {
-        let editor = EditorState::with_settings(
-            CreasePattern::empty(),
-            EditorSettings::default().with_cutting_allowed(true),
-        );
+    fn paper_properties_are_one_undoable_command_and_preserve_textures() {
+        let front_texture = ori_domain::AssetId::new();
+        let back_texture = ori_domain::AssetId::new();
+        let mut paper = Paper::default();
+        paper.front.texture_asset = Some(front_texture);
+        paper.back.texture_asset = Some(back_texture);
+        let original = paper.clone();
+        let mut editor = EditorState::with_paper(CreasePattern::empty(), paper);
+        let front_color = RgbaColor::opaque(12, 34, 56);
+        let back_color = RgbaColor::opaque(210, 190, 170);
 
-        assert!(editor.settings().cutting_allowed());
+        let result = editor
+            .execute(
+                0,
+                Command::UpdatePaperProperties {
+                    thickness_mm: 0.0,
+                    front_color,
+                    back_color,
+                    cutting_allowed: true,
+                },
+            )
+            .expect("update paper properties");
+
+        assert_eq!(result.revision, 1);
+        assert!(result.settings_changed);
+        assert!(result.changed_vertices.is_empty());
+        assert!(result.changed_edges.is_empty());
+        assert_eq!(editor.paper().thickness_mm, 0.0);
+        assert_eq!(editor.paper().front.color, front_color);
+        assert_eq!(editor.paper().back.color, back_color);
+        assert_eq!(editor.paper().front.texture_asset, Some(front_texture));
+        assert_eq!(editor.paper().back.texture_asset, Some(back_texture));
+        assert!(editor.paper().cutting_allowed);
+
+        editor.undo(1).expect("undo paper properties");
+        assert_eq!(editor.paper(), &original);
+        editor.redo(2).expect("redo paper properties");
+        assert_eq!(editor.paper().thickness_mm, 0.0);
+        assert_eq!(editor.paper().front.color, front_color);
+        assert_eq!(editor.paper().back.color, back_color);
+        assert_eq!(editor.paper().front.texture_asset, Some(front_texture));
+        assert_eq!(editor.paper().back.texture_asset, Some(back_texture));
+        assert!(editor.paper().cutting_allowed);
+    }
+
+    #[test]
+    fn invalid_paper_thickness_does_not_change_state_or_history() {
+        for (invalid, expected) in [
+            (f64::NAN, CommandError::PaperThicknessNotFinite),
+            (f64::INFINITY, CommandError::PaperThicknessNotFinite),
+            (f64::NEG_INFINITY, CommandError::PaperThicknessNotFinite),
+            (-f64::MIN_POSITIVE, CommandError::PaperThicknessNegative),
+        ] {
+            let mut editor = EditorState::new(CreasePattern::empty());
+            let original = editor.paper().clone();
+            let error = editor
+                .execute(
+                    0,
+                    Command::UpdatePaperProperties {
+                        thickness_mm: invalid,
+                        front_color: RgbaColor::opaque(1, 2, 3),
+                        back_color: RgbaColor::opaque(4, 5, 6),
+                        cutting_allowed: true,
+                    },
+                )
+                .expect_err("invalid thickness must fail");
+
+            assert_eq!(error, expected);
+            assert_eq!(editor.paper(), &original);
+            assert_eq!(editor.revision(), 0);
+            assert!(!editor.can_undo());
+            assert!(!editor.can_redo());
+        }
+    }
+
+    #[test]
+    fn existing_cut_edge_prevents_disabling_cutting_without_partial_changes() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let cut_edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: cut_edge,
+                start,
+                end,
+                kind: EdgeKind::Cut,
+            }],
+        };
+        let paper = Paper {
+            cutting_allowed: true,
+            ..Paper::default()
+        };
+        let mut editor = EditorState::with_paper(pattern.clone(), paper);
+        let original = editor.paper().clone();
+
+        let error = editor
+            .execute(0, Command::SetCuttingAllowed { allowed: false })
+            .expect_err("cut edge must prevent disabling");
+        assert_eq!(
+            error,
+            CommandError::CutEdgesPreventDisabling { edge: cut_edge }
+        );
+        assert_eq!(editor.paper(), &original);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+
+        let error = editor
+            .execute(
+                0,
+                Command::UpdatePaperProperties {
+                    thickness_mm: 0.5,
+                    front_color: RgbaColor::opaque(1, 2, 3),
+                    back_color: RgbaColor::opaque(4, 5, 6),
+                    cutting_allowed: false,
+                },
+            )
+            .expect_err("combined update must also reject disabling");
+        assert_eq!(
+            error,
+            CommandError::CutEdgesPreventDisabling { edge: cut_edge }
+        );
+        assert_eq!(editor.paper(), &original);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn undo_restores_a_loaded_cutting_policy_without_revalidating_history() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Cut,
+            }],
+        };
+        let mut editor = EditorState::with_paper(pattern, Paper::default());
+
+        editor
+            .execute(0, Command::SetCuttingAllowed { allowed: true })
+            .expect("repair loaded cutting policy");
+        editor.undo(1).expect("restore exact loaded state");
+
+        assert!(!editor.paper().cutting_allowed);
+        assert_eq!(editor.revision(), 2);
+        assert!(editor.can_redo());
+    }
+
+    #[test]
+    fn persisted_paper_restores_without_creating_history() {
+        let paper = Paper {
+            cutting_allowed: true,
+            thickness_mm: 0.25,
+            ..Paper::default()
+        };
+        let editor = EditorState::with_paper(CreasePattern::empty(), paper.clone());
+
+        assert_eq!(editor.paper(), &paper);
         assert!(editor.cutting_allowed());
         assert_eq!(editor.revision(), 0);
         assert!(!editor.can_undo());
@@ -700,8 +938,11 @@ mod tests {
             ],
             edges: Vec::new(),
         };
-        let mut editor =
-            EditorState::with_settings(pattern, EditorSettings::new().with_cutting_allowed(true));
+        let paper = Paper {
+            cutting_allowed: true,
+            ..Paper::default()
+        };
+        let mut editor = EditorState::with_paper(pattern, paper);
 
         editor
             .execute(

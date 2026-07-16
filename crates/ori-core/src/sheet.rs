@@ -1,7 +1,7 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
 use thiserror::Error;
 
-use crate::{EditorSettings, EditorState};
+use crate::EditorState;
 
 /// A newly-created single sheet whose boundary and crease pattern agree.
 ///
@@ -49,19 +49,13 @@ impl SheetProject {
     /// [`Self::into_editor_state`] when retaining it is unnecessary.
     #[must_use]
     pub fn editor_state(&self) -> EditorState {
-        EditorState::with_settings(
-            self.pattern.clone(),
-            EditorSettings::new().with_cutting_allowed(self.paper.cutting_allowed),
-        )
+        EditorState::with_paper(self.pattern.clone(), self.paper.clone())
     }
 
     /// Consumes this sheet and creates an editor without undo or redo history.
     #[must_use]
     pub fn into_editor_state(self) -> EditorState {
-        EditorState::with_settings(
-            self.pattern,
-            EditorSettings::new().with_cutting_allowed(self.paper.cutting_allowed),
-        )
+        EditorState::with_paper(self.pattern, self.paper)
     }
 
     /// Separates the generated crease pattern and paper metadata for
@@ -258,9 +252,11 @@ mod tests {
     fn editor_starts_with_sheet_and_settings_but_no_history() {
         let sheet = create_rectangular_sheet(100.0, 80.0, true).expect("valid rectangle");
         let expected_pattern = sheet.pattern().clone();
+        let expected_paper = sheet.paper().clone();
         let editor = sheet.editor_state();
 
         assert_eq!(editor.pattern(), &expected_pattern);
+        assert_eq!(editor.paper(), &expected_paper);
         assert!(editor.cutting_allowed());
         assert_eq!(editor.revision(), 0);
         assert!(!editor.can_undo());
@@ -268,6 +264,7 @@ mod tests {
 
         let consumed_editor = sheet.into_editor_state();
         assert_eq!(consumed_editor.pattern(), &expected_pattern);
+        assert_eq!(consumed_editor.paper(), &expected_paper);
         assert!(consumed_editor.cutting_allowed());
         assert_eq!(consumed_editor.revision(), 0);
         assert!(!consumed_editor.can_undo());

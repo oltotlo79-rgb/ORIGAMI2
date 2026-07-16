@@ -20,8 +20,8 @@ import {
   removeVertex,
   saveProject,
   saveProjectAs,
-  setCuttingAllowed,
   undo,
+  updatePaperProperties,
   type ProjectSnapshot,
   type RgbaColor,
   type ValidationSnapshot,
@@ -112,6 +112,15 @@ function App() {
       }
     : null
   const paperFrontColor = rgbaToCss(nativeSnapshot?.paper.front.color)
+  const paperFormKey = nativeSnapshot
+    ? [
+        nativeSnapshot.project_id,
+        nativeSnapshot.paper.thickness_mm,
+        rgbaToHex(nativeSnapshot.paper.front.color),
+        rgbaToHex(nativeSnapshot.paper.back.color),
+        nativeSnapshot.paper.cutting_allowed,
+      ].join(':')
+    : 'paper-unavailable'
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -288,6 +297,34 @@ function App() {
     }
     void runNativeEdit((projectId, revision) =>
       moveVertex(projectId, revision, selectedVertex.id, x, y))
+  }
+
+  function submitPaperProperties(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+
+    const form = new FormData(event.currentTarget)
+    const thicknessInput = String(form.get('thickness_mm') ?? '').trim()
+    const thicknessMm = Number(thicknessInput)
+    const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
+    const backColor = parseHexColor(String(form.get('back_color') ?? ''))
+    if (!thicknessInput || !Number.isFinite(thicknessMm) || thicknessMm < 0) {
+      setCoreStatus('紙厚には0以上の有限の数値を入力してください')
+      return
+    }
+    if (!frontColor || !backColor) {
+      setCoreStatus('表色と裏色には有効な色を指定してください')
+      return
+    }
+
+    void runNativeEdit((projectId, revision) =>
+      updatePaperProperties(projectId, revision, {
+        thicknessMm,
+        frontColor: { ...frontColor, alpha: current.paper.front.color.alpha },
+        backColor: { ...backColor, alpha: current.paper.back.color.alpha },
+        cuttingAllowed: form.get('cutting_allowed') === 'on',
+      }))
   }
 
   async function runValidation() {
@@ -738,27 +775,61 @@ function App() {
           )}
           <section>
             <h2>紙</h2>
-            <label className="field">
-              厚さ
-              <input
-                value={nativeSnapshot?.paper.thickness_mm ?? ''}
-                readOnly
-                aria-label="現在の紙厚"
-              /> mm
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={nativeSnapshot?.cutting_allowed ?? false}
-                disabled={coreBusy || !nativeSnapshot}
-                onChange={(event) =>
-                  runNativeEdit((projectId, revision) =>
-                    setCuttingAllowed(projectId, revision, event.target.checked),
-                  )
-                }
-              />{' '}
-              切断を許可
-            </label>
+            <form
+              key={paperFormKey}
+              className="paper-properties-form"
+              onSubmit={submitPaperProperties}
+              noValidate
+            >
+              <label className="field">
+                <span>厚さ</span>
+                <input
+                  name="thickness_mm"
+                  type="number"
+                  min="0"
+                  step="any"
+                  defaultValue={nativeSnapshot?.paper.thickness_mm ?? ''}
+                  required
+                  disabled={coreBusy || !nativeSnapshot}
+                  aria-label="紙厚"
+                />
+                <span>mm</span>
+              </label>
+              <div className="paper-color-fields">
+                <label className="paper-color-field">
+                  <span>表色</span>
+                  <input
+                    name="front_color"
+                    type="color"
+                    defaultValue={rgbaToHex(nativeSnapshot?.paper.front.color, '#ffffff')}
+                    disabled={coreBusy || !nativeSnapshot}
+                  />
+                </label>
+                <label className="paper-color-field">
+                  <span>裏色</span>
+                  <input
+                    name="back_color"
+                    type="color"
+                    defaultValue={rgbaToHex(nativeSnapshot?.paper.back.color, '#f8f8f5')}
+                    disabled={coreBusy || !nativeSnapshot}
+                  />
+                </label>
+              </div>
+              <label className="check">
+                <input
+                  name="cutting_allowed"
+                  type="checkbox"
+                  defaultChecked={nativeSnapshot?.paper.cutting_allowed ?? false}
+                  disabled={coreBusy || !nativeSnapshot}
+                />{' '}
+                切断を許可
+              </label>
+              <div className="property-actions">
+                <button type="submit" disabled={coreBusy || !nativeSnapshot}>
+                  紙設定を更新
+                </button>
+              </div>
+            </form>
           </section>
           <section>
             <h2>スナップ</h2>
@@ -1020,6 +1091,16 @@ function formatMillimetres(value: number) {
 function rgbaToCss(color: RgbaColor | undefined) {
   if (!color) return '#fffdf9'
   return `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha / 255})`
+}
+
+function rgbaToHex(color: RgbaColor | undefined, fallback = '#fffdf9') {
+  if (!color) return fallback
+  const channels = [color.red, color.green, color.blue]
+  if (!channels.every(Number.isFinite)) return fallback
+  const toHex = (channel: number) => Math.round(Math.min(255, Math.max(0, channel)))
+    .toString(16)
+    .padStart(2, '0')
+  return `#${toHex(color.red)}${toHex(color.green)}${toHex(color.blue)}`
 }
 
 function parseHexColor(value: string): RgbaColor | null {

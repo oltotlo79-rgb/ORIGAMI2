@@ -5,7 +5,10 @@ pub fn benchmark_pattern(edge_count: usize) -> CreasePattern {
     if edge_count == 0 {
         return CreasePattern::empty();
     }
-    let side = ((edge_count as f64 / 2.0).sqrt().ceil() as usize).max(2);
+    let mut side = ((edge_count as f64 / 2.0).sqrt().ceil() as usize).max(2);
+    while 2 * side * (side - 1) < edge_count {
+        side += 1;
+    }
     let mut vertices = Vec::with_capacity(side * side);
     for y in 0..side {
         for x in 0..side {

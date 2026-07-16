@@ -1,8 +1,16 @@
 //! Versioned persistence and interchange adapters.
 
+mod ori2;
+
 use ori_domain::{CreasePattern, ProjectId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use ori2::{
+    CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER, ORI2_MANIFEST_PATH,
+    ORI2_PROJECT_PATH, Ori2Limits, Ori2Manifest, Ori2ProjectEntry, read_project_ori2,
+    read_project_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
+};
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
 
@@ -30,10 +38,70 @@ impl ProjectDocument {
 pub enum FormatError {
     #[error("project JSON is invalid: {0}")]
     InvalidJson(#[from] serde_json::Error),
+    #[error(".ori2 manifest JSON is invalid: {0}")]
+    InvalidManifestJson(#[source] serde_json::Error),
+    #[error(".ori2 ZIP data is invalid: {0}")]
+    InvalidZip(#[from] zip::result::ZipError),
+    #[error(".ori2 ZIP end-of-central-directory record is missing or invalid")]
+    InvalidZipFooter,
+    #[error("multi-disk .ori2 ZIP archives are not supported")]
+    MultiDiskZipNotSupported,
+    #[error("ZIP64 .ori2 archives are not supported")]
+    Zip64NotSupported,
+    #[error(
+        ".ori2 ZIP declares {declared} entries, but {parsed} unique entries were parsed; duplicate names are not allowed"
+    )]
+    ArchiveEntryCountMismatch { declared: usize, parsed: usize },
+    #[error("could not read or write .ori2 data: {0}")]
+    Io(#[from] std::io::Error),
     #[error(
         "project format version {found} is not supported; latest supported version is {latest}"
     )]
     UnsupportedVersion { found: u32, latest: u32 },
+    #[error(".ori2 archive is {actual} bytes; the limit is {limit} bytes")]
+    ContainerTooLarge { actual: u64, limit: u64 },
+    #[error(".ori2 archive has {actual} entries; the limit is {limit}")]
+    TooManyEntries { actual: usize, limit: usize },
+    #[error(".ori2 entry path is {actual} bytes; the limit is {limit} bytes")]
+    EntryPathTooLong { actual: usize, limit: usize },
+    #[error(".ori2 entry path is not safe: {path:?}")]
+    UnsafeEntryPath { path: String },
+    #[error(".ori2 entry path is not valid UTF-8")]
+    NonUtf8EntryPath,
+    #[error(".ori2 is missing the required entry: {path}")]
+    MissingEntry { path: &'static str },
+    #[error("required .ori2 entry is a directory: {path}")]
+    RequiredEntryIsDirectory { path: &'static str },
+    #[error("encrypted .ori2 entries are not supported: {path}")]
+    EncryptedEntry { path: String },
+    #[error(".ori2 entry {path} is {actual} bytes; the limit is {limit} bytes")]
+    EntryTooLarge {
+        path: String,
+        actual: u64,
+        limit: u64,
+    },
+    #[error(".ori2 expands to {actual} bytes; the limit is {limit} bytes")]
+    ExpandedArchiveTooLarge { actual: u64, limit: u64 },
+    #[error("unexpected .ori2 container identifier {found:?}")]
+    InvalidContainerIdentifier { found: String },
+    #[error(
+        ".ori2 container version {found} is not supported; latest supported version is {latest}"
+    )]
+    UnsupportedContainerVersion { found: u32, latest: u32 },
+    #[error(".ori2 requires unsupported features: {features:?}")]
+    UnsupportedRequiredFeatures { features: Vec<String> },
+    #[error(".ori2 manifest references an invalid project path: {found:?}")]
+    InvalidManifestProjectPath { found: String },
+    #[error(
+        ".ori2 manifest declares project size {declared} bytes, but project.json is {actual} bytes"
+    )]
+    ProjectSizeMismatch { declared: u64, actual: u64 },
+    #[error(".ori2 project checksum differs (expected {expected}, actual {actual})")]
+    ProjectHashMismatch { expected: String, actual: String },
+    #[error(
+        ".ori2 manifest declares project format version {manifest}, but project.json declares {project}"
+    )]
+    ManifestProjectVersionMismatch { manifest: u32, project: u32 },
 }
 
 pub fn write_project_json(document: &ProjectDocument) -> Result<Vec<u8>, FormatError> {

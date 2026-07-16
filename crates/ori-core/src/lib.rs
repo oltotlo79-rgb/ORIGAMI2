@@ -1,8 +1,13 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
 mod editor;
+mod validation;
 
-pub use editor::{Command, CommandError, CommandResult, EditorState};
+pub use editor::{Command, CommandError, CommandResult, EditorState, Revision};
+pub use ori_geometry::{
+    CreasePatternValidation, EdgeEndpoint, GeometryError, SegmentIntersection, ValidationIssue,
+};
+pub use validation::EditorValidation;
 
 #[must_use]
 pub fn benchmark_pattern(edge_count: usize) -> CreasePattern {

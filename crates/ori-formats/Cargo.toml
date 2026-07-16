@@ -9,4 +9,6 @@ repository.workspace = true
 ori-domain = { path = "../ori-domain" }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 thiserror.workspace = true
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }

@@ -1,16 +1,14 @@
 use std::{
-    ffi::OsStr,
-    fs::File,
-    io::{Read, Write},
+    ffi::{OsStr, OsString},
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
-#[cfg(not(target_os = "windows"))]
-use atomic_write_file::AtomicWriteFile;
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
     PaperValidationIssue, ValidationIssue, create_rectangular_sheet, validate_paper,
@@ -26,9 +24,6 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(target_os = "windows")]
 use std::{
-    ffi::OsString,
-    fs::OpenOptions,
-    io::{Seek, SeekFrom},
     mem::size_of,
     os::windows::{
         ffi::OsStrExt,
@@ -36,7 +31,6 @@ use std::{
         io::{AsRawHandle, RawHandle},
     },
     ptr,
-    sync::atomic::AtomicU64,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -53,7 +47,6 @@ const UNTITLED_PROJECT_NAME: &str = "Untitled";
 const DEFAULT_SHEET_SIZE_MM: f64 = 400.0;
 const MAX_PROJECT_NAME_CHARS: usize = 120;
 const MAX_BENCHMARK_EDGE_COUNT: usize = 100_000;
-#[cfg(target_os = "windows")]
 static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
@@ -1155,29 +1148,21 @@ fn persist_document_atomically(
     document: &ProjectDocument,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let mut atomic_file = AtomicWriteFile::open(path).map_err(|error| {
-        format!(
-            "failed to prepare atomic save for {}: {error}",
-            path.display()
-        )
-    })?;
-    atomic_file.write_all(bytes).map_err(|error| {
-        format!(
-            "failed to write staged project data for {}: {error}",
-            path.display()
-        )
-    })?;
-    atomic_file.sync_all().map_err(|error| {
-        format!(
-            "failed to synchronize staged project data for {}: {error}",
-            path.display()
-        )
-    })?;
-
-    verify_generated_ori2(document, bytes)?;
-    atomic_file
-        .commit()
-        .map_err(|error| format!("failed to commit {} atomically: {error}", path.display()))
+    let mut staged = prepare_staged_file(path, document, bytes)?;
+    std::fs::rename(&staged.path, path)
+        .map_err(|error| format!("failed to commit {} atomically: {error}", path.display()))?;
+    staged.committed = true;
+    let parent = containing_directory(path)
+        .ok_or_else(|| format!("{} is not a file path", path.display()))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed to synchronize the project directory for {}: {error}",
+                path.display()
+            )
+        })?;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -1186,7 +1171,50 @@ fn persist_document_atomically(
     document: &ProjectDocument,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let mut staged = create_windows_staged_file(path)?;
+    let mut staged = prepare_staged_file(path, document, bytes)?;
+    rename_windows_staged_file(staged.file(), path)?;
+    staged.committed = true;
+    Ok(())
+}
+
+struct StagedFile {
+    file: Option<File>,
+    path: PathBuf,
+    committed: bool,
+}
+
+impl StagedFile {
+    fn file(&self) -> &File {
+        self.file
+            .as_ref()
+            .expect("a staged file handle remains present until drop")
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        self.file
+            .as_mut()
+            .expect("a staged file handle remains present until drop")
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        // Windows sharing deliberately denies deletion while this handle is
+        // open. Closing first is harmless and makes cleanup consistent on all
+        // platforms.
+        drop(self.file.take());
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn prepare_staged_file(
+    path: &Path,
+    document: &ProjectDocument,
+    bytes: &[u8],
+) -> Result<StagedFile, String> {
+    let mut staged = create_staged_file(path)?;
     staged.file_mut().write_all(bytes).map_err(|error| {
         format!(
             "failed to write staged project data for {}: {error}",
@@ -1200,9 +1228,9 @@ fn persist_document_atomically(
         )
     })?;
 
-    // Re-read the staged file through the same handle. Its share mode denies
-    // other writers, and the handle stays open until the rename completes, so
-    // the bytes checked here are the bytes committed below.
+    // Re-read the staged file through the same handle before its same-directory
+    // rename. Windows additionally denies writer/delete sharing for the life
+    // of this handle.
     staged
         .file_mut()
         .seek(SeekFrom::Start(0))
@@ -1229,50 +1257,11 @@ fn persist_document_atomically(
         ));
     }
     verify_generated_ori2(document, &staged_bytes)?;
-
-    rename_windows_staged_file(staged.file(), path)?;
-    staged.committed = true;
-    Ok(())
+    Ok(staged)
 }
 
-#[cfg(target_os = "windows")]
-struct WindowsStagedFile {
-    file: Option<File>,
-    path: PathBuf,
-    committed: bool,
-}
-
-#[cfg(target_os = "windows")]
-impl WindowsStagedFile {
-    fn file(&self) -> &File {
-        self.file
-            .as_ref()
-            .expect("a staged file handle remains present until drop")
-    }
-
-    fn file_mut(&mut self) -> &mut File {
-        self.file
-            .as_mut()
-            .expect("a staged file handle remains present until drop")
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for WindowsStagedFile {
-    fn drop(&mut self) {
-        // Our share mode deliberately denies deletion while the handle is
-        // open. Close it before cleaning an uncommitted stage.
-        drop(self.file.take());
-        if !self.committed {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn create_windows_staged_file(path: &Path) -> Result<WindowsStagedFile, String> {
-    let parent = path
-        .parent()
+fn create_staged_file(path: &Path) -> Result<StagedFile, String> {
+    let parent = containing_directory(path)
         .ok_or_else(|| format!("{} is not a file path", path.display()))?;
     path.file_name()
         .ok_or_else(|| format!("{} is not a file path", path.display()))?;
@@ -1282,20 +1271,40 @@ fn create_windows_staged_file(path: &Path) -> Result<WindowsStagedFile, String> 
         let mut staged_name = OsString::from(".origami2-");
         staged_name.push(format!("{}-{id}.tmp", std::process::id()));
         let staged_path = parent.join(staged_name);
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(target_os = "windows")]
+        options
             .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
-            .share_mode(FILE_SHARE_READ)
-            .open(&staged_path)
-        {
+            .share_mode(FILE_SHARE_READ);
+        match options.open(&staged_path) {
             Ok(file) => {
-                return Ok(WindowsStagedFile {
+                let staged = StagedFile {
                     file: Some(file),
                     path: staged_path,
                     committed: false,
-                });
+                };
+                #[cfg(not(target_os = "windows"))]
+                match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_file() => staged
+                        .file()
+                        .set_permissions(metadata.permissions())
+                        .map_err(|error| {
+                            format!(
+                                "failed to preserve permissions for {}: {error}",
+                                path.display()
+                            )
+                        })?,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "failed to inspect permissions for {}: {error}",
+                            path.display()
+                        ));
+                    }
+                }
+                return Ok(staged);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -1311,6 +1320,16 @@ fn create_windows_staged_file(path: &Path) -> Result<WindowsStagedFile, String> 
         "failed to prepare atomic save for {}: could not allocate a unique staged file",
         path.display()
     ))
+}
+
+fn containing_directory(path: &Path) -> Option<&Path> {
+    path.parent().map(|parent| {
+        if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -4091,7 +4110,7 @@ mod tests {
     fn windows_staged_save_denies_concurrent_writers_and_cleans_up() {
         let directory = TestDirectory::new();
         let path = directory.join("writer-sharing.ori2");
-        let staged = create_windows_staged_file(&path).expect("create protected staged file");
+        let staged = create_staged_file(&path).expect("create protected staged file");
 
         let writer_error = OpenOptions::new()
             .write(true)
@@ -4104,6 +4123,26 @@ mod tests {
         assert_eq!(rename_error.raw_os_error(), Some(32));
         drop(staged);
         assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_save_overwrite_preserves_unix_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TestDirectory::new();
+        let path = directory.join("mode-preservation.ori2");
+        fs::write(&path, b"pre-existing invalid project").expect("write mode fixture");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).expect("set fixture mode");
+        let mut project = unsaved_project_with_redo_history("Mode preservation");
+
+        save_project_to_path(&mut project, path.clone()).expect("overwrite mode fixture");
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(load_document_from_path(&path).unwrap(), project.document());
     }
 
     #[test]
@@ -4249,6 +4288,18 @@ mod tests {
         assert_eq!(
             ensure_ori2_extension(PathBuf::from("crane.ORI2")),
             PathBuf::from("crane.ORI2")
+        );
+    }
+
+    #[test]
+    fn relative_save_path_uses_the_current_directory_for_staging_and_sync() {
+        assert_eq!(
+            containing_directory(Path::new("bird.ori2")),
+            Some(Path::new("."))
+        );
+        assert_eq!(
+            containing_directory(Path::new("projects/bird.ori2")),
+            Some(Path::new("projects"))
         );
     }
 

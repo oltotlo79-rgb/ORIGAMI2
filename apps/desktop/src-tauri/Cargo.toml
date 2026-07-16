@@ -21,8 +21,5 @@ serde.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 
-[target.'cfg(not(windows))'.dependencies]
-atomic-write-file = "0.3.0"
-
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

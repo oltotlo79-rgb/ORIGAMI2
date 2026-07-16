@@ -6,4 +6,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+num-bigint.workspace = true
 ori-domain = { path = "../ori-domain" }

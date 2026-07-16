@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use num_bigint::{BigInt, BigUint, Sign};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 
-use crate::{GeometryError, SegmentIntersection, checked_cross, segment_intersection, subtract};
+use crate::{GeometryError, SegmentIntersection, ensure_finite, segment_intersection};
 
 /// Identifies which endpoint of an edge references a missing vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,7 +278,7 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
             .iter()
             .map(|position| position.expect("all boundary vertices were resolved"))
             .collect();
-        match signed_double_area(&positions) {
+        match polygon_signed_double_area(&positions) {
             Ok(0.0) => issues.push(PaperValidationIssue::ZeroArea {
                 boundary_vertices: boundary.clone(),
             }),
@@ -646,24 +647,157 @@ fn boundary_edges_are_adjacent(first: usize, second: usize, boundary_length: usi
             || (second == 0 && first == boundary_length - 1))
 }
 
-fn signed_double_area(points: &[Point2]) -> Result<f64, GeometryError> {
-    let Some(origin) = points.first().copied() else {
-        return Ok(0.0);
+/// Computes twice the signed area of a polygon boundary.
+///
+/// Every finite binary64 coordinate is expanded exactly and the shoelace sum
+/// is accumulated with arbitrary-precision integers. The exact result is
+/// rounded to binary64 only once, making its sign and returned bits independent
+/// of the starting vertex and summation order. A positive result denotes
+/// counter-clockwise order and a negative result denotes clockwise order.
+/// Values too small to represent round to signed zero; values too large to
+/// represent return [`GeometryError::ArithmeticOverflow`].
+pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryError> {
+    const COMMON_PRODUCT_EXPONENT: i32 = -2148;
+
+    let mut exact_area = BigInt::from(0_u8);
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        ensure_finite("polygon point", current)?;
+        ensure_finite("polygon point", next)?;
+
+        let (current_x, current_x_exponent) = decompose_f64(current.x);
+        let (current_y, current_y_exponent) = decompose_f64(current.y);
+        let (next_x, next_x_exponent) = decompose_f64(next.x);
+        let (next_y, next_y_exponent) = decompose_f64(next.y);
+        add_exact_product(
+            &mut exact_area,
+            current_x,
+            current_x_exponent,
+            next_y,
+            next_y_exponent,
+            COMMON_PRODUCT_EXPONENT,
+        );
+        add_exact_product(
+            &mut exact_area,
+            -current_y,
+            current_y_exponent,
+            next_x,
+            next_x_exponent,
+            COMMON_PRODUCT_EXPONENT,
+        );
+    }
+
+    scaled_bigint_to_f64(exact_area, COMMON_PRODUCT_EXPONENT)
+}
+
+fn decompose_f64(value: f64) -> (i64, i32) {
+    debug_assert!(value.is_finite());
+    let bits = value.to_bits();
+    let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    let (significand, exponent) = if exponent_bits == 0 {
+        (fraction, -1074)
+    } else {
+        ((1_u64 << 52) | fraction, exponent_bits - 1075)
     };
-    let mut area = 0.0;
-    for index in 1..points.len().saturating_sub(1) {
-        // Triangulating relative to a boundary vertex makes the calculation
-        // translation-invariant and avoids cancellation between very large
-        // absolute-coordinate products for small, far-from-origin sheets.
-        let first = subtract(points[index], origin)?;
-        let second = subtract(points[index + 1], origin)?;
-        let contribution = checked_cross(first, second)?;
-        area += contribution;
-        if !area.is_finite() {
+    let significand = significand as i64;
+    if bits >> 63 == 0 {
+        (significand, exponent)
+    } else {
+        (-significand, exponent)
+    }
+}
+
+fn add_exact_product(
+    accumulator: &mut BigInt,
+    left: i64,
+    left_exponent: i32,
+    right: i64,
+    right_exponent: i32,
+    common_exponent: i32,
+) {
+    let product = i128::from(left) * i128::from(right);
+    if product == 0 {
+        return;
+    }
+    let shift = usize::try_from(left_exponent + right_exponent - common_exponent)
+        .expect("the common product exponent is the minimum binary64 product exponent");
+    *accumulator += BigInt::from(product) << shift;
+}
+
+fn scaled_bigint_to_f64(value: BigInt, binary_exponent: i32) -> Result<f64, GeometryError> {
+    let sign = value.sign();
+    if sign == Sign::NoSign {
+        return Ok(0.0);
+    }
+    let magnitude = value.magnitude();
+    let leading_exponent = i64::try_from(magnitude.bits() - 1)
+        .expect("a binary64 polygon accumulator bit count fits i64")
+        + i64::from(binary_exponent);
+    if leading_exponent > 1023 {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+
+    let mut result = if leading_exponent < -1022 {
+        let shift = usize::try_from(-1074_i32 - binary_exponent)
+            .expect("subnormal rounding shift is non-negative");
+        let units = round_shift_right(magnitude, shift);
+        let bits = biguint_to_u64(&units);
+        debug_assert!(bits <= 1_u64 << 52);
+        f64::from_bits(bits)
+    } else {
+        let mut shift = usize::try_from(magnitude.bits().saturating_sub(53))
+            .expect("a binary64 polygon accumulator shift fits usize");
+        let mut significand = round_shift_right(magnitude, shift);
+        if significand.bits() > 53 {
+            significand >>= 1_usize;
+            shift += 1;
+        }
+        let significand = biguint_to_u64(&significand);
+        let scale_exponent = i32::try_from(shift)
+            .ok()
+            .and_then(|shift| shift.checked_add(binary_exponent))
+            .ok_or(GeometryError::ArithmeticOverflow)?;
+        let unbiased_exponent = scale_exponent
+            .checked_add(52)
+            .ok_or(GeometryError::ArithmeticOverflow)?;
+        if unbiased_exponent > 1023 {
             return Err(GeometryError::ArithmeticOverflow);
         }
+        debug_assert!((-1022..=1023).contains(&unbiased_exponent));
+        debug_assert!((1_u64 << 52..1_u64 << 53).contains(&significand));
+        let exponent_bits = u64::try_from(unbiased_exponent + 1023)
+            .expect("a normal binary64 exponent is non-negative");
+        let fraction_bits = significand - (1_u64 << 52);
+        f64::from_bits((exponent_bits << 52) | fraction_bits)
+    };
+    if !result.is_finite() {
+        return Err(GeometryError::ArithmeticOverflow);
     }
-    Ok(area)
+    if sign == Sign::Minus {
+        result = -result;
+    }
+    Ok(result)
+}
+
+fn round_shift_right(value: &BigUint, shift: usize) -> BigUint {
+    if shift == 0 {
+        return value.clone();
+    }
+    let mut rounded = value >> shift;
+    let remainder = value - (&rounded << shift);
+    let halfway = BigUint::from(1_u8) << (shift - 1);
+    if remainder > halfway || (remainder == halfway && rounded.bit(0)) {
+        rounded += 1_u8;
+    }
+    rounded
+}
+
+fn biguint_to_u64(value: &BigUint) -> u64 {
+    let digits = value.to_u64_digits();
+    debug_assert!(digits.len() <= 1);
+    digits.first().copied().unwrap_or(0)
 }
 
 fn is_finite(point: Point2) -> bool {
@@ -929,6 +1063,84 @@ mod tests {
         ];
 
         assert!(validate_paper(&paper(&vertices), &pattern(&vertices)).is_valid());
+    }
+
+    #[test]
+    fn exact_polygon_area_is_bit_stable_across_cycle_start_and_reversal() {
+        let mut points = vec![
+            Point2::new(2.5, -0.2),
+            Point2::new(0.0, 3.8),
+            Point2::new(-2.5, 0.3),
+            Point2::new(0.3, -3.2),
+        ];
+        let expected = polygon_signed_double_area(&points).expect("finite polygon area");
+        for _ in 0..points.len() {
+            assert_eq!(
+                polygon_signed_double_area(&points)
+                    .expect("rotated finite polygon area")
+                    .to_bits(),
+                expected.to_bits()
+            );
+            points.rotate_left(1);
+        }
+
+        points.reverse();
+        assert_eq!(
+            polygon_signed_double_area(&points)
+                .expect("reversed finite polygon area")
+                .to_bits(),
+            (-expected).to_bits()
+        );
+
+        let mut near_degenerate = vec![
+            Point2::new(-9.723_461_371_658_034e-63, -9.723_461_371_658_034e-63),
+            Point2::new(-4.687_132_327_120_085e-63, -5.890_285_417_377_298e-63),
+            Point2::new(1.348_447_477_636_382_8e-62, 7.940_218_265_707_989e-63),
+        ];
+        let expected = polygon_signed_double_area(&near_degenerate)
+            .expect("near-degenerate finite polygon area");
+        assert_ne!(expected, 0.0);
+        for _ in 0..near_degenerate.len() {
+            assert_eq!(
+                polygon_signed_double_area(&near_degenerate)
+                    .expect("rotated near-degenerate polygon area")
+                    .to_bits(),
+                expected.to_bits()
+            );
+            near_degenerate.rotate_left(1);
+        }
+    }
+
+    #[test]
+    fn exact_polygon_area_handles_subnormal_rounding_and_overflow() {
+        let minimum_area_side = f64::from_bits(486_u64 << 52);
+        assert_eq!(
+            polygon_signed_double_area(&[
+                Point2::new(0.0, 0.0),
+                Point2::new(minimum_area_side, 0.0),
+                Point2::new(0.0, minimum_area_side),
+            ]),
+            Ok(f64::from_bits(1))
+        );
+
+        let underflow_side = f64::from_bits(485_u64 << 52);
+        assert_eq!(
+            polygon_signed_double_area(&[
+                Point2::new(0.0, 0.0),
+                Point2::new(underflow_side, 0.0),
+                Point2::new(0.0, underflow_side),
+            ]),
+            Ok(0.0)
+        );
+
+        assert_eq!(
+            polygon_signed_double_area(&[
+                Point2::new(f64::MAX, 0.0),
+                Point2::new(0.0, f64::MAX),
+                Point2::new(-f64::MAX, 0.0),
+            ]),
+            Err(GeometryError::ArithmeticOverflow)
+        );
     }
 
     #[test]

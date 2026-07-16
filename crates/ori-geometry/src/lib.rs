@@ -9,7 +9,7 @@ mod validation;
 
 pub use validation::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, PaperValidation, PaperValidationIssue,
-    ValidationIssue, validate_crease_pattern, validate_paper,
+    ValidationIssue, polygon_signed_double_area, validate_crease_pattern, validate_paper,
 };
 
 /// The orientation of three ordered points.
@@ -18,6 +18,22 @@ pub enum Orientation {
     Clockwise,
     CounterClockwise,
     Collinear,
+}
+
+/// A sign certified by the floating-point orientation filter.
+///
+/// [`FilteredOrientation::Indeterminate`] means that ordinary `f64`
+/// arithmetic cannot certify either sign. It includes exactly collinear
+/// inputs as well as non-collinear inputs whose determinant lies inside the
+/// rounding-error bound. This crate does not yet provide an adaptive exact
+/// backend, so callers must fail closed or hand an indeterminate result to an
+/// exact predicate. It is not safe to resolve it with an epsilon or an ID
+/// tie-break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilteredOrientation {
+    Clockwise,
+    CounterClockwise,
+    Indeterminate,
 }
 
 /// An error that prevents a geometric predicate from producing a valid answer.
@@ -70,6 +86,77 @@ pub fn orientation(a: Point2, b: Point2, c: Point2) -> Result<Orientation, Geome
         Orientation::Clockwise
     } else {
         Orientation::Collinear
+    })
+}
+
+/// Certifies the orientation sign of the ordered triplet `(a, b, c)` when a
+/// fast `f64` determinant is far enough from its rounding-error boundary.
+///
+/// For unit roundoff `u = 2^-53`, the standard first-stage `orient2d` filter
+/// bounds the determinant error by
+/// `(3 + 16u) * u * (|det_left| + |det_right|)`. The implementation uses the
+/// slightly larger, exactly representable factor `4u`, and only returns a
+/// direction when the computed determinant is strictly outside that bound.
+/// If the bound would be subnormal, the result is also indeterminate rather
+/// than relying on an underflowed error estimate.
+///
+/// Non-finite coordinates and overflowing intermediate arithmetic are
+/// rejected. No adaptive exact fallback is implemented yet; therefore
+/// [`FilteredOrientation::Indeterminate`] must never be guessed into a
+/// topological sign with an epsilon or an unrelated stable ID.
+///
+/// Only a returned direction is certified. Because binary64 subtraction and
+/// overflow depend on which argument is chosen as the local origin, permuting
+/// the same three inputs can change whether this first-stage filter returns a
+/// direction, [`FilteredOrientation::Indeterminate`], or an error. Callers
+/// must not rely on those three result categories being permutation-invariant.
+pub fn filtered_orientation(
+    a: Point2,
+    b: Point2,
+    c: Point2,
+) -> Result<FilteredOrientation, GeometryError> {
+    ensure_finite("a", a)?;
+    ensure_finite("b", b)?;
+    ensure_finite("c", c)?;
+
+    // Using c as the local origin is the conventional orient2d formulation:
+    // det = (a.x-c.x)(b.y-c.y) - (a.y-c.y)(b.x-c.x).
+    let a_minus_c = subtract(a, c)?;
+    let b_minus_c = subtract(b, c)?;
+    let determinant_left = checked_product(a_minus_c.x, b_minus_c.y)?;
+    let determinant_right = checked_product(a_minus_c.y, b_minus_c.x)?;
+    let determinant = determinant_left - determinant_right;
+    if !determinant.is_finite() {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+
+    let determinant_permanent = determinant_left.abs() + determinant_right.abs();
+    if !determinant_permanent.is_finite() {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+
+    // f64::EPSILON is 2u, hence this is the conservative 4u envelope of the
+    // standard (3 + 16u)u first-stage bound. The extra margin also covers the
+    // final rounded multiplication used to construct `error_bound`.
+    const ORIENTATION_ERROR_FACTOR: f64 = 2.0 * f64::EPSILON;
+    let error_bound = ORIENTATION_ERROR_FACTOR * determinant_permanent;
+    if !error_bound.is_finite() {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+
+    // Relative-error bounds cannot by themselves account for a subnormal
+    // multiplication result. Returning Indeterminate here keeps the filter a
+    // one-sided certificate even at the bottom of the f64 range.
+    if error_bound < f64::MIN_POSITIVE {
+        return Ok(FilteredOrientation::Indeterminate);
+    }
+
+    Ok(if determinant > error_bound {
+        FilteredOrientation::CounterClockwise
+    } else if determinant < -error_bound {
+        FilteredOrientation::Clockwise
+    } else {
+        FilteredOrientation::Indeterminate
     })
 }
 
@@ -219,6 +306,15 @@ fn checked_cross(a: Point2, b: Point2) -> Result<f64, GeometryError> {
     }
 }
 
+fn checked_product(left: f64, right: f64) -> Result<f64, GeometryError> {
+    let product = left * right;
+    if product.is_finite() {
+        Ok(product)
+    } else {
+        Err(GeometryError::ArithmeticOverflow)
+    }
+}
+
 fn cross(a: Point2, b: Point2) -> f64 {
     // Keep both products rounded in the same way. Using `mul_add` for only one
     // product can make `cross(v, v)` a tiny non-zero value for ordinary finite
@@ -342,6 +438,168 @@ mod tests {
                 Err(GeometryError::NonFinitePoint { argument: "b", .. })
             ));
         }
+    }
+
+    #[test]
+    fn filtered_orientation_certifies_clear_signs_and_argument_reversal() {
+        let a = Point2::new(-3.0, -1.0);
+        let b = Point2::new(5.0, 0.0);
+        let c = Point2::new(1.0, 4.0);
+
+        assert_eq!(
+            filtered_orientation(a, b, c),
+            Ok(FilteredOrientation::CounterClockwise)
+        );
+        assert_eq!(
+            filtered_orientation(a, c, b),
+            Ok(FilteredOrientation::Clockwise)
+        );
+        assert_eq!(
+            filtered_orientation(b, c, a),
+            Ok(FilteredOrientation::CounterClockwise)
+        );
+    }
+
+    #[test]
+    fn filtered_orientation_is_invariant_under_exact_translation_and_half_turn() {
+        let points = [
+            Point2::new(-8.0, -2.0),
+            Point2::new(6.0, 1.0),
+            Point2::new(-1.0, 9.0),
+        ];
+        let expected = filtered_orientation(points[0], points[1], points[2]);
+        let translated =
+            points.map(|point| Point2::new(point.x + 1_048_576.0, point.y - 2_097_152.0));
+        let half_turned = points.map(|point| Point2::new(-point.x, -point.y));
+
+        assert_eq!(expected, Ok(FilteredOrientation::CounterClockwise));
+        assert_eq!(
+            filtered_orientation(translated[0], translated[1], translated[2]),
+            expected
+        );
+        assert_eq!(
+            filtered_orientation(half_turned[0], half_turned[1], half_turned[2]),
+            expected
+        );
+    }
+
+    #[test]
+    fn filtered_orientation_handles_huge_adjacent_floats_without_an_epsilon() {
+        let huge = 2.0_f64.powi(500);
+        let adjacent = f64::from_bits(huge.to_bits() + 1);
+        let a = Point2::new(huge, huge);
+        let b = Point2::new(adjacent, huge);
+        let c = Point2::new(huge, adjacent);
+
+        assert_eq!(
+            filtered_orientation(a, b, c),
+            Ok(FilteredOrientation::CounterClockwise)
+        );
+        assert_eq!(
+            filtered_orientation(a, c, b),
+            Ok(FilteredOrientation::Clockwise)
+        );
+    }
+
+    #[test]
+    fn filtered_orientation_fails_closed_for_collinearity_and_known_cancellation() {
+        assert_eq!(
+            filtered_orientation(
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 1.0),
+                Point2::new(2.0, 2.0),
+            ),
+            Ok(FilteredOrientation::Indeterminate)
+        );
+
+        let next = 1.0 + f64::EPSILON;
+        let next_again = 1.0 + 2.0 * f64::EPSILON;
+        let cancellation_points = [
+            Point2::new(0.0, 0.0),
+            Point2::new(next, 1.0),
+            Point2::new(next_again, next),
+        ];
+        // In exact arithmetic over these binary64 inputs, the determinant is
+        // EPSILON^2 and therefore counter-clockwise. Both rounded products are
+        // `next_again`, however, so a plain f64 determinant cancels to zero.
+        // The legacy API intentionally retains that historical behavior.
+        assert_eq!(
+            orientation(
+                cancellation_points[0],
+                cancellation_points[1],
+                cancellation_points[2],
+            ),
+            Ok(Orientation::Collinear)
+        );
+        assert_eq!(
+            filtered_orientation(
+                cancellation_points[0],
+                cancellation_points[1],
+                cancellation_points[2],
+            ),
+            Ok(FilteredOrientation::Indeterminate)
+        );
+    }
+
+    #[test]
+    fn filtered_orientation_fails_closed_when_the_error_bound_is_subnormal() {
+        assert_eq!(
+            filtered_orientation(
+                Point2::new(0.0, 0.0),
+                Point2::new(f64::MIN_POSITIVE, 0.0),
+                Point2::new(0.0, 1.0),
+            ),
+            Ok(FilteredOrientation::Indeterminate)
+        );
+    }
+
+    #[test]
+    fn filtered_orientation_rejects_non_finite_and_overflowing_arithmetic() {
+        for (a, b, c, expected_argument) in [
+            (
+                Point2::new(f64::NAN, 0.0),
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 1.0),
+                "a",
+            ),
+            (
+                Point2::new(0.0, 0.0),
+                Point2::new(f64::INFINITY, 0.0),
+                Point2::new(1.0, 1.0),
+                "b",
+            ),
+            (
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 0.0),
+                Point2::new(1.0, f64::NEG_INFINITY),
+                "c",
+            ),
+        ] {
+            assert!(matches!(
+                filtered_orientation(a, b, c),
+                Err(GeometryError::NonFinitePoint { argument, .. })
+                    if argument == expected_argument
+            ));
+        }
+
+        assert_eq!(
+            filtered_orientation(
+                Point2::new(-f64::MAX, 0.0),
+                Point2::new(0.0, 1.0),
+                Point2::new(f64::MAX, 0.0),
+            ),
+            Err(GeometryError::ArithmeticOverflow)
+        );
+
+        let product_overflow = 2.0_f64.powi(600);
+        assert_eq!(
+            filtered_orientation(
+                Point2::new(product_overflow, 0.0),
+                Point2::new(0.0, product_overflow),
+                Point2::new(0.0, 0.0),
+            ),
+            Err(GeometryError::ArithmeticOverflow)
+        );
     }
 
     #[test]

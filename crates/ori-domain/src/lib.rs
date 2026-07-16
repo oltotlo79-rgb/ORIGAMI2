@@ -12,6 +12,15 @@ macro_rules! entity_id {
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
             }
+
+            /// Returns the UUID in its canonical RFC byte order.
+            ///
+            /// The returned value is an owned copy, so callers can use it in
+            /// deterministic keys without borrowing the ID.
+            #[must_use]
+            pub const fn canonical_bytes(&self) -> [u8; 16] {
+                self.0.into_bytes()
+            }
         }
 
         impl Default for $name {
@@ -27,6 +36,17 @@ entity_id!(VertexId);
 entity_id!(EdgeId);
 entity_id!(FaceId);
 entity_id!(AssetId);
+
+impl FaceId {
+    /// Derives a stable face ID from a project namespace and canonical name.
+    ///
+    /// UUID v5 makes the same namespace/name pair deterministic. Callers are
+    /// responsible for constructing a collision-resistant canonical name.
+    #[must_use]
+    pub fn derive_v5(namespace: ProjectId, name: &[u8]) -> Self {
+        Self(Uuid::new_v5(&namespace.0, name))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point2 {
@@ -166,6 +186,78 @@ mod tests {
         let json = serde_json::to_string(&vertex).expect("serialize vertex");
         let restored: Vertex = serde_json::from_str(&json).expect("deserialize vertex");
         assert_eq!(restored, vertex);
+    }
+
+    #[test]
+    fn all_entity_ids_expose_canonical_rfc_byte_order() {
+        const EXPECTED: [u8; 16] = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        const JSON_ID: &str = r#""00112233-4455-6677-8899-aabbccddeeff""#;
+
+        let project: ProjectId = serde_json::from_str(JSON_ID).expect("deserialize project ID");
+        let vertex: VertexId = serde_json::from_str(JSON_ID).expect("deserialize vertex ID");
+        let edge: EdgeId = serde_json::from_str(JSON_ID).expect("deserialize edge ID");
+        let face: FaceId = serde_json::from_str(JSON_ID).expect("deserialize face ID");
+        let asset: AssetId = serde_json::from_str(JSON_ID).expect("deserialize asset ID");
+
+        for bytes in [
+            project.canonical_bytes(),
+            vertex.canonical_bytes(),
+            edge.canonical_bytes(),
+            face.canonical_bytes(),
+            asset.canonical_bytes(),
+        ] {
+            assert_eq!(bytes, EXPECTED);
+        }
+    }
+
+    #[test]
+    fn face_v5_derivation_is_deterministic() {
+        let namespace: ProjectId =
+            serde_json::from_str(r#""00112233-4455-6677-8899-aabbccddeeff""#)
+                .expect("deserialize namespace");
+        let expected: FaceId = serde_json::from_str(r#""2c99010b-dc57-5a6b-9e5d-9c16280876d7""#)
+            .expect("deserialize expected face ID");
+
+        let first = FaceId::derive_v5(namespace, b"face-key");
+        let second = FaceId::derive_v5(namespace, b"face-key");
+
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+    }
+
+    #[test]
+    fn face_v5_derivation_separates_namespaces_and_names() {
+        let first_namespace: ProjectId =
+            serde_json::from_str(r#""00112233-4455-6677-8899-aabbccddeeff""#)
+                .expect("deserialize first namespace");
+        let second_namespace: ProjectId =
+            serde_json::from_str(r#""ffffffff-ffff-ffff-ffff-ffffffffffff""#)
+                .expect("deserialize second namespace");
+
+        let baseline = FaceId::derive_v5(first_namespace, b"face-key");
+        let different_name = FaceId::derive_v5(first_namespace, b"face-key-2");
+        let different_namespace = FaceId::derive_v5(second_namespace, b"face-key");
+
+        assert_ne!(baseline, different_name);
+        assert_ne!(baseline, different_namespace);
+        assert_ne!(different_name, different_namespace);
+    }
+
+    #[test]
+    fn derived_face_id_survives_json_round_trip() {
+        let namespace: ProjectId =
+            serde_json::from_str(r#""00112233-4455-6677-8899-aabbccddeeff""#)
+                .expect("deserialize namespace");
+        let face = FaceId::derive_v5(namespace, b"\0binary\xffface-key");
+
+        let json = serde_json::to_string(&face).expect("serialize derived face ID");
+        let restored: FaceId = serde_json::from_str(&json).expect("deserialize derived face ID");
+
+        assert_eq!(restored, face);
+        assert_eq!(restored.canonical_bytes(), face.canonical_bytes());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
 import {
@@ -31,6 +31,7 @@ function App() {
     isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
   )
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
+  const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
   const nativeLines = useMemo<CreaseLine[]>(() => {
     if (!nativeSnapshot) return []
     const positions = new Map(
@@ -46,6 +47,8 @@ function App() {
       ) return []
       return [{
         id: edge.id,
+        startVertexId: edge.start,
+        endVertexId: edge.end,
         x1: start.x,
         y1: start.y,
         x2: end.x,
@@ -75,7 +78,9 @@ function App() {
       .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
   }, [])
 
-  async function runNativeEdit(action: (revision: number) => Promise<ProjectSnapshot>) {
+  const runNativeEdit = useCallback(async (
+    action: (revision: number) => Promise<ProjectSnapshot>,
+  ) => {
     if (!nativeSnapshot) return false
     try {
       const snapshot = await action(nativeSnapshot.revision)
@@ -87,7 +92,58 @@ function App() {
       setCoreStatus(`コアエラー: ${String(error)}`)
       return false
     }
-  }
+  }, [nativeSnapshot])
+
+  const deleteSelection = useCallback(async () => {
+    if (selectedLine) {
+      const removed = await runNativeEdit((revision) => removeEdge(revision, selectedLine.id))
+      if (removed) setSelectedLineId(null)
+      return
+    }
+    if (selectedVertex) {
+      const removed = await runNativeEdit((revision) => removeVertex(revision, selectedVertex.id))
+      if (removed) setSelectedVertexId(null)
+    }
+  }, [runNativeEdit, selectedLine, selectedVertex])
+
+  useEffect(() => {
+    function handleKeyboardShortcut(event: KeyboardEvent) {
+      if (isEditingText(event.target)) return
+
+      const key = event.key.toLowerCase()
+      const primaryModifier = event.ctrlKey || event.metaKey
+      if (primaryModifier && key === 'z') {
+        event.preventDefault()
+        if (event.repeat) return
+        if (event.shiftKey) {
+          if (nativeSnapshot?.can_redo) void runNativeEdit(redo)
+        } else if (nativeSnapshot?.can_undo) {
+          void runNativeEdit(undo)
+        }
+        return
+      }
+      if (primaryModifier && key === 'y') {
+        event.preventDefault()
+        if (!event.repeat && nativeSnapshot?.can_redo) void runNativeEdit(redo)
+        return
+      }
+      if (key === 'delete' || key === 'backspace') {
+        if (!selectedLine && !selectedVertex) return
+        event.preventDefault()
+        if (!event.repeat) void deleteSelection()
+        return
+      }
+      if (key === 'escape') {
+        setSelectedLineId(null)
+        setSelectedVertexId(null)
+        setPendingEdgeStart(null)
+        setCancelInteractionToken((token) => token + 1)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyboardShortcut)
+    return () => window.removeEventListener('keydown', handleKeyboardShortcut)
+  }, [deleteSelection, nativeSnapshot, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
     if (activeTool !== 'mountain' && activeTool !== 'valley' && activeTool !== 'cut') return
@@ -155,6 +211,8 @@ function App() {
             type="button"
             disabled={!nativeSnapshot?.can_undo}
             onClick={() => runNativeEdit(undo)}
+            title="元に戻す (Ctrl/Cmd+Z)"
+            aria-keyshortcuts="Control+Z Meta+Z"
           >
             元に戻す
           </button>
@@ -162,6 +220,8 @@ function App() {
             type="button"
             disabled={!nativeSnapshot?.can_redo}
             onClick={() => runNativeEdit(redo)}
+            title="やり直す (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
+            aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"
           >
             やり直す
           </button>
@@ -230,6 +290,7 @@ function App() {
               selectedVertexId={selectedVertexId}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
+              cancelInteractionToken={cancelInteractionToken}
               onSelectLine={(lineId) => {
                 setSelectedLineId(lineId)
                 if (lineId) setSelectedVertexId(null)
@@ -238,6 +299,9 @@ function App() {
                 runNativeEdit((revision) => addVertex(revision, x, y))
               }
               onSelectVertex={selectCanvasVertex}
+              onMoveVertex={(vertexId, x, y) => {
+                void runNativeEdit((revision) => moveVertex(revision, vertexId, x, y))
+              }}
             />
           </article>
 
@@ -284,12 +348,7 @@ function App() {
                   <button
                     type="button"
                     className="danger"
-                    onClick={() => {
-                      void runNativeEdit((revision) => removeEdge(revision, selectedLine.id))
-                        .then((removed) => {
-                          if (removed) setSelectedLineId(null)
-                        })
-                    }}
+                    onClick={() => void deleteSelection()}
                   >
                     線を削除
                   </button>
@@ -329,12 +388,7 @@ function App() {
                     <button
                       type="button"
                       className="danger"
-                      onClick={() => {
-                        void runNativeEdit((revision) => removeVertex(revision, selectedVertex.id))
-                          .then((removed) => {
-                            if (removed) setSelectedVertexId(null)
-                          })
-                      }}
+                      onClick={() => void deleteSelection()}
                     >
                       頂点を削除
                     </button>
@@ -460,6 +514,12 @@ function validationIssueLabel(code: string) {
     unsplit_intersection: '分割されていない交差・重なり',
     intersection_calculation_failed: '交差計算に失敗',
   }[code] ?? code
+}
+
+function isEditingText(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.matches('input, textarea')) return true
+  return target.isContentEditable || Boolean(target.closest('[contenteditable="true"]'))
 }
 
 export default App

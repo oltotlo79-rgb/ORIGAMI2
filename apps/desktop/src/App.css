@@ -92,7 +92,8 @@ button { color: inherit; }
 .preview-panel { grid-template-rows: 34px minmax(0, 1fr) 48px; }
 .crease-canvas, .fold-preview { display: block; width: 100%; height: 100%; min-height: 0; }
 .crease-canvas { background: #eef2f5; cursor: crosshair; }
-.crease-canvas.tool-select { cursor: default; }
+.crease-canvas.tool-select { cursor: grab; touch-action: none; }
+.crease-canvas.tool-select.is-dragging { cursor: grabbing; }
 .crease-canvas.tool-vertex { cursor: cell; }
 .fold-control { display: grid; grid-template-columns: auto 1fr 50px; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
 .fold-control label, .fold-control output { font-size: 12px; }

@@ -327,15 +327,15 @@ impl EditorState {
     }
 
     fn ensure_cutting_can_be_set(&self, allowed: bool) -> Result<(), CommandError> {
-        if self.paper.cutting_allowed && !allowed {
-            if let Some(edge) = self
+        if self.paper.cutting_allowed
+            && !allowed
+            && let Some(edge) = self
                 .pattern
                 .edges
                 .iter()
                 .find(|edge| edge.kind == EdgeKind::Cut)
-            {
-                return Err(CommandError::CutEdgesPreventDisabling { edge: edge.id });
-            }
+        {
+            return Err(CommandError::CutEdgesPreventDisabling { edge: edge.id });
         }
         Ok(())
     }

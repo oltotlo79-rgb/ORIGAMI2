@@ -55,7 +55,10 @@ function App() {
       if (
         !start ||
         !end ||
-        (edge.kind !== 'mountain' && edge.kind !== 'valley' && edge.kind !== 'cut')
+        (edge.kind !== 'mountain' &&
+          edge.kind !== 'valley' &&
+          edge.kind !== 'boundary' &&
+          edge.kind !== 'cut')
       ) return []
       return [{
         id: edge.id,
@@ -79,6 +82,14 @@ function App() {
     ),
     [nativeSnapshot, selectedVertexId],
   )
+  const boundaryVertexIds = useMemo(() => new Set(
+    nativeSnapshot?.crease_pattern.edges
+      .filter((edge) => edge.kind === 'boundary')
+      .flatMap((edge) => [edge.start, edge.end]) ?? [],
+  ), [nativeSnapshot])
+  const selectedVertexIsBoundary = selectedVertex
+    ? boundaryVertexIds.has(selectedVertex.id)
+    : false
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
@@ -144,17 +155,25 @@ function App() {
 
   const deleteSelection = useCallback(async () => {
     if (selectedLine) {
+      if (selectedLine.kind === 'boundary') {
+        setCoreStatus('輪郭線の追加・削除は紙形状編集から行います')
+        return
+      }
       const removed = await runNativeEdit((projectId, revision) =>
         removeEdge(projectId, revision, selectedLine.id))
       if (removed) setSelectedLineId(null)
       return
     }
     if (selectedVertex) {
+      if (selectedVertexIsBoundary) {
+        setCoreStatus('輪郭頂点の削除は紙形状編集から行います')
+        return
+      }
       const removed = await runNativeEdit((projectId, revision) =>
         removeVertex(projectId, revision, selectedVertex.id))
       if (removed) setSelectedVertexId(null)
     }
-  }, [runNativeEdit, selectedLine, selectedVertex])
+  }, [runNativeEdit, selectedLine, selectedVertex, selectedVertexIsBoundary])
 
   useEffect(() => {
     function handleKeyboardShortcut(event: KeyboardEvent) {
@@ -484,12 +503,15 @@ function App() {
                   <button
                     type="button"
                     className="danger"
-                    disabled={coreBusy}
+                    disabled={coreBusy || selectedLine.kind === 'boundary'}
                     onClick={() => void deleteSelection()}
                   >
                     線を削除
                   </button>
                 </div>
+                {selectedLine.kind === 'boundary' && (
+                  <p className="muted">輪郭線の構成変更は、今後追加する紙形状編集から行います。</p>
+                )}
               </>
             ) : selectedVertex ? (
               <>
@@ -527,13 +549,17 @@ function App() {
                     <button
                       type="button"
                       className="danger"
-                      disabled={coreBusy}
+                      disabled={coreBusy || selectedVertexIsBoundary}
                       onClick={() => void deleteSelection()}
                     >
                       頂点を削除
                     </button>
                   </div>
-                  <p className="muted">接続線がある頂点は、線を削除してから削除します。</p>
+                  <p className="muted">
+                    {selectedVertexIsBoundary
+                      ? '輪郭頂点の構成変更は、今後追加する紙形状編集から行います。'
+                      : '接続線がある頂点は、線を削除してから削除します。'}
+                  </p>
                 </form>
               </>
             ) : <p className="muted">線または頂点を選択してください</p>}

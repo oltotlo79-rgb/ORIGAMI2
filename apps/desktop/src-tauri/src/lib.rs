@@ -10,7 +10,7 @@ use std::{
 };
 
 use atomic_write_file::AtomicWriteFile;
-use ori_core::{Command, EditorSettings, EditorState, ValidationIssue};
+use ori_core::{Command, EditorSettings, EditorState, ValidationIssue, create_rectangular_sheet};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, VertexId};
 use ori_formats::{
     CURRENT_FORMAT_VERSION, Ori2Limits, ProjectDocument, read_project_ori2_with_limits,
@@ -26,6 +26,7 @@ use tauri::menu::{
 };
 
 const UNTITLED_PROJECT_NAME: &str = "Untitled";
+const DEFAULT_SHEET_SIZE_MM: f64 = 400.0;
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
@@ -49,15 +50,27 @@ struct ProjectState {
 
 impl ProjectState {
     fn new(pattern: CreasePattern) -> Self {
-        Self {
+        Self::new_with_paper(pattern, Paper::default())
+    }
+
+    fn new_with_paper(pattern: CreasePattern, paper: Paper) -> Self {
+        let editor = EditorState::with_settings(
+            pattern,
+            EditorSettings::new().with_cutting_allowed(paper.cutting_allowed),
+        );
+        let mut project = Self {
             project_id: ProjectId::new(),
             name: UNTITLED_PROJECT_NAME.to_owned(),
             current_path: None,
-            paper: Paper::default(),
-            editor: EditorState::new(pattern),
+            paper,
+            editor,
             saved_revision: None,
             saved_document: None,
-        }
+        };
+        // A newly-created sheet is the clean baseline. It becomes dirty only
+        // after the user makes an edit, even though it has no file path yet.
+        project.saved_document = Some(project.document());
+        project
     }
 
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
@@ -103,6 +116,13 @@ impl ProjectState {
             || saved.paper.back != self.paper.back
             || saved.crease_pattern != *self.editor.pattern()
     }
+}
+
+fn initial_project_state() -> ProjectState {
+    let sheet = create_rectangular_sheet(DEFAULT_SHEET_SIZE_MM, DEFAULT_SHEET_SIZE_MM, false)
+        .expect("the built-in default sheet dimensions must be valid");
+    let (pattern, paper) = sheet.into_parts();
+    ProjectState::new_with_paper(pattern, paper)
 }
 
 #[derive(Serialize)]
@@ -779,9 +799,7 @@ pub fn run() {
 
     let app = builder
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState(Mutex::new(ProjectState::new(
-            CreasePattern::empty(),
-        ))))
+        .manage(AppState(Mutex::new(initial_project_state())))
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
@@ -875,6 +893,7 @@ mod tests {
             edges: Vec::new(),
         });
         let project_id = project.project_id;
+        assert!(!project.is_dirty());
 
         let response = execute_command(
             &mut project,
@@ -894,6 +913,25 @@ mod tests {
         );
         assert!(response.can_undo);
         assert!(response.is_dirty);
+    }
+
+    #[test]
+    fn initial_project_is_a_clean_square_sheet() {
+        let project = initial_project_state();
+        let snapshot = snapshot(&project);
+
+        assert!(!snapshot.is_dirty);
+        assert_eq!(snapshot.revision, 0);
+        assert_eq!(project.paper.boundary_vertices.len(), 4);
+        assert_eq!(snapshot.crease_pattern.vertices.len(), 4);
+        assert_eq!(snapshot.crease_pattern.edges.len(), 4);
+        assert!(
+            snapshot
+                .crease_pattern
+                .edges
+                .iter()
+                .all(|edge| edge.kind == EdgeKind::Boundary)
+        );
     }
 
     #[test]

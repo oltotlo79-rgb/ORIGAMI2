@@ -52,6 +52,7 @@ pub enum EdgeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RgbaColor {
     pub red: u8,
     pub green: u8,
@@ -71,19 +72,55 @@ impl RgbaColor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl Default for RgbaColor {
+    fn default() -> Self {
+        Self::opaque(255, 255, 255)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PaperAppearance {
     pub color: RgbaColor,
     pub texture_asset: Option<AssetId>,
 }
 
+pub const DEFAULT_PAPER_THICKNESS_MM: f64 = 0.10;
+pub const DEFAULT_PAPER_FRONT_COLOR: RgbaColor = RgbaColor::opaque(255, 255, 255);
+pub const DEFAULT_PAPER_BACK_COLOR: RgbaColor = RgbaColor::opaque(248, 248, 245);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Paper {
     pub boundary_vertices: Vec<VertexId>,
+    /// Physical thickness in millimetres.
+    ///
+    /// Persistence deliberately neither clamps nor applies a sign policy to
+    /// negative or non-finite values. Their admissibility belongs to the
+    /// domain-validation workflow; the JSON codec's number representation is
+    /// the interchange boundary rather than a reason to mutate design data.
     pub thickness_mm: f64,
     pub cutting_allowed: bool,
     pub front: PaperAppearance,
     pub back: PaperAppearance,
+}
+
+impl Default for Paper {
+    fn default() -> Self {
+        Self {
+            boundary_vertices: Vec::new(),
+            thickness_mm: DEFAULT_PAPER_THICKNESS_MM,
+            cutting_allowed: false,
+            front: PaperAppearance {
+                color: DEFAULT_PAPER_FRONT_COLOR,
+                texture_asset: None,
+            },
+            back: PaperAppearance {
+                color: DEFAULT_PAPER_BACK_COLOR,
+                texture_asset: None,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,5 +166,17 @@ mod tests {
         let json = serde_json::to_string(&vertex).expect("serialize vertex");
         let restored: Vertex = serde_json::from_str(&json).expect("deserialize vertex");
         assert_eq!(restored, vertex);
+    }
+
+    #[test]
+    fn default_paper_is_safe_for_legacy_projects() {
+        let paper = Paper::default();
+        assert!(paper.boundary_vertices.is_empty());
+        assert_eq!(paper.thickness_mm, 0.10);
+        assert!(!paper.cutting_allowed);
+        assert_eq!(paper.front.color, DEFAULT_PAPER_FRONT_COLOR);
+        assert_eq!(paper.back.color, DEFAULT_PAPER_BACK_COLOR);
+        assert_eq!(paper.front.texture_asset, None);
+        assert_eq!(paper.back.texture_asset, None);
     }
 }

@@ -2,7 +2,7 @@
 
 mod ori2;
 
-use ori_domain::{CreasePattern, ProjectId};
+use ori_domain::{CreasePattern, Paper, ProjectId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -19,6 +19,8 @@ pub struct ProjectDocument {
     pub format_version: u32,
     pub project_id: ProjectId,
     pub name: String,
+    #[serde(default)]
+    pub paper: Paper,
     pub crease_pattern: CreasePattern,
 }
 
@@ -29,6 +31,7 @@ impl ProjectDocument {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: ProjectId::new(),
             name: name.into(),
+            paper: Paper::default(),
             crease_pattern,
         }
     }
@@ -121,7 +124,9 @@ pub fn read_project_json(bytes: &[u8]) -> Result<ProjectDocument, FormatError> {
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
+    use ori_domain::{
+        AssetId, Edge, EdgeId, EdgeKind, PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
+    };
 
     use super::*;
 
@@ -157,6 +162,69 @@ mod tests {
         let bytes = write_project_json(&original).expect("write project");
         let restored = read_project_json(&bytes).expect("read project");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn new_project_uses_default_paper() {
+        let document = ProjectDocument::new("Blank", CreasePattern::empty());
+        assert_eq!(document.paper, Paper::default());
+    }
+
+    #[test]
+    fn legacy_json_without_paper_uses_safe_defaults() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize project value");
+        value
+            .as_object_mut()
+            .expect("project is a JSON object")
+            .remove("paper");
+        let bytes = serde_json::to_vec(&value).expect("serialize legacy project");
+
+        let restored = read_project_json(&bytes).expect("read legacy project");
+        assert_eq!(restored.paper, Paper::default());
+    }
+
+    #[test]
+    fn json_round_trip_preserves_complete_paper_definition() {
+        let mut original = sample_document();
+        let boundary_vertices = original
+            .crease_pattern
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect();
+        let front_texture = AssetId::new();
+        let back_texture = AssetId::new();
+        original.paper = Paper {
+            boundary_vertices,
+            thickness_mm: 0.235,
+            cutting_allowed: true,
+            front: PaperAppearance {
+                color: RgbaColor {
+                    red: 18,
+                    green: 52,
+                    blue: 86,
+                    alpha: 240,
+                },
+                texture_asset: Some(front_texture),
+            },
+            back: PaperAppearance {
+                color: RgbaColor {
+                    red: 240,
+                    green: 230,
+                    blue: 210,
+                    alpha: 255,
+                },
+                texture_asset: Some(back_texture),
+            },
+        };
+
+        let bytes = write_project_json(&original).expect("write project with paper");
+        let restored = read_project_json(&bytes).expect("read project with paper");
+
+        assert_eq!(restored.paper, original.paper);
+        assert_eq!(restored.paper.front.texture_asset, Some(front_texture));
+        assert_eq!(restored.paper.back.texture_asset, Some(back_texture));
     }
 
     #[test]

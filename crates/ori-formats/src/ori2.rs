@@ -492,7 +492,10 @@ fn is_sha256_hex(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
+    use ori_domain::{
+        AssetId, CreasePattern, Edge, EdgeId, EdgeKind, Paper, PaperAppearance, Point2, RgbaColor,
+        Vertex, VertexId,
+    };
 
     use super::*;
 
@@ -571,6 +574,48 @@ mod tests {
         assert_eq!(archive.len(), REQUIRED_ENTRY_COUNT);
         assert!(archive.by_name(ORI2_MANIFEST_PATH).is_ok());
         assert!(archive.by_name(ORI2_PROJECT_PATH).is_ok());
+    }
+
+    #[test]
+    fn ori2_round_trip_preserves_complete_paper_definition() {
+        let mut original = sample_document();
+        let front_texture = AssetId::new();
+        let back_texture = AssetId::new();
+        original.paper = Paper {
+            boundary_vertices: original
+                .crease_pattern
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect(),
+            thickness_mm: 0.075,
+            cutting_allowed: true,
+            front: PaperAppearance {
+                color: RgbaColor {
+                    red: 210,
+                    green: 45,
+                    blue: 80,
+                    alpha: 250,
+                },
+                texture_asset: Some(front_texture),
+            },
+            back: PaperAppearance {
+                color: RgbaColor {
+                    red: 250,
+                    green: 248,
+                    blue: 235,
+                    alpha: 255,
+                },
+                texture_asset: Some(back_texture),
+            },
+        };
+
+        let bytes = write_project_ori2(&original).expect("write .ori2 with paper");
+        let restored = read_project_ori2(&bytes).expect("read .ori2 with paper");
+
+        assert_eq!(restored.paper, original.paper);
+        assert_eq!(restored.paper.front.texture_asset, Some(front_texture));
+        assert_eq!(restored.paper.back.texture_asset, Some(back_texture));
     }
 
     #[test]

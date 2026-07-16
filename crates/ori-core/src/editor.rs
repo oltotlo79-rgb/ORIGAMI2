@@ -1,7 +1,10 @@
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, RgbaColor, Vertex, VertexId,
 };
-use ori_geometry::{validate_crease_pattern, validate_paper};
+use ori_geometry::{
+    GeometryError, Orientation, SegmentIntersection, orientation, segment_intersection,
+    validate_crease_pattern, validate_paper,
+};
 use thiserror::Error;
 
 pub type Revision = u64;
@@ -46,6 +49,13 @@ pub enum Command {
         new_vertex: VertexId,
         new_edge: EdgeId,
         fraction: f64,
+    },
+    ConnectEdgeIntersection {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+        new_vertex: VertexId,
+        first_new_edge: EdgeId,
+        second_new_edge: EdgeId,
     },
     SplitBoundaryEdge {
         edge: EdgeId,
@@ -194,6 +204,26 @@ pub enum CommandError {
     EdgeSplitPositionNotDistinct,
     #[error("edge split position is already occupied by vertex {vertex:?}")]
     EdgeSplitPositionOccupied { vertex: VertexId },
+    #[error("the two intersection edge IDs must be different")]
+    EdgeIntersectionTargetsNotDistinct,
+    #[error("intersection target edge ID {edge:?} occurs more than once")]
+    EdgeIntersectionTargetEdgeIdAmbiguous { edge: EdgeId },
+    #[error("intersection edge {0:?} must not be a boundary edge")]
+    EdgeIntersectionBoundaryEdge(EdgeId),
+    #[error("the two generated intersection edge IDs must be different")]
+    EdgeIntersectionNewEdgeIdsNotDistinct,
+    #[error("intersection edge {edge:?} endpoint {vertex:?} has more than one vertex record")]
+    EdgeIntersectionEndpointVertexRecordAmbiguous { edge: EdgeId, vertex: VertexId },
+    #[error("intersection edge {edge:?} endpoint {vertex:?} has a non-finite position")]
+    EdgeIntersectionEndpointPositionNotFinite { edge: EdgeId, vertex: VertexId },
+    #[error("edge intersection geometry cannot be represented with finite coordinates")]
+    EdgeIntersectionGeometryNotRepresentable,
+    #[error("the selected edges do not have a single point intersection")]
+    EdgeIntersectionNotSinglePoint,
+    #[error("the selected edges must intersect strictly inside both edges")]
+    EdgeIntersectionNotProper,
+    #[error("edge intersection position is already occupied by vertex {vertex:?}")]
+    EdgeIntersectionPositionOccupied { vertex: VertexId },
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +269,12 @@ enum Inverse {
         new_edge_index: usize,
         new_edge: Edge,
     },
+    RestoreEdgeIntersection {
+        original_edges: [(usize, Edge); 2],
+        new_edges: [(usize, Edge); 2],
+        new_vertex_index: usize,
+        new_vertex: Vertex,
+    },
     RestoreBoundaryVertexRemoval {
         boundary_index: usize,
         vertex_index: usize,
@@ -276,6 +312,14 @@ fn stable_convex_combination(start: f64, end: f64, fraction: f64) -> f64 {
     } else {
         start * (1.0 - fraction) + end * fraction
     }
+}
+
+const fn orientations_are_opposite(first: Orientation, second: Orientation) -> bool {
+    matches!(
+        (first, second),
+        (Orientation::Clockwise, Orientation::CounterClockwise)
+            | (Orientation::CounterClockwise, Orientation::Clockwise)
+    )
 }
 
 fn apply_boundary_vertex_removal(
@@ -514,6 +558,19 @@ impl EditorState {
                 new_edge,
                 fraction,
             } => self.split_edge(edge, new_vertex, new_edge, fraction),
+            Command::ConnectEdgeIntersection {
+                first_edge,
+                second_edge,
+                new_vertex,
+                first_new_edge,
+                second_new_edge,
+            } => self.connect_edge_intersection(
+                first_edge,
+                second_edge,
+                new_vertex,
+                first_new_edge,
+                second_new_edge,
+            ),
             Command::SplitBoundaryEdge {
                 edge,
                 new_vertex,
@@ -829,6 +886,172 @@ impl EditorState {
             new_vertex,
             new_edge_index,
             new_edge,
+        })
+    }
+
+    fn connect_edge_intersection(
+        &mut self,
+        first_edge_id: EdgeId,
+        second_edge_id: EdgeId,
+        new_vertex_id: VertexId,
+        first_new_edge_id: EdgeId,
+        second_new_edge_id: EdgeId,
+    ) -> Result<Inverse, CommandError> {
+        if first_edge_id == second_edge_id {
+            return Err(CommandError::EdgeIntersectionTargetsNotDistinct);
+        }
+        if first_new_edge_id == second_new_edge_id {
+            return Err(CommandError::EdgeIntersectionNewEdgeIdsNotDistinct);
+        }
+        if self.vertex_index(new_vertex_id).is_some()
+            || self.paper.boundary_vertices.contains(&new_vertex_id)
+            || self
+                .pattern
+                .edges
+                .iter()
+                .any(|edge| edge.start == new_vertex_id || edge.end == new_vertex_id)
+        {
+            return Err(CommandError::VertexAlreadyExists(new_vertex_id));
+        }
+        for new_edge_id in [first_new_edge_id, second_new_edge_id] {
+            if self.edge_index(new_edge_id).is_some() {
+                return Err(CommandError::EdgeAlreadyExists(new_edge_id));
+            }
+        }
+
+        let unique_target = |edge_id| {
+            let mut matches = self
+                .pattern
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| edge.id == edge_id);
+            let Some((index, edge)) = matches.next() else {
+                return Err(CommandError::EdgeNotFound(edge_id));
+            };
+            if matches.next().is_some() {
+                return Err(CommandError::EdgeIntersectionTargetEdgeIdAmbiguous { edge: edge_id });
+            }
+            Ok((index, edge.clone()))
+        };
+        let (first_edge_index, first_edge) = unique_target(first_edge_id)?;
+        let (second_edge_index, second_edge) = unique_target(second_edge_id)?;
+        for edge in [&first_edge, &second_edge] {
+            if edge.kind == EdgeKind::Boundary {
+                return Err(CommandError::EdgeIntersectionBoundaryEdge(edge.id));
+            }
+        }
+
+        let unique_endpoint_position = |edge: &Edge, vertex_id| {
+            let mut matches = self
+                .pattern
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.id == vertex_id);
+            let Some(vertex) = matches.next() else {
+                return Err(CommandError::VertexNotFound(vertex_id));
+            };
+            if matches.next().is_some() {
+                return Err(
+                    CommandError::EdgeIntersectionEndpointVertexRecordAmbiguous {
+                        edge: edge.id,
+                        vertex: vertex_id,
+                    },
+                );
+            }
+            if !vertex.position.x.is_finite() || !vertex.position.y.is_finite() {
+                return Err(CommandError::EdgeIntersectionEndpointPositionNotFinite {
+                    edge: edge.id,
+                    vertex: vertex_id,
+                });
+            }
+            Ok(vertex.position)
+        };
+        let first_start = unique_endpoint_position(&first_edge, first_edge.start)?;
+        let first_end = unique_endpoint_position(&first_edge, first_edge.end)?;
+        let second_start = unique_endpoint_position(&second_edge, second_edge.start)?;
+        let second_end = unique_endpoint_position(&second_edge, second_edge.end)?;
+
+        let position = match segment_intersection(first_start, first_end, second_start, second_end)
+        {
+            Ok(SegmentIntersection::Point(position)) => position,
+            Ok(SegmentIntersection::None | SegmentIntersection::CollinearOverlap) => {
+                return Err(CommandError::EdgeIntersectionNotSinglePoint);
+            }
+            Err(GeometryError::NonFinitePoint { .. } | GeometryError::ArithmeticOverflow) => {
+                return Err(CommandError::EdgeIntersectionGeometryNotRepresentable);
+            }
+        };
+        let first_side_start = orientation(first_start, first_end, second_start)
+            .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
+        let first_side_end = orientation(first_start, first_end, second_end)
+            .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
+        let second_side_start = orientation(second_start, second_end, first_start)
+            .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
+        let second_side_end = orientation(second_start, second_end, first_end)
+            .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
+        if !orientations_are_opposite(first_side_start, first_side_end)
+            || !orientations_are_opposite(second_side_start, second_side_end)
+            || [first_start, first_end, second_start, second_end].contains(&position)
+        {
+            return Err(CommandError::EdgeIntersectionNotProper);
+        }
+        if let Some(vertex) = self
+            .pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.position == position)
+        {
+            return Err(CommandError::EdgeIntersectionPositionOccupied { vertex: vertex.id });
+        }
+
+        let new_vertex_index = self.pattern.vertices.len();
+        let new_vertex = Vertex {
+            id: new_vertex_id,
+            position,
+        };
+        let mut splits = [
+            (first_edge_index, first_edge, first_new_edge_id),
+            (second_edge_index, second_edge, second_new_edge_id),
+        ];
+        splits.sort_by_key(|(index, _, _)| *index);
+        let original_edges = [
+            (splits[0].0, splits[0].1.clone()),
+            (splits[1].0, splits[1].1.clone()),
+        ];
+        let created_edges = [
+            Edge {
+                id: splits[0].2,
+                start: new_vertex_id,
+                end: splits[0].1.end,
+                kind: splits[0].1.kind,
+            },
+            Edge {
+                id: splits[1].2,
+                start: new_vertex_id,
+                end: splits[1].1.end,
+                kind: splits[1].1.kind,
+            },
+        ];
+
+        self.pattern.vertices.push(new_vertex.clone());
+        self.pattern.edges[splits[0].0].end = new_vertex_id;
+        self.pattern.edges[splits[1].0].end = new_vertex_id;
+        self.pattern
+            .edges
+            .insert(splits[1].0 + 1, created_edges[1].clone());
+        self.pattern
+            .edges
+            .insert(splits[0].0 + 1, created_edges[0].clone());
+
+        Ok(Inverse::RestoreEdgeIntersection {
+            original_edges,
+            new_edges: [
+                (splits[0].0 + 1, created_edges[0].clone()),
+                (splits[1].0 + 2, created_edges[1].clone()),
+            ],
+            new_vertex_index,
+            new_vertex,
         })
     }
 
@@ -1338,6 +1561,38 @@ impl EditorState {
                 );
                 self.pattern.vertices.remove(*new_vertex_index);
             }
+            Inverse::RestoreEdgeIntersection {
+                original_edges,
+                new_edges,
+                new_vertex_index,
+                new_vertex,
+            } => {
+                for (new_edge_index, new_edge) in new_edges.iter().rev() {
+                    debug_assert_eq!(
+                        self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
+                        Some(new_edge.id)
+                    );
+                    self.pattern.edges.remove(*new_edge_index);
+                }
+                for (original_edge_index, original_edge) in original_edges {
+                    debug_assert_eq!(
+                        self.pattern
+                            .edges
+                            .get(*original_edge_index)
+                            .map(|edge| edge.id),
+                        Some(original_edge.id)
+                    );
+                    self.pattern.edges[*original_edge_index] = original_edge.clone();
+                }
+                debug_assert_eq!(
+                    self.pattern
+                        .vertices
+                        .get(*new_vertex_index)
+                        .map(|vertex| vertex.id),
+                    Some(new_vertex.id)
+                );
+                self.pattern.vertices.remove(*new_vertex_index);
+            }
             Inverse::RestoreBoundaryVertexRemoval {
                 boundary_index,
                 vertex_index,
@@ -1465,6 +1720,43 @@ impl Command {
                     settings: false,
                 }
             }
+            Self::ConnectEdgeIntersection {
+                first_edge,
+                second_edge,
+                new_vertex,
+                first_new_edge,
+                second_new_edge,
+            } => {
+                let mut changed = [
+                    pattern
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .find(|(_, edge)| edge.id == first_edge)
+                        .map(|(index, edge)| (index, edge, first_new_edge)),
+                    pattern
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .find(|(_, edge)| edge.id == second_edge)
+                        .map(|(index, edge)| (index, edge, second_new_edge)),
+                ];
+                changed.sort_by_key(|entry| entry.map_or(usize::MAX, |(index, _, _)| index));
+                let mut vertices = vec![new_vertex];
+                let mut edges = Vec::with_capacity(4);
+                for entry in changed.into_iter().flatten() {
+                    let (_, edge, generated_edge) = entry;
+                    vertices.push(edge.start);
+                    vertices.push(edge.end);
+                    edges.push(edge.id);
+                    edges.push(generated_edge);
+                }
+                Changes {
+                    vertices,
+                    edges,
+                    settings: false,
+                }
+            }
             Self::SplitBoundaryEdge {
                 edge,
                 new_vertex,
@@ -1565,6 +1857,28 @@ impl Inverse {
                 edges: vec![original_edge.id, new_edge.id],
                 settings: false,
             },
+            Self::RestoreEdgeIntersection {
+                original_edges,
+                new_edges,
+                new_vertex,
+                ..
+            } => {
+                let mut vertices = vec![new_vertex.id];
+                let mut edges = Vec::with_capacity(4);
+                for ((_, original_edge), (_, new_edge)) in
+                    original_edges.iter().zip(new_edges.iter())
+                {
+                    vertices.push(original_edge.start);
+                    vertices.push(original_edge.end);
+                    edges.push(original_edge.id);
+                    edges.push(new_edge.id);
+                }
+                Changes {
+                    vertices,
+                    edges,
+                    settings: false,
+                }
+            }
             Self::RestoreBoundaryVertexRemoval {
                 vertex,
                 kept_edge,
@@ -1678,6 +1992,87 @@ mod tests {
         )
     }
 
+    fn crossing_edges_editor() -> (EditorState, CreasePattern, Paper, Edge, Edge) {
+        let sheet =
+            crate::create_rectangular_sheet(100.0, 100.0, true).expect("valid crossing test sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        let ids = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        pattern.vertices.extend([
+            Vertex {
+                id: ids[0],
+                position: Point2::new(20.0, 20.0),
+            },
+            Vertex {
+                id: ids[1],
+                position: Point2::new(80.0, 80.0),
+            },
+            Vertex {
+                id: ids[2],
+                position: Point2::new(20.0, 80.0),
+            },
+            Vertex {
+                id: ids[3],
+                position: Point2::new(80.0, 20.0),
+            },
+        ]);
+        let first = Edge {
+            id: EdgeId::new(),
+            start: ids[0],
+            end: ids[1],
+            kind: EdgeKind::Mountain,
+        };
+        let second = Edge {
+            id: EdgeId::new(),
+            start: ids[2],
+            end: ids[3],
+            kind: EdgeKind::Valley,
+        };
+        pattern.edges.extend([first.clone(), second.clone()]);
+        (
+            EditorState::with_paper(pattern.clone(), paper.clone()),
+            pattern,
+            paper,
+            first,
+            second,
+        )
+    }
+
+    fn two_edge_editor(points: [Point2; 4]) -> (EditorState, Edge, Edge) {
+        let ids = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        let vertices = ids
+            .into_iter()
+            .zip(points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect();
+        let first = Edge {
+            id: EdgeId::new(),
+            start: ids[0],
+            end: ids[1],
+            kind: EdgeKind::Mountain,
+        };
+        let second = Edge {
+            id: EdgeId::new(),
+            start: ids[2],
+            end: ids[3],
+            kind: EdgeKind::Valley,
+        };
+        let editor = EditorState::new(CreasePattern {
+            vertices,
+            edges: vec![first.clone(), second.clone()],
+        });
+        (editor, first, second)
+    }
+
     fn collinear_after_removal_editor() -> (EditorState, CreasePattern, Paper, VertexId) {
         let previous = VertexId::new();
         let target = VertexId::new();
@@ -1752,6 +2147,26 @@ mod tests {
         assert_eq!(editor.pattern(), &pattern);
         assert_eq!(editor.paper(), &paper);
         assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    fn assert_intersection_rejected(
+        editor: &mut EditorState,
+        command: Command,
+        expected: CommandError,
+    ) {
+        let pattern = editor.pattern().clone();
+        let paper = editor.paper().clone();
+        let revision = editor.revision();
+        let error = editor
+            .execute(revision, command)
+            .expect_err("edge intersection connection must fail");
+
+        assert_eq!(error, expected);
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), revision);
         assert!(!editor.can_undo());
         assert!(!editor.can_redo());
     }
@@ -2888,6 +3303,628 @@ mod tests {
                 position: Point2::new(0.0, 1.0),
             })
         );
+    }
+
+    #[test]
+    fn edge_intersection_connection_is_atomic_ordered_and_exact_through_history() {
+        let (_, mut original_pattern, original_paper, first, second) = crossing_edges_editor();
+        let original_second_index = original_pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == second.id)
+            .expect("second crossing edge");
+        let unrelated_edge = Edge {
+            id: EdgeId::new(),
+            start: first.start,
+            end: second.start,
+            kind: EdgeKind::Auxiliary,
+        };
+        original_pattern
+            .edges
+            .insert(original_second_index, unrelated_edge.clone());
+        let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
+        let first_index = original_pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == first.id)
+            .expect("first crossing edge");
+        let second_index = original_pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == second.id)
+            .expect("second crossing edge");
+        assert_eq!(second_index, first_index + 2);
+        assert_eq!(original_pattern.edges[first_index + 1], unrelated_edge);
+        assert!(!validate_crease_pattern(&original_pattern).is_valid());
+        let new_vertex = VertexId::new();
+        let first_new_edge = EdgeId::new();
+        let second_new_edge = EdgeId::new();
+
+        // Pass the targets in reverse vector order to verify that output order
+        // remains tied to the document, while each generated ID remains tied
+        // to its requested target edge.
+        let result = editor
+            .execute(
+                0,
+                Command::ConnectEdgeIntersection {
+                    first_edge: second.id,
+                    second_edge: first.id,
+                    new_vertex,
+                    first_new_edge,
+                    second_new_edge,
+                },
+            )
+            .expect("connect proper edge intersection");
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(
+            result.changed_vertices,
+            vec![new_vertex, first.start, first.end, second.start, second.end]
+        );
+        assert_eq!(
+            result.changed_edges,
+            vec![first.id, second_new_edge, second.id, first_new_edge]
+        );
+        assert!(!result.settings_changed);
+        assert_eq!(editor.paper(), &original_paper);
+        assert_eq!(
+            editor.pattern().vertices.last(),
+            Some(&Vertex {
+                id: new_vertex,
+                position: Point2::new(50.0, 50.0),
+            })
+        );
+        assert_eq!(
+            editor.pattern().edges[first_index],
+            Edge {
+                end: new_vertex,
+                ..first.clone()
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[first_index + 1],
+            Edge {
+                id: second_new_edge,
+                start: new_vertex,
+                end: first.end,
+                kind: first.kind,
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[second_index + 1],
+            Edge {
+                end: new_vertex,
+                ..second.clone()
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[second_index + 2],
+            Edge {
+                id: first_new_edge,
+                start: new_vertex,
+                end: second.end,
+                kind: second.kind,
+            }
+        );
+        assert_eq!(editor.pattern().edges[first_index + 2], unrelated_edge);
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        assert!(crate::validate_paper(editor.paper(), editor.pattern()).is_valid());
+        let connected_pattern = editor.pattern().clone();
+
+        let undo = editor.undo(1).expect("undo intersection connection");
+        assert_eq!(undo.revision, 2);
+        assert_eq!(undo.changed_vertices, result.changed_vertices);
+        assert_eq!(undo.changed_edges, result.changed_edges);
+        assert!(!undo.settings_changed);
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+
+        let redo = editor.redo(2).expect("redo intersection connection");
+        assert_eq!(redo.revision, 3);
+        assert_eq!(redo.changed_vertices, result.changed_vertices);
+        assert_eq!(redo.changed_edges, result.changed_edges);
+        assert!(!redo.settings_changed);
+        assert_eq!(editor.pattern(), &connected_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+    }
+
+    #[test]
+    fn edge_intersection_connection_handles_asymmetric_proper_fractions() {
+        let (mut editor, horizontal, vertical) = two_edge_editor([
+            Point2::new(0.0, 3.0),
+            Point2::new(10.0, 3.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(2.0, 10.0),
+        ]);
+        let new_vertex = VertexId::new();
+        let horizontal_new = EdgeId::new();
+        let vertical_new = EdgeId::new();
+
+        editor
+            .execute(
+                0,
+                Command::ConnectEdgeIntersection {
+                    first_edge: horizontal.id,
+                    second_edge: vertical.id,
+                    new_vertex,
+                    first_new_edge: horizontal_new,
+                    second_new_edge: vertical_new,
+                },
+            )
+            .expect("connect asymmetric proper intersection");
+
+        assert_eq!(
+            editor.pattern().vertices.last(),
+            Some(&Vertex {
+                id: new_vertex,
+                position: Point2::new(2.0, 3.0),
+            })
+        );
+        assert_eq!(
+            editor.pattern().edges,
+            vec![
+                Edge {
+                    end: new_vertex,
+                    ..horizontal.clone()
+                },
+                Edge {
+                    id: horizontal_new,
+                    start: new_vertex,
+                    end: horizontal.end,
+                    kind: EdgeKind::Mountain,
+                },
+                Edge {
+                    end: new_vertex,
+                    ..vertical.clone()
+                },
+                Edge {
+                    id: vertical_new,
+                    start: new_vertex,
+                    end: vertical.end,
+                    kind: EdgeKind::Valley,
+                },
+            ]
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+    }
+
+    #[test]
+    fn edge_intersection_connection_preserves_reverse_cut_and_auxiliary_edges() {
+        let (_, mut pattern, mut paper, first, second) = crossing_edges_editor();
+        paper.cutting_allowed = true;
+        let first_index = pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == first.id)
+            .expect("first edge");
+        let second_index = pattern
+            .edges
+            .iter()
+            .position(|edge| edge.id == second.id)
+            .expect("second edge");
+        pattern.edges[first_index] = Edge {
+            start: first.end,
+            end: first.start,
+            kind: EdgeKind::Cut,
+            ..first
+        };
+        pattern.edges[second_index] = Edge {
+            start: second.end,
+            end: second.start,
+            kind: EdgeKind::Auxiliary,
+            ..second
+        };
+        let original_first = pattern.edges[first_index].clone();
+        let original_second = pattern.edges[second_index].clone();
+        let new_vertex = VertexId::new();
+        let first_new = EdgeId::new();
+        let second_new = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        editor
+            .execute(
+                0,
+                Command::ConnectEdgeIntersection {
+                    first_edge: original_first.id,
+                    second_edge: original_second.id,
+                    new_vertex,
+                    first_new_edge: first_new,
+                    second_new_edge: second_new,
+                },
+            )
+            .expect("connect reversed cut and auxiliary intersection");
+
+        assert_eq!(
+            editor.pattern().edges[first_index],
+            Edge {
+                end: new_vertex,
+                ..original_first.clone()
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[first_index + 1],
+            Edge {
+                id: first_new,
+                start: new_vertex,
+                end: original_first.end,
+                kind: EdgeKind::Cut,
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[second_index + 1],
+            Edge {
+                end: new_vertex,
+                ..original_second.clone()
+            }
+        );
+        assert_eq!(
+            editor.pattern().edges[second_index + 2],
+            Edge {
+                id: second_new,
+                start: new_vertex,
+                end: original_second.end,
+                kind: EdgeKind::Auxiliary,
+            }
+        );
+    }
+
+    #[test]
+    fn edge_intersection_connection_rejects_target_and_generated_id_ambiguity_atomically() {
+        let (_, pattern, paper, first, second) = crossing_edges_editor();
+        let command = |first_edge, second_edge, new_vertex, first_new_edge, second_new_edge| {
+            Command::ConnectEdgeIntersection {
+                first_edge,
+                second_edge,
+                new_vertex,
+                first_new_edge,
+                second_new_edge,
+            }
+        };
+
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                first.id,
+                VertexId::new(),
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::EdgeIntersectionTargetsNotDistinct,
+        );
+
+        let missing = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                missing,
+                VertexId::new(),
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::EdgeNotFound(missing),
+        );
+
+        let mut ambiguous_pattern = pattern.clone();
+        ambiguous_pattern.edges.push(second.clone());
+        let mut editor = EditorState::with_paper(ambiguous_pattern, paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                VertexId::new(),
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::EdgeIntersectionTargetEdgeIdAmbiguous { edge: second.id },
+        );
+
+        let boundary = pattern.edges[0].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                boundary,
+                first.id,
+                VertexId::new(),
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::EdgeIntersectionBoundaryEdge(boundary),
+        );
+
+        let duplicate_new_edge = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                VertexId::new(),
+                duplicate_new_edge,
+                duplicate_new_edge,
+            ),
+            CommandError::EdgeIntersectionNewEdgeIdsNotDistinct,
+        );
+
+        let existing_vertex = pattern.vertices[0].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                existing_vertex,
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::VertexAlreadyExists(existing_vertex),
+        );
+
+        let boundary_reference_only = VertexId::new();
+        let mut malformed_paper = paper.clone();
+        malformed_paper
+            .boundary_vertices
+            .push(boundary_reference_only);
+        let mut editor = EditorState::with_paper(pattern.clone(), malformed_paper);
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                boundary_reference_only,
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::VertexAlreadyExists(boundary_reference_only),
+        );
+
+        let endpoint_reference_only = VertexId::new();
+        let mut malformed_pattern = pattern.clone();
+        malformed_pattern.edges.push(Edge {
+            id: EdgeId::new(),
+            start: endpoint_reference_only,
+            end: first.start,
+            kind: EdgeKind::Auxiliary,
+        });
+        let mut editor = EditorState::with_paper(malformed_pattern, paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                endpoint_reference_only,
+                EdgeId::new(),
+                EdgeId::new(),
+            ),
+            CommandError::VertexAlreadyExists(endpoint_reference_only),
+        );
+
+        let existing_edge = pattern.edges[1].id;
+        let mut editor = EditorState::with_paper(pattern.clone(), paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                VertexId::new(),
+                existing_edge,
+                EdgeId::new(),
+            ),
+            CommandError::EdgeAlreadyExists(existing_edge),
+        );
+
+        let mut editor = EditorState::with_paper(pattern, paper);
+        assert_intersection_rejected(
+            &mut editor,
+            command(
+                first.id,
+                second.id,
+                VertexId::new(),
+                EdgeId::new(),
+                existing_edge,
+            ),
+            CommandError::EdgeAlreadyExists(existing_edge),
+        );
+    }
+
+    #[test]
+    fn edge_intersection_connection_rejects_non_proper_geometry_atomically() {
+        let cases = [
+            (
+                [
+                    Point2::new(0.0, 0.0),
+                    Point2::new(2.0, 0.0),
+                    Point2::new(0.0, 2.0),
+                    Point2::new(2.0, 2.0),
+                ],
+                CommandError::EdgeIntersectionNotSinglePoint,
+            ),
+            (
+                [
+                    Point2::new(0.0, 0.0),
+                    Point2::new(3.0, 0.0),
+                    Point2::new(1.0, 0.0),
+                    Point2::new(4.0, 0.0),
+                ],
+                CommandError::EdgeIntersectionNotSinglePoint,
+            ),
+            (
+                [
+                    Point2::new(0.0, 0.0),
+                    Point2::new(4.0, 0.0),
+                    Point2::new(2.0, 0.0),
+                    Point2::new(2.0, 2.0),
+                ],
+                CommandError::EdgeIntersectionNotProper,
+            ),
+            (
+                [
+                    Point2::new(0.0, 0.0),
+                    Point2::new(2.0, 2.0),
+                    Point2::new(2.0, 2.0),
+                    Point2::new(4.0, 0.0),
+                ],
+                CommandError::EdgeIntersectionNotProper,
+            ),
+        ];
+        for (points, expected) in cases {
+            let (mut editor, first, second) = two_edge_editor(points);
+            assert_intersection_rejected(
+                &mut editor,
+                Command::ConnectEdgeIntersection {
+                    first_edge: first.id,
+                    second_edge: second.id,
+                    new_vertex: VertexId::new(),
+                    first_new_edge: EdgeId::new(),
+                    second_new_edge: EdgeId::new(),
+                },
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn edge_intersection_connection_rejects_bad_endpoint_data_occupied_points_and_overflow() {
+        let (_, pattern, paper, first, second) = crossing_edges_editor();
+        let mut duplicate_endpoint = pattern.clone();
+        duplicate_endpoint.vertices.push(
+            duplicate_endpoint
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == first.start)
+                .expect("first start")
+                .clone(),
+        );
+        let mut editor = EditorState::with_paper(duplicate_endpoint, paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            Command::ConnectEdgeIntersection {
+                first_edge: first.id,
+                second_edge: second.id,
+                new_vertex: VertexId::new(),
+                first_new_edge: EdgeId::new(),
+                second_new_edge: EdgeId::new(),
+            },
+            CommandError::EdgeIntersectionEndpointVertexRecordAmbiguous {
+                edge: first.id,
+                vertex: first.start,
+            },
+        );
+
+        let mut missing_endpoint = pattern.clone();
+        missing_endpoint
+            .vertices
+            .retain(|vertex| vertex.id != first.start);
+        let mut editor = EditorState::with_paper(missing_endpoint, paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            Command::ConnectEdgeIntersection {
+                first_edge: first.id,
+                second_edge: second.id,
+                new_vertex: VertexId::new(),
+                first_new_edge: EdgeId::new(),
+                second_new_edge: EdgeId::new(),
+            },
+            CommandError::VertexNotFound(first.start),
+        );
+
+        let mut non_finite = pattern.clone();
+        non_finite
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == second.end)
+            .expect("second end")
+            .position
+            .x = f64::INFINITY;
+        let mut editor = EditorState::with_paper(non_finite, paper.clone());
+        assert_intersection_rejected(
+            &mut editor,
+            Command::ConnectEdgeIntersection {
+                first_edge: first.id,
+                second_edge: second.id,
+                new_vertex: VertexId::new(),
+                first_new_edge: EdgeId::new(),
+                second_new_edge: EdgeId::new(),
+            },
+            CommandError::EdgeIntersectionEndpointPositionNotFinite {
+                edge: second.id,
+                vertex: second.end,
+            },
+        );
+
+        let occupied_by = VertexId::new();
+        let mut occupied = pattern;
+        occupied.vertices.push(Vertex {
+            id: occupied_by,
+            position: Point2::new(50.0, 50.0),
+        });
+        let mut editor = EditorState::with_paper(occupied, paper);
+        assert_intersection_rejected(
+            &mut editor,
+            Command::ConnectEdgeIntersection {
+                first_edge: first.id,
+                second_edge: second.id,
+                new_vertex: VertexId::new(),
+                first_new_edge: EdgeId::new(),
+                second_new_edge: EdgeId::new(),
+            },
+            CommandError::EdgeIntersectionPositionOccupied {
+                vertex: occupied_by,
+            },
+        );
+
+        let (mut editor, first, second) = two_edge_editor([
+            Point2::new(-f64::MAX, -1.0),
+            Point2::new(f64::MAX, 1.0),
+            Point2::new(-f64::MAX, 1.0),
+            Point2::new(f64::MAX, -1.0),
+        ]);
+        assert_intersection_rejected(
+            &mut editor,
+            Command::ConnectEdgeIntersection {
+                first_edge: first.id,
+                second_edge: second.id,
+                new_vertex: VertexId::new(),
+                first_new_edge: EdgeId::new(),
+                second_new_edge: EdgeId::new(),
+            },
+            CommandError::EdgeIntersectionGeometryNotRepresentable,
+        );
+    }
+
+    #[test]
+    fn stale_edge_intersection_connection_preserves_state_and_history() {
+        let (mut editor, pattern, paper, first, second) = crossing_edges_editor();
+        let error = editor
+            .execute(
+                9,
+                Command::ConnectEdgeIntersection {
+                    first_edge: first.id,
+                    second_edge: second.id,
+                    new_vertex: VertexId::new(),
+                    first_new_edge: EdgeId::new(),
+                    second_new_edge: EdgeId::new(),
+                },
+            )
+            .expect_err("stale intersection connection must fail");
+
+        assert_eq!(
+            error,
+            CommandError::RevisionConflict {
+                expected: 9,
+                actual: 0,
+            }
+        );
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
     }
 
     #[test]

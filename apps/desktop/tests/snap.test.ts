@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { performance } from 'node:perf_hooks'
 import test from 'node:test'
 
 import {
@@ -12,6 +13,10 @@ import {
   type SnapSettings,
 } from '../src/lib/snap.ts'
 import { createVertexPlacement } from '../src/lib/vertexPlacement.ts'
+import {
+  createIntersectionSnapIndex,
+  type IntersectionSnapSegment,
+} from '../src/lib/intersectionSnap.ts'
 
 const EMPTY_GRID: SnapGrid = { xValues: [], yValues: [] }
 
@@ -522,4 +527,265 @@ test('malformed edge snap metadata never degrades to an overlapping free vertex'
     },
     [segment],
   ), null)
+})
+
+function intersectionSegment(
+  id: string,
+  startVertexId: string,
+  endVertexId: string,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): IntersectionSnapSegment {
+  return { id, startVertexId, endVertexId, x1, y1, x2, y2 }
+}
+
+function queryIntersection(
+  segments: readonly IntersectionSnapSegment[],
+  point = { x: 0, y: 0 },
+  thresholdPx = 8,
+) {
+  return createIntersectionSnapIndex(segments).query({
+    point,
+    scale: 1,
+    thresholdPx,
+  })
+}
+
+test('proper intersections expose canonical edge IDs, fractions, point, and key', () => {
+  const horizontal = intersectionSegment('z-edge', 'h1', 'h2', 0, 0, 10, 0)
+  const vertical = intersectionSegment('a-edge', 'v1', 'v2', 2, -5, 2, 5)
+  const result = queryIntersection([horizontal, vertical], { x: 2, y: 0 })
+
+  assert.equal(result.truncated, false)
+  assert.equal(result.candidateSegmentCount, 2)
+  assert.equal(result.testedPairCount, 1)
+  assert.deepEqual(result.target, {
+    kind: 'intersection',
+    classification: 'proper',
+    key: 'intersection:["a-edge","z-edge"]',
+    point: { x: 2, y: 0 },
+    distancePx: 0,
+    sourceEdges: [
+      { id: 'a-edge', fraction: 0.5 },
+      { id: 'z-edge', fraction: 0.2 },
+    ],
+  })
+})
+
+test('proper intersection output is deterministic across input order and reversed edges', () => {
+  const horizontal = intersectionSegment('z-edge', 'h2', 'h1', 10, 0, 0, 0)
+  const vertical = intersectionSegment('a-edge', 'v2', 'v1', 2, 5, 2, -5)
+  const forward = queryIntersection([horizontal, vertical], { x: 2, y: 0 })
+  const shuffled = queryIntersection([vertical, horizontal], { x: 2, y: 0 })
+
+  assert.deepEqual(shuffled, forward)
+  assert.deepEqual(forward.target?.sourceEdges, [
+    { id: 'a-edge', fraction: 0.5 },
+    { id: 'z-edge', fraction: 0.8 },
+  ])
+})
+
+test('equal-distance proper intersections use the canonical key as a stable tie-breaker', () => {
+  const segments = [
+    intersectionSegment('b', 'b1', 'b2', -1.5, 0, -0.5, 0),
+    intersectionSegment('c', 'c1', 'c2', -1, -1, -1, 1),
+    intersectionSegment('a', 'a1', 'a2', 0.5, 0, 1.5, 0),
+    intersectionSegment('z', 'z1', 'z2', 1, -1, 1, 1),
+  ]
+  const first = queryIntersection(segments, { x: 0, y: 0 }, 2)
+  const second = queryIntersection([...segments].reverse(), { x: 0, y: 0 }, 2)
+
+  assert.equal(first.target?.key, 'intersection:["a","z"]')
+  assert.deepEqual(second, first)
+})
+
+test('intersection accept filters choose the next ranked candidate deterministically', () => {
+  const segments = [
+    intersectionSegment('left-horizontal', 'lh1', 'lh2', -1.5, 0, -0.5, 0),
+    intersectionSegment('left-vertical', 'lv1', 'lv2', -1, -1, -1, 1),
+    intersectionSegment('right-horizontal', 'rh1', 'rh2', 1.5, 0, 2.5, 0),
+    intersectionSegment('right-vertical', 'rv1', 'rv2', 2, -1, 2, 1),
+  ]
+  const index = createIntersectionSnapIndex(segments)
+  const common = {
+    point: { x: 0, y: 0 },
+    scale: 1,
+    thresholdPx: 3,
+  }
+  const unfiltered = index.query(common)
+  const acceptAll = index.query({ ...common, accept: () => true })
+  const paperInteriorOnly = index.query({
+    ...common,
+    accept: (target) => target.point.x > 0,
+  })
+
+  assert.equal(unfiltered.target?.point.x, -1)
+  assert.deepEqual(acceptAll, unfiltered)
+  assert.equal(paperInteriorOnly.target?.point.x, 2)
+  assert.equal(paperInteriorOnly.truncated, false)
+  assert.deepEqual(
+    index.query({ ...common, accept: () => false }),
+    { target: null, candidateSegmentCount: 4, testedPairCount: 6, truncated: false },
+  )
+})
+
+test('T junctions, endpoints, shared vertices, parallel lines, and overlaps are excluded', () => {
+  const excludedPairs: readonly (readonly [IntersectionSnapSegment, IntersectionSnapSegment])[] = [
+    [
+      intersectionSegment('t-base', 'a', 'b', 0, 0, 10, 0),
+      intersectionSegment('t-stem', 'c', 'd', 5, 0, 5, 5),
+    ],
+    [
+      intersectionSegment('endpoint-a', 'a', 'b', 0, 0, 5, 0),
+      intersectionSegment('endpoint-b', 'c', 'd', 5, 0, 5, 5),
+    ],
+    [
+      intersectionSegment('shared-a', 'a', 'shared', 0, 0, 5, 0),
+      intersectionSegment('shared-b', 'shared', 'b', 5, 0, 5, 5),
+    ],
+    [
+      intersectionSegment('parallel-a', 'a', 'b', 0, 0, 10, 0),
+      intersectionSegment('parallel-b', 'c', 'd', 0, 1, 10, 1),
+    ],
+    [
+      intersectionSegment('overlap-a', 'a', 'b', 0, 0, 10, 0),
+      intersectionSegment('overlap-b', 'c', 'd', 4, 0, 12, 0),
+    ],
+  ]
+
+  for (const pair of excludedPairs) {
+    assert.equal(queryIntersection(pair, { x: 5, y: 0 }, 20).target, null)
+  }
+})
+
+test('invalid, zero-length, duplicate-ID, and overflowing segments are safely ignored', () => {
+  const filtered = createIntersectionSnapIndex([
+    intersectionSegment('zero', 'a', 'b', 1, 1, 1, 1),
+    intersectionSegment('same-vertex', 'a', 'a', 0, 0, 1, 1),
+    intersectionSegment('nonfinite', 'a', 'b', 0, 0, Number.NaN, 1),
+    intersectionSegment('duplicate', 'a', 'b', 0, 0, 1, 1),
+    intersectionSegment('duplicate', 'c', 'd', 0, 1, 1, 0),
+  ])
+  assert.equal(filtered.segmentCount, 0)
+
+  const overflow = queryIntersection([
+    intersectionSegment('huge-horizontal', 'a', 'b', -1e200, 0, 1e200, 0),
+    intersectionSegment('huge-vertical', 'c', 'd', 0, -1e200, 0, 1e200),
+  ], { x: 0, y: 0 }, 1)
+  assert.equal(overflow.target, null)
+  assert.equal(overflow.truncated, false)
+})
+
+test('large finite coordinates retain a proper strict-interior intersection', () => {
+  const magnitude = 1e150
+  const result = queryIntersection([
+    intersectionSegment('horizontal', 'a', 'b', -magnitude, 0, magnitude, 0),
+    intersectionSegment('vertical', 'c', 'd', 0, -magnitude, 0, magnitude),
+  ], { x: 0, y: 0 }, 1)
+
+  assert.deepEqual(result.target?.point, { x: 0, y: 0 })
+  assert.deepEqual(result.target?.sourceEdges, [
+    { id: 'horizontal', fraction: 0.5 },
+    { id: 'vertical', fraction: 0.5 },
+  ])
+})
+
+test('proper intersection distance uses inclusive pixel thresholds and scale', () => {
+  const segments = [
+    intersectionSegment('horizontal', 'a', 'b', 0, 0, 10, 0),
+    intersectionSegment('vertical', 'c', 'd', 5, -5, 5, 5),
+  ]
+  const index = createIntersectionSnapIndex(segments)
+  const atLimit = index.query({
+    point: { x: 5, y: 3 },
+    scale: 2,
+    thresholdPx: 6,
+  })
+  assert.equal(atLimit.target?.distancePx, 6)
+  assert.equal(index.query({
+    point: { x: 5, y: 3 },
+    scale: 2,
+    thresholdPx: 5.999,
+  }).target, null)
+  assert.equal(index.query({
+    point: { x: 5, y: 3 },
+    scale: 0,
+  }).target, null)
+})
+
+test('dense local geometry stops at the configured pair-test limit', () => {
+  const dense = Array.from({ length: 200 }, (_, index) =>
+    intersectionSegment(`edge-${String(index).padStart(3, '0')}`, `a-${index}`, `b-${index}`, -10, 0, 10, 0))
+  const result = createIntersectionSnapIndex(dense).query({
+    point: { x: 0, y: 0 },
+    scale: 1,
+    thresholdPx: 1,
+    maxPairTests: 17,
+  })
+
+  assert.equal(result.candidateSegmentCount, 200)
+  assert.equal(result.testedPairCount, 17)
+  assert.equal(result.truncated, true)
+  assert.equal(result.target, null)
+})
+
+test('truncated searches never expose a provisional target regardless of accept', () => {
+  const crowded = [
+    intersectionSegment('a-horizontal', 'a1', 'a2', -10, 0, 10, 0),
+    intersectionSegment('b-vertical', 'b1', 'b2', 0, -10, 0, 10),
+    ...Array.from({ length: 20 }, (_, index) =>
+      intersectionSegment(`z-${String(index).padStart(2, '0')}`, `z1-${index}`, `z2-${index}`, -10, 0, 10, 0)),
+  ]
+  const index = createIntersectionSnapIndex(crowded)
+
+  for (const scale of [1, Number.MIN_VALUE]) {
+    for (const accept of [undefined, () => true, () => false]) {
+      const result = index.query({
+        point: { x: 0, y: 0 },
+        scale,
+        thresholdPx: 1,
+        maxPairTests: 1,
+        accept,
+      })
+      assert.equal(result.testedPairCount, 1)
+      assert.equal(result.truncated, true)
+      assert.equal(result.target, null)
+    }
+  }
+})
+
+test('10,000 sparse segments use local AABB queries within a bounded time', () => {
+  const segments: IntersectionSnapSegment[] = []
+  for (let index = 0; index < 5_000; index += 1) {
+    const x = index * 10
+    const id = String(index).padStart(4, '0')
+    segments.push(
+      intersectionSegment(`h-${id}`, `hl-${id}`, `hr-${id}`, x - 1, 0, x + 1, 0),
+      intersectionSegment(`v-${id}`, `vb-${id}`, `vt-${id}`, x, -1, x, 1),
+    )
+  }
+
+  const buildStarted = performance.now()
+  const index = createIntersectionSnapIndex(segments)
+  const buildElapsed = performance.now() - buildStarted
+  assert.equal(index.segmentCount, 10_000)
+  assert.ok(buildElapsed < 5_000, `10,000-segment index build took ${buildElapsed}ms`)
+
+  const queryStarted = performance.now()
+  for (let sample = 0; sample < 250; sample += 1) {
+    const sourceIndex = sample * 19
+    const result = index.query({
+      point: { x: sourceIndex * 10, y: 0 },
+      scale: 1,
+      thresholdPx: 0.1,
+    })
+    assert.equal(result.candidateSegmentCount, 2)
+    assert.equal(result.testedPairCount, 1)
+    assert.equal(result.truncated, false)
+    assert.equal(result.target?.classification, 'proper')
+  }
+  const queryElapsed = performance.now() - queryStarted
+  assert.ok(queryElapsed < 2_000, `250 local intersection queries took ${queryElapsed}ms`)
 })

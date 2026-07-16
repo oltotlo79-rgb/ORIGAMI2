@@ -156,6 +156,12 @@ struct ProjectFileResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct EdgeIntersectionResponse {
+    snapshot: ProjectSnapshot,
+    vertex_id: VertexId,
+}
+
+#[derive(Debug, Serialize)]
 struct ValidationSnapshot {
     project_id: ProjectId,
     revision: u64,
@@ -521,6 +527,50 @@ fn execute_edge_split(
             fraction,
         },
     )
+}
+
+#[tauri::command]
+fn connect_edge_intersection(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    first_edge: EdgeId,
+    second_edge: EdgeId,
+) -> Result<EdgeIntersectionResponse, String> {
+    let mut project = lock_project(&state)?;
+    execute_edge_intersection_connection(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        first_edge,
+        second_edge,
+    )
+}
+
+fn execute_edge_intersection_connection(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    first_edge: EdgeId,
+    second_edge: EdgeId,
+) -> Result<EdgeIntersectionResponse, String> {
+    let vertex_id = VertexId::new();
+    let snapshot = execute_command(
+        project,
+        expected_project_id,
+        expected_revision,
+        Command::ConnectEdgeIntersection {
+            first_edge,
+            second_edge,
+            new_vertex: vertex_id,
+            first_new_edge: EdgeId::new(),
+            second_new_edge: EdgeId::new(),
+        },
+    )?;
+    Ok(EdgeIntersectionResponse {
+        snapshot,
+        vertex_id,
+    })
 }
 
 #[tauri::command]
@@ -1220,6 +1270,7 @@ pub fn run() {
             update_paper_properties,
             resize_rectangular_paper,
             split_edge,
+            connect_edge_intersection,
             split_boundary_edge,
             remove_boundary_vertex
         ])
@@ -1335,6 +1386,49 @@ mod tests {
             can_redo: project.editor.can_redo(),
             is_dirty: project.is_dirty(),
         }
+    }
+
+    fn crossing_project() -> (ProjectState, Edge, Edge) {
+        let sheet = create_rectangular_sheet(100.0, 100.0, true).expect("valid test sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        let ids = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        pattern.vertices.extend([
+            Vertex {
+                id: ids[0],
+                position: Point2::new(20.0, 20.0),
+            },
+            Vertex {
+                id: ids[1],
+                position: Point2::new(80.0, 80.0),
+            },
+            Vertex {
+                id: ids[2],
+                position: Point2::new(20.0, 80.0),
+            },
+            Vertex {
+                id: ids[3],
+                position: Point2::new(80.0, 20.0),
+            },
+        ]);
+        let first = Edge {
+            id: EdgeId::new(),
+            start: ids[0],
+            end: ids[1],
+            kind: EdgeKind::Mountain,
+        };
+        let second = Edge {
+            id: EdgeId::new(),
+            start: ids[2],
+            end: ids[3],
+            kind: EdgeKind::Valley,
+        };
+        pattern.edges.extend([first.clone(), second.clone()]);
+        (ProjectState::new_with_paper(pattern, paper), first, second)
     }
 
     #[test]
@@ -1750,6 +1844,149 @@ mod tests {
         let boundary = execute_edge_split(&mut project, project_id, 0, boundary_edge, 0.5)
             .expect_err("boundary split must use the sheet command");
         assert!(boundary.contains("must be changed through a sheet-boundary operation"));
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn edge_intersection_connection_returns_vertex_and_exact_undoable_snapshot() {
+        let (mut project, first, second) = crossing_project();
+        let project_id = project.project_id;
+        let original_document = project.document();
+        let original_vertex_ids = original_document
+            .crease_pattern
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let original_edge_ids = original_document
+            .crease_pattern
+            .edges
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<Vec<_>>();
+
+        let response =
+            execute_edge_intersection_connection(&mut project, project_id, 0, second.id, first.id)
+                .expect("connect crossing edges");
+
+        assert_eq!(response.snapshot.revision, 1);
+        assert!(response.snapshot.is_dirty);
+        assert!(response.snapshot.can_undo);
+        assert!(!response.snapshot.can_redo);
+        let created_vertex = response
+            .snapshot
+            .crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == response.vertex_id)
+            .expect("explicitly returned generated vertex");
+        assert_eq!(created_vertex.position, Point2::new(50.0, 50.0));
+        assert!(!original_vertex_ids.contains(&response.vertex_id));
+        let generated_edges = response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .filter(|edge| !original_edge_ids.contains(&edge.id))
+            .collect::<Vec<_>>();
+        assert_eq!(generated_edges.len(), 2);
+        assert!(
+            generated_edges
+                .iter()
+                .all(|edge| edge.start == response.vertex_id)
+        );
+        assert_eq!(
+            generated_edges
+                .iter()
+                .map(|edge| edge.kind)
+                .collect::<Vec<_>>(),
+            vec![EdgeKind::Mountain, EdgeKind::Valley]
+        );
+        assert_eq!(
+            response.snapshot.crease_pattern,
+            project.editor.pattern().clone()
+        );
+        assert!(validation_snapshot(&project).is_valid);
+        let connected_document = project.document();
+
+        project
+            .editor
+            .undo(1)
+            .expect("undo intersection connection");
+        assert_eq!(project.editor.revision(), 2);
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+
+        project
+            .editor
+            .redo(2)
+            .expect("redo intersection connection");
+        assert_eq!(project.editor.revision(), 3);
+        assert_eq!(project.document(), connected_document);
+        assert!(project.is_dirty());
+        assert!(validation_snapshot(&project).is_valid);
+    }
+
+    #[test]
+    fn edge_intersection_api_rejections_preserve_entire_project_state() {
+        let (mut project, first, second) = crossing_project();
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        let wrong_project = execute_edge_intersection_connection(
+            &mut project,
+            ProjectId::new(),
+            0,
+            first.id,
+            second.id,
+        )
+        .expect_err("wrong project must fail");
+        assert!(wrong_project.contains("active project changed"));
+        assert_eq!(project_state_signature(&project), before);
+
+        let stale =
+            execute_edge_intersection_connection(&mut project, project_id, 4, first.id, second.id)
+                .expect_err("stale revision must fail");
+        assert_eq!(stale, "expected revision 4, but the current revision is 0");
+        assert_eq!(project_state_signature(&project), before);
+
+        let same_edge =
+            execute_edge_intersection_connection(&mut project, project_id, 0, first.id, first.id)
+                .expect_err("same target edge must fail");
+        assert_eq!(same_edge, "the two intersection edge IDs must be different");
+        assert_eq!(project_state_signature(&project), before);
+
+        let boundary = project.editor.pattern().edges[0].id;
+        let boundary_error =
+            execute_edge_intersection_connection(&mut project, project_id, 0, boundary, first.id)
+                .expect_err("boundary target must fail");
+        assert!(boundary_error.contains("must not be a boundary edge"));
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn edge_intersection_api_rejects_t_junction_without_mutation() {
+        let (project, first, second) = crossing_project();
+        let mut document = project.document();
+        document
+            .crease_pattern
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == second.start)
+            .expect("second start")
+            .position = Point2::new(50.0, 50.0);
+        let mut project = ProjectState::new_with_paper(document.crease_pattern, document.paper);
+        let project_id = project.project_id;
+        let before = project_state_signature(&project);
+
+        let error =
+            execute_edge_intersection_connection(&mut project, project_id, 0, first.id, second.id)
+                .expect_err("T-junction must fail");
+
+        assert_eq!(
+            error,
+            "the selected edges must intersect strictly inside both edges"
+        );
         assert_eq!(project_state_signature(&project), before);
     }
 

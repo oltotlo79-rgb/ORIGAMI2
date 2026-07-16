@@ -15,5 +15,6 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 ori-core = { path = "../../../crates/ori-core" }
+ori-domain = { path = "../../../crates/ori-domain" }
 serde.workspace = true
 tauri = { version = "2", features = [] }

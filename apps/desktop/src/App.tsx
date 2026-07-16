@@ -1,7 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
-import { generateBenchmarkPattern } from './lib/coreClient'
+import {
+  addVertex,
+  generateBenchmarkPattern,
+  getProjectSnapshot,
+  isNativeCoreAvailable,
+  redo,
+  undo,
+  type ProjectSnapshot,
+} from './lib/coreClient'
 import './App.css'
 
 const SAMPLE_LINES: CreaseLine[] = [
@@ -20,10 +28,35 @@ function App() {
   const [foldAngle, setFoldAngle] = useState(52)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
+  const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
+  const [coreStatus, setCoreStatus] = useState(
+    isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
+  )
   const selectedLine = useMemo(
     () => SAMPLE_LINES.find((line) => line.id === selectedLineId),
     [selectedLineId],
   )
+
+  useEffect(() => {
+    if (!isNativeCoreAvailable()) return
+    getProjectSnapshot()
+      .then((snapshot) => {
+        setNativeSnapshot(snapshot)
+        setCoreStatus(`Rustコア revision ${snapshot.revision}`)
+      })
+      .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
+  }, [])
+
+  async function runNativeEdit(action: (revision: number) => Promise<ProjectSnapshot>) {
+    if (!nativeSnapshot) return
+    try {
+      const snapshot = await action(nativeSnapshot.revision)
+      setNativeSnapshot(snapshot)
+      setCoreStatus(`Rustコア revision ${snapshot.revision}`)
+    } catch (error) {
+      setCoreStatus(`コアエラー: ${String(error)}`)
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -32,6 +65,27 @@ function App() {
         <strong>ORIGAMI2</strong>
         <span className="document-name">無題のプロジェクト</span>
         <nav className="top-actions" aria-label="プロジェクト操作">
+          <button
+            type="button"
+            disabled={!nativeSnapshot?.can_undo}
+            onClick={() => runNativeEdit(undo)}
+          >
+            元に戻す
+          </button>
+          <button
+            type="button"
+            disabled={!nativeSnapshot?.can_redo}
+            onClick={() => runNativeEdit(redo)}
+          >
+            やり直す
+          </button>
+          <button
+            type="button"
+            disabled={!nativeSnapshot}
+            onClick={() => runNativeEdit((revision) => addVertex(revision, 200, 200))}
+          >
+            中央に頂点
+          </button>
           <button type="button">開く</button>
           <button type="button">保存</button>
           <button type="button" className="primary">検証</button>
@@ -140,6 +194,7 @@ function App() {
 
       <footer className="statusbar">
         <span>ツール: {toolLabel(activeTool)}</span>
+        <span>{coreStatus}</span>
         <span>スナップ: 頂点・交点</span>
         <span className="status-spacer" />
         <button

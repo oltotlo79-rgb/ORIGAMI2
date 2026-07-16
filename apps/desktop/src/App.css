@@ -43,6 +43,7 @@ button { color: inherit; }
   padding: 5px 11px;
 }
 .top-actions .primary { background: var(--accent); color: white; border-color: var(--accent); }
+.top-actions button:disabled { opacity: .45; cursor: not-allowed; }
 
 .workspace {
   min-height: 0;

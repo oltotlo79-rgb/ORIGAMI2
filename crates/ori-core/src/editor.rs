@@ -64,7 +64,14 @@ pub enum CommandError {
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     forward: Command,
-    inverse: Command,
+    inverse: Inverse,
+}
+
+#[derive(Debug, Clone)]
+enum Inverse {
+    Command(Command),
+    RestoreVertex { index: usize, vertex: Vertex },
+    RestoreEdge { index: usize, edge: Edge },
 }
 
 /// Project-level editor settings that are persisted alongside the pattern.
@@ -189,7 +196,7 @@ impl EditorState {
             return Ok(self.result(Changes::default()));
         };
         let result = entry.inverse.changes();
-        self.apply(&entry.inverse)?;
+        self.apply_inverse(&entry.inverse)?;
         self.redo_stack.push(entry);
         self.advance_revision();
         Ok(self.result(result))
@@ -207,14 +214,14 @@ impl EditorState {
         Ok(self.result(result))
     }
 
-    fn apply(&mut self, command: &Command) -> Result<Command, CommandError> {
+    fn apply(&mut self, command: &Command) -> Result<Inverse, CommandError> {
         match *command {
             Command::AddVertex { id, position } => {
                 if self.vertex_index(id).is_some() {
                     return Err(CommandError::VertexAlreadyExists(id));
                 }
                 self.pattern.vertices.push(Vertex { id, position });
-                Ok(Command::RemoveVertex { id })
+                Ok(Inverse::Command(Command::RemoveVertex { id }))
             }
             Command::MoveVertex { id, position } => {
                 let index = self
@@ -222,10 +229,10 @@ impl EditorState {
                     .ok_or(CommandError::VertexNotFound(id))?;
                 let previous = self.pattern.vertices[index].position;
                 self.pattern.vertices[index].position = position;
-                Ok(Command::MoveVertex {
+                Ok(Inverse::Command(Command::MoveVertex {
                     id,
                     position: previous,
-                })
+                }))
             }
             Command::RemoveVertex { id } => {
                 if let Some(edge) = self
@@ -243,10 +250,7 @@ impl EditorState {
                     .vertex_index(id)
                     .ok_or(CommandError::VertexNotFound(id))?;
                 let vertex = self.pattern.vertices.remove(index);
-                Ok(Command::AddVertex {
-                    id: vertex.id,
-                    position: vertex.position,
-                })
+                Ok(Inverse::RestoreVertex { index, vertex })
             }
             Command::AddEdge {
                 id,
@@ -275,24 +279,40 @@ impl EditorState {
                     end,
                     kind,
                 });
-                Ok(Command::RemoveEdge { id })
+                Ok(Inverse::Command(Command::RemoveEdge { id }))
             }
             Command::RemoveEdge { id } => {
                 let index = self.edge_index(id).ok_or(CommandError::EdgeNotFound(id))?;
                 let edge = self.pattern.edges.remove(index);
-                Ok(Command::AddEdge {
-                    id: edge.id,
-                    start: edge.start,
-                    end: edge.end,
-                    kind: edge.kind,
-                })
+                Ok(Inverse::RestoreEdge { index, edge })
             }
             Command::SetCuttingAllowed { allowed } => {
                 let previous = self.settings.cutting_allowed;
                 self.settings.cutting_allowed = allowed;
-                Ok(Command::SetCuttingAllowed { allowed: previous })
+                Ok(Inverse::Command(Command::SetCuttingAllowed {
+                    allowed: previous,
+                }))
             }
         }
+    }
+
+    fn apply_inverse(&mut self, inverse: &Inverse) -> Result<(), CommandError> {
+        match inverse {
+            Inverse::Command(command) => {
+                self.apply(command)?;
+            }
+            Inverse::RestoreVertex { index, vertex } => {
+                debug_assert!(self.vertex_index(vertex.id).is_none());
+                debug_assert!(*index <= self.pattern.vertices.len());
+                self.pattern.vertices.insert(*index, vertex.clone());
+            }
+            Inverse::RestoreEdge { index, edge } => {
+                debug_assert!(self.edge_index(edge.id).is_none());
+                debug_assert!(*index <= self.pattern.edges.len());
+                self.pattern.edges.insert(*index, edge.clone());
+            }
+        }
+        Ok(())
     }
 
     fn vertex_index(&self, id: VertexId) -> Option<usize> {
@@ -362,6 +382,24 @@ impl Command {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
+            },
+        }
+    }
+}
+
+impl Inverse {
+    fn changes(&self) -> Changes {
+        match self {
+            Self::Command(command) => command.changes(),
+            Self::RestoreVertex { vertex, .. } => Changes {
+                vertices: vec![vertex.id],
+                edges: Vec::new(),
+                settings: false,
+            },
+            Self::RestoreEdge { edge, .. } => Changes {
+                vertices: vec![edge.start, edge.end],
+                edges: vec![edge.id],
+                settings: false,
             },
         }
     }
@@ -590,5 +628,82 @@ mod tests {
         assert_eq!(editor.pattern().edges[0].id, edge);
         assert_eq!(editor.revision(), 1);
         assert!(editor.can_undo());
+    }
+
+    #[test]
+    fn undo_remove_vertex_restores_the_original_vector_order() {
+        let vertices = [
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(1.0, 0.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(2.0, 0.0),
+            },
+        ];
+        let original = CreasePattern {
+            vertices: vertices.to_vec(),
+            edges: Vec::new(),
+        };
+        let mut editor = EditorState::new(original.clone());
+
+        editor
+            .execute(0, Command::RemoveVertex { id: vertices[1].id })
+            .expect("remove middle vertex");
+        editor.undo(1).expect("restore middle vertex");
+
+        assert_eq!(editor.pattern(), &original);
+    }
+
+    #[test]
+    fn undo_remove_edge_restores_the_original_vector_order() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edges = [
+            Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        let original = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: edges.to_vec(),
+        };
+        let mut editor = EditorState::new(original.clone());
+
+        editor
+            .execute(0, Command::RemoveEdge { id: edges[1].id })
+            .expect("remove middle edge");
+        editor.undo(1).expect("restore middle edge");
+
+        assert_eq!(editor.pattern(), &original);
     }
 }

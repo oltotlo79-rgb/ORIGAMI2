@@ -1,12 +1,14 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
 mod editor;
+mod sheet;
 mod validation;
 
 pub use editor::{Command, CommandError, CommandResult, EditorSettings, EditorState, Revision};
 pub use ori_geometry::{
     CreasePatternValidation, EdgeEndpoint, GeometryError, SegmentIntersection, ValidationIssue,
 };
+pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
 pub use validation::EditorValidation;
 
 #[must_use]

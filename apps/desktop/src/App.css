@@ -180,6 +180,7 @@ button { color: inherit; }
 .crease-canvas.tool-select { cursor: grab; touch-action: none; }
 .crease-canvas.tool-select.is-dragging { cursor: grabbing; }
 .crease-canvas.tool-vertex { cursor: cell; }
+.crease-canvas.tool-measure { cursor: crosshair; }
 .crease-canvas.is-disabled { cursor: progress; }
 .fold-preview { position: relative; overflow: hidden; background: #eef2f5; }
 .fold-preview canvas { display: block; width: 100%; height: 100%; }

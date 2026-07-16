@@ -84,6 +84,7 @@ function App() {
     () => nativeLines.find((line) => line.id === selectedLineId),
     [nativeLines, selectedLineId],
   )
+  const selectedLineMeasurement = selectedLine ? measureCreaseLine(selectedLine) : null
   const selectedVertex = useMemo(
     () => nativeSnapshot?.crease_pattern.vertices.find(
       (vertex) => vertex.id === selectedVertexId,
@@ -604,6 +605,7 @@ function App() {
               selectedVertexId={selectedVertexId}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
+              measurementLabel={formatLineMeasurementLabel(selectedLineMeasurement)}
               cancelInteractionToken={cancelInteractionToken}
               disabled={coreBusy}
               onSelectLine={(lineId) => {
@@ -666,6 +668,10 @@ function App() {
                   <div><dt>種類</dt><dd>{lineKindLabel(selectedLine.kind)}</dd></div>
                   <div><dt>始点</dt><dd>{selectedLine.x1}, {selectedLine.y1}</dd></div>
                   <div><dt>終点</dt><dd>{selectedLine.x2}, {selectedLine.y2}</dd></div>
+                  <div><dt>ΔX</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.deltaX, ' mm')}</dd></div>
+                  <div><dt>ΔY</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.deltaY, ' mm')}</dd></div>
+                  <div><dt>長さ</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.length, ' mm')}</dd></div>
+                  <div><dt>角度</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.angleDegrees, '°', 2)}</dd></div>
                 </dl>
                 <div className="property-actions">
                   <button
@@ -1086,6 +1092,45 @@ function resolvePaperBounds(snapshot: ProjectSnapshot | null): PaperBounds | und
 
 function formatMillimetres(value: number) {
   return value.toLocaleString('ja-JP', { maximumFractionDigits: 3 })
+}
+
+type LineMeasurement = {
+  deltaX: number
+  deltaY: number
+  length: number
+  angleDegrees: number
+}
+
+function measureCreaseLine(
+  line: Pick<CreaseLine, 'x1' | 'y1' | 'x2' | 'y2'>,
+): LineMeasurement | null {
+  if (![line.x1, line.y1, line.x2, line.y2].every(Number.isFinite)) return null
+  const rawDeltaX = line.x2 - line.x1
+  const rawDeltaY = line.y2 - line.y1
+  if (!Number.isFinite(rawDeltaX) || !Number.isFinite(rawDeltaY)) return null
+  const deltaX = Object.is(rawDeltaX, -0) ? 0 : rawDeltaX
+  const deltaY = Object.is(rawDeltaY, -0) ? 0 : rawDeltaY
+  const length = Math.hypot(deltaX, deltaY)
+  if (!Number.isFinite(length) || length <= 0) return null
+  const rawAngle = Math.atan2(deltaY, deltaX) * 180 / Math.PI
+  if (!Number.isFinite(rawAngle)) return null
+  const angleDegrees = Object.is(rawAngle, -0) ? 0 : rawAngle
+  return { deltaX, deltaY, length, angleDegrees }
+}
+
+function formatMeasurementValue(
+  value: number | null | undefined,
+  unit: string,
+  maximumFractionDigits = 3,
+) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '計測不可'
+  const normalized = Object.is(value, -0) ? 0 : value
+  return `${normalized.toLocaleString('ja-JP', { maximumFractionDigits })}${unit}`
+}
+
+function formatLineMeasurementLabel(measurement: LineMeasurement | null) {
+  if (!measurement) return '計測不可'
+  return `${formatMeasurementValue(measurement.length, ' mm')} / ${formatMeasurementValue(measurement.angleDegrees, '°', 2)}`
 }
 
 function rgbaToCss(color: RgbaColor | undefined) {

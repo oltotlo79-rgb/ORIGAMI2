@@ -27,6 +27,7 @@ type Props = {
   selectedVertexId?: string | null
   pendingVertexId?: string | null
   selectedLineId: string | null
+  measurementLabel?: string
   onSelectLine: (id: string | null) => void
   onAddVertex?: (x: number, y: number) => void
   onSelectVertex?: (id: string) => void
@@ -88,6 +89,7 @@ export function CreaseCanvas({
   selectedVertexId = null,
   pendingVertexId = null,
   selectedLineId,
+  measurementLabel,
   onSelectLine,
   onAddVertex,
   onSelectVertex,
@@ -234,16 +236,40 @@ export function CreaseCanvas({
       context.lineWidth = 2
       context.stroke()
     }
+
+    if (tool === 'measure' && selectedLineId) {
+      const selectedLine = lines.find((line) => line.id === selectedLineId)
+      if (selectedLine) {
+        const start = mapPaperPoint(transform, selectedLine.x1, selectedLine.y1)
+        const end = mapPaperPoint(transform, selectedLine.x2, selectedLine.y2)
+        const labelX = start && end
+          ? (start.x + end.x) / 2
+          : transform.left + transform.width / 2
+        const labelY = start && end
+          ? (start.y + end.y) / 2 - 18
+          : transform.top + 20
+        drawMeasurementLabel(
+          context,
+          measurementLabel ?? '計測不可',
+          labelX,
+          labelY,
+          canvasRect.width,
+          canvasRect.height,
+        )
+      }
+    }
   }, [
     canvasSize.height,
     canvasSize.width,
     dragPreview,
     lines,
+    measurementLabel,
     paperColor,
     pendingVertexId,
     resolvedPaperBounds,
     selectedLineId,
     selectedVertexId,
+    tool,
     vertices,
   ])
 
@@ -667,4 +693,34 @@ function forEachGridValue(
 function safePixelRatio(pixelRatio: number) {
   if (!Number.isFinite(pixelRatio) || pixelRatio <= 0) return 1
   return Math.min(pixelRatio, 4)
+}
+
+function drawMeasurementLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  requestedX: number,
+  requestedY: number,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  if (![requestedX, requestedY, canvasWidth, canvasHeight].every(Number.isFinite)) return
+  context.save()
+  context.font = '600 12px system-ui, sans-serif'
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  const horizontalPadding = 8
+  const labelHeight = 24
+  const labelWidth = Math.max(52, context.measureText(text).width + horizontalPadding * 2)
+  const halfWidth = labelWidth / 2
+  const halfHeight = labelHeight / 2
+  const x = clampToRange(requestedX, halfWidth + 4, Math.max(halfWidth + 4, canvasWidth - halfWidth - 4))
+  const y = clampToRange(requestedY, halfHeight + 4, Math.max(halfHeight + 4, canvasHeight - halfHeight - 4))
+  context.fillStyle = 'rgba(255, 255, 255, 0.94)'
+  context.strokeStyle = 'rgba(64, 78, 90, 0.45)'
+  context.lineWidth = 1
+  context.fillRect(x - halfWidth, y - halfHeight, labelWidth, labelHeight)
+  context.strokeRect(x - halfWidth, y - halfHeight, labelWidth, labelHeight)
+  context.fillStyle = '#26313b'
+  context.fillText(text, x, y)
+  context.restore()
 }

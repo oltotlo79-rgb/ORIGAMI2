@@ -119,6 +119,7 @@ button { color: inherit; }
 .step.add { border-style: dashed; color: var(--muted); }
 .statusbar { display: flex; align-items: center; gap: 22px; padding: 0 10px; border-top: 1px solid var(--border-dark); background: #f5f7f8; font-size: 11px; color: var(--muted); }
 .status-spacer { flex: 1; }
+.benchmark-button { border: 1px solid var(--border); background: transparent; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
 
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
+import { generateBenchmarkPattern } from './lib/coreClient'
 import './App.css'
 
 const SAMPLE_LINES: CreaseLine[] = [
@@ -18,6 +19,7 @@ function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>('m-1')
   const [foldAngle, setFoldAngle] = useState(52)
   const [activeTool, setActiveTool] = useState('select')
+  const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
   const selectedLine = useMemo(
     () => SAMPLE_LINES.find((line) => line.id === selectedLineId),
     [selectedLineId],
@@ -140,7 +142,19 @@ function App() {
         <span>ツール: {toolLabel(activeTool)}</span>
         <span>スナップ: 頂点・交点</span>
         <span className="status-spacer" />
-        <span>準備完了</span>
+        <button
+          type="button"
+          className="benchmark-button"
+          onClick={async () => {
+            setBenchmarkStatus('生成中…')
+            const startedAt = performance.now()
+            const result = await generateBenchmarkPattern(10_000)
+            setBenchmarkStatus(`${result.edge_count.toLocaleString()}本 / ${(performance.now() - startedAt).toFixed(1)}ms`)
+          }}
+        >
+          10,000本テスト
+        </button>
+        <span>{benchmarkStatus}</span>
       </footer>
     </main>
   )

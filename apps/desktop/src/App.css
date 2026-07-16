@@ -181,6 +181,22 @@ button { color: inherit; }
 .crease-canvas.tool-select.is-dragging { cursor: grabbing; }
 .crease-canvas.tool-vertex { cursor: cell; }
 .crease-canvas.is-disabled { cursor: progress; }
+.fold-preview { position: relative; overflow: hidden; background: #eef2f5; }
+.fold-preview canvas { display: block; width: 100%; height: 100%; }
+.fold-preview-note {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  z-index: 1;
+  padding: 3px 6px;
+  border: 1px solid rgb(122 135 147 / 35%);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 82%);
+  color: #52616d;
+  font-size: 10px;
+  line-height: 1.35;
+  pointer-events: none;
+}
 .fold-control { display: grid; grid-template-columns: auto 1fr 50px; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
 .fold-control label, .fold-control output { font-size: 12px; }
 .fold-control output { text-align: right; font-variant-numeric: tabular-nums; }

@@ -596,7 +596,13 @@ function App() {
                   : '検証前'}
               </span>
             </div>
-            <FoldPreview angle={foldAngle} />
+            <FoldPreview
+              angle={foldAngle}
+              paperBounds={paperBounds}
+              frontColor={nativeSnapshot?.paper.front.color}
+              backColor={nativeSnapshot?.paper.back.color}
+              thicknessMm={nativeSnapshot?.paper.thickness_mm}
+            />
             <div className="fold-control">
               <label htmlFor="fold-angle">折り角</label>
               <input

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use ori_domain::{CreasePattern, EdgeId, Point2, VertexId};
+use ori_domain::{CreasePattern, EdgeId, Paper, Point2, VertexId};
 
-use crate::{GeometryError, SegmentIntersection, segment_intersection};
+use crate::{GeometryError, SegmentIntersection, checked_cross, segment_intersection, subtract};
 
 /// Identifies which endpoint of an edge references a missing vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +61,212 @@ impl CreasePatternValidation {
     pub fn into_issues(self) -> Vec<ValidationIssue> {
         self.issues
     }
+}
+
+/// Identifies one directed edge of the closed paper boundary.
+///
+/// `index` is the index of `start` in [`Paper::boundary_vertices`]. The end
+/// vertex is the next entry, wrapping back to index zero for the closing edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundaryEdgeRef {
+    pub index: usize,
+    pub start: VertexId,
+    pub end: VertexId,
+}
+
+/// A structural or geometric defect found in a paper definition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaperValidationIssue {
+    /// Paper thickness is `NaN` or positive/negative infinity.
+    NonFiniteThickness { thickness_mm: f64 },
+    /// A finite paper thickness is zero or negative.
+    NonPositiveThickness { thickness_mm: f64 },
+    /// A closed polygon needs at least three boundary vertex references.
+    TooFewBoundaryVertices { count: usize },
+    /// The same vertex ID occurs more than once in the boundary order.
+    DuplicateBoundaryVertex {
+        vertex: VertexId,
+        first_index: usize,
+        duplicate_index: usize,
+    },
+    /// A boundary entry references a vertex absent from the crease pattern.
+    MissingBoundaryVertex {
+        boundary_index: usize,
+        vertex: VertexId,
+    },
+    /// A referenced boundary vertex has a `NaN` or infinite coordinate.
+    NonFiniteBoundaryVertex {
+        boundary_index: usize,
+        vertex: VertexId,
+        position: Point2,
+    },
+    /// Consecutive boundary entries, including the closing pair, have the same
+    /// position and therefore do not form an edge.
+    ZeroLengthBoundaryEdge { edge: BoundaryEdgeRef },
+    /// Two boundary edges meet anywhere other than the shared endpoint of two
+    /// adjacent edges, or adjacent edges overlap along a positive length.
+    SelfIntersection {
+        first_edge: BoundaryEdgeRef,
+        second_edge: BoundaryEdgeRef,
+        intersection: SegmentIntersection,
+    },
+    /// Finite coordinates overflowed while classifying two boundary edges.
+    IntersectionCalculationFailed {
+        first_edge: BoundaryEdgeRef,
+        second_edge: BoundaryEdgeRef,
+        error: GeometryError,
+    },
+    /// The closed boundary has exactly zero signed area.
+    ZeroArea { boundary_vertices: Vec<VertexId> },
+    /// Finite coordinates overflowed while calculating boundary area.
+    AreaCalculationFailed {
+        boundary_vertices: Vec<VertexId>,
+        error: GeometryError,
+    },
+}
+
+/// Complete validation result for a paper definition.
+///
+/// Validation reports every independent issue it can classify, allowing the
+/// editor to highlight all affected boundary entries and edges in one pass.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PaperValidation {
+    pub issues: Vec<PaperValidationIssue>,
+}
+
+impl PaperValidation {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.issues.is_empty()
+    }
+
+    #[must_use]
+    pub fn into_issues(self) -> Vec<PaperValidationIssue> {
+        self.issues
+    }
+}
+
+/// Validates paper thickness and the closed polygon described by the paper's
+/// ordered boundary vertex IDs.
+///
+/// Boundary coordinates are resolved from `pattern`. Both clockwise and
+/// counter-clockwise simple polygons are accepted, including concave ones.
+#[must_use]
+pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation {
+    let mut issues = Vec::new();
+
+    if !paper.thickness_mm.is_finite() {
+        issues.push(PaperValidationIssue::NonFiniteThickness {
+            thickness_mm: paper.thickness_mm,
+        });
+    } else if paper.thickness_mm <= 0.0 {
+        issues.push(PaperValidationIssue::NonPositiveThickness {
+            thickness_mm: paper.thickness_mm,
+        });
+    }
+
+    let boundary = &paper.boundary_vertices;
+    if boundary.len() < 3 {
+        issues.push(PaperValidationIssue::TooFewBoundaryVertices {
+            count: boundary.len(),
+        });
+    }
+
+    let mut first_boundary_indices = HashMap::with_capacity(boundary.len());
+    for (index, vertex) in boundary.iter().copied().enumerate() {
+        if let Some(first_index) = first_boundary_indices.get(&vertex).copied() {
+            issues.push(PaperValidationIssue::DuplicateBoundaryVertex {
+                vertex,
+                first_index,
+                duplicate_index: index,
+            });
+        } else {
+            first_boundary_indices.insert(vertex, index);
+        }
+    }
+
+    let mut pattern_vertices = HashMap::with_capacity(pattern.vertices.len());
+    for vertex in &pattern.vertices {
+        // Match crease-pattern validation by resolving duplicate records with
+        // the first occurrence, keeping malformed external data deterministic.
+        pattern_vertices.entry(vertex.id).or_insert(vertex.position);
+    }
+
+    let mut resolved_vertices = Vec::with_capacity(boundary.len());
+    let mut all_vertices_resolved = true;
+    for (boundary_index, vertex) in boundary.iter().copied().enumerate() {
+        let Some(position) = pattern_vertices.get(&vertex).copied() else {
+            issues.push(PaperValidationIssue::MissingBoundaryVertex {
+                boundary_index,
+                vertex,
+            });
+            all_vertices_resolved = false;
+            resolved_vertices.push(None);
+            continue;
+        };
+        if !is_finite(position) {
+            issues.push(PaperValidationIssue::NonFiniteBoundaryVertex {
+                boundary_index,
+                vertex,
+                position,
+            });
+            all_vertices_resolved = false;
+            resolved_vertices.push(None);
+            continue;
+        }
+
+        resolved_vertices.push(Some(position));
+    }
+
+    let mut resolved_edges = Vec::with_capacity(boundary.len());
+    if !boundary.is_empty() {
+        for edge_index in 0..boundary.len() {
+            let end_index = (edge_index + 1) % boundary.len();
+            let edge = BoundaryEdgeRef {
+                index: edge_index,
+                start: boundary[edge_index],
+                end: boundary[end_index],
+            };
+            let (Some(start), Some(end)) =
+                (resolved_vertices[edge_index], resolved_vertices[end_index])
+            else {
+                continue;
+            };
+
+            if start == end {
+                issues.push(PaperValidationIssue::ZeroLengthBoundaryEdge { edge });
+                continue;
+            }
+
+            resolved_edges.push(ResolvedBoundaryEdge {
+                edge,
+                start,
+                end,
+                bounds: Bounds::from_points(start, end),
+            });
+        }
+    }
+
+    validate_boundary_intersections(&resolved_edges, boundary.len(), &mut issues);
+
+    if boundary.len() >= 3 && all_vertices_resolved {
+        let positions: Vec<_> = resolved_vertices
+            .iter()
+            .map(|position| position.expect("all boundary vertices were resolved"))
+            .collect();
+        match signed_double_area(&positions) {
+            Ok(0.0) => issues.push(PaperValidationIssue::ZeroArea {
+                boundary_vertices: boundary.clone(),
+            }),
+            Ok(_) => {}
+            Err(error) => issues.push(PaperValidationIssue::AreaCalculationFailed {
+                boundary_vertices: boundary.clone(),
+                error,
+            }),
+        }
+    }
+
+    PaperValidation { issues }
 }
 
 /// Validates basic topology and segment intersections in a crease pattern.
@@ -189,6 +395,10 @@ impl Bounds {
     fn overlaps_y(self, other: Self) -> bool {
         self.min_y <= other.max_y && other.min_y <= self.max_y
     }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.min_x <= other.max_x && other.min_x <= self.max_x && self.overlaps_y(other)
+    }
 }
 
 fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIssue>) {
@@ -253,6 +463,74 @@ fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIss
     issues.extend(found.into_iter().map(|(_, _, issue)| issue));
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ResolvedBoundaryEdge {
+    edge: BoundaryEdgeRef,
+    start: Point2,
+    end: Point2,
+    bounds: Bounds,
+}
+
+fn validate_boundary_intersections(
+    edges: &[ResolvedBoundaryEdge],
+    boundary_length: usize,
+    issues: &mut Vec<PaperValidationIssue>,
+) {
+    for (position, first) in edges.iter().copied().enumerate() {
+        for second in edges.iter().copied().skip(position + 1) {
+            if !first.bounds.overlaps(second.bounds) {
+                continue;
+            }
+
+            let adjacent =
+                boundary_edges_are_adjacent(first.edge.index, second.edge.index, boundary_length);
+            match segment_intersection(first.start, first.end, second.start, second.end) {
+                Ok(SegmentIntersection::None) => {}
+                Ok(SegmentIntersection::Point(_)) if adjacent => {}
+                Ok(intersection) => issues.push(PaperValidationIssue::SelfIntersection {
+                    first_edge: first.edge,
+                    second_edge: second.edge,
+                    intersection,
+                }),
+                Err(error) => {
+                    issues.push(PaperValidationIssue::IntersectionCalculationFailed {
+                        first_edge: first.edge,
+                        second_edge: second.edge,
+                        error,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn boundary_edges_are_adjacent(first: usize, second: usize, boundary_length: usize) -> bool {
+    boundary_length > 1
+        && (first.abs_diff(second) == 1
+            || (first == 0 && second == boundary_length - 1)
+            || (second == 0 && first == boundary_length - 1))
+}
+
+fn signed_double_area(points: &[Point2]) -> Result<f64, GeometryError> {
+    let Some(origin) = points.first().copied() else {
+        return Ok(0.0);
+    };
+    let mut area = 0.0;
+    for index in 1..points.len().saturating_sub(1) {
+        // Triangulating relative to a boundary vertex makes the calculation
+        // translation-invariant and avoids cancellation between very large
+        // absolute-coordinate products for small, far-from-origin sheets.
+        let first = subtract(points[index], origin)?;
+        let second = subtract(points[index + 1], origin)?;
+        let contribution = checked_cross(first, second)?;
+        area += contribution;
+        if !area.is_finite() {
+            return Err(GeometryError::ArithmeticOverflow);
+        }
+    }
+    Ok(area)
+}
+
 fn is_finite(point: Point2) -> bool {
     point.x.is_finite() && point.y.is_finite()
 }
@@ -268,7 +546,7 @@ fn canonical_bits(value: f64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{Edge, EdgeKind, Vertex};
+    use ori_domain::{Edge, EdgeKind, Paper, Vertex};
 
     use super::*;
 
@@ -285,6 +563,20 @@ mod tests {
             start: start.id,
             end: end.id,
             kind: EdgeKind::Valley,
+        }
+    }
+
+    fn paper(vertices: &[Vertex]) -> Paper {
+        Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..Paper::default()
+        }
+    }
+
+    fn pattern(vertices: &[Vertex]) -> CreasePattern {
+        CreasePattern {
+            vertices: vertices.to_vec(),
+            edges: Vec::new(),
         }
     }
 
@@ -460,5 +752,201 @@ mod tests {
                     intersection: SegmentIntersection::Point(Point2::new(1.0, 0.0)),
                 })
         );
+    }
+
+    #[test]
+    fn accepts_square_boundaries_in_both_orientations() {
+        let vertices = vec![
+            vertex(0.0, 0.0),
+            vertex(2.0, 0.0),
+            vertex(2.0, 2.0),
+            vertex(0.0, 2.0),
+        ];
+        let pattern = pattern(&vertices);
+        let counter_clockwise = paper(&vertices);
+        let mut clockwise = counter_clockwise.clone();
+        clockwise.boundary_vertices.reverse();
+
+        assert!(validate_paper(&counter_clockwise, &pattern).is_valid());
+        assert!(validate_paper(&clockwise, &pattern).is_valid());
+    }
+
+    #[test]
+    fn accepts_a_small_square_far_from_the_origin() {
+        let offset = 1_000_000_000.0;
+        let vertices = vec![
+            vertex(offset, offset),
+            vertex(offset + 1.0, offset),
+            vertex(offset + 1.0, offset + 1.0),
+            vertex(offset, offset + 1.0),
+        ];
+
+        assert!(validate_paper(&paper(&vertices), &pattern(&vertices)).is_valid());
+    }
+
+    #[test]
+    fn accepts_a_simple_concave_boundary() {
+        let vertices = vec![
+            vertex(0.0, 0.0),
+            vertex(3.0, 0.0),
+            vertex(3.0, 3.0),
+            vertex(1.5, 1.0),
+            vertex(0.0, 3.0),
+        ];
+
+        assert!(validate_paper(&paper(&vertices), &pattern(&vertices)).is_valid());
+    }
+
+    #[test]
+    fn reports_bow_tie_intersection_and_zero_area() {
+        let vertices = vec![
+            vertex(0.0, 0.0),
+            vertex(2.0, 2.0),
+            vertex(0.0, 2.0),
+            vertex(2.0, 0.0),
+        ];
+        let report = validate_paper(&paper(&vertices), &pattern(&vertices));
+
+        assert!(report.issues.iter().any(|issue| matches!(
+            issue,
+            PaperValidationIssue::SelfIntersection {
+                first_edge,
+                second_edge,
+                intersection: SegmentIntersection::Point(point),
+            } if first_edge.index == 0
+                && second_edge.index == 2
+                && *point == Point2::new(1.0, 1.0)
+        )));
+        assert!(report.issues.iter().any(|issue| matches!(
+            issue,
+            PaperValidationIssue::ZeroArea { boundary_vertices }
+                if boundary_vertices == &vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>()
+        )));
+    }
+
+    #[test]
+    fn reports_missing_and_duplicate_boundary_ids_with_indices() {
+        let vertices = vec![vertex(0.0, 0.0), vertex(2.0, 0.0), vertex(0.0, 2.0)];
+        let missing = VertexId::new();
+        let paper = Paper {
+            boundary_vertices: vec![vertices[0].id, vertices[1].id, missing, vertices[1].id],
+            ..Paper::default()
+        };
+        let report = validate_paper(&paper, &pattern(&vertices));
+
+        assert!(
+            report
+                .issues
+                .contains(&PaperValidationIssue::DuplicateBoundaryVertex {
+                    vertex: vertices[1].id,
+                    first_index: 1,
+                    duplicate_index: 3,
+                })
+        );
+        assert!(
+            report
+                .issues
+                .contains(&PaperValidationIssue::MissingBoundaryVertex {
+                    boundary_index: 2,
+                    vertex: missing,
+                })
+        );
+    }
+
+    #[test]
+    fn reports_non_finite_and_non_positive_thickness() {
+        let vertices = vec![vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(0.0, 1.0)];
+        let pattern = pattern(&vertices);
+
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut paper = paper(&vertices);
+            paper.thickness_mm = invalid;
+            let report = validate_paper(&paper, &pattern);
+            assert!(matches!(
+                report.issues.as_slice(),
+                [PaperValidationIssue::NonFiniteThickness { thickness_mm }]
+                    if thickness_mm.to_bits() == invalid.to_bits()
+            ));
+        }
+
+        for invalid in [0.0, -0.0, -0.1] {
+            let mut paper = paper(&vertices);
+            paper.thickness_mm = invalid;
+            let report = validate_paper(&paper, &pattern);
+            assert_eq!(
+                report.issues,
+                vec![PaperValidationIssue::NonPositiveThickness {
+                    thickness_mm: invalid,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn reports_too_few_vertices_and_both_kinds_of_zero_length_edge() {
+        let only = vertex(0.0, 0.0);
+        let single = paper(std::slice::from_ref(&only));
+        let report = validate_paper(&single, &pattern(std::slice::from_ref(&only)));
+        assert!(
+            report
+                .issues
+                .contains(&PaperValidationIssue::TooFewBoundaryVertices { count: 1 })
+        );
+        assert!(
+            report
+                .issues
+                .contains(&PaperValidationIssue::ZeroLengthBoundaryEdge {
+                    edge: BoundaryEdgeRef {
+                        index: 0,
+                        start: only.id,
+                        end: only.id,
+                    },
+                })
+        );
+
+        let vertices = vec![
+            vertex(0.0, 0.0),
+            vertex(0.0, 0.0),
+            vertex(2.0, 0.0),
+            vertex(0.0, 2.0),
+            vertex(0.0, 0.0),
+        ];
+        let report = validate_paper(&paper(&vertices), &pattern(&vertices));
+        assert!(report.issues.iter().any(|issue| matches!(
+            issue,
+            PaperValidationIssue::ZeroLengthBoundaryEdge { edge } if edge.index == 0
+        )));
+        assert!(report.issues.iter().any(|issue| matches!(
+            issue,
+            PaperValidationIssue::ZeroLengthBoundaryEdge { edge } if edge.index == 4
+        )));
+    }
+
+    #[test]
+    fn reports_a_zero_area_collinear_boundary() {
+        let vertices = vec![vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(2.0, 0.0)];
+        let report = validate_paper(&paper(&vertices), &pattern(&vertices));
+
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| matches!(issue, PaperValidationIssue::ZeroArea { .. }))
+        );
+    }
+
+    #[test]
+    fn reports_non_finite_boundary_coordinates_at_their_boundary_index() {
+        let vertices = vec![vertex(0.0, 0.0), vertex(f64::NAN, 1.0), vertex(0.0, 2.0)];
+        let report = validate_paper(&paper(&vertices), &pattern(&vertices));
+
+        assert!(matches!(
+            report.issues.as_slice(),
+            [PaperValidationIssue::NonFiniteBoundaryVertex {
+                boundary_index: 1,
+                vertex: affected,
+                ..
+            }] if *affected == vertices[1].id
+        ));
     }
 }

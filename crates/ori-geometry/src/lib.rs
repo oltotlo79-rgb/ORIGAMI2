@@ -8,7 +8,8 @@ use ori_domain::Point2;
 mod validation;
 
 pub use validation::{
-    CreasePatternValidation, EdgeEndpoint, ValidationIssue, validate_crease_pattern,
+    BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, PaperValidation, PaperValidationIssue,
+    ValidationIssue, validate_crease_pattern, validate_paper,
 };
 
 /// The orientation of three ordered points.

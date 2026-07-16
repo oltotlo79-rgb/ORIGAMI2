@@ -5,9 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/desktop
@@ -28,6 +36,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -37,11 +46,31 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: Rust tests
         shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+          CARGO_TERM_COLOR: always
         run: |
           set -o pipefail
-          if ! cargo test --workspace 2>&1 | tee cargo-test.log; then
-            details=$(tail -n 30 cargo-test.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
-            echo "::error title=Rust tests failed::$details"
-            exit 1
-          fi
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 | tee cargo-test.log
+      - name: Upload Rust test log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-test-log-${{ matrix.os }}
+          path: cargo-test.log
+          if-no-files-found: ignore
+      - run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - uses: actions/setup-node@v5
+        if: runner.os == 'macOS'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install frontend dependencies for macOS bundle check
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Build unsigned macOS app bundle
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop
+        run: npm run tauri -- build --bundles app

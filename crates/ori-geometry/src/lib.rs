@@ -73,6 +73,46 @@ pub fn orientation(a: Point2, b: Point2, c: Point2) -> Result<Orientation, Geome
     })
 }
 
+/// The exact topological relation between a point and a closed segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointSegmentRelation {
+    Outside,
+    Start,
+    End,
+    StrictInterior,
+}
+
+/// Classifies `point` against the directed segment `start -> end`.
+///
+/// Endpoint identity is checked before collinearity so callers can preserve
+/// the original edge direction while treating only
+/// [`PointSegmentRelation::StrictInterior`] as a split location. Non-finite
+/// inputs and overflowing orientation arithmetic are rejected.
+pub fn point_segment_relation(
+    point: Point2,
+    start: Point2,
+    end: Point2,
+) -> Result<PointSegmentRelation, GeometryError> {
+    ensure_finite("point", point)?;
+    ensure_finite("start", start)?;
+    ensure_finite("end", end)?;
+    if point == start {
+        return Ok(PointSegmentRelation::Start);
+    }
+    if point == end {
+        return Ok(PointSegmentRelation::End);
+    }
+    if orientation(start, end, point)? != Orientation::Collinear
+        || point.x < start.x.min(end.x)
+        || point.x > start.x.max(end.x)
+        || point.y < start.y.min(end.y)
+        || point.y > start.y.max(end.y)
+    {
+        return Ok(PointSegmentRelation::Outside);
+    }
+    Ok(PointSegmentRelation::StrictInterior)
+}
+
 /// The geometric intersection of two closed line segments.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SegmentIntersection {
@@ -187,14 +227,7 @@ fn cross(a: Point2, b: Point2) -> f64 {
 }
 
 fn point_on_segment(point: Point2, start: Point2, end: Point2) -> Result<bool, GeometryError> {
-    if orientation(start, end, point)? != Orientation::Collinear {
-        return Ok(false);
-    }
-
-    Ok(point.x >= start.x.min(end.x)
-        && point.x <= start.x.max(end.x)
-        && point.y >= start.y.min(end.y)
-        && point.y <= start.y.max(end.y))
+    Ok(point_segment_relation(point, start, end)? != PointSegmentRelation::Outside)
 }
 
 fn classify_collinear_intersection(
@@ -309,6 +342,61 @@ mod tests {
                 Err(GeometryError::NonFinitePoint { argument: "b", .. })
             ));
         }
+    }
+
+    #[test]
+    fn point_segment_relation_distinguishes_directional_endpoints_and_strict_interior() {
+        let start = Point2::new(-2.0, 1.0);
+        let end = Point2::new(4.0, 1.0);
+        assert_eq!(
+            point_segment_relation(start, start, end),
+            Ok(PointSegmentRelation::Start)
+        );
+        assert_eq!(
+            point_segment_relation(end, start, end),
+            Ok(PointSegmentRelation::End)
+        );
+        assert_eq!(
+            point_segment_relation(Point2::new(1.0, 1.0), start, end),
+            Ok(PointSegmentRelation::StrictInterior)
+        );
+        for outside in [
+            Point2::new(-3.0, 1.0),
+            Point2::new(5.0, 1.0),
+            Point2::new(1.0, 1.0 + f64::EPSILON),
+        ] {
+            assert_eq!(
+                point_segment_relation(outside, start, end),
+                Ok(PointSegmentRelation::Outside)
+            );
+        }
+        assert_eq!(
+            point_segment_relation(end, end, start),
+            Ok(PointSegmentRelation::Start)
+        );
+    }
+
+    #[test]
+    fn point_segment_relation_rejects_non_finite_and_overflowing_geometry() {
+        assert!(matches!(
+            point_segment_relation(
+                Point2::new(f64::NAN, 0.0),
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 0.0),
+            ),
+            Err(GeometryError::NonFinitePoint {
+                argument: "point",
+                ..
+            })
+        ));
+        assert_eq!(
+            point_segment_relation(
+                Point2::new(0.0, 1.0),
+                Point2::new(-f64::MAX, 0.0),
+                Point2::new(f64::MAX, 0.0),
+            ),
+            Err(GeometryError::ArithmeticOverflow)
+        );
     }
 
     #[test]

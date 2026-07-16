@@ -228,6 +228,17 @@ type ClusterIntersectionTarget = {
 - boundary-boundary pairはseedにしない。
 - 上限到達時は部分候補を返さず、過密案内を表示する。
 
+### 実装済みの数値・探索規約
+
+- 公開単位は3〜64辺とし、API、Rust planner、frontend配置検証の全層で同じ上限を検査する。
+- frontendのpair探索は4,096組、cluster所属・全pair検査は65,536回を既定上限とし、使い切った場合は部分候補を返さない。
+- 成功したclusterの全edge pairを同じ展開結果へ登録し、64辺で2,016個生じる丸めの異なるpair交点を再展開しない。
+- 点が辺上かの判定は、絶対座標epsilonではなく`16 × Number.EPSILON × (|dx×py| + |dy×px|)`の局所的な行列式誤差境界をfrontendとRustで共有する。線分の座標範囲とexact endpointは緩和しない。
+- seed交点の数ULP近傍に一意な既存端点・孤立頂点があり、そのexact座標が全対象辺上で再検証できる場合だけ、その座標とIDへcanonical化してReuseする。近傍候補が複数、同位置別ID、同ID複数recordなら遮断する。
+- RustのCreate plannerは文書順の全unordered pairを走査し、各pairをforward、reverseの順で評価する。候補生成だけはfrontendと同じ非FMAのcross、fraction、stable convex combinationを使い、全対象辺がstrict interiorになる最初の点を採用する。
+- 公開`ori-geometry`のFMA補間と厳密predicateは変更しない。候補決定後の全pair交差検査、対象完全性検査、Undo/RedoはRustを最終権威とする。
+- 遮断候補と通常頂点が同じ検索範囲にある場合、通常頂点がpixel距離で厳密に近いときだけ頂点を選べる。同距離は曖昧として遮断する。
+
 優先順位は次とする。
 
 1. 既存頂点を使う未接続cluster

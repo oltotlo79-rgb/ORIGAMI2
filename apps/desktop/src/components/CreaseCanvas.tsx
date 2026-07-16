@@ -108,7 +108,7 @@ export function CreaseCanvas({
       onAddVertex(x, y)
       return
     }
-    if ((tool === 'mountain' || tool === 'valley') && onSelectVertex) {
+    if ((tool === 'mountain' || tool === 'valley' || tool === 'cut') && onSelectVertex) {
       let closest: { id: string; distance: number } | null = null
       for (const vertex of vertices) {
         const distance = Math.hypot(x - vertex.x, y - vertex.y)

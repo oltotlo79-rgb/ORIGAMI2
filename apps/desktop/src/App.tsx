@@ -32,7 +32,11 @@ function App() {
     return nativeSnapshot.crease_pattern.edges.flatMap((edge) => {
       const start = positions.get(edge.start)
       const end = positions.get(edge.end)
-      if (!start || !end || (edge.kind !== 'mountain' && edge.kind !== 'valley')) return []
+      if (
+        !start ||
+        !end ||
+        (edge.kind !== 'mountain' && edge.kind !== 'valley' && edge.kind !== 'cut')
+      ) return []
       return [{
         id: edge.id,
         x1: start.x,
@@ -70,7 +74,7 @@ function App() {
   }
 
   function selectVertexForEdge(vertexId: string) {
-    if (activeTool !== 'mountain' && activeTool !== 'valley') return
+    if (activeTool !== 'mountain' && activeTool !== 'valley' && activeTool !== 'cut') return
     if (!pendingEdgeStart) {
       setPendingEdgeStart(vertexId)
       setCoreStatus('折り線の終点を選択してください')

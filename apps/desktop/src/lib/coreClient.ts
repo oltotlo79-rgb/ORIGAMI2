@@ -42,7 +42,7 @@ export function addEdge(
   expectedRevision: number,
   start: string,
   end: string,
-  kind: 'mountain' | 'valley',
+  kind: 'mountain' | 'valley' | 'cut',
 ) {
   return invoke<ProjectSnapshot>('add_edge', {
     expectedRevision,

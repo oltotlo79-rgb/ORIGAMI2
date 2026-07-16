@@ -67,24 +67,72 @@ struct HistoryEntry {
     inverse: Command,
 }
 
+/// Project-level editor settings that are persisted alongside the pattern.
+///
+/// Settings are supplied when restoring a saved project so that the editor can
+/// start from the persisted state without creating undo history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorSettings {
+    cutting_allowed: bool,
+}
+
+impl EditorSettings {
+    /// Creates settings with the same defaults used by [`EditorState::new`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            cutting_allowed: false,
+        }
+    }
+
+    /// Sets whether cut edges may be added to the project.
+    #[must_use]
+    pub const fn with_cutting_allowed(mut self, allowed: bool) -> Self {
+        self.cutting_allowed = allowed;
+        self
+    }
+
+    /// Returns whether cut edges may be added to the project.
+    #[must_use]
+    pub const fn cutting_allowed(&self) -> bool {
+        self.cutting_allowed
+    }
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EditorState {
     pattern: CreasePattern,
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
-    cutting_allowed: bool,
+    settings: EditorSettings,
 }
 
 impl EditorState {
     #[must_use]
     pub const fn new(pattern: CreasePattern) -> Self {
+        Self::with_settings(pattern, EditorSettings::new())
+    }
+
+    /// Restores an editor from a pattern and its persisted project settings.
+    ///
+    /// The restored state starts at revision zero with empty undo and redo
+    /// histories. Loading persisted settings therefore cannot be undone as an
+    /// editing operation.
+    #[must_use]
+    pub const fn with_settings(pattern: CreasePattern, settings: EditorSettings) -> Self {
         Self {
             pattern,
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            cutting_allowed: false,
+            settings,
         }
     }
 
@@ -99,8 +147,13 @@ impl EditorState {
     }
 
     #[must_use]
+    pub const fn settings(&self) -> &EditorSettings {
+        &self.settings
+    }
+
+    #[must_use]
     pub const fn cutting_allowed(&self) -> bool {
-        self.cutting_allowed
+        self.settings.cutting_allowed()
     }
 
     #[must_use]
@@ -201,7 +254,7 @@ impl EditorState {
                 end,
                 kind,
             } => {
-                if kind == EdgeKind::Cut && !self.cutting_allowed {
+                if kind == EdgeKind::Cut && !self.settings.cutting_allowed {
                     return Err(CommandError::CuttingDisabled);
                 }
                 if self.edge_index(id).is_some() {
@@ -235,8 +288,8 @@ impl EditorState {
                 })
             }
             Command::SetCuttingAllowed { allowed } => {
-                let previous = self.cutting_allowed;
-                self.cutting_allowed = allowed;
+                let previous = self.settings.cutting_allowed;
+                self.settings.cutting_allowed = allowed;
                 Ok(Command::SetCuttingAllowed { allowed: previous })
             }
         }
@@ -485,5 +538,57 @@ mod tests {
         editor.undo(2).expect("undo cut");
         editor.undo(3).expect("undo setting");
         assert!(!editor.cutting_allowed());
+    }
+
+    #[test]
+    fn persisted_settings_restore_without_creating_history() {
+        let editor = EditorState::with_settings(
+            CreasePattern::empty(),
+            EditorSettings::default().with_cutting_allowed(true),
+        );
+
+        assert!(editor.settings().cutting_allowed());
+        assert!(editor.cutting_allowed());
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn restored_cutting_setting_allows_cut_edges_at_revision_zero() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: Vec::new(),
+        };
+        let mut editor =
+            EditorState::with_settings(pattern, EditorSettings::new().with_cutting_allowed(true));
+
+        editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: edge,
+                    start,
+                    end,
+                    kind: EdgeKind::Cut,
+                },
+            )
+            .expect("add cut using restored setting");
+
+        assert_eq!(editor.pattern().edges[0].id, edge);
+        assert_eq!(editor.revision(), 1);
+        assert!(editor.can_undo());
     }
 }

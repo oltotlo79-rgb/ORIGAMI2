@@ -3,7 +3,7 @@ use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId
 mod editor;
 mod validation;
 
-pub use editor::{Command, CommandError, CommandResult, EditorState, Revision};
+pub use editor::{Command, CommandError, CommandResult, EditorSettings, EditorState, Revision};
 pub use ori_geometry::{
     CreasePatternValidation, EdgeEndpoint, GeometryError, SegmentIntersection, ValidationIssue,
 };

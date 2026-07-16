@@ -16,6 +16,16 @@ export type ProjectSnapshot = {
   cutting_allowed: boolean
 }
 
+export type ValidationSnapshot = {
+  revision: number
+  is_valid: boolean
+  issues: Array<{
+    code: string
+    vertices: string[]
+    edges: string[]
+  }>
+}
+
 export function isNativeCoreAvailable() {
   return '__TAURI_INTERNALS__' in window
 }
@@ -32,6 +42,10 @@ export async function generateBenchmarkPattern(edgeCount: number): Promise<Patte
 
 export function getProjectSnapshot() {
   return invoke<ProjectSnapshot>('project_snapshot')
+}
+
+export function validateProject() {
+  return invoke<ValidationSnapshot>('validate_project')
 }
 
 export function addVertex(expectedRevision: number, x: number, y: number) {

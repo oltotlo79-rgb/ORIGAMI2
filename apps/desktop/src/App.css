@@ -84,7 +84,9 @@ button { color: inherit; }
   font-size: 13px;
   font-weight: 650;
 }
-.panel-meta, .status-ready { color: var(--muted); font-size: 11px; font-weight: 500; }
+.panel-meta, .status-ready, .status-valid, .status-invalid { color: var(--muted); font-size: 11px; font-weight: 500; }
+.status-valid { color: #287249; }
+.status-invalid { color: #b34141; }
 .editor-grid { min-width: 0; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .crease-panel, .preview-panel { min-width: 0; display: grid; grid-template-rows: 34px minmax(0, 1fr); }
 .preview-panel { grid-template-rows: 34px minmax(0, 1fr) 48px; }
@@ -115,6 +117,19 @@ button { color: inherit; }
   font-size: 11px;
 }
 .property-actions button.danger { color: #a73535; border-color: #d9a7a7; }
+.validation-report p { margin: 0; font-size: 12px; }
+.validation-report.valid { border-left: 3px solid #4f9a6d; }
+.validation-report.invalid { border-left: 3px solid #c85c5c; }
+.validation-report ul { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
+.validation-report li button {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 4px;
+  padding: 5px 7px;
+  text-align: left;
+  font-size: 11px;
+}
 .check { display: block; margin-top: 10px; font-size: 12px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip { border: 1px solid var(--border); background: white; border-radius: 12px; font-size: 11px; padding: 3px 8px; }
@@ -137,6 +152,6 @@ button { color: inherit; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }
   .panel-heading, .statusbar { background: #20282f; }
-  .top-actions button, .timeline button, .chip, .step, .property-actions button { background: #303941; }
+  .top-actions button, .timeline button, .chip, .step, .property-actions button, .validation-report li button { background: #303941; }
   .crease-canvas { filter: brightness(.82); }
 }

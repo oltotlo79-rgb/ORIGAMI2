@@ -14,6 +14,8 @@ import {
   setCuttingAllowed,
   undo,
   type ProjectSnapshot,
+  type ValidationSnapshot,
+  validateProject,
 } from './lib/coreClient'
 import './App.css'
 
@@ -24,6 +26,7 @@ function App() {
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
+  const [validation, setValidation] = useState<ValidationSnapshot | null>(null)
   const [coreStatus, setCoreStatus] = useState(
     isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
   )
@@ -77,6 +80,7 @@ function App() {
     try {
       const snapshot = await action(nativeSnapshot.revision)
       setNativeSnapshot(snapshot)
+      setValidation(null)
       setCoreStatus(`Rustコア revision ${snapshot.revision}`)
       return true
     } catch (error) {
@@ -123,6 +127,23 @@ function App() {
     void runNativeEdit((revision) => moveVertex(revision, selectedVertex.id, x, y))
   }
 
+  async function runValidation() {
+    if (!nativeSnapshot) return
+    try {
+      const result = await validateProject()
+      if (result.revision !== nativeSnapshot.revision) {
+        setCoreStatus('検証中に内容が変更されたため、再度検証してください')
+        return
+      }
+      setValidation(result)
+      setCoreStatus(result.is_valid
+        ? `revision ${result.revision}: 幾何検証に合格`
+        : `revision ${result.revision}: ${result.issues.length}件の問題`)
+    } catch (error) {
+      setCoreStatus(`検証エラー: ${String(error)}`)
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="titlebar">
@@ -153,7 +174,14 @@ function App() {
           </button>
           <button type="button">開く</button>
           <button type="button">保存</button>
-          <button type="button" className="primary">検証</button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!nativeSnapshot}
+            onClick={() => void runValidation()}
+          >
+            検証
+          </button>
         </nav>
       </header>
 
@@ -216,7 +244,13 @@ function App() {
           <article className="panel preview-panel">
             <div className="panel-heading">
               <span>3D プレビュー</span>
-              <span className="status-ready">検証前</span>
+              <span className={validation?.is_valid ? 'status-valid' : validation ? 'status-invalid' : 'status-ready'}>
+                {validation
+                  ? validation.is_valid
+                    ? '幾何検証 OK'
+                    : `${validation.issues.length}件の問題`
+                  : '検証前'}
+              </span>
             </div>
             <FoldPreview angle={foldAngle} />
             <div className="fold-control">
@@ -310,6 +344,40 @@ function App() {
               </>
             ) : <p className="muted">線または頂点を選択してください</p>}
           </section>
+          {validation && (
+            <section className={validation.is_valid ? 'validation-report valid' : 'validation-report invalid'}>
+              <h2>幾何検証</h2>
+              {validation.is_valid ? (
+                <p>問題は見つかりませんでした。</p>
+              ) : (
+                <>
+                  <p>{validation.issues.length}件の問題が見つかりました。</p>
+                  <ul>
+                    {validation.issues.slice(0, 20).map((issue, index) => (
+                      <li key={`${issue.code}:${index}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const edgeId = issue.edges[0]
+                            const vertexId = issue.vertices[0]
+                            if (edgeId) {
+                              setSelectedLineId(edgeId)
+                              setSelectedVertexId(null)
+                            } else if (vertexId) {
+                              setSelectedVertexId(vertexId)
+                              setSelectedLineId(null)
+                            }
+                          }}
+                        >
+                          {validationIssueLabel(issue.code)}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
+          )}
           <section>
             <h2>紙</h2>
             <label className="field">厚さ <input defaultValue="0.10" /> mm</label>
@@ -381,6 +449,17 @@ function lineKindLabel(kind: CreaseLine['kind']) {
 
 function toolLabel(tool: string) {
   return { select: '選択', vertex: '頂点', mountain: '山折り', valley: '谷折り', cut: '切断', measure: '計測' }[tool]
+}
+
+function validationIssueLabel(code: string) {
+  return {
+    non_finite_vertex: '有限でない頂点座標',
+    duplicate_vertex: '同じ位置の重複頂点',
+    missing_endpoint: '存在しない端点を参照する線',
+    zero_length_edge: '長さ0の線',
+    unsplit_intersection: '分割されていない交差・重なり',
+    intersection_calculation_failed: '交差計算に失敗',
+  }[code] ?? code
 }
 
 export default App

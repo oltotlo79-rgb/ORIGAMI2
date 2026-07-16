@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use ori_core::{Command, EditorState};
+use ori_core::{Command, EditorState, ValidationIssue};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Point2, VertexId};
 use serde::Serialize;
 use tauri::State;
@@ -22,6 +22,20 @@ struct ProjectSnapshot {
     cutting_allowed: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct ValidationSnapshot {
+    revision: u64,
+    is_valid: bool,
+    issues: Vec<ValidationIssueSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationIssueSnapshot {
+    code: &'static str,
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+}
+
 #[tauri::command]
 fn generate_benchmark_pattern(edge_count: usize) -> PatternResponse {
     let pattern = ori_core::benchmark_pattern(edge_count.min(100_000));
@@ -35,6 +49,12 @@ fn generate_benchmark_pattern(edge_count: usize) -> PatternResponse {
 fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, String> {
     let editor = state.0.lock().map_err(|error| error.to_string())?;
     Ok(snapshot(&editor))
+}
+
+#[tauri::command]
+fn validate_project(state: State<'_, AppState>) -> Result<ValidationSnapshot, String> {
+    let editor = state.0.lock().map_err(|error| error.to_string())?;
+    Ok(validation_snapshot(&editor))
 }
 
 #[tauri::command]
@@ -168,6 +188,65 @@ fn snapshot(editor: &EditorState) -> ProjectSnapshot {
     }
 }
 
+fn validation_snapshot(editor: &EditorState) -> ValidationSnapshot {
+    let validation = editor.validation();
+    let issues = validation
+        .issues()
+        .iter()
+        .map(validation_issue_snapshot)
+        .collect();
+    ValidationSnapshot {
+        revision: validation.revision(),
+        is_valid: validation.is_valid(),
+        issues,
+    }
+}
+
+fn validation_issue_snapshot(issue: &ValidationIssue) -> ValidationIssueSnapshot {
+    match issue {
+        ValidationIssue::NonFiniteVertex { vertex, .. } => ValidationIssueSnapshot {
+            code: "non_finite_vertex",
+            vertices: vec![*vertex],
+            edges: Vec::new(),
+        },
+        ValidationIssue::DuplicateVertex {
+            first, duplicate, ..
+        } => ValidationIssueSnapshot {
+            code: "duplicate_vertex",
+            vertices: vec![*first, *duplicate],
+            edges: Vec::new(),
+        },
+        ValidationIssue::MissingEndpoint { edge, vertex, .. } => ValidationIssueSnapshot {
+            code: "missing_endpoint",
+            vertices: vec![*vertex],
+            edges: vec![*edge],
+        },
+        ValidationIssue::ZeroLengthEdge { edge } => ValidationIssueSnapshot {
+            code: "zero_length_edge",
+            vertices: Vec::new(),
+            edges: vec![*edge],
+        },
+        ValidationIssue::UnsplitIntersection {
+            first_edge,
+            second_edge,
+            ..
+        } => ValidationIssueSnapshot {
+            code: "unsplit_intersection",
+            vertices: Vec::new(),
+            edges: vec![*first_edge, *second_edge],
+        },
+        ValidationIssue::IntersectionCalculationFailed {
+            first_edge,
+            second_edge,
+            ..
+        } => ValidationIssueSnapshot {
+            code: "intersection_calculation_failed",
+            vertices: Vec::new(),
+            edges: vec![*first_edge, *second_edge],
+        },
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(EditorState::new(
@@ -176,6 +255,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
             project_snapshot,
+            validate_project,
             add_vertex,
             move_vertex,
             remove_vertex,
@@ -276,5 +356,54 @@ mod tests {
 
         assert_eq!(error, "expected revision 4, but the current revision is 0");
         assert_eq!(editor.pattern().vertices.len(), 1);
+    }
+
+    #[test]
+    fn validation_snapshot_identifies_both_crossing_edges() {
+        let vertices = [
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(2.0, 2.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(0.0, 2.0),
+            },
+            Vertex {
+                id: VertexId::new(),
+                position: Point2::new(2.0, 0.0),
+            },
+        ];
+        let first_edge = EdgeId::new();
+        let second_edge = EdgeId::new();
+        let editor = EditorState::new(CreasePattern {
+            vertices: vertices.to_vec(),
+            edges: vec![
+                Edge {
+                    id: first_edge,
+                    start: vertices[0].id,
+                    end: vertices[1].id,
+                    kind: EdgeKind::Mountain,
+                },
+                Edge {
+                    id: second_edge,
+                    start: vertices[2].id,
+                    end: vertices[3].id,
+                    kind: EdgeKind::Valley,
+                },
+            ],
+        });
+
+        let response = validation_snapshot(&editor);
+
+        assert!(!response.is_valid);
+        assert_eq!(response.revision, 0);
+        assert_eq!(response.issues.len(), 1);
+        assert_eq!(response.issues[0].code, "unsplit_intersection");
+        assert_eq!(response.issues[0].edges, vec![first_edge, second_edge]);
     }
 }

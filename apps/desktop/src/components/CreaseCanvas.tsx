@@ -18,7 +18,7 @@ export type CreaseLine = {
   y1: number
   x2: number
   y2: number
-  kind: 'mountain' | 'valley' | 'boundary' | 'cut'
+  kind: 'mountain' | 'valley' | 'auxiliary' | 'boundary' | 'cut'
 }
 
 export type PaperBounds = {
@@ -113,8 +113,17 @@ const SNAP_KIND_LABELS: Record<SnapKind, string> = {
 const COLORS: Record<CreaseLine['kind'], string> = {
   mountain: '#d95252',
   valley: '#3678d4',
+  auxiliary: '#7b8794',
   boundary: '#23303f',
   cut: '#e59b35',
+}
+
+const LINE_DASHES: Record<CreaseLine['kind'], number[]> = {
+  mountain: [],
+  valley: [7, 5],
+  auxiliary: [3, 4],
+  boundary: [],
+  cut: [12, 4, 2, 4],
 }
 
 export function CreaseCanvas({
@@ -287,7 +296,7 @@ export function CreaseCanvas({
       context.lineTo(end.x, end.y)
       context.strokeStyle = COLORS[line.kind]
       context.lineWidth = line.id === selectedLineId ? 4 : line.kind === 'boundary' ? 2.5 : 1.8
-      context.setLineDash(line.kind === 'valley' ? [7, 5] : line.kind === 'cut' ? [12, 4, 2, 4] : [])
+      context.setLineDash(LINE_DASHES[line.kind])
       context.stroke()
     }
     context.setLineDash([])
@@ -475,7 +484,10 @@ export function CreaseCanvas({
         return
       }
     }
-    if ((tool === 'mountain' || tool === 'valley' || tool === 'cut') && onSelectVertex) {
+    if (
+      (tool === 'mountain' || tool === 'valley' || tool === 'auxiliary' || tool === 'cut')
+      && onSelectVertex
+    ) {
       if (closestVertex) {
         onSelectVertex(closestVertex.id)
         return

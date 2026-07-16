@@ -86,6 +86,7 @@ function App() {
         !end ||
         (edge.kind !== 'mountain' &&
           edge.kind !== 'valley' &&
+          edge.kind !== 'auxiliary' &&
           edge.kind !== 'boundary' &&
           edge.kind !== 'cut')
       ) return []
@@ -387,10 +388,15 @@ function App() {
   }, [coreBusy, deleteSelection, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
-    if (activeTool !== 'mountain' && activeTool !== 'valley' && activeTool !== 'cut') return
+    if (
+      activeTool !== 'mountain'
+      && activeTool !== 'valley'
+      && activeTool !== 'auxiliary'
+      && activeTool !== 'cut'
+    ) return
     if (!pendingEdgeStart) {
       setPendingEdgeStart(vertexId)
-      setCoreStatus('折り線の終点を選択してください')
+      setCoreStatus('線の終点を選択してください')
       return
     }
     if (pendingEdgeStart === vertexId) {
@@ -717,6 +723,7 @@ function App() {
             ['vertex', '＋', '頂点'],
             ['mountain', '━', '山折り'],
             ['valley', '┅', '谷折り'],
+            ['auxiliary', '┈', '補助線'],
             ['cut', '✂', '切断'],
             ['measure', '∠', '計測'],
           ].map(([id, icon, label]) => (
@@ -731,6 +738,7 @@ function App() {
               }}
               title={label}
               aria-label={label}
+              aria-pressed={activeTool === id}
             >
               {icon}
             </button>
@@ -1259,11 +1267,25 @@ function App() {
 }
 
 function lineKindLabel(kind: CreaseLine['kind']) {
-  return { mountain: '山折り', valley: '谷折り', boundary: '輪郭線', cut: '切断線' }[kind]
+  return {
+    mountain: '山折り',
+    valley: '谷折り',
+    auxiliary: '補助線',
+    boundary: '輪郭線',
+    cut: '切断線',
+  }[kind]
 }
 
 function toolLabel(tool: string) {
-  return { select: '選択', vertex: '頂点', mountain: '山折り', valley: '谷折り', cut: '切断', measure: '計測' }[tool]
+  return {
+    select: '選択',
+    vertex: '頂点',
+    mountain: '山折り',
+    valley: '谷折り',
+    auxiliary: '補助線',
+    cut: '切断',
+    measure: '計測',
+  }[tool]
 }
 
 function validationIssueLabel(code: string) {

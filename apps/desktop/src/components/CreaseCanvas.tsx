@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEven
 import {
   DEFAULT_SNAP_SETTINGS,
   createVisibleGrid,
+  prioritizeAdditionSnapTargets,
   resolveSnapTarget,
+  type AdditionSnapTarget,
   type SnapKind,
   type SnapPoint,
   type SnapSettings,
-  type SnapTarget,
 } from '../lib/snap'
+import { createIntersectionSnapIndex } from '../lib/intersectionSnap'
 import { createVertexPlacement, type VertexPlacement } from '../lib/vertexPlacement'
 
 export type CreaseLine = {
@@ -87,7 +89,7 @@ type ViewTransform = {
 
 type SnapGuide = {
   rawPoint: SnapPoint
-  target: SnapTarget
+  target: AdditionSnapTarget
 }
 
 const DEFAULT_PAPER_BOUNDS: PaperBounds = {
@@ -105,6 +107,7 @@ const MAX_GRID_LINES_PER_AXIS = 100
 
 const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   vertex: '頂点',
+  intersection: '交点',
   midpoint: '中点',
   edge: '辺',
   grid: 'グリッド',
@@ -162,6 +165,10 @@ export function CreaseCanvas({
   const exactVertexIndex = useMemo(
     () => createExactVertexIndex(vertices),
     [vertices],
+  )
+  const intersectionSnapIndex = useMemo(
+    () => createIntersectionSnapIndex(lines.filter(({ kind }) => kind !== 'boundary')),
+    [lines],
   )
   const visibleGrid = useMemo(
     () => createVisibleGrid(
@@ -375,21 +382,30 @@ export function CreaseCanvas({
   ])
 
   function resolveAdditionSnap(point: SnapPoint, transform: ViewTransform) {
-    return resolveSnapTarget({
+    const accept = (target: { point: SnapPoint }) => isInsidePaper(
+      target.point.x,
+      target.point.y,
+      transform,
+      pointTestPaperPolygon,
+      useLegacyRectangularPaper,
+    )
+    const pointTarget = resolveSnapTarget({
       point,
       scale: transform.scale,
       settings: snapSettings,
       vertices,
       segments: lines,
       grid: visibleGrid,
-      accept: (target) => isInsidePaper(
-        target.point.x,
-        target.point.y,
-        transform,
-        pointTestPaperPolygon,
-        useLegacyRectangularPaper,
-      ),
+      accept,
     })
+    if (pointTarget?.kind === 'vertex' || !snapSettings.intersection) return pointTarget
+
+    const intersectionTarget = intersectionSnapIndex.query({
+      point,
+      scale: transform.scale,
+      accept,
+    }).target
+    return prioritizeAdditionSnapTargets(pointTarget, intersectionTarget)
   }
 
   function resolveDraggedPosition(

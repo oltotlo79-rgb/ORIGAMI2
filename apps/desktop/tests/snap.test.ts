@@ -5,7 +5,9 @@ import test from 'node:test'
 import {
   DEFAULT_SNAP_SETTINGS,
   createVisibleGrid,
+  prioritizeAdditionSnapTargets,
   resolveSnapTarget,
+  toggleSnapSetting,
   type ResolveSnapTargetOptions,
   type SnapGrid,
   type SnapKind,
@@ -23,6 +25,7 @@ const EMPTY_GRID: SnapGrid = { xValues: [], yValues: [] }
 function only(...kinds: SnapKind[]): SnapSettings {
   return {
     vertex: kinds.includes('vertex'),
+    intersection: kinds.includes('intersection'),
     midpoint: kinds.includes('midpoint'),
     edge: kinds.includes('edge'),
     grid: kinds.includes('grid'),
@@ -44,11 +47,22 @@ function resolve(overrides: Partial<ResolveSnapTargetOptions> = {}) {
 test('default settings enable every snap kind', () => {
   assert.deepEqual(DEFAULT_SNAP_SETTINGS, {
     vertex: true,
+    intersection: true,
     midpoint: true,
     edge: true,
     grid: true,
   })
   assert.equal(Object.isFrozen(DEFAULT_SNAP_SETTINGS), true)
+})
+
+test('intersection snapping is independently toggleable and defaults on', () => {
+  const disabled = toggleSnapSetting(DEFAULT_SNAP_SETTINGS, 'intersection')
+  assert.equal(DEFAULT_SNAP_SETTINGS.intersection, true)
+  assert.equal(disabled.intersection, false)
+  assert.deepEqual(toggleSnapSetting(disabled, 'intersection'), DEFAULT_SNAP_SETTINGS)
+  for (const kind of ['vertex', 'midpoint', 'edge', 'grid'] as const) {
+    assert.equal(disabled[kind], true)
+  }
 })
 
 test('kind priority is vertex, midpoint, edge, then grid', () => {
@@ -572,6 +586,97 @@ test('proper intersections expose canonical edge IDs, fractions, point, and key'
       { id: 'z-edge', fraction: 0.2 },
     ],
   })
+})
+
+test('addition snap priority is vertex, intersection, midpoint, edge, then grid', () => {
+  const crossing = [
+    intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
+    intersectionSegment('b-edge', 'b1', 'b2', -2, 0, 2, 0),
+  ]
+  const intersection = queryIntersection(crossing).target
+  assert.ok(intersection)
+  const vertex = resolve({
+    settings: only('vertex'),
+    vertices: [{ id: 'vertex', x: 0, y: 0 }],
+  })
+  const midpoint = resolve({
+    settings: only('midpoint'),
+    segments: [{
+      id: 'midpoint',
+      startVertexId: 'm1',
+      endVertexId: 'm2',
+      x1: -1,
+      y1: 0,
+      x2: 1,
+      y2: 0,
+    }],
+  })
+  const edge = resolve({
+    settings: only('edge'),
+    point: { x: 0, y: 1 },
+    segments: [{
+      id: 'edge',
+      startVertexId: 'e1',
+      endVertexId: 'e2',
+      x1: -1,
+      y1: 0,
+      x2: 1,
+      y2: 0,
+    }],
+  })
+  const grid = resolve({
+    settings: only('grid'),
+    grid: { xValues: [0], yValues: [0] },
+  })
+
+  assert.equal(prioritizeAdditionSnapTargets(vertex, intersection)?.kind, 'vertex')
+  for (const lowerPriority of [midpoint, edge, grid]) {
+    assert.equal(
+      prioritizeAdditionSnapTargets(lowerPriority, intersection)?.kind,
+      'intersection',
+    )
+    assert.equal(prioritizeAdditionSnapTargets(lowerPriority, null), lowerPriority)
+  }
+  assert.equal(prioritizeAdditionSnapTargets(null, intersection), intersection)
+  assert.equal(prioritizeAdditionSnapTargets(null, null), null)
+})
+
+test('proper intersection placement carries only validated canonical edge IDs', () => {
+  const segments = [
+    intersectionSegment('a-edge', 'a1', 'a2', 0, -2, 0, 2),
+    intersectionSegment('z-edge', 'z1', 'z2', -2, 0, 2, 0),
+  ]
+  const target = queryIntersection(segments).target
+  assert.ok(target)
+  assert.deepEqual(createVertexPlacement(target.point, target, segments), {
+    operation: 'connect-intersection',
+    firstEdgeId: 'a-edge',
+    secondEdgeId: 'z-edge',
+  })
+
+  const invalidTargets = [
+    { ...target, sourceEdges: [target.sourceEdges[1], target.sourceEdges[0]] },
+    {
+      ...target,
+      sourceEdges: [target.sourceEdges[0], { ...target.sourceEdges[1], id: 'a-edge' }],
+    },
+    {
+      ...target,
+      sourceEdges: [{ ...target.sourceEdges[0], fraction: 0 }, target.sourceEdges[1]],
+    },
+    { ...target, point: { x: Number.NaN, y: 0 } },
+  ]
+  for (const invalid of invalidTargets) {
+    assert.equal(createVertexPlacement(invalid.point, invalid, segments), null)
+  }
+  assert.equal(createVertexPlacement({ x: 1, y: 1 }, target, segments), null)
+  assert.equal(createVertexPlacement(target.point, target, segments.slice(0, 1)), null)
+
+  const sharedVertexSegments = [
+    { ...segments[0], endVertexId: 'shared' },
+    { ...segments[1], startVertexId: 'shared' },
+  ]
+  assert.equal(createVertexPlacement(target.point, target, sharedVertexSegments), null)
 })
 
 test('proper intersection output is deterministic across input order and reversed edges', () => {

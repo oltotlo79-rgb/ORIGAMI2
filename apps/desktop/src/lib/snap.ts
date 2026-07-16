@@ -1,7 +1,12 @@
-export type SnapKind = 'vertex' | 'midpoint' | 'edge' | 'grid'
+import type { ProperIntersectionSnapTarget } from './intersectionSnap'
+
+export type SnapKind = 'vertex' | 'intersection' | 'midpoint' | 'edge' | 'grid'
+
+type PointSnapKind = Exclude<SnapKind, 'intersection'>
 
 export type SnapSettings = Readonly<{
   vertex: boolean
+  intersection: boolean
   midpoint: boolean
   edge: boolean
   grid: boolean
@@ -9,6 +14,7 @@ export type SnapSettings = Readonly<{
 
 export const DEFAULT_SNAP_SETTINGS: SnapSettings = Object.freeze({
   vertex: true,
+  intersection: true,
   midpoint: true,
   edge: true,
   grid: true,
@@ -42,12 +48,14 @@ export type SnapGrid = Readonly<{
 
 export type SnapTarget = Readonly<{
   key: string
-  kind: SnapKind
+  kind: PointSnapKind
   point: SnapPoint
   distancePx: number
   sourceId?: string
   sourceFraction?: number
 }>
+
+export type AdditionSnapTarget = SnapTarget | ProperIntersectionSnapTarget
 
 export type SnapBounds = Readonly<{
   minX: number
@@ -75,7 +83,7 @@ type RankedTarget = Readonly<{
   modelDistance: number
 }>
 
-const DEFAULT_THRESHOLDS_PX: Readonly<Record<SnapKind, number>> = Object.freeze({
+const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.freeze({
   vertex: 10,
   midpoint: 9,
   edge: 7,
@@ -124,7 +132,13 @@ export function createVisibleGrid(
 export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget | null {
   const { point, scale, settings } = options
   if (!isFinitePoint(point) || !Number.isFinite(scale) || scale <= 0) return null
-  if (!settings.vertex && !settings.midpoint && !settings.edge && !settings.grid) return null
+  if (
+    !settings.vertex
+    && !settings.intersection
+    && !settings.midpoint
+    && !settings.edge
+    && !settings.grid
+  ) return null
 
   if (settings.vertex) {
     const threshold = thresholdFor('vertex', options.thresholdsPx)
@@ -217,6 +231,18 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
   return null
 }
 
+export function prioritizeAdditionSnapTargets(
+  pointTarget: SnapTarget | null,
+  intersectionTarget: ProperIntersectionSnapTarget | null,
+): AdditionSnapTarget | null {
+  if (pointTarget?.kind === 'vertex') return pointTarget
+  return intersectionTarget ?? pointTarget
+}
+
+export function toggleSnapSetting(settings: SnapSettings, kind: SnapKind): SnapSettings {
+  return { ...settings, [kind]: !settings[kind] }
+}
+
 function emptyGrid(): SnapGrid {
   return { xValues: [], yValues: [] }
 }
@@ -304,7 +330,7 @@ function stableAverage(first: number, second: number) {
 function considerTargetPoint(
   best: RankedTarget | null,
   key: string,
-  kind: SnapKind,
+  kind: PointSnapKind,
   x: number,
   y: number,
   inputPoint: SnapPoint,
@@ -398,7 +424,7 @@ function nearestGridValue(values: readonly number[], coordinate: number) {
   return bestValue
 }
 
-function thresholdFor(kind: SnapKind, overrides?: SnapThresholdsPx) {
+function thresholdFor(kind: PointSnapKind, overrides?: SnapThresholdsPx) {
   const override = overrides?.[kind]
   return override !== undefined && Number.isFinite(override) && override >= 0
     ? override

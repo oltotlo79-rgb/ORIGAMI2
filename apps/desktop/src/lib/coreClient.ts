@@ -59,6 +59,11 @@ export type ProjectFileResponse = {
   project: ProjectSnapshot
 }
 
+export type EdgeIntersectionResponse = {
+  snapshot: ProjectSnapshot
+  vertex_id: string
+}
+
 export type ValidationSnapshot = {
   project_id: string
   revision: number
@@ -246,5 +251,19 @@ export function splitEdge(
     expectedRevision,
     edge,
     fraction,
+  })
+}
+
+export function connectEdgeIntersection(
+  expectedProjectId: string,
+  expectedRevision: number,
+  firstEdge: string,
+  secondEdge: string,
+) {
+  return invoke<EdgeIntersectionResponse>('connect_edge_intersection', {
+    expectedProjectId,
+    expectedRevision,
+    firstEdge,
+    secondEdge,
   })
 }

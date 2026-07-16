@@ -10,6 +10,7 @@ import { FoldPreview } from './components/FoldPreview'
 import {
   addEdge,
   addVertex,
+  connectEdgeIntersection,
   generateBenchmarkPattern,
   getProjectSnapshot,
   isNativeCoreAvailable,
@@ -34,15 +35,16 @@ import {
 } from './lib/coreClient'
 import {
   DEFAULT_SNAP_SETTINGS,
-  type SnapKind,
+  toggleSnapSetting,
   type SnapSettings,
 } from './lib/snap'
 import type { VertexPlacement } from './lib/vertexPlacement'
 import './App.css'
 
-const SNAP_OPTIONS: ReadonlyArray<{ kind: SnapKind; label: string }> = [
+const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
   { kind: 'grid', label: 'グリッド' },
   { kind: 'vertex', label: '頂点' },
+  { kind: 'intersection', label: '交点' },
   { kind: 'edge', label: '辺' },
   { kind: 'midpoint', label: '中点' },
 ]
@@ -307,22 +309,65 @@ function App() {
     const previousVertexIds = new Set(
       current.crease_pattern.vertices.map((vertex) => vertex.id),
     )
-    const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
+    const result: { snapshot: ProjectSnapshot | null; connectedVertexId: string | null } = {
+      snapshot: null,
+      connectedVertexId: null,
+    }
     const succeeded = await runNativeEdit(async (projectId, revision) => {
       let snapshot: ProjectSnapshot
       if (placement.operation === 'add') {
         snapshot = await addVertex(projectId, revision, placement.x, placement.y)
-      } else {
+      } else if (placement.operation === 'split-edge') {
         const edge = current.crease_pattern.edges.find(({ id }) => id === placement.edgeId)
         if (!edge) throw new Error(`分割対象の辺が見つかりません: ${placement.edgeId}`)
         snapshot = edge.kind === 'boundary'
           ? await splitBoundaryEdge(projectId, revision, placement.edgeId, placement.fraction)
           : await splitEdge(projectId, revision, placement.edgeId, placement.fraction)
+      } else {
+        const firstEdge = current.crease_pattern.edges.find(
+          ({ id }) => id === placement.firstEdgeId,
+        )
+        const secondEdge = current.crease_pattern.edges.find(
+          ({ id }) => id === placement.secondEdgeId,
+        )
+        if (!firstEdge || !secondEdge) {
+          throw new Error('交点を構成する辺が見つかりません')
+        }
+        if (
+          firstEdge.kind === 'boundary'
+          || secondEdge.kind === 'boundary'
+          || placement.firstEdgeId >= placement.secondEdgeId
+        ) throw new Error('交点接続の対象辺が不正です')
+        const response = await connectEdgeIntersection(
+          projectId,
+          revision,
+          placement.firstEdgeId,
+          placement.secondEdgeId,
+        )
+        snapshot = response.snapshot
+        result.connectedVertexId = response.vertex_id
       }
       result.snapshot = snapshot
       return snapshot
     })
     if (!succeeded || !result.snapshot) return
+
+    if (placement.operation === 'connect-intersection') {
+      if (
+        !result.connectedVertexId
+        || !result.snapshot.crease_pattern.vertices.some(
+          ({ id }) => id === result.connectedVertexId,
+        )
+      ) {
+        setCoreStatus('交点を接続しましたが、作成された頂点を確認できませんでした')
+        return
+      }
+      setSelectedLineId(null)
+      setPendingEdgeStart(null)
+      setSelectedVertexId(result.connectedVertexId)
+      setCoreStatus('交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）')
+      return
+    }
 
     const addedVertices = result.snapshot.crease_pattern.vertices.filter(
       ({ id }) => !previousVertexIds.has(id),
@@ -1074,10 +1119,7 @@ function App() {
                   className={`chip${snapSettings[kind] ? ' active' : ''}`}
                   aria-pressed={snapSettings[kind]}
                   disabled={coreBusy}
-                  onClick={() => setSnapSettings((current) => ({
-                    ...current,
-                    [kind]: !current[kind],
-                  }))}
+                  onClick={() => setSnapSettings((current) => toggleSnapSetting(current, kind))}
                 >
                   {label}
                 </button>

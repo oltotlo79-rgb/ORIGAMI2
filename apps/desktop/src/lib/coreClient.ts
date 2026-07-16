@@ -6,7 +6,12 @@ export type PatternResponse = {
 }
 
 export type ProjectSnapshot = {
+  project_id: string
+  name: string
+  current_path: string | null
   revision: number
+  saved_revision: number | null
+  is_dirty: boolean
   crease_pattern: {
     vertices: Array<{ id: string; position: { x: number; y: number } }>
     edges: Array<{ id: string; start: string; end: string; kind: string }>
@@ -16,7 +21,13 @@ export type ProjectSnapshot = {
   cutting_allowed: boolean
 }
 
+export type ProjectFileResponse = {
+  canceled: boolean
+  project: ProjectSnapshot
+}
+
 export type ValidationSnapshot = {
+  project_id: string
   revision: number
   is_valid: boolean
   issues: Array<{
@@ -48,17 +59,31 @@ export function validateProject() {
   return invoke<ValidationSnapshot>('validate_project')
 }
 
-export function addVertex(expectedRevision: number, x: number, y: number) {
-  return invoke<ProjectSnapshot>('add_vertex', { expectedRevision, x, y })
+export function openProject() {
+  return invoke<ProjectFileResponse>('open_project')
+}
+
+export function saveProject() {
+  return invoke<ProjectFileResponse>('save_project')
+}
+
+export function saveProjectAs() {
+  return invoke<ProjectFileResponse>('save_project_as')
+}
+
+export function addVertex(expectedProjectId: string, expectedRevision: number, x: number, y: number) {
+  return invoke<ProjectSnapshot>('add_vertex', { expectedProjectId, expectedRevision, x, y })
 }
 
 export function addEdge(
+  expectedProjectId: string,
   expectedRevision: number,
   start: string,
   end: string,
   kind: 'mountain' | 'valley' | 'cut',
 ) {
   return invoke<ProjectSnapshot>('add_edge', {
+    expectedProjectId,
     expectedRevision,
     start,
     end,
@@ -67,30 +92,39 @@ export function addEdge(
 }
 
 export function moveVertex(
+  expectedProjectId: string,
   expectedRevision: number,
   id: string,
   x: number,
   y: number,
 ) {
-  return invoke<ProjectSnapshot>('move_vertex', { expectedRevision, id, x, y })
+  return invoke<ProjectSnapshot>('move_vertex', { expectedProjectId, expectedRevision, id, x, y })
 }
 
-export function removeVertex(expectedRevision: number, id: string) {
-  return invoke<ProjectSnapshot>('remove_vertex', { expectedRevision, id })
+export function removeVertex(expectedProjectId: string, expectedRevision: number, id: string) {
+  return invoke<ProjectSnapshot>('remove_vertex', { expectedProjectId, expectedRevision, id })
 }
 
-export function removeEdge(expectedRevision: number, id: string) {
-  return invoke<ProjectSnapshot>('remove_edge', { expectedRevision, id })
+export function removeEdge(expectedProjectId: string, expectedRevision: number, id: string) {
+  return invoke<ProjectSnapshot>('remove_edge', { expectedProjectId, expectedRevision, id })
 }
 
-export function undo(expectedRevision: number) {
-  return invoke<ProjectSnapshot>('undo', { expectedRevision })
+export function undo(expectedProjectId: string, expectedRevision: number) {
+  return invoke<ProjectSnapshot>('undo', { expectedProjectId, expectedRevision })
 }
 
-export function redo(expectedRevision: number) {
-  return invoke<ProjectSnapshot>('redo', { expectedRevision })
+export function redo(expectedProjectId: string, expectedRevision: number) {
+  return invoke<ProjectSnapshot>('redo', { expectedProjectId, expectedRevision })
 }
 
-export function setCuttingAllowed(expectedRevision: number, allowed: boolean) {
-  return invoke<ProjectSnapshot>('set_cutting_allowed', { expectedRevision, allowed })
+export function setCuttingAllowed(
+  expectedProjectId: string,
+  expectedRevision: number,
+  allowed: boolean,
+) {
+  return invoke<ProjectSnapshot>('set_cutting_allowed', {
+    expectedProjectId,
+    expectedRevision,
+    allowed,
+  })
 }

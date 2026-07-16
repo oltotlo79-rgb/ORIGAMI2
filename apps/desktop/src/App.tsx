@@ -1,4 +1,5 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CreaseCanvas, type CreaseLine } from './components/CreaseCanvas'
 import { FoldPreview } from './components/FoldPreview'
 import {
@@ -8,9 +9,12 @@ import {
   getProjectSnapshot,
   isNativeCoreAvailable,
   moveVertex,
+  openProject,
   redo,
   removeEdge,
   removeVertex,
+  saveProject,
+  saveProjectAs,
   setCuttingAllowed,
   undo,
   type ProjectSnapshot,
@@ -32,6 +36,14 @@ function App() {
   )
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
+  const [fileOperation, setFileOperation] = useState<'open' | 'save' | 'save_as' | null>(null)
+  const [coreBusy, setCoreBusy] = useState(false)
+  const coreOperationRef = useRef(false)
+  const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
+  const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
+    latestSnapshotRef.current = snapshot
+    setNativeSnapshot(snapshot)
+  }, [])
   const nativeLines = useMemo<CreaseLine[]>(() => {
     if (!nativeSnapshot) return []
     const positions = new Map(
@@ -72,36 +84,74 @@ function App() {
     if (!isNativeCoreAvailable()) return
     getProjectSnapshot()
       .then((snapshot) => {
-        setNativeSnapshot(snapshot)
+        applySnapshot(snapshot)
         setCoreStatus(`Rustコア revision ${snapshot.revision}`)
       })
       .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
+  }, [applySnapshot])
+
+  useEffect(() => {
+    if (!isNativeCoreAvailable()) return
+
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void getCurrentWindow().onCloseRequested((event) => {
+      if (coreOperationRef.current) {
+        event.preventDefault()
+        setCoreStatus('処理が完了してから終了してください')
+        return
+      }
+      if (!latestSnapshotRef.current?.is_dirty) return
+      const discard = window.confirm(
+        '未保存の変更があります。変更を破棄して終了しますか？\nキャンセルすると編集画面に戻ります。',
+      )
+      if (!discard) event.preventDefault()
+    }).then((stopListening) => {
+      if (disposed) stopListening()
+      else unlisten = stopListening
+    }).catch((error: unknown) => {
+      if (!disposed) setCoreStatus(`終了確認の初期化エラー: ${String(error)}`)
+    })
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
   }, [])
 
   const runNativeEdit = useCallback(async (
-    action: (revision: number) => Promise<ProjectSnapshot>,
+    action: (projectId: string, revision: number) => Promise<ProjectSnapshot>,
   ) => {
-    if (!nativeSnapshot) return false
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return false
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setCancelInteractionToken((token) => token + 1)
     try {
-      const snapshot = await action(nativeSnapshot.revision)
-      setNativeSnapshot(snapshot)
+      const snapshot = await action(current.project_id, current.revision)
+      applySnapshot(snapshot)
       setValidation(null)
       setCoreStatus(`Rustコア revision ${snapshot.revision}`)
       return true
     } catch (error) {
       setCoreStatus(`コアエラー: ${String(error)}`)
       return false
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
     }
-  }, [nativeSnapshot])
+  }, [applySnapshot])
 
   const deleteSelection = useCallback(async () => {
     if (selectedLine) {
-      const removed = await runNativeEdit((revision) => removeEdge(revision, selectedLine.id))
+      const removed = await runNativeEdit((projectId, revision) =>
+        removeEdge(projectId, revision, selectedLine.id))
       if (removed) setSelectedLineId(null)
       return
     }
     if (selectedVertex) {
-      const removed = await runNativeEdit((revision) => removeVertex(revision, selectedVertex.id))
+      const removed = await runNativeEdit((projectId, revision) =>
+        removeVertex(projectId, revision, selectedVertex.id))
       if (removed) setSelectedVertexId(null)
     }
   }, [runNativeEdit, selectedLine, selectedVertex])
@@ -158,7 +208,8 @@ function App() {
     }
     const start = pendingEdgeStart
     setPendingEdgeStart(null)
-    void runNativeEdit((revision) => addEdge(revision, start, vertexId, activeTool))
+    void runNativeEdit((projectId, revision) =>
+      addEdge(projectId, revision, start, vertexId, activeTool))
   }
 
   function selectCanvasVertex(vertexId: string) {
@@ -180,14 +231,22 @@ function App() {
       setCoreStatus('座標には有限の数値を入力してください')
       return
     }
-    void runNativeEdit((revision) => moveVertex(revision, selectedVertex.id, x, y))
+    void runNativeEdit((projectId, revision) =>
+      moveVertex(projectId, revision, selectedVertex.id, x, y))
   }
 
   async function runValidation() {
-    if (!nativeSnapshot) return
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setCancelInteractionToken((token) => token + 1)
     try {
       const result = await validateProject()
-      if (result.revision !== nativeSnapshot.revision) {
+      if (
+        result.project_id !== current.project_id ||
+        result.revision !== current.revision
+      ) {
         setCoreStatus('検証中に内容が変更されたため、再度検証してください')
         return
       }
@@ -197,6 +256,53 @@ function App() {
         : `revision ${result.revision}: ${result.issues.length}件の問題`)
     } catch (error) {
       setCoreStatus(`検証エラー: ${String(error)}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function runFileOperation(operation: 'open' | 'save' | 'save_as') {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    if (
+      operation === 'open' &&
+      current.is_dirty &&
+      !window.confirm('未保存の変更があります。保存せずに別のプロジェクトを開きますか？')
+    ) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation(operation)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const response = await (
+        operation === 'open'
+          ? openProject()
+          : operation === 'save'
+            ? saveProject()
+            : saveProjectAs()
+      )
+      applySnapshot(response.project)
+      if (response.canceled) {
+        setCoreStatus('ファイル操作をキャンセルしました')
+        return
+      }
+      if (operation === 'open') {
+        setValidation(null)
+        setSelectedLineId(null)
+        setSelectedVertexId(null)
+        setPendingEdgeStart(null)
+      }
+      setCoreStatus(operation === 'open'
+        ? `「${response.project.name}」を開きました`
+        : `「${response.project.name}」を保存しました`)
+    } catch (error) {
+      setCoreStatus(`ファイルエラー: ${String(error)}`)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
     }
   }
 
@@ -205,11 +311,17 @@ function App() {
       <header className="titlebar">
         <div className="brand-mark" aria-hidden="true">◇</div>
         <strong>ORIGAMI2</strong>
-        <span className="document-name">無題のプロジェクト</span>
+        <span
+          className="document-name"
+          title={nativeSnapshot?.current_path ?? undefined}
+        >
+          {nativeSnapshot?.name ?? '無題のプロジェクト'}
+          {nativeSnapshot?.is_dirty ? ' *' : ''}
+        </span>
         <nav className="top-actions" aria-label="プロジェクト操作">
           <button
             type="button"
-            disabled={!nativeSnapshot?.can_undo}
+            disabled={coreBusy || !nativeSnapshot?.can_undo}
             onClick={() => runNativeEdit(undo)}
             title="元に戻す (Ctrl/Cmd+Z)"
             aria-keyshortcuts="Control+Z Meta+Z"
@@ -218,7 +330,7 @@ function App() {
           </button>
           <button
             type="button"
-            disabled={!nativeSnapshot?.can_redo}
+            disabled={coreBusy || !nativeSnapshot?.can_redo}
             onClick={() => runNativeEdit(redo)}
             title="やり直す (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
             aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"
@@ -227,17 +339,37 @@ function App() {
           </button>
           <button
             type="button"
-            disabled={!nativeSnapshot}
-            onClick={() => runNativeEdit((revision) => addVertex(revision, 200, 200))}
+            disabled={coreBusy || !nativeSnapshot}
+            onClick={() => runNativeEdit((projectId, revision) =>
+              addVertex(projectId, revision, 200, 200))}
           >
             中央に頂点
           </button>
-          <button type="button">開く</button>
-          <button type="button">保存</button>
+          <button
+            type="button"
+            disabled={coreBusy || !nativeSnapshot}
+            onClick={() => void runFileOperation('open')}
+          >
+            {fileOperation === 'open' ? '開いています…' : '開く'}
+          </button>
+          <button
+            type="button"
+            disabled={coreBusy || !nativeSnapshot}
+            onClick={() => void runFileOperation('save')}
+          >
+            {fileOperation === 'save' ? '保存中…' : '保存'}
+          </button>
+          <button
+            type="button"
+            disabled={coreBusy || !nativeSnapshot}
+            onClick={() => void runFileOperation('save_as')}
+          >
+            {fileOperation === 'save_as' ? '保存中…' : '別名保存'}
+          </button>
           <button
             type="button"
             className="primary"
-            disabled={!nativeSnapshot}
+            disabled={coreBusy || !nativeSnapshot}
             onClick={() => void runValidation()}
           >
             検証
@@ -258,6 +390,7 @@ function App() {
             <button
               type="button"
               key={id}
+              disabled={coreBusy}
               className={activeTool === id ? 'active' : ''}
               onClick={() => {
                 setActiveTool(id)
@@ -291,16 +424,19 @@ function App() {
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
               cancelInteractionToken={cancelInteractionToken}
+              disabled={coreBusy}
               onSelectLine={(lineId) => {
                 setSelectedLineId(lineId)
                 if (lineId) setSelectedVertexId(null)
               }}
               onAddVertex={(x, y) =>
-                runNativeEdit((revision) => addVertex(revision, x, y))
+                runNativeEdit((projectId, revision) =>
+                  addVertex(projectId, revision, x, y))
               }
               onSelectVertex={selectCanvasVertex}
               onMoveVertex={(vertexId, x, y) => {
-                void runNativeEdit((revision) => moveVertex(revision, vertexId, x, y))
+                void runNativeEdit((projectId, revision) =>
+                  moveVertex(projectId, revision, vertexId, x, y))
               }}
             />
           </article>
@@ -348,6 +484,7 @@ function App() {
                   <button
                     type="button"
                     className="danger"
+                    disabled={coreBusy}
                     onClick={() => void deleteSelection()}
                   >
                     線を削除
@@ -371,6 +508,7 @@ function App() {
                       name="x"
                       type="number"
                       step="any"
+                      disabled={coreBusy}
                       defaultValue={selectedVertex.position.x}
                     />
                   </label>
@@ -380,14 +518,16 @@ function App() {
                       name="y"
                       type="number"
                       step="any"
+                      disabled={coreBusy}
                       defaultValue={selectedVertex.position.y}
                     />
                   </label>
                   <div className="property-actions">
-                    <button type="submit">座標を更新</button>
+                    <button type="submit" disabled={coreBusy}>座標を更新</button>
                     <button
                       type="button"
                       className="danger"
+                      disabled={coreBusy}
                       onClick={() => void deleteSelection()}
                     >
                       頂点を削除
@@ -439,10 +579,10 @@ function App() {
               <input
                 type="checkbox"
                 checked={nativeSnapshot?.cutting_allowed ?? false}
-                disabled={!nativeSnapshot}
+                disabled={coreBusy || !nativeSnapshot}
                 onChange={(event) =>
-                  runNativeEdit((revision) =>
-                    setCuttingAllowed(revision, event.target.checked),
+                  runNativeEdit((projectId, revision) =>
+                    setCuttingAllowed(projectId, revision, event.target.checked),
                   )
                 }
               />{' '}

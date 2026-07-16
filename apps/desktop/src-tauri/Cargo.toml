@@ -14,7 +14,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+atomic-write-file = "0.3.0"
 ori-core = { path = "../../../crates/ori-core" }
 ori-domain = { path = "../../../crates/ori-domain" }
+ori-formats = { path = "../../../crates/ori-formats" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

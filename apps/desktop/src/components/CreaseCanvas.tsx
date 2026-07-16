@@ -23,6 +23,7 @@ type Props = {
   onSelectVertex?: (id: string) => void
   onMoveVertex?: (id: string, x: number, y: number) => void
   cancelInteractionToken?: number
+  disabled?: boolean
 }
 
 type Vertex = { id: string; x: number; y: number }
@@ -61,6 +62,7 @@ export function CreaseCanvas({
   onSelectVertex,
   onMoveVertex,
   cancelInteractionToken = 0,
+  disabled = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -153,6 +155,7 @@ export function CreaseCanvas({
   }, [dragPreview, lines, pendingVertexId, selectedLineId, selectedVertexId, vertices])
 
   function handleClick(event: MouseEvent<HTMLCanvasElement>) {
+    if (disabled) return
     if (suppressClickRef.current) {
       suppressClickRef.current = false
       return
@@ -193,6 +196,7 @@ export function CreaseCanvas({
 
   function handlePointerDown(event: PointerEvent<HTMLCanvasElement>) {
     if (
+      disabled ||
       dragRef.current ||
       tool !== 'select' ||
       event.button !== 0 ||
@@ -227,6 +231,7 @@ export function CreaseCanvas({
   }
 
   function handlePointerMove(event: PointerEvent<HTMLCanvasElement>) {
+    if (disabled) return
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
 
@@ -240,6 +245,7 @@ export function CreaseCanvas({
   }
 
   function handlePointerUp(event: PointerEvent<HTMLCanvasElement>) {
+    if (disabled) return
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
 
@@ -288,8 +294,9 @@ export function CreaseCanvas({
   return (
     <canvas
       ref={canvasRef}
-      className={`crease-canvas tool-${tool}${dragPreview ? ' is-dragging' : ''}`}
+      className={`crease-canvas tool-${tool}${dragPreview ? ' is-dragging' : ''}${disabled ? ' is-disabled' : ''}`}
       aria-label="展開図編集キャンバス"
+      aria-disabled={disabled}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}

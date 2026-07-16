@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
 import {
   DEFAULT_SNAP_SETTINGS,
+  createSnapSpatialIndex,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
   resolveUniqueSnapAnchor,
@@ -12,9 +13,11 @@ import {
   type ParallelSnapReference,
   type SnapKind,
   type SnapPoint,
+  type SnapSpatialIndex,
   type SnapSettings,
 } from '../lib/snap'
 import { createIntersectionSnapIndex } from '../lib/intersectionSnap'
+import { createCanvasLineDrawBatches } from '../lib/canvasBatching'
 import {
   createVertexPlacement,
   isSupportedIntersectionTarget,
@@ -45,6 +48,23 @@ export type PaperPolygonPoint = {
   y: number
 }
 
+export type CreaseCanvasRenderMetrics = Readonly<{
+  requestId: string | number
+  lineCount: number
+  vertexCount: number
+  canvasWidth: number
+  canvasHeight: number
+  pixelRatio: number
+  initialDrawMs: number
+  sampleFrameCount: number
+  elapsedMs: number
+  framesPerSecond: number
+  averageDrawMs: number
+  p95DrawMs: number
+  presentationDelayMs: number
+  totalDurationMs: number
+}>
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
@@ -68,6 +88,8 @@ type Props = {
   onMoveVertex?: (id: string, x: number, y: number) => void
   cancelInteractionToken?: number
   disabled?: boolean
+  renderMetricsRequestId?: string | number | null
+  onRenderMetrics?: (metrics: CreaseCanvasRenderMetrics) => void
 }
 
 type Vertex = { id: string; x: number; y: number }
@@ -131,6 +153,7 @@ const VERTEX_HIT_RADIUS_PX = 10
 const LINE_HIT_RADIUS_PX = 7
 const DESIRED_GRID_INTERVALS = 20
 const MAX_GRID_LINES_PER_AXIS = 100
+const RENDER_METRICS_SAMPLE_FRAME_COUNT = 30
 
 const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   vertex: '頂点',
@@ -181,6 +204,8 @@ export function CreaseCanvas({
   onMoveVertex,
   cancelInteractionToken = 0,
   disabled = false,
+  renderMetricsRequestId = null,
+  onRenderMetrics,
 }: Props) {
   const resolvedPaperBounds = resolvePaperBounds(paperBounds)
   const drawablePaperPolygon = useMemo(
@@ -204,6 +229,10 @@ export function CreaseCanvas({
     () => resolveUniqueSnapAnchor(vertices, selectedVertexId),
     [selectedVertexId, vertices],
   )
+  const snapSpatialIndex = useMemo(
+    () => createSnapSpatialIndex(vertices, lines),
+    [lines, vertices],
+  )
   const intersectionSnapIndex = useMemo(
     () => createIntersectionSnapIndex(
       lines,
@@ -226,9 +255,23 @@ export function CreaseCanvas({
     ),
     [resolvedPaperBounds],
   )
+  const lineDrawBatches = useMemo(
+    () => createCanvasLineDrawBatches(lines, selectedLineId),
+    [lines, selectedLineId],
+  )
+  const firstVertexById = useMemo(() => {
+    const index = new Map<string, Vertex>()
+    for (const vertex of vertices) {
+      if (!index.has(vertex.id)) index.set(vertex.id, vertex)
+    }
+    return index
+  }, [vertices])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const suppressClickRef = useRef(false)
+  const renderMetricsCallbackRef = useRef(onRenderMetrics)
+  const lastReportedRenderMetricsRequestRef = useRef<string | number | null>(null)
+  renderMetricsCallbackRef.current = onRenderMetrics
   const [dragPreview, setDragPreview] = useState<DragState | null>(null)
   const [snapGuide, setSnapGuide] = useState<SnapGuide | null>(null)
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 0, height: 0 })
@@ -279,9 +322,6 @@ export function CreaseCanvas({
     const pixelRatio = safePixelRatio(window.devicePixelRatio)
     canvas.width = Math.max(1, Math.round(canvasRect.width * pixelRatio))
     canvas.height = Math.max(1, Math.round(canvasRect.height * pixelRatio))
-    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
-    context.clearRect(0, 0, canvasRect.width, canvasRect.height)
-
     const transform = createViewTransform(canvasRect, resolvedPaperBounds)
     const mapX = (x: number) => mapPaperX(transform, x)
     const mapY = (y: number) => mapPaperY(transform, y)
@@ -290,146 +330,228 @@ export function CreaseCanvas({
         ? { ...point, x: dragPreview.x, y: dragPreview.y }
         : point)
 
-    context.fillStyle = paperColor
-    if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
-      context.fill('evenodd')
-    } else if (useLegacyRectangularPaper) {
-      context.fillRect(transform.left, transform.top, transform.width, transform.height)
-    }
+    const drawFrame = () => {
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      context.clearRect(0, 0, canvasRect.width, canvasRect.height)
 
-    context.save()
-    let shouldDrawGrid = useLegacyRectangularPaper
-    if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
-      context.clip('evenodd')
-      shouldDrawGrid = true
-    }
-    if (shouldDrawGrid) {
-      context.strokeStyle = '#dbe2ea'
-      context.lineWidth = 1
-      for (const value of visibleGrid.xValues) {
-        const x = mapX(value)
-        if (!Number.isFinite(x)) continue
+      context.fillStyle = paperColor
+      if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
+        context.fill('evenodd')
+      } else if (useLegacyRectangularPaper) {
+        context.fillRect(transform.left, transform.top, transform.width, transform.height)
+      }
+
+      context.save()
+      let shouldDrawGrid = useLegacyRectangularPaper
+      if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
+        context.clip('evenodd')
+        shouldDrawGrid = true
+      }
+      if (shouldDrawGrid) {
+        context.strokeStyle = '#dbe2ea'
+        context.lineWidth = 1
         context.beginPath()
-        context.moveTo(x, transform.top)
-        context.lineTo(x, transform.top + transform.height)
+        for (const value of visibleGrid.xValues) {
+          const x = mapX(value)
+          if (!Number.isFinite(x)) continue
+          context.moveTo(x, transform.top)
+          context.lineTo(x, transform.top + transform.height)
+        }
+        for (const value of visibleGrid.yValues) {
+          const y = mapY(value)
+          if (!Number.isFinite(y)) continue
+          context.moveTo(transform.left, y)
+          context.lineTo(transform.left + transform.width, y)
+        }
         context.stroke()
       }
-      for (const value of visibleGrid.yValues) {
-        const y = mapY(value)
-        if (!Number.isFinite(y)) continue
-        context.beginPath()
-        context.moveTo(transform.left, y)
-        context.lineTo(transform.left + transform.width, y)
+      context.restore()
+
+      if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
+        context.strokeStyle = COLORS.boundary
+        context.lineWidth = 1.2
+        context.setLineDash([])
         context.stroke()
       }
-    }
-    context.restore()
 
-    if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
-      context.strokeStyle = COLORS.boundary
-      context.lineWidth = 1.2
+      for (const batch of lineDrawBatches) {
+        context.beginPath()
+        let pathCount = 0
+        for (const line of batch.lines) {
+          const previewStart = line.startVertexId === dragPreview?.vertexId ? dragPreview : null
+          const previewEnd = line.endVertexId === dragPreview?.vertexId ? dragPreview : null
+          const start = mapPaperPoint(
+            transform,
+            previewStart?.x ?? line.x1,
+            previewStart?.y ?? line.y1,
+          )
+          const end = mapPaperPoint(
+            transform,
+            previewEnd?.x ?? line.x2,
+            previewEnd?.y ?? line.y2,
+          )
+          if (!start || !end) continue
+          context.moveTo(start.x, start.y)
+          context.lineTo(end.x, end.y)
+          pathCount += 1
+        }
+        if (pathCount > 0) {
+          context.strokeStyle = COLORS[batch.kind]
+          context.lineWidth = batch.selected ? 4 : batch.kind === 'boundary' ? 2.5 : 1.8
+          context.setLineDash(LINE_DASHES[batch.kind])
+          context.stroke()
+        }
+      }
       context.setLineDash([])
-      context.stroke()
-    }
 
-    for (const line of lines) {
-      const previewStart = line.startVertexId === dragPreview?.vertexId ? dragPreview : null
-      const previewEnd = line.endVertexId === dragPreview?.vertexId ? dragPreview : null
-      const start = mapPaperPoint(
-        transform,
-        previewStart?.x ?? line.x1,
-        previewStart?.y ?? line.y1,
-      )
-      const end = mapPaperPoint(
-        transform,
-        previewEnd?.x ?? line.x2,
-        previewEnd?.y ?? line.y2,
-      )
-      if (!start || !end) continue
-      context.beginPath()
-      context.moveTo(start.x, start.y)
-      context.lineTo(end.x, end.y)
-      context.strokeStyle = COLORS[line.kind]
-      context.lineWidth = line.id === selectedLineId ? 4 : line.kind === 'boundary' ? 2.5 : 1.8
-      context.setLineDash(LINE_DASHES[line.kind])
-      context.stroke()
-    }
-    context.setLineDash([])
-
-    if (parallelReference) {
-      const start = mapPaperPoint(transform, parallelReference.x1, parallelReference.y1)
-      const end = mapPaperPoint(transform, parallelReference.x2, parallelReference.y2)
-      if (start && end) {
-        context.save()
-        context.beginPath()
-        context.moveTo(start.x, start.y)
-        context.lineTo(end.x, end.y)
-        context.strokeStyle = '#8b4fb3'
-        context.lineWidth = 4.5
-        context.setLineDash([2, 5])
-        context.stroke()
-        context.restore()
+      if (parallelReference) {
+        const start = mapPaperPoint(transform, parallelReference.x1, parallelReference.y1)
+        const end = mapPaperPoint(transform, parallelReference.x2, parallelReference.y2)
+        if (start && end) {
+          context.save()
+          context.beginPath()
+          context.moveTo(start.x, start.y)
+          context.lineTo(end.x, end.y)
+          context.strokeStyle = '#8b4fb3'
+          context.lineWidth = 4.5
+          context.setLineDash([2, 5])
+          context.stroke()
+          context.restore()
+        }
       }
-    }
 
-    for (const vertex of vertices) {
-      const preview = vertex.id === dragPreview?.vertexId ? dragPreview : null
-      const x = preview?.x ?? vertex.x
-      const y = preview?.y ?? vertex.y
-      const point = mapPaperPoint(transform, x, y)
-      if (!point) continue
-      if (vertex.id === selectedVertexId || vertex.id === pendingVertexId) {
+      const mappedVertices: Array<{
+        id: string
+        x: number
+        y: number
+      }> = []
+      for (const vertex of vertices) {
+        const preview = vertex.id === dragPreview?.vertexId ? dragPreview : null
+        const x = preview?.x ?? vertex.x
+        const y = preview?.y ?? vertex.y
+        const point = mapPaperPoint(transform, x, y)
+        if (!point) continue
+        mappedVertices.push({ id: vertex.id, ...point })
+      }
+
+      drawVertexHaloBatch(
+        context,
+        mappedVertices,
+        selectedVertexId,
+        pendingVertexId,
+        false,
+      )
+      drawVertexHaloBatch(
+        context,
+        mappedVertices,
+        selectedVertexId,
+        pendingVertexId,
+        true,
+      )
+      if (mappedVertices.length > 0) {
         context.beginPath()
-        context.arc(point.x, point.y, 9, 0, Math.PI * 2)
-        context.fillStyle = vertex.id === pendingVertexId
-          ? 'rgba(229, 155, 53, 0.28)'
-          : 'rgba(23, 107, 135, 0.2)'
+        for (const point of mappedVertices) traceCircle(context, point.x, point.y, 5)
+        context.fillStyle = '#176b87'
         context.fill()
+        context.strokeStyle = '#ffffff'
+        context.lineWidth = 2
+        context.stroke()
       }
-      context.beginPath()
-      context.arc(point.x, point.y, 5, 0, Math.PI * 2)
-      context.fillStyle = '#176b87'
-      context.fill()
-      context.strokeStyle = '#ffffff'
-      context.lineWidth = 2
-      context.stroke()
-    }
 
-    if (tool === 'measure' && selectedLineId) {
-      const selectedLine = lines.find((line) => line.id === selectedLineId)
-      if (selectedLine) {
-        const start = mapPaperPoint(transform, selectedLine.x1, selectedLine.y1)
-        const end = mapPaperPoint(transform, selectedLine.x2, selectedLine.y2)
-        const labelX = start && end
-          ? (start.x + end.x) / 2
-          : transform.left + transform.width / 2
-        const labelY = start && end
-          ? (start.y + end.y) / 2 - 18
-          : transform.top + 20
-        drawMeasurementLabel(
+      if (tool === 'measure' && selectedLineId) {
+        const selectedLine = lines.find((line) => line.id === selectedLineId)
+        if (selectedLine) {
+          const start = mapPaperPoint(transform, selectedLine.x1, selectedLine.y1)
+          const end = mapPaperPoint(transform, selectedLine.x2, selectedLine.y2)
+          const labelX = start && end
+            ? (start.x + end.x) / 2
+            : transform.left + transform.width / 2
+          const labelY = start && end
+            ? (start.y + end.y) / 2 - 18
+            : transform.top + 20
+          drawMeasurementLabel(
+            context,
+            measurementLabel ?? '計測不可',
+            labelX,
+            labelY,
+            canvasRect.width,
+            canvasRect.height,
+          )
+        }
+      }
+
+      if (snapGuide) {
+        drawSnapGuide(
           context,
-          measurementLabel ?? '計測不可',
-          labelX,
-          labelY,
+          transform,
+          snapGuide,
           canvasRect.width,
           canvasRect.height,
         )
       }
     }
 
-    if (snapGuide) {
-      drawSnapGuide(
-        context,
-        transform,
-        snapGuide,
-        canvasRect.width,
-        canvasRect.height,
+    const shouldMeasure = renderMetricsRequestId !== null &&
+      !Object.is(lastReportedRenderMetricsRequestRef.current, renderMetricsRequestId)
+    const initialDrawStartedAt = shouldMeasure ? performance.now() : 0
+    drawFrame()
+    if (!shouldMeasure) return
+
+    const initialDrawFinishedAt = performance.now()
+    const initialDrawMs = Math.max(0, initialDrawFinishedAt - initialDrawStartedAt)
+    const drawDurations: number[] = []
+    let cancelled = false
+    let animationFrameId = 0
+    let firstSampleFrameAt = 0
+    let lastDrawFinishedAt = initialDrawFinishedAt
+
+    const finishMeasurement = (presentedAt: number) => {
+      if (cancelled || renderMetricsRequestId === null) return
+      const elapsedMs = Math.max(0, presentedAt - firstSampleFrameAt)
+      const totalDurationMs = Math.max(0, presentedAt - initialDrawStartedAt)
+      lastReportedRenderMetricsRequestRef.current = renderMetricsRequestId
+      renderMetricsCallbackRef.current?.({
+        requestId: renderMetricsRequestId,
+        lineCount: lines.length,
+        vertexCount: vertices.length,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        pixelRatio,
+        initialDrawMs,
+        sampleFrameCount: drawDurations.length,
+        elapsedMs,
+        framesPerSecond: elapsedMs > 0 ? drawDurations.length * 1_000 / elapsedMs : 0,
+        averageDrawMs: average(drawDurations),
+        p95DrawMs: percentile95(drawDurations),
+        presentationDelayMs: Math.max(0, presentedAt - lastDrawFinishedAt),
+        totalDurationMs,
+      })
+    }
+
+    const sampleFrame = (frameStartedAt: number) => {
+      if (cancelled) return
+      if (drawDurations.length === 0) firstSampleFrameAt = frameStartedAt
+      const drawStartedAt = performance.now()
+      drawFrame()
+      lastDrawFinishedAt = performance.now()
+      drawDurations.push(Math.max(0, lastDrawFinishedAt - drawStartedAt))
+      animationFrameId = window.requestAnimationFrame(
+        drawDurations.length < RENDER_METRICS_SAMPLE_FRAME_COUNT
+          ? sampleFrame
+          : finishMeasurement,
       )
+    }
+
+    animationFrameId = window.requestAnimationFrame(sampleFrame)
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(animationFrameId)
     }
   }, [
     canvasSize.height,
     canvasSize.width,
     dragPreview,
+    lineDrawBatches,
     lines,
     measurementLabel,
     paperColor,
@@ -437,6 +559,7 @@ export function CreaseCanvas({
     drawablePaperPolygon,
     pendingVertexId,
     resolvedPaperBounds,
+    renderMetricsRequestId,
     selectedLineId,
     selectedVertexId,
     snapGuide,
@@ -468,6 +591,7 @@ export function CreaseCanvas({
       parallelReference: parallelReference ?? undefined,
       angleConfig,
       accept,
+      spatialIndex: snapSpatialIndex,
     })
     if (!snapSettings.intersection) return { status: 'ready', target: pointTarget }
 
@@ -540,6 +664,7 @@ export function CreaseCanvas({
       parallelReference: drag.parallelReference,
       angleConfig: drag.angleConfig,
       excludedVertexId: drag.vertexId,
+      spatialIndex: snapSpatialIndex,
       accept: (candidate) => {
         if (
           !isFiniteSnapPoint(candidate.point) ||
@@ -575,9 +700,9 @@ export function CreaseCanvas({
     const pointer = eventToPaperPosition(canvas, event, resolvedPaperBounds)
     const { x, y } = pointer
     const closestVertex = findClosestVertex(
-      vertices,
-      pointer.canvasX,
-      pointer.canvasY,
+      snapSpatialIndex.vertices,
+      x,
+      y,
       pointer.transform,
     )
     if (tool === 'vertex' && onPlaceVertex) {
@@ -648,25 +773,12 @@ export function CreaseCanvas({
       onSelectLine(null)
       return
     }
-    let best: { id: string; distance: number } | null = null
-    for (const line of lines) {
-      const start = mapPaperPoint(pointer.transform, line.x1, line.y1)
-      const end = mapPaperPoint(pointer.transform, line.x2, line.y2)
-      if (!start || !end) continue
-      const distance = pointSegmentDistance(
-        pointer.canvasX,
-        pointer.canvasY,
-        start.x,
-        start.y,
-        end.x,
-        end.y,
-      )
-      if (
-        distance < LINE_HIT_RADIUS_PX &&
-        (!best || distance < best.distance)
-      ) best = { id: line.id, distance }
-    }
-    onSelectLine(best?.id ?? null)
+    const best = snapSpatialIndex.segments.nearest({
+      point: { x, y },
+      radius: LINE_HIT_RADIUS_PX / pointer.transform.scale,
+      boundary: 'exclusive',
+    })
+    onSelectLine(best?.value.id ?? null)
   }
 
   function handlePointerDown(event: PointerEvent<HTMLCanvasElement>) {
@@ -682,14 +794,14 @@ export function CreaseCanvas({
     const canvas = event.currentTarget
     const pointer = eventToPaperPosition(canvas, event, resolvedPaperBounds)
     const closestVertex = findClosestVertex(
-      vertices,
-      pointer.canvasX,
-      pointer.canvasY,
+      snapSpatialIndex.vertices,
+      pointer.x,
+      pointer.y,
       pointer.transform,
     )
     if (!closestVertex) return
 
-    const vertex = vertices.find((candidate) => candidate.id === closestVertex.id)
+    const vertex = firstVertexById.get(closestVertex.id)
     if (!vertex) return
 
     event.preventDefault()
@@ -1215,24 +1327,19 @@ function pointInPolygonInclusive(
 }
 
 function findClosestVertex(
-  vertices: Vertex[],
-  canvasX: number,
-  canvasY: number,
+  index: SnapSpatialIndex['vertices'],
+  x: number,
+  y: number,
   transform: ViewTransform,
 ) {
-  let closest: { id: string; distance: number } | null = null
-  for (const vertex of vertices) {
-    const point = mapPaperPoint(transform, vertex.x, vertex.y)
-    if (!point) continue
-    const distance = Math.hypot(canvasX - point.x, canvasY - point.y)
-    if (
-      distance < VERTEX_HIT_RADIUS_PX &&
-      (!closest || distance < closest.distance)
-    ) {
-      closest = { id: vertex.id, distance }
-    }
-  }
+  const closest = index.nearest({
+    point: { x, y },
+    radius: VERTEX_HIT_RADIUS_PX / transform.scale,
+    boundary: 'exclusive',
+  })
   return closest
+    ? { id: closest.value.id, distance: closest.distance * transform.scale }
+    : null
 }
 
 function pointSegmentDistance(
@@ -1256,6 +1363,52 @@ function pointSegmentDistance(
 function safePixelRatio(pixelRatio: number) {
   if (!Number.isFinite(pixelRatio) || pixelRatio <= 0) return 1
   return Math.min(pixelRatio, 4)
+}
+
+function drawVertexHaloBatch(
+  context: CanvasRenderingContext2D,
+  vertices: readonly Vertex[],
+  selectedVertexId: string | null,
+  pendingVertexId: string | null,
+  pending: boolean,
+) {
+  const targetId = pending ? pendingVertexId : selectedVertexId
+  if (targetId === null || (!pending && targetId === pendingVertexId)) return
+  context.beginPath()
+  let pathCount = 0
+  for (const vertex of vertices) {
+    if (vertex.id !== targetId) continue
+    traceCircle(context, vertex.x, vertex.y, 9)
+    pathCount += 1
+  }
+  if (pathCount === 0) return
+  context.fillStyle = pending
+    ? 'rgba(229, 155, 53, 0.28)'
+    : 'rgba(23, 107, 135, 0.2)'
+  context.fill()
+}
+
+function traceCircle(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+) {
+  context.moveTo(x + radius, y)
+  context.arc(x, y, radius, 0, Math.PI * 2)
+}
+
+function average(values: readonly number[]) {
+  if (values.length === 0) return 0
+  let sum = 0
+  for (const value of values) sum += value
+  return Number.isFinite(sum) ? sum / values.length : 0
+}
+
+function percentile95(values: readonly number[]) {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((left, right) => left - right)
+  return sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] ?? 0
 }
 
 function drawSnapGuide(

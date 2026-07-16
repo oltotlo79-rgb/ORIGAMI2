@@ -2,6 +2,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CreaseCanvas,
+  type CreaseCanvasRenderMetrics,
   type CreaseLine,
   type PaperBounds,
   type PaperPolygonPoint,
@@ -48,6 +49,10 @@ import {
   isSupportedIntersectionPlacement,
   type VertexPlacement,
 } from './lib/vertexPlacement'
+import {
+  measureBenchmarkPayloadBytes,
+  prepareBenchmarkRenderData,
+} from './lib/renderBenchmark'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -62,12 +67,26 @@ const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> =
   { kind: 'angle', label: '角度' },
 ]
 
+type BenchmarkRun = Readonly<{
+  requestId: number
+  requestedEdgeCount: number
+  lines: CreaseLine[]
+  vertices: Array<{ id: string; x: number; y: number }>
+  bounds: PaperBounds
+  payloadBytes: number
+  responseMs: number
+  preparationMs: number
+  startedAt: number
+}>
+
 function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [foldAngle, setFoldAngle] = useState(52)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
+  const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
   const [validation, setValidation] = useState<ValidationSnapshot | null>(null)
   const [coreStatus, setCoreStatus] = useState(
@@ -93,6 +112,7 @@ function App() {
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
   const angleInputRef = useRef<HTMLInputElement>(null)
+  const benchmarkRequestIdRef = useRef(0)
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
     latestSnapshotRef.current = snapshot
     setNativeSnapshot(snapshot)
@@ -134,10 +154,18 @@ function App() {
     })) ?? [],
     [nativeSnapshot],
   )
-  const selectedLine = useMemo(
-    () => nativeLines.find((line) => line.id === selectedLineId),
-    [nativeLines, selectedLineId],
-  )
+  const displayedLines = benchmarkRun?.lines ?? nativeLines
+  const displayedVertices = benchmarkRun?.vertices ?? nativeVertices
+  const firstDisplayedLineById = useMemo(() => {
+    const index = new Map<string, CreaseLine>()
+    for (const line of displayedLines) {
+      if (!index.has(line.id)) index.set(line.id, line)
+    }
+    return index
+  }, [displayedLines])
+  const selectedLine = selectedLineId
+    ? firstDisplayedLineById.get(selectedLineId)
+    : undefined
   const parallelReferenceLine = useMemo(
     () => resolveUniqueParallelReference(nativeLines, parallelReferenceEdgeId),
     [nativeLines, parallelReferenceEdgeId],
@@ -162,6 +190,16 @@ function App() {
     ),
     [nativeSnapshot, selectedVertexId],
   )
+  const firstBenchmarkVertexById = useMemo(() => {
+    const index = new Map<string, { id: string; x: number; y: number }>()
+    for (const vertex of benchmarkRun?.vertices ?? []) {
+      if (!index.has(vertex.id)) index.set(vertex.id, vertex)
+    }
+    return index
+  }, [benchmarkRun])
+  const selectedBenchmarkVertex = selectedVertexId
+    ? firstBenchmarkVertexById.get(selectedVertexId)
+    : undefined
   const boundaryVertexIds = useMemo(() => new Set(
     nativeSnapshot?.paper.boundary_vertices ?? [],
   ), [nativeSnapshot])
@@ -283,6 +321,10 @@ function App() {
   }, [applySnapshot])
 
   const deleteSelection = useCallback(async () => {
+    if (benchmarkRun) {
+      setCoreStatus('性能テストの図は読み取り専用です。通常図へ戻ると編集できます')
+      return
+    }
     if (selectedLine) {
       if (selectedLine.kind === 'boundary') {
         setCoreStatus('輪郭線の追加・削除は紙形状編集から行います')
@@ -312,6 +354,7 @@ function App() {
         : '頂点を削除しました（元に戻すで復元できます）')
     }
   }, [
+    benchmarkRun,
     paperBoundaryVertexCount,
     runNativeEdit,
     selectedLine,
@@ -745,6 +788,70 @@ function App() {
     }
   }
 
+  async function toggleBenchmark() {
+    if (benchmarkRun) {
+      setBenchmarkRun(null)
+      setBenchmarkStatus('通常の展開図に戻りました')
+      setSelectedLineId(null)
+      setSelectedVertexId(null)
+      return
+    }
+    if (benchmarkLoading) return
+
+    setBenchmarkLoading(true)
+    setBenchmarkStatus('10,000本の実データを生成・転送中…')
+    setSelectedLineId(null)
+    setSelectedVertexId(null)
+    setPendingEdgeStart(null)
+    const requestId = ++benchmarkRequestIdRef.current
+    const startedAt = performance.now()
+    try {
+      const result = await generateBenchmarkPattern(10_000)
+      const responseMs = performance.now() - startedAt
+      const preparationStartedAt = performance.now()
+      const payloadBytes = measureBenchmarkPayloadBytes(result)
+      const prepared = prepareBenchmarkRenderData(result)
+      const preparationMs = performance.now() - preparationStartedAt
+      const run: BenchmarkRun = {
+        requestId,
+        requestedEdgeCount: prepared.requestedEdgeCount,
+        lines: prepared.lines.map((line) => ({ ...line })),
+        vertices: prepared.vertices.map((vertex) => ({ ...vertex })),
+        bounds: { ...prepared.bounds },
+        payloadBytes,
+        responseMs,
+        preparationMs,
+        startedAt,
+      }
+      setBenchmarkRun(run)
+      setBenchmarkStatus(
+        `${run.lines.length.toLocaleString()}本 · ${formatBytes(payloadBytes)} · `
+        + `生成+転送 ${responseMs.toFixed(1)}ms · Canvas計測中…`,
+      )
+    } catch (error) {
+      setBenchmarkStatus(`ベンチマーク失敗: ${String(error)}`)
+    } finally {
+      setBenchmarkLoading(false)
+    }
+  }
+
+  function recordBenchmarkRenderMetrics(metrics: CreaseCanvasRenderMetrics) {
+    const run = benchmarkRun
+    if (!run || !Object.is(metrics.requestId, run.requestId)) return
+    const endToEndMs = performance.now() - run.startedAt
+    const uiPreparationMs = Math.max(
+      0,
+      endToEndMs - run.responseMs - run.preparationMs - metrics.totalDurationMs,
+    )
+    setBenchmarkStatus(
+      `${metrics.lineCount.toLocaleString()}本 · ${formatBytes(run.payloadBytes)} · `
+      + `生成+転送 ${run.responseMs.toFixed(1)}ms · 変換 ${run.preparationMs.toFixed(1)}ms · `
+      + `UI準備 ${uiPreparationMs.toFixed(1)}ms · 初描画 ${metrics.initialDrawMs.toFixed(1)}ms · `
+      + `${metrics.sampleFrameCount}f ${metrics.framesPerSecond.toFixed(1)} FPS · `
+      + `p95 ${metrics.p95DrawMs.toFixed(1)}ms`,
+    )
+  }
+
   return (
     <main className="app-shell">
       <header className="titlebar" inert={newProjectOpen}>
@@ -863,42 +970,57 @@ function App() {
             <div className="panel-heading">
               <span>2D 展開図</span>
               <span className="panel-meta">
-                {paperSizeLabel} · {nativeLines.length.toLocaleString()}本
+                {benchmarkRun
+                  ? `性能テスト · ${displayedLines.length.toLocaleString()}本`
+                  : `${paperSizeLabel} · ${displayedLines.length.toLocaleString()}本`}
               </span>
             </div>
             <CreaseCanvas
-              lines={nativeLines}
-              paperBounds={paperBounds}
-              paperPolygon={paperPolygon}
+              lines={displayedLines}
+              paperBounds={benchmarkRun?.bounds ?? paperBounds}
+              paperPolygon={benchmarkRun ? undefined : paperPolygon}
               paperColor={paperFrontColor}
-              vertices={nativeVertices}
-              tool={activeTool}
+              vertices={displayedVertices}
+              tool={benchmarkRun ? 'select' : activeTool}
               selectedVertexId={selectedVertexId}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
               measurementLabel={formatLineMeasurementLabel(selectedLineMeasurement)}
               snapSettings={snapSettings}
-              parallelReference={parallelReferenceLine}
+              parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
               cancelInteractionToken={cancelInteractionToken}
-              disabled={coreBusy}
+              disabled={coreBusy || benchmarkLoading}
+              renderMetricsRequestId={benchmarkRun?.requestId ?? null}
+              onRenderMetrics={recordBenchmarkRenderMetrics}
               onSelectLine={(lineId) => {
                 setSelectedLineId(lineId)
                 if (lineId) setSelectedVertexId(null)
               }}
-              onPlaceVertex={(placement) => void placeCanvasVertex(placement)}
-              onPlacementBlocked={(reason) => {
-                if (reason === 'intersection-truncated') {
-                  setCoreStatus('交点候補が過密なため配置できません。拡大して再試行してください')
-                } else if (reason === 'intersection-blocked') {
-                  setCoreStatus('未対応または曖昧な交点クラスタのため配置できません。辺や頂点の重複を確認してください')
-                }
-              }}
-              onSelectVertex={selectCanvasVertex}
-              onMoveVertex={(vertexId, x, y) => {
-                void runNativeEdit((projectId, revision) =>
-                  moveVertex(projectId, revision, vertexId, x, y))
-              }}
+              onPlaceVertex={benchmarkRun
+                ? undefined
+                : (placement) => void placeCanvasVertex(placement)}
+              onPlacementBlocked={benchmarkRun
+                ? undefined
+                : (reason) => {
+                    if (reason === 'intersection-truncated') {
+                      setCoreStatus('交点候補が過密なため配置できません。拡大して再試行してください')
+                    } else if (reason === 'intersection-blocked') {
+                      setCoreStatus('未対応または曖昧な交点クラスタのため配置できません。辺や頂点の重複を確認してください')
+                    }
+                  }}
+              onSelectVertex={benchmarkRun
+                ? (vertexId) => {
+                    setSelectedVertexId(vertexId)
+                    setSelectedLineId(null)
+                  }
+                : selectCanvasVertex}
+              onMoveVertex={benchmarkRun
+                ? undefined
+                : (vertexId, x, y) => {
+                    void runNativeEdit((projectId, revision) =>
+                      moveVertex(projectId, revision, vertexId, x, y))
+                  }}
             />
           </article>
 
@@ -951,41 +1073,55 @@ function App() {
                   <div><dt>長さ</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.length, ' mm')}</dd></div>
                   <div><dt>角度</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.angleDegrees, '°', 2)}</dd></div>
                 </dl>
-                <div className="property-actions">
-                  <button
-                    type="button"
-                    aria-pressed={parallelReferenceEdgeId === selectedLine.id}
-                    disabled={coreBusy}
-                    onClick={() => setParallelReferenceEdgeId((current) => (
-                      current === selectedLine.id ? null : selectedLine.id
-                    ))}
-                  >
-                    {parallelReferenceEdgeId === selectedLine.id
-                      ? '方向参照を解除'
-                      : '方向参照に設定'}
-                  </button>
-                  {selectedLine.kind === 'boundary' ? (
+                {benchmarkRun ? (
+                  <p className="muted">性能テストの図は選択・計測のみ可能です。</p>
+                ) : (
+                  <div className="property-actions">
                     <button
                       type="button"
+                      aria-pressed={parallelReferenceEdgeId === selectedLine.id}
                       disabled={coreBusy}
-                      onClick={() => void splitSelectedBoundaryEdge()}
+                      onClick={() => setParallelReferenceEdgeId((current) => (
+                        current === selectedLine.id ? null : selectedLine.id
+                      ))}
                     >
-                      輪郭辺を中点で分割
+                      {parallelReferenceEdgeId === selectedLine.id
+                        ? '方向参照を解除'
+                        : '方向参照に設定'}
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={coreBusy}
-                      onClick={() => void deleteSelection()}
-                    >
-                      線を削除
-                    </button>
-                  )}
-                </div>
+                    {selectedLine.kind === 'boundary' ? (
+                      <button
+                        type="button"
+                        disabled={coreBusy}
+                        onClick={() => void splitSelectedBoundaryEdge()}
+                      >
+                        輪郭辺を中点で分割
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={coreBusy}
+                        onClick={() => void deleteSelection()}
+                      >
+                        線を削除
+                      </button>
+                    )}
+                  </div>
+                )}
                 {selectedLine.kind === 'boundary' && (
                   <p className="muted">分割後に選択される新しい頂点を移動して、紙の輪郭を編集できます。</p>
                 )}
+              </>
+            ) : selectedBenchmarkVertex ? (
+              <>
+                <dl>
+                  <div><dt>ID</dt><dd>{selectedBenchmarkVertex.id}</dd></div>
+                  <div><dt>種類</dt><dd>性能テスト頂点</dd></div>
+                  <div><dt>X</dt><dd>{selectedBenchmarkVertex.x}</dd></div>
+                  <div><dt>Y</dt><dd>{selectedBenchmarkVertex.y}</dd></div>
+                </dl>
+                <p className="muted">性能テストの図は選択・計測のみ可能です。</p>
               </>
             ) : selectedVertex ? (
               <>
@@ -1483,23 +1619,21 @@ function App() {
       )}
 
       <footer className="statusbar" inert={newProjectOpen}>
-        <span>ツール: {toolLabel(activeTool)}</span>
+        <span>ツール: {benchmarkRun ? '性能テスト選択' : toolLabel(activeTool)}</span>
         <span>{coreStatus}</span>
         <span>スナップ: {snapStatusLabel}</span>
         <span className="status-spacer" />
         <button
           type="button"
           className="benchmark-button"
-          onClick={async () => {
-            setBenchmarkStatus('生成中…')
-            const startedAt = performance.now()
-            const result = await generateBenchmarkPattern(10_000)
-            setBenchmarkStatus(`${result.edge_count.toLocaleString()}本 / ${(performance.now() - startedAt).toFixed(1)}ms`)
-          }}
+          disabled={coreBusy || benchmarkLoading}
+          onClick={() => void toggleBenchmark()}
         >
-          10,000本テスト
+          {benchmarkLoading ? '読込中…' : benchmarkRun ? '通常図へ戻る' : '10,000本テスト'}
         </button>
-        <span>{benchmarkStatus}</span>
+        <span className="benchmark-status" aria-live="polite" title={benchmarkStatus}>
+          {benchmarkStatus}
+        </span>
       </footer>
     </main>
   )
@@ -1513,6 +1647,13 @@ function lineKindLabel(kind: CreaseLine['kind']) {
     boundary: '輪郭線',
     cut: '切断線',
   }[kind]
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'サイズ不明'
+  if (bytes < 1_000) return `${bytes} B`
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`
+  return `${(bytes / 1_000_000).toFixed(2)} MB`
 }
 
 function toolLabel(tool: string) {

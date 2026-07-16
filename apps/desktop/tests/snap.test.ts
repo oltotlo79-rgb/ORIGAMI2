@@ -27,8 +27,76 @@ import {
   createIntersectionSnapIndex,
   type IntersectionSnapSegment,
 } from '../src/lib/intersectionSnap.ts'
+import {
+  createBrowserBenchmarkPattern,
+  MAX_BENCHMARK_EDGE_COUNT,
+  normalizeBenchmarkEdgeCount,
+} from '../src/lib/coreClient.ts'
 
 const EMPTY_GRID: SnapGrid = { xValues: [], yValues: [] }
+
+test('browser benchmark fixture contains stable renderable geometry', () => {
+  const fixture = createBrowserBenchmarkPattern(4)
+
+  assert.deepEqual(fixture, {
+    requested_edge_count: 4,
+    vertex_count: 4,
+    edge_count: 4,
+    vertices: [
+      { id: 'benchmark-v-0', position: { x: 0, y: 0 } },
+      { id: 'benchmark-v-1', position: { x: 1, y: 0 } },
+      { id: 'benchmark-v-2', position: { x: 0, y: 1 } },
+      { id: 'benchmark-v-3', position: { x: 1, y: 1 } },
+    ],
+    edges: [
+      {
+        id: 'benchmark-e-0',
+        start: 'benchmark-v-0',
+        end: 'benchmark-v-1',
+        kind: 'mountain',
+      },
+      {
+        id: 'benchmark-e-1',
+        start: 'benchmark-v-0',
+        end: 'benchmark-v-2',
+        kind: 'valley',
+      },
+      {
+        id: 'benchmark-e-2',
+        start: 'benchmark-v-1',
+        end: 'benchmark-v-3',
+        kind: 'mountain',
+      },
+      {
+        id: 'benchmark-e-3',
+        start: 'benchmark-v-2',
+        end: 'benchmark-v-3',
+        kind: 'valley',
+      },
+    ],
+  })
+})
+
+test('browser benchmark fixture materializes ten thousand valid edges', () => {
+  const fixture = createBrowserBenchmarkPattern(10_000)
+  const vertexIds = new Set(fixture.vertices.map(({ id }) => id))
+
+  assert.equal(fixture.requested_edge_count, 10_000)
+  assert.equal(fixture.vertex_count, 5_184)
+  assert.equal(fixture.edge_count, 10_000)
+  assert.equal(
+    fixture.edges.every(({ start, end }) => vertexIds.has(start) && vertexIds.has(end)),
+    true,
+  )
+})
+
+test('benchmark edge requests are safely normalized', () => {
+  assert.equal(normalizeBenchmarkEdgeCount(-1), 0)
+  assert.equal(normalizeBenchmarkEdgeCount(2.9), 2)
+  assert.equal(normalizeBenchmarkEdgeCount(Number.NaN), 0)
+  assert.equal(normalizeBenchmarkEdgeCount(Number.POSITIVE_INFINITY), 0)
+  assert.equal(normalizeBenchmarkEdgeCount(MAX_BENCHMARK_EDGE_COUNT + 1), MAX_BENCHMARK_EDGE_COUNT)
+})
 
 function only(...kinds: SnapKind[]): SnapSettings {
   return {

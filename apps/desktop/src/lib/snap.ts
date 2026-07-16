@@ -1,4 +1,10 @@
 import type { IntersectionSnapTarget } from './intersectionSnap'
+import {
+  createPointSpatialIndex,
+  createSegmentSpatialIndex,
+  type PointSpatialIndex,
+  type SegmentSpatialIndex,
+} from './nearestSpatialIndex.ts'
 
 export type SnapKind =
   | 'vertex'
@@ -211,6 +217,15 @@ export type ResolveSnapTargetOptions = Readonly<{
   excludedVertexId?: string
   accept?: (target: SnapTarget) => boolean
   thresholdsPx?: SnapThresholdsPx
+  spatialIndex?: SnapSpatialIndex
+}>
+
+export type SnapSpatialIndex = Readonly<{
+  sourceVertices: readonly SnapVertex[]
+  sourceSegments: readonly SnapSegment[]
+  vertices: PointSpatialIndex<SnapVertex>
+  midpoints: PointSpatialIndex<SnapSegment>
+  segments: SegmentSpatialIndex<SnapSegment>
 }>
 
 type RankedTarget = Readonly<{
@@ -231,6 +246,36 @@ const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
 
 const DEFAULT_DESIRED_INTERVALS = 20
 const DEFAULT_MAX_GRID_VALUES = 100
+
+export function createSnapSpatialIndex(
+  vertices: readonly SnapVertex[],
+  segments: readonly SnapSegment[],
+): SnapSpatialIndex {
+  return Object.freeze({
+    sourceVertices: vertices,
+    sourceSegments: segments,
+    vertices: createPointSpatialIndex(vertices.map((vertex) => ({
+      key: `vertex:${vertex.id}`,
+      x: vertex.x,
+      y: vertex.y,
+      value: vertex,
+    }))),
+    midpoints: createPointSpatialIndex(segments.map((segment) => ({
+      key: `midpoint:${segment.id}`,
+      x: stableAverage(segment.x1, segment.x2),
+      y: stableAverage(segment.y1, segment.y2),
+      value: segment,
+    }))),
+    segments: createSegmentSpatialIndex(segments.map((segment) => ({
+      key: `edge:${segment.id}`,
+      x1: segment.x1,
+      y1: segment.y1,
+      x2: segment.x2,
+      y2: segment.y2,
+      value: segment,
+    }))),
+  })
+}
 
 export function createVisibleGrid(
   bounds: SnapBounds,
@@ -286,7 +331,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
   if (settings.vertex) {
     const threshold = thresholdFor('vertex', options.thresholdsPx)
     let best: RankedTarget | null = null
-    for (const vertex of options.vertices) {
+    for (const vertex of snapVertexCandidates(options, threshold)) {
       if (vertex.id === options.excludedVertexId || !isFinitePoint(vertex)) continue
       best = considerTargetPoint(
         best,
@@ -307,7 +352,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
   if (settings.midpoint) {
     const threshold = thresholdFor('midpoint', options.thresholdsPx)
     let best: RankedTarget | null = null
-    for (const segment of options.segments) {
+    for (const segment of snapMidpointCandidates(options, threshold)) {
       const geometry = validSegmentGeometry(segment, options.excludedVertexId)
       if (!geometry) continue
       const midpointX = stableAverage(segment.x1, segment.x2)
@@ -348,7 +393,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
   if (settings.edge) {
     const threshold = thresholdFor('edge', options.thresholdsPx)
     let best: RankedTarget | null = null
-    for (const segment of options.segments) {
+    for (const segment of snapSegmentCandidates(options, threshold)) {
       const geometry = validSegmentGeometry(segment, options.excludedVertexId)
       if (!geometry) continue
       const offsetX = point.x - segment.x1
@@ -483,6 +528,59 @@ function alignedGridValues(minimum: number, maximum: number, step: number, limit
     if (Number.isFinite(value) && value >= minimum && value <= maximum) values.push(value)
   }
   return values
+}
+
+function snapVertexCandidates(
+  options: ResolveSnapTargetOptions,
+  thresholdPx: number,
+): readonly SnapVertex[] {
+  const index = options.spatialIndex
+  const radius = expandedModelRadius(thresholdPx, options.scale)
+  if (!index || index.sourceVertices !== options.vertices || radius === null) {
+    return options.vertices
+  }
+  return index.vertices.withinRadius({ point: options.point, radius }).matches
+    .map(({ value }) => value)
+}
+
+function snapMidpointCandidates(
+  options: ResolveSnapTargetOptions,
+  thresholdPx: number,
+): readonly SnapSegment[] {
+  const index = options.spatialIndex
+  const radius = expandedModelRadius(thresholdPx, options.scale)
+  if (!index || index.sourceSegments !== options.segments || radius === null) {
+    return options.segments
+  }
+  return index.midpoints.withinRadius({ point: options.point, radius }).matches
+    .map(({ value }) => value)
+}
+
+function snapSegmentCandidates(
+  options: ResolveSnapTargetOptions,
+  thresholdPx: number,
+): readonly SnapSegment[] {
+  const index = options.spatialIndex
+  const radius = expandedModelRadius(thresholdPx, options.scale)
+  if (!index || index.sourceSegments !== options.segments || radius === null) {
+    return options.segments
+  }
+  return index.segments.withinRadius({ point: options.point, radius }).matches
+    .map(({ value }) => value)
+}
+
+function expandedModelRadius(thresholdPx: number, scale: number) {
+  const radius = thresholdPx / scale
+  if (!Number.isFinite(radius) || radius < 0) return null
+  // Candidate collection is deliberately a few ULPs wider than the pixel
+  // authority below. This prevents division-vs-multiplication roundoff from
+  // dropping a threshold candidate; considerTargetPoint remains authoritative.
+  const expansion = Math.max(
+    Number.MIN_VALUE,
+    Math.abs(radius) * Number.EPSILON * 8,
+  )
+  const expanded = radius + expansion
+  return Number.isFinite(expanded) ? expanded : null
 }
 
 function validSegmentGeometry(segment: SnapSegment, excludedVertexId?: string) {

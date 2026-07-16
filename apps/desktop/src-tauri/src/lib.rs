@@ -31,6 +31,7 @@ use tauri::menu::{
 const UNTITLED_PROJECT_NAME: &str = "Untitled";
 const DEFAULT_SHEET_SIZE_MM: f64 = 400.0;
 const MAX_PROJECT_NAME_CHARS: usize = 120;
+const MAX_BENCHMARK_EDGE_COUNT: usize = 100_000;
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
@@ -128,10 +129,27 @@ fn initial_project_state() -> ProjectState {
     ProjectState::new_with_paper(pattern, paper)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct PatternResponse {
+    requested_edge_count: usize,
     vertex_count: usize,
     edge_count: usize,
+    vertices: Vec<BenchmarkVertex>,
+    edges: Vec<BenchmarkEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BenchmarkVertex {
+    id: String,
+    position: Point2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BenchmarkEdge {
+    id: String,
+    start: String,
+    end: String,
+    kind: EdgeKind,
 }
 
 #[derive(Debug, Serialize)]
@@ -211,11 +229,84 @@ struct NewProjectParameters {
 
 #[tauri::command]
 fn generate_benchmark_pattern(edge_count: usize) -> PatternResponse {
-    let pattern = ori_core::benchmark_pattern(edge_count.min(100_000));
-    PatternResponse {
-        vertex_count: pattern.vertices.len(),
-        edge_count: pattern.edges.len(),
+    let edge_count = edge_count.min(MAX_BENCHMARK_EDGE_COUNT);
+    if edge_count == 0 {
+        return PatternResponse {
+            requested_edge_count: edge_count,
+            vertex_count: 0,
+            edge_count: 0,
+            vertices: Vec::new(),
+            edges: Vec::new(),
+        };
     }
+
+    // Keep the payload independent from the open project and its undo history.
+    // Stable index-based IDs also make native and browser benchmark fixtures
+    // structurally comparable without leaking random domain IDs into metrics.
+    let mut side = ((edge_count as f64 / 2.0).sqrt().ceil() as usize).max(2);
+    while 2 * side * (side - 1) < edge_count {
+        side += 1;
+    }
+
+    let vertices = (0..side * side)
+        .map(|index| BenchmarkVertex {
+            id: benchmark_vertex_id(index),
+            position: Point2::new((index % side) as f64, (index / side) as f64),
+        })
+        .collect::<Vec<_>>();
+
+    let mut edges = Vec::with_capacity(edge_count);
+    'grid: for y in 0..side {
+        for x in 0..side {
+            let index = y * side + x;
+            if x + 1 < side {
+                edges.push(BenchmarkEdge {
+                    id: benchmark_edge_id(edges.len()),
+                    start: benchmark_vertex_id(index),
+                    end: benchmark_vertex_id(index + 1),
+                    kind: if y % 2 == 0 {
+                        EdgeKind::Mountain
+                    } else {
+                        EdgeKind::Valley
+                    },
+                });
+                if edges.len() == edge_count {
+                    break 'grid;
+                }
+            }
+            if y + 1 < side {
+                edges.push(BenchmarkEdge {
+                    id: benchmark_edge_id(edges.len()),
+                    start: benchmark_vertex_id(index),
+                    end: benchmark_vertex_id(index + side),
+                    kind: if x % 2 == 0 {
+                        EdgeKind::Valley
+                    } else {
+                        EdgeKind::Mountain
+                    },
+                });
+                if edges.len() == edge_count {
+                    break 'grid;
+                }
+            }
+        }
+    }
+
+    PatternResponse {
+        requested_edge_count: edge_count,
+        vertex_count: vertices.len(),
+        edge_count: edges.len(),
+        vertices,
+        edges,
+    }
+}
+
+fn benchmark_vertex_id(index: usize) -> String {
+    format!("benchmark-v-{index}")
+}
+
+fn benchmark_edge_id(index: usize) -> String {
+    format!("benchmark-e-{index}")
 }
 
 #[tauri::command]
@@ -1775,6 +1866,94 @@ mod tests {
             [horizontal, vertical, stem],
             junction,
         )
+    }
+
+    #[test]
+    fn benchmark_pattern_response_contains_stable_renderable_geometry() {
+        let response = generate_benchmark_pattern(4);
+
+        assert_eq!(response.requested_edge_count, 4);
+        assert_eq!(response.vertex_count, 4);
+        assert_eq!(response.edge_count, 4);
+        assert_eq!(
+            response.vertices,
+            vec![
+                BenchmarkVertex {
+                    id: "benchmark-v-0".to_owned(),
+                    position: Point2::new(0.0, 0.0),
+                },
+                BenchmarkVertex {
+                    id: "benchmark-v-1".to_owned(),
+                    position: Point2::new(1.0, 0.0),
+                },
+                BenchmarkVertex {
+                    id: "benchmark-v-2".to_owned(),
+                    position: Point2::new(0.0, 1.0),
+                },
+                BenchmarkVertex {
+                    id: "benchmark-v-3".to_owned(),
+                    position: Point2::new(1.0, 1.0),
+                },
+            ]
+        );
+        assert_eq!(
+            response.edges,
+            vec![
+                BenchmarkEdge {
+                    id: "benchmark-e-0".to_owned(),
+                    start: "benchmark-v-0".to_owned(),
+                    end: "benchmark-v-1".to_owned(),
+                    kind: EdgeKind::Mountain,
+                },
+                BenchmarkEdge {
+                    id: "benchmark-e-1".to_owned(),
+                    start: "benchmark-v-0".to_owned(),
+                    end: "benchmark-v-2".to_owned(),
+                    kind: EdgeKind::Valley,
+                },
+                BenchmarkEdge {
+                    id: "benchmark-e-2".to_owned(),
+                    start: "benchmark-v-1".to_owned(),
+                    end: "benchmark-v-3".to_owned(),
+                    kind: EdgeKind::Mountain,
+                },
+                BenchmarkEdge {
+                    id: "benchmark-e-3".to_owned(),
+                    start: "benchmark-v-2".to_owned(),
+                    end: "benchmark-v-3".to_owned(),
+                    kind: EdgeKind::Valley,
+                },
+            ]
+        );
+        assert_eq!(generate_benchmark_pattern(4), response);
+    }
+
+    #[test]
+    fn benchmark_pattern_response_has_all_ten_thousand_edges_and_valid_references() {
+        let response = generate_benchmark_pattern(10_000);
+
+        assert_eq!(response.requested_edge_count, 10_000);
+        assert_eq!(response.vertex_count, 5_184);
+        assert_eq!(response.edge_count, 10_000);
+        let vertex_ids = response
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(response.edges.iter().all(|edge| {
+            vertex_ids.contains(edge.start.as_str()) && vertex_ids.contains(edge.end.as_str())
+        }));
+    }
+
+    #[test]
+    fn benchmark_pattern_response_is_empty_for_zero_edges() {
+        let response = generate_benchmark_pattern(0);
+
+        assert_eq!(response.requested_edge_count, 0);
+        assert_eq!(response.vertex_count, 0);
+        assert_eq!(response.edge_count, 0);
+        assert!(response.vertices.is_empty());
+        assert!(response.edges.is_empty());
     }
 
     #[test]

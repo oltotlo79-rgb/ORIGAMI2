@@ -7,6 +7,9 @@ import {
   type FoldPreviewTreeSingleHingeContinuousAnalyzer,
 } from '../src/lib/foldPreviewTreeSingleHingeContinuousCollision.ts'
 import {
+  describeFoldPreviewContinuousMotionDetail,
+} from '../src/lib/foldPreviewContinuousMotionDetail.ts'
+import {
   MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES,
   MAX_FOLD_PREVIEW_COLLISION_FACES,
 } from '../src/lib/foldPreviewCollision.ts'
@@ -273,6 +276,46 @@ test('a terminal block retains its exact request-bound collision sample', () => 
       : null,
     sample,
   )
+
+  const detail = describeFoldPreviewContinuousMotionDetail({
+    requested: targetSelectedAngleDegrees,
+    applied: (
+      startAngles[1].angleDegrees
+      + (
+        targetSelectedAngleDegrees - startAngles[1].angleDegrees
+      ) * result.certifiedSafeThrough
+    ),
+    start: startAngles[1].angleDegrees,
+    status: 'blocked',
+    reason: 'motion_blocked',
+    result,
+  }, model.faces.map((face, index) => ({
+    id: face.id,
+    number: index + 1,
+    label: `面 ${index + 1}`,
+  })), {
+    projectId: model.projectId,
+    revision: model.revision,
+    fixedFaceId: 'root',
+    selectedHingeEdgeId: 'selected',
+    contextKey: expectedRequestIdentity.contextKey,
+    sourcePoseRequestKey,
+    generation: expectedRequestIdentity.generation,
+    requestSequence: expectedRequestIdentity.requestSequence,
+    collisionThickness: thickness,
+    startAngles,
+    targetSelectedAngleDegrees,
+  })
+  assert.ok(detail?.blockingEvidence)
+  assert.equal(
+    detail.blockingEvidence.unsafeAnalysisDegrees,
+    sample.selectedAngleDegrees,
+  )
+  assert.equal(
+    detail.blockingEvidence.safety.sampleTransformsAppliedToScene,
+    false,
+  )
+  assert.equal(detail.blockingEvidence.safety.autoApplicable, false)
 })
 
 test('request identity mismatches and malformed values reject job creation', () => {
@@ -379,8 +422,9 @@ test('a requestless pure analyzer still retains a complete blocking snapshot', (
 })
 
 test('blocking samples bind exact start and target endpoint times', () => {
+  const model = stationaryBranchCollisionModel()
   const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
-    stationaryBranchCollisionModel(),
+    model,
     'root',
     'selected',
   )
@@ -413,7 +457,22 @@ test('blocking samples bind exact start and target endpoint times', () => {
     { edgeId: 'selected', angleDegrees: 120 },
     { edgeId: 'frozen', angleDegrees: 90 },
   ] as const
-  const reverseJob = analyzer.createJob(blockedStart, 0, 0.02)
+  const reverseSourcePoseRequestKey =
+    createFoldPreviewTreeSceneCollisionPoseKey(
+      model,
+      'root',
+      0.02,
+      blockedStart,
+    )
+  assert.ok(reverseSourcePoseRequestKey)
+  const reverseJob = analyzer.createJob(blockedStart, 0, 0.02, {
+    requestIdentity: {
+      contextKey: 'blocked-start-context',
+      sourcePoseRequestKey: reverseSourcePoseRequestKey,
+      generation: 3,
+      requestSequence: 4,
+    },
+  })
   assert.ok(reverseJob)
   const reverse = run(reverseJob)
   assert.equal(reverse.kind, 'blocked')
@@ -430,6 +489,36 @@ test('blocking samples bind exact start and target endpoint times', () => {
       { edgeId: 'selected', angleDegrees: 0 },
       { edgeId: 'frozen', angleDegrees: 90 },
     ],
+  )
+  const reverseDetail = describeFoldPreviewContinuousMotionDetail({
+    requested: 0,
+    applied: 120,
+    start: 120,
+    status: 'blocked',
+    reason: 'motion_blocked',
+    result: reverse,
+  }, model.faces.map((face, index) => ({
+    id: face.id,
+    number: index + 1,
+    label: `面 ${index + 1}`,
+  })), {
+    projectId: model.projectId,
+    revision: model.revision,
+    fixedFaceId: 'root',
+    selectedHingeEdgeId: 'selected',
+    contextKey: 'blocked-start-context',
+    sourcePoseRequestKey: reverseSourcePoseRequestKey,
+    generation: 3,
+    requestSequence: 4,
+    collisionThickness: 0.02,
+    startAngles: blockedStart,
+    targetSelectedAngleDegrees: 0,
+  })
+  assert.ok(reverseDetail?.blockingEvidence)
+  assert.equal(reverseDetail.blockingEvidence.unsafeAnalysisDegrees, 120)
+  assert.equal(
+    reverseDetail.blockingEvidence.safety.sampleTransformsAppliedToScene,
+    false,
   )
 })
 

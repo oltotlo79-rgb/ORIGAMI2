@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約35.5%（2026-07-17）**
+**全体完成率: 約35.9%（2026-07-18）**
 
 完成率は画面数ではなく、要件定義書のMUST 86件、FUTURE 14件、品質検証、両OS配布を含む総工数の概算である。研究要素の結果によって見積もりを更新する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計35.50%を小数第1位へ丸めて全体完成率としている。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計35.90%を小数第1位へ丸めて全体完成率としている。
 
 ## 重み付け
 
@@ -16,13 +16,13 @@
 | プロジェクト・保存・履歴 | 8% | 60% | 4.80% | 原子的編集とUndo/Redo、ネイティブ`.ori2`実ファイル操作、全OSの原子的上書きと失敗時保護を実装 |
 | 2D展開図エディター | 15% | 52% | 7.80% | 基本編集、任意多角形用紙、9種のスナップに加え、2D・角度一覧・3Dヒンジの選択同期を実装 |
 | 数式・幾何制約 | 9% | 57% | 5.13% | 木構造の選択1ヒンジについて、他ヒンジを固定した完全角度vectorと非可換姿勢を保ち、連続衝突を検証する純粋契約を実装 |
-| 3D折り・紙厚・衝突 | 17% | 47% | 7.99% | 確定済み非隣接三角柱pairのface・triangle identityとbounded witnessをauthoritative狭域SAT結果へ統合 |
-| 折り可能性・経路探索 | 18% | 11% | 1.98% | blocked結果へ実際の危険検出時刻を保持し、探索区間上端との一致をcore・runner・表示境界で検証 |
+| 3D折り・紙厚・衝突 | 17% | 48% | 8.16% | 木構造の危険点判定と同じ2面行列・完全角度vector・bounded witnessを終端停止snapshotへ固定 |
+| 折り可能性・経路探索 | 18% | 12% | 2.16% | 危険検出時刻とblockerが一致する場合だけ、project・revision・固定面・選択ヒンジ・runtime request identity付き根拠をblocked結果へ保持 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 16% | 0.80% | 安全制限付き`.ori2`、実パス読込・保存・再上書き・全OSの原子的置換を実装 |
-| 多言語・設定・配布・QA | 5% | 68% | 3.40% | 両OS CI、実ファイル回帰に加え、狭域witness統合を含むfrontend 542件、Rust 302件を検証 |
+| 多言語・設定・配布・QA | 5% | 69% | 3.45% | frontend 546件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app`をCI検証 |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **35.50%** | — |
+| **合計** | **100%** | — | **35.90%** | — |
 
 ## 完了
 
@@ -152,6 +152,8 @@
 - authoritative classとの不一致、`indeterminate`、近平行軸、退化・非有限・cap不整合、過大supportを`null`へ退避し、結果をdeep freezeするwitness境界。局所分離hintは選択三角柱対だけを対象とする`autoApplicable: false`で、解析入力姿勢の位置候補やtranslationを安全停止姿勢へ自動適用しない
 - authoritative狭域SATの非隣接interactionへface ID、triangle index、確定class、同じ6頂点から導出したwitnessを最大16件の`witnessSamples`として統合し、hinge、`indeterminate`、ゼロ厚を説明対象へ混入させない境界
 - `penetrating`を`touching`より先に収録し、同一severity内の決定順を維持するbounded選択。eligible・attempted・unavailable・上限省略数と走査完了性を独立coverageで返し、witness導出不能や上限到達でもauthoritativeなinteraction分類を変更しない
+- 木構造の連続経路で実際にblockedを返した同じ点判定から、危険検出時刻・選択角・完全な開始/目標/危険角度vector・blocker 2面の倍精度行列・全bounded witnessとcoverageを切り離してdeep freezeし、終端時刻とblockerが一致した場合だけ説明用snapshotへ固定
+- 危険姿勢snapshotをproject・revision・固定面・選択ヒンジ・紙厚・context key・source pose key・runtime世代・request番号へ結合し、不一致や説明生成失敗では衝突停止自体を維持したまま説明だけを`null`へ退避。危険行列と局所分離hintは認定済み表示姿勢へ適用しない
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -250,6 +252,7 @@
 - コミット`bd815d0`のCI Run `29582254012`全ジョブ完走（連続経路の危険検出時刻契約、frontend 515件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`c5b6921`のCI Run `29585500562`全ジョブ完走（bounded SAT collision witness seed、frontend 532件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`1ab15be`のCI Run `29587413353`全ジョブ完走（authoritative狭域SATへのbounded witness・coverage統合、frontend 542件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`6665f40`のCI Run `29589287905`全ジョブ完走（危険姿勢・request identity・bounded witnessの結合、frontend 546件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 

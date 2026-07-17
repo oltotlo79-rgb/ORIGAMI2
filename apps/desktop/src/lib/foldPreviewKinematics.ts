@@ -13,6 +13,15 @@ export type FoldPreviewTreePose = Readonly<{
   hingeTransforms: ReadonlyMap<string, Matrix4>
 }>
 
+export type FoldPreviewHingeAngle = Readonly<{
+  edgeId: string
+  angleDegrees: number
+}>
+
+export type FoldPreviewTreeAngleInput =
+  | Readonly<{ kind: 'uniform'; angleDegrees: number }>
+  | Readonly<{ kind: 'per_hinge'; angles: readonly FoldPreviewHingeAngle[] }>
+
 /**
  * Propagates one shared fold magnitude through an acyclic hinge graph.
  *
@@ -23,7 +32,22 @@ export function calculateFoldTreePose(
   kinematics: FoldPreviewTreeKinematics,
   angleDegrees: number,
 ): FoldPreviewTreePose | null {
-  if (!Number.isFinite(angleDegrees) || angleDegrees < 0 || angleDegrees > 180) return null
+  return calculateFoldTreePoseWithAngles(kinematics, {
+    kind: 'uniform',
+    angleDegrees,
+  })
+}
+
+/**
+ * Propagates independently editable magnitudes through an acyclic hinge graph.
+ * Per-hinge inputs are unordered but must match the tree's edge IDs exactly.
+ */
+export function calculateFoldTreePoseWithAngles(
+  kinematics: FoldPreviewTreeKinematics,
+  input: FoldPreviewTreeAngleInput,
+): FoldPreviewTreePose | null {
+  const anglesByEdge = resolveAngles(kinematics, input)
+  if (!anglesByEdge) return null
 
   const faceTransforms = new Map<string, Matrix4>([
     [kinematics.rootFaceId, new Matrix4()],
@@ -32,10 +56,12 @@ export function calculateFoldTreePose(
   for (const joint of kinematics.joints) {
     const parent = faceTransforms.get(joint.parentFaceId)
     const hinge = joint.hinge
+    const angleDegrees = anglesByEdge.get(hinge.edgeId)
     if (
       !parent
       || faceTransforms.has(joint.childFaceId)
       || hingeTransforms.has(hinge.edgeId)
+      || !validAngle(angleDegrees)
       || (joint.childRotationSign !== 1 && joint.childRotationSign !== -1)
       || !finiteHinge(hinge)
     ) return null
@@ -59,6 +85,40 @@ export function calculateFoldTreePose(
   return faceTransforms.size === kinematics.joints.length + 1
     ? { faceTransforms, hingeTransforms }
     : null
+}
+
+function resolveAngles(
+  kinematics: FoldPreviewTreeKinematics,
+  input: FoldPreviewTreeAngleInput,
+): ReadonlyMap<string, number> | null {
+  if (input.kind === 'uniform') {
+    if (!validAngle(input.angleDegrees)) return null
+    return new Map(kinematics.joints.map((joint) => [
+      joint.hinge.edgeId,
+      input.angleDegrees,
+    ]))
+  }
+  if (input.kind !== 'per_hinge' || input.angles.length !== kinematics.joints.length) return null
+
+  const expectedEdgeIds = new Set(kinematics.joints.map((joint) => joint.hinge.edgeId))
+  if (expectedEdgeIds.size !== kinematics.joints.length) return null
+  const anglesByEdge = new Map<string, number>()
+  for (const angle of input.angles) {
+    if (
+      !expectedEdgeIds.has(angle.edgeId)
+      || anglesByEdge.has(angle.edgeId)
+      || !validAngle(angle.angleDegrees)
+    ) return null
+    anglesByEdge.set(angle.edgeId, angle.angleDegrees)
+  }
+  return anglesByEdge.size === expectedEdgeIds.size ? anglesByEdge : null
+}
+
+function validAngle(angleDegrees: unknown): angleDegrees is number {
+  return typeof angleDegrees === 'number'
+    && Number.isFinite(angleDegrees)
+    && angleDegrees >= 0
+    && angleDegrees <= 180
 }
 
 function finiteHinge(hinge: FoldPreviewTreeKinematics['joints'][number]['hinge']) {

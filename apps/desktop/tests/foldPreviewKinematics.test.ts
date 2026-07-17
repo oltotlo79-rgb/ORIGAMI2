@@ -4,6 +4,7 @@ import test from 'node:test'
 import { Matrix4, Vector3 } from 'three'
 import {
   calculateFoldTreePose,
+  calculateFoldTreePoseWithAngles,
   type FoldPreviewTreeKinematics,
 } from '../src/lib/foldPreviewKinematics.ts'
 import type { FoldPreviewHingeModel } from '../src/lib/foldPreviewModel.ts'
@@ -207,6 +208,150 @@ test('poses are history-independent and sibling branches do not inherit each oth
   assert.deepEqual(
     secondNinety.faceTransforms.get('right-branch')?.elements,
     standaloneRight.faceTransforms.get('right-branch')?.elements,
+  )
+})
+
+test('per-hinge angles move each tree joint independently', () => {
+  const tree: FoldPreviewTreeKinematics = {
+    kind: 'tree',
+    rootFaceId: 'west',
+    joints: [
+      {
+        parentFaceId: 'west',
+        childFaceId: 'middle',
+        hinge: firstHinge,
+        childRotationSign: 1,
+      },
+      {
+        parentFaceId: 'middle',
+        childFaceId: 'east',
+        hinge: secondHinge,
+        childRotationSign: -1,
+      },
+    ],
+  }
+
+  const firstOnly = calculateFoldTreePoseWithAngles(tree, {
+    kind: 'per_hinge',
+    angles: [
+      { edgeId: 'hinge-1', angleDegrees: 90 },
+      { edgeId: 'hinge-2', angleDegrees: 0 },
+    ],
+  })
+  const secondOnly = calculateFoldTreePoseWithAngles(tree, {
+    kind: 'per_hinge',
+    angles: [
+      { edgeId: 'hinge-2', angleDegrees: 90 },
+      { edgeId: 'hinge-1', angleDegrees: 0 },
+    ],
+  })
+
+  assert.ok(firstOnly && secondOnly)
+  assert.ok(firstOnly.faceTransforms.get('middle')?.equals(firstOnly.faceTransforms.get('east')!))
+  assert.ok(secondOnly.faceTransforms.get('middle')?.equals(new Matrix4()))
+  assert.ok(!secondOnly.faceTransforms.get('east')?.equals(new Matrix4()))
+  assertPoint(
+    new Vector3(2, 0, 0).applyMatrix4(firstOnly.faceTransforms.get('east')!),
+    [0, 2, 0],
+  )
+  assertPoint(
+    new Vector3(2, 0, 0).applyMatrix4(secondOnly.faceTransforms.get('east')!),
+    [1, -1, 0],
+  )
+})
+
+test('per-hinge angle inputs must be complete, exact, unique, and finite', () => {
+  const tree: FoldPreviewTreeKinematics = {
+    kind: 'tree',
+    rootFaceId: 'root',
+    joints: [{
+      parentFaceId: 'root',
+      childFaceId: 'child',
+      hinge: firstHinge,
+      childRotationSign: 1,
+    }],
+  }
+
+  const pose = (angles: ReadonlyArray<Readonly<{ edgeId: string; angleDegrees: number }>>) => (
+    calculateFoldTreePoseWithAngles(tree, { kind: 'per_hinge', angles })
+  )
+  assert.equal(pose([]), null)
+  assert.equal(pose([
+    { edgeId: 'hinge-1', angleDegrees: 45 },
+    { edgeId: 'stale-hinge', angleDegrees: 45 },
+  ]), null)
+  assert.equal(pose([{ edgeId: 'stale-hinge', angleDegrees: 45 }]), null)
+  assert.equal(pose([{ edgeId: 'hinge-1', angleDegrees: Number.NaN }]), null)
+  assert.equal(pose([{ edgeId: 'hinge-1', angleDegrees: -1 }]), null)
+  assert.equal(pose([{ edgeId: 'hinge-1', angleDegrees: 181 }]), null)
+  assert.ok(pose([{ edgeId: 'hinge-1', angleDegrees: 0 }]))
+  assert.ok(pose([{ edgeId: 'hinge-1', angleDegrees: 180 }]))
+
+  const twoJointTree: FoldPreviewTreeKinematics = {
+    kind: 'tree',
+    rootFaceId: 'root',
+    joints: [
+      tree.joints[0],
+      {
+        parentFaceId: 'root',
+        childFaceId: 'other-child',
+        hinge: secondHinge,
+        childRotationSign: -1,
+      },
+    ],
+  }
+  assert.equal(calculateFoldTreePoseWithAngles(twoJointTree, {
+    kind: 'per_hinge',
+    angles: [
+      { edgeId: 'hinge-1', angleDegrees: 10 },
+      { edgeId: 'hinge-1', angleDegrees: 20 },
+    ],
+  }), null)
+  assert.equal(calculateFoldTreePoseWithAngles(twoJointTree, {
+    kind: 'per_hinge',
+    angles: [
+      { edgeId: 'hinge-1', angleDegrees: 10 },
+      { edgeId: 'stale-hinge', angleDegrees: 20 },
+    ],
+  }), null)
+})
+
+test('uniform and complete per-hinge inputs produce identical poses', () => {
+  const tree: FoldPreviewTreeKinematics = {
+    kind: 'tree',
+    rootFaceId: 'root',
+    joints: [
+      {
+        parentFaceId: 'root',
+        childFaceId: 'middle',
+        hinge: firstHinge,
+        childRotationSign: 1,
+      },
+      {
+        parentFaceId: 'middle',
+        childFaceId: 'leaf',
+        hinge: secondHinge,
+        childRotationSign: -1,
+      },
+    ],
+  }
+  const uniform = calculateFoldTreePose(tree, 63)
+  const perHinge = calculateFoldTreePoseWithAngles(tree, {
+    kind: 'per_hinge',
+    angles: [
+      { edgeId: 'hinge-2', angleDegrees: 63 },
+      { edgeId: 'hinge-1', angleDegrees: 63 },
+    ],
+  })
+
+  assert.ok(uniform && perHinge)
+  assert.deepEqual(
+    [...perHinge.faceTransforms].map(([faceId, matrix]) => [faceId, matrix.elements]),
+    [...uniform.faceTransforms].map(([faceId, matrix]) => [faceId, matrix.elements]),
+  )
+  assert.deepEqual(
+    [...perHinge.hingeTransforms].map(([edgeId, matrix]) => [edgeId, matrix.elements]),
+    [...uniform.hingeTransforms].map(([edgeId, matrix]) => [edgeId, matrix.elements]),
   )
 })
 

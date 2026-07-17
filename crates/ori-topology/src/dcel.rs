@@ -97,6 +97,24 @@ pub(crate) struct PaperWalkSet {
     exterior: WalkIndex,
 }
 
+impl PaperWalkSet {
+    pub(crate) fn half_edges(&self) -> &[EmbeddedHalfEdge] {
+        &self.embedding.half_edges
+    }
+
+    pub(crate) fn walks(&self) -> &[CanonicalWalk] {
+        &self.walks
+    }
+
+    pub(crate) const fn exterior(&self) -> WalkIndex {
+        self.exterior
+    }
+
+    pub(crate) fn walk_owner(&self, half_edge: HalfEdgeIndex) -> Option<WalkIndex> {
+        self.half_edge_to_walk.get(half_edge.0).copied()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaperBoundaryError {
     TooFewVertices { count: usize },

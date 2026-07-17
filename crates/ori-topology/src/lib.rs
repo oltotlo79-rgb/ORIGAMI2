@@ -23,6 +23,8 @@ const FACE_KEY_DOMAIN: &[u8] = b"ORIGAMI2_FACE_KEY_V1";
 mod admission;
 #[allow(dead_code)]
 mod dcel;
+#[allow(dead_code)]
+mod fold_graph;
 mod single_fold;
 
 use single_fold::{SingleFoldError, extract_single_fold_faces};
@@ -62,6 +64,9 @@ pub struct Face {
     pub id: FaceId,
     pub key: FaceKey,
     pub outer: BoundaryWalk,
+    /// Independently rounded binary64 measurement. Topology never relies on
+    /// this value, and sums of several face measurements may differ from the
+    /// independently rounded paper area by a final-rounding unit.
     pub area: f64,
 }
 

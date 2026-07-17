@@ -1,0 +1,996 @@
+//! Material faces and hinge incidence for an admitted fold graph.
+//!
+//! This first general-graph slice supports boundary, mountain, valley, and
+//! ignored auxiliary records. Every active crease must separate two distinct
+//! simple material walks, and every material face must have one counter-
+//! clockwise boundary component. Closed disconnected crease loops and cuts
+//! remain explicit errors until holes and material separation are represented
+//! in the public snapshot contract. Admission errors deliberately precede
+//! this module's capability errors; therefore a forbidden or malformed cut is
+//! rejected by admission before an admitted, allowed cut reaches
+//! [`FoldGraphError::UnsupportedCut`].
+
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, VertexId};
+use ori_geometry::Orientation;
+
+use crate::{
+    BoundaryWalk, EdgeIncidence, Face, FaceAdjacency, FaceExtractionInput, FoldAssignment,
+    HalfEdgeRef, TopologyIssueKind, TopologySnapshot,
+    admission::PaperGraphAdmissionError,
+    admission::build_admitted_paper_walks,
+    dcel::{HalfEdgeIndex, PaperWalkSet, WalkIndex},
+    face_from_walk,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FoldGraphError {
+    Admission(PaperGraphAdmissionError),
+    UnsupportedCut { edge: EdgeId },
+    DisconnectedParticipantGraph { edge: EdgeId },
+    UnexpectedWalkOrientation { edge: EdgeId },
+    NonSeparatingFold { edge: EdgeId },
+    ExteriorFoldIncidence { edge: EdgeId },
+    UnsupportedNonSimpleFace { edge: EdgeId },
+    FaceBuild(TopologyIssueKind),
+    InternalInvariant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FoldSides {
+    edge: EdgeId,
+    left: WalkIndex,
+    right: WalkIndex,
+    assignment: FoldAssignment,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParticipantCounts {
+    vertices: usize,
+    edges: usize,
+    boundary_edges: usize,
+    folds: usize,
+}
+
+struct IncidenceResult {
+    edges: Vec<(EdgeId, EdgeIncidence)>,
+    hinges: Vec<FaceAdjacency>,
+}
+
+/// Extracts one deterministic snapshot from an admitted, cut-free fold graph.
+pub(crate) fn extract_fold_graph_snapshot(
+    input: FaceExtractionInput<'_>,
+) -> Result<TopologySnapshot, FoldGraphError> {
+    let walks = build_admitted_paper_walks(input.paper, input.pattern)
+        .map_err(FoldGraphError::Admission)?;
+
+    if let Some(cut) = input
+        .pattern
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::Cut)
+        .min_by_key(|edge| edge.id.canonical_bytes())
+    {
+        return Err(FoldGraphError::UnsupportedCut { edge: cut.id });
+    }
+
+    let counts = ensure_connected_participants(input.paper, input.pattern)?;
+    ensure_euler_partition(&walks, counts)?;
+    let halves_by_edge = index_half_edges(&walks)?;
+    let fold_sides = resolve_fold_sides(input.pattern.edges.as_slice(), &walks, &halves_by_edge)?;
+    ensure_single_ccw_component_per_face(&walks)?;
+    ensure_simple_material_walks(&walks)?;
+
+    let (mut faces, faces_by_walk) = build_faces(input.identity_namespace, &walks)?;
+    let IncidenceResult {
+        edges: mut edge_incidence,
+        hinges: mut hinge_adjacency,
+    } = build_incidence(
+        input.pattern.edges.as_slice(),
+        &walks,
+        &halves_by_edge,
+        &fold_sides,
+        &faces_by_walk,
+    )?;
+
+    faces.sort_by_key(|face| face.key);
+    edge_incidence.sort_by_key(|(edge, _)| edge.canonical_bytes());
+    sort_hinge_adjacency(&mut hinge_adjacency, &faces)?;
+
+    Ok(TopologySnapshot {
+        source_revision: input.source_revision,
+        faces,
+        edge_incidence,
+        hinge_adjacency,
+    })
+}
+
+fn sort_hinge_adjacency(
+    adjacency: &mut Vec<FaceAdjacency>,
+    faces: &[Face],
+) -> Result<(), FoldGraphError> {
+    let keys_by_id = faces
+        .iter()
+        .map(|face| (face.id, face.key))
+        .collect::<HashMap<_, _>>();
+    if keys_by_id.len() != faces.len() {
+        return Err(FoldGraphError::InternalInvariant);
+    }
+    let mut keyed = adjacency
+        .drain(..)
+        .map(|adjacency| {
+            let first = keys_by_id
+                .get(&adjacency.first)
+                .copied()
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            let second = keys_by_id
+                .get(&adjacency.second)
+                .copied()
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            if first >= second {
+                return Err(FoldGraphError::InternalInvariant);
+            }
+            Ok((first, second, adjacency.edge.canonical_bytes(), adjacency))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    keyed.sort_by_key(|(first, second, edge, _)| (*first, *second, *edge));
+    adjacency.extend(keyed.into_iter().map(|(_, _, _, adjacency)| adjacency));
+    Ok(())
+}
+
+fn ensure_connected_participants(
+    paper: &Paper,
+    pattern: &CreasePattern,
+) -> Result<ParticipantCounts, FoldGraphError> {
+    let participant_edges = pattern
+        .edges
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.kind,
+                EdgeKind::Boundary | EdgeKind::Mountain | EdgeKind::Valley
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut adjacency: HashMap<VertexId, Vec<VertexId>> = HashMap::new();
+    let mut participant_vertices = HashSet::new();
+    for edge in &participant_edges {
+        participant_vertices.extend([edge.start, edge.end]);
+        adjacency.entry(edge.start).or_default().push(edge.end);
+        adjacency.entry(edge.end).or_default().push(edge.start);
+    }
+
+    let root = paper
+        .boundary_vertices
+        .first()
+        .copied()
+        .ok_or(FoldGraphError::InternalInvariant)?;
+    let mut reached = HashSet::with_capacity(participant_vertices.len());
+    let mut queue = VecDeque::from([root]);
+    while let Some(vertex) = queue.pop_front() {
+        if !reached.insert(vertex) {
+            continue;
+        }
+        let neighbours = adjacency
+            .get(&vertex)
+            .ok_or(FoldGraphError::InternalInvariant)?;
+        queue.extend(
+            neighbours
+                .iter()
+                .copied()
+                .filter(|neighbour| !reached.contains(neighbour)),
+        );
+    }
+
+    if let Some(edge) = participant_edges
+        .iter()
+        .filter(|edge| !reached.contains(&edge.start) || !reached.contains(&edge.end))
+        .map(|edge| edge.id)
+        .min_by_key(EdgeId::canonical_bytes)
+    {
+        return Err(FoldGraphError::DisconnectedParticipantGraph { edge });
+    }
+    if reached.len() != participant_vertices.len() {
+        return Err(FoldGraphError::InternalInvariant);
+    }
+
+    Ok(ParticipantCounts {
+        vertices: participant_vertices.len(),
+        edges: participant_edges.len(),
+        boundary_edges: participant_edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Boundary)
+            .count(),
+        folds: participant_edges
+            .iter()
+            .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+            .count(),
+    })
+}
+
+fn ensure_euler_partition(
+    walks: &PaperWalkSet,
+    counts: ParticipantCounts,
+) -> Result<(), FoldGraphError> {
+    let expected_walks = counts
+        .edges
+        .checked_add(2)
+        .and_then(|sum| sum.checked_sub(counts.vertices))
+        .ok_or(FoldGraphError::InternalInvariant)?;
+    let expected_half_edges = counts
+        .edges
+        .checked_mul(2)
+        .ok_or(FoldGraphError::InternalInvariant)?;
+    if walks.walks().len() != expected_walks || walks.half_edges().len() != expected_half_edges {
+        return Err(FoldGraphError::InternalInvariant);
+    }
+
+    let material_occurrences = walks
+        .walks()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| WalkIndex(*index) != walks.exterior())
+        .map(|(_, walk)| walk.half_edges.len())
+        .sum::<usize>();
+    let expected_material_occurrences = counts
+        .folds
+        .checked_mul(2)
+        .and_then(|fold_occurrences| fold_occurrences.checked_add(counts.boundary_edges))
+        .ok_or(FoldGraphError::InternalInvariant)?;
+    if material_occurrences != expected_material_occurrences {
+        return Err(FoldGraphError::InternalInvariant);
+    }
+    Ok(())
+}
+
+fn index_half_edges(
+    walks: &PaperWalkSet,
+) -> Result<HashMap<EdgeId, [HalfEdgeIndex; 2]>, FoldGraphError> {
+    let mut pending: HashMap<EdgeId, Vec<HalfEdgeIndex>> = HashMap::new();
+    for (index, half_edge) in walks.half_edges().iter().enumerate() {
+        pending
+            .entry(half_edge.edge)
+            .or_default()
+            .push(HalfEdgeIndex(index));
+    }
+
+    let mut indexed = HashMap::with_capacity(pending.len());
+    for (edge, halves) in pending {
+        let halves: [HalfEdgeIndex; 2] = halves
+            .try_into()
+            .map_err(|_| FoldGraphError::InternalInvariant)?;
+        if indexed.insert(edge, halves).is_some() {
+            return Err(FoldGraphError::InternalInvariant);
+        }
+    }
+    Ok(indexed)
+}
+
+fn resolve_fold_sides(
+    source_edges: &[Edge],
+    walks: &PaperWalkSet,
+    halves_by_edge: &HashMap<EdgeId, [HalfEdgeIndex; 2]>,
+) -> Result<Vec<FoldSides>, FoldGraphError> {
+    let mut folds = source_edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .collect::<Vec<_>>();
+    folds.sort_by_key(|edge| edge.id.canonical_bytes());
+
+    folds
+        .into_iter()
+        .map(|edge| {
+            let halves = halves_by_edge
+                .get(&edge.id)
+                .copied()
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            let (canonical_start, canonical_end) = canonical_endpoints(edge.start, edge.end);
+            let left_half = halves
+                .into_iter()
+                .find(|index| {
+                    walks.half_edges().get(index.0).is_some_and(|half_edge| {
+                        half_edge.kind == edge.kind
+                            && half_edge.origin == canonical_start
+                            && half_edge.destination == canonical_end
+                    })
+                })
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            let right_half = walks
+                .half_edges()
+                .get(left_half.0)
+                .map(|half_edge| half_edge.twin)
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            if !halves.contains(&right_half) {
+                return Err(FoldGraphError::InternalInvariant);
+            }
+
+            let left = walks
+                .walk_owner(left_half)
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            let right = walks
+                .walk_owner(right_half)
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            if left == walks.exterior() || right == walks.exterior() {
+                return Err(FoldGraphError::ExteriorFoldIncidence { edge: edge.id });
+            }
+            if left == right {
+                return Err(FoldGraphError::NonSeparatingFold { edge: edge.id });
+            }
+
+            let assignment = match edge.kind {
+                EdgeKind::Mountain => FoldAssignment::Mountain,
+                EdgeKind::Valley => FoldAssignment::Valley,
+                _ => return Err(FoldGraphError::InternalInvariant),
+            };
+            Ok(FoldSides {
+                edge: edge.id,
+                left,
+                right,
+                assignment,
+            })
+        })
+        .collect()
+}
+
+fn ensure_single_ccw_component_per_face(walks: &PaperWalkSet) -> Result<(), FoldGraphError> {
+    let mut unsupported = None;
+    for (walk_index, walk) in walks.walks().iter().enumerate() {
+        if WalkIndex(walk_index) == walks.exterior()
+            || walk.orientation == Orientation::CounterClockwise
+        {
+            continue;
+        }
+        unsupported = minimum_edge(
+            unsupported,
+            minimum_active_edge(walks, WalkIndex(walk_index)),
+        );
+    }
+    if let Some(edge) = unsupported {
+        Err(FoldGraphError::UnexpectedWalkOrientation { edge })
+    } else if walks.walks().iter().enumerate().any(|(index, walk)| {
+        WalkIndex(index) != walks.exterior() && walk.orientation != Orientation::CounterClockwise
+    }) {
+        Err(FoldGraphError::InternalInvariant)
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_simple_material_walks(walks: &PaperWalkSet) -> Result<(), FoldGraphError> {
+    let mut unsupported = None;
+    let mut found_repeated_vertex = false;
+    for (walk_index, walk) in walks.walks().iter().enumerate() {
+        let walk_index = WalkIndex(walk_index);
+        if walk_index == walks.exterior() {
+            continue;
+        }
+        let mut vertices = HashSet::with_capacity(walk.half_edges.len());
+        let mut repeated = false;
+        for half_edge in &walk.half_edges {
+            let origin = walks
+                .half_edges()
+                .get(half_edge.0)
+                .map(|record| record.origin)
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            repeated |= !vertices.insert(origin);
+        }
+        if repeated {
+            found_repeated_vertex = true;
+            unsupported = minimum_edge(unsupported, minimum_active_edge(walks, walk_index));
+        }
+    }
+    if let Some(edge) = unsupported {
+        Err(FoldGraphError::UnsupportedNonSimpleFace { edge })
+    } else if found_repeated_vertex {
+        Err(FoldGraphError::InternalInvariant)
+    } else {
+        Ok(())
+    }
+}
+
+fn minimum_active_edge(walks: &PaperWalkSet, walk: WalkIndex) -> Option<EdgeId> {
+    walks
+        .walks()
+        .get(walk.0)?
+        .half_edges
+        .iter()
+        .filter_map(|index| walks.half_edges().get(index.0))
+        .filter(|half_edge| matches!(half_edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .map(|half_edge| half_edge.edge)
+        .min_by_key(EdgeId::canonical_bytes)
+}
+
+fn minimum_edge(current: Option<EdgeId>, candidate: Option<EdgeId>) -> Option<EdgeId> {
+    current
+        .into_iter()
+        .chain(candidate)
+        .min_by_key(EdgeId::canonical_bytes)
+}
+
+fn build_faces(
+    identity_namespace: ori_domain::ProjectId,
+    walks: &PaperWalkSet,
+) -> Result<(Vec<Face>, HashMap<WalkIndex, Face>), FoldGraphError> {
+    let mut faces = Vec::with_capacity(walks.walks().len().saturating_sub(1));
+    let mut by_walk = HashMap::with_capacity(faces.capacity());
+    let mut keys = HashSet::with_capacity(faces.capacity());
+    let mut ids = HashSet::with_capacity(faces.capacity());
+
+    for (walk_index, walk) in walks.walks().iter().enumerate() {
+        let walk_index = WalkIndex(walk_index);
+        if walk_index == walks.exterior() {
+            continue;
+        }
+        let half_edges = walk
+            .half_edges
+            .iter()
+            .map(|index| {
+                walks
+                    .half_edges()
+                    .get(index.0)
+                    .map(|half_edge| HalfEdgeRef {
+                        edge: half_edge.edge,
+                        origin: half_edge.origin,
+                        destination: half_edge.destination,
+                    })
+                    .ok_or(FoldGraphError::InternalInvariant)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let face = face_from_walk(
+            identity_namespace,
+            BoundaryWalk {
+                half_edges,
+                signed_double_area: walk.signed_double_area,
+            },
+        )
+        .map_err(FoldGraphError::FaceBuild)?;
+        if !keys.insert(face.key) || !ids.insert(face.id) {
+            return Err(FoldGraphError::InternalInvariant);
+        }
+        if by_walk.insert(walk_index, face.clone()).is_some() {
+            return Err(FoldGraphError::InternalInvariant);
+        }
+        faces.push(face);
+    }
+    Ok((faces, by_walk))
+}
+
+fn build_incidence(
+    source_edges: &[Edge],
+    walks: &PaperWalkSet,
+    halves_by_edge: &HashMap<EdgeId, [HalfEdgeIndex; 2]>,
+    fold_sides: &[FoldSides],
+    faces_by_walk: &HashMap<WalkIndex, Face>,
+) -> Result<IncidenceResult, FoldGraphError> {
+    let sides_by_edge = fold_sides
+        .iter()
+        .map(|sides| (sides.edge, *sides))
+        .collect::<HashMap<_, _>>();
+    if sides_by_edge.len() != fold_sides.len() {
+        return Err(FoldGraphError::InternalInvariant);
+    }
+
+    let mut edge_incidence = Vec::with_capacity(source_edges.len());
+    for edge in source_edges {
+        let incidence = match edge.kind {
+            EdgeKind::Boundary => {
+                let halves = halves_by_edge
+                    .get(&edge.id)
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                let owners = halves
+                    .iter()
+                    .map(|half_edge| {
+                        walks
+                            .walk_owner(*half_edge)
+                            .ok_or(FoldGraphError::InternalInvariant)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let material_walk = match owners.as_slice() {
+                    [first, second]
+                        if *first == walks.exterior() && *second != walks.exterior() =>
+                    {
+                        *second
+                    }
+                    [first, second]
+                        if *second == walks.exterior() && *first != walks.exterior() =>
+                    {
+                        *first
+                    }
+                    _ => return Err(FoldGraphError::InternalInvariant),
+                };
+                let material = faces_by_walk
+                    .get(&material_walk)
+                    .map(|face| face.id)
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                EdgeIncidence::Boundary { material }
+            }
+            EdgeKind::Mountain | EdgeKind::Valley => {
+                let sides = sides_by_edge
+                    .get(&edge.id)
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                let left = face_id(faces_by_walk, sides.left)?;
+                let right = face_id(faces_by_walk, sides.right)?;
+                if left == right {
+                    return Err(FoldGraphError::InternalInvariant);
+                }
+                EdgeIncidence::Hinge {
+                    left,
+                    right,
+                    assignment: sides.assignment,
+                }
+            }
+            EdgeKind::Auxiliary => EdgeIncidence::AuxiliaryIgnored,
+            EdgeKind::Cut => return Err(FoldGraphError::UnsupportedCut { edge: edge.id }),
+        };
+        edge_incidence.push((edge.id, incidence));
+    }
+
+    let mut hinge_adjacency = Vec::with_capacity(fold_sides.len());
+    for sides in fold_sides {
+        let left = faces_by_walk
+            .get(&sides.left)
+            .ok_or(FoldGraphError::InternalInvariant)?;
+        let right = faces_by_walk
+            .get(&sides.right)
+            .ok_or(FoldGraphError::InternalInvariant)?;
+        let (first, second) = if left.key < right.key {
+            (left.id, right.id)
+        } else if right.key < left.key {
+            (right.id, left.id)
+        } else {
+            return Err(FoldGraphError::InternalInvariant);
+        };
+        hinge_adjacency.push(FaceAdjacency {
+            edge: sides.edge,
+            first,
+            second,
+            assignment: sides.assignment,
+        });
+    }
+    Ok(IncidenceResult {
+        edges: edge_incidence,
+        hinges: hinge_adjacency,
+    })
+}
+
+fn face_id(
+    faces_by_walk: &HashMap<WalkIndex, Face>,
+    walk: WalkIndex,
+) -> Result<FaceId, FoldGraphError> {
+    faces_by_walk
+        .get(&walk)
+        .map(|face| face.id)
+        .ok_or(FoldGraphError::InternalInvariant)
+}
+
+fn canonical_endpoints(first: VertexId, second: VertexId) -> (VertexId, VertexId) {
+    if first.canonical_bytes() <= second.canonical_bytes() {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ori_domain::{CreasePattern, Edge, Paper, Point2, ProjectId, Vertex};
+    use serde::de::DeserializeOwned;
+
+    use super::*;
+    use crate::analyze_faces;
+
+    fn fixed_id<T: DeserializeOwned>(suffix: u64) -> T {
+        serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012x}\""))
+            .expect("fixed UUID fixture")
+    }
+
+    fn vertex(suffix: u64, x: f64, y: f64) -> Vertex {
+        Vertex {
+            id: fixed_id(suffix),
+            position: Point2::new(x, y),
+        }
+    }
+
+    fn edge(suffix: u64, start: &Vertex, end: &Vertex, kind: EdgeKind) -> Edge {
+        Edge {
+            id: fixed_id(suffix),
+            start: start.id,
+            end: end.id,
+            kind,
+        }
+    }
+
+    fn paper(vertices: &[&Vertex], cutting_allowed: bool) -> Paper {
+        Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            cutting_allowed,
+            ..Paper::default()
+        }
+    }
+
+    fn boundary_edges(vertices: &[&Vertex], first_suffix: u64) -> Vec<Edge> {
+        (0..vertices.len())
+            .map(|index| {
+                edge(
+                    first_suffix + index as u64,
+                    vertices[index],
+                    vertices[(index + 1) % vertices.len()],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect()
+    }
+
+    fn input<'a>(
+        namespace: ProjectId,
+        paper: &'a Paper,
+        pattern: &'a CreasePattern,
+    ) -> FaceExtractionInput<'a> {
+        FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: 73,
+            paper,
+            pattern,
+        }
+    }
+
+    fn split_x_fixture() -> (ProjectId, Paper, CreasePattern, [EdgeId; 4]) {
+        let namespace = fixed_id(1);
+        let a = vertex(0x101, 0.0, 0.0);
+        let b = vertex(0x102, 4.0, 0.0);
+        let c = vertex(0x103, 4.0, 4.0);
+        let d = vertex(0x104, 0.0, 4.0);
+        let center = vertex(0x105, 2.0, 2.0);
+        let boundary = [&a, &b, &c, &d];
+        let folds = [
+            edge(0x301, &a, &center, EdgeKind::Mountain),
+            edge(0x302, &center, &c, EdgeKind::Mountain),
+            edge(0x303, &b, &center, EdgeKind::Valley),
+            edge(0x304, &center, &d, EdgeKind::Valley),
+        ];
+        let fold_ids = folds.each_ref().map(|edge| edge.id);
+        let mut edges = boundary_edges(&boundary, 0x201);
+        edges.extend(folds.into_iter().rev());
+        let pattern = CreasePattern {
+            vertices: vec![center, d.clone(), b.clone(), a.clone(), c.clone()],
+            edges,
+        };
+        (namespace, paper(&boundary, false), pattern, fold_ids)
+    }
+
+    #[test]
+    fn split_x_becomes_four_faces_and_four_real_hinges() {
+        let (namespace, source_paper, pattern, folds) = split_x_fixture();
+        let snapshot = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("split X fold graph");
+
+        assert_eq!(snapshot.faces.len(), 4);
+        assert_eq!(snapshot.edge_incidence.len(), 8);
+        assert_eq!(snapshot.hinge_adjacency.len(), 4);
+        assert_eq!(
+            snapshot.faces.iter().map(|face| face.area).sum::<f64>(),
+            16.0
+        );
+        assert!(snapshot.faces.iter().all(|face| face.area == 4.0));
+        assert!(
+            snapshot
+                .faces
+                .windows(2)
+                .all(|faces| faces[0].key < faces[1].key)
+        );
+        assert!(
+            snapshot
+                .edge_incidence
+                .windows(2)
+                .all(|edges| edges[0].0.canonical_bytes() < edges[1].0.canonical_bytes())
+        );
+        let keys_by_id = snapshot
+            .faces
+            .iter()
+            .map(|face| (face.id, face.key))
+            .collect::<HashMap<_, _>>();
+        let adjacency_keys = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|adjacency| {
+                (
+                    keys_by_id[&adjacency.first],
+                    keys_by_id[&adjacency.second],
+                    adjacency.edge.canonical_bytes(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(adjacency_keys.windows(2).all(|pair| pair[0] < pair[1]));
+
+        for fold in folds {
+            assert!(matches!(
+                snapshot
+                    .edge_incidence
+                    .iter()
+                    .find(|(edge, _)| *edge == fold)
+                    .map(|(_, incidence)| incidence),
+                Some(EdgeIncidence::Hinge { left, right, .. }) if left != right
+            ));
+            assert!(
+                snapshot
+                    .hinge_adjacency
+                    .iter()
+                    .any(|hinge| hinge.edge == fold)
+            );
+        }
+    }
+
+    #[test]
+    fn split_x_snapshot_is_invariant_under_all_storage_transforms() {
+        let (namespace, source_paper, pattern, _) = split_x_fixture();
+        let expected = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("baseline split X");
+        let mut transformed_pattern = pattern;
+        transformed_pattern.vertices.reverse();
+        transformed_pattern.edges.reverse();
+        for edge in &mut transformed_pattern.edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        let mut transformed_paper = source_paper;
+        transformed_paper.boundary_vertices.rotate_left(2);
+        transformed_paper.boundary_vertices.reverse();
+
+        assert_eq!(
+            extract_fold_graph_snapshot(input(namespace, &transformed_paper, &transformed_pattern)),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn assignment_changes_leave_faces_and_identity_unchanged() {
+        let (namespace, source_paper, pattern, _) = split_x_fixture();
+        let baseline = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("baseline assignments");
+        let mut reversed_assignments = pattern;
+        for edge in &mut reversed_assignments.edges {
+            edge.kind = match edge.kind {
+                EdgeKind::Mountain => EdgeKind::Valley,
+                EdgeKind::Valley => EdgeKind::Mountain,
+                kind => kind,
+            };
+        }
+        let changed =
+            extract_fold_graph_snapshot(input(namespace, &source_paper, &reversed_assignments))
+                .expect("reversed assignments");
+
+        assert_eq!(changed.faces, baseline.faces);
+        assert_eq!(changed.edge_incidence.len(), baseline.edge_incidence.len());
+        for ((changed_edge, changed), (baseline_edge, baseline)) in
+            changed.edge_incidence.iter().zip(&baseline.edge_incidence)
+        {
+            assert_eq!(changed_edge, baseline_edge);
+            match (changed, baseline) {
+                (
+                    EdgeIncidence::Hinge {
+                        left: changed_left,
+                        right: changed_right,
+                        assignment: changed_assignment,
+                    },
+                    EdgeIncidence::Hinge {
+                        left: baseline_left,
+                        right: baseline_right,
+                        assignment: baseline_assignment,
+                    },
+                ) => {
+                    assert_eq!(
+                        (changed_left, changed_right),
+                        (baseline_left, baseline_right)
+                    );
+                    assert_ne!(changed_assignment, baseline_assignment);
+                }
+                _ => assert_eq!(changed, baseline),
+            }
+        }
+        for (changed, baseline) in changed
+            .hinge_adjacency
+            .iter()
+            .zip(&baseline.hinge_adjacency)
+        {
+            assert_eq!(changed.edge, baseline.edge);
+            assert_eq!(
+                (changed.first, changed.second),
+                (baseline.first, baseline.second)
+            );
+            assert_ne!(changed.assignment, baseline.assignment);
+        }
+    }
+
+    #[test]
+    fn two_parallel_chords_become_three_cellular_faces() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x801, 0.0, 0.0);
+        let b = vertex(0x802, 2.0, 0.0);
+        let c = vertex(0x803, 4.0, 0.0);
+        let d = vertex(0x804, 6.0, 0.0);
+        let e = vertex(0x805, 6.0, 4.0);
+        let f = vertex(0x806, 4.0, 4.0);
+        let g = vertex(0x807, 2.0, 4.0);
+        let h = vertex(0x808, 0.0, 4.0);
+        let boundary = [&a, &b, &c, &d, &e, &f, &g, &h];
+        let first = edge(0x820, &b, &g, EdgeKind::Mountain);
+        let second = edge(0x821, &c, &f, EdgeKind::Valley);
+        let mut edges = boundary_edges(&boundary, 0x810);
+        edges.extend([second.clone(), first.clone()]);
+        let pattern = CreasePattern {
+            vertices: vec![
+                h.clone(),
+                f.clone(),
+                d.clone(),
+                b.clone(),
+                a.clone(),
+                c.clone(),
+                e.clone(),
+                g.clone(),
+            ],
+            edges,
+        };
+        let source_paper = paper(&boundary, false);
+        let snapshot = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("two cellular chords");
+
+        assert_eq!(snapshot.faces.len(), 3);
+        assert_eq!(snapshot.hinge_adjacency.len(), 2);
+        assert!(snapshot.faces.iter().all(|face| face.area == 8.0));
+        let first_faces = hinge_faces(&snapshot, first.id);
+        let second_faces = hinge_faces(&snapshot, second.id);
+        assert_eq!(
+            first_faces
+                .into_iter()
+                .filter(|face| second_faces.contains(face))
+                .count(),
+            1,
+            "the middle panel is incident to both chords"
+        );
+    }
+
+    #[test]
+    fn one_fold_general_graph_matches_the_existing_public_snapshot_exactly() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x401, 0.0, 0.0);
+        let b = vertex(0x402, 4.0, 0.0);
+        let c = vertex(0x403, 4.0, 4.0);
+        let d = vertex(0x404, 0.0, 4.0);
+        let boundary = [&a, &b, &c, &d];
+        let mut edges = boundary_edges(&boundary, 0x410);
+        edges.push(edge(0x420, &a, &c, EdgeKind::Mountain));
+        let pattern = CreasePattern {
+            vertices: vec![d.clone(), b.clone(), a.clone(), c.clone()],
+            edges,
+        };
+        let source_paper = paper(&boundary, false);
+        let extraction_input = input(namespace, &source_paper, &pattern);
+        let legacy = analyze_faces(extraction_input)
+            .snapshot
+            .expect("legacy single-fold snapshot");
+
+        assert_eq!(extract_fold_graph_snapshot(extraction_input), Ok(legacy));
+    }
+
+    #[test]
+    fn boundary_only_general_graph_matches_the_existing_public_snapshot_exactly() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x451, 0.0, 0.0);
+        let b = vertex(0x452, 4.0, 0.0);
+        let c = vertex(0x453, 4.0, 4.0);
+        let d = vertex(0x454, 0.0, 4.0);
+        let boundary = [&a, &b, &c, &d];
+        let pattern = CreasePattern {
+            vertices: vec![c.clone(), a.clone(), d.clone(), b.clone()],
+            edges: boundary_edges(&boundary, 0x460),
+        };
+        let source_paper = paper(&boundary, false);
+        let extraction_input = input(namespace, &source_paper, &pattern);
+        let legacy = analyze_faces(extraction_input)
+            .snapshot
+            .expect("legacy boundary-only snapshot");
+
+        assert_eq!(extract_fold_graph_snapshot(extraction_input), Ok(legacy));
+    }
+
+    #[test]
+    fn dangling_fold_is_rejected_as_non_separating() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x501, 0.0, 0.0);
+        let b = vertex(0x502, 4.0, 0.0);
+        let c = vertex(0x503, 4.0, 4.0);
+        let d = vertex(0x504, 0.0, 4.0);
+        let center = vertex(0x505, 2.0, 2.0);
+        let boundary = [&a, &b, &c, &d];
+        let fold = edge(0x520, &a, &center, EdgeKind::Valley);
+        let mut edges = boundary_edges(&boundary, 0x510);
+        edges.push(fold.clone());
+        let pattern = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone(), center],
+            edges,
+        };
+        let source_paper = paper(&boundary, false);
+
+        assert_eq!(
+            extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern)),
+            Err(FoldGraphError::NonSeparatingFold { edge: fold.id })
+        );
+    }
+
+    #[test]
+    fn disconnected_closed_fold_loop_is_explicitly_rejected() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x601, 0.0, 0.0);
+        let b = vertex(0x602, 6.0, 0.0);
+        let c = vertex(0x603, 6.0, 6.0);
+        let d = vertex(0x604, 0.0, 6.0);
+        let p = vertex(0x605, 2.0, 2.0);
+        let q = vertex(0x606, 4.0, 2.0);
+        let r = vertex(0x607, 3.0, 4.0);
+        let boundary = [&a, &b, &c, &d];
+        let first = edge(0x620, &p, &q, EdgeKind::Mountain);
+        let mut edges = boundary_edges(&boundary, 0x610);
+        edges.extend([
+            edge(0x622, &r, &p, EdgeKind::Valley),
+            edge(0x621, &q, &r, EdgeKind::Mountain),
+            first.clone(),
+        ]);
+        let pattern = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone(), p, q, r],
+            edges,
+        };
+        let source_paper = paper(&boundary, false);
+
+        assert_eq!(
+            extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern)),
+            Err(FoldGraphError::DisconnectedParticipantGraph { edge: first.id })
+        );
+    }
+
+    #[test]
+    fn allowed_cut_remains_an_explicit_unsupported_case() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x701, 0.0, 0.0);
+        let b = vertex(0x702, 4.0, 0.0);
+        let c = vertex(0x703, 4.0, 4.0);
+        let d = vertex(0x704, 0.0, 4.0);
+        let boundary = [&a, &b, &c, &d];
+        let cut = edge(0x720, &a, &c, EdgeKind::Cut);
+        let mut edges = boundary_edges(&boundary, 0x710);
+        edges.push(cut.clone());
+        let pattern = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone()],
+            edges,
+        };
+        let source_paper = paper(&boundary, true);
+
+        assert_eq!(
+            extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern)),
+            Err(FoldGraphError::UnsupportedCut { edge: cut.id })
+        );
+
+        let forbidden_paper = paper(&boundary, false);
+        assert_eq!(
+            extract_fold_graph_snapshot(input(namespace, &forbidden_paper, &pattern)),
+            Err(FoldGraphError::Admission(
+                PaperGraphAdmissionError::CutNotAllowed { edge: cut.id }
+            ))
+        );
+    }
+
+    fn hinge_faces(snapshot: &TopologySnapshot, edge: EdgeId) -> [FaceId; 2] {
+        snapshot
+            .edge_incidence
+            .iter()
+            .find_map(|(candidate, incidence)| {
+                if *candidate != edge {
+                    return None;
+                }
+                match incidence {
+                    EdgeIncidence::Hinge { left, right, .. } => Some([*left, *right]),
+                    _ => None,
+                }
+            })
+            .expect("hinge incidence")
+    }
+}

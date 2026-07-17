@@ -45,7 +45,9 @@ pub enum GeometryError {
         argument: &'static str,
         point: Point2,
     },
-    /// Intermediate `f64` arithmetic overflowed despite all inputs being finite.
+    /// The result cannot be represented safely in binary64 despite all inputs
+    /// being finite. This includes numeric overflow and a strict interior
+    /// intersection whose rounded coordinate coincides with an endpoint.
     ArithmeticOverflow,
 }
 
@@ -58,7 +60,7 @@ impl fmt::Display for GeometryError {
                 point.x, point.y
             ),
             Self::ArithmeticOverflow => {
-                formatter.write_str("geometry calculation exceeded the finite f64 range")
+                formatter.write_str("geometry result cannot be represented safely in finite f64")
             }
         }
     }
@@ -193,8 +195,10 @@ pub enum PointSegmentRelation {
 ///
 /// Endpoint identity is checked before collinearity so callers can preserve
 /// the original edge direction while treating only
-/// [`PointSegmentRelation::StrictInterior`] as a split location. Non-finite
-/// inputs and overflowing orientation arithmetic are rejected.
+/// [`PointSegmentRelation::StrictInterior`] as a split location. The
+/// collinearity decision uses the exact binary64 determinant sign, so a tiny
+/// non-zero offset is never rounded onto the segment. Non-finite inputs are
+/// rejected.
 pub fn point_segment_relation(
     point: Point2,
     start: Point2,
@@ -209,11 +213,8 @@ pub fn point_segment_relation(
     if point == end {
         return Ok(PointSegmentRelation::End);
     }
-    if orientation(start, end, point)? != Orientation::Collinear
-        || point.x < start.x.min(end.x)
-        || point.x > start.x.max(end.x)
-        || point.y < start.y.min(end.y)
-        || point.y > start.y.max(end.y)
+    if exact_orientation(start, end, point)? != Orientation::Collinear
+        || !point_within_segment_bounds(point, start, end)
     {
         return Ok(PointSegmentRelation::Outside);
     }
@@ -271,33 +272,60 @@ pub fn segment_intersection(
         });
     }
 
-    let r = subtract(b, a)?;
-    let s = subtract(d, c)?;
-    let c_minus_a = subtract(c, a)?;
-    let cross_rs = checked_cross(r, s)?;
-    let cross_cma_r = checked_cross(c_minus_a, r)?;
+    // Decide the topology with exact determinant signs. In particular, an
+    // ordinary product underflow must never turn two adjacent, non-collinear
+    // edges into a collinear overlap.
+    let ab_c = exact_orientation(a, b, c)?;
+    let ab_d = exact_orientation(a, b, d)?;
+    let cd_a = exact_orientation(c, d, a)?;
+    let cd_b = exact_orientation(c, d, b)?;
 
-    if cross_rs == 0.0 {
-        return if cross_cma_r == 0.0 {
-            Ok(classify_collinear_intersection(a, b, c, d, r))
-        } else {
-            Ok(SegmentIntersection::None)
-        };
+    if [ab_c, ab_d, cd_a, cd_b]
+        .into_iter()
+        .all(|orientation| orientation == Orientation::Collinear)
+    {
+        return Ok(classify_collinear_intersection(a, b, c, d));
     }
 
-    let t = checked_cross(c_minus_a, s)? / cross_rs;
-    let u = cross_cma_r / cross_rs;
-    if !t.is_finite() || !u.is_finite() {
-        return Err(GeometryError::ArithmeticOverflow);
+    // Return shared endpoints verbatim before interpolation. This also covers
+    // a T-junction where exactly one endpoint lies in the other segment.
+    for (orientation, point, start, end) in [
+        (ab_c, c, a, b),
+        (ab_d, d, a, b),
+        (cd_a, a, c, d),
+        (cd_b, b, c, d),
+    ] {
+        if orientation == Orientation::Collinear && point_within_segment_bounds(point, start, end) {
+            return Ok(SegmentIntersection::Point(point));
+        }
     }
 
-    if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
-        Ok(SegmentIntersection::Point(intersection_point(
-            a, b, c, d, t, u,
-        )?))
-    } else {
-        Ok(SegmentIntersection::None)
+    if !orientations_are_opposite(ab_c, ab_d) || !orientations_are_opposite(cd_a, cd_b) {
+        return Ok(SegmentIntersection::None);
     }
+
+    // Exact predicates above prove a strict interior crossing. Compute its
+    // coordinate as an exact determinant ratio and round only the final x/y
+    // values; rounded f64 cross products can otherwise produce a completely
+    // different parameter even while remaining inside (0, 1).
+    Ok(SegmentIntersection::Point(
+        validation::exact_proper_segment_intersection_point(a, b, c, d)?,
+    ))
+}
+
+fn orientations_are_opposite(left: Orientation, right: Orientation) -> bool {
+    matches!(
+        (left, right),
+        (Orientation::Clockwise, Orientation::CounterClockwise)
+            | (Orientation::CounterClockwise, Orientation::Clockwise)
+    )
+}
+
+fn point_within_segment_bounds(point: Point2, start: Point2, end: Point2) -> bool {
+    point.x >= start.x.min(end.x)
+        && point.x <= start.x.max(end.x)
+        && point.y >= start.y.min(end.y)
+        && point.y <= start.y.max(end.y)
 }
 
 fn ensure_finite(argument: &'static str, point: Point2) -> Result<(), GeometryError> {
@@ -312,15 +340,6 @@ fn subtract(left: Point2, right: Point2) -> Result<Point2, GeometryError> {
     let difference = Point2::new(left.x - right.x, left.y - right.y);
     if difference.x.is_finite() && difference.y.is_finite() {
         Ok(difference)
-    } else {
-        Err(GeometryError::ArithmeticOverflow)
-    }
-}
-
-fn checked_cross(a: Point2, b: Point2) -> Result<f64, GeometryError> {
-    let value = cross(a, b);
-    if value.is_finite() {
-        Ok(value)
     } else {
         Err(GeometryError::ArithmeticOverflow)
     }
@@ -351,9 +370,11 @@ fn classify_collinear_intersection(
     b: Point2,
     c: Point2,
     d: Point2,
-    direction: Point2,
 ) -> SegmentIntersection {
-    let use_x = direction.x.abs() >= direction.y.abs();
+    // `ab` is known to be non-degenerate here. Choosing a coordinate that
+    // changes along it avoids a subtraction which could overflow for finite
+    // endpoints near opposite extremes of the binary64 range.
+    let use_x = a.x != b.x;
     let project = |point: Point2| if use_x { point.x } else { point.y };
 
     let a_value = project(a);
@@ -380,38 +401,6 @@ fn classify_collinear_intersection(
     }
 
     unreachable!("the overlap boundary must be one of the segment endpoints")
-}
-
-fn intersection_point(
-    a: Point2,
-    b: Point2,
-    c: Point2,
-    d: Point2,
-    t: f64,
-    u: f64,
-) -> Result<Point2, GeometryError> {
-    // Preserve original endpoints exactly. This matters for topology checks,
-    // which identify a correctly split intersection by its shared vertex ID.
-    let point = if t == 0.0 {
-        a
-    } else if t == 1.0 {
-        b
-    } else if u == 0.0 {
-        c
-    } else if u == 1.0 {
-        d
-    } else {
-        Point2::new(
-            (1.0 - t).mul_add(a.x, t * b.x),
-            (1.0 - t).mul_add(a.y, t * b.y),
-        )
-    };
-
-    if point.x.is_finite() && point.y.is_finite() {
-        Ok(point)
-    } else {
-        Err(GeometryError::ArithmeticOverflow)
-    }
 }
 
 #[cfg(test)]
@@ -741,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn point_segment_relation_rejects_non_finite_and_overflowing_geometry() {
+    fn point_segment_relation_rejects_non_finite_and_handles_extreme_geometry_exactly() {
         assert!(matches!(
             point_segment_relation(
                 Point2::new(f64::NAN, 0.0),
@@ -759,7 +748,15 @@ mod tests {
                 Point2::new(-f64::MAX, 0.0),
                 Point2::new(f64::MAX, 0.0),
             ),
-            Err(GeometryError::ArithmeticOverflow)
+            Ok(PointSegmentRelation::Outside)
+        );
+        assert_eq!(
+            point_segment_relation(
+                Point2::new(0.0, 0.0),
+                Point2::new(-f64::MAX, 0.0),
+                Point2::new(f64::MAX, 0.0),
+            ),
+            Ok(PointSegmentRelation::StrictInterior)
         );
     }
 
@@ -773,6 +770,153 @@ mod tests {
                 Point2::new(2.0, 0.0)
             ),
             Ok(SegmentIntersection::Point(Point2::new(1.0, 1.0)))
+        );
+    }
+
+    #[test]
+    fn exact_intersection_ratio_survives_subnormal_determinant_cancellation() {
+        let value = |fraction| f64::from_bits((535_u64 << 52) | fraction);
+        let a = Point2::new(value(0x0002_a0d4_fd38_4c1a), value(0x0001_8a9c_66cf_7513));
+        let b = Point2::new(value(0x0002_a0d4_fd38_4c16), value(0x0001_8a9c_66cf_751d));
+        let c = Point2::new(value(0x0002_a0d4_fd38_4c1c), value(0x0001_8a9c_66cf_751c));
+        let d = Point2::new(value(0x0002_a0d4_fd38_4c18), value(0x0001_8a9c_66cf_7511));
+        let expected = Point2::new(value(0x0002_a0d4_fd38_4c19), value(0x0001_8a9c_66cf_7515));
+
+        assert_crossing_permutations(a, b, c, d, expected);
+    }
+
+    #[test]
+    fn exact_intersection_ratio_survives_normal_determinant_cancellation() {
+        let p300 = |fraction| f64::from_bits((1323_u64 << 52) | fraction);
+        let p301 = |fraction| f64::from_bits((1324_u64 << 52) | fraction);
+        let p302 = |fraction| f64::from_bits((1325_u64 << 52) | fraction);
+        let a = Point2::new(0.0, 0.0);
+        let b = Point2::new(p301(0x000a_9b3e_d95a_0de2), p301(0x000a_b82e_f54e_e35c));
+        let c = Point2::new(p300(0x000a_9b3e_d95a_0ddc), p300(0x000a_b82e_f54e_e35e));
+        let d = Point2::new(p302(0x0003_f46f_2303_8a6c), p302(0x0004_0a23_37fb_2a84));
+        let expected = Point2::new(p301(0x0006_faad_7ef8_7294), p301(0x0007_13ab_aaf4_004f));
+
+        assert_crossing_permutations(a, b, c, d, expected);
+    }
+
+    #[test]
+    fn exact_intersection_rounds_ties_to_even_across_binary64_boundaries() {
+        let one = 1.0_f64.to_bits();
+        let two = 2.0_f64.to_bits();
+        let cases = [
+            (f64::from_bits(one), f64::from_bits(one + 1), one),
+            (f64::from_bits(one + 1), f64::from_bits(one + 2), one + 2),
+            (
+                f64::from_bits(0x000f_ffff_ffff_ffff),
+                f64::from_bits(0x0010_0000_0000_0000),
+                0x0010_0000_0000_0000,
+            ),
+            (f64::from_bits(two - 1), f64::from_bits(two), two),
+            (
+                f64::from_bits((1_u64 << 63) | 1),
+                f64::from_bits(1_u64 << 63),
+                1_u64 << 63,
+            ),
+        ];
+
+        for (x0, x1, expected_x_bits) in cases {
+            let intersection = segment_intersection(
+                Point2::new(x0, 0.0),
+                Point2::new(x1, 2.0),
+                Point2::new(x0, 2.0),
+                Point2::new(x1, 0.0),
+            )
+            .expect("finite exact intersection");
+            let SegmentIntersection::Point(point) = intersection else {
+                panic!("expected point intersection, got {intersection:?}");
+            };
+            assert_eq!(point.x.to_bits(), expected_x_bits);
+            assert_eq!(point.y, 1.0);
+        }
+    }
+
+    #[test]
+    fn exact_intersection_handles_non_dyadic_ratio_and_extreme_coordinates() {
+        assert_eq!(
+            segment_intersection(
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 3.0),
+                Point2::new(-1.0, 1.0),
+                Point2::new(1.0, 1.0),
+            ),
+            Ok(SegmentIntersection::Point(Point2::new(1.0 / 3.0, 1.0)))
+        );
+        assert_eq!(
+            segment_intersection(
+                Point2::new(-f64::MAX, 0.0),
+                Point2::new(f64::MAX, 0.0),
+                Point2::new(0.0, -f64::MAX),
+                Point2::new(0.0, f64::MAX),
+            ),
+            Ok(SegmentIntersection::Point(Point2::new(0.0, 0.0)))
+        );
+    }
+
+    #[test]
+    fn exact_interior_intersection_that_rounds_to_an_endpoint_fails_closed() {
+        let minimum = f64::from_bits(1);
+        assert_eq!(
+            segment_intersection(
+                Point2::new(0.0, 0.0),
+                Point2::new(minimum, minimum),
+                Point2::new(0.0, minimum),
+                Point2::new(minimum, 0.0),
+            ),
+            Err(GeometryError::ArithmeticOverflow)
+        );
+    }
+
+    fn assert_crossing_permutations(a: Point2, b: Point2, c: Point2, d: Point2, expected: Point2) {
+        for (first_start, first_end, second_start, second_end) in [
+            (a, b, c, d),
+            (b, a, c, d),
+            (a, b, d, c),
+            (b, a, d, c),
+            (c, d, a, b),
+            (d, c, a, b),
+            (c, d, b, a),
+            (d, c, b, a),
+        ] {
+            assert_eq!(
+                segment_intersection(first_start, first_end, second_start, second_end),
+                Ok(SegmentIntersection::Point(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn exact_predicates_keep_tiny_adjacent_segments_non_collinear() {
+        let side = f64::from_bits(485_u64 << 52);
+        let origin = Point2::new(0.0, 0.0);
+        let x = Point2::new(side, 0.0);
+        let y = Point2::new(0.0, side);
+
+        assert_eq!(orientation(origin, x, y), Ok(Orientation::Collinear));
+        assert_eq!(
+            exact_orientation(origin, x, y),
+            Ok(Orientation::CounterClockwise)
+        );
+        assert_eq!(
+            segment_intersection(origin, x, x, y),
+            Ok(SegmentIntersection::Point(x))
+        );
+        assert_eq!(
+            point_segment_relation(y, origin, x),
+            Ok(PointSegmentRelation::Outside)
+        );
+    }
+
+    #[test]
+    fn finds_non_collinear_shared_endpoint_without_interpolation() {
+        let shared = Point2::new(2.0, 2.0);
+        assert_eq!(
+            segment_intersection(Point2::new(0.0, 0.0), shared, shared, Point2::new(3.0, 0.0),),
+            Ok(SegmentIntersection::Point(shared))
         );
     }
 

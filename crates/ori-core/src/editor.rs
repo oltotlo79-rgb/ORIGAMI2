@@ -4,7 +4,7 @@ use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, RgbaColor, Vertex, VertexId,
 };
 use ori_geometry::{
-    GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, orientation,
+    GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
     point_segment_relation, segment_intersection, validate_crease_pattern, validate_paper,
 };
 use thiserror::Error;
@@ -524,13 +524,11 @@ fn intersection_cluster_point_segment_relation(
         return Ok(exact);
     }
 
-    // `point` may have been produced by segment-intersection interpolation.
-    // Its exact mathematical determinant can therefore round to a small
-    // non-zero value even against either source edge. Bound only that fixed
-    // arithmetic depth: four subtractions, two products, the determinant
-    // subtraction, and the preceding interpolation/division. The tolerance
-    // scales with the two determinant products, never with an arbitrary world
-    // coordinate epsilon, so a translated one-ULP near miss remains visible.
+    // A correctly rounded rational intersection is usually not an exactly
+    // representable point on either source line. Bound only that final
+    // coordinate-rounding residue. The tolerance scales with the two local
+    // determinant products, never with an arbitrary world-coordinate epsilon,
+    // so a translated one-ULP near miss remains visible.
     let direction_x = end.x - start.x;
     let direction_y = end.y - start.y;
     let offset_x = point.x - start.x;
@@ -570,28 +568,25 @@ fn first_strict_intersection_cluster_candidate(
     for first_index in 0..targets.len() {
         let first = &targets[first_index];
         for second in &targets[first_index + 1..] {
-            // Stable interpolation is directed and can differ by a few bits
-            // when the segment authority is reversed. Keep both candidates
-            // in a fixed document-order sequence, matching the frontend's
-            // cluster arithmetic without making public geometry tolerant.
-            for (candidate_first, candidate_second) in [(first, second), (second, first)] {
-                let Some(position) = intersection_cluster_pair_candidate(
-                    candidate_first.start_position,
-                    candidate_first.end_position,
-                    candidate_second.start_position,
-                    candidate_second.end_position,
-                ) else {
-                    continue;
-                };
-                if targets.iter().all(|target| {
-                    intersection_cluster_point_segment_relation(
-                        position,
-                        target.start_position,
-                        target.end_position,
-                    ) == Ok(PointSegmentRelation::StrictInterior)
-                }) {
-                    return Some(position);
-                }
+            // The exact determinant-ratio implementation is invariant under
+            // segment reversal and exchange, so each unordered pair supplies
+            // one canonical candidate.
+            let Some(position) = intersection_cluster_pair_candidate(
+                first.start_position,
+                first.end_position,
+                second.start_position,
+                second.end_position,
+            ) else {
+                continue;
+            };
+            if targets.iter().all(|target| {
+                intersection_cluster_point_segment_relation(
+                    position,
+                    target.start_position,
+                    target.end_position,
+                ) == Ok(PointSegmentRelation::StrictInterior)
+            }) {
+                return Some(position);
             }
         }
     }
@@ -604,63 +599,9 @@ fn intersection_cluster_pair_candidate(
     second_start: Point2,
     second_end: Point2,
 ) -> Option<Point2> {
-    // Mirror the frontend's singlePointIntersection operation order. In
-    // particular, round both cross products before subtraction and avoid the
-    // FMA interpolation used by the public geometry intersection point.
-    let first_direction = Point2::new(first_end.x - first_start.x, first_end.y - first_start.y);
-    let second_direction =
-        Point2::new(second_end.x - second_start.x, second_end.y - second_start.y);
-    let second_offset = Point2::new(
-        second_start.x - first_start.x,
-        second_start.y - first_start.y,
-    );
-    if [first_direction, second_direction, second_offset]
-        .into_iter()
-        .any(|point| !point.x.is_finite() || !point.y.is_finite())
-    {
-        return None;
-    }
-    let checked_cross = |first: Point2, second: Point2| {
-        let first_product = first.x * second.y;
-        let second_product = first.y * second.x;
-        let value = first_product - second_product;
-        if first_product.is_finite() && second_product.is_finite() && value.is_finite() {
-            Some(value)
-        } else {
-            None
-        }
-    };
-    let denominator = checked_cross(first_direction, second_direction)?;
-    if denominator == 0.0 {
-        return None;
-    }
-    let first_fraction = checked_cross(second_offset, second_direction)? / denominator;
-    let second_fraction = checked_cross(second_offset, first_direction)? / denominator;
-    if !first_fraction.is_finite()
-        || !second_fraction.is_finite()
-        || !(0.0..=1.0).contains(&first_fraction)
-        || !(0.0..=1.0).contains(&second_fraction)
-    {
-        return None;
-    }
-    let position = if first_fraction == 0.0 {
-        first_start
-    } else if first_fraction == 1.0 {
-        first_end
-    } else if second_fraction == 0.0 {
-        second_start
-    } else if second_fraction == 1.0 {
-        second_end
-    } else {
-        Point2::new(
-            stable_convex_combination(first_start.x, first_end.x, first_fraction),
-            stable_convex_combination(first_start.y, first_end.y, first_fraction),
-        )
-    };
-    if position.x.is_finite() && position.y.is_finite() {
-        Some(position)
-    } else {
-        None
+    match segment_intersection(first_start, first_end, second_start, second_end) {
+        Ok(SegmentIntersection::Point(position)) => Some(position),
+        Ok(SegmentIntersection::None | SegmentIntersection::CollinearOverlap) | Err(_) => None,
     }
 }
 
@@ -1057,13 +998,7 @@ fn point_is_strictly_inside_segment(
     start: Point2,
     end: Point2,
 ) -> Result<bool, GeometryError> {
-    if point == start || point == end || orientation(start, end, point)? != Orientation::Collinear {
-        return Ok(false);
-    }
-    Ok(point.x >= start.x.min(end.x)
-        && point.x <= start.x.max(end.x)
-        && point.y >= start.y.min(end.y)
-        && point.y <= start.y.max(end.y))
+    Ok(point_segment_relation(point, start, end)? == PointSegmentRelation::StrictInterior)
 }
 
 fn apply_boundary_vertex_removal(
@@ -1735,13 +1670,13 @@ impl EditorState {
                 return Err(CommandError::EdgeIntersectionGeometryNotRepresentable);
             }
         };
-        let first_side_start = orientation(first_start, first_end, second_start)
+        let first_side_start = exact_orientation(first_start, first_end, second_start)
             .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
-        let first_side_end = orientation(first_start, first_end, second_end)
+        let first_side_end = exact_orientation(first_start, first_end, second_end)
             .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
-        let second_side_start = orientation(second_start, second_end, first_start)
+        let second_side_start = exact_orientation(second_start, second_end, first_start)
             .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
-        let second_side_end = orientation(second_start, second_end, first_end)
+        let second_side_end = exact_orientation(second_start, second_end, first_end)
             .map_err(|_| CommandError::EdgeIntersectionGeometryNotRepresentable)?;
         if !orientations_are_opposite(first_side_start, first_side_end)
             || !orientations_are_opposite(second_side_start, second_side_end)
@@ -5480,7 +5415,8 @@ mod tests {
     }
 
     #[test]
-    fn edge_intersection_connection_rejects_bad_endpoint_data_occupied_points_and_overflow() {
+    fn edge_intersection_connection_rejects_bad_data_occupied_points_and_unrepresentable_rounding()
+    {
         let (_, pattern, paper, first, second) = crossing_edges_editor();
         let mut duplicate_endpoint = pattern.clone();
         duplicate_endpoint.vertices.push(
@@ -5569,11 +5505,12 @@ mod tests {
             },
         );
 
+        let minimum = f64::from_bits(1);
         let (mut editor, first, second) = two_edge_editor([
-            Point2::new(-f64::MAX, -1.0),
-            Point2::new(f64::MAX, 1.0),
-            Point2::new(-f64::MAX, 1.0),
-            Point2::new(f64::MAX, -1.0),
+            Point2::new(0.0, 0.0),
+            Point2::new(minimum, minimum),
+            Point2::new(0.0, minimum),
+            Point2::new(minimum, 0.0),
         ]);
         assert_intersection_rejected(
             &mut editor,
@@ -5586,6 +5523,45 @@ mod tests {
             },
             CommandError::EdgeIntersectionGeometryNotRepresentable,
         );
+    }
+
+    #[test]
+    fn edge_intersection_connection_handles_extreme_finite_coordinates_exactly() {
+        let (mut editor, first, second) = two_edge_editor([
+            Point2::new(-f64::MAX, -1.0),
+            Point2::new(f64::MAX, 1.0),
+            Point2::new(-f64::MAX, 1.0),
+            Point2::new(f64::MAX, -1.0),
+        ]);
+        let original = editor.pattern().clone();
+        let junction = VertexId::new();
+
+        editor
+            .execute(
+                0,
+                Command::ConnectEdgeIntersection {
+                    first_edge: first.id,
+                    second_edge: second.id,
+                    new_vertex: junction,
+                    first_new_edge: EdgeId::new(),
+                    second_new_edge: EdgeId::new(),
+                },
+            )
+            .expect("exact predicates keep the finite crossing representable");
+
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == junction)
+                .expect("created extreme-coordinate junction")
+                .position,
+            Point2::new(0.0, 0.0)
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        editor.undo(1).expect("undo extreme-coordinate crossing");
+        assert_eq!(editor.pattern(), &original);
     }
 
     #[test]
@@ -6593,7 +6569,7 @@ mod tests {
     }
 
     #[test]
-    fn intersection_cluster_handles_large_finite_geometry_and_rejects_overflow_atomically() {
+    fn intersection_cluster_handles_extreme_geometry_and_rejects_unrepresentable_rounding() {
         let center = 1.0e150;
         let radius = 1.0e140;
         let points = [
@@ -6696,13 +6672,85 @@ mod tests {
             vertices: overflow_vertices,
             edges: overflow_edges.to_vec(),
         });
+        let extreme_original = editor.pattern().clone();
+        let extreme_junction = VertexId::new();
+        editor
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create {
+                        id: extreme_junction,
+                    },
+                    targets: overflow_edges
+                        .iter()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("extreme finite cluster has an exactly representable junction");
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == extreme_junction)
+                .expect("created extreme cluster junction")
+                .position,
+            Point2::new(0.0, 0.0)
+        );
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        editor.undo(1).expect("undo extreme cluster");
+        assert_eq!(editor.pattern(), &extreme_original);
+
+        let minimum = f64::from_bits(1);
+        let unrepresentable_points = [
+            Point2::new(0.0, 0.0),
+            Point2::new(minimum, minimum),
+            Point2::new(0.0, minimum),
+            Point2::new(minimum, 0.0),
+            Point2::new(-minimum, 0.0),
+            Point2::new(2.0 * minimum, minimum),
+        ];
+        let unrepresentable_ids = unrepresentable_points.map(|_| VertexId::new());
+        let unrepresentable_vertices = unrepresentable_ids
+            .into_iter()
+            .zip(unrepresentable_points)
+            .map(|(id, position)| Vertex { id, position })
+            .collect::<Vec<_>>();
+        let unrepresentable_edges = [
+            Edge {
+                id: EdgeId::new(),
+                start: unrepresentable_ids[0],
+                end: unrepresentable_ids[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: unrepresentable_ids[2],
+                end: unrepresentable_ids[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: unrepresentable_ids[4],
+                end: unrepresentable_ids[5],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: unrepresentable_vertices,
+            edges: unrepresentable_edges.to_vec(),
+        });
         assert_cluster_rejected(
             &mut editor,
             Command::ConnectIntersectionCluster {
                 junction: JunctionVertexIntent::Create {
                     id: VertexId::new(),
                 },
-                targets: overflow_edges
+                targets: unrepresentable_edges
                     .iter()
                     .map(|edge| IntersectionEdgeTarget {
                         edge: edge.id,
@@ -6715,7 +6763,7 @@ mod tests {
     }
 
     #[test]
-    fn create_cluster_chooses_the_first_all_target_pair_candidate_and_restores_exactly() {
+    fn create_cluster_chooses_the_first_exact_pair_candidate_and_restores_exactly() {
         let (original_pattern, edges) = intersection_candidate_authority_fixture();
         let position = |vertex_id| {
             original_pattern
@@ -6746,28 +6794,17 @@ mod tests {
             .expect("finite planner pair candidate")
         };
         let first_pair_position = pair_intersection(&edges[0], &edges[1]);
-        assert_eq!(
-            intersection_cluster_point_segment_relation(
-                first_pair_position,
-                position(edges[2].start),
-                position(edges[2].end),
-            ),
-            Ok(PointSegmentRelation::Outside),
-            "the document-first pair is not authoritative for every target"
-        );
-        let first_contained_position = pair_candidate(&edges[0], &edges[2]);
-        let second_contained_position = pair_candidate(&edges[1], &edges[2]);
-        for candidate in [first_contained_position, second_contained_position] {
-            for edge in &edges {
-                assert_eq!(
-                    intersection_cluster_point_segment_relation(
-                        candidate,
-                        position(edge.start),
-                        position(edge.end),
-                    ),
-                    Ok(PointSegmentRelation::StrictInterior)
-                );
-            }
+        assert_eq!(pair_candidate(&edges[0], &edges[1]), first_pair_position);
+        assert_eq!(pair_candidate(&edges[1], &edges[0]), first_pair_position);
+        for edge in &edges {
+            assert_eq!(
+                intersection_cluster_point_segment_relation(
+                    first_pair_position,
+                    position(edge.start),
+                    position(edge.end),
+                ),
+                Ok(PointSegmentRelation::StrictInterior)
+            );
         }
 
         let original_paper = Paper::default();
@@ -6787,7 +6824,7 @@ mod tests {
                         .collect(),
                 },
             )
-            .expect("a later document-order pair supplies the authoritative junction");
+            .expect("the first document-order pair supplies the canonical junction");
 
         assert_eq!(result.revision, 1);
         assert_eq!(
@@ -6798,7 +6835,7 @@ mod tests {
                 .find(|vertex| vertex.id == junction)
                 .expect("created authority fixture junction")
                 .position,
-            first_contained_position
+            first_pair_position
         );
         assert!(validate_crease_pattern(editor.pattern()).is_valid());
         let connected_pattern = editor.pattern().clone();
@@ -6817,7 +6854,7 @@ mod tests {
     }
 
     #[test]
-    fn create_cluster_uses_non_fma_pair_candidate_and_restores_exactly() {
+    fn create_cluster_uses_exact_pair_candidate_and_restores_exactly() {
         let (original_pattern, edges) = fma_intersection_candidate_fixture();
         let position = |vertex_id| {
             original_pattern
@@ -6837,6 +6874,7 @@ mod tests {
             })
         };
 
+        let mut expected_position = None;
         for first_index in 0..edges.len() {
             for second in &edges[first_index + 1..] {
                 let public_candidate = match segment_intersection(
@@ -6852,34 +6890,31 @@ mod tests {
                         panic!("expected public point intersection, got {intersection:?}")
                     }
                 };
-                assert!(
-                    !candidate_is_strict(public_candidate),
-                    "the public FMA-interpolated candidate must expose this regression"
+                if expected_position.is_none() && candidate_is_strict(public_candidate) {
+                    expected_position = Some(public_candidate);
+                }
+                assert_eq!(
+                    intersection_cluster_pair_candidate(
+                        position(edges[first_index].start),
+                        position(edges[first_index].end),
+                        position(second.start),
+                        position(second.end),
+                    ),
+                    Some(public_candidate)
+                );
+                assert_eq!(
+                    intersection_cluster_pair_candidate(
+                        position(second.end),
+                        position(second.start),
+                        position(edges[first_index].end),
+                        position(edges[first_index].start),
+                    ),
+                    Some(public_candidate)
                 );
             }
         }
-
-        let mut expected_position = None;
-        'pairs: for first_index in 0..edges.len() {
-            let first = &edges[first_index];
-            for second in &edges[first_index + 1..] {
-                for (candidate_first, candidate_second) in [(first, second), (second, first)] {
-                    let candidate = intersection_cluster_pair_candidate(
-                        position(candidate_first.start),
-                        position(candidate_first.end),
-                        position(candidate_second.start),
-                        position(candidate_second.end),
-                    )
-                    .expect("finite ordered planner candidate");
-                    if candidate_is_strict(candidate) {
-                        expected_position = Some(candidate);
-                        break 'pairs;
-                    }
-                }
-            }
-        }
         let expected_position =
-            expected_position.expect("one non-FMA pair candidate must contain every target");
+            expected_position.expect("one canonical exact pair candidate contains every target");
 
         let original_paper = Paper::default();
         let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
@@ -6899,7 +6934,7 @@ mod tests {
                         .collect(),
                 },
             )
-            .expect("the non-FMA pair candidate must connect the FMA fixture");
+            .expect("the exact pair candidate must connect the cancellation fixture");
 
         assert_eq!(
             editor
@@ -6923,7 +6958,7 @@ mod tests {
     }
 
     #[test]
-    fn create_cluster_checks_reverse_pair_authority_deterministically() {
+    fn create_cluster_candidate_is_direction_invariant_and_deterministic() {
         let (original_pattern, edges) = reverse_only_intersection_candidate_fixture();
         let position = |vertex_id| {
             original_pattern
@@ -6952,24 +6987,18 @@ mod tests {
             })
         };
 
+        let mut expected_position = None;
         for first_index in 0..edges.len() {
             for second in &edges[first_index + 1..] {
-                assert!(
-                    !is_strict(candidate(&edges[first_index], second)),
-                    "every document-forward pair candidate must fail this fixture"
-                );
+                let forward = candidate(&edges[first_index], second);
+                assert_eq!(forward, candidate(second, &edges[first_index]));
+                if expected_position.is_none() && is_strict(forward) {
+                    expected_position = Some(forward);
+                }
             }
         }
-        assert!(
-            !is_strict(candidate(&edges[1], &edges[0])),
-            "the earlier 1 -> 0 reverse candidate must not preempt 2 -> 0"
-        );
-        let expected_position = candidate(&edges[2], &edges[0]);
-        assert_eq!(
-            expected_position,
-            Point2::new(524.9690688215196, 611.4160856232047)
-        );
-        assert!(is_strict(expected_position));
+        let expected_position =
+            expected_position.expect("one canonical exact pair candidate contains every target");
 
         let original_paper = Paper::default();
         let mut editor = EditorState::with_paper(original_pattern.clone(), original_paper.clone());
@@ -6988,7 +7017,7 @@ mod tests {
                         .collect(),
                 },
             )
-            .expect("the 2 -> 0 reverse candidate must connect the cluster");
+            .expect("the first all-target exact candidate must connect the cluster");
 
         assert_eq!(
             editor
@@ -7679,22 +7708,33 @@ mod tests {
                 vertex: occupied_by,
             },
         );
+    }
 
+    #[test]
+    fn t_junction_connection_handles_extreme_finite_segment_exactly() {
         let (mut editor, first, second) = two_edge_editor([
             Point2::new(-f64::MAX, 0.0),
             Point2::new(f64::MAX, 0.0),
             Point2::new(0.0, -1.0),
             Point2::new(0.0, 0.0),
         ]);
-        assert_t_junction_rejected(
-            &mut editor,
-            Command::ConnectTJunction {
-                first_edge: first.id,
-                second_edge: second.id,
-                new_edge: EdgeId::new(),
-            },
-            CommandError::TJunctionGeometryNotRepresentable,
-        );
+        let original = editor.pattern().clone();
+        let original_vertex_count = original.vertices.len();
+        editor
+            .execute(
+                0,
+                Command::ConnectTJunction {
+                    first_edge: first.id,
+                    second_edge: second.id,
+                    new_edge: EdgeId::new(),
+                },
+            )
+            .expect("exact point-segment relation handles the extreme finite carrier");
+        assert_eq!(editor.pattern().vertices.len(), original_vertex_count);
+        assert_eq!(editor.pattern().edges.len(), original.edges.len() + 1);
+        assert!(validate_crease_pattern(editor.pattern()).is_valid());
+        editor.undo(1).expect("undo extreme T-junction");
+        assert_eq!(editor.pattern(), &original);
     }
 
     #[test]

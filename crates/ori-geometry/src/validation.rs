@@ -282,11 +282,18 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
             .iter()
             .map(|position| position.expect("all boundary vertices were resolved"))
             .collect();
-        match polygon_signed_double_area(&positions) {
-            Ok(0.0) => issues.push(PaperValidationIssue::ZeroArea {
+        match exact_polygon_orientation(&positions) {
+            Ok(Orientation::Collinear) => issues.push(PaperValidationIssue::ZeroArea {
                 boundary_vertices: boundary.clone(),
             }),
-            Ok(_) => {}
+            Ok(Orientation::Clockwise | Orientation::CounterClockwise) => {
+                if let Err(error) = polygon_signed_double_area(&positions) {
+                    issues.push(PaperValidationIssue::AreaCalculationFailed {
+                        boundary_vertices: boundary.clone(),
+                        error,
+                    });
+                }
+            }
             Err(error) => issues.push(PaperValidationIssue::AreaCalculationFailed {
                 boundary_vertices: boundary.clone(),
                 error,
@@ -696,6 +703,78 @@ pub(super) fn exact_triangle_orientation(a: Point2, b: Point2, c: Point2) -> Ori
     }
 }
 
+/// Returns the correctly rounded binary64 intersection of two finite
+/// binary64 segments that cross strictly inside both segments.
+///
+/// Every coordinate is first represented as an integer multiple of 2^-1074.
+/// The determinant ratio and both resulting coordinates therefore remain
+/// exact until one final round-to-nearest, ties-to-even conversion. Exact
+/// parameter bounds are checked defensively, and an interior point that rounds
+/// onto an input endpoint is rejected because binary64 cannot represent a safe
+/// split location for it.
+pub(super) fn exact_proper_segment_intersection_point(
+    a: Point2,
+    b: Point2,
+    c: Point2,
+    d: Point2,
+) -> Result<Point2, GeometryError> {
+    debug_assert!(a.x.is_finite() && a.y.is_finite());
+    debug_assert!(b.x.is_finite() && b.y.is_finite());
+    debug_assert!(c.x.is_finite() && c.y.is_finite());
+    debug_assert!(d.x.is_finite() && d.y.is_finite());
+
+    let ax = exact_coordinate_units(a.x);
+    let ay = exact_coordinate_units(a.y);
+    let bx = exact_coordinate_units(b.x);
+    let by = exact_coordinate_units(b.y);
+    let cx = exact_coordinate_units(c.x);
+    let cy = exact_coordinate_units(c.y);
+    let dx = exact_coordinate_units(d.x);
+    let dy = exact_coordinate_units(d.y);
+
+    let rx = &bx - &ax;
+    let ry = &by - &ay;
+    let sx = &dx - &cx;
+    let sy = &dy - &cy;
+    let cax = &cx - &ax;
+    let cay = &cy - &ay;
+    let mut denominator = &rx * &sy - &ry * &sx;
+    let mut t_numerator = &cax * &sy - &cay * &sx;
+    let mut u_numerator = &cax * &ry - &cay * &rx;
+    if denominator.sign() == Sign::Minus {
+        denominator = -denominator;
+        t_numerator = -t_numerator;
+        u_numerator = -u_numerator;
+    }
+    if denominator.sign() == Sign::NoSign
+        || t_numerator.sign() != Sign::Plus
+        || u_numerator.sign() != Sign::Plus
+        || t_numerator >= denominator
+        || u_numerator >= denominator
+    {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+    let x_numerator = &ax * &denominator + &rx * &t_numerator;
+    let y_numerator = &ay * &denominator + &ry * &t_numerator;
+
+    let point = Point2::new(
+        scaled_ratio_to_f64(x_numerator, denominator.clone(), -1074)?,
+        scaled_ratio_to_f64(y_numerator, denominator, -1074)?,
+    );
+    if [a, b, c, d].contains(&point) {
+        Err(GeometryError::ArithmeticOverflow)
+    } else {
+        Ok(point)
+    }
+}
+
+fn exact_coordinate_units(value: f64) -> BigInt {
+    let (significand, exponent) = decompose_f64(value);
+    let shift = usize::try_from(exponent + 1074)
+        .expect("a finite binary64 exponent is at least the subnormal exponent");
+    BigInt::from(significand) << shift
+}
+
 fn exact_polygon_double_area(points: &[Point2]) -> BigInt {
     let mut exact_area = BigInt::from(0_u8);
     for index in 0..points.len() {
@@ -815,6 +894,112 @@ fn scaled_bigint_to_f64(value: BigInt, binary_exponent: i32) -> Result<f64, Geom
         result = -result;
     }
     Ok(result)
+}
+
+fn scaled_ratio_to_f64(
+    numerator: BigInt,
+    denominator: BigInt,
+    binary_exponent: i32,
+) -> Result<f64, GeometryError> {
+    if denominator.sign() == Sign::NoSign {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+    if numerator.sign() == Sign::NoSign {
+        return Ok(0.0);
+    }
+
+    let negative = numerator.sign() != denominator.sign();
+    let numerator = numerator.magnitude();
+    let denominator = denominator.magnitude();
+    let ratio_exponent = floor_log2_ratio(numerator, denominator);
+    let mut leading_exponent = ratio_exponent + i64::from(binary_exponent);
+    if leading_exponent > 1023 {
+        return Err(GeometryError::ArithmeticOverflow);
+    }
+
+    let mut bits = if leading_exponent < -1022 {
+        let shift = i64::from(binary_exponent) + 1074;
+        let units = round_scaled_ratio(numerator, denominator, shift);
+        if units.bits() > 53 {
+            return Err(GeometryError::ArithmeticOverflow);
+        }
+        let units = biguint_to_u64(&units);
+        if units > 1_u64 << 52 {
+            return Err(GeometryError::ArithmeticOverflow);
+        }
+        units
+    } else {
+        let shift = i64::from(binary_exponent) - leading_exponent + 52;
+        let mut significand = round_scaled_ratio(numerator, denominator, shift);
+        if significand.bits() > 53 {
+            if significand != BigUint::from(1_u8) << 53_usize {
+                return Err(GeometryError::ArithmeticOverflow);
+            }
+            significand >>= 1_usize;
+            leading_exponent += 1;
+        }
+        if leading_exponent > 1023
+            || significand.bits() != 53
+            || significand < BigUint::from(1_u8) << 52_usize
+        {
+            return Err(GeometryError::ArithmeticOverflow);
+        }
+        let significand = biguint_to_u64(&significand);
+        let exponent_bits = u64::try_from(leading_exponent + 1023)
+            .map_err(|_| GeometryError::ArithmeticOverflow)?;
+        (exponent_bits << 52) | (significand - (1_u64 << 52))
+    };
+
+    if negative {
+        bits |= 1_u64 << 63;
+    }
+    let result = f64::from_bits(bits);
+    if result.is_finite() {
+        Ok(result)
+    } else {
+        Err(GeometryError::ArithmeticOverflow)
+    }
+}
+
+fn floor_log2_ratio(numerator: &BigUint, denominator: &BigUint) -> i64 {
+    debug_assert!(numerator != &BigUint::from(0_u8));
+    debug_assert!(denominator != &BigUint::from(0_u8));
+    let candidate = i64::try_from(numerator.bits()).expect("BigUint bit count fits i64")
+        - i64::try_from(denominator.bits()).expect("BigUint bit count fits i64");
+    let reaches_candidate = if candidate >= 0 {
+        numerator >= &(denominator << usize::try_from(candidate).expect("non-negative shift"))
+    } else {
+        &(numerator << usize::try_from(-candidate).expect("negated shift is non-negative"))
+            >= denominator
+    };
+    if reaches_candidate {
+        candidate
+    } else {
+        candidate - 1
+    }
+}
+
+fn round_scaled_ratio(numerator: &BigUint, denominator: &BigUint, binary_shift: i64) -> BigUint {
+    let (scaled_numerator, scaled_denominator) = if binary_shift >= 0 {
+        (
+            numerator << usize::try_from(binary_shift).expect("non-negative shift"),
+            denominator.clone(),
+        )
+    } else {
+        (
+            numerator.clone(),
+            denominator << usize::try_from(-binary_shift).expect("negated shift is non-negative"),
+        )
+    };
+    let mut quotient = &scaled_numerator / &scaled_denominator;
+    let remainder = scaled_numerator - &quotient * &scaled_denominator;
+    let twice_remainder = &remainder << 1_usize;
+    if twice_remainder > scaled_denominator
+        || (twice_remainder == scaled_denominator && quotient.bit(0))
+    {
+        quotient += 1_u8;
+    }
+    quotient
 }
 
 fn round_shift_right(value: &BigUint, shift: usize) -> BigUint {
@@ -1175,6 +1360,49 @@ mod tests {
                 Point2::new(0.0, f64::MAX),
                 Point2::new(-f64::MAX, 0.0),
             ]),
+            Err(GeometryError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn exact_ratio_conversion_rounds_binary64_boundaries_to_even() {
+        let power = |exponent: usize| BigInt::from(1_u8) << exponent;
+        let ratio = |numerator: BigInt, denominator: BigInt, exponent| {
+            scaled_ratio_to_f64(numerator, denominator, exponent)
+                .expect("representable exact ratio")
+        };
+
+        assert_eq!(
+            ratio(power(53) + 1_u8, power(53), 0).to_bits(),
+            1.0_f64.to_bits()
+        );
+        assert_eq!(
+            ratio(power(53) + 3_u8, power(53), 0).to_bits(),
+            1.0_f64.to_bits() + 2
+        );
+        assert_eq!(
+            ratio(BigInt::from(1_u8), BigInt::from(2_u8), -1074).to_bits(),
+            0
+        );
+        assert_eq!(
+            ratio(BigInt::from(-1_i8), BigInt::from(2_u8), -1074).to_bits(),
+            1_u64 << 63
+        );
+        assert_eq!(
+            ratio(BigInt::from(3_u8), BigInt::from(2_u8), -1074).to_bits(),
+            2
+        );
+        assert_eq!(
+            ratio(power(53) - 1_u8, BigInt::from(2_u8), -1074).to_bits(),
+            0x0010_0000_0000_0000
+        );
+        assert_eq!(
+            ratio(power(54) - 1_u8, power(53), 0).to_bits(),
+            2.0_f64.to_bits()
+        );
+        assert_eq!(ratio(power(53) - 1_u8, BigInt::from(1_u8), 971), f64::MAX);
+        assert_eq!(
+            scaled_ratio_to_f64(power(54) - 1_u8, BigInt::from(1_u8), 970),
             Err(GeometryError::ArithmeticOverflow)
         );
     }
@@ -1544,6 +1772,23 @@ mod tests {
                 .iter()
                 .any(|issue| matches!(issue, PaperValidationIssue::ZeroArea { .. }))
         );
+    }
+
+    #[test]
+    fn accepts_exact_nonzero_boundary_when_measured_area_underflows() {
+        let side = f64::from_bits(485_u64 << 52);
+        let mut vertices = vec![vertex(0.0, 0.0), vertex(side, 0.0), vertex(0.0, side)];
+        for expected in [Orientation::CounterClockwise, Orientation::Clockwise] {
+            let points = vertices
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<Vec<_>>();
+            assert_eq!(polygon_signed_double_area(&points), Ok(0.0));
+            assert_eq!(exact_polygon_orientation(&points), Ok(expected));
+            let report = validate_paper(&paper(&vertices), &pattern(&vertices));
+            assert!(report.is_valid(), "unexpected issues: {:?}", report.issues);
+            vertices.reverse();
+        }
     }
 
     #[test]

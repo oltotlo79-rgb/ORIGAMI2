@@ -365,6 +365,16 @@ solve(current geometry, constraints, edited targets, policy)
 - 不正work budget、inner例外、結果形式または作業集計の後退は`indeterminate`、cancelと再入は全inner jobを停止して`cancelled`へ退避する。終端後の`step`は同じ不変objectを返し、途中の認定候補を部分的な成功として公開しない。
 - `certified`だけがsource/target完全角度vector、両pose key、静的候補順位、連続解析statsと`continuousCandidatePathCertified: true`を持つ。これはその二姿勢間の単一線形角度経路だけの解析証明であり、現在の3D sceneがsource姿勢にあること、層順、材料変形、project適用は別境界とする。全variantで`sceneApplied: false`、`autoApplicable: false`を固定する。
 
+#### 8.2.9 連続経路certificateの真正性と読み取り専用表示
+
+連続経路を認定したcertificateはdeep-frozen構造だけを適用権限として扱わない。clear結果の完全性を確認してcertificateを不変化した後、生成元の真正motion context参照、source/target pose key、完全角度vector、候補順位の切り離したmetadataをprivate provenanceへ登録する。
+
+- exact certificateとexact context参照の組だけがprovenance guardを通る。outer terminalのcloneが同じcertificate参照を保持する場合は有効だが、certificate自体のclone、JSON往復、同値の別context、hostile・revoked Proxy、primitive、clear以外の結果は権限を持たない。guardは入力propertyを読まずprivate mapだけを照合する。
+- `tree_single_hinge_static_candidate_path_presentation_v1`はguardを通ったcertificateだけから表示DTOを生成する。project/revisionと選択ヒンジ、候補順位、source/target角、方向、連続解析statsと先行試行数、静的interaction集計、保守的作業上限だけをcopyし、seed種別、face ID、完全角度vector、pose key、application token、scene command、runtime stateを出力しない。
+- badge単独でも「解析上」「静的・連続経路確認済み」「現在姿勢未照合」を示す。制限文は解析結果が現在も有効とは限らず、現在姿勢からの安全移動、層順、材料変形を証明せず、この表示から3D sceneまたは設計dataへ適用できないことを示す。DTOはdeep freezeし、`analysisOnly: true`、`runtimeRequestBound: false`、`activeRequestLeaseBound: false`、`startScenePoseMatched: false`、`sceneApplied: false`、`autoApplicable: false`を維持する。
+- DTO単独を保存・再表示しない。UI coordinatorはowner/requestの非公開leaseとしてexact context、fixed face、collision thickness、generation/request sequence、source poseを保持し、各RAFの前後とpublish/render直前に現在値を照合する。新request、直接角度変更、model/revision・fixed face・selected hinge・thickness変更、disposeでは、古い表示を先にclearしてからjobをcancelする。lease不一致の結果はpresentation factoryへ渡さず公開しない。
+- presentation moduleはThree.js、motion owner、runtime、scene pose適用、project commandをimportしない。将来の適用は、真正runtimeの現在完全角度vectorとsource pose keyを再確認し、新しいowner request・application tokenを発行して既存の原子的scene commitへ渡す別境界とする。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

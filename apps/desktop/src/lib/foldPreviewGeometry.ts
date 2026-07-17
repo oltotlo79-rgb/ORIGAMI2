@@ -10,6 +10,8 @@ export type FoldPreviewGeometryPoint = Readonly<{
   z: number
 }>
 
+export type FoldPreviewTriangleIndices = readonly [number, number, number]
+
 export const FOLD_PREVIEW_FRONT_MATERIAL_INDEX = 0
 export const FOLD_PREVIEW_BACK_MATERIAL_INDEX = 1
 export const FOLD_PREVIEW_SIDE_MATERIAL_INDEX = 2
@@ -29,16 +31,8 @@ export function createFoldPreviewFaceGeometry(
   polygon: readonly FoldPreviewGeometryPoint[],
   visualThickness: number,
 ): BufferGeometry {
-  validateInput(polygon, visualThickness)
-
-  const signedDoubleArea = polygonSignedDoubleArea(polygon)
-  if (signedDoubleArea === 0) {
-    throw new RangeError('fold preview polygon must have non-zero area')
-  }
-
-  const contour = polygon.map((point) => new Vector2(point.x, point.z))
-  const triangles = ShapeUtils.triangulateShape(contour, [])
-  validateTriangulation(polygon, triangles, signedDoubleArea)
+  validateThickness(visualThickness)
+  const { signedDoubleArea, triangles } = validatedTriangulation(polygon)
 
   const halfThickness = visualThickness * 0.5
   if (!Number.isFinite(halfThickness) || halfThickness <= 0) {
@@ -90,15 +84,33 @@ export function createFoldPreviewFaceGeometry(
   return geometry
 }
 
-function validateInput(
+/**
+ * Returns the same validated double-precision cap triangulation used by the
+ * renderer, without exposing its Float32 GPU attributes.
+ */
+export function triangulateFoldPreviewPolygon(
   polygon: readonly FoldPreviewGeometryPoint[],
-  visualThickness: number,
-) {
+): readonly FoldPreviewTriangleIndices[] {
+  return validatedTriangulation(polygon).triangles
+}
+
+function validatedTriangulation(polygon: readonly FoldPreviewGeometryPoint[]) {
+  validatePolygon(polygon)
+  const signedDoubleArea = polygonSignedDoubleArea(polygon)
+  if (signedDoubleArea === 0) {
+    throw new RangeError('fold preview polygon must have non-zero area')
+  }
+  const contour = polygon.map((point) => new Vector2(point.x, point.z))
+  const rawTriangles = ShapeUtils.triangulateShape(contour, [])
+  validateTriangulation(polygon, rawTriangles, signedDoubleArea)
+  const triangles = rawTriangles.map(([first, second, third]) =>
+    [first, second, third] as FoldPreviewTriangleIndices)
+  return { signedDoubleArea, triangles }
+}
+
+function validatePolygon(polygon: readonly FoldPreviewGeometryPoint[]) {
   if (polygon.length < 3) {
     throw new RangeError('fold preview polygon must contain at least three points')
-  }
-  if (!Number.isFinite(visualThickness) || visualThickness <= 0) {
-    throw new RangeError('fold preview thickness must be a positive finite number')
   }
 
   const distinctPoints = new Set<string>()
@@ -120,6 +132,12 @@ function validateInput(
     if (!Number.isFinite(edgeLength) || edgeLength <= 0) {
       throw new RangeError('fold preview polygon contains a degenerate edge')
     }
+  }
+}
+
+function validateThickness(visualThickness: number) {
+  if (!Number.isFinite(visualThickness) || visualThickness <= 0) {
+    throw new RangeError('fold preview thickness must be a positive finite number')
   }
 }
 

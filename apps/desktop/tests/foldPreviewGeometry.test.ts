@@ -7,6 +7,7 @@ import {
   FOLD_PREVIEW_FRONT_MATERIAL_INDEX,
   FOLD_PREVIEW_SIDE_MATERIAL_INDEX,
   createFoldPreviewFaceGeometry,
+  triangulateFoldPreviewPolygon,
 } from '../src/lib/foldPreviewGeometry.ts'
 
 const rectangle = [
@@ -91,6 +92,25 @@ test('invalid, non-finite, and degenerate inputs fail deterministically', () => 
   for (const [label, operation] of cases) {
     assert.throws(operation, RangeError, label)
   }
+})
+
+test('collision and rendering share one deterministic double-precision triangulation', () => {
+  const concave = [
+    { x: 0, z: 0 },
+    { x: 3, z: 0 },
+    { x: 3, z: 3 },
+    { x: 1.5, z: 1.25 },
+    { x: 0, z: 3 },
+  ] as const
+  const triangles = triangulateFoldPreviewPolygon(concave)
+  assert.equal(triangles.length, concave.length - 2)
+  assert.deepEqual(triangulateFoldPreviewPolygon(concave), triangles)
+  assert.ok(triangles.every((triangle) =>
+    triangle.length === 3 && new Set(triangle).size === 3))
+  assert.throws(
+    () => triangulateFoldPreviewPolygon([{ x: 0, z: 0 }, { x: 1, z: 0 }]),
+    RangeError,
+  )
 })
 
 function assertBounds(

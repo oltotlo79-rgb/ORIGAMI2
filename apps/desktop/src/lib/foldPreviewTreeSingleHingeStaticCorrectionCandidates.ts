@@ -185,6 +185,31 @@ export type FoldPreviewTreeSingleHingeStaticCorrectionCandidates = Readonly<{
   }>
 }>
 
+const staticCorrectionCandidateContexts = new WeakMap<
+  object,
+  FoldPreviewTreeMotionContext
+>()
+
+/**
+ * Confirms that an unchanged successful result came from this exact authentic
+ * motion-context snapshot. Structural clones and equivalent replacement
+ * contexts deliberately do not cross this provenance boundary.
+ */
+export function isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+  context: FoldPreviewTreeMotionContext,
+  value: unknown,
+): value is FoldPreviewTreeSingleHingeStaticCorrectionCandidates {
+  try {
+    return typeof context === 'object'
+      && context !== null
+      && typeof value === 'object'
+      && value !== null
+      && staticCorrectionCandidateContexts.get(value) === context
+  } catch {
+    return false
+  }
+}
+
 type VerifiedContext = Readonly<{
   sourceAngles: readonly FoldPreviewHingeAngle[]
   blockingAngles: readonly FoldPreviewHingeAngle[]
@@ -371,7 +396,9 @@ export function deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
         > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES
     ) return null
 
-    return deepFreeze({
+    const result = deepFreeze<
+      FoldPreviewTreeSingleHingeStaticCorrectionCandidates
+    >({
       version:
         FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_VERSION,
       kind: 'statically_revalidated_single_hinge_correction_candidates',
@@ -470,6 +497,8 @@ export function deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
         autoApplicable: false,
       },
     })
+    staticCorrectionCandidateContexts.set(result, context)
+    return result
   } catch {
     return null
   }

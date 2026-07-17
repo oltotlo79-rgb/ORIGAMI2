@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates,
   FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_VERSION,
+  isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
 } from '../src/lib/foldPreviewTreeSingleHingeStaticCorrectionCandidates.ts'
 import {
@@ -195,6 +196,121 @@ test('identity, pose keys, and the rerooted partition remain exactly bound', () 
     point: { x: 0.25, y: 0, z: 0 },
     direction: { x: 0, y: 0, z: 1 },
   })
+})
+
+test('successful result provenance is bound to the exact authentic context', () => {
+  const fixture = correctionFixture()
+  const result = deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
+    fixture.context,
+    fixture.binding,
+    CLEARANCE,
+    MAXIMUM_TRANSLATION,
+    MAXIMUM_ANGLE_DELTA_DEGREES,
+  )
+  assert.ok(result)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+      fixture.context,
+      result,
+    ),
+    true,
+  )
+
+  const equivalentContext = prepareFoldPreviewTreeMotionContext({
+    model: stationaryBranchCollisionModel(),
+    fixedFaceId: 'root',
+    selectedHingeEdgeId: 'selected',
+    appliedAngles: [
+      { edgeId: 'selected', angleDegrees: 0 },
+      { edgeId: 'frozen', angleDegrees: 90 },
+    ],
+    collisionThickness: COLLISION_THICKNESS,
+    visualThickness: COLLISION_THICKNESS,
+  })
+  assert.ok(equivalentContext)
+  assert.notStrictEqual(equivalentContext, fixture.context)
+  assert.equal(equivalentContext.contextKey, fixture.context.contextKey)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+      equivalentContext,
+      result,
+    ),
+    false,
+  )
+
+  for (const clone of [
+    { ...result },
+    Object.freeze({ ...result }),
+    Object.create(result) as unknown,
+  ]) {
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+        fixture.context,
+        clone,
+      ),
+      false,
+    )
+  }
+
+  let hostileValueReadCount = 0
+  const hostileValue = new Proxy({}, {
+    get() {
+      hostileValueReadCount += 1
+      throw new Error('value getter')
+    },
+  })
+  const revokedValue = Proxy.revocable({}, {})
+  revokedValue.revoke()
+  for (const value of [
+    null,
+    undefined,
+    false,
+    0,
+    '',
+    Symbol('value'),
+    () => undefined,
+    hostileValue,
+    revokedValue.proxy,
+  ]) {
+    assert.doesNotThrow(() => {
+      assert.equal(
+        isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+          fixture.context,
+          value,
+        ),
+        false,
+      )
+    })
+  }
+  assert.equal(hostileValueReadCount, 0)
+
+  let hostileContextReadCount = 0
+  const hostileContext = new Proxy(fixture.context, {
+    get() {
+      hostileContextReadCount += 1
+      throw new Error('context getter')
+    },
+  })
+  const invalidContexts: unknown[] = [
+    null,
+    undefined,
+    false,
+    0,
+    '',
+    hostileContext,
+  ]
+  for (const context of invalidContexts) {
+    assert.doesNotThrow(() => {
+      assert.equal(
+        isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+          context as FoldPreviewTreeMotionContext,
+          result,
+        ),
+        false,
+      )
+    })
+  }
+  assert.equal(hostileContextReadCount, 0)
 })
 
 test('a rerooted negative rotation sign yields the matching static-clear correction', () => {

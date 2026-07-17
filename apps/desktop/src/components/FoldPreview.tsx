@@ -14,6 +14,10 @@ import {
   calculateFoldTreePoseWithAngles,
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
+import {
+  createLatestFrameTask,
+  type LatestFrameTask,
+} from '../lib/latestFrameTask'
 import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewModel'
 import { findFoldPreviewNarrowPhaseInteractions } from '../lib/foldPreviewNarrowCollision'
 import {
@@ -36,11 +40,17 @@ type FoldPreviewProps = {
 }
 
 type PreviewRuntime = {
-  updatePose: (angle: number, hingeAngles?: readonly FoldPreviewHingeAngle[]) => boolean
+  schedulePose: (angle: number, hingeAngles?: readonly FoldPreviewHingeAngle[]) => boolean
   updateSelection: (selectedHingeId: string | null) => void
   render: () => void
   dispose: () => void
 }
+
+type PendingPose = Readonly<{
+  angle: number
+  hingeAngles?: readonly FoldPreviewHingeAngle[]
+  requestKey: string
+}>
 
 type CollisionSummary =
   | Readonly<{
@@ -189,6 +199,7 @@ export function FoldPreview({
     let observer: ResizeObserver | null = null
     let clickHandler: ((event: MouseEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
+    let poseFrameTask: LatestFrameTask<PendingPose> | null = null
     let disposed = false
     const collisionAdjacencies: FoldPreviewCollisionAdjacency[] = model.kind === 'planar'
       ? []
@@ -261,6 +272,7 @@ export function FoldPreview({
       if (disposed) return
       disposed = true
       attemptCleanup(() => observer?.disconnect())
+      attemptCleanup(() => poseFrameTask?.dispose())
       if (runtime && runtimeRef.current === runtime) runtimeRef.current = null
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
       for (const geometry of edgeGeometries) attemptCleanup(() => geometry.dispose())
@@ -532,8 +544,11 @@ export function FoldPreview({
         model.kind === 'planar'
         || (model.kind === 'fold_graph' && model.kinematics.kind === 'static_cycle')
       ) {
+        const flatFaceTransforms = new Map(
+          model.faces.map((face) => [face.id, new THREE.Matrix4()]),
+        )
         updateCollision(
-          new Map(model.faces.map((face) => [face.id, new THREE.Matrix4()])),
+          flatFaceTransforms,
           collisionPoseKey(
             model,
             resolvedFixedFaceId,
@@ -542,9 +557,71 @@ export function FoldPreview({
             hingeAnglesRef.current,
           ),
         )
+        updatePose = (nextAngle, nextHingeAngles) => {
+          updateCollision(
+            flatFaceTransforms,
+            collisionPoseKey(
+              model,
+              resolvedFixedFaceId,
+              physicalPreviewThickness,
+              nextAngle,
+              nextHingeAngles,
+            ),
+          )
+          return true
+        }
       }
 
       const render = () => createdRenderer.render(scene, camera)
+      let appliedPoseKey = collisionPoseKey(
+        model,
+        resolvedFixedFaceId,
+        physicalPreviewThickness,
+        angleRef.current,
+        hingeAnglesRef.current,
+      )
+      if (
+        typeof window.requestAnimationFrame !== 'function'
+        || typeof window.cancelAnimationFrame !== 'function'
+      ) throw new Error('animation frame scheduling is unavailable')
+      const createdPoseFrameTask = createLatestFrameTask<PendingPose>(
+        {
+          request: (callback) => window.requestAnimationFrame(callback),
+          cancel: (handle) => window.cancelAnimationFrame(handle),
+        },
+        (pendingPose) => {
+          if (disposed) return
+          if (!updatePose(pendingPose.angle, pendingPose.hingeAngles)) {
+            throw new Error('invalid fold pose')
+          }
+          appliedPoseKey = pendingPose.requestKey
+          render()
+        },
+        () => {
+          if (disposed) return
+          dispose()
+          setRenderError('3D描画を安全に継続できませんでした')
+        },
+      )
+      poseFrameTask = createdPoseFrameTask
+      const schedulePose = (
+        nextAngle: number,
+        nextHingeAngles?: readonly FoldPreviewHingeAngle[],
+      ) => {
+        const requestKey = collisionPoseKey(
+          model,
+          resolvedFixedFaceId,
+          physicalPreviewThickness,
+          nextAngle,
+          nextHingeAngles,
+        )
+        if (requestKey === appliedPoseKey && !createdPoseFrameTask.hasPending()) return true
+        return createdPoseFrameTask.schedule({
+          angle: nextAngle,
+          hingeAngles: nextHingeAngles?.map((hingeAngle) => ({ ...hingeAngle })),
+          requestKey,
+        })
+      }
       const raycaster = new THREE.Raycaster()
       const pointer = new THREE.Vector2()
       clickHandler = (event) => {
@@ -577,7 +654,7 @@ export function FoldPreview({
         }
       }
       createdRenderer.domElement.addEventListener('click', clickHandler)
-      runtime = { updatePose, updateSelection, render, dispose }
+      runtime = { schedulePose, updateSelection, render, dispose }
       runtimeRef.current = runtime
 
       const resize = () => {
@@ -620,8 +697,9 @@ export function FoldPreview({
     const runtime = runtimeRef.current
     if (!runtime) return
     try {
-      if (!runtime.updatePose(safeAngle, hingeAngles)) throw new Error('invalid fold pose')
-      runtime.render()
+      if (!runtime.schedulePose(safeAngle, hingeAngles)) {
+        throw new Error('fold pose frame could not be scheduled')
+      }
     } catch {
       runtime.dispose()
       setRenderError('3D描画を安全に継続できませんでした')

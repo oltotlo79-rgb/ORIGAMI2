@@ -1235,6 +1235,13 @@ function App() {
                   ? updateUniformFoldAngle
                   : undefined
               }
+              onCommitHingeFoldAngle={
+                !benchmarkRun
+                && foldPreviewModel?.kind === 'fold_graph'
+                && foldPreviewModel.kinematics.kind === 'tree'
+                  ? updateHingeFoldAngle
+                  : undefined
+              }
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}

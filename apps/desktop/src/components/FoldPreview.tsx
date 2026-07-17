@@ -107,6 +107,7 @@ type FoldPreviewProps = {
   onSelectHinge?: (edgeId: string | null) => void
   onChooseFixedFace?: (faceId: string) => void
   onRequestFoldAngle?: (angleDegrees: number) => void
+  onCommitHingeFoldAngle?: (edgeId: string, angleDegrees: number) => void
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -174,6 +175,7 @@ export function FoldPreview({
   onSelectHinge,
   onChooseFixedFace,
   onRequestFoldAngle,
+  onCommitHingeFoldAngle,
   model,
   statusMessage,
   frontColor,
@@ -206,6 +208,8 @@ export function FoldPreview({
   onChooseFixedFaceRef.current = onChooseFixedFace
   const onRequestFoldAngleRef = useRef(onRequestFoldAngle)
   onRequestFoldAngleRef.current = onRequestFoldAngle
+  const onCommitHingeFoldAngleRef = useRef(onCommitHingeFoldAngle)
+  onCommitHingeFoldAngleRef.current = onCommitHingeFoldAngle
   const resolvedFixedFaceId = fixedFaceId
     ?? (model?.kind === 'single_fold'
       ? model.fixedFace.id

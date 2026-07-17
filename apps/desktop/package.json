@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test:snap": "node --test tests/snap.test.ts tests/renderBenchmark.test.ts tests/canvasBatching.test.ts tests/nearestSpatialIndex.test.ts tests/foldPreviewModel.test.ts tests/foldPreviewGeometry.test.ts tests/foldPreviewKinematics.test.ts tests/foldPreviewAnchoring.test.ts tests/foldPreviewPicking.test.ts tests/foldPreviewCollision.test.ts tests/foldPreviewNarrowCollision.test.ts tests/latestFrameTask.test.ts",
+    "test:snap": "node --test tests/snap.test.ts tests/renderBenchmark.test.ts tests/canvasBatching.test.ts tests/nearestSpatialIndex.test.ts tests/foldPreviewModel.test.ts tests/foldPreviewGeometry.test.ts tests/foldPreviewKinematics.test.ts tests/foldPreviewAnchoring.test.ts tests/foldPreviewPicking.test.ts tests/foldPreviewCollision.test.ts tests/foldPreviewNarrowCollision.test.ts tests/foldPreviewCollisionPresentation.test.ts tests/latestFrameTask.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

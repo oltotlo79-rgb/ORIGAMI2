@@ -9,6 +9,10 @@ import {
 import {
   type FoldPreviewCollisionAdjacency,
 } from '../lib/foldPreviewCollision'
+import {
+  summarizeFoldPreviewCollision,
+  type FoldPreviewFaceCollisionSeverity,
+} from '../lib/foldPreviewCollisionPresentation'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import {
   calculateFoldTreePoseWithAngles,
@@ -194,6 +198,9 @@ export function FoldPreview({
     let edgeMaterial: THREE.LineBasicMaterial | null = null
     let fixedFaceEdgeMaterial: THREE.LineBasicMaterial | null = null
     let dependentFaceEdgeMaterial: THREE.LineBasicMaterial | null = null
+    let collisionContactEdgeMaterial: THREE.LineBasicMaterial | null = null
+    let collisionIndeterminateEdgeMaterial: THREE.LineBasicMaterial | null = null
+    let collisionPenetrationEdgeMaterial: THREE.LineBasicMaterial | null = null
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
@@ -208,12 +215,15 @@ export function FoldPreview({
           firstFaceId: hinge.leftFaceId,
           secondFaceId: hinge.rightFaceId,
         }))
+    let collisionSeverityByFace = new Map<string, FoldPreviewFaceCollisionSeverity>()
+    let refreshFaceHighlights = () => undefined
 
     const updateCollision = (
       faceTransforms: ReadonlyMap<string, THREE.Matrix4>,
       requestKey: string,
     ) => {
       let nextSummary: CollisionSummary = { kind: 'unavailable', requestKey }
+      let nextCollisionSeverityByFace = new Map<string, FoldPreviewFaceCollisionSeverity>()
       try {
         const result = findFoldPreviewNarrowPhaseInteractions(
           model.faces,
@@ -222,47 +232,31 @@ export function FoldPreview({
           collisionAdjacencies,
         )
         if (result) {
-          const nonAdjacentPenetrations = result.interactions.reduce(
-            (count, interaction) => count + Number(
-              interaction.relation === 'non_adjacent'
-              && interaction.geometryClass === 'penetrating',
-            ),
-            0,
-          )
-          const nonAdjacentContacts = result.interactions.reduce(
-            (count, interaction) => count + Number(
-              interaction.relation === 'non_adjacent'
-              && interaction.geometryClass === 'touching',
-            ),
-            0,
-          )
-          const hingeInteractions = result.interactions.reduce(
-            (count, interaction) => count + Number(interaction.relation === 'hinge_adjacent'),
-            0,
-          )
-          const indeterminateInteractions = result.interactions.reduce(
-            (count, interaction) => count + Number(
-              interaction.geometryClass === 'indeterminate',
-            ),
-            0,
-          )
+          const presentation = summarizeFoldPreviewCollision(result)
+          nextCollisionSeverityByFace = new Map(presentation.faceSeverities)
           nextSummary = {
             kind: 'ready',
             requestKey,
-            totalCandidates: result.broadPhaseCandidates,
-            nonAdjacentCandidates: result.broadPhaseNonAdjacentCandidates,
-            hingeAdjacentCandidates: result.broadPhaseHingeAdjacentCandidates,
-            narrowInteractions: result.interactions.length,
-            nonAdjacentPenetrations,
-            nonAdjacentContacts,
-            hingeInteractions,
-            indeterminateInteractions,
+            totalCandidates: presentation.totalCandidates,
+            nonAdjacentCandidates: presentation.nonAdjacentCandidates,
+            hingeAdjacentCandidates: presentation.hingeAdjacentCandidates,
+            narrowInteractions: presentation.narrowInteractions,
+            nonAdjacentPenetrations: presentation.nonAdjacentPenetrations,
+            nonAdjacentContacts: presentation.nonAdjacentContacts,
+            hingeInteractions: presentation.hingeInteractions,
+            indeterminateInteractions: presentation.indeterminateInteractions,
           }
         }
       } catch {
         // Collision diagnostics are optional and must not invalidate a verified pose.
       }
       if (!disposed) {
+        collisionSeverityByFace = nextCollisionSeverityByFace
+        try {
+          refreshFaceHighlights()
+        } catch {
+          collisionSeverityByFace = new Map()
+        }
         setCollisionSummary((current) =>
           collisionSummariesEqual(current, nextSummary) ? current : nextSummary)
       }
@@ -287,6 +281,9 @@ export function FoldPreview({
       attemptCleanup(() => edgeMaterial?.dispose())
       attemptCleanup(() => fixedFaceEdgeMaterial?.dispose())
       attemptCleanup(() => dependentFaceEdgeMaterial?.dispose())
+      attemptCleanup(() => collisionContactEdgeMaterial?.dispose())
+      attemptCleanup(() => collisionIndeterminateEdgeMaterial?.dispose())
+      attemptCleanup(() => collisionPenetrationEdgeMaterial?.dispose())
       attemptCleanup(() => hingeMaterial?.dispose())
       attemptCleanup(() => selectedHingeMaterial?.dispose())
       if (renderer) {
@@ -359,8 +356,52 @@ export function FoldPreview({
         depthWrite: false,
       })
       dependentFaceEdgeMaterial = createdDependentFaceEdgeMaterial
+      const createdCollisionContactEdgeMaterial = new THREE.LineBasicMaterial({
+        color: 0x8e44ad,
+        depthTest: false,
+        depthWrite: false,
+      })
+      collisionContactEdgeMaterial = createdCollisionContactEdgeMaterial
+      const createdCollisionIndeterminateEdgeMaterial = new THREE.LineBasicMaterial({
+        color: 0xb18412,
+        depthTest: false,
+        depthWrite: false,
+      })
+      collisionIndeterminateEdgeMaterial = createdCollisionIndeterminateEdgeMaterial
+      const createdCollisionPenetrationEdgeMaterial = new THREE.LineBasicMaterial({
+        color: 0xc62828,
+        depthTest: false,
+        depthWrite: false,
+      })
+      collisionPenetrationEdgeMaterial = createdCollisionPenetrationEdgeMaterial
 
       const faceEdgeLines = new Map<string, THREE.LineSegments>()
+      let dependentFaceIdsForHighlight = new Set<string>()
+      refreshFaceHighlights = () => {
+        for (const [faceId, line] of faceEdgeLines) {
+          const fixed = faceId === resolvedFixedFaceId
+          const dependent = dependentFaceIdsForHighlight.has(faceId)
+          const collisionSeverity = collisionSeverityByFace.get(faceId)
+          line.material = collisionSeverity === 'penetrating'
+            ? createdCollisionPenetrationEdgeMaterial
+            : collisionSeverity === 'indeterminate'
+              ? createdCollisionIndeterminateEdgeMaterial
+              : collisionSeverity === 'contact'
+                ? createdCollisionContactEdgeMaterial
+                : fixed
+                  ? createdFixedFaceEdgeMaterial
+                  : dependent
+                    ? createdDependentFaceEdgeMaterial
+                    : createdEdgeMaterial
+          line.renderOrder = collisionSeverity === 'penetrating'
+            ? 13
+            : collisionSeverity === 'indeterminate'
+              ? 12
+              : collisionSeverity === 'contact'
+                ? 11
+                : fixed ? 9 : dependent ? 8 : 0
+        }
+      }
       const facePickObjects: FoldPreviewPickObject[] = []
       const makeFace = (geometry: THREE.BufferGeometry, face: FoldPreviewFaceModel) => {
         const group = new THREE.Group()
@@ -490,16 +531,8 @@ export function FoldPreview({
             if (!resolvedDependentFaceIds) throw new Error('invalid dependent face tree')
             for (const faceId of resolvedDependentFaceIds) dependentFaceIds.add(faceId)
           }
-          for (const [faceId, line] of faceEdgeLines) {
-            const fixed = faceId === resolvedFixedFaceId
-            const dependent = dependentFaceIds.has(faceId)
-            line.material = fixed
-              ? createdFixedFaceEdgeMaterial
-              : dependent
-                ? createdDependentFaceEdgeMaterial
-                : createdEdgeMaterial
-            line.renderOrder = fixed ? 9 : dependent ? 8 : 0
-          }
+          dependentFaceIdsForHighlight = dependentFaceIds
+          refreshFaceHighlights()
         }
         updateSelection(selectedHingeIdRef.current)
 

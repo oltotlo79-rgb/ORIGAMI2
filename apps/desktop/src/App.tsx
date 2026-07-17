@@ -39,6 +39,7 @@ import {
   validateProject,
 } from './lib/coreClient'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
+import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
@@ -82,10 +83,19 @@ type BenchmarkRun = Readonly<{
   startedAt: number
 }>
 
+type FoldAngleOverrides = Readonly<{
+  projectId: string | null
+  values: ReadonlyMap<string, number>
+}>
+
 function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [foldAngle, setFoldAngle] = useState(52)
+  const [foldAngleOverrides, setFoldAngleOverrides] = useState<FoldAngleOverrides>({
+    projectId: null,
+    values: new Map(),
+  })
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
@@ -247,6 +257,53 @@ function App() {
       foldPreviewModel?.kind === 'fold_graph'
       && foldPreviewModel.kinematics.kind === 'tree'
     )
+  const foldTreeHingeAngles = useMemo<readonly FoldPreviewHingeAngle[] | undefined>(() => {
+    if (
+      foldPreviewModel?.kind !== 'fold_graph'
+      || foldPreviewModel.kinematics.kind !== 'tree'
+    ) return undefined
+    const overrides = foldAngleOverrides.projectId === foldPreviewModel.projectId
+      ? foldAngleOverrides.values
+      : null
+    return foldPreviewModel.kinematics.joints.map((joint) => ({
+      edgeId: joint.hinge.edgeId,
+      angleDegrees: overrides?.get(joint.hinge.edgeId) ?? foldAngle,
+    }))
+  }, [foldAngle, foldAngleOverrides, foldPreviewModel])
+
+  const updateUniformFoldAngle = (value: number) => {
+    const nextAngle = normalizeFoldAngle(value)
+    if (nextAngle === null) return
+    setFoldAngle(nextAngle)
+    setFoldAngleOverrides({
+      projectId: foldPreviewModel?.projectId ?? null,
+      values: new Map(),
+    })
+  }
+
+  const updateHingeFoldAngle = (edgeId: string, value: number) => {
+    const nextAngle = normalizeFoldAngle(value)
+    if (
+      nextAngle === null
+      || foldPreviewModel?.kind !== 'fold_graph'
+      || foldPreviewModel.kinematics.kind !== 'tree'
+      || !foldPreviewModel.kinematics.joints.some((joint) => joint.hinge.edgeId === edgeId)
+    ) return
+    const projectId = foldPreviewModel.projectId
+    const activeEdgeIds = new Set(
+      foldPreviewModel.kinematics.joints.map((joint) => joint.hinge.edgeId),
+    )
+    setFoldAngleOverrides((current) => {
+      const values = new Map<string, number>()
+      if (current.projectId === projectId) {
+        for (const [currentEdgeId, currentAngle] of current.values) {
+          if (activeEdgeIds.has(currentEdgeId)) values.set(currentEdgeId, currentAngle)
+        }
+      }
+      values.set(edgeId, nextAngle)
+      return { projectId, values }
+    })
+  }
   const paperSizeLabel = paperBounds
     ? `${formatMillimetres(paperBounds.maxX - paperBounds.minX)} × ${formatMillimetres(paperBounds.maxY - paperBounds.minY)} mm`
     : '寸法不明'
@@ -1103,6 +1160,7 @@ function App() {
             </div>
             <FoldPreview
               angle={foldAngle}
+              hingeAngles={foldTreeHingeAngles}
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
@@ -1113,7 +1171,7 @@ function App() {
               <label htmlFor="fold-angle">
                 {foldPreviewModel?.kind === 'fold_graph'
                   && foldPreviewModel.kinematics.kind === 'tree'
-                  ? '一括折り量'
+                  ? '全ヒンジ'
                   : '折り量'}
               </label>
               <input
@@ -1121,12 +1179,75 @@ function App() {
                 type="range"
                 min="0"
                 max="180"
+                step="0.1"
                 disabled={!foldAngleEnabled}
                 value={foldAngle}
-                onChange={(event) => setFoldAngle(Number(event.target.value))}
+                onChange={(event) => updateUniformFoldAngle(event.currentTarget.valueAsNumber)}
               />
-              <output>{foldAngleEnabled ? `${foldAngle}°` : '—'}</output>
+              {foldAngleEnabled ? (
+                <span className="fold-angle-number">
+                  <input
+                    type="number"
+                    min="0"
+                    max="180"
+                    step="0.1"
+                    aria-label="全体の折り角度"
+                    value={foldAngle}
+                    onChange={(event) => updateUniformFoldAngle(event.currentTarget.valueAsNumber)}
+                  />
+                  <span aria-hidden="true">°</span>
+                </span>
+              ) : <output className="fold-angle-unavailable">—</output>}
             </div>
+            {foldPreviewModel?.kind === 'fold_graph'
+              && foldPreviewModel.kinematics.kind === 'tree'
+              && foldTreeHingeAngles ? (
+                <section className="hinge-angle-controls" aria-labelledby="hinge-angle-title">
+                  <div className="hinge-angle-heading">
+                    <strong id="hinge-angle-title">ヒンジ別の折り量</strong>
+                    <span>プレビュー専用・衝突未検証</span>
+                  </div>
+                  {foldPreviewModel.kinematics.joints.map((joint, index) => {
+                    const hingeAngle = foldTreeHingeAngles[index]?.angleDegrees ?? foldAngle
+                    const label = joint.hinge.assignment === 'mountain' ? '山折り' : '谷折り'
+                    const inputId = `hinge-angle-${joint.hinge.edgeId}`
+                    return (
+                      <div className="hinge-angle-row" key={joint.hinge.edgeId}>
+                        <label htmlFor={inputId} title={joint.hinge.edgeId}>
+                          {index + 1}. {label}
+                        </label>
+                        <input
+                          id={inputId}
+                          type="range"
+                          min="0"
+                          max="180"
+                          step="0.1"
+                          value={hingeAngle}
+                          onChange={(event) => updateHingeFoldAngle(
+                            joint.hinge.edgeId,
+                            event.currentTarget.valueAsNumber,
+                          )}
+                        />
+                        <span className="fold-angle-number">
+                          <input
+                            type="number"
+                            min="0"
+                            max="180"
+                            step="0.1"
+                            aria-label={`${index + 1}番目の${label}の角度`}
+                            value={hingeAngle}
+                            onChange={(event) => updateHingeFoldAngle(
+                              joint.hinge.edgeId,
+                              event.currentTarget.valueAsNumber,
+                            )}
+                          />
+                          <span aria-hidden="true">°</span>
+                        </span>
+                      </div>
+                    )
+                  })}
+                </section>
+              ) : null}
           </article>
         </section>
 
@@ -1720,6 +1841,11 @@ function lineKindLabel(kind: CreaseLine['kind']) {
     boundary: '輪郭線',
     cut: '切断線',
   }[kind]
+}
+
+function normalizeFoldAngle(value: number) {
+  if (!Number.isFinite(value)) return null
+  return Math.min(180, Math.max(0, value))
 }
 
 function formatBytes(bytes: number) {

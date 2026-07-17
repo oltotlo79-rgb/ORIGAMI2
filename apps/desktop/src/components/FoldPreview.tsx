@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { RgbaColor } from '../lib/coreClient'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
-import { calculateFoldTreePose } from '../lib/foldPreviewKinematics'
+import {
+  calculateFoldTreePoseWithAngles,
+  type FoldPreviewHingeAngle,
+} from '../lib/foldPreviewKinematics'
 import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewModel'
 
 type FoldPreviewProps = {
   angle: number
+  hingeAngles?: readonly FoldPreviewHingeAngle[]
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -15,7 +19,7 @@ type FoldPreviewProps = {
 }
 
 type PreviewRuntime = {
-  updateAngle: (angle: number) => boolean
+  updatePose: (angle: number, hingeAngles?: readonly FoldPreviewHingeAngle[]) => boolean
   render: () => void
   dispose: () => void
 }
@@ -26,6 +30,7 @@ const MAX_VISIBLE_THICKNESS = 0.35
 
 export function FoldPreview({
   angle,
+  hingeAngles,
   model,
   statusMessage,
   frontColor,
@@ -39,6 +44,8 @@ export function FoldPreview({
   const safeAngle = Number.isFinite(angle) ? THREE.MathUtils.clamp(angle, 0, 180) : 0
   const angleRef = useRef(safeAngle)
   angleRef.current = safeAngle
+  const hingeAnglesRef = useRef(hingeAngles)
+  hingeAnglesRef.current = hingeAngles
 
   const safeThicknessMm = isNonNegativeFinite(thicknessMm) ? thicknessMm : DEFAULT_THICKNESS_MM
   const physicalPreviewThickness = model
@@ -210,7 +217,7 @@ export function FoldPreview({
       let pivot: THREE.Group | null = null
       let axis: THREE.Vector3 | null = null
       let rotationSign: 1 | -1 = 1
-      let updateAngle = (_angle: number) => true
+      let updatePose = (_angle: number, _hingeAngles?: readonly FoldPreviewHingeAngle[]) => true
       if (model.kind === 'single_fold' && movingGeometry) {
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
@@ -219,7 +226,7 @@ export function FoldPreview({
         rotationSign = model.hinge.rotationSign
         applyFoldRotation(pivot, axis, rotationSign, angleRef.current)
         scene.add(pivot)
-        updateAngle = (nextAngle) => {
+        updatePose = (nextAngle) => {
           if (!pivot || !axis) return false
           applyFoldRotation(pivot, axis, rotationSign, nextAngle)
           return true
@@ -260,8 +267,10 @@ export function FoldPreview({
 
         if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
           const treeKinematics = model.kinematics
-          updateAngle = (nextAngle) => {
-            const pose = calculateFoldTreePose(treeKinematics, nextAngle)
+          updatePose = (nextAngle, nextHingeAngles) => {
+            const pose = calculateFoldTreePoseWithAngles(treeKinematics, nextHingeAngles
+              ? { kind: 'per_hinge', angles: nextHingeAngles }
+              : { kind: 'uniform', angleDegrees: nextAngle })
             if (
               !pose
               || pose.faceTransforms.size !== faceGroups.size
@@ -281,12 +290,14 @@ export function FoldPreview({
             }
             return true
           }
-          if (!updateAngle(angleRef.current)) throw new Error('invalid fold tree pose')
+          if (!updatePose(angleRef.current, hingeAnglesRef.current)) {
+            throw new Error('invalid fold tree pose')
+          }
         }
       }
 
       const render = () => createdRenderer.render(scene, camera)
-      runtime = { updateAngle, render, dispose }
+      runtime = { updatePose, render, dispose }
       runtimeRef.current = runtime
 
       const resize = () => {
@@ -327,13 +338,13 @@ export function FoldPreview({
     const runtime = runtimeRef.current
     if (!runtime) return
     try {
-      if (!runtime.updateAngle(safeAngle)) throw new Error('invalid fold pose')
+      if (!runtime.updatePose(safeAngle, hingeAngles)) throw new Error('invalid fold pose')
       runtime.render()
     } catch {
       runtime.dispose()
       setRenderError('3D描画を安全に継続できませんでした')
     }
-  }, [safeAngle])
+  }, [safeAngle, hingeAngles])
 
   const thicknessNote = thicknessIsEmphasised
     ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示は視認用の最小厚）`
@@ -343,15 +354,16 @@ export function FoldPreview({
   const unavailableMessage = model && renderError
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
+  const treeAngleNote = describeTreeAngles(hingeAngles, safeAngle)
   const previewNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
-    ? `${model.faces.length}面・${model.hinges.length}ヒンジを一括 ${safeAngle}度（衝突未検証）・${thicknessNote}`
+    ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}（衝突未検証）・${thicknessNote}`
     : model?.kind === 'fold_graph'
       ? `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階・${thicknessNote}`
       : thicknessNote
   const previewDescription = model?.kind === 'single_fold' && !renderError
     ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
-      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、一括折り角${safeAngle}度、衝突未検証、${thicknessNote}`
+      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}、衝突未検証、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
         ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
@@ -363,6 +375,7 @@ export function FoldPreview({
       ref={hostRef}
       className="fold-preview"
       data-angle={safeAngle}
+      data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
       role="img"
       aria-label={previewDescription}
@@ -385,6 +398,26 @@ function applyFoldRotation(
     axis,
     THREE.MathUtils.degToRad(angle * rotationSign),
   )
+}
+
+function describeTreeAngles(
+  hingeAngles: readonly FoldPreviewHingeAngle[] | undefined,
+  uniformAngle: number,
+) {
+  if (!hingeAngles || hingeAngles.length === 0) return `一括 ${formatAngle(uniformAngle)}度`
+  const values = hingeAngles.map(({ angleDegrees }) => angleDegrees)
+  if (!values.every((value) => Number.isFinite(value) && value >= 0 && value <= 180)) {
+    return '個別角度'
+  }
+  const minimum = Math.min(...values)
+  const maximum = Math.max(...values)
+  return minimum === maximum
+    ? `全ヒンジ ${formatAngle(minimum)}度`
+    : `個別 ${formatAngle(minimum)}〜${formatAngle(maximum)}度`
+}
+
+function formatAngle(value: number) {
+  return value.toLocaleString('ja-JP', { maximumFractionDigits: 1 })
 }
 
 function resolveColor(color: RgbaColor | null | undefined, fallback: number) {

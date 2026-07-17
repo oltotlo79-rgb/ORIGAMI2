@@ -163,6 +163,41 @@ export type FoldPreviewTreeSingleHingeStaticCandidatePathCertificate =
     safety: CertifiedSafety
   }>
 
+type CertificateProvenance = Readonly<{
+  context: FoldPreviewTreeMotionContext
+  sourcePoseRequestKey: string
+  targetPoseRequestKey: string
+  sourceAngles: readonly FoldPreviewHingeAngle[]
+  targetAngles: readonly FoldPreviewHingeAngle[]
+  candidateRank: number
+}>
+
+const staticCandidatePathCertificateProvenance = new WeakMap<
+  object,
+  CertificateProvenance
+>()
+
+/**
+ * Confirms that this exact certificate was issued for this exact authentic
+ * context by a terminal clear path job. Structural clones and equivalent
+ * replacement contexts deliberately do not cross this provenance boundary.
+ */
+export function isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+  context: FoldPreviewTreeMotionContext,
+  value: unknown,
+): value is FoldPreviewTreeSingleHingeStaticCandidatePathCertificate {
+  try {
+    return typeof context === 'object'
+      && context !== null
+      && typeof value === 'object'
+      && value !== null
+      && staticCandidatePathCertificateProvenance.get(value)?.context
+        === context
+  } catch {
+    return false
+  }
+}
+
 export type FoldPreviewTreeSingleHingeStaticCandidatePathStep =
   | Readonly<{
       version:
@@ -513,6 +548,21 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
               },
             }) satisfies
               FoldPreviewTreeSingleHingeStaticCandidatePathCertificate
+            staticCandidatePathCertificateProvenance.set(
+              certificate,
+              Object.freeze({
+                context,
+                sourcePoseRequestKey:
+                  sourceIdentity.sourcePoseRequestKey,
+                targetPoseRequestKey:
+                  activeCandidate.snapshot.poseRequestKey,
+                sourceAngles: copyAngles(sourceAngleSnapshot),
+                targetAngles: copyAngles(
+                  activeCandidate.snapshot.appliedAngles,
+                ),
+                candidateRank: activeCandidate.snapshot.rank,
+              }),
+            )
             cancelRemaining(innerJobs, activeIndex + 1)
             return finish({
               version:

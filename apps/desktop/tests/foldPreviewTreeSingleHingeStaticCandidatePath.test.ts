@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   createFoldPreviewTreeSingleHingeStaticCandidatePathJob,
   FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
+  isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext,
   type FoldPreviewTreeSingleHingeStaticCandidatePathJob,
   type FoldPreviewTreeSingleHingeStaticCandidatePathOptions,
 } from '../src/lib/foldPreviewTreeSingleHingeStaticCandidatePath.ts'
@@ -450,6 +451,182 @@ test('cancellation and invalid work budgets become permanent fail-closed termina
       )
     }
     assert.strictEqual(job.step(1), result)
+  }
+})
+
+test('certificate provenance binds only the exact clear result and context', () => {
+  const fixture = correctionFixture()
+  const certifiedJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+    )
+  assert.ok(certifiedJob)
+  const result = runPath(certifiedJob)
+  assert.equal(result.kind, 'certified')
+  if (result.kind !== 'certified') return
+  const certificate = result.certificate
+
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+      fixture.context,
+      certificate,
+    ),
+    true,
+  )
+  const outerClone = Object.freeze({ ...result })
+  assert.notStrictEqual(outerClone, result)
+  assert.strictEqual(outerClone.certificate, certificate)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+      fixture.context,
+      outerClone.certificate,
+    ),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+      fixture.context,
+      result,
+    ),
+    false,
+  )
+
+  const equivalentContext = prepareContext()
+  assert.notStrictEqual(equivalentContext, fixture.context)
+  assert.equal(equivalentContext.contextKey, fixture.context.contextKey)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+      equivalentContext,
+      certificate,
+    ),
+    false,
+  )
+  for (const clone of [
+    { ...certificate },
+    Object.freeze({ ...certificate }),
+    Object.create(certificate) as unknown,
+  ]) {
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+        fixture.context,
+        clone,
+      ),
+      false,
+    )
+  }
+
+  let hostileValueReadCount = 0
+  const hostileValue = new Proxy(certificate, {
+    get() {
+      hostileValueReadCount += 1
+      throw new Error('certificate getter')
+    },
+  })
+  const revokedValue = Proxy.revocable(certificate, {})
+  revokedValue.revoke()
+  for (const value of [
+    null,
+    undefined,
+    false,
+    0,
+    '',
+    Symbol('certificate'),
+    () => undefined,
+    hostileValue,
+    revokedValue.proxy,
+  ]) {
+    assert.doesNotThrow(() => {
+      assert.equal(
+        isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+          fixture.context,
+          value,
+        ),
+        false,
+      )
+    })
+  }
+  assert.equal(hostileValueReadCount, 0)
+
+  let hostileContextReadCount = 0
+  const hostileContext = new Proxy(fixture.context, {
+    get() {
+      hostileContextReadCount += 1
+      throw new Error('context getter')
+    },
+  })
+  const revokedContext = Proxy.revocable(fixture.context, {})
+  revokedContext.revoke()
+  for (const context of [
+    null,
+    undefined,
+    false,
+    0,
+    '',
+    hostileContext,
+    revokedContext.proxy,
+  ]) {
+    assert.doesNotThrow(() => {
+      assert.equal(
+        isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+          context as FoldPreviewTreeMotionContext,
+          certificate,
+        ),
+        false,
+      )
+    })
+  }
+  assert.equal(hostileContextReadCount, 0)
+
+  const pendingJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+    )
+  const exhaustedJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+      { maxIntervalTests: 1 },
+    )
+  const cancelledJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+    )
+  const indeterminateJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+    )
+  assert.ok(
+    pendingJob
+      && exhaustedJob
+      && cancelledJob
+      && indeterminateJob,
+  )
+  const pending = pendingJob.step(1)
+  const exhausted = runPath(exhaustedJob)
+  cancelledJob.cancel()
+  const cancelled = cancelledJob.step(1)
+  const indeterminate = indeterminateJob.step(0)
+  assert.equal(pending.kind, 'pending')
+  assert.equal(exhausted.kind, 'exhausted')
+  assert.equal(cancelled.kind, 'cancelled')
+  assert.equal(indeterminate.kind, 'indeterminate')
+  for (const nonClear of [
+    pending,
+    exhausted,
+    cancelled,
+    indeterminate,
+  ]) {
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+        fixture.context,
+        nonClear,
+      ),
+      false,
+    )
   }
 })
 

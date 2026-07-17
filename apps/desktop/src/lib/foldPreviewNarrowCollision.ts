@@ -22,6 +22,8 @@ export type FoldPreviewNarrowPhaseInteraction = Readonly<{
 
 export type FoldPreviewNarrowPhaseResult = Readonly<{
   broadPhaseCandidates: number
+  broadPhaseNonAdjacentCandidates: number
+  broadPhaseHingeAdjacentCandidates: number
   interactions: readonly FoldPreviewNarrowPhaseInteraction[]
   trianglePairTests: number
   satTests: number
@@ -73,9 +75,17 @@ export function findFoldPreviewNarrowPhaseInteractions(
   if (facesById.size !== faces.length) return null
   const numericalMargin = broadPhase.numericalMargin * SAT_MARGIN_FACTOR
   if (!Number.isFinite(numericalMargin)) return null
+  const broadPhaseHingeAdjacentCandidates = broadPhase.candidates.reduce(
+    (count, candidate) => count + Number(candidate.relation === 'hinge_adjacent'),
+    0,
+  )
+  const broadPhaseNonAdjacentCandidates = broadPhase.candidates.length
+    - broadPhaseHingeAdjacentCandidates
   if (thickness === 0) {
     return {
       broadPhaseCandidates: broadPhase.candidates.length,
+      broadPhaseNonAdjacentCandidates,
+      broadPhaseHingeAdjacentCandidates,
       interactions: broadPhase.candidates.map((candidate) => ({
         firstFaceId: candidate.firstFaceId,
         secondFaceId: candidate.secondFaceId,
@@ -152,6 +162,8 @@ export function findFoldPreviewNarrowPhaseInteractions(
 
   return {
     broadPhaseCandidates: broadPhase.candidates.length,
+    broadPhaseNonAdjacentCandidates,
+    broadPhaseHingeAdjacentCandidates,
     interactions,
     trianglePairTests,
     satTests,

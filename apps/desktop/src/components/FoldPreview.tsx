@@ -7,7 +7,6 @@ import {
   resolveSingleFoldAnchor,
 } from '../lib/foldPreviewAnchoring'
 import {
-  findFoldPreviewPoseBroadPhaseCandidates,
   type FoldPreviewCollisionAdjacency,
 } from '../lib/foldPreviewCollision'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
@@ -16,6 +15,7 @@ import {
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
 import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewModel'
+import { findFoldPreviewNarrowPhaseInteractions } from '../lib/foldPreviewNarrowCollision'
 import {
   pickFoldPreviewTarget,
   type FoldPreviewPickObject,
@@ -49,6 +49,11 @@ type CollisionSummary =
       totalCandidates: number
       nonAdjacentCandidates: number
       hingeAdjacentCandidates: number
+      narrowInteractions: number
+      nonAdjacentPenetrations: number
+      nonAdjacentContacts: number
+      hingeInteractions: number
+      indeterminateInteractions: number
     }>
   | Readonly<{ kind: 'unavailable'; requestKey: string }>
 
@@ -199,27 +204,52 @@ export function FoldPreview({
     ) => {
       let nextSummary: CollisionSummary = { kind: 'unavailable', requestKey }
       try {
-        const result = findFoldPreviewPoseBroadPhaseCandidates(
+        const result = findFoldPreviewNarrowPhaseInteractions(
           model.faces,
           faceTransforms,
           physicalPreviewThickness,
           collisionAdjacencies,
         )
         if (result) {
-          const hingeAdjacentCandidates = result.candidates.reduce(
-            (count, candidate) => count + Number(candidate.relation === 'hinge_adjacent'),
+          const nonAdjacentPenetrations = result.interactions.reduce(
+            (count, interaction) => count + Number(
+              interaction.relation === 'non_adjacent'
+              && interaction.geometryClass === 'penetrating',
+            ),
+            0,
+          )
+          const nonAdjacentContacts = result.interactions.reduce(
+            (count, interaction) => count + Number(
+              interaction.relation === 'non_adjacent'
+              && interaction.geometryClass === 'touching',
+            ),
+            0,
+          )
+          const hingeInteractions = result.interactions.reduce(
+            (count, interaction) => count + Number(interaction.relation === 'hinge_adjacent'),
+            0,
+          )
+          const indeterminateInteractions = result.interactions.reduce(
+            (count, interaction) => count + Number(
+              interaction.geometryClass === 'indeterminate',
+            ),
             0,
           )
           nextSummary = {
             kind: 'ready',
             requestKey,
-            totalCandidates: result.candidates.length,
-            nonAdjacentCandidates: result.candidates.length - hingeAdjacentCandidates,
-            hingeAdjacentCandidates,
+            totalCandidates: result.broadPhaseCandidates,
+            nonAdjacentCandidates: result.broadPhaseNonAdjacentCandidates,
+            hingeAdjacentCandidates: result.broadPhaseHingeAdjacentCandidates,
+            narrowInteractions: result.interactions.length,
+            nonAdjacentPenetrations,
+            nonAdjacentContacts,
+            hingeInteractions,
+            indeterminateInteractions,
           }
         }
       } catch {
-        // Broad-phase diagnostics are optional and must not invalidate a verified pose.
+        // Collision diagnostics are optional and must not invalidate a verified pose.
       }
       if (!disposed) {
         setCollisionSummary((current) =>
@@ -681,6 +711,18 @@ export function FoldPreview({
       data-non-adjacent-candidates={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.nonAdjacentCandidates
         : undefined}
+      data-non-adjacent-penetrations={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.nonAdjacentPenetrations
+        : undefined}
+      data-non-adjacent-contacts={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.nonAdjacentContacts
+        : undefined}
+      data-hinge-interactions={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeInteractions
+        : undefined}
+      data-indeterminate-interactions={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.indeterminateInteractions
+        : undefined}
       role="img"
       aria-label={previewDescription}
     >
@@ -742,6 +784,11 @@ function collisionSummariesEqual(
       && first.totalCandidates === second.totalCandidates
       && first.nonAdjacentCandidates === second.nonAdjacentCandidates
       && first.hingeAdjacentCandidates === second.hingeAdjacentCandidates
+      && first.narrowInteractions === second.narrowInteractions
+      && first.nonAdjacentPenetrations === second.nonAdjacentPenetrations
+      && first.nonAdjacentContacts === second.nonAdjacentContacts
+      && first.hingeInteractions === second.hingeInteractions
+      && first.indeterminateInteractions === second.indeterminateInteractions
     )
 }
 
@@ -774,36 +821,57 @@ function compareText(first: string, second: string) {
 }
 
 function describeCollisionSummary(summary: CollisionSummary | null, accessible = false) {
-  if (!summary) return accessible ? '衝突候補の広域判定中' : '広域判定中'
+  if (!summary) return accessible ? '現在姿勢の衝突候補を判定中' : '衝突判定中'
   if (summary.kind === 'unavailable') {
-    return accessible ? '衝突候補の広域判定は利用できません' : '広域判定不能'
+    return accessible ? '現在姿勢の衝突判定は利用できません' : '衝突判定不能'
   }
   if (summary.totalCandidates === 0) {
     return accessible
-      ? '広域衝突候補は0件、狭域衝突判定は未実装'
-      : '広域候補 0（狭域判定は未実装）'
+      ? '現在姿勢の広域候補と狭域相互作用は0件。連続運動中の衝突は未検証です'
+      : '現在姿勢: 衝突候補 0（連続運動は未検証）'
   }
   return accessible
-    ? `広域衝突候補は${summary.totalCandidates}件、非隣接${summary.nonAdjacentCandidates}件、ヒンジ隣接${summary.hingeAdjacentCandidates}件。衝突確定ではありません`
-    : `広域候補 ${summary.totalCandidates}（非隣接 ${summary.nonAdjacentCandidates}・ヒンジ隣接 ${summary.hingeAdjacentCandidates}、衝突確定ではありません）`
+    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、ヒンジ隣接の未解決相互作用${summary.hingeInteractions}件、数値不確定${summary.indeterminateInteractions}件。ヒンジ接触の許可判定と連続運動中の衝突は未検証です`
+    : `現在姿勢: 非隣接貫通 ${summary.nonAdjacentPenetrations}・接触 ${summary.nonAdjacentContacts}・ヒンジ未解決 ${summary.hingeInteractions}・不確定 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
 }
 
 function collisionDataStatus(summary: CollisionSummary | null) {
-  return !summary ? 'pending' : summary.kind
+  if (!summary) return 'pending'
+  if (summary.kind === 'unavailable') return 'unavailable'
+  if (summary.nonAdjacentPenetrations > 0) return 'penetrating'
+  if (summary.indeterminateInteractions > 0) return 'indeterminate'
+  if (summary.nonAdjacentContacts > 0) return 'contact'
+  if (summary.hingeInteractions > 0) return 'hinge-unresolved'
+  return 'clear'
 }
 
 function collisionBadgeClass(summary: CollisionSummary | null) {
   if (!summary || summary.kind === 'unavailable') return 'is-unavailable'
-  if (summary.totalCandidates === 0) return 'is-clear'
-  return summary.nonAdjacentCandidates > 0 ? 'has-other-candidates' : 'has-hinge-candidates'
+  if (summary.nonAdjacentPenetrations > 0) return 'has-penetrations'
+  if (summary.indeterminateInteractions > 0) return 'has-indeterminate'
+  if (summary.nonAdjacentContacts > 0) return 'has-contact'
+  if (summary.hingeInteractions > 0) return 'has-hinge-candidates'
+  return 'is-clear'
 }
 
 function collisionBadgeText(summary: CollisionSummary | null) {
-  if (!summary) return '広域判定中'
-  if (summary.kind === 'unavailable') return '広域判定不能'
+  if (!summary) return '衝突判定中'
+  if (summary.kind === 'unavailable') return '衝突判定不能'
+  if (summary.nonAdjacentPenetrations > 0) {
+    return `非隣接貫通 ${summary.nonAdjacentPenetrations}・接触 ${summary.nonAdjacentContacts}`
+  }
+  if (summary.indeterminateInteractions > 0) {
+    return `狭域不確定 ${summary.indeterminateInteractions}・広域 ${summary.totalCandidates}`
+  }
+  if (summary.nonAdjacentContacts > 0) {
+    return `非隣接接触 ${summary.nonAdjacentContacts}・貫通 0`
+  }
+  if (summary.hingeInteractions > 0) {
+    return `ヒンジ未解決 ${summary.hingeInteractions}・非隣接貫通 0`
+  }
   return summary.totalCandidates === 0
-    ? '広域候補 0'
-    : `広域候補 ${summary.totalCandidates}・非隣接 ${summary.nonAdjacentCandidates}`
+    ? '現在姿勢: 衝突候補 0'
+    : `広域 ${summary.totalCandidates} → 狭域相互作用 0`
 }
 
 function describeTreeAngles(

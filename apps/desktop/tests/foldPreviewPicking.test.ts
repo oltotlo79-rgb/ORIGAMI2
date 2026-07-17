@@ -156,6 +156,38 @@ test('surface picking can prefer a coincident moving face without depending on o
   assert.equal(result?.distance, 5)
 })
 
+test('surface picking can prefer one deterministic face from a coincident moving subtree', () => {
+  const { camera } = fixture()
+  const fixed = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  const child = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  const leaf = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  fixed.updateMatrixWorld(true)
+  child.updateMatrixWorld(true)
+  leaf.updateMatrixWorld(true)
+  for (const faces of [
+    [
+      { id: 'fixed', object: fixed },
+      { id: 'child', object: child },
+      { id: 'leaf', object: leaf },
+    ],
+    [
+      { id: 'leaf', object: leaf },
+      { id: 'fixed', object: fixed },
+      { id: 'child', object: child },
+    ],
+  ]) {
+    const result = pickFoldPreviewFaceSurface(
+      new Raycaster(),
+      camera,
+      new Vector2(0, 0),
+      faces,
+      ['leaf', 'child'],
+    )
+    assert.equal(result?.faceId, 'leaf')
+    assert.equal(result?.distance, 5)
+  }
+})
+
 test('preferred surface picking never reaches through a nearer visible face', () => {
   const { camera, face } = fixture()
   const hidden = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
@@ -170,6 +202,27 @@ test('preferred surface picking never reaches through a nearer visible face', ()
       { id: 'visible', object: face },
     ],
     'hidden',
+  ), null)
+})
+
+test('preferred subtree picking never reaches through a nearer fixed-side face', () => {
+  const { camera, face } = fixture()
+  const child = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  const leaf = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  child.position.z = -1
+  leaf.position.z = -2
+  child.updateMatrixWorld(true)
+  leaf.updateMatrixWorld(true)
+  assert.equal(pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [
+      { id: 'leaf', object: leaf },
+      { id: 'visible-fixed', object: face },
+      { id: 'child', object: child },
+    ],
+    ['child', 'leaf'],
   ), null)
 })
 
@@ -220,6 +273,21 @@ test('surface picking rejects invalid pointers, targets, and intersection values
     [{ id: 'face', object: face }],
     'missing',
   ), null)
+  for (const preferred of [
+    [],
+    ['face', 'face'],
+    ['face', 'missing'],
+    [''],
+    [1],
+  ] as unknown[]) {
+    assert.equal(pickFoldPreviewFaceSurface(
+      new Raycaster(),
+      camera,
+      new Vector2(0, 0),
+      [{ id: 'face', object: face }],
+      preferred as readonly string[],
+    ), null)
+  }
 
   const malformedRaycaster = {
     setFromCamera() {},

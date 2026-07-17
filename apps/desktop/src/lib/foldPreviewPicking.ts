@@ -22,6 +22,8 @@ export type FoldPreviewFaceSurfaceHit = Readonly<{
   materialIndex: number
 }>
 
+export type FoldPreviewPreferredFaceIds = string | readonly string[]
+
 /**
  * Raycasts one pointer sample. Hinges intentionally outrank faces so a crease
  * drawn on the paper remains selectable without relying on sub-pixel depth.
@@ -67,41 +69,41 @@ export function pickFoldPreviewTarget(
  * This is intentionally separate from selection picking: physical grab input
  * needs a material surface point, while adding mutable Three.js intersection
  * records to the stable selection contract would couple unrelated callers.
+ * A preferred face or ordered face set may replace the nearest hit only at the
+ * same numerical depth, so overlapped moving subtrees never see through paper.
  */
 export function pickFoldPreviewFaceSurface(
   raycaster: Raycaster,
   camera: Camera,
   pointer: Vector2,
   faces: readonly FoldPreviewPickObject[],
-  preferredFaceId?: string,
+  preferredFaceIds?: FoldPreviewPreferredFaceIds,
 ): FoldPreviewFaceSurfaceHit | null {
   if (
     !Number.isFinite(pointer.x)
     || !Number.isFinite(pointer.y)
     || Math.abs(pointer.x) > 1
     || Math.abs(pointer.y) > 1
-    || (
-      preferredFaceId !== undefined
-      && (
-        typeof preferredFaceId !== 'string'
-        || preferredFaceId.length === 0
-      )
-    )
   ) return null
   const faceIndex = indexTargets(faces)
   if (!faceIndex) return null
+  const preferred = normalizePreferredFaceIds(
+    preferredFaceIds,
+    new Set(faceIndex.values()),
+  )
+  if (preferred === null) return null
   try {
     raycaster.setFromCamera(pointer, camera)
     const hits = raycaster.intersectObjects([...faceIndex.keys()], false)
     const nearestHit = hits[0]
     if (!validSurfaceIntersection(nearestHit, faceIndex)) return null
-    const hit = preferredFaceId === undefined
+    const hit = preferred === undefined
       ? nearestHit
       : preferredSurfaceIntersection(
           hits,
           nearestHit.distance,
           faceIndex,
-          preferredFaceId,
+          preferred,
         )
     if (!hit || !validSurfaceIntersection(hit, faceIndex)) return null
     const materialIndex = hit?.face?.materialIndex
@@ -147,27 +149,66 @@ function preferredSurfaceIntersection(
   hits: ReturnType<Raycaster['intersectObjects']>,
   nearestDistance: number,
   faceIndex: ReadonlyMap<Object3D, string>,
-  preferredFaceId: string,
+  preferredFaceIds: readonly string[],
 ) {
-  const preferred = hits.find((hit) =>
-    faceIndex.get(hit.object) === preferredFaceId)
-  if (
-    !preferred
-    || !Number.isFinite(preferred.distance)
-    || preferred.distance < 0
-  ) return null
-  const distanceScale = Math.max(
-    1,
-    Math.abs(nearestDistance),
-    Math.abs(preferred.distance),
+  const preferredRanks = new Map(
+    preferredFaceIds.map((faceId, index) => [faceId, index]),
   )
-  const coincidentTolerance =
-    distanceScale * Number.EPSILON * 1024
+  const candidates = hits
+    .filter((hit) => {
+      const faceId = faceIndex.get(hit.object)
+      if (
+        faceId === undefined
+        || !preferredRanks.has(faceId)
+        || !validSurfaceIntersection(hit, faceIndex)
+      ) return false
+      const distanceScale = Math.max(
+        1,
+        Math.abs(nearestDistance),
+        Math.abs(hit.distance),
+      )
+      const coincidentTolerance =
+        distanceScale * Number.EPSILON * 1024
+      return Number.isFinite(coincidentTolerance)
+        && hit.distance - nearestDistance <= coincidentTolerance
+    })
+    .sort((first, second) => {
+      const distanceOrder = first.distance - second.distance
+      if (distanceOrder !== 0) return distanceOrder
+      const firstFaceId = faceIndex.get(first.object)
+      const secondFaceId = faceIndex.get(second.object)
+      return (firstFaceId === undefined
+        ? Number.POSITIVE_INFINITY
+        : preferredRanks.get(firstFaceId) ?? Number.POSITIVE_INFINITY)
+        - (secondFaceId === undefined
+          ? Number.POSITIVE_INFINITY
+          : preferredRanks.get(secondFaceId) ?? Number.POSITIVE_INFINITY)
+    })
+  return candidates[0] ?? null
+}
+
+function normalizePreferredFaceIds(
+  value: FoldPreviewPreferredFaceIds | undefined,
+  availableFaceIds: ReadonlySet<string>,
+): readonly string[] | null | undefined {
+  if (value === undefined) return undefined
+  const values = typeof value === 'string' ? [value] : value
   if (
-    !Number.isFinite(coincidentTolerance)
-    || preferred.distance - nearestDistance > coincidentTolerance
+    !Array.isArray(values)
+    || values.length === 0
+    || values.length > availableFaceIds.size
   ) return null
-  return preferred
+  const unique = new Set<string>()
+  for (const faceId of values) {
+    if (
+      typeof faceId !== 'string'
+      || faceId.length === 0
+      || unique.has(faceId)
+      || !availableFaceIds.has(faceId)
+    ) return null
+    unique.add(faceId)
+  }
+  return Object.freeze([...unique])
 }
 
 function validSurfaceIntersection(

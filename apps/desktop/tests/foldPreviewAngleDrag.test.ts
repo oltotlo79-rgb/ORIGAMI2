@@ -294,11 +294,12 @@ test('repeated samples in the same tenth do not emit duplicate targets', () => {
   )
 })
 
-test('secondary buttons, non-primary pointers, modifiers, and unknown types pass through', () => {
+test('secondary buttons, competing pointers, modifiers, and unknown types pass through', () => {
   const rejected: FoldPreviewAngleDragEvent[] = [
     down({ button: 1 }),
     down({ button: 2 }),
     down({ isPrimary: false }),
+    down({ hadActivePointer: true }),
     down({ altKey: true }),
     down({ ctrlKey: true }),
     down({ metaKey: true }),
@@ -598,6 +599,7 @@ function down(
     ctrlKey: false,
     metaKey: false,
     shiftKey: false,
+    hadActivePointer: false,
     appliedAngle: 52.04,
     viewportHeight: 244,
     ...overrides,

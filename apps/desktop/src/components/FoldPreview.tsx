@@ -315,6 +315,7 @@ export function FoldPreview({
     let pendingAngleDragTarget: number | null = null
     let controlsEnabledBeforeAngleDrag: boolean | null = null
     let cursorBeforeAngleDrag: string | null = null
+    const activeDocumentPointerIds = new Set<number>()
     let disposed = false
     const hinges = model.kind === 'single_fold'
       ? [model.hinge]
@@ -480,6 +481,7 @@ export function FoldPreview({
         renderer.domElement.style.cursor = cursorBeforeAngleDrag
       }
       cursorBeforeAngleDrag = null
+      activeDocumentPointerIds.clear()
       setAngleDragPresentation((current) => current.state === 'idle'
         && current.cameraControlsEnabled
         ? current
@@ -1222,6 +1224,10 @@ export function FoldPreview({
 
       pointerDownHandler = (event) => {
         try {
+          const hadActivePointer = activeDocumentPointerIds.size > 0
+          if (Number.isSafeInteger(event.pointerId) && event.pointerId >= 0) {
+            activeDocumentPointerIds.add(event.pointerId)
+          }
           if (isCleanAngleDragState(angleDragState) && event.target !== canvas) return
           if (
             !isCleanAngleDragState(angleDragState)
@@ -1255,6 +1261,7 @@ export function FoldPreview({
               ctrlKey: event.ctrlKey,
               metaKey: event.metaKey,
               shiftKey: event.shiftKey,
+              hadActivePointer,
               appliedAngle: isFoldPreviewAngle(currentApplied) ? currentApplied : 0,
               viewportHeight: bounds.height,
             })
@@ -1299,6 +1306,7 @@ export function FoldPreview({
             ctrlKey: event.ctrlKey,
             metaKey: event.metaKey,
             shiftKey: event.shiftKey,
+            hadActivePointer,
             appliedAngle,
             viewportHeight: bounds.height,
           })
@@ -1372,6 +1380,7 @@ export function FoldPreview({
         }
       }
       pointerUpHandler = (event) => {
+        activeDocumentPointerIds.delete(event.pointerId)
         const selectionAccepted = selectionGesture.pointerUp(pointerSample(event))
         if (isCleanAngleDragState(angleDragState)) {
           if (selectionAccepted) selectAt(event.clientX, event.clientY)
@@ -1410,6 +1419,7 @@ export function FoldPreview({
         }
       }
       pointerCancelHandler = (event) => {
+        activeDocumentPointerIds.delete(event.pointerId)
         selectionGesture.pointerCancel(event.pointerId)
         if (isCleanAngleDragState(angleDragState)) return
         const pointerType =
@@ -1445,6 +1455,7 @@ export function FoldPreview({
         applyAngleDragTransition(transition, event.pointerId)
       }
       windowBlurHandler = () => {
+        activeDocumentPointerIds.clear()
         selectionGesture.reset()
         resetAngleDrag('window_blur')
       }

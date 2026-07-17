@@ -71,6 +71,7 @@ export type FoldPreviewAngleDragEvent =
         ctrlKey: boolean
         metaKey: boolean
         shiftKey: boolean
+        hadActivePointer: boolean
         appliedAngle: number
         viewportHeight: number
       }>
@@ -504,6 +505,7 @@ function validStart(
     && event.ctrlKey === false
     && event.metaKey === false
     && event.shiftKey === false
+    && event.hadActivePointer === false
     && validAngle(event.appliedAngle)
 }
 

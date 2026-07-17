@@ -238,19 +238,47 @@ test('stale or mismatched completions clean up without requesting an angle', () 
     { completionTarget: target({ angleDegrees: Number.NaN }) },
     { completionTarget: target({ angleDegrees: -0.001 }) },
     { completionTarget: target({ angleDegrees: 180.001 }) },
+    { completionTarget: target({ rawAngleDegrees: Number.NaN }) },
+    { completionTarget: target({ endpoint: 'middle' }) },
+    { completionTarget: target({ missDistance: -1 }) },
+    {
+      completionTarget: target({
+        orbitWorldPoint: Object.freeze({
+          x: Number.NaN,
+          y: 0,
+          z: 0,
+        }),
+      }),
+    },
+    { completionTarget: target({ evaluationCount: -1 }) },
+    { completionTarget: target({ rootEvaluationCount: 0.5 }) },
+    { completionTarget: target({ stationaryCandidateCount: -1 }) },
+    { completionTarget: target({ boundaryCandidateCount: -1 }) },
+    { completionTarget: target({ equivalentCandidateCount: 0 }) },
+    {
+      completionTarget: Object.freeze({
+        kind: 'unverified_target',
+        mapping: FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING,
+        contextKey: 'context-1',
+        angleDegrees: 40,
+      }) as FoldPreviewPhysicalGrabTarget,
+    },
   ]
 
   for (const current of cases) {
     const completed = plan(
       transition(
         createFoldPreviewPhysicalGrabGestureState(),
-        [{
-          kind: 'end',
-          pointerId: 1,
-          outcome: 'drag',
-          completionTarget: current.completionTarget ?? target(),
-          rejectionReason: null,
-        }],
+        [
+          handled(1),
+          {
+            kind: 'end',
+            pointerId: 1,
+            outcome: 'drag',
+            completionTarget: current.completionTarget ?? target(),
+            rejectionReason: null,
+          },
+        ],
       ),
       current.input,
     )
@@ -296,13 +324,16 @@ test('completion identity strings must be nonblank and bounded', () => {
     const completed = plan(
       transition(
         createFoldPreviewPhysicalGrabGestureState(),
-        [{
-          kind: 'end',
-          pointerId: 1,
-          outcome: 'drag',
-          completionTarget: current.completionTarget ?? target(),
-          rejectionReason: null,
-        }],
+        [
+          handled(1),
+          {
+            kind: 'end',
+            pointerId: 1,
+            outcome: 'drag',
+            completionTarget: current.completionTarget ?? target(),
+            rejectionReason: null,
+          },
+        ],
       ),
       current.input,
     )
@@ -318,13 +349,16 @@ test('completion identity strings must be nonblank and bounded', () => {
   const accepted = plan(
     transition(
       createFoldPreviewPhysicalGrabGestureState(),
-      [{
-        kind: 'end',
-        pointerId: 1,
-        outcome: 'drag',
-        completionTarget: target({ contextKey: aboveLegacyLimit }),
-        rejectionReason: null,
-      }],
+      [
+        handled(1),
+        {
+          kind: 'end',
+          pointerId: 1,
+          outcome: 'drag',
+          completionTarget: target({ contextKey: aboveLegacyLimit }),
+          rejectionReason: null,
+        },
+      ],
     ),
     { activeContextKey: aboveLegacyLimit },
   )
@@ -346,7 +380,7 @@ test('completion fields are captured once into the immutable request', () => {
     targetContextKey: 0,
     angleDegrees: 0,
   }
-  const completionTarget = {
+  const completionTarget = Object.freeze({
     ...target(),
     get kind() {
       reads.targetKind += 1
@@ -368,16 +402,19 @@ test('completion fields are captured once into the immutable request', () => {
       reads.angleDegrees += 1
       return reads.angleDegrees === 1 ? 73 : Number.NaN
     },
-  } as FoldPreviewPhysicalGrabTarget
+  }) as FoldPreviewPhysicalGrabTarget
   const trustedTransition = transition(
     createFoldPreviewPhysicalGrabGestureState(),
-    [{
-      kind: 'end',
-      pointerId: 1,
-      outcome: 'drag',
-      completionTarget,
-      rejectionReason: null,
-    }],
+    [
+      handled(1),
+      {
+        kind: 'end',
+        pointerId: 1,
+        outcome: 'drag',
+        completionTarget,
+        rejectionReason: null,
+      },
+    ],
   )
   const input = {
     get transition() {
@@ -546,6 +583,92 @@ test('malformed terminal combinations never submit a completion', () => {
   ))
   assert.equal(
     suppressedTerminal.commands.some(
+      (command) => command.kind === 'request_fold_angle',
+    ),
+    false,
+  )
+})
+
+test('only an authentic handled-then-end reducer sequence may request', () => {
+  const validEnd = {
+    kind: 'end' as const,
+    pointerId: 1,
+    outcome: 'drag' as const,
+    completionTarget: target(),
+    rejectionReason: null,
+  }
+  const invalidSequences: readonly (
+    readonly FoldPreviewPhysicalGrabGestureEffect[]
+  )[] = [
+    [validEnd],
+    [validEnd, handled(1)],
+    [handled(2), validEnd],
+    [handled(1), { ...validEnd, pointerId: 999 }],
+    [
+      handled(1),
+      {
+        kind: 'presentation',
+        pointerId: 1,
+        target: target(),
+        rejectionReason: null,
+      },
+      validEnd,
+    ],
+    [
+      handled(1),
+      {
+        ...validEnd,
+        rejectionReason: 'target_too_far',
+      },
+    ],
+    [
+      handled(1),
+      {
+        ...validEnd,
+        completionTarget: null,
+        rejectionReason: null,
+      },
+    ],
+    [
+      handled(1),
+      {
+        ...validEnd,
+        completionTarget: null,
+        rejectionReason: 'unknown_reason' as never,
+      },
+    ],
+  ]
+
+  for (const effects of invalidSequences) {
+    const result = plan(transition(
+      createFoldPreviewPhysicalGrabGestureState(),
+      effects,
+    ))
+    assert.equal(
+      result.commands.some(
+        (command) => command.kind === 'request_fold_angle',
+      ),
+      false,
+    )
+    assert.equal(
+      result.commands.some(
+        (command) => command.kind === 'restore_camera',
+      ),
+      true,
+    )
+  }
+
+  const unfrozenCleanState = {
+    kind: 'idle' as const,
+    suppressedPointerIds: Object.freeze([]),
+    requiresReset: false,
+  } as FoldPreviewPhysicalGrabGestureState
+  const unfrozenResult = plan(transition(
+    unfrozenCleanState,
+    [handled(1), validEnd],
+  ))
+  assert.equal(
+    unfrozenResult.commands.some(
       (command) => command.kind === 'request_fold_angle',
     ),
     false,

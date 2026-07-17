@@ -218,8 +218,14 @@ function planTransition(
     if (
       effect.outcome === 'drag'
       && effect.completionTarget !== null
+      && effect.rejectionReason === null
       && cleanState
       && terminalEffectCount === 1
+      && authenticCompletionSequence(
+        effects,
+        effect,
+        eventPointerId,
+      )
     ) {
       completionRequest = resolveCompletionRequest(
         effect.completionTarget,
@@ -271,12 +277,29 @@ function resolveCompletionRequest(
 ): Extract<
   FoldPreviewPhysicalGrabCommand,
   { kind: 'request_fold_angle' }
-> | null {
+  > | null {
   try {
+    if (!Object.isFrozen(target)) return null
     const targetKind = target.kind
     const mapping = target.mapping
     const targetContextKey = target.contextKey
     const angleDegrees = target.angleDegrees
+    const rawAngleDegrees = target.rawAngleDegrees
+    const endpoint = target.endpoint
+    const missDistance = target.missDistance
+    const orbitWorldPoint = target.orbitWorldPoint
+    const evaluationCount = target.evaluationCount
+    const rootEvaluationCount = target.rootEvaluationCount
+    const stationaryCandidateCount = target.stationaryCandidateCount
+    const boundaryCandidateCount = target.boundaryCandidateCount
+    const equivalentCandidateCount = target.equivalentCandidateCount
+    if (
+      !isRecord(orbitWorldPoint)
+      || !Object.isFrozen(orbitWorldPoint)
+    ) return null
+    const orbitWorldX = orbitWorldPoint.x
+    const orbitWorldY = orbitWorldPoint.y
+    const orbitWorldZ = orbitWorldPoint.z
     const {
       activeHingeId,
       modelHingeId,
@@ -296,6 +319,21 @@ function resolveCompletionRequest(
       || targetContextKey !== activeContextKey
       || !guardIsCurrent
       || !isFoldPreviewAngle(angleDegrees)
+      || !isFoldPreviewAngle(rawAngleDegrees)
+      || (
+        endpoint !== null
+        && endpoint !== 'zero'
+        && endpoint !== 'one_eighty'
+      )
+      || !isNonnegativeFiniteNumber(missDistance)
+      || !isFiniteNumber(orbitWorldX)
+      || !isFiniteNumber(orbitWorldY)
+      || !isFiniteNumber(orbitWorldZ)
+      || !isNonnegativeSafeInteger(evaluationCount)
+      || !isNonnegativeSafeInteger(rootEvaluationCount)
+      || !isNonnegativeSafeInteger(stationaryCandidateCount)
+      || !isNonnegativeSafeInteger(boundaryCandidateCount)
+      || !isPositiveSafeInteger(equivalentCandidateCount)
     ) return null
     return command({
       kind: 'request_fold_angle',
@@ -320,6 +358,7 @@ type FoldPreviewPhysicalGrabGestureEffectSnapshot =
       pointerId: number
       outcome: 'tap' | 'drag'
       completionTarget: FoldPreviewPhysicalGrabTarget | null
+      rejectionReason: unknown
     }>
 
 function snapshotEffect(
@@ -346,18 +385,46 @@ function snapshotEffect(
   const pointerId = effect.pointerId
   const outcome = effect.outcome
   const completionTarget = effect.completionTarget
+  const rejectionReason = effect.rejectionReason
   if (
     !validPointerId(pointerId)
     || (outcome !== 'tap' && outcome !== 'drag')
     || (completionTarget !== null && !isRecord(completionTarget))
   ) return null
-  return { kind, pointerId, outcome, completionTarget }
+  return {
+    kind,
+    pointerId,
+    outcome,
+    completionTarget,
+    rejectionReason,
+  }
+}
+
+function authenticCompletionSequence(
+  effects: readonly FoldPreviewPhysicalGrabGestureEffectSnapshot[],
+  endEffect: Extract<
+    FoldPreviewPhysicalGrabGestureEffectSnapshot,
+    { kind: 'end' }
+  >,
+  eventPointerId: number | null,
+) {
+  if (
+    effects.length !== 2
+    || effects[1] !== endEffect
+    || effects[0].kind !== 'handled'
+  ) return false
+  const pointerId = endEffect.pointerId
+  return pointerId === eventPointerId
+    && effects[0].pointerId === pointerId
 }
 
 function isCleanPhysicalGrabState(
   state: FoldPreviewPhysicalGrabGestureState,
   kind: FoldPreviewPhysicalGrabGestureState['kind'],
 ) {
+  if (!Object.isFrozen(state)) {
+    throw new TypeError('invalid physical grab state')
+  }
   if (kind !== 'idle') return false
   const idleState = state as Extract<
     FoldPreviewPhysicalGrabGestureState,
@@ -367,6 +434,7 @@ function isCleanPhysicalGrabState(
   const requiresReset = idleState.requiresReset
   if (
     !Array.isArray(suppressedPointerIds)
+    || !Object.isFrozen(suppressedPointerIds)
     || typeof requiresReset !== 'boolean'
   ) throw new TypeError('invalid physical grab state')
   const suppressedPointerCount = suppressedPointerIds.length
@@ -410,6 +478,22 @@ function isFoldPreviewAngle(value: unknown): value is number {
     && Number.isFinite(value)
     && value >= 0
     && value <= 180
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isNonnegativeFiniteNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1
 }
 
 function validCoordinatorId(value: unknown): value is string {

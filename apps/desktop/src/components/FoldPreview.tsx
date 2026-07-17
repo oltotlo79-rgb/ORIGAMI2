@@ -65,8 +65,11 @@ import {
   FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING,
   type FoldPreviewPhysicalGrabRay,
   type FoldPreviewPhysicalGrabSession,
-  type FoldPreviewPhysicalGrabTarget,
 } from '../lib/foldPreviewPhysicalGrab'
+import {
+  currentFoldPreviewPhysicalGrabGuardKey,
+  planFoldPreviewPhysicalGrabTransition,
+} from '../lib/foldPreviewPhysicalGrabCoordinator'
 import {
   collectFoldPreviewPhysicalGrabPointerSamples,
   createFoldPreviewPhysicalGrabGestureState,
@@ -1351,111 +1354,92 @@ export function FoldPreview({
           : null
       }
 
-      const physicalGrabExternalGuardIsCurrent = () =>
-        physicalGrabGuardKey !== null
-        && physicalGrabStartRunnerState !== null
-        && physicalGrabCameraSnapshot !== null
-        && angleDragContextKey !== null
-        && angleDragContextKey === singleFoldMotionContextKey
-        && angleDragContextKey === singleFoldMotionContextKeyRef.current
-        && continuousMotionRunner?.getState() === physicalGrabStartRunnerState
-        && currentPhysicalGrabViewSnapshot()
-          === physicalGrabCameraSnapshot
+      const currentPhysicalGrabGuardKey = () =>
+        currentFoldPreviewPhysicalGrabGuardKey({
+          guardKey: physicalGrabGuardKey,
+          startedRunnerState: physicalGrabStartRunnerState,
+          currentRunnerState: continuousMotionRunner?.getState() ?? null,
+          startedViewKey: physicalGrabCameraSnapshot,
+          currentViewKey: currentPhysicalGrabViewSnapshot(),
+          activeContextKey: angleDragContextKey,
+          renderedContextKey: singleFoldMotionContextKey,
+          latestContextKey: singleFoldMotionContextKeyRef.current,
+        })
 
       const physicalGrabEventGuardKey = () =>
-        physicalGrabExternalGuardIsCurrent()
-          ? physicalGrabGuardKey as string
-          : 'stale-physical-grab-guard'
+        currentPhysicalGrabGuardKey()
+        ?? 'stale-physical-grab-guard'
 
-      const clearPhysicalGrabGuards = () => {
+      const clearPhysicalGrabGuards = (clearEventSession: boolean) => {
         physicalGrabStartRunnerState = null
         physicalGrabCameraSnapshot = null
         physicalGrabGuardKey = null
-        if (isCleanPhysicalGrabState(physicalGrabState)) {
-          physicalGrabSessionForEvents = null
-        }
-      }
-
-      const resolvePhysicalGrabSubmission = (
-        target: FoldPreviewPhysicalGrabTarget,
-      ): number | null => {
-        if (
-          disposed
-          || model.kind !== 'single_fold'
-          || target.mapping !== FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING
-          || target.contextKey !== angleDragContextKey
-          || angleDragHingeId !== model.hinge.edgeId
-          || !physicalGrabExternalGuardIsCurrent()
-          || !isFoldPreviewAngle(target.angleDegrees)
-        ) return null
-        return target.angleDegrees
+        if (clearEventSession) physicalGrabSessionForEvents = null
       }
 
       const applyPhysicalGrabTransition = (
         transition: ReturnType<typeof reduceFoldPreviewPhysicalGrabGesture>,
         eventPointerId: number | null,
       ) => {
-        physicalGrabState = transition.state
-        let handled = false
-        let endedAsTap = false
-        let completionAngle: number | null = null
-        let queuedPresentation = false
-        for (const effect of transition.effects) {
-          if (effect.kind === 'handled') {
-            if (effect.pointerId === eventPointerId) handled = true
-            continue
-          }
-          if (effect.kind === 'presentation') {
-            queuedPresentation = true
+        const completionNeedsCurrentGuard = transition.effects.some(
+          (effect) =>
+            effect.kind === 'end'
+            && effect.outcome === 'drag'
+            && effect.completionTarget !== null,
+        )
+        const plan = planFoldPreviewPhysicalGrabTransition({
+          transition,
+          eventPointerId,
+          selectedHingeId: selectedHingeIdRef.current,
+          activeHingeId: angleDragHingeId,
+          modelHingeId:
+            model.kind === 'single_fold' ? model.hinge.edgeId : null,
+          activeContextKey: angleDragContextKey,
+          disposed,
+          guardIsCurrent:
+            completionNeedsCurrentGuard
+            && currentPhysicalGrabGuardKey() !== null,
+        })
+        physicalGrabState = plan.state
+        for (const command of plan.commands) {
+          if (command.kind === 'queue_presentation') {
             queueAngleDragTargetPresentation()
-            if (
-              effect.target
-              && selectedHingeIdRef.current !== angleDragHingeId
-              && angleDragHingeId
-            ) {
-              attemptCleanup(() =>
-                onSelectHingeRef.current?.(angleDragHingeId!))
-            }
             continue
           }
-          if (effect.kind === 'cancel') {
+          if (command.kind === 'select_hinge') {
+            attemptCleanup(() =>
+              onSelectHingeRef.current?.(command.hingeId))
+            continue
+          }
+          if (command.kind === 'discard_presentation') {
             discardPendingAngleDragTarget()
-            releaseAngleDragCapture(effect.pointerId)
+            continue
+          }
+          if (command.kind === 'release_capture') {
+            releaseAngleDragCapture(command.pointerId)
+            continue
+          }
+          if (command.kind === 'clear_interaction') {
             angleDragHingeId = null
             angleDragContextKey = null
-            clearPhysicalGrabGuards()
+            clearPhysicalGrabGuards(command.clearEventSession)
             continue
           }
-          discardPendingAngleDragTarget()
-          releaseAngleDragCapture(effect.pointerId)
-          endedAsTap = effect.outcome === 'tap'
-          if (
-            effect.outcome === 'drag'
-            && effect.completionTarget !== null
-          ) {
-            completionAngle =
-              resolvePhysicalGrabSubmission(effect.completionTarget)
+          if (command.kind === 'restore_camera') {
+            restoreCameraAfterAngleDrag()
+            continue
           }
-          angleDragHingeId = null
-          angleDragContextKey = null
-          clearPhysicalGrabGuards()
-        }
-        if (isCleanPhysicalGrabState(physicalGrabState)) {
-          angleDragContextKey = null
-          clearPhysicalGrabGuards()
-        }
-        restoreCameraAfterAngleDrag()
-        if (
-          !queuedPresentation
-          || physicalGrabState.kind !== 'dragging'
-        ) {
-          syncAngleDragPresentation()
-        }
-        if (completionAngle !== null) {
+          if (command.kind === 'sync_presentation') {
+            syncAngleDragPresentation()
+            continue
+          }
           attemptCleanup(() =>
-            onRequestFoldAngleRef.current?.(completionAngle!))
+            onRequestFoldAngleRef.current?.(command.angleDegrees))
         }
-        return { handled, endedAsTap }
+        return {
+          handled: plan.handled,
+          endedAsTap: plan.endedAsTap,
+        }
       }
 
       const resetPhysicalGrab = (

@@ -354,6 +354,17 @@ solve(current geometry, constraints, edited targets, policy)
 - 候補数は有限回転fitと同じ最大6件とする。全候補についてfull scanと通常解析を合わせた保守的triangle-pair上限を開始前に算出し、累積1,000,000を超えるモデルまたは実測値はfail-closedとする。計画上限、実測visit数、各scan回数をdeep-frozen結果へ保存する。
 - 出力はmodel identity、source/blocking pose、partition、完全合法角度vector、静的全scene、共有ヒンジ規則の再検証済みである。一方、候補までの連続経路、層順、材料変形、scene反映、undo可能なproject commandは未検証なので、`continuousCandidatePathCertified`、`sceneApplied`、`autoApplicable`をすべて`false`に固定する。解析結果をmotion owner、3D表示、プロジェクトへ直接適用しない。
 
+#### 8.2.8 静的補正候補への連続経路認定
+
+`tree_single_hinge_static_candidate_path_v1`は、同じ真正motion contextから生成された静的補正候補を残差順位で試し、source完全角度vectorから候補までの選択1ヒンジ線形経路を既存の連続区間証明で再検証する解析専用jobである。既知の衝突姿勢であるblocking角を開始点には使わない。
+
+- 静的候補の成功結果は生成時にprivate provenanceへ登録し、同じcontext参照と組み合わせた未変更の結果だけを受理する。deep-frozen構造のclone、同値に見える別context、stale revision、hostile Proxyは安全flagの値にかかわらず拒否する。
+- source pose keyをcontextの完全角度vectorから再生成し、project、revision、固定面、選択ヒンジ、context key、紙厚を照合する。prepared continuous analyzerのstationary/moving集合を保存済みpartitionと順序込みで一致させ、各候補が選択ヒンジだけを変えた完全角度vectorであることとtarget pose keyを再確認する。
+- 最大6候補の既存continuous jobを同じsource vectorと同じ作業optionから事前生成し、残差順位で一件ずつ進める。一回の公開`step(workBudget)`は現在候補だけを処理し、衝突または未確定になっても同じcall内で次候補を開始しない。最初に経路全体が`clear`となった候補で`certified`終了し、全候補が非認定なら`exhausted`とする。
+- inner jobへ旧terminal request identityを渡さず、候補探索中のblocking説明用terminal full-scanを発生させない。候補単位のinterval pair・point triangle上限を候補数倍した保守的job上限と、interval test、point test、cache hit、最大深度の集計だけを公開し、未計測の実triangle visit数を実績として主張しない。
+- 不正work budget、inner例外、結果形式または作業集計の後退は`indeterminate`、cancelと再入は全inner jobを停止して`cancelled`へ退避する。終端後の`step`は同じ不変objectを返し、途中の認定候補を部分的な成功として公開しない。
+- `certified`だけがsource/target完全角度vector、両pose key、静的候補順位、連続解析statsと`continuousCandidatePathCertified: true`を持つ。これはその二姿勢間の単一線形角度経路だけの解析証明であり、現在の3D sceneがsource姿勢にあること、層順、材料変形、project適用は別境界とする。全variantで`sceneApplied: false`、`autoApplicable: false`を固定する。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

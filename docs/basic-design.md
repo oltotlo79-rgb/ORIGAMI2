@@ -332,6 +332,16 @@ solve(current geometry, constraints, edited targets, policy)
 - 通常の浮動小数点内積一致だけでは安全認定しない。各積と和を下向きに囲った射影下限が上向き丸め済み必要量を厳密に超えるまで、有限回だけ外向きscaleする。最大並進は上向き丸めしたL1ノルムをEuclideanノルム上限として判定し、候補には射影下限とノルム上限を保存する。
 - `sourcePairConstraintsSatisfied: true`が意味するのは、このbindingに含まれる非隣接・cross-partition三角柱pairの線形制約を候補が満たしたことだけである。共有ヒンジ、同一body、全sceneの新規衝突、合法角度への射影、静的再判定、現在姿勢からの連続経路、層順・材料変形は未検証なので、対応する安全フラグと`autoApplicable`はすべて`false`に固定し、3D表示やプロジェクトへ適用しない。
 
+#### 8.2.6 共通並進からの未検証1ヒンジ角度seed
+
+`single_hinge_rotation_fit_seeds_v1`は、二体間の共通並進候補を、指定したworldヒンジ軸まわりの有限回転で近似できる角度候補へ変換する純粋な最小二乗境界である。この段階では軸・点・角度をproject、revision、選択ヒンジ、terminal bindingへ結合せず、候補を合法姿勢または安全姿勢とは認定しない。
+
+- 入力はworld軸、child側の回転符号、危険角、許容する最大角度差、共通並進、moving側material pointを一度だけsnapshotする。軸方向は単位長許容差を確認してから同じ正規化値へ固定し、点IDを決定順へ並べる。重複ID、非有限値、ゼロ並進、空集合、100,000点超過、演算overflowは`null`へ退避する。
+- 各点について、軸方向成分を除いたradial vectorと接線vectorを保存し、有限回転変位`radial × (cos φ - 1) + tangent × sin φ`と共通並進の残差二乗和を目的関数とする。微小角線形化ではなく、`cos φ`、`sin φ`、`cos 2φ`、`sin 2φ`を含む同じ有限回転目的を係数化する。単位軸では理論上ゼロになる二次調波については、幾何スケールの丸め境界と一次根の角度ずれ境界をともに満たす浮動小数点残差だけをゼロへcanonicalizeし、安定な一次調波解析根へ退化させる。
+- 角度domainは折り角0〜180度と最大角度差の共通部分に限定する。両端点に加え、目的関数の導関数を二次調波三角多項式として正負の回転domainで全根列挙し、最大6候補だけを直接評価する。根の重複・数値曖昧性・作業上限では推測せず`null`へ退避する。
+- 危険角でのbaselineより丸め許容差を超えて残差を減らす候補だけを、残差二乗、点数で正規化したRMS、改善量、改善率とともに返す。残差、回転量、角度の固定順で順位を付け、結果全体をdeep freezeする。
+- 出力は`unverified_single_hinge_rotation_fit_seeds`であり、`modelIdentityBound`、`collisionConstraintsRevalidated`、`legalCorrectionPoseGenerated`、`staticCandidateRevalidated`、`continuousCandidatePathCertified`、`autoApplicable`をすべて`false`に固定する。次層でterminal bindingとworldヒンジ軸・moving頂点を再導出し、完全角度vectorを生成して全scene静的判定を通すまで、3D表示、motion owner、プロジェクトへ適用しない。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

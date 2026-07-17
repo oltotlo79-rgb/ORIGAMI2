@@ -418,7 +418,7 @@ fn duplicate_ids_remain_fatal_even_when_the_duplicate_record_is_auxiliary_only()
 }
 
 #[test]
-fn multiple_valid_fold_chords_are_rejected_in_canonical_edge_order() {
+fn multiple_valid_fold_chords_extract_three_faces_and_two_hinges() {
     let fixture = six_vertex_rectangle();
     let mut multiple = fixture.clone();
     let earlier_fold = fixed_id(0x300);
@@ -440,14 +440,141 @@ fn multiple_valid_fold_chords_are_rejected_in_canonical_edge_order() {
         pattern: &multiple.pattern,
     });
 
+    assert!(report.issues.is_empty());
+    let snapshot = report.snapshot.expect("multi-fold snapshot");
+    assert_eq!(snapshot.faces.len(), 3);
+    assert_eq!(snapshot.hinge_adjacency.len(), 2);
+    assert!(
+        snapshot
+            .faces
+            .windows(2)
+            .all(|faces| faces[0].key < faces[1].key)
+    );
+    assert!(
+        snapshot.hinge_adjacency.iter().any(|hinge| {
+            hinge.edge == earlier_fold && hinge.assignment == FoldAssignment::Valley
+        })
+    );
+    assert!(snapshot.hinge_adjacency.iter().any(|hinge| {
+        hinge.edge == fixture.fold && hinge.assignment == FoldAssignment::Mountain
+    }));
+}
+
+#[test]
+fn dangling_edge_in_a_multi_fold_graph_has_a_stable_blocking_diagnostic() {
+    let mut fixture = six_vertex_rectangle();
+    let dangling_vertex = fixed_id(0x107);
+    let dangling_fold = fixed_id(0x300);
+    fixture.pattern.vertices.push(Vertex {
+        id: dangling_vertex,
+        position: Point2::new(1.0, 1.0),
+    });
+    fixture.pattern.edges.insert(
+        0,
+        Edge {
+            id: dangling_fold,
+            start: fixture.vertices[0],
+            end: dangling_vertex,
+            kind: EdgeKind::Valley,
+        },
+    );
+    fixture.pattern.edges.reverse();
+
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace: fixture.namespace,
+        source_revision: SOURCE_REVISION,
+        paper: &fixture.paper,
+        pattern: &fixture.pattern,
+    });
+
     assert!(report.snapshot.is_none());
     assert_eq!(
         report.issues,
         vec![TopologyIssue {
             severity: TopologyIssueSeverity::BlocksSimulation,
-            kind: TopologyIssueKind::TooManyActiveFoldEdges {
-                edges: vec![earlier_fold, fixture.fold],
+            kind: TopologyIssueKind::NonSeparatingFold {
+                edge: dangling_fold,
             },
+        }]
+    );
+}
+
+#[test]
+fn disconnected_inner_fold_loop_has_a_stable_blocking_diagnostic() {
+    let mut fixture = six_vertex_rectangle();
+    let inner_vertices = [fixed_id(0x107), fixed_id(0x108), fixed_id(0x109)];
+    for (id, position) in inner_vertices.into_iter().zip([
+        Point2::new(0.4, 1.0),
+        Point2::new(1.4, 1.0),
+        Point2::new(0.9, 2.0),
+    ]) {
+        fixture.pattern.vertices.push(Vertex { id, position });
+    }
+    let loop_edges = [fixed_id(0x300), fixed_id(0x302), fixed_id(0x303)];
+    for index in 0..inner_vertices.len() {
+        fixture.pattern.edges.push(Edge {
+            id: loop_edges[index],
+            start: inner_vertices[index],
+            end: inner_vertices[(index + 1) % inner_vertices.len()],
+            kind: EdgeKind::Mountain,
+        });
+    }
+    fixture.pattern.edges.reverse();
+
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace: fixture.namespace,
+        source_revision: SOURCE_REVISION,
+        paper: &fixture.paper,
+        pattern: &fixture.pattern,
+    });
+
+    assert!(report.snapshot.is_none());
+    assert_eq!(
+        report.issues,
+        vec![TopologyIssue {
+            severity: TopologyIssueSeverity::BlocksSimulation,
+            kind: TopologyIssueKind::DisconnectedFoldGraph {
+                edge: loop_edges[0],
+            },
+        }]
+    );
+}
+
+#[test]
+fn outside_edge_in_a_multi_fold_graph_is_fatal_before_face_construction() {
+    let mut fixture = six_vertex_rectangle();
+    let outside_vertices = [fixed_id(0x107), fixed_id(0x108)];
+    fixture.pattern.vertices.extend([
+        Vertex {
+            id: outside_vertices[0],
+            position: Point2::new(5.0, 1.0),
+        },
+        Vertex {
+            id: outside_vertices[1],
+            position: Point2::new(6.0, 1.0),
+        },
+    ]);
+    let outside_fold = fixed_id(0x300);
+    fixture.pattern.edges.push(Edge {
+        id: outside_fold,
+        start: outside_vertices[0],
+        end: outside_vertices[1],
+        kind: EdgeKind::Valley,
+    });
+
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace: fixture.namespace,
+        source_revision: SOURCE_REVISION,
+        paper: &fixture.paper,
+        pattern: &fixture.pattern,
+    });
+
+    assert!(report.snapshot.is_none());
+    assert_eq!(
+        report.issues,
+        vec![TopologyIssue {
+            severity: TopologyIssueSeverity::Fatal,
+            kind: TopologyIssueKind::ActiveEdgeOutsidePaper { edge: outside_fold },
         }]
     );
 }

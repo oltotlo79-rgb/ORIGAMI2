@@ -61,7 +61,18 @@ export type SingleFoldPreviewModel = FoldPreviewModelBase & Readonly<{
   hinge: FoldPreviewHingeModel
 }>
 
-export type FoldPreviewModel = PlanarFoldPreviewModel | SingleFoldPreviewModel
+export type FoldGraphPreviewModel = FoldPreviewModelBase & Readonly<{
+  kind: 'fold_graph'
+  /** Canonical FaceKey order. */
+  faces: readonly FoldPreviewFaceModel[]
+  /** Canonical adjacency order: first FaceKey, second FaceKey, then edge ID. */
+  hinges: readonly FoldPreviewHingeModel[]
+}>
+
+export type FoldPreviewModel =
+  | PlanarFoldPreviewModel
+  | SingleFoldPreviewModel
+  | FoldGraphPreviewModel
 
 type UnknownRecord = Record<string, unknown>
 type PaperPoint = Readonly<{ vertexId: string; x: number; y: number }>
@@ -96,6 +107,16 @@ type ParsedIncidence =
       assignment: FoldAssignment
     }>
   | Readonly<{ kind: 'auxiliary_ignored'; edge: string }>
+type ParsedAdjacency = Readonly<{
+  edge: string
+  first: string
+  second: string
+  assignment: FoldAssignment
+}>
+type ValidatedHinge = Readonly<{
+  incidence: Extract<ParsedIncidence, { kind: 'hinge' }>
+  model: FoldPreviewHingeModel
+}>
 
 type ParsedProject = Readonly<{
   projectId: string
@@ -163,57 +184,126 @@ export function buildFoldPreviewModel(
     }
   }
 
-  if (faces.length !== 2 || hinges.length !== 1 || snapshot.hinge_adjacency.length !== 1) {
-    return null
+  const validatedHinges = validateHinges(
+    hinges,
+    snapshot.hinge_adjacency,
+    faces,
+    parsedProject,
+  )
+  if (!validatedHinges) return null
+
+  if (faces.length === 2 && validatedHinges.length === 1) {
+    const [{ incidence: hinge, model }] = validatedHinges
+    const fixedFace = faces.find((face) => face.id === hinge.left)?.worldFace
+    const movingFace = faces.find((face) => face.id === hinge.right)?.worldFace
+    if (!fixedFace || !movingFace) return null
+    return {
+      ...base,
+      kind: 'single_fold',
+      faces: [fixedFace, movingFace],
+      fixedFace,
+      movingFace,
+      hinge: model,
+    }
   }
-  const hinge = hinges[0]
-  if (hinge.left === hinge.right) return null
-  const fixed = faces.find((face) => face.id === hinge.left)
-  const moving = faces.find((face) => face.id === hinge.right)
-  if (!fixed || !moving) return null
 
-  const fixedHingeEdges = fixed.halfEdges.filter((edge) => edge.edge === hinge.edge)
-  const movingHingeEdges = moving.halfEdges.filter((edge) => edge.edge === hinge.edge)
-  if (fixedHingeEdges.length !== 1 || movingHingeEdges.length !== 1) return null
-  const canonicalEdge = fixedHingeEdges[0]
-  const oppositeEdge = movingHingeEdges[0]
-  if (
-    canonicalEdge.origin >= canonicalEdge.destination
-    || oppositeEdge.origin !== canonicalEdge.destination
-    || oppositeEdge.destination !== canonicalEdge.origin
-  ) return null
+  if (faces.length < 2 || validatedHinges.length < 2) return null
+  if (!hasCanonicalFaceOrder(faces)) return null
+  return {
+    ...base,
+    kind: 'fold_graph',
+    faces: faces.map((face) => face.worldFace),
+    hinges: validatedHinges.map((hinge) => hinge.model),
+  }
+}
 
-  const sourceHinge = parsedProject.edges.get(hinge.edge)
-  if (
-    !sourceHinge
-    || sourceHinge.kind !== hinge.assignment
-    || !sourceHinge.start
-    || !sourceHinge.end
-    || !sameUndirectedEndpoints(
-      sourceHinge.start,
-      sourceHinge.end,
-      canonicalEdge.origin,
-      canonicalEdge.destination,
-    )
-  ) return null
+function validateHinges(
+  incidences: readonly Extract<ParsedIncidence, { kind: 'hinge' }>[],
+  rawAdjacencies: readonly unknown[],
+  faces: readonly ParsedFace[],
+  project: ParsedProject,
+): ValidatedHinge[] | null {
+  if (incidences.length !== rawAdjacencies.length) return null
+  const incidenceByEdge = new Map(incidences.map((incidence) => [incidence.edge, incidence]))
+  if (incidenceByEdge.size !== incidences.length) return null
+  const facesById = new Map(faces.map((face) => [face.id, face]))
+  if (facesById.size !== faces.length) return null
 
-  const adjacency = parseAdjacency(snapshot.hinge_adjacency[0])
-  if (
-    !adjacency
-    || adjacency.edge !== hinge.edge
-    || adjacency.assignment !== hinge.assignment
-    || !sameUnorderedPair(adjacency.first, adjacency.second, hinge.left, hinge.right)
-  ) return null
+  const seenEdges = new Set<string>()
+  const validated: ValidatedHinge[] = []
+  let previousOrder: Readonly<{
+    firstKey: readonly number[]
+    secondKey: readonly number[]
+    edge: string
+  }> | null = null
+  for (const rawAdjacency of rawAdjacencies) {
+    const adjacency = parseAdjacency(rawAdjacency)
+    if (!adjacency || seenEdges.has(adjacency.edge)) return null
+    seenEdges.add(adjacency.edge)
+    const incidence = incidenceByEdge.get(adjacency.edge)
+    if (!incidence || incidence.left === incidence.right) return null
+    const left = facesById.get(incidence.left)
+    const right = facesById.get(incidence.right)
+    const first = facesById.get(adjacency.first)
+    const second = facesById.get(adjacency.second)
+    if (
+      !left
+      || !right
+      || !first
+      || !second
+      || adjacency.assignment !== incidence.assignment
+      || !sameUnorderedPair(adjacency.first, adjacency.second, incidence.left, incidence.right)
+      || compareFaceKeys(first.key, second.key) >= 0
+    ) return null
 
-  const firstFace = faces.find((face) => face.id === adjacency.first)
-  const secondFace = faces.find((face) => face.id === adjacency.second)
-  if (!firstFace || !secondFace || compareFaceKeys(firstFace.key, secondFace.key) >= 0) return null
+    const order = { firstKey: first.key, secondKey: second.key, edge: adjacency.edge }
+    if (previousOrder && compareAdjacencyOrder(previousOrder, order) >= 0) return null
+    previousOrder = order
 
-  const startPaper = parsedProject.positions.get(canonicalEdge.origin)
-  const endPaper = parsedProject.positions.get(canonicalEdge.destination)
+    const leftEdges = left.halfEdges.filter((edge) => edge.edge === incidence.edge)
+    const rightEdges = right.halfEdges.filter((edge) => edge.edge === incidence.edge)
+    if (leftEdges.length !== 1 || rightEdges.length !== 1) return null
+    const canonicalEdge = leftEdges[0]
+    const oppositeEdge = rightEdges[0]
+    if (
+      canonicalEdge.origin >= canonicalEdge.destination
+      || oppositeEdge.origin !== canonicalEdge.destination
+      || oppositeEdge.destination !== canonicalEdge.origin
+    ) return null
+
+    const source = project.edges.get(incidence.edge)
+    if (
+      !source
+      || source.kind !== incidence.assignment
+      || !source.start
+      || !source.end
+      || !sameUndirectedEndpoints(
+        source.start,
+        source.end,
+        canonicalEdge.origin,
+        canonicalEdge.destination,
+      )
+    ) return null
+
+    const model = hingeModel(incidence, canonicalEdge, project)
+    if (!model) return null
+    validated.push({ incidence, model })
+  }
+  return seenEdges.size === incidences.length && hingeGraphConnectsAllFaces(incidences, faces)
+    ? validated
+    : null
+}
+
+function hingeModel(
+  incidence: Extract<ParsedIncidence, { kind: 'hinge' }>,
+  canonicalEdge: ParsedHalfEdge,
+  project: ParsedProject,
+): FoldPreviewHingeModel | null {
+  const startPaper = project.positions.get(canonicalEdge.origin)
+  const endPaper = project.positions.get(canonicalEdge.destination)
   if (!startPaper || !endPaper) return null
-  const start = parsedProject.frame.toWorld(startPaper)
-  const end = parsedProject.frame.toWorld(endPaper)
+  const start = project.frame.toWorld(startPaper)
+  const end = project.frame.toWorld(endPaper)
   if (!start || !end) return null
   const deltaX = end.x - start.x
   const deltaZ = end.z - start.z
@@ -222,23 +312,13 @@ export function buildFoldPreviewModel(
   const axisX = normalizeZero(deltaX / length)
   const axisZ = normalizeZero(deltaZ / length)
   if (!Number.isFinite(axisX) || !Number.isFinite(axisZ)) return null
-
-  const fixedFace = fixed.worldFace
-  const movingFace = moving.worldFace
   return {
-    ...base,
-    kind: 'single_fold',
-    faces: [fixedFace, movingFace],
-    fixedFace,
-    movingFace,
-    hinge: {
-      edgeId: hinge.edge,
-      start,
-      end,
-      axis: { x: axisX, z: axisZ },
-      assignment: hinge.assignment,
-      rotationSign: hinge.assignment === 'mountain' ? 1 : -1,
-    },
+    edgeId: incidence.edge,
+    start,
+    end,
+    axis: { x: axisX, z: axisZ },
+    assignment: incidence.assignment,
+    rotationSign: incidence.assignment === 'mountain' ? 1 : -1,
   }
 }
 
@@ -412,7 +492,7 @@ function parseFaces(
   positions: ReadonlyMap<string, PaperPoint>,
   frame: PreviewFrame,
 ): ParsedFace[] | null {
-  if (rawFaces.length < 1 || rawFaces.length > 2) return null
+  if (rawFaces.length < 1) return null
   const faces: ParsedFace[] = []
   const faceIds = new Set<string>()
   const faceKeys = new Set<string>()
@@ -589,7 +669,7 @@ function incidencesMatchProject(
   return true
 }
 
-function parseAdjacency(rawAdjacency: unknown) {
+function parseAdjacency(rawAdjacency: unknown): ParsedAdjacency | null {
   if (!isRecord(rawAdjacency)) return null
   const edge = canonicalEntityId(rawAdjacency.edge)
   const first = canonicalEntityId(rawAdjacency.first)
@@ -598,6 +678,58 @@ function parseAdjacency(rawAdjacency: unknown) {
   return edge && first && second && first !== second && assignment
     ? { edge, first, second, assignment }
     : null
+}
+
+function compareAdjacencyOrder(
+  first: Readonly<{
+    firstKey: readonly number[]
+    secondKey: readonly number[]
+    edge: string
+  }>,
+  second: Readonly<{
+    firstKey: readonly number[]
+    secondKey: readonly number[]
+    edge: string
+  }>,
+) {
+  const firstDifference = compareFaceKeys(first.firstKey, second.firstKey)
+  if (firstDifference !== 0) return firstDifference
+  const secondDifference = compareFaceKeys(first.secondKey, second.secondKey)
+  if (secondDifference !== 0) return secondDifference
+  return first.edge < second.edge ? -1 : first.edge === second.edge ? 0 : 1
+}
+
+function hasCanonicalFaceOrder(faces: readonly ParsedFace[]) {
+  for (let index = 1; index < faces.length; index += 1) {
+    if (compareFaceKeys(faces[index - 1].key, faces[index].key) >= 0) return false
+  }
+  return true
+}
+
+function hingeGraphConnectsAllFaces(
+  incidences: readonly Extract<ParsedIncidence, { kind: 'hinge' }>[],
+  faces: readonly ParsedFace[],
+) {
+  const firstFace = faces[0]
+  if (!firstFace) return false
+  const neighbours = new Map<string, string[]>()
+  for (const incidence of incidences) {
+    const leftNeighbours = neighbours.get(incidence.left) ?? []
+    leftNeighbours.push(incidence.right)
+    neighbours.set(incidence.left, leftNeighbours)
+    const rightNeighbours = neighbours.get(incidence.right) ?? []
+    rightNeighbours.push(incidence.left)
+    neighbours.set(incidence.right, rightNeighbours)
+  }
+  const reached = new Set<string>()
+  const pending = [firstFace.id]
+  while (pending.length > 0) {
+    const face = pending.pop()
+    if (!face || reached.has(face)) continue
+    reached.add(face)
+    pending.push(...(neighbours.get(face) ?? []))
+  }
+  return reached.size === faces.length
 }
 
 function modelBase(frame: PreviewFrame): FoldPreviewModelBase {

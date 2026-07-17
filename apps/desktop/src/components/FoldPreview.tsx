@@ -65,15 +65,20 @@ export function FoldPreview({
 
     const geometries: THREE.BufferGeometry[] = []
     const edgeGeometries: THREE.EdgesGeometry[] = []
-    let fixedGeometry: THREE.BufferGeometry
+    const staticFaces: Array<{
+      face: FoldPreviewFaceModel
+      geometry: THREE.BufferGeometry
+    }> = []
     let movingGeometry: THREE.BufferGeometry | null = null
     try {
-      fixedGeometry = createFoldPreviewFaceGeometry(
-        model.fixedFace.polygon,
-        previewThickness,
-      )
-      geometries.push(fixedGeometry)
       if (model.kind === 'single_fold') {
+        const fixedGeometry = createFoldPreviewFaceGeometry(
+          model.fixedFace.polygon,
+          previewThickness,
+        )
+        geometries.push(fixedGeometry)
+        staticFaces.push({ face: model.fixedFace, geometry: fixedGeometry })
+
         const { start } = model.hinge
         movingGeometry = createFoldPreviewFaceGeometry(
           model.movingFace.polygon.map((point) => ({
@@ -83,6 +88,12 @@ export function FoldPreview({
           previewThickness,
         )
         geometries.push(movingGeometry)
+      } else {
+        for (const face of model.faces) {
+          const geometry = createFoldPreviewFaceGeometry(face.polygon, previewThickness)
+          geometries.push(geometry)
+          staticFaces.push({ face, geometry })
+        }
       }
     } catch {
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
@@ -187,7 +198,9 @@ export function FoldPreview({
         return group
       }
 
-      scene.add(makeFace(fixedGeometry, model.fixedFace))
+      for (const { face, geometry } of staticFaces) {
+        scene.add(makeFace(geometry, face))
+      }
 
       let pivot: THREE.Group | null = null
       let axis: THREE.Vector3 | null = null
@@ -200,24 +213,31 @@ export function FoldPreview({
         rotationSign = model.hinge.rotationSign
         applyFoldRotation(pivot, axis, rotationSign, angleRef.current)
         scene.add(pivot)
+      }
 
+      const hinges = model.kind === 'single_fold'
+        ? [model.hinge]
+        : model.kind === 'fold_graph'
+          ? model.hinges
+          : []
+      if (hinges.length > 0) {
         const createdHingeMaterial = new THREE.LineBasicMaterial({ color: 0x7a3f16 })
         hingeMaterial = createdHingeMaterial
         const createdHingeGeometry = new THREE.BufferGeometry()
         hingeGeometry = createdHingeGeometry
-        createdHingeGeometry.setFromPoints([
+        createdHingeGeometry.setFromPoints(hinges.flatMap((hinge) => [
           new THREE.Vector3(
-            model.hinge.start.x,
+            hinge.start.x,
             previewThickness / 2 + 0.008,
-            model.hinge.start.z,
+            hinge.start.z,
           ),
           new THREE.Vector3(
-            model.hinge.end.x,
+            hinge.end.x,
             previewThickness / 2 + 0.008,
-            model.hinge.end.z,
+            hinge.end.z,
           ),
-        ])
-        scene.add(new THREE.Line(createdHingeGeometry, createdHingeMaterial))
+        ]))
+        scene.add(new THREE.LineSegments(createdHingeGeometry, createdHingeMaterial))
       }
 
       const render = () => createdRenderer.render(scene, camera)
@@ -280,8 +300,13 @@ export function FoldPreview({
   const unavailableMessage = model && renderError
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
+  const previewNote = model?.kind === 'fold_graph'
+    ? `${model.faces.length}面・${model.hinges.length}ヒンジは平面確認段階（折り動作は未適用）・${thicknessNote}`
+    : thicknessNote
   const previewDescription = model?.kind === 'single_fold' && !renderError
     ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度、${thicknessNote}`
+    : model?.kind === 'fold_graph' && !renderError
+      ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、折り動作は未適用、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
       ? `実展開図の平面3Dプレビュー、${thicknessNote}`
       : `3D折りプレビューは利用できません。${unavailableMessage}`
@@ -298,7 +323,7 @@ export function FoldPreview({
       {!model || renderError ? (
         <span className="fold-preview-empty">{unavailableMessage}</span>
       ) : null}
-      {model && !renderError ? <span className="fold-preview-note">{thicknessNote}</span> : null}
+      {model && !renderError ? <span className="fold-preview-note">{previewNote}</span> : null}
     </div>
   )
 }

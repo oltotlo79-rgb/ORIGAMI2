@@ -21,9 +21,12 @@ const ids = {
   f: id(0x106),
   auxiliaryVertex: id(0x107),
   missingVertex: id(0x108),
+  center: id(0x109),
   west: id(0x401),
   east: id(0x402),
   whole: id(0x403),
+  south: id(0x404),
+  north: id(0x405),
   ab: id(0x201),
   bc: id(0x202),
   cd: id(0x203),
@@ -33,6 +36,10 @@ const ids = {
   fold: id(0x301),
   auxiliary: id(0x302),
   malformedAuxiliary: id(0x303),
+  foldAg: id(0x304),
+  foldDg: id(0x305),
+  foldCg: id(0x306),
+  foldFg: id(0x307),
 } as const
 
 const boundaryEdgeIds = [ids.ab, ids.bc, ids.cd, ids.de, ids.ef, ids.fa] as const
@@ -146,6 +153,124 @@ function topologyFixture(): ProjectTopologyResponse {
     },
     issues: [],
   }
+}
+
+function foldGraphFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
+  const project = projectFixture()
+  project.name = 'four-face fold graph'
+  project.crease_pattern.vertices.push({
+    id: ids.center,
+    position: { x: 2, y: 2 },
+  })
+  project.crease_pattern.edges.pop()
+  project.crease_pattern.edges.push(
+    { id: ids.foldAg, start: ids.center, end: ids.a, kind: 'mountain' },
+    { id: ids.foldDg, start: ids.center, end: ids.d, kind: 'valley' },
+    { id: ids.foldCg, start: ids.center, end: ids.c, kind: 'mountain' },
+    { id: ids.foldFg, start: ids.center, end: ids.f, kind: 'valley' },
+  )
+
+  const face = (
+    faceId: string,
+    keyByte: number,
+    halfEdges: TopologyFace['outer']['half_edges'],
+  ): TopologyFace => ({
+    id: faceId,
+    key: [keyByte, ...Array<number>(31).fill(0)],
+    outer: { signed_double_area: 8, half_edges: halfEdges },
+    area: 4,
+  })
+  const west = face(ids.west, 1, [
+    { edge: ids.fa, origin: ids.f, destination: ids.a },
+    { edge: ids.foldAg, origin: ids.a, destination: ids.center },
+    { edge: ids.foldFg, origin: ids.center, destination: ids.f },
+  ])
+  const south = face(ids.south, 2, [
+    { edge: ids.ab, origin: ids.a, destination: ids.b },
+    { edge: ids.bc, origin: ids.b, destination: ids.c },
+    { edge: ids.foldCg, origin: ids.c, destination: ids.center },
+    { edge: ids.foldAg, origin: ids.center, destination: ids.a },
+  ])
+  const east = face(ids.east, 3, [
+    { edge: ids.cd, origin: ids.c, destination: ids.d },
+    { edge: ids.foldDg, origin: ids.d, destination: ids.center },
+    { edge: ids.foldCg, origin: ids.center, destination: ids.c },
+  ])
+  const north = face(ids.north, 4, [
+    { edge: ids.de, origin: ids.d, destination: ids.e },
+    { edge: ids.ef, origin: ids.e, destination: ids.f },
+    { edge: ids.foldFg, origin: ids.f, destination: ids.center },
+    { edge: ids.foldDg, origin: ids.center, destination: ids.d },
+  ])
+
+  return [project, {
+    project_id: ids.project,
+    revision: 7,
+    simulation_ready: true,
+    snapshot: {
+      source_revision: 7,
+      faces: [west, south, east, north],
+      edge_incidence: [
+        [ids.fa, { kind: 'boundary', material: ids.west }],
+        [ids.ef, { kind: 'boundary', material: ids.north }],
+        [ids.de, { kind: 'boundary', material: ids.north }],
+        [ids.cd, { kind: 'boundary', material: ids.east }],
+        [ids.bc, { kind: 'boundary', material: ids.south }],
+        [ids.ab, { kind: 'boundary', material: ids.south }],
+        [ids.foldDg, {
+          kind: 'hinge',
+          left: ids.east,
+          right: ids.north,
+          assignment: 'valley',
+        }],
+        [ids.foldFg, {
+          kind: 'hinge',
+          left: ids.north,
+          right: ids.west,
+          assignment: 'valley',
+        }],
+        [ids.foldAg, {
+          kind: 'hinge',
+          left: ids.west,
+          right: ids.south,
+          assignment: 'mountain',
+        }],
+        [ids.foldCg, {
+          kind: 'hinge',
+          left: ids.south,
+          right: ids.east,
+          assignment: 'mountain',
+        }],
+      ],
+      hinge_adjacency: [
+        {
+          edge: ids.foldAg,
+          first: ids.west,
+          second: ids.south,
+          assignment: 'mountain',
+        },
+        {
+          edge: ids.foldFg,
+          first: ids.west,
+          second: ids.north,
+          assignment: 'valley',
+        },
+        {
+          edge: ids.foldCg,
+          first: ids.south,
+          second: ids.east,
+          assignment: 'mountain',
+        },
+        {
+          edge: ids.foldDg,
+          first: ids.east,
+          second: ids.north,
+          assignment: 'valley',
+        },
+      ],
+    },
+    issues: [],
+  }]
 }
 
 function flatFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
@@ -266,6 +391,106 @@ test('single fold becomes centered world-XZ polygons around the canonical hinge'
     assignment: 'mountain',
     rotationSign: 1,
   })
+})
+
+test('a cellular fold graph preserves every face and validated hinge in canonical order', () => {
+  const [project, topology] = foldGraphFixtures()
+
+  const model = buildFoldPreviewModel(project, topology)
+
+  assert.ok(model?.kind === 'fold_graph')
+  assert.deepEqual(
+    model.faces.map((face) => face.id),
+    [ids.west, ids.south, ids.east, ids.north],
+  )
+  assert.deepEqual(
+    model.hinges.map((hinge) => hinge.edgeId),
+    [ids.foldAg, ids.foldFg, ids.foldCg, ids.foldDg],
+  )
+  assert.deepEqual(
+    model.hinges.map((hinge) => [
+      hinge.start.vertexId,
+      hinge.end.vertexId,
+      hinge.assignment,
+      hinge.rotationSign,
+    ]),
+    [
+      [ids.a, ids.center, 'mountain', 1],
+      [ids.f, ids.center, 'valley', -1],
+      [ids.c, ids.center, 'mountain', 1],
+      [ids.d, ids.center, 'valley', -1],
+    ],
+  )
+  for (const hinge of model.hinges) {
+    assert.ok(Math.abs(Math.hypot(hinge.axis.x, hinge.axis.z) - 1) < Number.EPSILON * 2)
+  }
+
+  const expected = clone(model)
+  project.crease_pattern.vertices.reverse()
+  project.crease_pattern.edges.reverse()
+  project.paper.boundary_vertices.push(...project.paper.boundary_vertices.splice(0, 3))
+  topology.snapshot?.edge_incidence.reverse()
+  assert.deepEqual(buildFoldPreviewModel(project, topology), expected)
+})
+
+test('every fold-graph hinge must match incidence, adjacency, source, and oriented boundaries', () => {
+  const corruptions: Array<[
+    string,
+    (project: ProjectSnapshot, topology: ProjectTopologyResponse) => void,
+  ]> = [
+    ['missing adjacency', (_project, topology) => {
+      topology.snapshot?.hinge_adjacency.pop()
+    }],
+    ['duplicate adjacency', (_project, topology) => {
+      const adjacency = topology.snapshot?.hinge_adjacency[0]
+      if (adjacency) topology.snapshot?.hinge_adjacency.push(clone(adjacency))
+    }],
+    ['non-canonical adjacency order', (_project, topology) => {
+      topology.snapshot?.hinge_adjacency.reverse()
+    }],
+    ['non-canonical face order', (_project, topology) => {
+      topology.snapshot?.faces.reverse()
+    }],
+    ['reversed adjacency pair', (_project, topology) => {
+      const adjacency = topology.snapshot?.hinge_adjacency[2]
+      if (adjacency) [adjacency.first, adjacency.second] = [adjacency.second, adjacency.first]
+    }],
+    ['wrong adjacency assignment', (_project, topology) => {
+      const adjacency = topology.snapshot?.hinge_adjacency[1]
+      if (adjacency) adjacency.assignment = 'mountain'
+    }],
+    ['wrong adjacency faces', (_project, topology) => {
+      const adjacency = topology.snapshot?.hinge_adjacency[1]
+      if (adjacency) adjacency.second = ids.south
+    }],
+    ['swapped incidence sides', (_project, topology) => {
+      const incidence = topology.snapshot?.edge_incidence
+        .find(([edge]) => edge === ids.foldDg)?.[1]
+      if (incidence?.kind === 'hinge') {
+        [incidence.left, incidence.right] = [incidence.right, incidence.left]
+      }
+    }],
+    ['wrong incidence assignment', (_project, topology) => {
+      const incidence = topology.snapshot?.edge_incidence
+        .find(([edge]) => edge === ids.foldCg)?.[1]
+      if (incidence?.kind === 'hinge') incidence.assignment = 'valley'
+    }],
+    ['wrong source assignment', (project) => {
+      const source = project.crease_pattern.edges.find((edge) => edge.id === ids.foldAg)
+      if (source) source.kind = 'valley'
+    }],
+    ['wrong source endpoints', (project) => {
+      const source = project.crease_pattern.edges.find((edge) => edge.id === ids.foldFg)
+      if (source) source.end = ids.e
+    }],
+  ]
+
+  for (const [label, corrupt] of corruptions) {
+    const [project, topology] = foldGraphFixtures()
+    corrupt(project, topology)
+    assert.doesNotThrow(() => buildFoldPreviewModel(project, topology), label)
+    assert.equal(buildFoldPreviewModel(project, topology), null, label)
+  }
 })
 
 test('face and source record order do not replace geometric left/right semantics', () => {

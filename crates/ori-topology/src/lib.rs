@@ -1,8 +1,8 @@
 //! Deterministic planar topology derived from an ORIGAMI2 crease pattern.
 //!
-//! The first implementation slice intentionally accepts boundary-only sheets.
-//! It establishes stable face identity and a strict diagnostic boundary before
-//! fold and cut edges are admitted into the half-edge reconstruction.
+//! Boundary-only sheets and one-fold legacy snapshots share the same stable
+//! identity contract with admitted cellular multi-fold graphs. Cut topology,
+//! holes, seams, and non-simple material faces remain explicit diagnostics.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,17 +16,17 @@ use thiserror::Error;
 
 const FACE_KEY_DOMAIN: &[u8] = b"ORIGAMI2_FACE_KEY_V1";
 
-// The deterministic embedding is intentionally kept behind the existing
-// boundary/single-fold public paths until material-face classification is
-// implemented and admitted into the production analysis route.
+// The embedding internals remain crate-private; only validated snapshots and
+// stable diagnostics cross the public analysis boundary.
 #[allow(dead_code)]
 mod admission;
 #[allow(dead_code)]
 mod dcel;
-#[allow(dead_code)]
 mod fold_graph;
 mod single_fold;
 
+use admission::PaperGraphAdmissionError;
+use fold_graph::{FoldGraphError, extract_fold_graph_snapshot};
 use single_fold::{SingleFoldError, extract_single_fold_faces};
 
 /// Immutable input used to derive a topology snapshot.
@@ -129,16 +129,56 @@ pub enum TopologyIssueSeverity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TopologyIssueKind {
-    DuplicateVertexId { vertex: VertexId },
-    DuplicateEdgeId { edge: EdgeId },
-    InvalidPaper { issue_count: usize },
-    InvalidCreasePattern { issue_count: usize },
-    UnsupportedActiveEdge { edge: EdgeId, edge_kind: EdgeKind },
-    TooManyActiveFoldEdges { edges: Vec<EdgeId> },
-    FoldEndpointNotOnBoundary { edge: EdgeId, vertex: VertexId },
-    UnsupportedAdjacentBoundaryFold { edge: EdgeId },
-    UnsupportedNonConvexFoldSheet { edge: EdgeId, vertex: VertexId },
-    DegenerateFoldFace { edge: EdgeId },
+    DuplicateVertexId {
+        vertex: VertexId,
+    },
+    DuplicateEdgeId {
+        edge: EdgeId,
+    },
+    InvalidPaper {
+        issue_count: usize,
+    },
+    InvalidCreasePattern {
+        issue_count: usize,
+    },
+    UnsupportedActiveEdge {
+        edge: EdgeId,
+        edge_kind: EdgeKind,
+    },
+    /// Retained for compatibility with reports produced before general fold
+    /// graphs were admitted by the public analysis route.
+    TooManyActiveFoldEdges {
+        edges: Vec<EdgeId>,
+    },
+    ActiveEdgeOutsidePaper {
+        edge: EdgeId,
+    },
+    DisconnectedFoldGraph {
+        edge: EdgeId,
+    },
+    NonSeparatingFold {
+        edge: EdgeId,
+    },
+    UnsupportedFoldGraph {
+        edge: EdgeId,
+    },
+    InvalidEdgeIncidence {
+        edge: EdgeId,
+    },
+    FoldEndpointNotOnBoundary {
+        edge: EdgeId,
+        vertex: VertexId,
+    },
+    UnsupportedAdjacentBoundaryFold {
+        edge: EdgeId,
+    },
+    UnsupportedNonConvexFoldSheet {
+        edge: EdgeId,
+        vertex: VertexId,
+    },
+    DegenerateFoldFace {
+        edge: EdgeId,
+    },
     UnrepresentableFaceArea,
     InternalBoundaryResolution,
 }
@@ -174,10 +214,11 @@ impl FaceExtractionRejected {
 
 /// Analyzes the document without mutating it.
 ///
-/// The accepted fold subset currently contains either no active edge, or one
-/// mountain/valley chord between non-adjacent vertices of a convex boundary.
-/// All broader fold graphs and every cut remain explicitly blocked; silently
-/// treating them as auxiliary would create unsafe 3D input.
+/// Boundary-only sheets and the established single-chord subset retain their
+/// legacy extraction path. Connected, cut-free planar graphs with two or more
+/// mountain/valley edges use the deterministic half-edge extractor. Graphs
+/// that cannot be represented as simple material faces remain explicitly
+/// blocked; silently treating them as auxiliary would create unsafe 3D input.
 #[must_use]
 pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
     let mut vertex_ids = HashSet::with_capacity(input.pattern.vertices.len());
@@ -257,32 +298,26 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
             );
         }
     }
-    if fold_edges.len() > 1 {
-        return rejected(
-            TopologyIssueSeverity::BlocksSimulation,
-            TopologyIssueKind::TooManyActiveFoldEdges {
-                edges: fold_edges.iter().map(|edge| edge.id).collect(),
-            },
-        );
-    }
-
-    let extracted = if let Some(fold) = fold_edges.first() {
-        let mut endpoints = [fold.start, fold.end];
-        endpoints.sort_by_key(VertexId::canonical_bytes);
-        for vertex in endpoints {
-            if !input.paper.boundary_vertices.contains(&vertex) {
-                return rejected(
-                    TopologyIssueSeverity::BlocksSimulation,
-                    TopologyIssueKind::FoldEndpointNotOnBoundary {
-                        edge: fold.id,
-                        vertex,
-                    },
-                );
+    let extracted = match fold_edges.len() {
+        0 => extract_boundary_face(input).map_err(|kind| (TopologyIssueSeverity::Fatal, kind)),
+        1 => {
+            let fold = fold_edges[0];
+            let mut endpoints = [fold.start, fold.end];
+            endpoints.sort_by_key(VertexId::canonical_bytes);
+            for vertex in endpoints {
+                if !input.paper.boundary_vertices.contains(&vertex) {
+                    return rejected(
+                        TopologyIssueSeverity::BlocksSimulation,
+                        TopologyIssueKind::FoldEndpointNotOnBoundary {
+                            edge: fold.id,
+                            vertex,
+                        },
+                    );
+                }
             }
+            extract_single_fold_snapshot(input, fold)
         }
-        extract_single_fold_snapshot(input, fold)
-    } else {
-        extract_boundary_face(input).map_err(|kind| (TopologyIssueSeverity::Fatal, kind))
+        _ => extract_fold_graph_snapshot(input).map_err(map_fold_graph_error),
     };
 
     match extracted {
@@ -291,6 +326,76 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
             issues: Vec::new(),
         },
         Err((severity, kind)) => rejected(severity, kind),
+    }
+}
+
+fn map_fold_graph_error(error: FoldGraphError) -> (TopologyIssueSeverity, TopologyIssueKind) {
+    match error {
+        FoldGraphError::Admission(admission) => match admission {
+            PaperGraphAdmissionError::DuplicateVertexId { vertex } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::DuplicateVertexId { vertex },
+            ),
+            PaperGraphAdmissionError::DuplicateEdgeId { edge } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::DuplicateEdgeId { edge },
+            ),
+            PaperGraphAdmissionError::InvalidPaper { issue_count } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InvalidPaper { issue_count },
+            ),
+            PaperGraphAdmissionError::CutNotAllowed { edge } => (
+                TopologyIssueSeverity::BlocksSimulation,
+                TopologyIssueKind::UnsupportedActiveEdge {
+                    edge,
+                    edge_kind: EdgeKind::Cut,
+                },
+            ),
+            PaperGraphAdmissionError::InvalidParticipantPattern { issue_count } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InvalidCreasePattern { issue_count },
+            ),
+            PaperGraphAdmissionError::ActiveEdgeOutsidePaper { edge } => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::ActiveEdgeOutsidePaper { edge },
+            ),
+            PaperGraphAdmissionError::ContainmentPredicateFailure { .. }
+            | PaperGraphAdmissionError::ContainmentInvariantViolation { .. }
+            | PaperGraphAdmissionError::InternalBoundaryResolution
+            | PaperGraphAdmissionError::Dcel(_) => (
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InternalBoundaryResolution,
+            ),
+        },
+        FoldGraphError::UnsupportedCut { edge } => (
+            TopologyIssueSeverity::BlocksSimulation,
+            TopologyIssueKind::UnsupportedActiveEdge {
+                edge,
+                edge_kind: EdgeKind::Cut,
+            },
+        ),
+        FoldGraphError::DisconnectedParticipantGraph { edge } => (
+            TopologyIssueSeverity::BlocksSimulation,
+            TopologyIssueKind::DisconnectedFoldGraph { edge },
+        ),
+        FoldGraphError::NonSeparatingFold { edge } => (
+            TopologyIssueSeverity::BlocksSimulation,
+            TopologyIssueKind::NonSeparatingFold { edge },
+        ),
+        FoldGraphError::ExteriorFoldIncidence { edge } => (
+            TopologyIssueSeverity::Fatal,
+            TopologyIssueKind::InvalidEdgeIncidence { edge },
+        ),
+        FoldGraphError::UnexpectedWalkOrientation { edge }
+        | FoldGraphError::UnsupportedNonSimpleFace { edge } => (
+            TopologyIssueSeverity::BlocksSimulation,
+            TopologyIssueKind::UnsupportedFoldGraph { edge },
+        ),
+        FoldGraphError::FaceBuild(kind) => (TopologyIssueSeverity::Fatal, kind),
+        FoldGraphError::InternalInvariant => (
+            TopologyIssueSeverity::Fatal,
+            TopologyIssueKind::InternalBoundaryResolution,
+        ),
     }
 }
 

@@ -76,7 +76,9 @@ impl EditorTopology {
         self.report
     }
 
-    /// Returns whether this result may be consumed by folding simulation.
+    /// Returns whether this result is a safe, complete topology snapshot for
+    /// downstream consumers. A consumer still decides whether it supports the
+    /// snapshot's hinge count and kinematic constraint class.
     #[must_use]
     pub fn is_simulation_ready(&self) -> bool {
         self.report.snapshot.is_some()
@@ -133,7 +135,7 @@ impl EditorState {
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{EdgeId, EdgeKind};
+    use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
 
     use super::*;
     use crate::{Command, create_rectangular_sheet};
@@ -142,6 +144,53 @@ mod tests {
         let sheet = create_rectangular_sheet(8.0, 6.0, false).expect("rectangle fixture");
         let (pattern, paper) = sheet.into_parts();
         EditorState::with_paper(pattern, paper)
+    }
+
+    fn parallel_fold_editor() -> EditorState {
+        let positions = [
+            Point2::new(0.0, 0.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(6.0, 0.0),
+            Point2::new(8.0, 0.0),
+            Point2::new(8.0, 6.0),
+            Point2::new(6.0, 6.0),
+            Point2::new(2.0, 6.0),
+            Point2::new(0.0, 6.0),
+        ];
+        let vertices = positions
+            .into_iter()
+            .map(|position| Vertex {
+                id: VertexId::new(),
+                position,
+            })
+            .collect::<Vec<_>>();
+        let mut edges = (0..vertices.len())
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % vertices.len()].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend([
+            Edge {
+                id: EdgeId::new(),
+                start: vertices[1].id,
+                end: vertices[6].id,
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: vertices[2].id,
+                end: vertices[5].id,
+                kind: EdgeKind::Valley,
+            },
+        ]);
+        let paper = Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..Paper::default()
+        };
+        EditorState::with_paper(CreasePattern { vertices, edges }, paper)
     }
 
     #[test]
@@ -195,6 +244,21 @@ mod tests {
         assert_eq!(snapshot.source_revision, 1);
         assert_eq!(snapshot.faces.len(), 2);
         assert_eq!(snapshot.hinge_adjacency.len(), 1);
+    }
+
+    #[test]
+    fn multiple_folds_produce_a_simulation_safe_cellular_snapshot() {
+        let editor = parallel_fold_editor();
+        let topology = editor.topology_analysis_input(ProjectId::new()).analyze();
+
+        assert_eq!(topology.revision(), 0);
+        assert!(topology.is_simulation_ready());
+        assert!(topology.report().issues.is_empty());
+        let snapshot = topology
+            .simulation_snapshot()
+            .expect("three cellular faces");
+        assert_eq!(snapshot.faces.len(), 3);
+        assert_eq!(snapshot.hinge_adjacency.len(), 2);
     }
 
     #[test]

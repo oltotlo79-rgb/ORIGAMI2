@@ -145,6 +145,11 @@ export type TopologyIssueKind =
   | { kind: 'invalid_crease_pattern'; issue_count: number }
   | { kind: 'unsupported_active_edge'; edge: string; edge_kind: string }
   | { kind: 'too_many_active_fold_edges'; edges: string[] }
+  | { kind: 'active_edge_outside_paper'; edge: string }
+  | { kind: 'disconnected_fold_graph'; edge: string }
+  | { kind: 'non_separating_fold'; edge: string }
+  | { kind: 'unsupported_fold_graph'; edge: string }
+  | { kind: 'invalid_edge_incidence'; edge: string }
   | { kind: 'fold_endpoint_not_on_boundary'; edge: string; vertex: string }
   | { kind: 'unsupported_adjacent_boundary_fold'; edge: string }
   | { kind: 'unsupported_non_convex_fold_sheet'; edge: string; vertex: string }

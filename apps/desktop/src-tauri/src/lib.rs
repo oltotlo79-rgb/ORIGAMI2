@@ -2003,6 +2003,53 @@ mod tests {
         }
     }
 
+    fn cellular_multi_fold_project_state() -> ProjectState {
+        let positions = [
+            Point2::new(0.0, 0.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(6.0, 0.0),
+            Point2::new(8.0, 0.0),
+            Point2::new(8.0, 6.0),
+            Point2::new(6.0, 6.0),
+            Point2::new(2.0, 6.0),
+            Point2::new(0.0, 6.0),
+        ];
+        let vertices = positions
+            .into_iter()
+            .map(|position| Vertex {
+                id: VertexId::new(),
+                position,
+            })
+            .collect::<Vec<_>>();
+        let mut edges = (0..vertices.len())
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % vertices.len()].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend([
+            Edge {
+                id: EdgeId::new(),
+                start: vertices[1].id,
+                end: vertices[6].id,
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: vertices[2].id,
+                end: vertices[5].id,
+                kind: EdgeKind::Valley,
+            },
+        ]);
+        let paper = Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..Paper::default()
+        };
+        ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper)
+    }
+
     #[derive(Debug, PartialEq)]
     struct ProjectStateSignature {
         project_id: ProjectId,
@@ -2086,6 +2133,25 @@ mod tests {
         assert_eq!(snapshot.faces.len(), 2);
         assert_eq!(snapshot.hinge_adjacency.len(), 1);
         assert_eq!(snapshot.hinge_adjacency[0].edge, fold);
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn topology_bridge_preserves_three_faces_and_two_hinges_for_multiple_folds() {
+        let project = cellular_multi_fold_project_state();
+        let before = project_state_signature(&project);
+        let input = capture_topology_input(&project, project.project_id, 0)
+            .expect("capture cellular fold graph");
+
+        let response = finish_topology_response(&project, &input, input.analyze())
+            .expect("finish cellular fold topology");
+
+        assert!(response.simulation_ready);
+        assert!(response.issues.is_empty());
+        let snapshot = response.snapshot.expect("cellular fold snapshot");
+        assert_eq!(snapshot.source_revision, 0);
+        assert_eq!(snapshot.faces.len(), 3);
+        assert_eq!(snapshot.hinge_adjacency.len(), 2);
         assert_eq!(project_state_signature(&project), before);
     }
 

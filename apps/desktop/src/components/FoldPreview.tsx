@@ -84,6 +84,7 @@ import {
 import {
   pickFoldPreviewFaceSurface,
   pickFoldPreviewTarget,
+  type FoldPreviewPreferredFaceIds,
   type FoldPreviewPickObject,
   type FoldPreviewPickTarget,
 } from '../lib/foldPreviewPicking'
@@ -100,6 +101,7 @@ import {
 } from '../lib/foldPreviewTreeScenePose'
 import {
   prepareFoldPreviewTreeMotionContext,
+  type FoldPreviewTreeMotionContext,
 } from '../lib/foldPreviewTreeMotionContext'
 import {
   createFoldPreviewTreeMotionOwnerState,
@@ -108,9 +110,22 @@ import {
   type FoldPreviewTreeMotionOwnerState,
 } from '../lib/foldPreviewTreeMotionOwner'
 import {
+  completeFoldPreviewTreeMotionRuntimePoseApplication,
   createFoldPreviewTreeMotionRuntime,
+  transitionFoldPreviewTreeMotionRuntime,
+  type FoldPreviewTreeMotionRuntimeCommand,
+  type FoldPreviewTreeMotionRuntimePlan,
+  type FoldPreviewTreeMotionRuntimeRunnerToken,
   type FoldPreviewTreeMotionRuntimeState,
 } from '../lib/foldPreviewTreeMotionRuntime'
+import {
+  prepareFoldPreviewTreePhysicalGrab,
+} from '../lib/foldPreviewTreePhysicalGrab'
+import {
+  prepareFoldPreviewTreeSingleHingeContinuousCollision,
+  type FoldPreviewTreeSingleHingeContinuousAnalyzer,
+  type FoldPreviewTreeSingleHingeContinuousBlocker,
+} from '../lib/foldPreviewTreeSingleHingeContinuousCollision'
 
 type FoldPreviewProps = {
   angle: number
@@ -173,6 +188,30 @@ type ContextualMotionState = Readonly<{
   state: FoldPreviewContinuousMotionRunnerState<FoldPreviewSingleFoldContinuousBlocker>
 }>
 
+type TreeContextualMotionState = Readonly<{
+  model: FoldPreviewModel
+  fixedFaceId: string
+  contextKey: string
+  hingeEdgeId: string
+  state: FoldPreviewContinuousMotionRunnerState<
+    FoldPreviewTreeSingleHingeContinuousBlocker
+  >
+}>
+
+type TreeMotionBinding = {
+  context: FoldPreviewTreeMotionContext
+  analyzer: FoldPreviewTreeSingleHingeContinuousAnalyzer
+  runtimeState: FoldPreviewTreeMotionRuntimeState
+  runner:
+    FoldPreviewContinuousMotionRunner<
+      FoldPreviewTreeSingleHingeContinuousBlocker
+    >
+    | null
+  runnerToken: FoldPreviewTreeMotionRuntimeRunnerToken | null
+  externalRequestKey: string
+  disposed: boolean
+}
+
 type AngleDragPresentation = Readonly<{
   state: 'idle' | 'armed' | 'dragging'
   mapping: typeof FOLD_PREVIEW_ANGLE_DRAG_MAPPING
@@ -226,6 +265,8 @@ export function FoldPreview({
   const [renderError, setRenderError] = useState<string | null>(null)
   const [collisionSummary, setCollisionSummary] = useState<CollisionSummary | null>(null)
   const [motionSnapshot, setMotionSnapshot] = useState<ContextualMotionState | null>(null)
+  const [treeMotionSnapshot, setTreeMotionSnapshot] =
+    useState<TreeContextualMotionState | null>(null)
   const [renderedTreePoseSnapshot, setRenderedTreePoseSnapshot] =
     useState<RenderedTreePoseSnapshot | null>(null)
   const [angleDragPresentation, setAngleDragPresentation] = useState(
@@ -250,6 +291,7 @@ export function FoldPreview({
   onRequestFoldAngleRef.current = onRequestFoldAngle
   const onCommitHingeFoldAngleRef = useRef(onCommitHingeFoldAngle)
   onCommitHingeFoldAngleRef.current = onCommitHingeFoldAngle
+  const treeCommitAvailable = Boolean(onCommitHingeFoldAngle)
   const resolvedFixedFaceId = fixedFaceId
     ?? (model?.kind === 'single_fold'
       ? model.fixedFace.id
@@ -325,11 +367,13 @@ export function FoldPreview({
     if (!host || !model) {
       runtimeRef.current = null
       setCollisionSummary(null)
+      setTreeMotionSnapshot(null)
       setRenderedTreePoseSnapshot(null)
       return
     }
     setRenderError(null)
     setCollisionSummary(null)
+    setTreeMotionSnapshot(null)
     setRenderedTreePoseSnapshot(null)
 
     const singleAnchor = model.kind === 'single_fold'
@@ -416,8 +460,17 @@ export function FoldPreview({
       LatestFrameTask<PendingTreeDirectPose> | null = null
     let treeMotionOwnerState:
       FoldPreviewTreeMotionOwnerState | null = null
-    let treeMotionRuntimeState:
-      FoldPreviewTreeMotionRuntimeState | null = null
+    let treeMotionBinding: TreeMotionBinding | null = null
+    let requestTreeMotionTarget = (
+      _binding: TreeMotionBinding,
+      _targetSelectedAngleDegrees: number,
+    ) => false
+    let treeBindingPoseIsCurrent = (
+      _binding: TreeMotionBinding,
+    ) => false
+    let currentTreeRenderedAngle = (
+      _binding: TreeMotionBinding,
+    ): number | null => null
     let renderedTreeAngles: readonly FoldPreviewHingeAngle[] | null = null
     let renderedTreePoseKey: string | null = null
     let selectedTreeHingeId = selectedHingeIdRef.current
@@ -428,8 +481,11 @@ export function FoldPreview({
     let physicalGrabState: FoldPreviewPhysicalGrabGestureState =
       createFoldPreviewPhysicalGrabGestureState()
     let physicalGrabStartRunnerState:
-      FoldPreviewContinuousMotionRunnerState<FoldPreviewSingleFoldContinuousBlocker>
+      | FoldPreviewContinuousMotionRunnerState<FoldPreviewSingleFoldContinuousBlocker>
+      | FoldPreviewTreeMotionRuntimeState
       | null = null
+    let physicalGrabTreeBinding: TreeMotionBinding | null = null
+    let physicalGrabStartTreePoseKey: string | null = null
     let physicalGrabCameraSnapshot: string | null = null
     let physicalGrabGuardKey: string | null = null
     let physicalGrabSessionForEvents: FoldPreviewPhysicalGrabSession | null = null
@@ -548,6 +604,18 @@ export function FoldPreview({
       }
     }
 
+    const disposeCurrentTreeMotionBinding = () => {
+      const binding = treeMotionBinding
+      if (!binding) return
+      const runner = binding.runner
+      binding.disposed = true
+      binding.runnerToken = null
+      binding.runner = null
+      treeMotionBinding = null
+      setTreeMotionSnapshot(null)
+      attemptCleanup(() => runner?.dispose())
+    }
+
     const executeTreeOwnershipCleanupCommand = (
       command: FoldPreviewTreeMotionOwnerCommand,
     ) => {
@@ -556,9 +624,9 @@ export function FoldPreview({
           resetTreeOwnedGesture()
           return true
         case 'dispose_runner':
-          // Runtime callbacks always consult the current state reference.
-          // Dropping this snapshot makes callbacks from the prior generation inert.
-          treeMotionRuntimeState = null
+          // The binding and token become stale before runner.dispose(), because
+          // dispose may synchronously publish one final runner state.
+          disposeCurrentTreeMotionBinding()
           return true
         case 'dispose_direct':
           treeDirectPoseFrameTask?.dispose()
@@ -583,6 +651,10 @@ export function FoldPreview({
           }
         }
       }
+      // Even a rejected/corrupted owner transition must not leave scheduler
+      // work alive. This preserves stale-before-dispose ordering independently
+      // of the pure owner command boundary.
+      disposeCurrentTreeMotionBinding()
       disposed = true
       angleDragState = reduceFoldPreviewAngleDrag(angleDragState, {
         kind: 'reset',
@@ -593,6 +665,8 @@ export function FoldPreview({
         { kind: 'reset', reason: 'dispose' },
       ).state
       physicalGrabStartRunnerState = null
+      physicalGrabTreeBinding = null
+      physicalGrabStartTreePoseKey = null
       physicalGrabCameraSnapshot = null
       physicalGrabGuardKey = null
       physicalGrabSessionForEvents = null
@@ -1175,10 +1249,10 @@ export function FoldPreview({
           }
         }
         const createIdleTreeOwner = () => {
+          if (treeMotionBinding) return false
           const ownerState = createFoldPreviewTreeMotionOwnerState()
           if (!ownerState) return false
           treeMotionOwnerState = ownerState
-          treeMotionRuntimeState = null
           return true
         }
         const resetTreeOwnerToIdle = () => {
@@ -1197,32 +1271,369 @@ export function FoldPreview({
           }
           return createIdleTreeOwner()
         }
+        const treeBindingIsCurrent = (binding: TreeMotionBinding) =>
+          !disposed
+          && !binding.disposed
+          && treeMotionBinding === binding
+        const treeBindingExternalRequestIsCurrent = (
+          binding: TreeMotionBinding,
+        ) => {
+          const latestRequest = latestRequestedTreePoseRef.current
+          return treeBindingIsCurrent(binding)
+            && Boolean(onCommitHingeFoldAngleRef.current)
+            && selectedHingeIdRef.current
+              === binding.context.selectedHingeEdgeId
+            && latestRequest?.model === model
+            && latestRequest.fixedFaceId === binding.context.fixedFaceId
+            && latestRequest.collisionThickness
+              === binding.context.collisionThickness
+            && latestRequest.visualThickness
+              === binding.context.visualThickness
+            && latestRequest.requestKey === binding.externalRequestKey
+        }
+        const treeAnglesEqual = (
+          first: readonly FoldPreviewHingeAngle[],
+          second: readonly FoldPreviewHingeAngle[],
+        ) =>
+          first.length === second.length
+          && first.every(
+            (hingeAngle, index) =>
+              hingeAngle.edgeId === second[index]?.edgeId
+              && hingeAngle.angleDegrees
+                === second[index]?.angleDegrees,
+          )
+        const selectedTreeAngle = (
+          angles: readonly FoldPreviewHingeAngle[],
+          hingeEdgeId: string,
+        ) => {
+          const matches = angles.filter(
+            (hingeAngle) => hingeAngle.edgeId === hingeEdgeId,
+          )
+          return matches.length === 1
+            && isFoldPreviewAngle(matches[0]?.angleDegrees)
+            ? matches[0]?.angleDegrees ?? null
+            : null
+        }
+        currentTreeRenderedAngle = (binding) =>
+          treeBindingIsCurrent(binding) && renderedTreeAngles
+            ? selectedTreeAngle(
+                renderedTreeAngles,
+                binding.context.selectedHingeEdgeId,
+              )
+            : null
+        treeBindingPoseIsCurrent = (binding) => {
+          return treeBindingExternalRequestIsCurrent(binding)
+            && renderedTreeAngles !== null
+            && renderedTreePoseKey !== null
+            && treeAnglesEqual(
+              binding.runtimeState.appliedAngles,
+              renderedTreeAngles,
+            )
+            && binding.externalRequestKey === renderedTreePoseKey
+        }
+        const failTreeMotion = (
+          binding: TreeMotionBinding,
+          wasCurrent = false,
+        ) => {
+          if (
+            disposed
+            || (!wasCurrent && !treeBindingIsCurrent(binding))
+          ) return
+          dispose()
+          setRenderError('木構造の折り経路を安全に継続できませんでした')
+        }
+        const executeTreeRuntimePlan = (
+          binding: TreeMotionBinding,
+          runtimePlan: FoldPreviewTreeMotionRuntimePlan,
+        ): boolean => {
+          if (!treeBindingIsCurrent(binding)) return false
+          binding.runtimeState = runtimePlan.state
+          treeMotionOwnerState = runtimePlan.ownerState
+          binding.runnerToken = runtimePlan.state.activeRunnerToken
+          let commandsSucceeded = true
+          for (const command of runtimePlan.commands) {
+            if (!executeTreeRuntimeCommand(binding, command)) {
+              commandsSucceeded = false
+              break
+            }
+          }
+          return runtimePlan.accepted && commandsSucceeded
+        }
+        const completeTreePoseApplication = (
+          binding: TreeMotionBinding,
+          command: Extract<
+            FoldPreviewTreeMotionRuntimeCommand,
+            { kind: 'apply_complete_pose' }
+          >,
+          applied: boolean,
+        ) => {
+          if (!treeBindingIsCurrent(binding)) return false
+          const completionPlan =
+            completeFoldPreviewTreeMotionRuntimePoseApplication(
+              binding.runtimeState,
+              command.applicationToken,
+              applied,
+            )
+          return completionPlan
+            ? executeTreeRuntimePlan(binding, completionPlan)
+            : false
+        }
+        const executeTreeRuntimeCommand = (
+          binding: TreeMotionBinding,
+          command: FoldPreviewTreeMotionRuntimeCommand,
+        ): boolean => {
+          if (!treeBindingIsCurrent(binding)) return false
+          if (command.kind === 'dispose_runner') {
+            disposeCurrentTreeMotionBinding()
+            return true
+          }
+          if (command.kind === 'start_runner') {
+            const runner = binding.runner
+            const runnerState = runner?.getState()
+            if (
+              !runner
+              || !runnerState
+              || command.contextKey !== binding.context.contextKey
+              || command.hingeEdgeId
+                !== binding.context.selectedHingeEdgeId
+              || command.generation !== binding.runtimeState.generation
+              || command.runnerToken
+                !== binding.runtimeState.activeRunnerToken
+              || command.runnerToken !== binding.runnerToken
+              || command.requestSequence
+                !== binding.runtimeState.activeRequestSequence
+              || command.targetSelectedAngleDegrees
+                !== binding.runtimeState.activeTargetSelectedAngleDegrees
+              || runnerState.status === 'running'
+              || runnerState.status === 'disposed'
+            ) return false
+            // This token is installed before request(), whose onState callback
+            // publishes synchronously.
+            binding.runnerToken = command.runnerToken
+            const started = runner.request(
+              command.targetSelectedAngleDegrees,
+            )
+            return started
+              || (
+                treeBindingIsCurrent(binding)
+                && binding.runtimeState.activeRequestSequence === null
+                && binding.runtimeState.pendingApplicationToken === null
+                && binding.runtimeState.committedRequestSequence
+                  === command.requestSequence
+                && binding.runnerToken === null
+              )
+          }
+          if (command.kind === 'apply_complete_pose') {
+            if (
+              command.contextKey !== binding.context.contextKey
+              || command.hingeEdgeId
+                !== binding.context.selectedHingeEdgeId
+              || command.generation !== binding.runtimeState.generation
+              || command.requestSequence
+                !== binding.runtimeState.activeRequestSequence
+              || command.applicationToken
+                !== binding.runtimeState.pendingApplicationToken
+            ) return false
+            let applied = false
+            try {
+              applied = updatePose(0, command.appliedAngles)
+                && renderedTreeAngles !== null
+                && treeAnglesEqual(
+                  renderedTreeAngles,
+                  command.appliedAngles,
+                )
+            } catch {
+              applied = false
+            }
+            const completed = completeTreePoseApplication(
+              binding,
+              command,
+              applied,
+            )
+            if (!applied || !completed) {
+              if (!disposed) {
+                dispose()
+                setRenderError(
+                  '木構造の折り姿勢を安全に適用できませんでした',
+                )
+              }
+              return false
+            }
+            try {
+              render()
+              return true
+            } catch {
+              if (!disposed) {
+                dispose()
+                setRenderError(
+                  '木構造の折り姿勢を安全に描画できませんでした',
+                )
+              }
+              return false
+            }
+          }
+          if (command.kind === 'commit_complete_applied') {
+            const callback = onCommitHingeFoldAngleRef.current
+            if (
+              !callback
+              || command.contextKey !== binding.context.contextKey
+              || command.hingeEdgeId
+                !== binding.context.selectedHingeEdgeId
+              || command.generation !== binding.runtimeState.generation
+              || command.requestSequence
+                !== binding.runtimeState.committedRequestSequence
+              || renderedTreePoseKey === null
+              || !treeAnglesEqual(
+                command.appliedAngles,
+                binding.runtimeState.appliedAngles,
+              )
+              || selectedTreeAngle(
+                command.appliedAngles,
+                command.hingeEdgeId,
+              ) !== command.selectedAngleDegrees
+            ) return false
+            binding.externalRequestKey = renderedTreePoseKey
+            try {
+              callback(
+                command.hingeEdgeId,
+                command.selectedAngleDegrees,
+              )
+            } catch {
+              // The certified scene remains authoritative even if a consumer
+              // cannot persist the exactly-once terminal notification.
+            }
+            return true
+          }
+          return false
+        }
+        const applyTreeRunnerAngle = (
+          binding: TreeMotionBinding,
+          selectedAngleDegrees: number,
+        ) => {
+          const wasCurrent = treeBindingIsCurrent(binding)
+          if (
+            wasCurrent
+            && !treeBindingExternalRequestIsCurrent(binding)
+          ) {
+            disposeCurrentTreeMotionBinding()
+            return false
+          }
+          const runnerToken = binding.runnerToken
+          if (
+            !wasCurrent
+            || !runnerToken
+            || !isFoldPreviewAngle(selectedAngleDegrees)
+          ) return false
+          const runtimePlan = transitionFoldPreviewTreeMotionRuntime(
+            binding.runtimeState,
+            {
+              kind: 'runner_apply',
+              runnerToken,
+              selectedAngleDegrees,
+            },
+          )
+          const accepted = runtimePlan
+            ? executeTreeRuntimePlan(binding, runtimePlan)
+            : false
+          if (!accepted) failTreeMotion(binding, wasCurrent)
+          return accepted
+        }
+        const publishTreeRunnerState = (
+          binding: TreeMotionBinding,
+          runnerState: FoldPreviewContinuousMotionRunnerState<
+            FoldPreviewTreeSingleHingeContinuousBlocker
+          >,
+        ) => {
+          const wasCurrent = treeBindingIsCurrent(binding)
+          if (
+            wasCurrent
+            && !treeBindingExternalRequestIsCurrent(binding)
+          ) {
+            disposeCurrentTreeMotionBinding()
+            return
+          }
+          const runnerToken = binding.runnerToken
+          if (
+            !wasCurrent
+            || !runnerToken
+          ) return
+          const runtimePlan = transitionFoldPreviewTreeMotionRuntime(
+            binding.runtimeState,
+            {
+              kind: 'runner_state',
+              runnerToken,
+              runnerState,
+            },
+          )
+          const accepted = runtimePlan
+            ? executeTreeRuntimePlan(binding, runtimePlan)
+            : false
+          if (!accepted) {
+            failTreeMotion(binding, wasCurrent)
+            return
+          }
+          setTreeMotionSnapshot({
+            model,
+            fixedFaceId: treeKinematics.rootFaceId,
+            contextKey: binding.context.contextKey,
+            hingeEdgeId: binding.context.selectedHingeEdgeId,
+            state: runnerState,
+          })
+        }
+        requestTreeMotionTarget = (
+          binding,
+          targetSelectedAngleDegrees,
+        ) => {
+          const wasCurrent = treeBindingIsCurrent(binding)
+          if (
+            !wasCurrent
+            || !onCommitHingeFoldAngleRef.current
+            || !isFoldPreviewAngle(targetSelectedAngleDegrees)
+            || binding.runtimeState.pendingApplicationToken !== null
+            || binding.runtimeState.activeRequestSequence !== null
+            || treeMotionOwnerState?.owner !== 'runner'
+            || treeMotionOwnerState.directPending
+            || !treeBindingPoseIsCurrent(binding)
+          ) return false
+          const runtimePlan = transitionFoldPreviewTreeMotionRuntime(
+            binding.runtimeState,
+            {
+              kind: 'request',
+              targetSelectedAngleDegrees,
+            },
+          )
+          const accepted = runtimePlan
+            ? executeTreeRuntimePlan(binding, runtimePlan)
+            : false
+          if (!accepted) failTreeMotion(binding, wasCurrent)
+          return accepted
+        }
         const prepareTreeMotionRuntime = (hingeEdgeId: string | null) => {
           if (
             !renderedTreeAngles
             || renderedTreePoseKey === null
             || collisionThickness === null
+            || !treeCommitAvailable
+            || !onCommitHingeFoldAngleRef.current
             || !hingeEdgeId
             || !treeKinematics.joints.some(
               (joint) => joint.hinge.edgeId === hingeEdgeId,
             )
           ) {
             if (
-              treeMotionRuntimeState
+              treeMotionBinding
               || treeMotionOwnerState?.owner === 'runner'
             ) return resetTreeOwnerToIdle()
             return treeMotionOwnerState ? true : createIdleTreeOwner()
           }
           if (
-            treeMotionRuntimeState
-            && treeMotionRuntimeState.hingeEdgeId === hingeEdgeId
-            && treeMotionRuntimeState.appliedAngles.length
-              === renderedTreeAngles.length
-            && treeMotionRuntimeState.appliedAngles.every(
-              (hingeAngle, index) =>
-                hingeAngle.edgeId === renderedTreeAngles?.[index]?.edgeId
-                && hingeAngle.angleDegrees
-                  === renderedTreeAngles[index]?.angleDegrees,
+            treeMotionBinding
+            && !treeMotionBinding.disposed
+            && treeMotionBinding.context.selectedHingeEdgeId
+              === hingeEdgeId
+            && treeAnglesEqual(
+              treeMotionBinding.runtimeState.appliedAngles,
+              renderedTreeAngles,
             )
           ) return true
           if (!treeMotionOwnerState && !createIdleTreeOwner()) return false
@@ -1238,6 +1649,13 @@ export function FoldPreview({
             visualThickness: previewThickness,
           })
           if (!context) return false
+          const analyzer =
+            prepareFoldPreviewTreeSingleHingeContinuousCollision(
+              model,
+              treeKinematics.rootFaceId,
+              hingeEdgeId,
+            )
+          if (!analyzer) return false
           const ownerPlan = transitionFoldPreviewTreeMotionOwner(ownerState, {
             kind: 'prepare_runner',
             ownerToken: ownerState.ownerToken,
@@ -1272,7 +1690,48 @@ export function FoldPreview({
             ownerState: ownerPlan.state,
           })
           if (!motionRuntime) return false
-          treeMotionRuntimeState = motionRuntime
+          const binding: TreeMotionBinding = {
+            context,
+            analyzer,
+            runtimeState: motionRuntime,
+            runner: null,
+            runnerToken: null,
+            externalRequestKey: renderedTreePoseKey,
+            disposed: false,
+          }
+          const motionRunner = createFoldPreviewContinuousMotionRunner({
+            initialAngle: context.selectedAngleDegrees,
+            schedule: (callback) => window.requestAnimationFrame(callback),
+            cancel: (handle) => window.cancelAnimationFrame(handle),
+            jobFactory: (startAngle, targetAngle) => {
+              if (
+                !treeBindingIsCurrent(binding)
+                || selectedTreeAngle(
+                  binding.runtimeState.appliedAngles,
+                  binding.context.selectedHingeEdgeId,
+                ) !== startAngle
+              ) return null
+              return binding.analyzer.createJob(
+                binding.runtimeState.appliedAngles,
+                targetAngle,
+                binding.context.collisionThickness,
+              )
+            },
+            applyAngle: (nextAngle) =>
+              applyTreeRunnerAngle(binding, nextAngle),
+            onState: (runnerState) =>
+              publishTreeRunnerState(binding, runnerState),
+          })
+          if (!motionRunner) return false
+          binding.runner = motionRunner
+          treeMotionBinding = binding
+          setTreeMotionSnapshot({
+            model,
+            fixedFaceId: treeKinematics.rootFaceId,
+            contextKey: context.contextKey,
+            hingeEdgeId,
+            state: motionRunner.getState(),
+          })
           return true
         }
         const createTreeDirectPoseFrameTask = () =>
@@ -1350,6 +1809,22 @@ export function FoldPreview({
         updateSelection = (nextSelectedHingeId) => {
           selectedTreeHingeId = nextSelectedHingeId
           updateTreeSelectionVisual(nextSelectedHingeId)
+          const latestRequest = latestRequestedTreePoseRef.current
+          if (
+            latestRequest?.model === model
+            && latestRequest.fixedFaceId === treeKinematics.rootFaceId
+            && latestRequest.collisionThickness === collisionThickness
+            && latestRequest.visualThickness === previewThickness
+            && latestRequest.requestKey !== renderedTreePoseKey
+          ) {
+            if (!schedulePose(
+              angleRef.current,
+              hingeAnglesRef.current,
+            )) {
+              throw new Error('tree selection pose restore failed')
+            }
+            return
+          }
           if (!prepareTreeMotionRuntime(nextSelectedHingeId)) {
             throw new Error('tree motion runtime selection failed')
           }
@@ -1366,7 +1841,7 @@ export function FoldPreview({
           if (
             requestedPose.requestKey === renderedTreePoseKey
             && !treeDirectPoseFrameTask?.hasPending()
-            && treeMotionRuntimeState?.activeRequestSequence === null
+            && treeMotionBinding?.runtimeState.activeRequestSequence === null
           ) {
             resetTreeOwnedGesture()
             return prepareTreeMotionRuntime(selectedTreeHingeId)
@@ -1499,7 +1974,7 @@ export function FoldPreview({
       const pickSurfaceAt = (
         clientX: number,
         clientY: number,
-        preferredFaceId?: string,
+        preferredFaceIds?: FoldPreviewPreferredFaceIds,
       ) => {
         try {
           if (!setPointerFromClient(clientX, clientY)) return null
@@ -1509,7 +1984,7 @@ export function FoldPreview({
             camera,
             pointer,
             facePickObjects,
-            preferredFaceId,
+            preferredFaceIds,
           )
         } catch {
           return null
@@ -1777,20 +2252,53 @@ export function FoldPreview({
         return true
       }
 
-      const currentPhysicalGrabViewSnapshot = () => {
+      const physicalGrabViewSnapshotAt = (viewAngle: number) => {
         const viewport = readFoldPreviewPhysicalGrabViewport(canvas)
-        return viewport
+        return viewport && isFoldPreviewAngle(viewAngle)
           ? snapshotFoldPreviewPhysicalGrabView(
               camera,
               createdControls.target,
               viewport,
-              angleRef.current,
+              viewAngle,
             )
           : null
       }
+      const currentPhysicalGrabViewSnapshot = () => {
+        const viewAngle = model.kind === 'fold_graph'
+          && model.kinematics.kind === 'tree'
+          ? physicalGrabTreeBinding
+            ? currentTreeRenderedAngle(physicalGrabTreeBinding)
+            : null
+          : angleRef.current
+        return viewAngle === null
+          ? null
+          : physicalGrabViewSnapshotAt(viewAngle)
+      }
 
-      const currentPhysicalGrabGuardKey = () =>
-        currentFoldPreviewPhysicalGrabGuardKey({
+      const currentPhysicalGrabGuardKey = () => {
+        if (
+          model.kind === 'fold_graph'
+          && model.kinematics.kind === 'tree'
+        ) {
+          const binding = physicalGrabTreeBinding
+          if (
+            !binding
+            || !treeBindingPoseIsCurrent(binding)
+            || physicalGrabStartTreePoseKey === null
+            || physicalGrabStartTreePoseKey !== renderedTreePoseKey
+          ) return null
+          return currentFoldPreviewPhysicalGrabGuardKey({
+            guardKey: physicalGrabGuardKey,
+            startedRunnerState: physicalGrabStartRunnerState,
+            currentRunnerState: binding.runtimeState,
+            startedViewKey: physicalGrabCameraSnapshot,
+            currentViewKey: currentPhysicalGrabViewSnapshot(),
+            activeContextKey: angleDragContextKey,
+            renderedContextKey: binding.context.contextKey,
+            latestContextKey: binding.context.contextKey,
+          })
+        }
+        return currentFoldPreviewPhysicalGrabGuardKey({
           guardKey: physicalGrabGuardKey,
           startedRunnerState: physicalGrabStartRunnerState,
           currentRunnerState: continuousMotionRunner?.getState() ?? null,
@@ -1800,13 +2308,22 @@ export function FoldPreview({
           renderedContextKey: singleFoldMotionContextKey,
           latestContextKey: singleFoldMotionContextKeyRef.current,
         })
+      }
 
       const physicalGrabEventGuardKey = () =>
         currentPhysicalGrabGuardKey()
         ?? 'stale-physical-grab-guard'
+      const physicalGrabEventContextKey = () =>
+        physicalGrabState.kind === 'armed'
+        || physicalGrabState.kind === 'dragging'
+          ? physicalGrabState.contextKey
+          : physicalGrabSessionForEvents?.contextKey
+            ?? 'stale-physical-grab-context'
 
       const clearPhysicalGrabGuards = (clearEventSession: boolean) => {
         physicalGrabStartRunnerState = null
+        physicalGrabTreeBinding = null
+        physicalGrabStartTreePoseKey = null
         physicalGrabCameraSnapshot = null
         physicalGrabGuardKey = null
         if (clearEventSession) physicalGrabSessionForEvents = null
@@ -1816,6 +2333,9 @@ export function FoldPreview({
         transition: ReturnType<typeof reduceFoldPreviewPhysicalGrabGesture>,
         eventPointerId: number | null,
       ) => {
+        const completionTreeBinding = physicalGrabTreeBinding
+        const completionHingeId = angleDragHingeId
+        const completionContextKey = angleDragContextKey
         const completionNeedsCurrentGuard = transition.effects.some(
           (effect) =>
             effect.kind === 'end'
@@ -1828,7 +2348,13 @@ export function FoldPreview({
           selectedHingeId: selectedHingeIdRef.current,
           activeHingeId: angleDragHingeId,
           modelHingeId:
-            model.kind === 'single_fold' ? model.hinge.edgeId : null,
+            model.kind === 'single_fold'
+              ? model.hinge.edgeId
+              : model.kind === 'fold_graph'
+                && model.kinematics.kind === 'tree'
+                ? completionTreeBinding?.context.selectedHingeEdgeId
+                  ?? null
+                : null,
           activeContextKey: angleDragContextKey,
           disposed,
           guardIsCurrent:
@@ -1868,8 +2394,34 @@ export function FoldPreview({
             syncAngleDragPresentation()
             continue
           }
-          attemptCleanup(() =>
-            onRequestFoldAngleRef.current?.(command.angleDegrees))
+          if (model.kind === 'single_fold') {
+            if (
+              command.hingeEdgeId === model.hinge.edgeId
+              && command.contextKey === singleFoldMotionContextKey
+            ) {
+              attemptCleanup(() =>
+                onRequestFoldAngleRef.current?.(command.angleDegrees))
+            }
+            continue
+          }
+          if (
+            model.kind === 'fold_graph'
+            && model.kinematics.kind === 'tree'
+            && completionTreeBinding
+            && completionHingeId === command.hingeEdgeId
+            && completionContextKey === command.contextKey
+            && completionTreeBinding.context.selectedHingeEdgeId
+              === command.hingeEdgeId
+            && completionTreeBinding.context.contextKey
+              === command.contextKey
+            && treeMotionBinding === completionTreeBinding
+            && !completionTreeBinding.disposed
+          ) {
+            requestTreeMotionTarget(
+              completionTreeBinding,
+              command.angleDegrees,
+            )
+          }
         }
         return {
           handled: plan.handled,
@@ -2016,6 +2568,156 @@ export function FoldPreview({
               viewportHeight: bounds.height,
             })
             if (applyAngleDragTransition(transition, event.pointerId)) {
+              consumePointerEvent(event)
+            }
+            return
+          }
+          if (
+            model.kind === 'fold_graph'
+            && model.kinematics.kind === 'tree'
+          ) {
+            const binding = treeMotionBinding
+            const ownerState = treeMotionOwnerState
+            const runnerState = binding?.runner?.getState()
+            if (
+              !pointerType
+              || !onCommitHingeFoldAngleRef.current
+              || collisionThickness === null
+              || !binding
+              || binding.disposed
+              || !runnerState
+              || binding.context.selectedHingeEdgeId
+                !== selectedTreeHingeId
+              || binding.context.selectedHingeEdgeId
+                !== selectedHingeIdRef.current
+              || binding.context.collisionThickness !== collisionThickness
+              || binding.context.visualThickness !== previewThickness
+              || ownerState?.owner !== 'runner'
+              || ownerState.directPending
+              || binding.runtimeState.activeRequestSequence !== null
+              || binding.runtimeState.pendingApplicationToken !== null
+              || runnerState.status === 'running'
+              || runnerState.status === 'disposed'
+              || !treeBindingPoseIsCurrent(binding)
+            ) return
+            const appliedAngle = currentTreeRenderedAngle(binding)
+            if (
+              appliedAngle === null
+              || runnerState.applied !== appliedAngle
+            ) return
+            const dependentFaceIds = collectFoldTreeDependentFaces(
+              binding.context.tree,
+              binding.context.selectedHingeEdgeId,
+            )
+            const surfaceHit = dependentFaceIds
+              ? pickSurfaceAt(
+                  event.clientX,
+                  event.clientY,
+                  dependentFaceIds,
+                )
+              : null
+            const startRay = pointerRayAt(
+              event.clientX,
+              event.clientY,
+            )
+            const minimumOrbitRadius =
+              model.worldUnitsPerMillimetre * 0.001
+            if (
+              !surfaceHit
+              || !startRay
+              || !isPositiveFinite(minimumOrbitRadius)
+            ) return
+            const prepared = prepareFoldPreviewTreePhysicalGrab({
+              model,
+              fixedFaceId: binding.context.fixedFaceId,
+              selectedHingeEdgeId:
+                binding.context.selectedHingeEdgeId,
+              appliedAngles: {
+                kind: 'per_hinge',
+                angles: binding.runtimeState.appliedAngles,
+              },
+              contextKey: binding.context.contextKey,
+              surfaceHit,
+              visualThickness: previewThickness,
+              startRay,
+              minimumOrbitRadius,
+            })
+            const physicalGrabViewport =
+              readFoldPreviewPhysicalGrabViewport(canvas)
+            if (
+              prepared.kind !== 'ready'
+              || !physicalGrabViewport
+              || !canBeginFoldPreviewPhysicalGrabInView(
+                camera,
+                prepared.session,
+                physicalGrabViewport,
+              )
+            ) return
+            const cameraSnapshot =
+              physicalGrabViewSnapshotAt(appliedAngle)
+            if (!cameraSnapshot || renderedTreePoseKey === null) return
+            const guardKey =
+              `physical-grab-${physicalGrabGuardSequence + 1}`
+            const transition = reduceFoldPreviewPhysicalGrabGesture(
+              physicalGrabState,
+              {
+                kind: 'pointer_down',
+                pointerId: event.pointerId,
+                pointerType,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                button: event.button,
+                buttons: event.buttons,
+                isPrimary: event.isPrimary,
+                altKey: event.altKey,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                shiftKey: event.shiftKey,
+                hadActivePointer,
+                guardKey,
+                contextKey: binding.context.contextKey,
+                session: prepared.session,
+              },
+            )
+            if (transition.state.kind !== 'armed') return
+            try {
+              canvas.setPointerCapture(event.pointerId)
+              if (!canvas.hasPointerCapture(event.pointerId)) {
+                throw new Error('pointer capture was not acquired')
+              }
+            } catch {
+              physicalGrabState = reduceFoldPreviewPhysicalGrabGesture(
+                transition.state,
+                { kind: 'reset', reason: 'reset' },
+              ).state
+              if (canvas.hasPointerCapture(event.pointerId)) {
+                attemptCleanup(() =>
+                  canvas.releasePointerCapture(event.pointerId))
+              }
+              return
+            }
+            physicalGrabGuardSequence += 1
+            physicalGrabStartRunnerState = binding.runtimeState
+            physicalGrabTreeBinding = binding
+            physicalGrabStartTreePoseKey = renderedTreePoseKey
+            physicalGrabCameraSnapshot = cameraSnapshot
+            physicalGrabGuardKey = guardKey
+            physicalGrabSessionForEvents = prepared.session
+            angleDragCapturedPointerId = event.pointerId
+            angleDragCapturedPointerType = pointerType
+            angleDragHingeId =
+              binding.context.selectedHingeEdgeId
+            angleDragContextKey = binding.context.contextKey
+            controlsEnabledBeforeAngleDrag =
+              createdControls.enabled
+            cursorBeforeAngleDrag = canvas.style.cursor
+            createdControls.enabled = false
+            canvas.style.cursor = 'grabbing'
+            angleDragSequenceRef.current += 1
+            if (applyPhysicalGrabTransition(
+              transition,
+              event.pointerId,
+            ).handled) {
               consumePointerEvent(event)
             }
             return
@@ -2249,10 +2951,7 @@ export function FoldPreview({
                   clientX: event.clientX,
                   clientY: event.clientY,
                   guardKey: physicalGrabEventGuardKey(),
-                  contextKey:
-                    singleFoldMotionContextKey
-                    ?? physicalGrabSessionForEvents?.contextKey
-                    ?? 'stale-physical-grab-context',
+                  contextKey: physicalGrabEventContextKey(),
                   ray: null,
                   isInside: pointerWithinCanvas(event),
                   buttons: event.buttons,
@@ -2279,10 +2978,7 @@ export function FoldPreview({
                 clientX: sample.clientX,
                 clientY: sample.clientY,
                 guardKey: physicalGrabEventGuardKey(),
-                contextKey:
-                  singleFoldMotionContextKey
-                  ?? physicalGrabSessionForEvents?.contextKey
-                  ?? 'stale-physical-grab-context',
+                contextKey: physicalGrabEventContextKey(),
                 ray,
                 isInside: pointerWithinCanvas(sample),
                 buttons: sample.buttons,
@@ -2344,10 +3040,7 @@ export function FoldPreview({
               clientX: event.clientX,
               clientY: event.clientY,
               guardKey: physicalGrabEventGuardKey(),
-              contextKey:
-                singleFoldMotionContextKey
-                ?? physicalGrabSessionForEvents?.contextKey
-                ?? 'stale-physical-grab-context',
+              contextKey: physicalGrabEventContextKey(),
               ray,
               isInside: pointerWithinCanvas(event),
               button: event.button,
@@ -2556,6 +3249,7 @@ export function FoldPreview({
     backOpacity,
     resolvedFixedFaceId,
     singleFoldMotionContextKey,
+    treeCommitAvailable,
   ])
 
   useEffect(() => {
@@ -2640,10 +3334,39 @@ export function FoldPreview({
     && motionSnapshot?.contextKey === singleFoldMotionContextKey
     ? motionSnapshot.state
     : null
+  const contextualTreeMotionState =
+    model?.kind === 'fold_graph'
+    && model.kinematics.kind === 'tree'
+    && treeCommitAvailable
+    && treeMotionSnapshot?.model === model
+    && treeMotionSnapshot.fixedFaceId
+      === (resolvedFixedFaceId ?? model.kinematics.rootFaceId)
+    && treeMotionSnapshot.hingeEdgeId === selectedHingeId
+      ? treeMotionSnapshot.state
+      : null
+  const renderedSelectedTreeAngles =
+    model?.kind === 'fold_graph'
+    && model.kinematics.kind === 'tree'
+    && renderedTreePose
+    && selectedHingeId
+      ? renderedTreePose.appliedAngles.filter(
+          (hingeAngle) => hingeAngle.edgeId === selectedHingeId,
+        )
+      : []
+  const renderedSelectedTreeAngle =
+    renderedSelectedTreeAngles.length === 1
+    && isFoldPreviewAngle(
+      renderedSelectedTreeAngles[0]?.angleDegrees,
+    )
+      ? renderedSelectedTreeAngles[0]?.angleDegrees ?? null
+      : null
   const displayedAngle = model?.kind === 'single_fold'
     ? contextualMotionState?.applied ?? 0
-    : safeAngle
-  const currentMotionState = model?.kind === 'single_fold'
+    : model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+      ? renderedSelectedTreeAngle ?? safeAngle
+      : safeAngle
+  const currentSingleMotionState = model?.kind === 'single_fold'
     ? contextualMotionState
       ? contextualMotionState.requested === safeAngle
         ? contextualMotionState
@@ -2658,18 +3381,42 @@ export function FoldPreview({
           }
       : null
     : null
+  const currentMotionState = model?.kind === 'single_fold'
+    ? currentSingleMotionState
+    : model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+      ? contextualTreeMotionState
+      : null
   const motionFaceLabels: readonly FoldPreviewMotionFaceLabel[] =
     model?.kind === 'single_fold'
+    || (
+      model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+    )
       ? model.faces.map((face, index) => ({
           id: face.id,
           number: index + 1,
           label: `面 ${index + 1}${face.id === resolvedFixedFaceId ? '（固定）' : ''}`,
         }))
       : []
-  const motionView = model?.kind === 'single_fold' && !renderError
+  const motionView = (
+    model?.kind === 'single_fold'
+    || (
+      model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+      && treeCommitAvailable
+    )
+  ) && !renderError
     ? describeFoldPreviewContinuousMotion(currentMotionState)
     : null
-  const motionDetail = model?.kind === 'single_fold'
+  const motionDetail = (
+    model?.kind === 'single_fold'
+    || (
+      model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+      && treeCommitAvailable
+    )
+  )
     && !renderError
     && angleDragPresentation.state === 'idle'
     ? describeFoldPreviewContinuousMotionDetail(currentMotionState, motionFaceLabels)
@@ -2705,6 +3452,11 @@ export function FoldPreview({
     ? collisionSummary
     : null
   const collisionPathDisclosure = model?.kind === 'single_fold'
+    || (
+      model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+      && treeCommitAvailable
+    )
     ? 'separately_reported'
     : 'unverified'
   const collisionNote = describeCollisionSummary(
@@ -2724,7 +3476,11 @@ export function FoldPreview({
     : `${previewPoseNote}・${collisionNote}・${thicknessNote}`
   const previewNote = model?.kind === 'single_fold'
     ? `${onRequestFoldAngle ? '移動面ドラッグで物理目標・折り目の上下ドラッグで角度指定・' : ''}${basePreviewNote}・ドラッグ中の姿勢は未変更・中央面・単一線形経路のみ`
-    : basePreviewNote
+    : model?.kind === 'fold_graph'
+      && model.kinematics.kind === 'tree'
+      && treeCommitAvailable
+      ? `選択ヒンジの従属面ドラッグで物理目標・${basePreviewNote}・ドラッグ中の姿勢は未変更・選択ヒンジ単一経路のみ`
+      : basePreviewNote
   const collisionDescription = describeCollisionSummary(
     currentCollisionSummary,
     true,
@@ -2733,7 +3489,7 @@ export function FoldPreview({
   const previewImageDescription = model?.kind === 'single_fold' && !renderError
     ? `実展開図の3D折りプレビュー、表示角 ${displayedAngle}度、指定角 ${safeAngle}度${angleDragTarget === null ? '' : `、${angleDragActionLabel}中の未確認目標角 ${angleDragTarget}度。この目標角はポインターを離して経路検証が完了するまで3Dへ適用しません`}${fixedFaceNote}、${motionView?.accessibleText ?? ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
-      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、${collisionDescription}、${thicknessNote}`
+      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}${motionView ? `、${motionView.accessibleText}` : ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}、${collisionDescription}、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
         ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
@@ -2749,24 +3505,40 @@ export function FoldPreview({
   const angleDragDescription =
     model?.kind === 'single_fold' && onRequestFoldAngle
       ? '。3D上で移動する紙面の表または裏をつかんでドラッグすると、紙の回転軌道から折り角目標を作れます。折り目の上下ドラッグでは、上方向で増加、下方向で減少する角度パラメータ操作ができます。どちらの目標もドラッグ中は未確認で、ポインターを離して連続経路を確認した後にだけ3D表示へ適用されます。Altキーを押したドラッグはカメラ操作になります。キーボードでは下の指定折り量入力を使用できます'
-      : ''
+      : model?.kind === 'fold_graph'
+        && model.kinematics.kind === 'tree'
+        && treeCommitAvailable
+        ? '。3D上で選択ヒンジから先の紙面の表または裏をつかんでドラッグすると、そのヒンジだけの折り角目標を作れます。目標はドラッグ中は未確認で、ポインターを離して複数面の連続経路を確認した後にだけ3D表示と角度入力へ確定されます'
+        : ''
   const cameraDescription = model && !renderError
     ? `。マウスは${angleDragDescription ? '紙面と折り目の折り操作以外の場所を' : ''}左ドラッグで回転、ホイールまたは中ドラッグで拡大縮小、右ドラッグで平行移動できます。タッチは${angleDragDescription ? '紙面と折り目の折り操作以外を' : ''}1本指で回転、2本指で拡大縮小と平行移動ができます。キーボードは矢印キーで平行移動、Shiftと矢印キーで回転、プラスとマイナスで拡大縮小、Homeまたは0で視点をリセットできます`
     : ''
   const previewDescription =
     `${previewImageDescription}${selectionDescription}${angleDragDescription}${cameraDescription}`
   const previewAvailable = Boolean(model && !renderError)
+  const treePhysicalGrabAvailable =
+    model?.kind === 'fold_graph'
+    && model.kinematics.kind === 'tree'
+    && treeCommitAvailable
+  const motionPresentationAvailable =
+    model?.kind === 'single_fold' || treePhysicalGrabAvailable
 
   return (
     <div
       className="fold-preview"
       data-angle={displayedAngle}
-      data-requested-angle={model?.kind === 'single_fold' ? safeAngle : undefined}
-      data-applied-angle={model?.kind === 'single_fold' ? displayedAngle : undefined}
-      data-motion-status={model?.kind === 'single_fold'
+      data-requested-angle={model?.kind === 'single_fold'
+        ? safeAngle
+        : treePhysicalGrabAvailable
+          ? currentMotionState?.requested ?? undefined
+          : undefined}
+      data-applied-angle={motionPresentationAvailable
+        ? displayedAngle
+        : undefined}
+      data-motion-status={motionPresentationAvailable
         ? previewAvailable ? motionView?.status : 'unavailable'
         : undefined}
-      data-motion-runner-status={model?.kind === 'single_fold'
+      data-motion-runner-status={motionPresentationAvailable
         ? currentMotionState?.status ?? (previewAvailable ? 'preparing' : 'unavailable')
         : undefined}
       data-motion-result-kind={
@@ -2795,7 +3567,9 @@ export function FoldPreview({
           : undefined
       }
       data-physical-grab-mapping={
-        model?.kind === 'single_fold' && onRequestFoldAngle
+        (
+          model?.kind === 'single_fold' && onRequestFoldAngle
+        ) || treePhysicalGrabAvailable
           ? FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING
           : undefined
       }
@@ -2816,7 +3590,10 @@ export function FoldPreview({
       data-selected-hinge={selectedHingeId ?? undefined}
       data-fixed-face={resolvedFixedFaceId ?? undefined}
       data-interactive={Boolean(
-        onSelectHinge || onChooseFixedFace || onRequestFoldAngle,
+        onSelectHinge
+        || onChooseFixedFace
+        || onRequestFoldAngle
+        || onCommitHingeFoldAngle,
       )}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
       data-collision-thickness-world={collisionThickness ?? undefined}

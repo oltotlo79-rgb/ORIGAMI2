@@ -12,12 +12,18 @@ import {
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
 import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewModel'
+import {
+  pickFoldPreviewTarget,
+  type FoldPreviewPickObject,
+} from '../lib/foldPreviewPicking'
 
 type FoldPreviewProps = {
   angle: number
   hingeAngles?: readonly FoldPreviewHingeAngle[]
   selectedHingeId?: string | null
   fixedFaceId?: string | null
+  onSelectHinge?: (edgeId: string | null) => void
+  onChooseFixedFace?: (faceId: string) => void
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -41,6 +47,8 @@ export function FoldPreview({
   hingeAngles,
   selectedHingeId,
   fixedFaceId,
+  onSelectHinge,
+  onChooseFixedFace,
   model,
   statusMessage,
   frontColor,
@@ -58,6 +66,10 @@ export function FoldPreview({
   hingeAnglesRef.current = hingeAngles
   const selectedHingeIdRef = useRef(selectedHingeId ?? null)
   selectedHingeIdRef.current = selectedHingeId ?? null
+  const onSelectHingeRef = useRef(onSelectHinge)
+  onSelectHingeRef.current = onSelectHinge
+  const onChooseFixedFaceRef = useRef(onChooseFixedFace)
+  onChooseFixedFaceRef.current = onChooseFixedFace
   const resolvedFixedFaceId = fixedFaceId
     ?? (model?.kind === 'single_fold'
       ? model.fixedFace.id
@@ -153,6 +165,7 @@ export function FoldPreview({
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
+    let clickHandler: ((event: MouseEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
     let disposed = false
 
@@ -177,6 +190,9 @@ export function FoldPreview({
       attemptCleanup(() => hingeMaterial?.dispose())
       attemptCleanup(() => selectedHingeMaterial?.dispose())
       if (renderer) {
+        if (clickHandler) {
+          attemptCleanup(() => renderer?.domElement.removeEventListener('click', clickHandler!))
+        }
         attemptCleanup(() => renderer?.renderLists.dispose())
         attemptCleanup(() => renderer?.dispose())
         attemptCleanup(() => renderer?.domElement.remove())
@@ -245,10 +261,13 @@ export function FoldPreview({
       dependentFaceEdgeMaterial = createdDependentFaceEdgeMaterial
 
       const faceEdgeLines = new Map<string, THREE.LineSegments>()
+      const facePickObjects: FoldPreviewPickObject[] = []
       const makeFace = (geometry: THREE.BufferGeometry, face: FoldPreviewFaceModel) => {
         const group = new THREE.Group()
         group.userData.faceId = face.id
         const paper = new THREE.Mesh(geometry, materials)
+        paper.userData.faceId = face.id
+        facePickObjects.push({ id: face.id, object: paper })
         paper.castShadow = true
         paper.receiveShadow = true
         const edgeGeometry = new THREE.EdgesGeometry(geometry, 20)
@@ -295,6 +314,7 @@ export function FoldPreview({
         : model.kind === 'fold_graph'
           ? model.hinges
           : []
+      const hingePickObjects: FoldPreviewPickObject[] = []
       if (hinges.length > 0) {
         const createdHingeMaterial = new THREE.LineBasicMaterial({ color: 0x7a3f16 })
         hingeMaterial = createdHingeMaterial
@@ -321,6 +341,8 @@ export function FoldPreview({
             ),
           ])
           const line = new THREE.LineSegments(geometry, createdHingeMaterial)
+          line.userData.hingeId = hinge.edgeId
+          hingePickObjects.push({ id: hinge.edgeId, object: line })
           hingeLines.set(hinge.edgeId, line)
           if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
             line.matrixAutoUpdate = false
@@ -400,6 +422,38 @@ export function FoldPreview({
       }
 
       const render = () => createdRenderer.render(scene, camera)
+      const raycaster = new THREE.Raycaster()
+      const pointer = new THREE.Vector2()
+      clickHandler = (event) => {
+        try {
+          const bounds = createdRenderer.domElement.getBoundingClientRect()
+          if (!isPositiveFinite(bounds.width) || !isPositiveFinite(bounds.height)) return
+          pointer.set(
+            ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+            -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+          )
+          scene.updateMatrixWorld(true)
+          const target = pickFoldPreviewTarget(
+            raycaster,
+            camera,
+            pointer,
+            hingePickObjects,
+            facePickObjects,
+          )
+          if (target?.kind === 'hinge') {
+            onSelectHingeRef.current?.(
+              target.edgeId === selectedHingeIdRef.current ? null : target.edgeId,
+            )
+          } else if (target?.kind === 'face') {
+            onChooseFixedFaceRef.current?.(target.faceId)
+          } else {
+            onSelectHingeRef.current?.(null)
+          }
+        } catch {
+          // Picking is optional; keep the verified render state unchanged.
+        }
+      }
+      createdRenderer.domElement.addEventListener('click', clickHandler)
       runtime = { updatePose, updateSelection, render, dispose }
       runtimeRef.current = runtime
 
@@ -483,7 +537,7 @@ export function FoldPreview({
       : model?.kind === 'single_fold' && fixedFaceLabel
         ? `${fixedFaceLabel}・${thicknessNote}`
         : thicknessNote
-  const previewDescription = model?.kind === 'single_fold' && !renderError
+  const previewImageDescription = model?.kind === 'single_fold' && !renderError
     ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度${fixedFaceNote}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
       ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、衝突未検証、${thicknessNote}`
@@ -492,6 +546,14 @@ export function FoldPreview({
     : model?.kind === 'planar' && !renderError
       ? `実展開図の平面3Dプレビュー、${thicknessNote}`
       : `3D折りプレビューは利用できません。${unavailableMessage}`
+  const interactionDescription = onSelectHinge && onChooseFixedFace
+    ? '。3D上のヒンジをクリックして選択し、面をクリックして固定面を変更できます'
+    : onSelectHinge
+      ? '。3D上のヒンジをクリックして選択できます'
+      : onChooseFixedFace
+        ? '。3D上の面をクリックして固定面を変更できます'
+        : ''
+  const previewDescription = `${previewImageDescription}${interactionDescription}`
 
   return (
     <div
@@ -501,6 +563,7 @@ export function FoldPreview({
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
       data-selected-hinge={selectedHingeId ?? undefined}
       data-fixed-face={resolvedFixedFaceId ?? undefined}
+      data-interactive={Boolean(onSelectHinge || onChooseFixedFace)}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
       role="img"
       aria-label={previewDescription}

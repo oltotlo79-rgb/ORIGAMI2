@@ -1206,6 +1206,24 @@ function App() {
               hingeAngles={foldTreeHingeAngles}
               selectedHingeId={selectedPreviewHingeId}
               fixedFaceId={effectiveFixedFaceId}
+              onSelectHinge={benchmarkRun || foldPreviewHingeIds.size === 0
+                ? undefined
+                : (edgeId) => {
+                    setSelectedLineId(edgeId)
+                    if (edgeId) setSelectedVertexId(null)
+                  }}
+              onChooseFixedFace={!fixedFaceEnabled
+                ? undefined
+                : (faceId) => {
+                    if (
+                      !foldPreviewModel
+                      || !fixedFaceOptions.some((face) => face.id === faceId)
+                    ) return
+                    setFixedFaceChoice({
+                      projectId: foldPreviewModel.projectId,
+                      faceId,
+                    })
+                  }}
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}

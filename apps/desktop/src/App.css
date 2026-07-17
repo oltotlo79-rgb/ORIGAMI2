@@ -184,6 +184,7 @@ button { color: inherit; }
 .crease-canvas.is-disabled { cursor: progress; }
 .fold-preview { position: relative; overflow: hidden; background: #eef2f5; }
 .fold-preview canvas { display: block; width: 100%; height: 100%; }
+.fold-preview[data-interactive="true"] canvas { cursor: pointer; }
 .fold-preview-empty {
   position: absolute;
   inset: 0;

@@ -42,6 +42,7 @@ import {
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   calculateFoldPreviewNarrowPhaseNumericalMargin,
   prepareFoldPreviewNarrowPhase,
+  type FoldPreviewFullScanNonAdjacentWitnessSet,
   type FoldPreviewNarrowPhaseInteraction,
   type FoldPreviewNarrowPhaseWitnessCoverage,
   type FoldPreviewNarrowPhaseWitnessSample,
@@ -53,8 +54,12 @@ export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_INTERVAL_PAIR_VISITS 
   1_000_000
 export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_POINT_TRIANGLE_TESTS =
   1_000_000
+export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS =
+  100_000
 export const FOLD_PREVIEW_TREE_SINGLE_HINGE_BLOCKING_SAMPLE_VERSION =
   'tree_single_hinge_blocking_sample_v1'
+export const FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION =
+  'tree_single_hinge_terminal_full_scan_binding_v1'
 
 const HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR = 8
 const MOTION_POSE_EQUIVALENCE_FACTOR = 1_024
@@ -71,6 +76,61 @@ export type FoldPreviewTreeSingleHingeBlockingFaceTransform = Readonly<{
   faceId: string
   /** Exact detached column-major Matrix4 elements used by the point check. */
   elements: readonly number[]
+}>
+
+type FoldPreviewCompleteNonAdjacentWitnessSet = Extract<
+  FoldPreviewFullScanNonAdjacentWitnessSet,
+  { kind: 'complete' }
+>
+
+export type FoldPreviewTreeTerminalFullScanBinding = Readonly<{
+  version: typeof FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION
+  sourcePose: 'blocking_evaluate_point_pose'
+  requestIdentityBound: true
+  identity: Readonly<{
+    projectId: string
+    revision: number
+    revisionBinding: 'project_response_source_equal_v1'
+    fixedFaceId: string
+    selectedHingeEdgeId: string
+    request: FoldPreviewTreeSingleHingeContinuousRequestIdentity
+    blockingPoseRequestKey: string
+  }>
+  blockingSampleTime: number
+  selectedAngleDegrees: number
+  collisionThickness: number
+  angleVectors: Readonly<{
+    start: readonly FoldPreviewHingeAngle[]
+    target: readonly FoldPreviewHingeAngle[]
+    sample: readonly FoldPreviewHingeAngle[]
+  }>
+  partition: Readonly<{
+    version: 'rerooted_selected_hinge_partition_v1'
+    stationaryFaceIds: readonly string[]
+    movingFaceIds: readonly string[]
+    witnessRelations: readonly Readonly<{
+      witnessIndex: number
+      firstBody: 'stationary' | 'moving'
+      secondBody: 'stationary' | 'moving'
+      relation:
+        | 'cross_partition'
+        | 'stationary_internal'
+        | 'moving_internal'
+    }>[]
+  }>
+  evidence: FoldPreviewCompleteNonAdjacentWitnessSet
+  safety: Readonly<{
+    nonAdjacentScopeOnly: true
+    hingeAdjacentPairsIncluded: false
+    allWitnessesCrossPartition: boolean
+    sameBodyWitnessCount: number
+    twoBodyTranslationInputEligible: boolean
+    wholeSceneConstraintsRepresented: false
+    legalCorrectionPoseGenerated: false
+    staticCandidateRevalidated: false
+    continuousCandidatePathCertified: false
+    autoApplicable: false
+  }>
 }>
 
 export type FoldPreviewTreeSingleHingeBlockingSample = Readonly<{
@@ -105,6 +165,11 @@ export type FoldPreviewTreeSingleHingeBlockingSample = Readonly<{
    * that pair was omitted by the cap or conservative derivation was unavailable.
    */
   primaryWitnessIndex: number | null
+  /**
+   * Optional complete non-adjacent evidence bound to this exact terminal
+   * request and fold-tree partition. Failure never weakens the v1 block.
+   */
+  terminalFullScanBinding: FoldPreviewTreeTerminalFullScanBinding | null
 }>
 
 export type FoldPreviewTreeSingleHingeContinuousBlocker = Readonly<{
@@ -133,6 +198,12 @@ export type FoldPreviewTreeSingleHingeContinuousOptions =
      * fits in the remaining budget.
      */
     maxPointTriangleTests?: number
+    /**
+     * Optional per-job tightening for the one terminal-only full evidence
+     * scan. If the all-face upper bound exceeds it, the v1 block is returned
+     * immediately with a null terminal binding.
+     */
+    maxTerminalEvidenceTrianglePairs?: number
     /**
      * Optional UI/runtime identity for the exact request that created the job.
      * Direct pure-analyzer callers may omit it; UI publication must not.
@@ -183,6 +254,7 @@ type ResolvedJobOptions = Readonly<{
   motion: FoldPreviewContinuousMotionOptions
   maxIntervalPairVisits: number
   maxPointTriangleTests: number
+  maxTerminalEvidenceTrianglePairs: number
   requestIdentity: FoldPreviewTreeSingleHingeContinuousRequestIdentity | null
 }>
 
@@ -354,16 +426,18 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
         (total, row) => total + row.filter(Boolean).length,
         0,
       )
+    const stationaryFaceIds = Object.freeze(
+      stationaryFaces.map((face) => face.id),
+    )
+    const movingFaceIdSnapshot = Object.freeze([...movingFaceIds])
 
     return Object.freeze({
       fixedFaceId: tree.rootFaceId,
       selectedHingeEdgeId,
       parentFaceId: selectedJoint.parentFaceId,
       childFaceId: selectedJoint.childFaceId,
-      stationaryFaceIds: Object.freeze(
-        stationaryFaces.map((face) => face.id),
-      ),
-      movingFaceIds: Object.freeze([...movingFaceIds]),
+      stationaryFaceIds,
+      movingFaceIds: movingFaceIdSnapshot,
       crossTrianglePairs,
       staticallySupportedTrianglePairs,
       createJob(
@@ -691,9 +765,34 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
           return attachBlockingSampleToJob(
             innerJob,
             () => earliestBlockingSampleSeed,
+            (seed) => {
+              if (
+                !resolvedOptions.requestIdentity
+                || pointTrianglePairUpperBound
+                > resolvedOptions.maxTerminalEvidenceTrianglePairs
+              ) return null
+              const terminalTransforms = faceTransformsAt(
+                seed.selectedAngleDegrees,
+              )
+              if (
+                !terminalTransforms
+                || !blockingFaceTransformsMatch(
+                  seed.faceTransforms,
+                  terminalTransforms,
+                )
+              ) return null
+              return pointAnalyzer.collectFullScanNonAdjacentWitnessSet(
+                terminalTransforms,
+                thickness,
+              )
+            },
             snapshot,
             tree.rootFaceId,
             selectedHingeEdgeId,
+            selectedJoint.parentFaceId,
+            selectedJoint.childFaceId,
+            stationaryFaceIds,
+            movingFaceIdSnapshot,
             normalizedAngles,
             targetSelectedAngleDegrees,
             thickness,
@@ -909,9 +1008,16 @@ function captureBlockingSampleSeed(
 function attachBlockingSampleToJob(
   innerJob: FoldPreviewContinuousMotionJob<LightweightBlocker>,
   getSeed: () => BlockingSampleSeed | null,
+  collectTerminalFullScan: (
+    seed: BlockingSampleSeed,
+  ) => FoldPreviewFullScanNonAdjacentWitnessSet | null,
   model: FoldGraphPreviewModel,
   fixedFaceId: string,
   selectedHingeEdgeId: string,
+  parentFaceId: string,
+  childFaceId: string,
+  stationaryFaceIds: readonly string[],
+  movingFaceIds: readonly string[],
   startAngles: readonly FoldPreviewHingeAngle[],
   targetSelectedAngleDegrees: number,
   collisionThickness: number,
@@ -951,7 +1057,7 @@ function attachBlockingSampleToJob(
       let blockingSample: FoldPreviewTreeSingleHingeBlockingSample | null = null
       try {
         const seed = getSeed()
-        blockingSample = seed
+        const baseBlockingSample = seed
           && seed.blockingSampleTime === step.blockingSampleTime
           && sameLightweightBlocker(seed.blocker, lightweight)
           ? buildBlockingSample(
@@ -965,6 +1071,34 @@ function attachBlockingSampleToJob(
               requestIdentity,
             )
           : null
+        blockingSample = baseBlockingSample
+        if (seed && baseBlockingSample) {
+          try {
+            const evidence = collectTerminalFullScan(seed)
+            const terminalFullScanBinding =
+              buildTerminalFullScanBinding(
+                evidence,
+                seed,
+                baseBlockingSample,
+                model,
+                fixedFaceId,
+                selectedHingeEdgeId,
+                parentFaceId,
+                childFaceId,
+                stationaryFaceIds,
+                movingFaceIds,
+                requestIdentity,
+              )
+            if (terminalFullScanBinding) {
+              blockingSample = deepFreeze({
+                ...baseBlockingSample,
+                terminalFullScanBinding,
+              })
+            }
+          } catch {
+            // Optional evidence failure must leave the v1 sample intact.
+          }
+        }
       } catch {
         // Explanation failure must never weaken or replace the block itself.
       }
@@ -1067,7 +1201,303 @@ function buildBlockingSample(
     witnessSamples: seed.witnessSamples,
     witnessCoverage: seed.witnessCoverage,
     primaryWitnessIndex: seed.primaryWitnessIndex,
+    terminalFullScanBinding: null,
   })
+}
+
+function buildTerminalFullScanBinding(
+  evidence: FoldPreviewFullScanNonAdjacentWitnessSet | null,
+  seed: BlockingSampleSeed,
+  blockingSample: FoldPreviewTreeSingleHingeBlockingSample,
+  model: FoldGraphPreviewModel,
+  fixedFaceId: string,
+  selectedHingeEdgeId: string,
+  parentFaceId: string,
+  childFaceId: string,
+  stationaryFaceIds: readonly string[],
+  movingFaceIds: readonly string[],
+  requestIdentity:
+    FoldPreviewTreeSingleHingeContinuousRequestIdentity | null,
+): FoldPreviewTreeTerminalFullScanBinding | null {
+  if (
+    !evidence
+    || evidence.kind !== 'complete'
+    || !requestIdentity
+    || blockingSample.terminalFullScanBinding !== null
+    || !sameRequestIdentity(
+      blockingSample.identity.request,
+      requestIdentity,
+    )
+    || evidence.collisionThickness !== blockingSample.collisionThickness
+    || evidence.sourcePose !== 'analyzed_input_pose'
+    || evidence.requestIdentityBound !== false
+    || evidence.autoApplicable !== false
+    || evidence.witnessSamples.length === 0
+    || !validCompleteFullScanCoverage(
+      evidence,
+    )
+    || !evidence.witnessSamples.some((sample) =>
+      witnessMatchesBlocker(sample, seed.blocker)
+    )
+  ) return null
+
+  const primaryWitness = blockingSample.primaryWitnessIndex === null
+    ? null
+    : blockingSample.witnessSamples[blockingSample.primaryWitnessIndex]
+  if (
+    primaryWitness
+    && !evidence.witnessSamples.some((sample) =>
+      sameWitnessIdentity(sample, primaryWitness)
+    )
+  ) return null
+
+  const startPoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    fixedFaceId,
+    blockingSample.collisionThickness,
+    blockingSample.angleVectors.start,
+  )
+  const blockingPoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    fixedFaceId,
+    blockingSample.collisionThickness,
+    blockingSample.angleVectors.sample,
+  )
+  if (
+    startPoseRequestKey !== requestIdentity.sourcePoseRequestKey
+    || !validBoundedKey(blockingPoseRequestKey)
+  ) return null
+
+  const modelFaceIds = model.faces.map((face) => face.id)
+  const stationary = snapshotFacePartition(
+    stationaryFaceIds,
+    modelFaceIds,
+  )
+  const moving = snapshotFacePartition(
+    movingFaceIds,
+    modelFaceIds,
+  )
+  if (
+    !stationary
+    || !moving
+    || stationary.length + moving.length !== modelFaceIds.length
+  ) return null
+  const stationarySet = new Set(stationary)
+  const movingSet = new Set(moving)
+  if (
+    fixedFaceId !== blockingSample.identity.fixedFaceId
+    || selectedHingeEdgeId
+      !== blockingSample.identity.selectedHingeEdgeId
+    || !stationarySet.has(fixedFaceId)
+    || !stationarySet.has(parentFaceId)
+    || !movingSet.has(childFaceId)
+    || [...stationarySet].some((faceId) => movingSet.has(faceId))
+    || modelFaceIds.some((faceId) =>
+      !stationarySet.has(faceId) && !movingSet.has(faceId)
+    )
+    || !selectedHingeMatchesPartition(
+      model,
+      selectedHingeEdgeId,
+      parentFaceId,
+      childFaceId,
+    )
+  ) return null
+
+  const witnessRelations: Array<
+    FoldPreviewTreeTerminalFullScanBinding['partition']['witnessRelations'][number]
+  > = []
+  let sameBodyWitnessCount = 0
+  for (
+    let witnessIndex = 0;
+    witnessIndex < evidence.witnessSamples.length;
+    witnessIndex += 1
+  ) {
+    const sample = evidence.witnessSamples[witnessIndex]
+    const firstBody = stationarySet.has(sample.firstFaceId)
+      ? 'stationary'
+      : movingSet.has(sample.firstFaceId)
+        ? 'moving'
+        : null
+    const secondBody = stationarySet.has(sample.secondFaceId)
+      ? 'stationary'
+      : movingSet.has(sample.secondFaceId)
+        ? 'moving'
+        : null
+    if (!firstBody || !secondBody) return null
+    const relation = firstBody !== secondBody
+      ? 'cross_partition'
+      : firstBody === 'stationary'
+        ? 'stationary_internal'
+        : 'moving_internal'
+    if (relation !== 'cross_partition') sameBodyWitnessCount += 1
+    witnessRelations.push(Object.freeze({
+      witnessIndex,
+      firstBody,
+      secondBody,
+      relation,
+    }))
+  }
+  const allWitnessesCrossPartition = sameBodyWitnessCount === 0
+  return deepFreeze({
+    version: FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION,
+    sourcePose: 'blocking_evaluate_point_pose',
+    requestIdentityBound: true,
+    identity: {
+      projectId: blockingSample.identity.projectId,
+      revision: blockingSample.identity.revision,
+      revisionBinding: 'project_response_source_equal_v1',
+      fixedFaceId,
+      selectedHingeEdgeId,
+      request: requestIdentity,
+      blockingPoseRequestKey,
+    },
+    blockingSampleTime: blockingSample.blockingSampleTime,
+    selectedAngleDegrees: blockingSample.selectedAngleDegrees,
+    collisionThickness: blockingSample.collisionThickness,
+    angleVectors: blockingSample.angleVectors,
+    partition: {
+      version: 'rerooted_selected_hinge_partition_v1',
+      stationaryFaceIds: stationary,
+      movingFaceIds: moving,
+      witnessRelations,
+    },
+    evidence,
+    safety: {
+      nonAdjacentScopeOnly: true,
+      hingeAdjacentPairsIncluded: false,
+      allWitnessesCrossPartition,
+      sameBodyWitnessCount,
+      twoBodyTranslationInputEligible:
+        allWitnessesCrossPartition
+        && evidence.witnessSamples.length > 0,
+      wholeSceneConstraintsRepresented: false,
+      legalCorrectionPoseGenerated: false,
+      staticCandidateRevalidated: false,
+      continuousCandidatePathCertified: false,
+      autoApplicable: false,
+    },
+  })
+}
+
+function validCompleteFullScanCoverage(
+  evidence: FoldPreviewCompleteNonAdjacentWitnessSet,
+) {
+  const coverage = evidence.coverage
+  const sampleCount = evidence.witnessSamples.length
+  return evidence.algorithm === 'full_non_adjacent_prism_witness_scan_v2'
+    && Number.isFinite(evidence.collisionThickness)
+    && evidence.collisionThickness > 0
+    && Number.isFinite(evidence.numericalMargin)
+    && evidence.numericalMargin >= 0
+    && coverage.scope
+      === 'all_broad_phase_non_adjacent_triangle_pairs_full_scan_v2'
+    && coverage.authoritativePairScanComplete === true
+    && coverage.allCollisionConstraintsRepresented === true
+    && validCount(coverage.broadPhaseCandidateCount)
+    && validCount(coverage.expectedTrianglePairCount)
+    && coverage.expectedTrianglePairCount
+      <= MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS
+    && validCount(coverage.trianglePairTests)
+    && validCount(coverage.aabbRejectedPairCount)
+    && validCount(coverage.satTests)
+    && validCount(coverage.satSeparatedPairCount)
+    && validCount(coverage.touchingPairCount)
+    && validCount(coverage.penetratingPairCount)
+    && coverage.indeterminatePairCount === 0
+    && validCount(coverage.eligiblePairCount)
+    && validCount(coverage.attemptedPairCount)
+    && validCount(coverage.availablePairCount)
+    && coverage.unavailablePairCount === 0
+    && coverage.omittedByLimitCount === 0
+    && coverage.expectedTrianglePairCount === coverage.trianglePairTests
+    && coverage.trianglePairTests
+      === coverage.aabbRejectedPairCount + coverage.satTests
+    && coverage.satTests === coverage.satSeparatedPairCount
+      + coverage.touchingPairCount
+      + coverage.penetratingPairCount
+    && coverage.eligiblePairCount
+      === coverage.touchingPairCount + coverage.penetratingPairCount
+    && coverage.eligiblePairCount === coverage.attemptedPairCount
+    && coverage.attemptedPairCount === coverage.availablePairCount
+    && coverage.availablePairCount === sampleCount
+    && sampleCount <= MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+}
+
+function snapshotFacePartition(
+  values: readonly string[],
+  modelFaceIds: readonly string[],
+): readonly string[] | null {
+  if (!Array.isArray(values) || values.length > modelFaceIds.length) return null
+  const allowed = new Set(modelFaceIds)
+  const seen = new Set<string>()
+  const snapshot: string[] = []
+  for (const value of values) {
+    if (
+      typeof value !== 'string'
+      || !allowed.has(value)
+      || seen.has(value)
+    ) return null
+    seen.add(value)
+    snapshot.push(value)
+  }
+  return Object.freeze(snapshot)
+}
+
+function selectedHingeMatchesPartition(
+  model: FoldGraphPreviewModel,
+  selectedHingeEdgeId: string,
+  parentFaceId: string,
+  childFaceId: string,
+) {
+  const hinge = model.hinges.find(
+    (current) => current.edgeId === selectedHingeEdgeId,
+  )
+  return hinge
+    && (
+      (
+        hinge.leftFaceId === parentFaceId
+        && hinge.rightFaceId === childFaceId
+      )
+      || (
+        hinge.rightFaceId === parentFaceId
+        && hinge.leftFaceId === childFaceId
+      )
+    )
+}
+
+function sameRequestIdentity(
+  first: FoldPreviewTreeSingleHingeContinuousRequestIdentity | null,
+  second: FoldPreviewTreeSingleHingeContinuousRequestIdentity,
+) {
+  return first?.contextKey === second.contextKey
+    && first.sourcePoseRequestKey === second.sourcePoseRequestKey
+    && first.generation === second.generation
+    && first.requestSequence === second.requestSequence
+}
+
+function sameWitnessIdentity(
+  first: FoldPreviewNarrowPhaseWitnessSample,
+  second: FoldPreviewNarrowPhaseWitnessSample,
+) {
+  return first.firstFaceId === second.firstFaceId
+    && first.secondFaceId === second.secondFaceId
+    && first.firstTriangleIndex === second.firstTriangleIndex
+    && first.secondTriangleIndex === second.secondTriangleIndex
+    && first.geometryClass === second.geometryClass
+}
+
+function blockingFaceTransformsMatch(
+  expected: FoldPreviewTreeSingleHingeBlockingSample['faceTransforms'],
+  actual: ReadonlyMap<string, Matrix4>,
+) {
+  for (const saved of expected) {
+    const transform = actual.get(saved.faceId)
+    if (!transform || !Array.isArray(transform.elements)) return false
+    for (let index = 0; index < 16; index += 1) {
+      if (transform.elements[index] !== saved.elements[index]) return false
+    }
+  }
+  return true
 }
 
 function snapshotBlockingFaceTransform(
@@ -1244,6 +1674,9 @@ function resolveJobOptions(
     ?? MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_INTERVAL_PAIR_VISITS
   const maxPointTriangleTests = options.maxPointTriangleTests
     ?? MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_POINT_TRIANGLE_TESTS
+  const maxTerminalEvidenceTrianglePairs =
+    options.maxTerminalEvidenceTrianglePairs
+    ?? MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS
   const rawRequestIdentity = options.requestIdentity
   const requestIdentity = rawRequestIdentity === undefined
     ? null
@@ -1257,6 +1690,10 @@ function resolveJobOptions(
     || maxPointTriangleTests <= 0
     || maxPointTriangleTests
       > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_POINT_TRIANGLE_TESTS
+    || !Number.isSafeInteger(maxTerminalEvidenceTrianglePairs)
+    || maxTerminalEvidenceTrianglePairs <= 0
+    || maxTerminalEvidenceTrianglePairs
+      > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS
     || (rawRequestIdentity !== undefined && !requestIdentity)
   ) return null
   return {
@@ -1267,6 +1704,7 @@ function resolveJobOptions(
     },
     maxIntervalPairVisits,
     maxPointTriangleTests,
+    maxTerminalEvidenceTrianglePairs,
     requestIdentity,
   }
 }

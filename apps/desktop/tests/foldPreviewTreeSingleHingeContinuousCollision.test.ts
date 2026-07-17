@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_CROSS_TRIANGLE_PAIRS,
+  MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS,
   prepareFoldPreviewTreeSingleHingeContinuousCollision,
   type FoldPreviewTreeSingleHingeContinuousAnalyzer,
 } from '../src/lib/foldPreviewTreeSingleHingeContinuousCollision.ts'
@@ -21,7 +23,11 @@ import type {
 } from '../src/lib/foldPreviewModel.ts'
 import {
   MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
+  prepareFoldPreviewNarrowPhase,
 } from '../src/lib/foldPreviewNarrowCollision.ts'
+import {
+  calculateFoldTreePoseWithAngles,
+} from '../src/lib/foldPreviewKinematics.ts'
 import {
   createFoldPreviewTreeSceneCollisionPoseKey,
 } from '../src/lib/foldPreviewTreeScenePose.ts'
@@ -266,6 +272,88 @@ test('a terminal block retains its exact request-bound collision sample', () => 
   assert.equal(primary.secondFaceId, blocker.secondFaceId)
   assert.equal(primary.geometryClass, blocker.geometryClass)
   assert.equal(primary.relation, 'non_adjacent')
+
+  const terminalBinding = sample.terminalFullScanBinding
+  assert.ok(terminalBinding)
+  assert.equal(
+    terminalBinding.version,
+    FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION,
+  )
+  assert.equal(terminalBinding.sourcePose, 'blocking_evaluate_point_pose')
+  assert.equal(terminalBinding.requestIdentityBound, true)
+  assert.deepEqual(terminalBinding.identity, {
+    projectId: model.projectId,
+    revision: model.revision,
+    revisionBinding: 'project_response_source_equal_v1',
+    fixedFaceId: 'root',
+    selectedHingeEdgeId: 'selected',
+    request: expectedRequestIdentity,
+    blockingPoseRequestKey:
+      createFoldPreviewTreeSceneCollisionPoseKey(
+        model,
+        'root',
+        thickness,
+        expectedSample,
+      ),
+  })
+  assert.equal(
+    terminalBinding.blockingSampleTime,
+    sample.blockingSampleTime,
+  )
+  assert.equal(
+    terminalBinding.selectedAngleDegrees,
+    sample.selectedAngleDegrees,
+  )
+  assert.equal(terminalBinding.collisionThickness, thickness)
+  assert.deepEqual(terminalBinding.angleVectors, sample.angleVectors)
+  assert.deepEqual(
+    terminalBinding.partition.stationaryFaceIds,
+    analyzer.stationaryFaceIds,
+  )
+  assert.deepEqual(
+    terminalBinding.partition.movingFaceIds,
+    analyzer.movingFaceIds,
+  )
+  assert.equal(
+    terminalBinding.partition.witnessRelations.length,
+    terminalBinding.evidence.witnessSamples.length,
+  )
+  assert.ok(terminalBinding.partition.witnessRelations.every(
+    (relation, index) =>
+      relation.witnessIndex === index
+      && relation.relation === 'cross_partition',
+  ))
+  assert.equal(terminalBinding.evidence.kind, 'complete')
+  assert.equal(terminalBinding.evidence.requestIdentityBound, false)
+  assert.equal(terminalBinding.evidence.autoApplicable, false)
+  assert.equal(
+    terminalBinding.evidence.coverage.allCollisionConstraintsRepresented,
+    true,
+  )
+  assert.equal(
+    terminalBinding.evidence.coverage.availablePairCount,
+    terminalBinding.evidence.witnessSamples.length,
+  )
+  assert.ok(terminalBinding.evidence.witnessSamples.some(
+    (candidate) =>
+      candidate.firstFaceId === primary.firstFaceId
+      && candidate.secondFaceId === primary.secondFaceId
+      && candidate.firstTriangleIndex === primary.firstTriangleIndex
+      && candidate.secondTriangleIndex === primary.secondTriangleIndex
+      && candidate.geometryClass === primary.geometryClass,
+  ))
+  assert.deepEqual(terminalBinding.safety, {
+    nonAdjacentScopeOnly: true,
+    hingeAdjacentPairsIncluded: false,
+    allWitnessesCrossPartition: true,
+    sameBodyWitnessCount: 0,
+    twoBodyTranslationInputEligible: true,
+    wholeSceneConstraintsRepresented: false,
+    legalCorrectionPoseGenerated: false,
+    staticCandidateRevalidated: false,
+    continuousCandidatePathCertified: false,
+    autoApplicable: false,
+  })
   assertDeeplyFrozen(sample)
 
   const repeatedTerminalResult = job.step(1)
@@ -316,6 +404,196 @@ test('a terminal block retains its exact request-bound collision sample', () => 
     false,
   )
   assert.equal(detail.blockingEvidence.safety.autoApplicable, false)
+})
+
+test('same-body full-scan witnesses retain binding but disable two-body translation', () => {
+  const model = stationaryInternalCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 0 },
+    { edgeId: 'frozen-twin', angleDegrees: 0 },
+  ] as const
+  const thickness = 0.02
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const job = analyzer.createJob(startAngles, 120, thickness, {
+    requestIdentity: {
+      contextKey: 'stationary-internal-context',
+      sourcePoseRequestKey,
+      generation: 4,
+      requestSequence: 9,
+    },
+  })
+  assert.ok(job)
+
+  const result = run(job)
+  assert.equal(result.kind, 'blocked', JSON.stringify(result))
+  assert.ok(result.kind === 'blocked')
+  assert.equal(result.blockingSampleTime, 0)
+  const sample = result.blocker?.blockingSample
+  const binding = sample?.terminalFullScanBinding
+  assert.ok(sample && binding)
+  assert.equal(binding.evidence.kind, 'complete')
+  assert.equal(
+    binding.evidence.coverage.allCollisionConstraintsRepresented,
+    true,
+  )
+
+  const stationaryInternal = binding.partition.witnessRelations.filter(
+    (relation) => relation.relation === 'stationary_internal',
+  )
+  assert.ok(stationaryInternal.length > 0)
+  assert.ok(stationaryInternal.every((relation) => {
+    const witness = binding.evidence.witnessSamples[relation.witnessIndex]
+    return relation.firstBody === 'stationary'
+      && relation.secondBody === 'stationary'
+      && witness?.firstFaceId !== undefined
+      && binding.partition.stationaryFaceIds.includes(witness.firstFaceId)
+      && binding.partition.stationaryFaceIds.includes(witness.secondFaceId)
+  }))
+  assert.equal(
+    binding.safety.sameBodyWitnessCount,
+    binding.partition.witnessRelations.filter(
+      (relation) => relation.relation !== 'cross_partition',
+    ).length,
+  )
+  assert.equal(binding.safety.allWitnessesCrossPartition, false)
+  assert.equal(binding.safety.twoBodyTranslationInputEligible, false)
+  assert.equal(binding.safety.autoApplicable, false)
+  assertDeeplyFrozen(sample)
+
+  const repeated = job.step(1)
+  assert.strictEqual(repeated, result)
+  assert.strictEqual(
+    repeated.kind === 'blocked'
+      ? repeated.blocker?.blockingSample?.terminalFullScanBinding
+      : null,
+    binding,
+  )
+})
+
+test('an unavailable terminal full scan preserves the complete v1 block', () => {
+  const model = stationaryInternalWitnessOverflowModel()
+  assert.equal(model.kinematics.kind, 'tree')
+  if (model.kinematics.kind !== 'tree') return
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 0 },
+    { edgeId: 'frozen-twin', angleDegrees: 0 },
+  ] as const
+  const thickness = 0.02
+  const pointAnalyzer = prepareFoldPreviewNarrowPhase(
+    model.faces,
+    model.hinges.map((hinge) => ({
+      edgeId: hinge.edgeId,
+      firstFaceId: hinge.leftFaceId,
+      secondFaceId: hinge.rightFaceId,
+    })),
+  )
+  const pose = calculateFoldTreePoseWithAngles(model.kinematics, {
+    kind: 'per_hinge',
+    angles: startAngles,
+  })
+  assert.ok(pointAnalyzer && pose)
+  const rawFullScan = pointAnalyzer.collectFullScanNonAdjacentWitnessSet(
+    pose.faceTransforms,
+    thickness,
+  )
+  assert.ok(rawFullScan)
+  assert.equal(rawFullScan.kind, 'unavailable')
+  assert.ok(
+    rawFullScan.kind === 'unavailable'
+    && rawFullScan.reasons.includes('witness_limit_exceeded'),
+  )
+  assert.deepEqual(rawFullScan.witnessSamples, [])
+
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const requestIdentity = {
+    contextKey: 'stationary-internal-overflow-context',
+    sourcePoseRequestKey,
+    generation: 5,
+    requestSequence: 10,
+  } as const
+  const fullScanJob = analyzer.createJob(startAngles, 120, thickness, {
+    requestIdentity,
+  })
+  const cappedJob = analyzer.createJob(startAngles, 120, thickness, {
+    requestIdentity,
+    maxTerminalEvidenceTrianglePairs: 1,
+  })
+  assert.ok(fullScanJob && cappedJob)
+
+  const unavailable = run(fullScanJob)
+  const capped = run(cappedJob)
+  assert.ok(unavailable.kind === 'blocked' && capped.kind === 'blocked')
+  assert.equal(unavailable.blockingSampleTime, 0)
+  const unavailableSample = unavailable.blocker?.blockingSample
+  const cappedSample = capped.blocker?.blockingSample
+  assert.ok(unavailableSample && cappedSample)
+  assert.equal(unavailableSample.terminalFullScanBinding, null)
+  assert.equal(cappedSample.terminalFullScanBinding, null)
+  assert.notEqual(unavailableSample.primaryWitnessIndex, null)
+  const {
+    terminalFullScanBinding: _unavailableBinding,
+    ...unavailableV1
+  } = unavailableSample
+  const {
+    terminalFullScanBinding: _cappedBinding,
+    ...cappedV1
+  } = cappedSample
+  assert.deepEqual(unavailableV1, cappedV1)
+  assert.deepEqual(
+    {
+      certifiedSafeThrough: unavailable.certifiedSafeThrough,
+      stopTime: unavailable.stopTime,
+      unsafeBracket: unavailable.unsafeBracket,
+      blockingSampleTime: unavailable.blockingSampleTime,
+      blocker: unavailable.blocker && {
+        firstFaceId: unavailable.blocker.firstFaceId,
+        secondFaceId: unavailable.blocker.secondFaceId,
+        relation: unavailable.blocker.relation,
+        geometryClass: unavailable.blocker.geometryClass,
+      },
+      stats: unavailable.stats,
+    },
+    {
+      certifiedSafeThrough: capped.certifiedSafeThrough,
+      stopTime: capped.stopTime,
+      unsafeBracket: capped.unsafeBracket,
+      blockingSampleTime: capped.blockingSampleTime,
+      blocker: capped.blocker && {
+        firstFaceId: capped.blocker.firstFaceId,
+        secondFaceId: capped.blocker.secondFaceId,
+        relation: capped.blocker.relation,
+        geometryClass: capped.blocker.geometryClass,
+      },
+      stats: capped.stats,
+    },
+  )
+  assertDeeplyFrozen(unavailableSample)
 })
 
 test('request identity mismatches and malformed values reject job creation', () => {
@@ -399,6 +677,7 @@ test('a requestless pure analyzer still retains a complete blocking snapshot', (
     : null
   assert.ok(sample)
   assert.equal(sample.identity.request, null)
+  assert.equal(sample.terminalFullScanBinding, null)
   assert.deepEqual(sample.identity, {
     projectId: model.projectId,
     revision: model.revision,
@@ -419,6 +698,119 @@ test('a requestless pure analyzer still retains a complete blocking snapshot', (
   ))
   assert.ok(sample.witnessSamples.length > 0)
   assertDeeplyFrozen(sample)
+})
+
+test('the terminal evidence cap skips only the optional full scan', () => {
+  const model = stationaryBranchCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const thickness = 0.02
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const requestIdentity = {
+    contextKey: 'terminal-cap-context',
+    sourcePoseRequestKey,
+    generation: 2,
+    requestSequence: 3,
+  } as const
+  const commonOptions = {
+    maxDepth: 18,
+    minTimeSpan: 2 ** -22,
+    maxIntervalTests: 10_000,
+    requestIdentity,
+  } as const
+  const defaultJob = analyzer.createJob(
+    startAngles,
+    120,
+    thickness,
+    commonOptions,
+  )
+  const cappedJob = analyzer.createJob(
+    startAngles,
+    120,
+    thickness,
+    {
+      ...commonOptions,
+      maxTerminalEvidenceTrianglePairs: 1,
+    },
+  )
+  assert.ok(defaultJob && cappedJob)
+  const complete = run(defaultJob)
+  const capped = run(cappedJob)
+  assert.ok(complete.kind === 'blocked' && capped.kind === 'blocked')
+  const completeSample = complete.blocker?.blockingSample
+  const cappedSample = capped.blocker?.blockingSample
+  assert.ok(completeSample && cappedSample)
+  assert.ok(completeSample.terminalFullScanBinding)
+  assert.equal(cappedSample.terminalFullScanBinding, null)
+  assert.deepEqual(
+    {
+      certifiedSafeThrough: capped.certifiedSafeThrough,
+      stopTime: capped.stopTime,
+      unsafeBracket: capped.unsafeBracket,
+      blockingSampleTime: capped.blockingSampleTime,
+      stats: capped.stats,
+      blocker: capped.blocker && {
+        firstFaceId: capped.blocker.firstFaceId,
+        secondFaceId: capped.blocker.secondFaceId,
+        relation: capped.blocker.relation,
+        geometryClass: capped.blocker.geometryClass,
+        hingeDecisionKind: capped.blocker.hingeDecisionKind,
+      },
+    },
+    {
+      certifiedSafeThrough: complete.certifiedSafeThrough,
+      stopTime: complete.stopTime,
+      unsafeBracket: complete.unsafeBracket,
+      blockingSampleTime: complete.blockingSampleTime,
+      stats: complete.stats,
+      blocker: complete.blocker && {
+        firstFaceId: complete.blocker.firstFaceId,
+        secondFaceId: complete.blocker.secondFaceId,
+        relation: complete.blocker.relation,
+        geometryClass: complete.blocker.geometryClass,
+        hingeDecisionKind: complete.blocker.hingeDecisionKind,
+      },
+    },
+  )
+  const {
+    terminalFullScanBinding: _completeBinding,
+    ...completeV1
+  } = completeSample
+  const {
+    terminalFullScanBinding: _cappedBinding,
+    ...cappedV1
+  } = cappedSample
+  assert.deepEqual(cappedV1, completeV1)
+  assertDeeplyFrozen(cappedSample)
+
+  for (const invalidCap of [
+    0,
+    MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS + 1,
+  ]) {
+    assert.equal(analyzer.createJob(
+      startAngles,
+      120,
+      thickness,
+      {
+        requestIdentity,
+        maxTerminalEvidenceTrianglePairs: invalidCap,
+      },
+    ), null)
+  }
 })
 
 test('blocking samples bind exact start and target endpoint times', () => {
@@ -489,6 +881,18 @@ test('blocking samples bind exact start and target endpoint times', () => {
       { edgeId: 'selected', angleDegrees: 0 },
       { edgeId: 'frozen', angleDegrees: 90 },
     ],
+  )
+  const reverseTerminalBinding =
+    reverse.blocker?.blockingSample?.terminalFullScanBinding
+  assert.ok(reverseTerminalBinding)
+  assert.equal(reverseTerminalBinding.blockingSampleTime, 0)
+  assert.equal(
+    reverseTerminalBinding.identity.blockingPoseRequestKey,
+    reverseSourcePoseRequestKey,
+  )
+  assert.equal(
+    reverseTerminalBinding.safety.autoApplicable,
+    false,
   )
   const reverseDetail = describeFoldPreviewContinuousMotionDetail({
     requested: 0,
@@ -1272,6 +1676,79 @@ function stationaryBranchCollisionModel(): FoldGraphPreviewModel {
         },
       ],
     },
+  }
+}
+
+function stationaryInternalCollisionModel(): FoldGraphPreviewModel {
+  const base = stationaryBranchCollisionModel()
+  const obstacle = base.faces.find((face) => face.id === 'obstacle')
+  const frozen = base.hinges.find((hinge) => hinge.edgeId === 'frozen')
+  if (!obstacle || !frozen || base.kinematics.kind !== 'tree') {
+    throw new Error('stationary collision fixture is incomplete')
+  }
+  const twin: FoldPreviewFaceModel = {
+    id: 'obstacle-twin',
+    polygon: obstacle.polygon.map((point, index) => ({
+      ...point,
+      vertexId: index === 0 || index === obstacle.polygon.length - 1
+        ? point.vertexId
+        : `obstacle-twin-${index}`,
+    })),
+  }
+  const twinHinge: FoldPreviewHingeModel = {
+    ...frozen,
+    edgeId: 'frozen-twin',
+    rightFaceId: twin.id,
+  }
+  return {
+    ...base,
+    projectId: 'stationary-internal-project',
+    faces: [...base.faces, twin],
+    hinges: [...base.hinges, twinHinge],
+    kinematics: {
+      ...base.kinematics,
+      joints: [
+        ...base.kinematics.joints,
+        {
+          parentFaceId: 'root',
+          childFaceId: twin.id,
+          hinge: twinHinge,
+          childRotationSign: -1,
+        },
+      ],
+    },
+  }
+}
+
+function stationaryInternalWitnessOverflowModel(): FoldGraphPreviewModel {
+  const base = stationaryInternalCollisionModel()
+  const leftBoundary = [
+    { vertexId: 'oa', x: 0, z: 0 },
+    { vertexId: 'overflow-1', x: -0.4, z: -0.1 },
+    { vertexId: 'overflow-2', x: -0.7, z: 0.2 },
+    { vertexId: 'overflow-3', x: -0.8, z: 0.5 },
+    { vertexId: 'overflow-4', x: -0.7, z: 0.8 },
+    { vertexId: 'overflow-5', x: -0.4, z: 1.1 },
+    { vertexId: 'ob', x: 0, z: 1 },
+  ] as const
+  return {
+    ...base,
+    projectId: 'stationary-internal-overflow-project',
+    paperCenter: { x: -0.025, y: 0.5 },
+    worldBounds: { minX: -0.8, minZ: -0.1, maxX: 0.75, maxZ: 1.1 },
+    faces: base.faces.map((face) => {
+      if (face.id !== 'obstacle' && face.id !== 'obstacle-twin') return face
+      return {
+        id: face.id,
+        polygon: leftBoundary.map((point, index) => ({
+          ...point,
+          vertexId:
+            index === 0 || index === leftBoundary.length - 1
+              ? point.vertexId
+              : `${face.id}-${index}`,
+        })),
+      }
+    }),
   }
 }
 

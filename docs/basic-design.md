@@ -310,6 +310,17 @@ solve(current geometry, constraints, edited targets, policy)
 - triangle-pair走査は最大1,000,000、witness導出は走査順の最大16件に固定する。未確定pair、17件目以降、witness導出不能のいずれかがあれば`kind: unavailable`とし、件数と理由だけを返して部分witnessを公開しない。完全な場合だけ`kind: complete`と全witnessをdeep freezeして返す。両variantとも`autoApplicable: false`である。
 - `complete`が保証するのは、同じ解析姿勢で全非隣接衝突pairの局所制約を取り出せたことだけであり、出力は`requestIdentityBound: false`を固定する。次層でproject・revision・request・完全角度vector・危険時刻へ再結合するまではsolver入力にしない。固定側・可動subtreeのpartition、正のclearance、合法なヒンジ角への投影、新規衝突の全面再検証、そこまでの連続経路認定、層順・材料変形は別段階とし、raw translationや局所hintを3D姿勢またはプロジェクトへ適用しない。
 
+#### 8.2.4 危険姿勢への終端full-scan結合
+
+木構造の選択1ヒンジ経路では、通常の点判定中にfull-scanを実行しない。連続運動jobが`blocked`を確定し、危険時刻・blockerが保存seedと一致し、既存v1 blocking sampleの構築にも成功した後だけ、補助証拠としてterminal full-scanを一度試行する。
+
+- 外側の`tree_single_hinge_blocking_sample_v1`を維持し、独立versionのnullableな`terminalFullScanBinding`を追加する。full-scanの例外、`unavailable`、identity不一致はこのfieldだけを`null`にし、block、停止時刻、v1 witness・coverage、motion stats、停止詳細UIを変更しない。反復`step()`はcache済みの同一terminal objectを返し、再走査しない。
+- request identityがない純粋analyzer呼出ではfull-scanを開始しない。request付きでは開始角vectorから`sourcePoseRequestKey`を再確認し、危険角vectorから別の`blockingPoseRequestKey`を生成する。project、revision、固定面、選択ヒンジ、危険時刻、危険角、紙厚、start・target・sample全vectorを同じbindingへdeep freezeする。
+- `faceTransformsAt(危険角)`で全姿勢を再構成し、保存済みprimary blocker 2面の16要素と完全一致してからv2を呼ぶ。`kind: complete`、raw setの`requestIdentityBound: false`、紙厚、coverage全式、terminal blockerのface pair・class、v1 primary witnessのtriangle identityが一致した場合だけ、外側wrapperを`requestIdentityBound: true`とする。
+- reroot済みのstationary・moving face集合は重複・交差・欠落を許さず全faceを一度だけ覆い、固定面と選択ヒンジのparentをstationary、childをmovingへ結合する。各witnessにはfirst/second面のbody所属と`cross_partition`、`stationary_internal`、`moving_internal`を記録する。
+- same-body witnessが1件でもあれば説明bindingは保持するが、共通二体並進の入力には不適格とする。全witnessがcross-partitionの場合だけ`twoBodyTranslationInputEligible: true`にできる。ただし非隣接pair限定のため`wholeSceneConstraintsRepresented: false`、`hingeAdjacentPairsIncluded: false`、未生成・未再検証・未経路認定・`autoApplicable: false`を固定する。
+- terminal同期処理には通常point budgetと独立した100,000 triangle-pair上限を置く。全face pair上限がこれを超える場合はv2を開始せずv1 blockを即時返す。将来はfull-scanと候補検証をincremental jobまたはworkerへ分離する。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

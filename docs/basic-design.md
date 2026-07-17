@@ -343,6 +343,17 @@ solve(current geometry, constraints, edited targets, policy)
 - 危険角でのbaselineより丸め許容差を超えて残差を減らす候補だけを、残差二乗、点数で正規化したRMS、改善量、改善率とともに返す。残差、回転量、角度の固定順で順位を付け、結果全体をdeep freezeする。
 - 出力は`unverified_single_hinge_rotation_fit_seeds`であり、`modelIdentityBound`、`collisionConstraintsRevalidated`、`legalCorrectionPoseGenerated`、`staticCandidateRevalidated`、`continuousCandidatePathCertified`、`autoApplicable`をすべて`false`に固定する。次層でterminal bindingとworldヒンジ軸・moving頂点を再導出し、完全角度vectorを生成して全scene静的判定を通すまで、3D表示、motion owner、プロジェクトへ適用しない。
 
+#### 8.2.7 モデル束縛済み1ヒンジ静的補正候補
+
+`tree_single_hinge_static_correction_candidates_v1`は、terminal full-scanから得た二体並進候補と未検証角度seedを、同じ真正な木構造motion contextへ再結合する解析専用境界である。返却候補は指定角における全sceneの静的衝突再判定まで完了しているが、現在姿勢または危険姿勢から候補姿勢までの連続経路はまだ認定しない。
+
+- raw terminal bindingを読む境界は二体並進候補の導出時の一度だけとし、その後は切り離された候補を使う。contextのversion、project、revision、固定面、選択ヒンジ、context key、紙厚、source完全角度vectorを再確認し、sourceとblockingのpose request keyを同じmodelから再計算する。差し替え、失効getter、例外、非有限値、不一致は`null`へ退避する。
+- contextから選択ヒンジの実moving subtreeとstationary complementを再導出し、保存済み`sourcePartition`と決定順を含めて一致させる。全faceを重複なく覆い、固定面・parentはstationary、childはmoving、選択ヒンジ以外のjointがpartitionを横断しないことを必須とする。
+- blocking完全角度vectorから姿勢を再構成し、parent face transformと保存されたhinge transformの一致を確認してworldヒンジ軸を得る。moving subtreeのmaterial vertexをblocking姿勢へ変換し、同一vertex IDのworld位置が数値許容差内で一致する場合だけ、共通並進に対する有限回転seedを生成する。
+- 各seedは選択ヒンジだけを置換した完全角度vectorへ戻し、新しいpose request keyと全face transformを生成する。まず全非隣接face pairのfull scanが`complete`で、未確定・接触・貫通・witnessが0、coverage全式が成立することを確認する。続いて通常のnarrow-phaseを実行し、残るinteractionがすべて共有ヒンジpairかつ`allowed_by_hinge_model`である場合だけ静的候補として保持する。
+- 候補数は有限回転fitと同じ最大6件とする。全候補についてfull scanと通常解析を合わせた保守的triangle-pair上限を開始前に算出し、累積1,000,000を超えるモデルまたは実測値はfail-closedとする。計画上限、実測visit数、各scan回数をdeep-frozen結果へ保存する。
+- 出力はmodel identity、source/blocking pose、partition、完全合法角度vector、静的全scene、共有ヒンジ規則の再検証済みである。一方、候補までの連続経路、層順、材料変形、scene反映、undo可能なproject commandは未検証なので、`continuousCandidatePathCertified`、`sceneApplied`、`autoApplicable`をすべて`false`に固定する。解析結果をmotion owner、3D表示、プロジェクトへ直接適用しない。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

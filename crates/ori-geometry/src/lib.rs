@@ -9,10 +9,11 @@ mod validation;
 
 pub use validation::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, PaperValidation, PaperValidationIssue,
-    ValidationIssue, polygon_signed_double_area, validate_crease_pattern, validate_paper,
+    ValidationIssue, exact_polygon_orientation, polygon_signed_double_area,
+    validate_crease_pattern, validate_paper,
 };
 
-/// The orientation of three ordered points.
+/// The orientation of an ordered point triple or polygon boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation {
     Clockwise,

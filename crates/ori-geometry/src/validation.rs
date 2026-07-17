@@ -667,6 +667,24 @@ pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryErro
     scaled_bigint_to_f64(exact_polygon_double_area(points), EXACT_PRODUCT_EXPONENT)
 }
 
+/// Classifies the exact sign of an ordered polygon boundary.
+///
+/// Unlike [`polygon_signed_double_area`], this function never rounds a
+/// non-zero area to positive or negative zero. Callers making topological
+/// decisions must use this sign and treat the numeric area as a measurement
+/// only. A positive exact shoelace sum is counter-clockwise; a negative sum is
+/// clockwise; and an exactly zero sum is collinear/zero-area.
+pub fn exact_polygon_orientation(points: &[Point2]) -> Result<Orientation, GeometryError> {
+    for point in points {
+        ensure_finite("polygon point", *point)?;
+    }
+    Ok(match exact_polygon_double_area(points).sign() {
+        Sign::Minus => Orientation::Clockwise,
+        Sign::NoSign => Orientation::Collinear,
+        Sign::Plus => Orientation::CounterClockwise,
+    })
+}
+
 pub(super) fn exact_triangle_orientation(a: Point2, b: Point2, c: Point2) -> Orientation {
     debug_assert!(a.x.is_finite() && a.y.is_finite());
     debug_assert!(b.x.is_finite() && b.y.is_finite());
@@ -1159,6 +1177,56 @@ mod tests {
             ]),
             Err(GeometryError::ArithmeticOverflow)
         );
+    }
+
+    #[test]
+    fn exact_polygon_orientation_preserves_sign_below_binary64_area_range() {
+        let side = f64::from_bits(485_u64 << 52);
+        let mut points = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(side, 0.0),
+            Point2::new(0.0, side),
+        ];
+        assert_eq!(polygon_signed_double_area(&points), Ok(0.0));
+        assert_eq!(
+            exact_polygon_orientation(&points),
+            Ok(Orientation::CounterClockwise)
+        );
+
+        for _ in 0..points.len() {
+            points.rotate_left(1);
+            assert_eq!(
+                exact_polygon_orientation(&points),
+                Ok(Orientation::CounterClockwise)
+            );
+        }
+        points.reverse();
+        assert_eq!(
+            polygon_signed_double_area(&points)
+                .expect("finite underflowing area")
+                .to_bits(),
+            (-0.0_f64).to_bits()
+        );
+        assert_eq!(
+            exact_polygon_orientation(&points),
+            Ok(Orientation::Clockwise)
+        );
+
+        assert_eq!(
+            exact_polygon_orientation(&[
+                Point2::new(0.0, 0.0),
+                Point2::new(side, 0.0),
+                Point2::new(0.0, 0.0),
+            ]),
+            Ok(Orientation::Collinear)
+        );
+        assert!(matches!(
+            exact_polygon_orientation(&[Point2::new(f64::NAN, 0.0)]),
+            Err(GeometryError::NonFinitePoint {
+                argument: "polygon point",
+                ..
+            })
+        ));
     }
 
     #[test]

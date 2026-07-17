@@ -14,6 +14,7 @@ import {
   Vector3,
 } from 'three'
 import {
+  pickFoldPreviewFaceSurface,
   pickFoldPreviewTarget,
   type FoldPreviewPickObject,
 } from '../src/lib/foldPreviewPicking.ts'
@@ -91,6 +92,99 @@ test('duplicate IDs or objects fail closed before raycasting', () => {
     new Vector2(0, 0),
     duplicateObjects,
     [],
+  ), null)
+})
+
+test('surface picking returns one detached frozen world-space hit', () => {
+  const { camera, face } = fixture()
+  const result = pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [{ id: 'face', object: face }],
+  )
+
+  assert.deepEqual(result, {
+    faceId: 'face',
+    worldPoint: { x: 0, y: 0, z: 0 },
+    distance: 5,
+    materialIndex: 0,
+  })
+  assert.ok(Object.isFrozen(result))
+  assert.ok(Object.isFrozen(result?.worldPoint))
+})
+
+test('surface picking chooses the nearest face without exposing its intersection', () => {
+  const { camera, face } = fixture()
+  const farther = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  farther.position.z = -1
+  farther.updateMatrixWorld(true)
+  const result = pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [
+      { id: 'farther', object: farther },
+      { id: 'nearest', object: face },
+    ],
+  )
+
+  assert.equal(result?.faceId, 'nearest')
+  assert.equal(result?.distance, 5)
+})
+
+test('surface picking rejects invalid pointers, targets, and intersection values', () => {
+  const { camera, face } = fixture()
+  assert.equal(pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(Number.NaN, 0),
+    [{ id: 'face', object: face }],
+  ), null)
+  assert.equal(pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [
+      { id: 'same', object: face },
+      { id: 'same', object: new Mesh(new PlaneGeometry()) },
+    ],
+  ), null)
+
+  const malformedRaycaster = {
+    setFromCamera() {},
+    intersectObjects() {
+      return [{
+        distance: 1,
+        point: new Vector3(Number.POSITIVE_INFINITY, 0, 0),
+        object: face,
+        face: { materialIndex: 0 },
+      }]
+    },
+  } as unknown as Raycaster
+  assert.equal(pickFoldPreviewFaceSurface(
+    malformedRaycaster,
+    camera,
+    new Vector2(0, 0),
+    [{ id: 'face', object: face }],
+  ), null)
+})
+
+test('surface picking contains raycaster failures', () => {
+  const { camera, face } = fixture()
+  const throwingRaycaster = {
+    setFromCamera() {
+      throw new Error('camera failure')
+    },
+    intersectObjects() {
+      assert.fail('intersection must not run')
+    },
+  } as unknown as Raycaster
+  assert.equal(pickFoldPreviewFaceSurface(
+    throwingRaycaster,
+    camera,
+    new Vector2(0, 0),
+    [{ id: 'face', object: face }],
   ), null)
 })
 

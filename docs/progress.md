@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約36.7%（2026-07-18）**
+**全体完成率: 約37.1%（2026-07-18）**
 
 完成率は画面数ではなく、要件定義書のMUST 86件、FUTURE 14件、品質検証、両OS配布を含む総工数の概算である。研究要素の結果によって見積もりを更新する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計36.70%を小数第1位へ丸めて全体完成率としている。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計37.10%を小数第1位へ丸めて全体完成率としている。
 
 ## 重み付け
 
@@ -16,13 +16,13 @@
 | プロジェクト・保存・履歴 | 8% | 60% | 4.80% | 原子的編集とUndo/Redo、ネイティブ`.ori2`実ファイル操作、全OSの原子的上書きと失敗時保護を実装 |
 | 2D展開図エディター | 15% | 52% | 7.80% | 基本編集、任意多角形用紙、9種のスナップに加え、2D・角度一覧・3Dヒンジの選択同期を実装 |
 | 数式・幾何制約 | 9% | 57% | 5.13% | 木構造の選択1ヒンジについて、他ヒンジを固定した完全角度vectorと非可換姿勢を保ち、連続衝突を検証する純粋契約を実装 |
-| 3D折り・紙厚・衝突 | 17% | 50% | 8.50% | 通常の早期停止判定を維持したまま、全非隣接triangle-pairの完全witness集合をオンデマンド収集するv2境界を実装 |
-| 折り可能性・経路探索 | 18% | 14% | 2.52% | 全衝突制約が表現できた場合だけcompleteとし、未確定・上限超過・導出不能では部分集合をsolverへ公開しない |
+| 3D折り・紙厚・衝突 | 17% | 51% | 8.67% | full-scan集合を危険時刻の完全角度vector・固定/可動partition・primary witnessへ結合 |
+| 折り可能性・経路探索 | 18% | 15% | 2.70% | request付きterminalだけで結合済み集合を生成し、same-body衝突や非隣接scope外をsolver適格から除外 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 16% | 0.80% | 安全制限付き`.ori2`、実パス読込・保存・再上書き・全OSの原子的置換を実装 |
-| 多言語・設定・配布・QA | 5% | 71% | 3.55% | frontend 561件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app`をCI検証 |
+| 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend 564件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app`をCI検証 |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **36.70%** | — |
+| **合計** | **100%** | — | **37.10%** | — |
 
 ## 完了
 
@@ -158,6 +158,8 @@
 - model・固定面・選択ヒンジ・紙厚・表示姿勢・外部要求・runtime stateを同一snapshotとして照合し、同期再入、新しい角度要求、描画姿勢不一致では旧い衝突証拠をfail-closedで破棄
 - prepared狭域analyzerへ全非隣接triangle-pairを貫通後も決定順で走査するオンデマンドv2を追加し、通常の早期停止解析・連続運動中の作業量・v1 witnessを不変に維持
 - 全走査coverage方程式、100万pair上限、16 witness上限、未確定・導出不能・上限省略を検証し、不完全時は件数と理由だけを返して部分witnessを非公開。状態依存Map・行列要素は公開境界で一度だけsnapshot
+- request付きterminal blockの同一危険角でfull-scanを一度だけ再構成し、project・revision・request、開始/目標/危険角vector、危険姿勢key、固定/可動partition、v1 primary witnessへ結合する独立versionのnullable binding
+- requestなし、10万pairのterminal上限超過、v2 unavailable、pose・blocker不一致ではfull-scanまたはbindingだけを省略し、v1 block・停止時刻・bracket・statsを不変に維持。same-body witnessは説明に保持しつつ二体並進solver適格性をfalseに固定
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -259,6 +261,7 @@
 - コミット`6665f40`のCI Run `29589287905`全ジョブ完走（危険姿勢・request identity・bounded witnessの結合、frontend 546件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`01bfd3e`のCI Run `29605119396`全ジョブ完走（衝突根拠の停止詳細UI、stale・再入・表示姿勢guard、frontend 553件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`7de8897`のCI Run `29606086440`全ジョブ完走（全非隣接pairのfull-scan v2、hostile pose snapshot、frontend 561件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`59e81ef`のCI Run `29607122375`全ジョブ完走（terminal full-scan binding、same-body・unavailable・独立cap回帰、frontend 564件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
@@ -275,7 +278,7 @@
 ## 次の作業
 
 1. OQ-002の物理的な厚さoffset・層ずれ規則を確定し、中央面基準の近似分類と選択可能にする
-2. full-scan v2集合を危険時刻のproject・revision・request・完全角度vector・固定/可動partitionへ結合し、その結合済み集合だけから非自動適用の全体修正候補を生成する
+2. terminal結合済みで全witnessがcross-partitionの集合だけから、非自動適用の二体間修正候補をbounded active-set法で生成する
 3. 三角柱の局所形状再利用、広域・狭域の差分更新、worker分離により、大規模な面・ヒンジの判定を最適化する
 4. 閉路拘束の診断と将来ソルバー境界を詳細化する
 5. 3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める

@@ -220,7 +220,10 @@ button { color: inherit; }
 .hinge-angle-heading strong { font-size: 11px; }
 .hinge-angle-heading span { color: var(--muted); font-size: 10px; }
 .hinge-angle-row { display: grid; grid-template-columns: 70px minmax(70px, 1fr) 78px; align-items: center; gap: 8px; min-height: 28px; }
-.hinge-angle-row label { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.hinge-select-button { overflow: hidden; border: 1px solid transparent; border-radius: 4px; padding: 3px 5px; background: transparent; color: var(--muted); font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.hinge-select-button:not(:disabled):hover { border-color: var(--border); background: var(--panel); }
+.hinge-select-button[aria-pressed="true"] { border-color: #d77a52; background: #fff0e8; color: #8c3515; }
+.hinge-select-button:disabled { opacity: .45; cursor: not-allowed; }
 
 .inspector { overflow-y: auto; }
 .inspector section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -327,6 +330,7 @@ button { color: inherit; }
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }
   .panel-heading, .statusbar { background: #20282f; }
   .top-actions button, .timeline button, .chip, .step, .property-actions button, .validation-report li button, .validation-report li > span { background: #303941; }
+  .hinge-select-button[aria-pressed="true"] { border-color: #b86a47; background: #4a2c20; color: #ffc0a2; }
   .chip.active, .chip[aria-pressed="true"] { color: #d1f3ff; border-color: #75bcd2; background: #174b5d; }
   .field-error { color: #ffb4ab; }
   .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }

@@ -11,6 +11,7 @@ import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewM
 type FoldPreviewProps = {
   angle: number
   hingeAngles?: readonly FoldPreviewHingeAngle[]
+  selectedHingeId?: string | null
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -20,6 +21,7 @@ type FoldPreviewProps = {
 
 type PreviewRuntime = {
   updatePose: (angle: number, hingeAngles?: readonly FoldPreviewHingeAngle[]) => boolean
+  updateSelection: (selectedHingeId: string | null) => void
   render: () => void
   dispose: () => void
 }
@@ -31,6 +33,7 @@ const MAX_VISIBLE_THICKNESS = 0.35
 export function FoldPreview({
   angle,
   hingeAngles,
+  selectedHingeId,
   model,
   statusMessage,
   frontColor,
@@ -46,6 +49,8 @@ export function FoldPreview({
   angleRef.current = safeAngle
   const hingeAnglesRef = useRef(hingeAngles)
   hingeAnglesRef.current = hingeAngles
+  const selectedHingeIdRef = useRef(selectedHingeId ?? null)
+  selectedHingeIdRef.current = selectedHingeId ?? null
 
   const safeThicknessMm = isNonNegativeFinite(thicknessMm) ? thicknessMm : DEFAULT_THICKNESS_MM
   const physicalPreviewThickness = model
@@ -115,6 +120,7 @@ export function FoldPreview({
     let sideMaterial: THREE.MeshStandardMaterial | null = null
     let edgeMaterial: THREE.LineBasicMaterial | null = null
     let hingeMaterial: THREE.LineBasicMaterial | null = null
+    let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
     let runtime: PreviewRuntime | null = null
     let disposed = false
@@ -136,6 +142,7 @@ export function FoldPreview({
       attemptCleanup(() => sideMaterial?.dispose())
       attemptCleanup(() => edgeMaterial?.dispose())
       attemptCleanup(() => hingeMaterial?.dispose())
+      attemptCleanup(() => selectedHingeMaterial?.dispose())
       if (renderer) {
         attemptCleanup(() => renderer?.renderLists.dispose())
         attemptCleanup(() => renderer?.dispose())
@@ -218,6 +225,7 @@ export function FoldPreview({
       let axis: THREE.Vector3 | null = null
       let rotationSign: 1 | -1 = 1
       let updatePose = (_angle: number, _hingeAngles?: readonly FoldPreviewHingeAngle[]) => true
+      let updateSelection = (_selectedHingeId: string | null) => undefined
       if (model.kind === 'single_fold' && movingGeometry) {
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
@@ -241,6 +249,12 @@ export function FoldPreview({
       if (hinges.length > 0) {
         const createdHingeMaterial = new THREE.LineBasicMaterial({ color: 0x7a3f16 })
         hingeMaterial = createdHingeMaterial
+        const createdSelectedHingeMaterial = new THREE.LineBasicMaterial({
+          color: 0xe24a16,
+          depthTest: false,
+          depthWrite: false,
+        })
+        selectedHingeMaterial = createdSelectedHingeMaterial
         const hingeLines = new Map<string, THREE.LineSegments>()
         for (const hinge of hinges) {
           const geometry = new THREE.BufferGeometry()
@@ -258,12 +272,21 @@ export function FoldPreview({
             ),
           ])
           const line = new THREE.LineSegments(geometry, createdHingeMaterial)
+          hingeLines.set(hinge.edgeId, line)
           if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
             line.matrixAutoUpdate = false
-            hingeLines.set(hinge.edgeId, line)
           }
           scene.add(line)
         }
+
+        updateSelection = (nextSelectedHingeId) => {
+          for (const [edgeId, line] of hingeLines) {
+            const selected = edgeId === nextSelectedHingeId
+            line.material = selected ? createdSelectedHingeMaterial : createdHingeMaterial
+            line.renderOrder = selected ? 10 : 0
+          }
+        }
+        updateSelection(selectedHingeIdRef.current)
 
         if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
           const treeKinematics = model.kinematics
@@ -297,7 +320,7 @@ export function FoldPreview({
       }
 
       const render = () => createdRenderer.render(scene, camera)
-      runtime = { updatePose, render, dispose }
+      runtime = { updatePose, updateSelection, render, dispose }
       runtimeRef.current = runtime
 
       const resize = () => {
@@ -346,6 +369,18 @@ export function FoldPreview({
     }
   }, [safeAngle, hingeAngles])
 
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    try {
+      runtime.updateSelection(selectedHingeId ?? null)
+      runtime.render()
+    } catch {
+      runtime.dispose()
+      setRenderError('3D選択表示を安全に継続できませんでした')
+    }
+  }, [selectedHingeId])
+
   const thicknessNote = thicknessIsEmphasised
     ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示は視認用の最小厚）`
     : thicknessIsLimited
@@ -376,6 +411,7 @@ export function FoldPreview({
       className="fold-preview"
       data-angle={safeAngle}
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
+      data-selected-hinge={selectedHingeId ?? undefined}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
       role="img"
       aria-label={previewDescription}

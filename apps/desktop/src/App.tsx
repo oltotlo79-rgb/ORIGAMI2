@@ -244,6 +244,18 @@ function App() {
     () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
     [nativeSnapshot, topologyResponse],
   )
+  const foldPreviewHingeIds = useMemo(() => new Set(
+    foldPreviewModel?.kind === 'single_fold'
+      ? [foldPreviewModel.hinge.edgeId]
+      : foldPreviewModel?.kind === 'fold_graph'
+        ? foldPreviewModel.hinges.map((hinge) => hinge.edgeId)
+        : [],
+  ), [foldPreviewModel])
+  const selectedPreviewHingeId = !benchmarkRun
+    && selectedLineId
+    && foldPreviewHingeIds.has(selectedLineId)
+    ? selectedLineId
+    : null
   const foldPreviewStatus = topologyResponse?.simulation_ready && !foldPreviewModel
     ? '3D入力の整合性検証で遮断'
     : topologyStatus
@@ -1161,6 +1173,7 @@ function App() {
             <FoldPreview
               angle={foldAngle}
               hingeAngles={foldTreeHingeAngles}
+              selectedHingeId={selectedPreviewHingeId}
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
@@ -1211,17 +1224,30 @@ function App() {
                     const hingeAngle = foldTreeHingeAngles[index]?.angleDegrees ?? foldAngle
                     const label = joint.hinge.assignment === 'mountain' ? '山折り' : '谷折り'
                     const inputId = `hinge-angle-${joint.hinge.edgeId}`
+                    const selected = selectedLineId === joint.hinge.edgeId
                     return (
                       <div className="hinge-angle-row" key={joint.hinge.edgeId}>
-                        <label htmlFor={inputId} title={joint.hinge.edgeId}>
+                        <button
+                          type="button"
+                          className="hinge-select-button"
+                          aria-pressed={benchmarkRun ? false : selected}
+                          aria-label={`${index + 1}番目の${label}を2D・3Dで${selected ? '選択解除' : '選択'}`}
+                          disabled={Boolean(benchmarkRun)}
+                          title={`2D・3Dで選択: ${joint.hinge.edgeId}`}
+                          onClick={() => {
+                            setSelectedLineId(selected ? null : joint.hinge.edgeId)
+                            setSelectedVertexId(null)
+                          }}
+                        >
                           {index + 1}. {label}
-                        </label>
+                        </button>
                         <input
                           id={inputId}
                           type="range"
                           min="0"
                           max="180"
                           step="0.1"
+                          aria-label={`${index + 1}番目の${label}の折り量`}
                           value={hingeAngle}
                           onChange={(event) => updateHingeFoldAngle(
                             joint.hinge.edgeId,

@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { Matrix4, Vector3 } from 'three'
 import {
+  collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
   resolveSingleFoldAnchor,
 } from '../src/lib/foldPreviewAnchoring.ts'
@@ -246,6 +247,32 @@ test('single-fold anchoring flips only the moving-side rotation sign', () => {
   }
   assert.equal(resolveSingleFoldAnchor(valleyModel, 'left')?.movingRotationSign, -1)
   assert.equal(resolveSingleFoldAnchor(valleyModel, 'right')?.movingRotationSign, 1)
+})
+
+test('dependent faces follow the selected hinge away from the fixed root', () => {
+  const tree = chainTree()
+  assert.deepEqual(collectFoldTreeDependentFaces(tree, 'hinge-1'), ['middle', 'east'])
+  assert.deepEqual(collectFoldTreeDependentFaces(tree, 'hinge-2'), ['east'])
+  assert.deepEqual(collectFoldTreeDependentFaces(tree, 'unknown'), [])
+
+  const eastRooted = rerootFoldPreviewTree(tree, 'east')
+  assert.ok(eastRooted)
+  assert.deepEqual(collectFoldTreeDependentFaces(eastRooted, 'hinge-2'), ['middle', 'west'])
+  assert.deepEqual(collectFoldTreeDependentFaces(eastRooted, 'hinge-1'), ['west'])
+})
+
+test('dependent face collection fails closed for invalid requests and trees', () => {
+  assert.equal(collectFoldTreeDependentFaces(chainTree(), ''), null)
+  assert.equal(collectFoldTreeDependentFaces({
+    kind: 'tree',
+    rootFaceId: 'root',
+    joints: [{
+      parentFaceId: 'missing',
+      childFaceId: 'child',
+      hinge: firstHinge,
+      childRotationSign: 1,
+    }],
+  }, 'hinge-1'), null)
 })
 
 function chainTree(): FoldPreviewTreeKinematics {

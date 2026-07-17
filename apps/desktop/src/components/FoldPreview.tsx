@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { RgbaColor } from '../lib/coreClient'
 import {
+  collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
   resolveSingleFoldAnchor,
 } from '../lib/foldPreviewAnchoring'
@@ -147,6 +148,8 @@ export function FoldPreview({
     let backMaterial: THREE.MeshStandardMaterial | null = null
     let sideMaterial: THREE.MeshStandardMaterial | null = null
     let edgeMaterial: THREE.LineBasicMaterial | null = null
+    let fixedFaceEdgeMaterial: THREE.LineBasicMaterial | null = null
+    let dependentFaceEdgeMaterial: THREE.LineBasicMaterial | null = null
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
@@ -169,6 +172,8 @@ export function FoldPreview({
       attemptCleanup(() => backMaterial?.dispose())
       attemptCleanup(() => sideMaterial?.dispose())
       attemptCleanup(() => edgeMaterial?.dispose())
+      attemptCleanup(() => fixedFaceEdgeMaterial?.dispose())
+      attemptCleanup(() => dependentFaceEdgeMaterial?.dispose())
       attemptCleanup(() => hingeMaterial?.dispose())
       attemptCleanup(() => selectedHingeMaterial?.dispose())
       if (renderer) {
@@ -226,7 +231,20 @@ export function FoldPreview({
       const materials = [createdFrontMaterial, createdBackMaterial, createdSideMaterial]
       const createdEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x715747 })
       edgeMaterial = createdEdgeMaterial
+      const createdFixedFaceEdgeMaterial = new THREE.LineBasicMaterial({
+        color: 0x1671b8,
+        depthTest: false,
+        depthWrite: false,
+      })
+      fixedFaceEdgeMaterial = createdFixedFaceEdgeMaterial
+      const createdDependentFaceEdgeMaterial = new THREE.LineBasicMaterial({
+        color: 0xe24a16,
+        depthTest: false,
+        depthWrite: false,
+      })
+      dependentFaceEdgeMaterial = createdDependentFaceEdgeMaterial
 
+      const faceEdgeLines = new Map<string, THREE.LineSegments>()
       const makeFace = (geometry: THREE.BufferGeometry, face: FoldPreviewFaceModel) => {
         const group = new THREE.Group()
         group.userData.faceId = face.id
@@ -235,7 +253,9 @@ export function FoldPreview({
         paper.receiveShadow = true
         const edgeGeometry = new THREE.EdgesGeometry(geometry, 20)
         edgeGeometries.push(edgeGeometry)
-        group.add(paper, new THREE.LineSegments(edgeGeometry, createdEdgeMaterial))
+        const faceEdges = new THREE.LineSegments(edgeGeometry, createdEdgeMaterial)
+        faceEdgeLines.set(face.id, faceEdges)
+        group.add(paper, faceEdges)
         return group
       }
 
@@ -313,6 +333,37 @@ export function FoldPreview({
             const selected = edgeId === nextSelectedHingeId
             line.material = selected ? createdSelectedHingeMaterial : createdHingeMaterial
             line.renderOrder = selected ? 10 : 0
+          }
+          const dependentFaceIds = new Set<string>()
+          if (
+            nextSelectedHingeId
+            && model.kind === 'single_fold'
+            && singleAnchor
+            && nextSelectedHingeId === model.hinge.edgeId
+          ) {
+            dependentFaceIds.add(singleAnchor.movingFace.id)
+          } else if (
+            nextSelectedHingeId
+            && model.kind === 'fold_graph'
+            && model.kinematics.kind === 'tree'
+            && treeKinematics
+          ) {
+            const resolvedDependentFaceIds = collectFoldTreeDependentFaces(
+              treeKinematics,
+              nextSelectedHingeId,
+            )
+            if (!resolvedDependentFaceIds) throw new Error('invalid dependent face tree')
+            for (const faceId of resolvedDependentFaceIds) dependentFaceIds.add(faceId)
+          }
+          for (const [faceId, line] of faceEdgeLines) {
+            const fixed = faceId === resolvedFixedFaceId
+            const dependent = dependentFaceIds.has(faceId)
+            line.material = fixed
+              ? createdFixedFaceEdgeMaterial
+              : dependent
+                ? createdDependentFaceEdgeMaterial
+                : createdEdgeMaterial
+            line.renderOrder = fixed ? 9 : dependent ? 8 : 0
           }
         }
         updateSelection(selectedHingeIdRef.current)

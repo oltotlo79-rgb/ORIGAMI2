@@ -123,6 +123,34 @@ export function resolveSingleFoldAnchor(
   return null
 }
 
+/**
+ * Returns the selected hinge's moving subtree in deterministic breadth-first
+ * order. An unknown edge is a valid empty selection; a malformed tree fails.
+ */
+export function collectFoldTreeDependentFaces(
+  tree: FoldPreviewTreeKinematics,
+  hingeEdgeId: string,
+): readonly string[] | null {
+  if (typeof hingeEdgeId !== 'string' || hingeEdgeId.length === 0) return null
+  if (!rerootFoldPreviewTree(tree, tree.rootFaceId)) return null
+  const selectedJoint = tree.joints.find((joint) => joint.hinge.edgeId === hingeEdgeId)
+  if (!selectedJoint) return []
+
+  const childrenByFace = new Map<string, string[]>()
+  for (const joint of tree.joints) {
+    const children = childrenByFace.get(joint.parentFaceId) ?? []
+    children.push(joint.childFaceId)
+    childrenByFace.set(joint.parentFaceId, children)
+  }
+  const dependentFaceIds = [selectedJoint.childFaceId]
+  for (let index = 0; index < dependentFaceIds.length; index += 1) {
+    for (const childFaceId of childrenByFace.get(dependentFaceIds[index]) ?? []) {
+      dependentFaceIds.push(childFaceId)
+    }
+  }
+  return dependentFaceIds
+}
+
 function validHinge(hinge: FoldPreviewHingeModel) {
   if (![
     hinge.start.x,

@@ -1233,7 +1233,7 @@ function App() {
                     ))
                   : <option value="">選択不可</option>}
               </select>
-              <span>{fixedFaceEnabled ? '動かさない面' : '—'}</span>
+              <span>{fixedFaceEnabled ? '青枠・固定' : '—'}</span>
             </div>
             <div className="fold-control">
               <label htmlFor="fold-angle">
@@ -1273,7 +1273,7 @@ function App() {
                 <section className="hinge-angle-controls" aria-labelledby="hinge-angle-title">
                   <div className="hinge-angle-heading">
                     <strong id="hinge-angle-title">ヒンジ別の折り量</strong>
-                    <span>プレビュー専用・衝突未検証</span>
+                    <span>橙枠=従属面・衝突未検証</span>
                   </div>
                   {foldPreviewModel.kinematics.joints.map((joint, index) => {
                     const hingeAngle = foldTreeHingeAngles[index]?.angleDegrees ?? foldAngle

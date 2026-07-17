@@ -15,6 +15,16 @@
 * { box-sizing: border-box; }
 button, input { font: inherit; }
 button { color: inherit; }
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+}
 
 .app-shell {
   height: 100vh;
@@ -175,7 +185,7 @@ button { color: inherit; }
 .editor-grid { min-width: 0; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .crease-panel, .preview-panel { min-width: 0; display: grid; grid-template-rows: 34px minmax(0, 1fr); }
 .preview-panel { grid-template-rows: 34px minmax(0, 1fr) auto auto auto; }
-.crease-canvas, .fold-preview { display: block; width: 100%; height: 100%; min-height: 0; }
+.crease-canvas, .fold-preview, .fold-preview-viewport { display: block; width: 100%; height: 100%; min-height: 0; }
 .crease-canvas { background: #eef2f5; cursor: crosshair; }
 .crease-canvas.tool-select { cursor: grab; touch-action: none; }
 .crease-canvas.tool-select.is-dragging { cursor: grabbing; }
@@ -183,8 +193,32 @@ button { color: inherit; }
 .crease-canvas.tool-measure { cursor: crosshair; }
 .crease-canvas.is-disabled { cursor: progress; }
 .fold-preview { position: relative; overflow: hidden; background: #eef2f5; }
-.fold-preview canvas { display: block; width: 100%; height: 100%; }
-.fold-preview[data-interactive="true"] canvas { cursor: pointer; }
+.fold-preview-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  outline: none;
+}
+.fold-preview-viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fold-preview-viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.fold-preview-reset {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  z-index: 2;
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid rgb(82 97 109 / 46%);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 92%);
+  color: #3f505c;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.fold-preview-reset:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+.fold-preview-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fold-preview-reset:disabled { opacity: .5; cursor: not-allowed; }
 .fold-preview-empty {
   position: absolute;
   inset: 0;
@@ -214,7 +248,9 @@ button { color: inherit; }
   position: absolute;
   top: 7px;
   left: 8px;
+  right: 116px;
   z-index: 1;
+  overflow: hidden;
   padding: 3px 6px;
   border: 1px solid rgb(82 97 109 / 40%);
   border-radius: 999px;
@@ -222,6 +258,8 @@ button { color: inherit; }
   color: #52616d;
   font-size: 10px;
   line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   pointer-events: none;
 }
 .fold-preview-collision.is-clear { border-color: rgb(40 114 73 / 45%); color: #287249; }

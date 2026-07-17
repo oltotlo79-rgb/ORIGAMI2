@@ -1,11 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { RgbaColor } from '../lib/coreClient'
 import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
   resolveSingleFoldAnchor,
 } from '../lib/foldPreviewAnchoring'
+import {
+  applyFoldPreviewCameraCommand,
+  createFoldPreviewSelectionGesture,
+  resolveFoldPreviewCameraCommand,
+} from '../lib/foldPreviewCameraInteraction'
 import {
   type FoldPreviewCollisionAdjacency,
 } from '../lib/foldPreviewCollision'
@@ -47,6 +53,7 @@ type PreviewRuntime = {
   schedulePose: (angle: number, hingeAngles?: readonly FoldPreviewHingeAngle[]) => boolean
   updateSelection: (selectedHingeId: string | null) => void
   render: () => void
+  resetView: () => void
   dispose: () => void
 }
 
@@ -90,6 +97,7 @@ export function FoldPreview({
 }: FoldPreviewProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const runtimeRef = useRef<PreviewRuntime | null>(null)
+  const descriptionId = useId()
   const [renderError, setRenderError] = useState<string | null>(null)
   const [collisionSummary, setCollisionSummary] = useState<CollisionSummary | null>(null)
   // Assignment selects the fold direction; the control supplies only its magnitude.
@@ -204,7 +212,13 @@ export function FoldPreview({
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
-    let clickHandler: ((event: MouseEvent) => void) | null = null
+    let controls: OrbitControls | null = null
+    let controlsChangeHandler: (() => void) | null = null
+    let pointerDownHandler: ((event: PointerEvent) => void) | null = null
+    let pointerMoveHandler: ((event: PointerEvent) => void) | null = null
+    let pointerUpHandler: ((event: PointerEvent) => void) | null = null
+    let pointerCancelHandler: ((event: PointerEvent) => void) | null = null
+    let keyDownHandler: ((event: KeyboardEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
     let poseFrameTask: LatestFrameTask<PendingPose> | null = null
     let disposed = false
@@ -275,6 +289,31 @@ export function FoldPreview({
     const dispose = () => {
       if (disposed) return
       disposed = true
+      if (renderer) {
+        const canvas = renderer.domElement
+        if (pointerDownHandler) {
+          attemptCleanup(() => canvas.removeEventListener('pointerdown', pointerDownHandler!))
+        }
+        if (pointerMoveHandler) {
+          attemptCleanup(() =>
+            canvas.ownerDocument.removeEventListener('pointermove', pointerMoveHandler!))
+        }
+        if (pointerUpHandler) {
+          attemptCleanup(() =>
+            canvas.ownerDocument.removeEventListener('pointerup', pointerUpHandler!))
+        }
+        if (pointerCancelHandler) {
+          attemptCleanup(() =>
+            canvas.ownerDocument.removeEventListener('pointercancel', pointerCancelHandler!))
+        }
+      }
+      if (keyDownHandler) {
+        attemptCleanup(() => host.removeEventListener('keydown', keyDownHandler!))
+      }
+      if (controls && controlsChangeHandler) {
+        attemptCleanup(() => controls?.removeEventListener('change', controlsChangeHandler!))
+      }
+      attemptCleanup(() => controls?.dispose())
       attemptCleanup(() => observer?.disconnect())
       attemptCleanup(() => poseFrameTask?.dispose())
       if (runtime && runtimeRef.current === runtime) runtimeRef.current = null
@@ -297,9 +336,6 @@ export function FoldPreview({
       attemptCleanup(() => hingeMaterial?.dispose())
       attemptCleanup(() => selectedHingeMaterial?.dispose())
       if (renderer) {
-        if (clickHandler) {
-          attemptCleanup(() => renderer?.domElement.removeEventListener('click', clickHandler!))
-        }
         attemptCleanup(() => renderer?.renderLists.dispose())
         attemptCleanup(() => renderer?.dispose())
         attemptCleanup(() => renderer?.domElement.remove())
@@ -329,6 +365,7 @@ export function FoldPreview({
       createdRenderer.outputColorSpace = THREE.SRGBColorSpace
       createdRenderer.shadowMap.enabled = true
       createdRenderer.shadowMap.type = THREE.PCFSoftShadowMap
+      createdRenderer.domElement.setAttribute('aria-hidden', 'true')
       host.appendChild(createdRenderer.domElement)
 
       scene.add(new THREE.HemisphereLight(0xffffff, 0x748090, 2.2))
@@ -616,6 +653,31 @@ export function FoldPreview({
       }
 
       const render = () => createdRenderer.render(scene, camera)
+      const createdControls = new OrbitControls(camera, createdRenderer.domElement)
+      controls = createdControls
+      createdControls.target.set(0, 0, 0)
+      createdControls.enableDamping = false
+      createdControls.enableRotate = true
+      createdControls.enableZoom = true
+      createdControls.enablePan = true
+      createdControls.screenSpacePanning = true
+      createdControls.minDistance = 1
+      createdControls.maxDistance = 40
+      createdControls.minPolarAngle = 0.02
+      createdControls.maxPolarAngle = Math.PI - 0.02
+      createdControls.cursorStyle = 'grab'
+      createdControls.update()
+      createdControls.saveState()
+      controlsChangeHandler = () => {
+        if (disposed) return
+        try {
+          render()
+        } catch {
+          dispose()
+          setRenderError('3Dカメラ操作を安全に継続できませんでした')
+        }
+      }
+      createdControls.addEventListener('change', controlsChangeHandler)
       let appliedPoseKey = collisionPoseKey(
         model,
         resolvedFixedFaceId,
@@ -667,13 +729,19 @@ export function FoldPreview({
       }
       const raycaster = new THREE.Raycaster()
       const pointer = new THREE.Vector2()
-      clickHandler = (event) => {
+      const selectAt = (clientX: number, clientY: number) => {
         try {
           const bounds = createdRenderer.domElement.getBoundingClientRect()
           if (!isPositiveFinite(bounds.width) || !isPositiveFinite(bounds.height)) return
+          if (
+            clientX < bounds.left
+            || clientX > bounds.right
+            || clientY < bounds.top
+            || clientY > bounds.bottom
+          ) return
           pointer.set(
-            ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
-            -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+            ((clientX - bounds.left) / bounds.width) * 2 - 1,
+            -((clientY - bounds.top) / bounds.height) * 2 + 1,
           )
           scene.updateMatrixWorld(true)
           const target = pickFoldPreviewTarget(
@@ -696,8 +764,57 @@ export function FoldPreview({
           // Picking is optional; keep the verified render state unchanged.
         }
       }
-      createdRenderer.domElement.addEventListener('click', clickHandler)
-      runtime = { schedulePose, updateSelection, render, dispose }
+      const selectionGesture = createFoldPreviewSelectionGesture()
+      pointerDownHandler = (event) => {
+        try {
+          host.focus({ preventScroll: true })
+          selectionGesture.pointerDown(pointerStart(event))
+        } catch {
+          selectionGesture.reset()
+        }
+      }
+      pointerMoveHandler = (event) => {
+        selectionGesture.pointerMove(pointerSample(event))
+      }
+      pointerUpHandler = (event) => {
+        if (selectionGesture.pointerUp(pointerSample(event))) {
+          selectAt(event.clientX, event.clientY)
+        }
+      }
+      pointerCancelHandler = (event) => {
+        selectionGesture.pointerCancel(event.pointerId)
+      }
+      const canvas = createdRenderer.domElement
+      const pointerDocument = canvas.ownerDocument
+      canvas.addEventListener('pointerdown', pointerDownHandler)
+      pointerDocument.addEventListener('pointermove', pointerMoveHandler)
+      pointerDocument.addEventListener('pointerup', pointerUpHandler)
+      pointerDocument.addEventListener('pointercancel', pointerCancelHandler)
+
+      keyDownHandler = (event) => {
+        if (event.target !== host) return
+        const command = resolveFoldPreviewCameraCommand(event)
+        if (!command) return
+        try {
+          if (!applyFoldPreviewCameraCommand(
+            createdControls,
+            command,
+            canvas.clientHeight,
+          )) return
+          event.preventDefault()
+        } catch {
+          dispose()
+          setRenderError('3Dカメラ操作を安全に継続できませんでした')
+        }
+      }
+      host.addEventListener('keydown', keyDownHandler)
+      runtime = {
+        schedulePose,
+        updateSelection,
+        render,
+        resetView: () => createdControls.reset(),
+        dispose,
+      }
       runtimeRef.current = runtime
 
       const resize = () => {
@@ -761,6 +878,17 @@ export function FoldPreview({
     }
   }, [selectedHingeId])
 
+  const resetView = () => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    try {
+      runtime.resetView()
+    } catch {
+      runtime.dispose()
+      setRenderError('3Dカメラ操作を安全に継続できませんでした')
+    }
+  }
+
   const thicknessNote = thicknessIsEmphasised
     ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示は視認用の最小厚）`
     : thicknessIsLimited
@@ -813,11 +941,14 @@ export function FoldPreview({
       : onChooseFixedFace
         ? '。3D上の面をクリックして固定面を変更できます'
         : ''
-  const previewDescription = `${previewImageDescription}${interactionDescription}`
+  const cameraDescription = model && !renderError
+    ? '。マウスは左ドラッグで回転、ホイールまたは中ドラッグで拡大縮小、右ドラッグで平行移動できます。タッチは1本指で回転、2本指で拡大縮小と平行移動ができます。キーボードは矢印キーで平行移動、Shiftと矢印キーで回転、プラスとマイナスで拡大縮小、Homeまたは0で視点をリセットできます'
+    : ''
+  const previewDescription = `${previewImageDescription}${interactionDescription}${cameraDescription}`
+  const previewAvailable = Boolean(model && !renderError)
 
   return (
     <div
-      ref={hostRef}
       className="fold-preview"
       data-angle={safeAngle}
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
@@ -844,23 +975,68 @@ export function FoldPreview({
       data-indeterminate-interactions={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.indeterminateInteractions
         : undefined}
-      role="img"
-      aria-label={previewDescription}
+      role="group"
+      aria-label="3D折りプレビュー"
     >
-      {!model || renderError ? (
-        <span className="fold-preview-empty">{unavailableMessage}</span>
+      <div
+        ref={hostRef}
+        className="fold-preview-viewport"
+        role={previewAvailable ? 'region' : 'img'}
+        aria-label={previewAvailable ? '3Dビュー' : previewDescription}
+        aria-describedby={previewAvailable ? descriptionId : undefined}
+        aria-keyshortcuts={previewAvailable
+          ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight + - Home 0'
+          : undefined}
+        tabIndex={previewAvailable ? 0 : -1}
+      >
+        {!model || renderError ? (
+          <span className="fold-preview-empty" aria-hidden="true">{unavailableMessage}</span>
+        ) : null}
+        {previewAvailable ? (
+          <span
+            className={`fold-preview-collision ${collisionBadgeClass(currentCollisionSummary)}`}
+            title={collisionDescription}
+            aria-hidden="true"
+          >
+            {collisionBadgeText(currentCollisionSummary)}
+          </span>
+        ) : null}
+        {previewAvailable ? (
+          <span className="fold-preview-note" aria-hidden="true">{previewNote}</span>
+        ) : null}
+      </div>
+      {previewAvailable ? (
+        <span id={descriptionId} className="visually-hidden">{previewDescription}</span>
       ) : null}
-      {model && !renderError ? (
-        <span
-          className={`fold-preview-collision ${collisionBadgeClass(currentCollisionSummary)}`}
-          title={collisionDescription}
-        >
-          {collisionBadgeText(currentCollisionSummary)}
-        </span>
-      ) : null}
-      {model && !renderError ? <span className="fold-preview-note">{previewNote}</span> : null}
+      <button
+        type="button"
+        className="fold-preview-reset"
+        disabled={!previewAvailable}
+        onClick={resetView}
+        title="カメラを初期位置へ戻す"
+      >
+        視点をリセット
+      </button>
     </div>
   )
+}
+
+function pointerStart(event: PointerEvent) {
+  return {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    button: event.button,
+    isPrimary: event.isPrimary,
+  }
+}
+
+function pointerSample(event: PointerEvent) {
+  return {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+  }
 }
 
 function applyFoldRotation(

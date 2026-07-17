@@ -55,6 +55,9 @@ import {
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
 import {
+  resolveFoldPreviewKeyboardSelection,
+} from '../lib/foldPreviewKeyboardSelection'
+import {
   createLatestFrameTask,
   type LatestFrameTask,
 } from '../lib/latestFrameTask'
@@ -198,6 +201,12 @@ type TreeContextualMotionState = Readonly<{
   >
 }>
 
+type KeyboardSelectionAnnouncement = Readonly<{
+  model: FoldPreviewModel
+  sequence: number
+  text: string
+}>
+
 type TreeMotionBinding = {
   context: FoldPreviewTreeMotionContext
   analyzer: FoldPreviewTreeSingleHingeContinuousAnalyzer
@@ -272,9 +281,13 @@ export function FoldPreview({
   const [angleDragPresentation, setAngleDragPresentation] = useState(
     INITIAL_ANGLE_DRAG_PRESENTATION,
   )
+  const [keyboardSelectionAnnouncement, setKeyboardSelectionAnnouncement] =
+    useState<KeyboardSelectionAnnouncement | null>(null)
   const angleDragSequenceRef = useRef(0)
   const motionSnapshotRef = useRef(motionSnapshot)
   motionSnapshotRef.current = motionSnapshot
+  const latestModelRef = useRef(model)
+  latestModelRef.current = model
   // Assignment selects the fold direction; the control supplies only its magnitude.
   const safeAngle = Number.isFinite(angle) ? THREE.MathUtils.clamp(angle, 0, 180) : 0
   const angleRef = useRef(safeAngle)
@@ -298,6 +311,8 @@ export function FoldPreview({
       : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
         ? model.kinematics.rootFaceId
         : null)
+  const resolvedFixedFaceIdRef = useRef(resolvedFixedFaceId)
+  resolvedFixedFaceIdRef.current = resolvedFixedFaceId
 
   const hasAuthoritativeThickness = isNonNegativeFinite(thicknessMm)
   const safeThicknessMm = hasAuthoritativeThickness ? thicknessMm : DEFAULT_THICKNESS_MM
@@ -505,6 +520,8 @@ export function FoldPreview({
       : model.kind === 'fold_graph'
         ? model.hinges
         : []
+    const keyboardHingeIds = hinges.map((hinge) => hinge.edgeId)
+    const keyboardFaceIds = model.faces.map((face) => face.id)
     const collisionAdjacencies: FoldPreviewCollisionAdjacency[] = hinges.map((hinge) => ({
       edgeId: hinge.edgeId,
       firstFaceId: hinge.leftFaceId,
@@ -3186,6 +3203,61 @@ export function FoldPreview({
           event.preventDefault()
           return
         }
+        if (latestModelRef.current !== model) return
+        const selectHingeCallback = onSelectHingeRef.current
+        const chooseFixedFaceCallback = onChooseFixedFaceRef.current
+        const selectionResult = resolveFoldPreviewKeyboardSelection({
+          event,
+          hingeIds: keyboardHingeIds,
+          faceIds: keyboardFaceIds,
+          selectedHingeId: selectedHingeIdRef.current,
+          fixedFaceId: resolvedFixedFaceIdRef.current,
+          hasSelectHingeCallback: Boolean(selectHingeCallback),
+          hasChooseFixedFaceCallback: Boolean(chooseFixedFaceCallback),
+        })
+        if (selectionResult.handled) {
+          let announcement: string | null = null
+          try {
+            const selectionCommand = selectionResult.command
+            if (selectionCommand.kind === 'select_hinge') {
+              const index = keyboardHingeIds.indexOf(
+                selectionCommand.edgeId,
+              )
+              if (!selectHingeCallback || index < 0) return
+              selectHingeCallback(selectionCommand.edgeId)
+              announcement =
+                `ヒンジ ${index + 1}/${keyboardHingeIds.length} を選択しました`
+            } else if (selectionCommand.kind === 'choose_fixed_face') {
+              const index = keyboardFaceIds.indexOf(
+                selectionCommand.faceId,
+              )
+              if (!chooseFixedFaceCallback || index < 0) return
+              chooseFixedFaceCallback(selectionCommand.faceId)
+              announcement =
+                `面 ${index + 1}/${keyboardFaceIds.length} を固定面に設定しました`
+            } else {
+              if (!selectHingeCallback) return
+              selectHingeCallback(null)
+              announcement = 'ヒンジ選択を解除しました'
+            }
+          } catch {
+            return
+          }
+          const announcementText = announcement
+          if (
+            announcementText
+            && !disposed
+            && latestModelRef.current === model
+          ) {
+            setKeyboardSelectionAnnouncement((current) => ({
+              model,
+              sequence: (current?.sequence ?? 0) + 1,
+              text: announcementText,
+            }))
+          }
+          event.preventDefault()
+          return
+        }
         const command = resolveFoldPreviewCameraCommand(event)
         if (!command) return
         try {
@@ -3324,6 +3396,14 @@ export function FoldPreview({
   const treeAngleNote = renderedTreePose
     ? describeTreeAngles(renderedTreePose.appliedAngles, 0)
     : '姿勢を準備中'
+  const previewHingeIds = model?.kind === 'single_fold'
+    ? [model.hinge.edgeId]
+    : model?.kind === 'fold_graph'
+      ? model.hinges.map((hinge) => hinge.edgeId)
+      : []
+  const selectedHingeIndex = selectedHingeId
+    ? previewHingeIds.indexOf(selectedHingeId)
+    : -1
   const fixedFaceIndex = model && resolvedFixedFaceId
     ? model.faces.findIndex((face) => face.id === resolvedFixedFaceId)
     : -1
@@ -3474,13 +3554,26 @@ export function FoldPreview({
   const basePreviewNote = previewPoseNote === thicknessNote
     ? `${previewPoseNote}・${collisionNote}`
     : `${previewPoseNote}・${collisionNote}・${thicknessNote}`
-  const previewNote = model?.kind === 'single_fold'
+  const hingeKeyboardSelectionAvailable =
+    Boolean(onSelectHinge) && previewHingeIds.length > 0
+  const faceKeyboardSelectionAvailable =
+    Boolean(onChooseFixedFace) && Boolean(model?.faces.length)
+  const keyboardSelectionNote = hingeKeyboardSelectionAvailable
+    && faceKeyboardSelectionAvailable
+    ? '・H/Shift+Hでヒンジ、F/Shift+Fで固定面'
+    : hingeKeyboardSelectionAvailable
+      ? '・H/Shift+Hでヒンジ'
+      : faceKeyboardSelectionAvailable
+        ? '・F/Shift+Fで固定面'
+        : ''
+  const foldOperationPreviewNote = model?.kind === 'single_fold'
     ? `${onRequestFoldAngle ? '移動面ドラッグで物理目標・折り目の上下ドラッグで角度指定・' : ''}${basePreviewNote}・ドラッグ中の姿勢は未変更・中央面・単一線形経路のみ`
     : model?.kind === 'fold_graph'
       && model.kinematics.kind === 'tree'
       && treeCommitAvailable
       ? `選択ヒンジの従属面ドラッグで物理目標・${basePreviewNote}・ドラッグ中の姿勢は未変更・選択ヒンジ単一経路のみ`
       : basePreviewNote
+  const previewNote = `${foldOperationPreviewNote}${keyboardSelectionNote}`
   const collisionDescription = describeCollisionSummary(
     currentCollisionSummary,
     true,
@@ -3502,6 +3595,20 @@ export function FoldPreview({
       : onChooseFixedFace
         ? '。3D上の面をクリックして固定面を変更できます'
         : ''
+  const keyboardSelectionDescription =
+    hingeKeyboardSelectionAvailable || faceKeyboardSelectionAvailable
+      ? `。3Dビューにフォーカス中、${hingeKeyboardSelectionAvailable
+        ? `Hで次、Shift+Hで前のヒンジを選択し、Escapeで解除できます。現在は${selectedHingeIndex >= 0
+          ? `ヒンジ ${selectedHingeIndex + 1}/${previewHingeIds.length}`
+          : 'ヒンジ未選択'}`
+        : ''}${hingeKeyboardSelectionAvailable && faceKeyboardSelectionAvailable
+          ? '。'
+          : ''}${faceKeyboardSelectionAvailable
+          ? `Fで次、Shift+Fで前の面を固定面にできます。現在は${fixedFaceIndex >= 0 && model
+            ? `固定面 ${fixedFaceIndex + 1}/${model.faces.length}`
+            : '固定面未選択'}`
+          : ''}`
+      : ''
   const angleDragDescription =
     model?.kind === 'single_fold' && onRequestFoldAngle
       ? '。3D上で移動する紙面の表または裏をつかんでドラッグすると、紙の回転軌道から折り角目標を作れます。折り目の上下ドラッグでは、上方向で増加、下方向で減少する角度パラメータ操作ができます。どちらの目標もドラッグ中は未確認で、ポインターを離して連続経路を確認した後にだけ3D表示へ適用されます。Altキーを押したドラッグはカメラ操作になります。キーボードでは下の指定折り量入力を使用できます'
@@ -3514,8 +3621,42 @@ export function FoldPreview({
     ? `。マウスは${angleDragDescription ? '紙面と折り目の折り操作以外の場所を' : ''}左ドラッグで回転、ホイールまたは中ドラッグで拡大縮小、右ドラッグで平行移動できます。タッチは${angleDragDescription ? '紙面と折り目の折り操作以外を' : ''}1本指で回転、2本指で拡大縮小と平行移動ができます。キーボードは矢印キーで平行移動、Shiftと矢印キーで回転、プラスとマイナスで拡大縮小、Homeまたは0で視点をリセットできます`
     : ''
   const previewDescription =
-    `${previewImageDescription}${selectionDescription}${angleDragDescription}${cameraDescription}`
+    `${previewImageDescription}${selectionDescription}${keyboardSelectionDescription}${angleDragDescription}${cameraDescription}`
   const previewAvailable = Boolean(model && !renderError)
+  const keyboardShortcutTokens = [
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+    'Shift+ArrowUp',
+    'Shift+ArrowDown',
+    'Shift+ArrowLeft',
+    'Shift+ArrowRight',
+    '+',
+    '-',
+    'Home',
+    '0',
+    ...(hingeKeyboardSelectionAvailable
+      ? ['H', 'Shift+H', 'Escape']
+      : []),
+    ...(faceKeyboardSelectionAvailable
+      ? ['F', 'Shift+F']
+      : []),
+  ]
+  const currentKeyboardSelectionAnnouncement =
+    keyboardSelectionAnnouncement?.model === model
+      ? keyboardSelectionAnnouncement
+      : null
+  const keyboardSelectionAnnouncementFirstChannel =
+    currentKeyboardSelectionAnnouncement
+    && currentKeyboardSelectionAnnouncement.sequence % 2 === 0
+      ? currentKeyboardSelectionAnnouncement.text
+      : ''
+  const keyboardSelectionAnnouncementSecondChannel =
+    currentKeyboardSelectionAnnouncement
+    && currentKeyboardSelectionAnnouncement.sequence % 2 === 1
+      ? currentKeyboardSelectionAnnouncement.text
+      : ''
   const treePhysicalGrabAvailable =
     model?.kind === 'fold_graph'
     && model.kinematics.kind === 'tree'
@@ -3650,7 +3791,7 @@ export function FoldPreview({
         aria-label={previewAvailable ? '3Dビュー' : previewDescription}
         aria-describedby={previewAvailable ? descriptionId : undefined}
         aria-keyshortcuts={previewAvailable
-          ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+ArrowLeft Shift+ArrowRight + - Home 0'
+          ? keyboardShortcutTokens.join(' ')
           : undefined}
         tabIndex={previewAvailable ? 0 : -1}
       >
@@ -3704,6 +3845,24 @@ export function FoldPreview({
         <span className="visually-hidden" aria-live="polite" aria-atomic="true">
           {motionView.terminalAnnouncement ?? ''}
         </span>
+      ) : null}
+      {previewAvailable ? (
+        <>
+          <span
+            className="visually-hidden"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {keyboardSelectionAnnouncementFirstChannel}
+          </span>
+          <span
+            className="visually-hidden"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {keyboardSelectionAnnouncementSecondChannel}
+          </span>
+        </>
       ) : null}
       <button
         type="button"

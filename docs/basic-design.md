@@ -286,14 +286,17 @@ solve(current geometry, constraints, edited targets, policy)
 
 #### 8.2.2 三角柱SAT witness seed
 
-現在の`triangle_prism_sat_witness_v1`は、authoritativeな狭域SATが確定した一つの正厚三角柱対から、後続の衝突説明に使う有限なwitness seedを導出する純粋境界である。現段階では狭域interactionやUIへ未接続であり、全体面の修正や安全な新姿勢を証明する機能ではない。
+現在の`triangle_prism_sat_witness_v1`は、authoritativeな狭域SATが確定した一つの正厚三角柱対から、後続の衝突説明に使う有限なwitness seedを導出する純粋境界である。現在姿勢の狭域結果にはface・triangle identity付きで接続済みだが、連続経路の危険姿勢やUIへは未接続であり、全体面の修正や安全な新姿勢を証明する機能ではない。
 
 - 入力頂点はauthoritative SATが使用した同一順序・同一座標の6頂点snapshotでなければならず、呼出側で再構築・並べ替えしない。`authoritativeGeometryClass`は`touching`または`penetrating`だけを受理し、ローカル再導出したclassと一致しなければ`null`とする。`separated`と`indeterminate`からwitnessを作らない。
+- 狭域結果の`witnessSamples`は、最終interactionが`touching`または`penetrating`へ確定した非隣接triangle-pairだけをface ID・両triangle index・classと結合する。hinge、`indeterminate`、ゼロ厚は対象外とし、witness導出が`null`でもauthoritative分類を変更しない。
+- 説明導出は衝突判定の100万pair上限と独立した最大16 attemptに制限する。全候補中の`penetrating`を`touching`より優先し、同一severityではauthoritative走査順を維持する。上限を満たした後もSAT自体の必要な走査は省略しない。
+- coverageは`eligible = attempted + omittedByLimit`、`attempted = witnessSamples + unavailable`を満たす。早期貫通終了または非隣接SAT未実行時は`authoritativePairScanComplete: false`とし、0件を「全対象を説明済み」と誤表示しない。
 - SATの正規化、外積、長さ、射影はauthoritative経路と同じ演算順を保ち、近平行軸はより保守的に`null`へ退避する。共通剛体変換後の丸めによって利用不能になる場合も、法線を推測しない。
 - 出力は「第2三角柱を第1三角柱から離す」向きの単位法線、単一pairが接触へ達するまでの`escapeDistance`、margin内ですでに離隔している`toleratedGap`、各4点以下のsupport、最大16点のsupport midpoint hullを持つ。位置候補の`sourcePose`はhint適用前の解析入力姿勢である。
 - `localSeparationHint`のscopeは選択三角柱pairだけであり、`autoApplicable: false`を固定する。複数pair、共有ヒンジ、他面、連続経路、紙の変形を考慮した全体修正ではないため、安全停止姿勢やプロジェクトへtranslationを自動適用しない。
 - 入力は公開境界で一度だけsnapshotし、頂点数、右手系frame、正厚、対応cap、有限値、support上限を検証する。結果は全階層を不変化し、Proxy、getter例外、overflow、退化、過大marginをfail-closedで`null`へ退避する。
-- 次段階の統合層でface ID、triangle index、project/revision、`blockingSampleTime`、危険側poseを結び付ける。画面へは確認済み安全姿勢とは別の解析位置として提示し、候補が「この移動で必ず解消する」という意味ではないことを明示する。
+- 次段階の連続運動層でproject/revision、request context、完全角度vector、`blockingSampleTime`、危険側face変換を現在のface・triangle identityへ結び付ける。画面へは確認済み安全姿勢とは別の解析位置として提示し、候補が「この移動で必ず解消する」という意味ではないことを明示する。
 
 ### 8.3 衝突前停止
 
@@ -324,7 +327,7 @@ angle(t) = appliedAngle + t × (requestedAngle - appliedAngle), 0 ≤ t ≤ 1
 - 停止・判定不能時は開始角、指定角、実表示角、探索角範囲、対象面番号、相互作用分類、確認済み進捗を`details`へ表示する。内部面IDと未知の内部reasonは生表示せず、読み上げのlive通知は短い終端結果だけにする。
 - `clear`表示にも中央面基準・単一ヒンジ・線形経路だけの確認であることを可視表示し、材料変形、実際の折り癖、層ずれ、複数ヒンジは未保証とする。`physical_grab_v2`は物理的な把持軌道から目標角を作る入力方式であり、材料変形や手指との力学を保証するシミュレーションとは表現しない。
 
-現在の停止位置は「最初の衝突時刻の推定値」ではなく、時刻順探索で最後に連続安全を確認できた下限である。三角柱pair単位のwitness seedは追加済みだが、危険姿勢・face/triangle identityとの統合、接触点・法線・修正候補のUI提示と、複数ヒンジvectorの同時連続運動は次段階とする。
+現在の停止位置は「最初の衝突時刻の推定値」ではなく、時刻順探索で最後に連続安全を確認できた下限である。現在姿勢の狭域結果には三角柱pair単位のwitnessとface・triangle identityを統合済みだが、連続経路の危険姿勢・request identityとの結合、接触点・法線・修正候補のUI提示と、複数ヒンジvectorの同時連続運動は次段階とする。
 
 ## 9. 検証・探索ジョブ
 

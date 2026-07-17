@@ -123,8 +123,9 @@ test('ordinary 60 and 90 degree folds allow the analytic centered-slab overlap',
 })
 
 test('hinge decisions are invariant under one shared non-trivial rigid world transform', () => {
+  const rectangleFaces = rectangleHingeFaces()
   const analyzer = prepareFoldPreviewNarrowPhase(
-    faces,
+    rectangleFaces,
     adjacency,
     [constraint],
   )
@@ -132,7 +133,7 @@ test('hinge decisions are invariant under one shared non-trivial rigid world tra
   const world = new Matrix4()
     .makeRotationAxis(new Vector3(0.3, 0.7, 0.2).normalize(), 0.731)
     .setPosition(2.3, -1.7, 0.4)
-  for (const degrees of [0, 60, 90]) {
+  for (const degrees of [0, 1, 60, 90, 150, 170]) {
     const base = analyzer.analyze(foldedPose(degrees), 0.1)
     const transformed = analyzer.analyze(new Map([
       ['left', world.clone()],
@@ -147,6 +148,8 @@ test('hinge decisions are invariant under one shared non-trivial rigid world tra
       transformed.interactions[0]?.hingeDecision,
       base.interactions[0]?.hingeDecision,
     )
+    assert.equal(base.trianglePairTests, 4)
+    assert.equal(transformed.trianglePairTests, 4)
   }
 })
 
@@ -301,6 +304,22 @@ test('an authentic non-hinge prism overlap outside the finite corridor is blocki
   })
 })
 
+test('a concave lobe crossing beyond a hinge endpoint remains blocking', () => {
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    concaveOutsideHingeFaces(),
+    adjacency,
+    [constraint],
+  )
+  assert.ok(analyzer)
+  const result = analyzer.analyze(identityPose(), 0.1)
+  assert.ok(result)
+  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
+  assert.deepEqual(result.interactions[0]?.hingeDecision, {
+    kind: 'outside_hinge_penetration',
+    hingeEdgeId: 'hinge',
+  })
+})
+
 test('non-hinge indeterminate pairs and duplicate pair witnesses remain unresolved', () => {
   const policy = prepareFoldPreviewHingeContactPolicy(
     outsideFaces,
@@ -351,7 +370,7 @@ test('non-hinge indeterminate pairs and duplicate pair witnesses remain unresolv
   })
 })
 
-test('hinge candidates scan every triangle pair after an early penetration', () => {
+test('rectangular hinge faces allow every pair at ordinary and near-limit angles', () => {
   const rectangleFaces = rectangleHingeFaces()
   const analyzer = prepareFoldPreviewNarrowPhase(
     rectangleFaces,
@@ -359,10 +378,22 @@ test('hinge candidates scan every triangle pair after an early penetration', () 
     [constraint],
   )
   assert.ok(analyzer)
-  const result = analyzer.analyze(foldedPose(60), 0.1)
-  assert.ok(result)
-  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
-  assert.equal(result.trianglePairTests, 4)
+  for (const degrees of [0, 1, 60, 90, 150, 170]) {
+    const result = analyzer.analyze(foldedPose(degrees), 0.1)
+    assert.ok(result)
+    assert.equal(
+      result.interactions[0]?.geometryClass,
+      degrees === 0 ? 'touching' : 'penetrating',
+    )
+    assert.deepEqual(result.interactions[0]?.hingeDecision, {
+      kind: 'allowed_by_hinge_model',
+      hingeEdgeId: 'hinge',
+      geometry: degrees === 0 ? 'boundary_contact' : 'corridor_overlap',
+      thicknessRule: 'centered_mid_surface_v1',
+    })
+    assert.equal(result.trianglePairTests, 4)
+    assert.equal(result.satTests, 4)
+  }
 })
 
 test('prepared hinge geometry and constraints are immutable snapshots', () => {
@@ -503,6 +534,34 @@ function rectangleHingeFaces() {
         end,
         { vertexId: 'right-top', x: 1, z: 1 },
         { vertexId: 'right-bottom', x: 1, z: 0 },
+        start,
+      ],
+    },
+  ]
+}
+
+function concaveOutsideHingeFaces() {
+  return [
+    {
+      id: 'left',
+      polygon: [
+        start,
+        { vertexId: 'left-bottom', x: -1, z: 0 },
+        { vertexId: 'left-outer-top', x: -1, z: 2 },
+        { vertexId: 'left-lobe-top', x: 2, z: 2 },
+        { vertexId: 'left-lobe-bottom', x: 2, z: 1.5 },
+        { vertexId: 'left-notch', x: -0.5, z: 1.5 },
+        end,
+      ],
+    },
+    {
+      id: 'right',
+      polygon: [
+        end,
+        { vertexId: 'right-notch', x: 0.5, z: 1.5 },
+        { vertexId: 'right-lobe-left', x: 0.5, z: 2 },
+        { vertexId: 'right-lobe-right', x: 2, z: 2 },
+        { vertexId: 'right-bottom', x: 2, z: 0 },
         start,
       ],
     },

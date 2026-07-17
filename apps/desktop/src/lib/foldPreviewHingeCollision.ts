@@ -94,9 +94,13 @@ type PreparedConstraint = Readonly<{
   start: FoldPreviewHingeContactConstraint['start']
   end: FoldPreviewHingeContactConstraint['end']
   thicknessRule: 'centered_mid_surface_v1'
-  leftTriangleIndex: number
-  rightTriangleIndex: number
-  hingeTrianglesAxiallyBounded: boolean
+  leftTriangleProofs: readonly PreparedTriangleHingeProof[]
+  rightTriangleProofs: readonly PreparedTriangleHingeProof[]
+}>
+
+type PreparedTriangleHingeProof = Readonly<{
+  materialSide: boolean
+  axiallyBounded: boolean
 }>
 
 type HingeFrame = Readonly<{
@@ -212,6 +216,17 @@ export function prepareFoldPreviewHingeContactPolicy(
         || Math.sign(leftBoundary.thirdVertexSide)
           === Math.sign(rightBoundary.thirdVertexSide)
       ) return null
+      const leftTriangleProofs = proveFaceTrianglesWithinHingeHalfSlab(
+        leftFace,
+        constraint,
+        Math.sign(leftBoundary.thirdVertexSide),
+      )
+      const rightTriangleProofs = proveFaceTrianglesWithinHingeHalfSlab(
+        rightFace,
+        constraint,
+        Math.sign(rightBoundary.thirdVertexSide),
+      )
+      if (!leftTriangleProofs || !rightTriangleProofs) return null
       constraintsById.set(constraint.edgeId, {
         edgeId: constraint.edgeId,
         leftFaceId: constraint.leftFaceId,
@@ -219,10 +234,8 @@ export function prepareFoldPreviewHingeContactPolicy(
         start: { ...constraint.start },
         end: { ...constraint.end },
         thicknessRule: constraint.thicknessRule,
-        leftTriangleIndex: leftBoundary.triangleIndex,
-        rightTriangleIndex: rightBoundary.triangleIndex,
-        hingeTrianglesAxiallyBounded: leftBoundary.axiallyBounded
-          && rightBoundary.axiallyBounded,
+        leftTriangleProofs,
+        rightTriangleProofs,
       })
     }
     if (constraintsById.size !== adjacencyById.size) return null
@@ -341,21 +354,21 @@ function classifyHingeContact(
       unresolvedReason ??= 'pair_geometry_mismatch'
       continue
     }
-    const usesHingeTriangles = pairUsesHingeTriangles(
+    const hingeProof = pairHingeProof(
       pair,
       constraint,
       input.firstFaceId,
     )
-    // Preparation proves that these two triangles occupy opposite half-planes
-    // of one shared edge. Under the verified rigid common-axis pose, their
-    // centered prisms are subsets of the two analytic half-infinite slabs, so
-    // every radial intersection is inside h / cos(theta / 2). Only containment
-    // by the finite hinge segment remains to be proved for this unique pair.
-    const placement = usesHingeTriangles
+    // Preparation proves which triangles stay entirely in their face's
+    // material half-plane. Any pair with both proofs is a subset of the two
+    // analytic half-infinite slabs, so every radial intersection is inside
+    // h / cos(theta / 2), even when triangulation represents the same legal
+    // hinge overlap through pairs other than the shared-edge pair.
+    const placement = hingeProof.radiallyBounded
       ? classifyFiniteHingePlacement(
           pair,
           frameResult.frame,
-          constraint.hingeTrianglesAxiallyBounded,
+          hingeProof.axiallyBounded,
         )
       : classifyCorridorPlacement(pair, frameResult.frame)
     if (placement === 'outside') {
@@ -372,7 +385,7 @@ function classifyHingeContact(
       unresolvedReason ??= 'corridor_boundary'
       continue
     }
-    if (!usesHingeTriangles) {
+    if (!hingeProof.radiallyBounded) {
       unresolvedReason ??= 'non_hinge_triangle'
       continue
     }
@@ -533,6 +546,11 @@ function classifyFiniteHingePlacement(
   frame: HingeFrame,
   staticallyAxiallyBounded: boolean,
 ): CorridorPlacement {
+  // Rigid transforms preserve the hinge-axis coordinate of every rest point.
+  // When both source triangles lie wholly between the two endpoints, their
+  // intersection does too; avoid turning harmless projection round-off at an
+  // endpoint into a corridor-boundary failure.
+  if (staticallyAxiallyBounded) return 'inside'
   const axial = intersectRanges(
     projectRange(pair.firstVertices, frame.start, frame.axis),
     projectRange(pair.secondVertices, frame.start, frame.axis),
@@ -544,11 +562,7 @@ function classifyFiniteHingePlacement(
     || axial.min > frame.length + frame.outerMargin
   ) return 'outside'
   if (axial.min >= 0 && axial.max <= frame.length) return 'inside'
-  return staticallyAxiallyBounded
-    && axial.min >= -frame.outerMargin
-    && axial.max <= frame.length + frame.outerMargin
-    ? 'inside'
-    : 'boundary'
+  return 'boundary'
 }
 
 function classifyCorridorPlacement(
@@ -638,16 +652,59 @@ function distanceFromZero(range: ProjectionRange) {
   return Math.min(Math.abs(range.min), Math.abs(range.max))
 }
 
-function pairUsesHingeTriangles(
+function pairHingeProof(
   pair: FoldPreviewHingeContactPair,
   constraint: PreparedConstraint,
   firstFaceId: string,
 ) {
-  return firstFaceId === constraint.leftFaceId
-    ? pair.firstTriangleIndex === constraint.leftTriangleIndex
-      && pair.secondTriangleIndex === constraint.rightTriangleIndex
-    : pair.firstTriangleIndex === constraint.rightTriangleIndex
-      && pair.secondTriangleIndex === constraint.leftTriangleIndex
+  const firstIsLeft = firstFaceId === constraint.leftFaceId
+  const left = firstIsLeft
+    ? constraint.leftTriangleProofs[pair.firstTriangleIndex]
+    : constraint.leftTriangleProofs[pair.secondTriangleIndex]
+  const right = firstIsLeft
+    ? constraint.rightTriangleProofs[pair.secondTriangleIndex]
+    : constraint.rightTriangleProofs[pair.firstTriangleIndex]
+  return {
+    radiallyBounded: Boolean(left?.materialSide && right?.materialSide),
+    axiallyBounded: Boolean(left?.axiallyBounded && right?.axiallyBounded),
+  }
+}
+
+function proveFaceTrianglesWithinHingeHalfSlab(
+  face: PreparedPolicyFace,
+  constraint: FoldPreviewHingeContactConstraint,
+  materialSideSign: number,
+): readonly PreparedTriangleHingeProof[] | null {
+  if (materialSideSign !== -1 && materialSideSign !== 1) return null
+  const edgeX = constraint.end.x - constraint.start.x
+  const edgeZ = constraint.end.z - constraint.start.z
+  const edgeLengthSquared = edgeX * edgeX + edgeZ * edgeZ
+  if (
+    !Number.isFinite(edgeX)
+    || !Number.isFinite(edgeZ)
+    || !Number.isFinite(edgeLengthSquared)
+    || edgeLengthSquared <= 0
+  ) return null
+
+  const proofs: PreparedTriangleHingeProof[] = []
+  for (const triangle of face.triangles) {
+    let materialSide = true
+    let axiallyBounded = true
+    for (const vertexIndex of triangle) {
+      const vertex = face.polygon[vertexIndex]
+      if (!vertex) return null
+      const relativeX = vertex.x - constraint.start.x
+      const relativeZ = vertex.z - constraint.start.z
+      const side = edgeX * relativeZ - edgeZ * relativeX
+      const axialProjection = edgeX * relativeX + edgeZ * relativeZ
+      if (!Number.isFinite(side) || !Number.isFinite(axialProjection)) return null
+      materialSide &&= materialSideSign * side >= 0
+      axiallyBounded &&= axialProjection >= 0
+        && axialProjection <= edgeLengthSquared
+    }
+    proofs.push({ materialSide, axiallyBounded })
+  }
+  return proofs.length === face.triangles.length ? proofs : null
 }
 
 function resolveBoundaryEdge(
@@ -670,11 +727,10 @@ function resolveBoundaryEdge(
   const direction = nextStart === endIndex ? 1 : nextEnd === startIndex ? -1 : 0
   if (direction === 0) return null
   const triangleMatches = face.triangles
-    .map((triangle, triangleIndex) => ({ triangle, triangleIndex }))
-    .filter(({ triangle }) =>
+    .filter((triangle) =>
       triangle.includes(startIndex) && triangle.includes(endIndex))
   if (triangleMatches.length !== 1) return null
-  const hingeTriangle = triangleMatches[0].triangle
+  const hingeTriangle = triangleMatches[0]
   const thirdVertexIndices = hingeTriangle.filter((index: number) =>
     index !== startIndex && index !== endIndex)
   if (thirdVertexIndices.length !== 1) return null
@@ -684,19 +740,9 @@ function resolveBoundaryEdge(
   const thirdVertexSide = edgeX * (thirdVertex.z - constraint.start.z)
     - edgeZ * (thirdVertex.x - constraint.start.x)
   if (!Number.isFinite(thirdVertexSide) || thirdVertexSide === 0) return null
-  const edgeLengthSquared = edgeX * edgeX + edgeZ * edgeZ
-  const axialProjection = edgeX * (thirdVertex.x - constraint.start.x)
-    + edgeZ * (thirdVertex.z - constraint.start.z)
-  if (
-    !Number.isFinite(edgeLengthSquared)
-    || edgeLengthSquared <= 0
-    || !Number.isFinite(axialProjection)
-  ) return null
   return {
     direction,
-    triangleIndex: triangleMatches[0].triangleIndex,
     thirdVertexSide,
-    axiallyBounded: axialProjection >= 0 && axialProjection <= edgeLengthSquared,
   }
 }
 

@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, Point2, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 use ori_geometry::{
     Orientation, exact_orientation, exact_polygon_orientation, polygon_signed_double_area,
 };
@@ -21,6 +21,7 @@ pub(crate) struct HalfEdgeIndex(pub(crate) usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EmbeddedHalfEdge {
     pub(crate) edge: EdgeId,
+    pub(crate) kind: EdgeKind,
     pub(crate) origin: VertexId,
     pub(crate) destination: VertexId,
     pub(crate) twin: HalfEdgeIndex,
@@ -79,6 +80,34 @@ pub(crate) struct CanonicalWalk {
     pub(crate) signed_double_area: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct WalkIndex(pub(crate) usize);
+
+/// One snapshot-owned walk partition with its paper-anchored exterior cycle.
+///
+/// The private fields keep the embedding, walks, and reverse index co-located,
+/// and the constructor never accepts independently supplied walks. This
+/// remains internal until paper containment and material-face grouping are
+/// admitted into the production topology route.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PaperWalkSet {
+    embedding: DcelEmbedding,
+    walks: Vec<CanonicalWalk>,
+    half_edge_to_walk: Vec<WalkIndex>,
+    exterior: WalkIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaperBoundaryError {
+    TooFewVertices { count: usize },
+    DuplicateVertex { vertex: VertexId },
+    MissingVertex { vertex: VertexId },
+    Collinear,
+    MissingPair { start: VertexId, end: VertexId },
+    NonBoundaryPair { edge: EdgeId, kind: EdgeKind },
+    UnexpectedBoundaryEdge { edge: EdgeId },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DcelBuildError {
     DuplicateVertexId {
@@ -110,6 +139,8 @@ pub(crate) enum DcelBuildError {
         vertex: VertexId,
     },
     AreaFailure,
+    PaperBoundary(PaperBoundaryError),
+    ExteriorWalkMismatch,
     InternalInvariant,
 }
 
@@ -135,6 +166,7 @@ impl UndirectedEndpoints {
 #[derive(Debug, Clone, Copy)]
 struct PendingHalfEdge {
     edge: EdgeId,
+    kind: EdgeKind,
     origin: VertexId,
     destination: VertexId,
     twin: HalfEdgeIndex,
@@ -192,12 +224,14 @@ pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, 
         let reverse = HalfEdgeIndex(pending.len() + 1);
         pending.push(PendingHalfEdge {
             edge: edge.id,
+            kind: edge.kind,
             origin: endpoints.first,
             destination: endpoints.second,
             twin: reverse,
         });
         pending.push(PendingHalfEdge {
             edge: edge.id,
+            kind: edge.kind,
             origin: endpoints.second,
             destination: endpoints.first,
             twin: forward,
@@ -269,6 +303,7 @@ pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, 
                 .ok_or(DcelBuildError::InternalInvariant)?;
             Ok(EmbeddedHalfEdge {
                 edge: half_edge.edge,
+                kind: half_edge.kind,
                 origin: half_edge.origin,
                 destination: half_edge.destination,
                 twin: half_edge.twin,
@@ -548,6 +583,252 @@ pub(crate) fn canonical_walks(
         .collect())
 }
 
+/// Builds one snapshot-owned walk partition and anchors its exterior cycle to
+/// the paper boundary rather than guessing from area magnitude or sign.
+///
+/// The paper boundary is normalized to exact counter-clockwise order. Its
+/// reverse `Boundary` half-edge cycle must then match one complete clockwise
+/// walk with no fold/cut excursions. An internal closed loop may create an
+/// additional clockwise walk and cannot displace this boundary-anchored one.
+///
+/// This classifier deliberately does not repeat the admission layer. A valid
+/// simple paper boundary, an intersection-free participating graph, the cut
+/// policy, and containment of every non-boundary edge are mandatory
+/// preconditions before this result can enter the production extraction route.
+/// In particular, a disconnected component outside the sheet is invisible to
+/// the anchored boundary cycle.
+pub(crate) fn build_paper_walks(
+    pattern: &CreasePattern,
+    paper: &Paper,
+) -> Result<PaperWalkSet, DcelBuildError> {
+    let embedding = build_embedding(pattern)?;
+    let boundary = normalized_ccw_paper_boundary(&embedding, paper)?;
+    let expected_exterior = expected_exterior_cycle(&embedding, &boundary)?;
+    let walks = canonical_walks(&embedding)?;
+    let half_edge_to_walk = index_walk_partition(&embedding, &walks)?;
+    let exterior = *half_edge_to_walk
+        .get(expected_exterior[0].0)
+        .ok_or(DcelBuildError::InternalInvariant)?;
+
+    if expected_exterior
+        .iter()
+        .any(|half_edge| half_edge_to_walk.get(half_edge.0).copied() != Some(exterior))
+    {
+        return Err(DcelBuildError::ExteriorWalkMismatch);
+    }
+    let exterior_walk = walks
+        .get(exterior.0)
+        .ok_or(DcelBuildError::InternalInvariant)?;
+    if exterior_walk.half_edges != expected_exterior
+        || exterior_walk.orientation != Orientation::Clockwise
+    {
+        return Err(DcelBuildError::ExteriorWalkMismatch);
+    }
+
+    Ok(PaperWalkSet {
+        embedding,
+        walks,
+        half_edge_to_walk,
+        exterior,
+    })
+}
+
+fn normalized_ccw_paper_boundary(
+    embedding: &DcelEmbedding,
+    paper: &Paper,
+) -> Result<Vec<VertexId>, DcelBuildError> {
+    let mut boundary = paper.boundary_vertices.clone();
+    if boundary.len() < 3 {
+        return Err(DcelBuildError::PaperBoundary(
+            PaperBoundaryError::TooFewVertices {
+                count: boundary.len(),
+            },
+        ));
+    }
+
+    let mut seen = HashSet::with_capacity(boundary.len());
+    let duplicate = boundary
+        .iter()
+        .copied()
+        .filter(|vertex| !seen.insert(*vertex))
+        .min_by_key(VertexId::canonical_bytes);
+    if let Some(vertex) = duplicate {
+        return Err(DcelBuildError::PaperBoundary(
+            PaperBoundaryError::DuplicateVertex { vertex },
+        ));
+    }
+
+    let positions = embedding
+        .participant_vertices
+        .iter()
+        .map(|participant| (participant.vertex, participant.position()))
+        .collect::<HashMap<_, _>>();
+    if let Some(vertex) = boundary
+        .iter()
+        .copied()
+        .filter(|vertex| !positions.contains_key(vertex))
+        .min_by_key(VertexId::canonical_bytes)
+    {
+        return Err(DcelBuildError::PaperBoundary(
+            PaperBoundaryError::MissingVertex { vertex },
+        ));
+    }
+    let boundary_positions = boundary
+        .iter()
+        .map(|vertex| {
+            positions
+                .get(vertex)
+                .copied()
+                .ok_or(DcelBuildError::InternalInvariant)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match exact_polygon_orientation(&boundary_positions).map_err(|_| DcelBuildError::AreaFailure)? {
+        Orientation::CounterClockwise => {}
+        Orientation::Clockwise => boundary.reverse(),
+        Orientation::Collinear => {
+            return Err(DcelBuildError::PaperBoundary(PaperBoundaryError::Collinear));
+        }
+    }
+
+    let minimum = boundary
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, vertex)| vertex.canonical_bytes())
+        .map(|(index, _)| index)
+        .ok_or(DcelBuildError::InternalInvariant)?;
+    boundary.rotate_left(minimum);
+    Ok(boundary)
+}
+
+fn expected_exterior_cycle(
+    embedding: &DcelEmbedding,
+    boundary: &[VertexId],
+) -> Result<Vec<HalfEdgeIndex>, DcelBuildError> {
+    let directed = embedding
+        .half_edges
+        .iter()
+        .enumerate()
+        .map(|(index, half_edge)| {
+            (
+                (half_edge.origin, half_edge.destination),
+                HalfEdgeIndex(index),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    if directed.len() != embedding.half_edges.len() {
+        return Err(DcelBuildError::InternalInvariant);
+    }
+
+    let mut material = Vec::with_capacity(boundary.len());
+    let mut expected_boundary_edges = HashSet::with_capacity(boundary.len());
+    for index in 0..boundary.len() {
+        let start = boundary[index];
+        let end = boundary[(index + 1) % boundary.len()];
+        let half_edge =
+            directed
+                .get(&(start, end))
+                .copied()
+                .ok_or(DcelBuildError::PaperBoundary(
+                    PaperBoundaryError::MissingPair { start, end },
+                ))?;
+        let record = embedding
+            .half_edges
+            .get(half_edge.0)
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        if record.kind != EdgeKind::Boundary {
+            return Err(DcelBuildError::PaperBoundary(
+                PaperBoundaryError::NonBoundaryPair {
+                    edge: record.edge,
+                    kind: record.kind,
+                },
+            ));
+        }
+        if !expected_boundary_edges.insert(record.edge) {
+            return Err(DcelBuildError::InternalInvariant);
+        }
+        material.push(half_edge);
+    }
+
+    if let Some(edge) = embedding
+        .half_edges
+        .iter()
+        .enumerate()
+        .filter(|(index, half_edge)| {
+            half_edge.kind == EdgeKind::Boundary
+                && *index < half_edge.twin.0
+                && !expected_boundary_edges.contains(&half_edge.edge)
+        })
+        .map(|(_, half_edge)| half_edge.edge)
+        .min_by_key(EdgeId::canonical_bytes)
+    {
+        return Err(DcelBuildError::PaperBoundary(
+            PaperBoundaryError::UnexpectedBoundaryEdge { edge },
+        ));
+    }
+
+    let exterior = material
+        .iter()
+        .map(|half_edge| {
+            embedding
+                .half_edges
+                .get(half_edge.0)
+                .map(|record| record.twin)
+                .ok_or(DcelBuildError::InternalInvariant)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for index in 0..exterior.len() {
+        let expected_next = exterior[(index + exterior.len() - 1) % exterior.len()];
+        let actual_next = embedding
+            .half_edges
+            .get(exterior[index].0)
+            .map(|record| record.next)
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        if actual_next != expected_next {
+            return Err(DcelBuildError::ExteriorWalkMismatch);
+        }
+    }
+
+    let mut canonical = exterior.into_iter().rev().collect::<Vec<_>>();
+    let minimum = canonical
+        .iter()
+        .enumerate()
+        .map(|(index, half_edge)| {
+            embedding
+                .half_edges
+                .get(half_edge.0)
+                .map(|record| (index, embedded_half_edge_token(record)))
+                .ok_or(DcelBuildError::InternalInvariant)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .min_by_key(|(_, token)| *token)
+        .map(|(index, _)| index)
+        .ok_or(DcelBuildError::InternalInvariant)?;
+    canonical.rotate_left(minimum);
+    Ok(canonical)
+}
+
+fn index_walk_partition(
+    embedding: &DcelEmbedding,
+    walks: &[CanonicalWalk],
+) -> Result<Vec<WalkIndex>, DcelBuildError> {
+    let mut owners = vec![None; embedding.half_edges.len()];
+    for (walk_index, walk) in walks.iter().enumerate() {
+        for half_edge in &walk.half_edges {
+            let owner = owners
+                .get_mut(half_edge.0)
+                .ok_or(DcelBuildError::InternalInvariant)?;
+            if owner.replace(WalkIndex(walk_index)).is_some() {
+                return Err(DcelBuildError::InternalInvariant);
+            }
+        }
+    }
+    owners
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(DcelBuildError::InternalInvariant)
+}
+
 fn canonicalize_and_measure_walk(
     embedding: &DcelEmbedding,
     mut half_edges: Vec<HalfEdgeIndex>,
@@ -666,6 +947,8 @@ fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
             .ok_or(DcelBuildError::InternalInvariant)?;
         if twin.twin != HalfEdgeIndex(index)
             || twin.edge != half_edge.edge
+            || twin.kind != half_edge.kind
+            || !participates_in_topology(half_edge.kind)
             || twin.origin != half_edge.destination
             || twin.destination != half_edge.origin
             || next.origin != half_edge.destination
@@ -709,6 +992,21 @@ mod tests {
             end: end.id,
             kind,
         }
+    }
+
+    fn paper(vertices: &[&Vertex]) -> Paper {
+        Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..Paper::default()
+        }
+    }
+
+    fn exterior_records(set: &PaperWalkSet) -> Vec<EmbeddedHalfEdge> {
+        set.walks[set.exterior.0]
+            .half_edges
+            .iter()
+            .map(|index| set.embedding.half_edges[index.0])
+            .collect()
     }
 
     fn assert_total_invariants(embedding: &DcelEmbedding, participant_edges: usize) {
@@ -846,6 +1144,321 @@ mod tests {
                 .filter(|walk| walk.orientation == Orientation::Clockwise)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn paper_exterior_is_invariant_under_boundary_and_storage_orientation() {
+        let a = vertex(0xc01, 0.0, 0.0);
+        let b = vertex(0xc02, 4.0, 0.0);
+        let c = vertex(0xc03, 4.0, 4.0);
+        let d = vertex(0xc04, 0.0, 4.0);
+        let pattern = CreasePattern {
+            vertices: vec![d.clone(), b.clone(), a.clone(), c.clone()],
+            edges: vec![
+                edge(0xc14, &a, &d, EdgeKind::Boundary),
+                edge(0xc12, &c, &b, EdgeKind::Boundary),
+                edge(0xc11, &a, &b, EdgeKind::Boundary),
+                edge(0xc13, &c, &d, EdgeKind::Boundary),
+            ],
+        };
+        let source_paper = paper(&[&a, &b, &c, &d]);
+        let expected = build_paper_walks(&pattern, &source_paper).expect("square paper walks");
+
+        let exterior = &expected.walks[expected.exterior.0];
+        assert_eq!(exterior.orientation, Orientation::Clockwise);
+        assert_eq!(exterior.signed_double_area, -32.0);
+        assert_eq!(exterior.half_edges.len(), 4);
+        assert!(
+            exterior_records(&expected)
+                .iter()
+                .all(|half_edge| half_edge.kind == EdgeKind::Boundary)
+        );
+        assert!(
+            exterior
+                .half_edges
+                .iter()
+                .all(|half_edge| { expected.half_edge_to_walk[half_edge.0] == expected.exterior })
+        );
+
+        let mut rotated = source_paper.clone();
+        rotated.boundary_vertices.rotate_left(2);
+        assert_eq!(
+            build_paper_walks(&pattern, &rotated).expect("rotated paper"),
+            expected
+        );
+
+        let mut clockwise = source_paper.clone();
+        clockwise.boundary_vertices.reverse();
+        assert_eq!(
+            build_paper_walks(&pattern, &clockwise).expect("clockwise paper"),
+            expected
+        );
+
+        let mut reordered = pattern.clone();
+        reordered.vertices.reverse();
+        reordered.edges.reverse();
+        for edge in &mut reordered.edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        assert_eq!(
+            build_paper_walks(&reordered, &source_paper).expect("reordered source"),
+            expected
+        );
+    }
+
+    #[test]
+    fn collinear_boundary_split_and_inward_dangling_fold_keep_exterior_pure() {
+        let south_west = vertex(0xd01, -2.0, -2.0);
+        let south_mid = vertex(0xd02, 0.0, -2.0);
+        let south_east = vertex(0xd03, 2.0, -2.0);
+        let north_east = vertex(0xd04, 2.0, 2.0);
+        let north_west = vertex(0xd05, -2.0, 2.0);
+        let interior = vertex(0xd06, 0.0, 0.0);
+        let boundary = [
+            &south_west,
+            &south_mid,
+            &south_east,
+            &north_east,
+            &north_west,
+        ];
+        let pattern = CreasePattern {
+            vertices: vec![
+                interior.clone(),
+                north_east.clone(),
+                south_west.clone(),
+                north_west.clone(),
+                south_mid.clone(),
+                south_east.clone(),
+            ],
+            edges: vec![
+                edge(0xd16, &south_mid, &interior, EdgeKind::Mountain),
+                edge(0xd15, &north_west, &south_west, EdgeKind::Boundary),
+                edge(0xd11, &south_mid, &south_west, EdgeKind::Boundary),
+                edge(0xd14, &north_west, &north_east, EdgeKind::Boundary),
+                edge(0xd12, &south_east, &south_mid, EdgeKind::Boundary),
+                edge(0xd13, &north_east, &south_east, EdgeKind::Boundary),
+            ],
+        };
+
+        let set = build_paper_walks(&pattern, &paper(&boundary)).expect("split boundary walks");
+
+        let exterior = &set.walks[set.exterior.0];
+        assert_eq!(exterior.orientation, Orientation::Clockwise);
+        assert_eq!(exterior.half_edges.len(), boundary.len());
+        assert!(
+            exterior_records(&set)
+                .iter()
+                .all(|half_edge| half_edge.kind == EdgeKind::Boundary)
+        );
+        assert!(set.walks.iter().enumerate().any(|(index, walk)| {
+            index != set.exterior.0
+                && walk.half_edges.iter().any(|half_edge| {
+                    set.embedding.half_edges[half_edge.0].kind == EdgeKind::Mountain
+                })
+        }));
+    }
+
+    #[test]
+    fn internal_closed_loop_cannot_displace_boundary_anchored_exterior() {
+        let a = vertex(0xe01, -4.0, -4.0);
+        let b = vertex(0xe02, 4.0, -4.0);
+        let c = vertex(0xe03, 4.0, 4.0);
+        let d = vertex(0xe04, -4.0, 4.0);
+        let p = vertex(0xe05, -1.0, -1.0);
+        let q = vertex(0xe06, 1.0, -1.0);
+        let r = vertex(0xe07, 0.0, 1.0);
+        let pattern = CreasePattern {
+            vertices: vec![
+                r.clone(),
+                d.clone(),
+                a.clone(),
+                q.clone(),
+                c.clone(),
+                p.clone(),
+                b.clone(),
+            ],
+            edges: vec![
+                edge(0xe17, &r, &p, EdgeKind::Valley),
+                edge(0xe14, &d, &a, EdgeKind::Boundary),
+                edge(0xe15, &p, &q, EdgeKind::Mountain),
+                edge(0xe12, &b, &c, EdgeKind::Boundary),
+                edge(0xe16, &q, &r, EdgeKind::Cut),
+                edge(0xe11, &a, &b, EdgeKind::Boundary),
+                edge(0xe13, &c, &d, EdgeKind::Boundary),
+            ],
+        };
+
+        let set = build_paper_walks(&pattern, &paper(&[&a, &b, &c, &d]))
+            .expect("paper plus internal loop");
+
+        assert!(
+            set.walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::Clockwise)
+                .count()
+                >= 2
+        );
+        assert_eq!(set.walks[set.exterior.0].half_edges.len(), 4);
+        assert!(
+            exterior_records(&set)
+                .iter()
+                .all(|half_edge| half_edge.kind == EdgeKind::Boundary)
+        );
+    }
+
+    #[test]
+    fn outward_boundary_branch_fails_closed_instead_of_polluting_exterior() {
+        let a = vertex(0xf01, 0.0, 0.0);
+        let b = vertex(0xf02, 4.0, 0.0);
+        let c = vertex(0xf03, 4.0, 4.0);
+        let d = vertex(0xf04, 0.0, 4.0);
+        let outside = vertex(0xf05, 0.0, -2.0);
+        let pattern = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone(), outside.clone()],
+            edges: vec![
+                edge(0xf11, &a, &b, EdgeKind::Boundary),
+                edge(0xf12, &b, &c, EdgeKind::Boundary),
+                edge(0xf13, &c, &d, EdgeKind::Boundary),
+                edge(0xf14, &d, &a, EdgeKind::Boundary),
+                edge(0xf15, &a, &outside, EdgeKind::Mountain),
+            ],
+        };
+
+        assert_eq!(
+            build_paper_walks(&pattern, &paper(&[&a, &b, &c, &d])),
+            Err(DcelBuildError::ExteriorWalkMismatch)
+        );
+    }
+
+    #[test]
+    fn exact_paper_exterior_orientation_survives_measured_area_underflow() {
+        let side = f64::from_bits(485_u64 << 52);
+        let a = vertex(0x1101, 0.0, 0.0);
+        let b = vertex(0x1102, side, 0.0);
+        let c = vertex(0x1103, 0.0, side);
+        let pattern = CreasePattern {
+            vertices: vec![c.clone(), a.clone(), b.clone()],
+            edges: vec![
+                edge(0x1113, &c, &a, EdgeKind::Boundary),
+                edge(0x1111, &a, &b, EdgeKind::Boundary),
+                edge(0x1112, &b, &c, EdgeKind::Boundary),
+            ],
+        };
+
+        let set =
+            build_paper_walks(&pattern, &paper(&[&a, &b, &c])).expect("underflow-area paper walks");
+        let exterior = &set.walks[set.exterior.0];
+
+        assert_eq!(exterior.signed_double_area, 0.0);
+        assert_eq!(exterior.orientation, Orientation::Clockwise);
+        assert_eq!(exterior.half_edges.len(), 3);
+    }
+
+    #[test]
+    fn paper_boundary_contract_rejects_mismatched_edge_sets_and_degenerate_order() {
+        let a = vertex(0x1201, 0.0, 0.0);
+        let b = vertex(0x1202, 4.0, 0.0);
+        let c = vertex(0x1203, 4.0, 4.0);
+        let d = vertex(0x1204, 0.0, 4.0);
+        let base = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone()],
+            edges: vec![
+                edge(0x1211, &a, &b, EdgeKind::Boundary),
+                edge(0x1212, &b, &c, EdgeKind::Boundary),
+                edge(0x1213, &c, &d, EdgeKind::Boundary),
+                edge(0x1214, &d, &a, EdgeKind::Boundary),
+            ],
+        };
+        let source_paper = paper(&[&a, &b, &c, &d]);
+
+        let mut missing = base.clone();
+        let missing_edge = missing.edges.remove(0);
+        assert_eq!(
+            build_paper_walks(&missing, &source_paper),
+            Err(DcelBuildError::PaperBoundary(
+                PaperBoundaryError::MissingPair {
+                    start: a.id,
+                    end: b.id,
+                }
+            ))
+        );
+
+        let mut non_boundary = base.clone();
+        non_boundary.edges[0].kind = EdgeKind::Mountain;
+        assert_eq!(
+            build_paper_walks(&non_boundary, &source_paper),
+            Err(DcelBuildError::PaperBoundary(
+                PaperBoundaryError::NonBoundaryPair {
+                    edge: missing_edge.id,
+                    kind: EdgeKind::Mountain,
+                }
+            ))
+        );
+
+        let extra_start = vertex(0x1205, 1.0, 1.0);
+        let extra_end = vertex(0x1206, 2.0, 1.0);
+        let extra_edge = edge(0x1215, &extra_start, &extra_end, EdgeKind::Boundary);
+        let mut unexpected = base.clone();
+        unexpected
+            .vertices
+            .extend([extra_start.clone(), extra_end.clone()]);
+        unexpected.edges.push(extra_edge.clone());
+        assert_eq!(
+            build_paper_walks(&unexpected, &source_paper),
+            Err(DcelBuildError::PaperBoundary(
+                PaperBoundaryError::UnexpectedBoundaryEdge {
+                    edge: extra_edge.id,
+                }
+            ))
+        );
+
+        let mut duplicate = source_paper.clone();
+        duplicate.boundary_vertices.insert(2, b.id);
+        assert_eq!(
+            build_paper_walks(&base, &duplicate),
+            Err(DcelBuildError::PaperBoundary(
+                PaperBoundaryError::DuplicateVertex { vertex: b.id }
+            ))
+        );
+
+        let mut too_short = source_paper.clone();
+        too_short.boundary_vertices.truncate(2);
+        assert_eq!(
+            build_paper_walks(&base, &too_short),
+            Err(DcelBuildError::PaperBoundary(
+                PaperBoundaryError::TooFewVertices { count: 2 }
+            ))
+        );
+    }
+
+    #[test]
+    fn exact_collinear_paper_order_is_rejected_before_pair_resolution() {
+        let a = vertex(0x1301, 0.0, 0.0);
+        let b = vertex(0x1302, 1.0, 0.0);
+        let c = vertex(0x1303, 2.0, 0.0);
+        let a_tip = vertex(0x1304, 0.0, 1.0);
+        let b_tip = vertex(0x1305, 1.0, 1.0);
+        let c_tip = vertex(0x1306, 2.0, 1.0);
+        let pattern = CreasePattern {
+            vertices: vec![
+                a.clone(),
+                b.clone(),
+                c.clone(),
+                a_tip.clone(),
+                b_tip.clone(),
+                c_tip.clone(),
+            ],
+            edges: vec![
+                edge(0x1311, &a, &a_tip, EdgeKind::Mountain),
+                edge(0x1312, &b, &b_tip, EdgeKind::Valley),
+                edge(0x1313, &c, &c_tip, EdgeKind::Cut),
+            ],
+        };
+
+        assert_eq!(
+            build_paper_walks(&pattern, &paper(&[&a, &b, &c])),
+            Err(DcelBuildError::PaperBoundary(PaperBoundaryError::Collinear))
         );
     }
 
@@ -1095,7 +1708,43 @@ mod tests {
         let transformed_walks =
             canonical_walks(&transformed_embedding).expect("transformed split-square walks");
 
-        assert_eq!(transformed_embedding, baseline_embedding);
+        assert_ne!(transformed_embedding, baseline_embedding);
+        assert_eq!(
+            transformed_embedding.rotations,
+            baseline_embedding.rotations
+        );
+        assert_eq!(
+            transformed_embedding.participant_vertices,
+            baseline_embedding.participant_vertices
+        );
+        assert_eq!(
+            transformed_embedding.half_edges.len(),
+            baseline_embedding.half_edges.len()
+        );
+        for (actual, expected) in transformed_embedding
+            .half_edges
+            .iter()
+            .zip(&baseline_embedding.half_edges)
+        {
+            assert_eq!(
+                (
+                    actual.edge,
+                    actual.origin,
+                    actual.destination,
+                    actual.twin,
+                    actual.next,
+                    actual.origin_position,
+                ),
+                (
+                    expected.edge,
+                    expected.origin,
+                    expected.destination,
+                    expected.twin,
+                    expected.next,
+                    expected.origin_position,
+                )
+            );
+        }
         assert_eq!(transformed_walks, baseline_walks);
         assert_walk_invariants(&baseline_embedding, &baseline_walks);
         assert_eq!(baseline_walks.len(), 5);
@@ -1118,6 +1767,27 @@ mod tests {
                 .filter(|walk| walk.orientation == Orientation::Clockwise)
                 .count(),
             1
+        );
+
+        let source_paper = paper(&[&south_west, &south_east, &north_east, &north_west]);
+        let baseline_set =
+            build_paper_walks(&baseline, &source_paper).expect("split-X paper walks");
+        let transformed_set =
+            build_paper_walks(&transformed, &source_paper).expect("transformed split-X walks");
+        assert_eq!(transformed_set.walks, baseline_set.walks);
+        assert_eq!(
+            transformed_set.half_edge_to_walk,
+            baseline_set.half_edge_to_walk
+        );
+        assert_eq!(transformed_set.exterior, baseline_set.exterior);
+        assert_eq!(
+            baseline_set.walks[baseline_set.exterior.0].half_edges.len(),
+            4
+        );
+        assert!(
+            exterior_records(&baseline_set)
+                .iter()
+                .all(|half_edge| half_edge.kind == EdgeKind::Boundary)
         );
     }
 

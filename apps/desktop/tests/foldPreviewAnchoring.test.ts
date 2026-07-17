@@ -235,6 +235,17 @@ test('single-fold anchoring flips only the moving-side rotation sign', () => {
     ...model,
     faces: [model.faces[0], model.faces[0]],
   }, 'left'), null)
+
+  const valleyModel: SingleFoldPreviewModel = {
+    ...model,
+    hinge: {
+      ...model.hinge,
+      assignment: 'valley',
+      rotationSign: -1,
+    },
+  }
+  assert.equal(resolveSingleFoldAnchor(valleyModel, 'left')?.movingRotationSign, -1)
+  assert.equal(resolveSingleFoldAnchor(valleyModel, 'right')?.movingRotationSign, 1)
 })
 
 function chainTree(): FoldPreviewTreeKinematics {

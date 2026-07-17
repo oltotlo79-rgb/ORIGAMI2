@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { RgbaColor } from '../lib/coreClient'
+import {
+  rerootFoldPreviewTree,
+  resolveSingleFoldAnchor,
+} from '../lib/foldPreviewAnchoring'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import {
   calculateFoldTreePoseWithAngles,
@@ -12,6 +16,7 @@ type FoldPreviewProps = {
   angle: number
   hingeAngles?: readonly FoldPreviewHingeAngle[]
   selectedHingeId?: string | null
+  fixedFaceId?: string | null
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -34,6 +39,7 @@ export function FoldPreview({
   angle,
   hingeAngles,
   selectedHingeId,
+  fixedFaceId,
   model,
   statusMessage,
   frontColor,
@@ -51,6 +57,12 @@ export function FoldPreview({
   hingeAnglesRef.current = hingeAngles
   const selectedHingeIdRef = useRef(selectedHingeId ?? null)
   selectedHingeIdRef.current = selectedHingeId ?? null
+  const resolvedFixedFaceId = fixedFaceId
+    ?? (model?.kind === 'single_fold'
+      ? model.fixedFace.id
+      : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
+        ? model.kinematics.rootFaceId
+        : null)
 
   const safeThicknessMm = isNonNegativeFinite(thicknessMm) ? thicknessMm : DEFAULT_THICKNESS_MM
   const physicalPreviewThickness = model
@@ -74,6 +86,21 @@ export function FoldPreview({
     }
     setRenderError(null)
 
+    const singleAnchor = model.kind === 'single_fold'
+      ? resolveSingleFoldAnchor(model, resolvedFixedFaceId ?? model.fixedFace.id)
+      : null
+    const treeKinematics = model.kind === 'fold_graph' && model.kinematics.kind === 'tree'
+      ? rerootFoldPreviewTree(model.kinematics, resolvedFixedFaceId ?? model.kinematics.rootFaceId)
+      : null
+    if (
+      (model.kind === 'single_fold' && !singleAnchor)
+      || (model.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !treeKinematics)
+    ) {
+      runtimeRef.current = null
+      setRenderError('固定面を安全に解決できませんでした')
+      return
+    }
+
     const geometries: THREE.BufferGeometry[] = []
     const edgeGeometries: THREE.EdgesGeometry[] = []
     const hingeGeometries: THREE.BufferGeometry[] = []
@@ -84,16 +111,17 @@ export function FoldPreview({
     let movingGeometry: THREE.BufferGeometry | null = null
     try {
       if (model.kind === 'single_fold') {
+        if (!singleAnchor) throw new Error('missing single-fold anchor')
         const fixedGeometry = createFoldPreviewFaceGeometry(
-          model.fixedFace.polygon,
+          singleAnchor.fixedFace.polygon,
           previewThickness,
         )
         geometries.push(fixedGeometry)
-        staticFaces.push({ face: model.fixedFace, geometry: fixedGeometry })
+        staticFaces.push({ face: singleAnchor.fixedFace, geometry: fixedGeometry })
 
         const { start } = model.hinge
         movingGeometry = createFoldPreviewFaceGeometry(
-          model.movingFace.polygon.map((point) => ({
+          singleAnchor.movingFace.polygon.map((point) => ({
             x: point.x - start.x,
             z: point.z - start.z,
           })),
@@ -227,11 +255,12 @@ export function FoldPreview({
       let updatePose = (_angle: number, _hingeAngles?: readonly FoldPreviewHingeAngle[]) => true
       let updateSelection = (_selectedHingeId: string | null) => undefined
       if (model.kind === 'single_fold' && movingGeometry) {
+        if (!singleAnchor) throw new Error('missing single-fold anchor')
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
-        pivot.add(makeFace(movingGeometry, model.movingFace))
+        pivot.add(makeFace(movingGeometry, singleAnchor.movingFace))
         axis = new THREE.Vector3(model.hinge.axis.x, 0, model.hinge.axis.z).normalize()
-        rotationSign = model.hinge.rotationSign
+        rotationSign = singleAnchor.movingRotationSign
         applyFoldRotation(pivot, axis, rotationSign, angleRef.current)
         scene.add(pivot)
         updatePose = (nextAngle) => {
@@ -289,7 +318,7 @@ export function FoldPreview({
         updateSelection(selectedHingeIdRef.current)
 
         if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
-          const treeKinematics = model.kinematics
+          if (!treeKinematics) throw new Error('missing fold-tree anchor')
           updatePose = (nextAngle, nextHingeAngles) => {
             const pose = calculateFoldTreePoseWithAngles(treeKinematics, nextHingeAngles
               ? { kind: 'per_hinge', angles: nextHingeAngles }
@@ -355,6 +384,7 @@ export function FoldPreview({
     frontOpacity,
     backHex,
     backOpacity,
+    resolvedFixedFaceId,
   ])
 
   useEffect(() => {
@@ -390,15 +420,22 @@ export function FoldPreview({
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
   const treeAngleNote = describeTreeAngles(hingeAngles, safeAngle)
+  const fixedFaceIndex = model && resolvedFixedFaceId
+    ? model.faces.findIndex((face) => face.id === resolvedFixedFaceId)
+    : -1
+  const fixedFaceLabel = fixedFaceIndex >= 0 ? `固定面 ${fixedFaceIndex + 1}` : null
+  const fixedFaceNote = fixedFaceLabel ? `・${fixedFaceLabel}` : ''
   const previewNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
-    ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}（衝突未検証）・${thicknessNote}`
+    ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}（衝突未検証）・${thicknessNote}`
     : model?.kind === 'fold_graph'
       ? `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階・${thicknessNote}`
-      : thicknessNote
+      : model?.kind === 'single_fold' && fixedFaceLabel
+        ? `${fixedFaceLabel}・${thicknessNote}`
+        : thicknessNote
   const previewDescription = model?.kind === 'single_fold' && !renderError
-    ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度、${thicknessNote}`
+    ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度${fixedFaceNote}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
-      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}、衝突未検証、${thicknessNote}`
+      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、衝突未検証、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
         ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
@@ -412,6 +449,7 @@ export function FoldPreview({
       data-angle={safeAngle}
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
       data-selected-hinge={selectedHingeId ?? undefined}
+      data-fixed-face={resolvedFixedFaceId ?? undefined}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
       role="img"
       aria-label={previewDescription}

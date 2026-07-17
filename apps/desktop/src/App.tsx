@@ -88,6 +88,11 @@ type FoldAngleOverrides = Readonly<{
   values: ReadonlyMap<string, number>
 }>
 
+type FixedFaceChoice = Readonly<{
+  projectId: string | null
+  faceId: string | null
+}>
+
 function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
@@ -95,6 +100,10 @@ function App() {
   const [foldAngleOverrides, setFoldAngleOverrides] = useState<FoldAngleOverrides>({
     projectId: null,
     values: new Map(),
+  })
+  const [fixedFaceChoice, setFixedFaceChoice] = useState<FixedFaceChoice>({
+    projectId: null,
+    faceId: null,
   })
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
@@ -244,6 +253,28 @@ function App() {
     () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
     [nativeSnapshot, topologyResponse],
   )
+  const fixedFaceOptions = useMemo(() => (
+    foldPreviewModel?.kind === 'single_fold'
+      ? foldPreviewModel.faces
+      : foldPreviewModel?.kind === 'fold_graph'
+        && foldPreviewModel.kinematics.kind === 'tree'
+        ? foldPreviewModel.faces
+        : []
+  ), [foldPreviewModel])
+  const canonicalFixedFaceId = foldPreviewModel?.kind === 'single_fold'
+    ? foldPreviewModel.fixedFace.id
+    : foldPreviewModel?.kind === 'fold_graph'
+      && foldPreviewModel.kinematics.kind === 'tree'
+      ? foldPreviewModel.kinematics.rootFaceId
+      : null
+  const fixedFaceChoiceIsCurrent = foldPreviewModel
+    && fixedFaceChoice.projectId === foldPreviewModel.projectId
+    && fixedFaceChoice.faceId
+    && fixedFaceOptions.some((face) => face.id === fixedFaceChoice.faceId)
+  const effectiveFixedFaceId = fixedFaceChoiceIsCurrent
+    ? fixedFaceChoice.faceId
+    : canonicalFixedFaceId
+  const fixedFaceEnabled = fixedFaceOptions.length > 1 && !benchmarkRun
   const foldPreviewHingeIds = useMemo(() => new Set(
     foldPreviewModel?.kind === 'single_fold'
       ? [foldPreviewModel.hinge.edgeId]
@@ -1174,12 +1205,36 @@ function App() {
               angle={foldAngle}
               hingeAngles={foldTreeHingeAngles}
               selectedHingeId={selectedPreviewHingeId}
+              fixedFaceId={effectiveFixedFaceId}
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
               backColor={nativeSnapshot?.paper.back.color}
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
             />
+            <div className="fixed-face-control">
+              <label htmlFor="fixed-face">固定面</label>
+              <select
+                id="fixed-face"
+                value={effectiveFixedFaceId ?? ''}
+                disabled={!fixedFaceEnabled}
+                title={effectiveFixedFaceId ?? undefined}
+                onChange={(event) => {
+                  if (!foldPreviewModel || !fixedFaceEnabled) return
+                  setFixedFaceChoice({
+                    projectId: foldPreviewModel.projectId,
+                    faceId: event.currentTarget.value,
+                  })
+                }}
+              >
+                {fixedFaceOptions.length > 0
+                  ? fixedFaceOptions.map((face, index) => (
+                      <option value={face.id} key={face.id}>面 {index + 1}</option>
+                    ))
+                  : <option value="">選択不可</option>}
+              </select>
+              <span>{fixedFaceEnabled ? '動かさない面' : '—'}</span>
+            </div>
             <div className="fold-control">
               <label htmlFor="fold-angle">
                 {foldPreviewModel?.kind === 'fold_graph'

@@ -445,15 +445,19 @@ export function FoldPreview({
         }
         if (pointerMoveHandler) {
           attemptCleanup(() =>
-            canvas.ownerDocument.removeEventListener('pointermove', pointerMoveHandler!))
+            canvas.ownerDocument.removeEventListener('pointermove', pointerMoveHandler!, true))
         }
         if (pointerUpHandler) {
           attemptCleanup(() =>
-            canvas.ownerDocument.removeEventListener('pointerup', pointerUpHandler!))
+            canvas.ownerDocument.removeEventListener('pointerup', pointerUpHandler!, true))
         }
         if (pointerCancelHandler) {
           attemptCleanup(() =>
-            canvas.ownerDocument.removeEventListener('pointercancel', pointerCancelHandler!))
+            canvas.ownerDocument.removeEventListener(
+              'pointercancel',
+              pointerCancelHandler!,
+              true,
+            ))
         }
         if (lostPointerCaptureHandler) {
           attemptCleanup(() =>
@@ -1460,9 +1464,9 @@ export function FoldPreview({
         resetAngleDrag('window_blur')
       }
       pointerDocument.addEventListener('pointerdown', pointerDownHandler, true)
-      pointerDocument.addEventListener('pointermove', pointerMoveHandler)
-      pointerDocument.addEventListener('pointerup', pointerUpHandler)
-      pointerDocument.addEventListener('pointercancel', pointerCancelHandler)
+      pointerDocument.addEventListener('pointermove', pointerMoveHandler, true)
+      pointerDocument.addEventListener('pointerup', pointerUpHandler, true)
+      pointerDocument.addEventListener('pointercancel', pointerCancelHandler, true)
       canvas.addEventListener('lostpointercapture', lostPointerCaptureHandler)
       window.addEventListener('blur', windowBlurHandler)
 

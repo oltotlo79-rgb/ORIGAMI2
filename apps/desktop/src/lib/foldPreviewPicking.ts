@@ -17,6 +17,7 @@ export type FoldPreviewPickTarget =
 export type FoldPreviewFaceSurfaceHit = Readonly<{
   faceId: string
   worldPoint: Readonly<{ x: number; y: number; z: number }>
+  localPoint: Readonly<{ x: number; y: number; z: number }>
   distance: number
   materialIndex: number
 }>
@@ -61,7 +62,7 @@ export function pickFoldPreviewTarget(
 }
 
 /**
- * Returns a detached world-space point on the nearest rendered face.
+ * Returns detached world- and object-local points on the nearest rendered face.
  *
  * This is intentionally separate from selection picking: physical grab input
  * needs a material surface point, while adding mutable Three.js intersection
@@ -98,12 +99,28 @@ export function pickFoldPreviewFaceSurface(
     ) return null
     const faceId = faceIndex.get(hit.object)
     if (!faceId) return null
+    const worldDeterminant = hit.object.matrixWorld.determinant()
+    if (
+      !Number.isFinite(worldDeterminant)
+      || Math.abs(worldDeterminant) < Number.EPSILON
+    ) return null
+    const localPoint = hit.object.worldToLocal(hit.point.clone())
+    if (
+      !Number.isFinite(localPoint.x)
+      || !Number.isFinite(localPoint.y)
+      || !Number.isFinite(localPoint.z)
+    ) return null
     return Object.freeze({
       faceId,
       worldPoint: Object.freeze({
         x: hit.point.x,
         y: hit.point.y,
         z: hit.point.z,
+      }),
+      localPoint: Object.freeze({
+        x: localPoint.x,
+        y: localPoint.y,
+        z: localPoint.z,
       }),
       distance: hit.distance,
       materialIndex,

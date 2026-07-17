@@ -107,11 +107,13 @@ test('surface picking returns one detached frozen world-space hit', () => {
   assert.deepEqual(result, {
     faceId: 'face',
     worldPoint: { x: 0, y: 0, z: 0 },
+    localPoint: { x: 0, y: 0, z: 0 },
     distance: 5,
     materialIndex: 0,
   })
   assert.ok(Object.isFrozen(result))
   assert.ok(Object.isFrozen(result?.worldPoint))
+  assert.ok(Object.isFrozen(result?.localPoint))
 })
 
 test('surface picking chooses the nearest face without exposing its intersection', () => {
@@ -131,6 +133,29 @@ test('surface picking chooses the nearest face without exposing its intersection
 
   assert.equal(result?.faceId, 'nearest')
   assert.equal(result?.distance, 5)
+})
+
+test('surface picking detaches the hit in both world and object-local coordinates', () => {
+  const { camera } = fixture()
+  const face = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  face.position.set(0.25, -0.5, 1)
+  face.updateMatrixWorld(true)
+  const projected = new Vector3(0.25, -0.5, 1).project(camera)
+  const result = pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(projected.x, projected.y),
+    [{ id: 'translated', object: face }],
+  )
+
+  assert.equal(result?.faceId, 'translated')
+  assert.ok(result)
+  assert.ok(Math.abs(result.worldPoint.x - 0.25) < 1e-12)
+  assert.ok(Math.abs(result.worldPoint.y + 0.5) < 1e-12)
+  assert.ok(Math.abs(result.worldPoint.z - 1) < 1e-12)
+  assert.ok(Math.abs(result.localPoint.x) < 1e-12)
+  assert.ok(Math.abs(result.localPoint.y) < 1e-12)
+  assert.ok(Math.abs(result.localPoint.z) < 1e-12)
 })
 
 test('surface picking rejects invalid pointers, targets, and intersection values', () => {

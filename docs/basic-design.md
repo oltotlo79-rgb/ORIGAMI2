@@ -321,6 +321,17 @@ solve(current geometry, constraints, edited targets, policy)
 - same-body witnessが1件でもあれば説明bindingは保持するが、共通二体並進の入力には不適格とする。全witnessがcross-partitionの場合だけ`twoBodyTranslationInputEligible: true`にできる。ただし非隣接pair限定のため`wholeSceneConstraintsRepresented: false`、`hingeAdjacentPairsIncluded: false`、未生成・未再検証・未経路認定・`autoApplicable: false`を固定する。
 - terminal同期処理には通常point budgetと独立した100,000 triangle-pair上限を置く。全face pair上限がこれを超える場合はv2を開始せずv1 blockを即時返す。将来はfull-scanと候補検証をincremental jobまたはworkerへ分離する。
 
+#### 8.2.5 結合済み全制約からの二体並進候補
+
+`two_body_translation_candidate_v1`は、危険姿勢へrequest結合済みで、全witnessがstationary/moving間をまたぐterminal full-scan bindingだけから、moving partition全体へ加える共通並進の解析候補を導出する純粋境界である。これは衝突局所制約を満たす三次元ベクトルであって、ヒンジだけで到達できる合法な折り姿勢ではない。
+
+- 入力時にbinding version、project/revision、固定面、選択ヒンジ、危険時刻、紙厚、start・target・sample角度vectorを一度だけsnapshotする。startとsampleのpose keyを再計算してrequest keyと照合し、100,000 pair以下のcomplete coverage全式、class別件数、partition所属、連番witness index、安全フラグを再検証する。
+- 各witnessは法線・escape・marginだけでなく、各4点以下の両support、最大16点のsupport midpoint generators、position source、局所hint translationまで再検証する。欠落、差し替え、非有限値、同一body、raw/unavailable集合、17制約以上は`null`へ退避する。
+- 第2面がmovingならwitness法線、第1面がmovingなら反転法線を制約方向とする。必要射影は`escapeDistance + (numericalMargin - toleratedGap) + clearance`であり、非負減算と各加算を安全側へ上向き丸めする。clearanceは有限の正値を必須とする。
+- 最大16制約についてactive setを1〜3本まで決定順に全列挙する。上限は`C(16,1)+C(16,2)+C(16,3)=696`で、Gram連立系と非負KKT multiplierから最小ノルムseedを求める。線形従属、負multiplier、矛盾、非有限値、作業上限超過は推測せずfail-closedとする。
+- 通常の浮動小数点内積一致だけでは安全認定しない。各積と和を下向きに囲った射影下限が上向き丸め済み必要量を厳密に超えるまで、有限回だけ外向きscaleする。最大並進は上向き丸めしたL1ノルムをEuclideanノルム上限として判定し、候補には射影下限とノルム上限を保存する。
+- `sourcePairConstraintsSatisfied: true`が意味するのは、このbindingに含まれる非隣接・cross-partition三角柱pairの線形制約を候補が満たしたことだけである。共有ヒンジ、同一body、全sceneの新規衝突、合法角度への射影、静的再判定、現在姿勢からの連続経路、層順・材料変形は未検証なので、対応する安全フラグと`autoApplicable`はすべて`false`に固定し、3D表示やプロジェクトへ適用しない。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

@@ -11,6 +11,13 @@ import {
   triangulateFoldPreviewPolygon,
   type FoldPreviewTriangleIndices,
 } from './foldPreviewGeometry.ts'
+import {
+  prepareFoldPreviewHingeContactPolicy,
+  type FoldPreviewHingeContactConstraint,
+  type FoldPreviewHingeContactDecision,
+  type FoldPreviewHingeContactPair,
+  type FoldPreviewHingeContactPolicy,
+} from './foldPreviewHingeCollision.ts'
 
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS = 1_000_000
 /** Bounds synchronous deep-copy and triangulation during preview setup. */
@@ -26,6 +33,7 @@ export type FoldPreviewNarrowPhaseInteraction = Readonly<{
   relation: 'hinge_adjacent' | 'non_adjacent'
   hingeEdgeIds: readonly string[]
   geometryClass: 'touching' | 'penetrating' | 'indeterminate'
+  hingeDecision?: FoldPreviewHingeContactDecision
 }>
 
 export type FoldPreviewNarrowPhaseResult = Readonly<{
@@ -58,6 +66,7 @@ type FoldPreviewNarrowPhaseFace = Readonly<{
 }>
 
 type TrianglePrism = Readonly<{
+  triangleIndex: number
   vertices: readonly Vector3[]
   faceAxes: readonly Vector3[]
   edgeDirections: readonly Vector3[]
@@ -103,6 +112,7 @@ export function findFoldPreviewNarrowPhaseInteractions(
       faceTransforms,
       thickness,
       broadPhase,
+      null,
     )
   } catch {
     return null
@@ -119,10 +129,16 @@ export function findFoldPreviewNarrowPhaseInteractions(
 export function prepareFoldPreviewNarrowPhase(
   faces: readonly FoldPreviewCollisionPoseFace[],
   adjacencies: readonly FoldPreviewCollisionAdjacency[],
+  hingeConstraints?: readonly FoldPreviewHingeContactConstraint[],
 ): FoldPreviewNarrowPhaseAnalyzer | null {
-  const prepared = snapshotNarrowPhaseInputs(faces, adjacencies)
+  const prepared = snapshotNarrowPhaseInputs(faces, adjacencies, hingeConstraints)
   if (!prepared) return null
-  const { preparedFaces, poseFaces, adjacencySnapshot } = prepared
+  const {
+    preparedFaces,
+    poseFaces,
+    adjacencySnapshot,
+    hingeContactPolicy,
+  } = prepared
 
   return Object.freeze({
     analyze(
@@ -137,6 +153,7 @@ export function prepareFoldPreviewNarrowPhase(
           adjacencySnapshot,
           faceTransforms,
           thickness,
+          hingeContactPolicy,
         )
       } catch {
         return null
@@ -151,6 +168,7 @@ function analyzePreparedFoldPreviewNarrowPhase(
   adjacencies: readonly FoldPreviewCollisionAdjacency[],
   faceTransforms: ReadonlyMap<string, Matrix4>,
   thickness: number,
+  hingeContactPolicy: FoldPreviewHingeContactPolicy | null,
 ): FoldPreviewNarrowPhaseResult | null {
   const broadPhase = findFoldPreviewPoseBroadPhaseCandidates(
     poseFaces,
@@ -165,6 +183,7 @@ function analyzePreparedFoldPreviewNarrowPhase(
     faceTransforms,
     thickness,
     broadPhase,
+    hingeContactPolicy,
   )
 }
 
@@ -173,6 +192,7 @@ function refineFoldPreviewNarrowPhase(
   faceTransforms: ReadonlyMap<string, Matrix4>,
   thickness: number,
   broadPhase: FoldPreviewBroadPhaseResult,
+  hingeContactPolicy: FoldPreviewHingeContactPolicy | null,
 ): FoldPreviewNarrowPhaseResult | null {
   const facesById = new Map(faces.map((face) => [face.id, face]))
   if (facesById.size !== faces.length) return null
@@ -189,13 +209,31 @@ function refineFoldPreviewNarrowPhase(
       broadPhaseCandidates: broadPhase.candidates.length,
       broadPhaseNonAdjacentCandidates,
       broadPhaseHingeAdjacentCandidates,
-      interactions: broadPhase.candidates.map((candidate) => ({
-        firstFaceId: candidate.firstFaceId,
-        secondFaceId: candidate.secondFaceId,
-        relation: candidate.relation,
-        hingeEdgeIds: candidate.hingeEdgeIds,
-        geometryClass: 'indeterminate',
-      })),
+      interactions: broadPhase.candidates.map((candidate) => {
+        const interaction: FoldPreviewNarrowPhaseInteraction = {
+          firstFaceId: candidate.firstFaceId,
+          secondFaceId: candidate.secondFaceId,
+          relation: candidate.relation,
+          hingeEdgeIds: candidate.hingeEdgeIds,
+          geometryClass: 'indeterminate',
+        }
+        if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
+          return {
+            ...interaction,
+            hingeDecision: hingeContactPolicy.classify({
+              firstFaceId: candidate.firstFaceId,
+              secondFaceId: candidate.secondFaceId,
+              hingeEdgeIds: candidate.hingeEdgeIds,
+              faceTransforms,
+              thickness,
+              numericalMargin,
+              testedTrianglePairs: 0,
+              pairs: [],
+            }),
+          }
+        }
+        return interaction
+      }),
       trianglePairTests: 0,
       satTests: 0,
       numericalMargin,
@@ -226,21 +264,38 @@ function refineFoldPreviewNarrowPhase(
       if (!firstPrisms || !secondPrisms) return null
 
       let geometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass'] | null = null
+      const hingePairs: FoldPreviewHingeContactPair[] = []
+      let candidateTrianglePairTests = 0
       pairSearch:
       for (const first of firstPrisms) {
         for (const second of secondPrisms) {
+          candidateTrianglePairTests += 1
           trianglePairTests += 1
           if (trianglePairTests > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS) return null
           if (!boundsOverlap(first.bounds, second.bounds, numericalMargin)) continue
           satTests += 1
           const intersection = classifyTrianglePrisms(first, second, numericalMargin)
           if (!intersection) return null
+          if (intersection === 'separated') continue
+          if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
+            hingePairs.push({
+              firstTriangleIndex: first.triangleIndex,
+              secondTriangleIndex: second.triangleIndex,
+              firstVertices: first.vertices,
+              secondVertices: second.vertices,
+              geometryClass: intersection,
+            })
+          }
           if (intersection === 'penetrating') {
             geometryClass = 'penetrating'
-            break pairSearch
+            if (!hingeContactPolicy || candidate.relation !== 'hinge_adjacent') {
+              break pairSearch
+            }
+            continue
           }
           if (
             intersection === 'indeterminate'
+            && geometryClass !== 'penetrating'
             && geometryClass !== 'indeterminate'
           ) {
             geometryClass = 'indeterminate'
@@ -250,13 +305,35 @@ function refineFoldPreviewNarrowPhase(
         }
       }
       if (geometryClass) {
-        interactions.push({
+        let interaction: FoldPreviewNarrowPhaseInteraction = {
           firstFaceId: candidate.firstFaceId,
           secondFaceId: candidate.secondFaceId,
           relation: candidate.relation,
           hingeEdgeIds: candidate.hingeEdgeIds,
           geometryClass,
-        })
+        }
+        if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
+          const hingeDecision = hingeContactPolicy.classify({
+            firstFaceId: candidate.firstFaceId,
+            secondFaceId: candidate.secondFaceId,
+            hingeEdgeIds: candidate.hingeEdgeIds,
+            faceTransforms,
+            thickness,
+            numericalMargin,
+            testedTrianglePairs: candidateTrianglePairTests,
+            pairs: hingePairs,
+          })
+          interaction = {
+            ...interaction,
+            geometryClass: hingeDecision.kind === 'allowed_by_hinge_model'
+              ? hingeDecision.geometry === 'boundary_contact'
+                ? 'touching'
+                : 'penetrating'
+              : interaction.geometryClass,
+            hingeDecision,
+          }
+        }
+        interactions.push(interaction)
       }
     }
   } catch {
@@ -277,6 +354,7 @@ function refineFoldPreviewNarrowPhase(
 function snapshotNarrowPhaseInputs(
   faces: readonly FoldPreviewCollisionPoseFace[],
   adjacencies: readonly FoldPreviewCollisionAdjacency[],
+  hingeConstraints: readonly FoldPreviewHingeContactConstraint[] | undefined,
 ) {
   try {
     if (
@@ -306,10 +384,17 @@ function snapshotNarrowPhaseInputs(
       const polygon = face.polygon.map((
         point: FoldPreviewCollisionPoseFace['polygon'][number],
       ) => {
-        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
+        if (
+          !point
+          || !Number.isFinite(point.x)
+          || !Number.isFinite(point.z)
+          || (point.vertexId !== undefined && !validId(point.vertexId))
+        ) {
           throw new RangeError('invalid collision polygon point')
         }
-        return { x: point.x, z: point.z }
+        return point.vertexId === undefined
+          ? { x: point.x, z: point.z }
+          : { vertexId: point.vertexId, x: point.x, z: point.z }
       })
       const triangles = triangulateFoldPreviewPolygon(polygon).map((triangle) =>
         [...triangle] as FoldPreviewTriangleIndices)
@@ -344,10 +429,19 @@ function snapshotNarrowPhaseInputs(
       id: face.id,
       polygon: face.polygon,
     }))
+    const hingeContactPolicy = hingeConstraints === undefined
+      ? null
+      : prepareFoldPreviewHingeContactPolicy(
+          preparedFaces,
+          adjacencySnapshot,
+          hingeConstraints,
+        )
+    if (hingeConstraints !== undefined && !hingeContactPolicy) return null
     return {
       preparedFaces,
       poseFaces,
       adjacencySnapshot,
+      hingeContactPolicy,
     }
   } catch {
     return null
@@ -375,7 +469,8 @@ function buildTrianglePrisms(
   const halfThickness = thickness / 2
   if (!Number.isFinite(halfThickness) || halfThickness < 0) return null
   const prisms: TrianglePrism[] = []
-  for (const triangle of triangles) {
+  for (let triangleIndex = 0; triangleIndex < triangles.length; triangleIndex += 1) {
+    const triangle = triangles[triangleIndex]
     const top = triangle.map((index) => transformedPoint(
       face.polygon[index].x,
       halfThickness,
@@ -417,7 +512,7 @@ function buildTrianglePrisms(
     }
     const bounds = boundsForVertices(vertices)
     if (!bounds) return null
-    prisms.push({ vertices, faceAxes, edgeDirections, bounds })
+    prisms.push({ triangleIndex, vertices, faceAxes, edgeDirections, bounds })
   }
   return prisms.length === triangles.length && prisms.length > 0 ? prisms : null
 }

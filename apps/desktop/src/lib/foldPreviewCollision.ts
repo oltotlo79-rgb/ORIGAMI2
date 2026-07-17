@@ -8,6 +8,8 @@ export const MAX_FOLD_PREVIEW_BROAD_PHASE_CANDIDATES = 100_000
 const NUMERICAL_MARGIN_FACTOR = 64
 
 export type FoldPreviewCollisionPoint = Readonly<{
+  /** Optional stable identity used by the shared-hinge contact policy. */
+  vertexId?: string
   x: number
   z: number
 }>

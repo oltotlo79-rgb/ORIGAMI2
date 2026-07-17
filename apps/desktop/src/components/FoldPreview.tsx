@@ -19,7 +19,17 @@ import {
   summarizeFoldPreviewCollision,
   type FoldPreviewFaceCollisionSeverity,
 } from '../lib/foldPreviewCollisionPresentation'
+import {
+  collisionBadgeClass,
+  collisionBadgeText,
+  collisionDataStatus,
+  collisionPoseKey,
+  collisionSummariesEqual,
+  describeCollisionSummary,
+  type CollisionSummary,
+} from '../lib/foldPreviewCollisionView'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
+import type { FoldPreviewHingeContactConstraint } from '../lib/foldPreviewHingeCollision'
 import {
   calculateFoldTreePoseWithAngles,
   type FoldPreviewHingeAngle,
@@ -63,21 +73,6 @@ type PendingPose = Readonly<{
   requestKey: string
 }>
 
-type CollisionSummary =
-  | Readonly<{
-      kind: 'ready'
-      requestKey: string
-      totalCandidates: number
-      nonAdjacentCandidates: number
-      hingeAdjacentCandidates: number
-      narrowInteractions: number
-      nonAdjacentPenetrations: number
-      nonAdjacentContacts: number
-      hingeInteractions: number
-      indeterminateInteractions: number
-    }>
-  | Readonly<{ kind: 'unavailable'; requestKey: string }>
-
 const DEFAULT_THICKNESS_MM = 0.1
 const MIN_VISIBLE_THICKNESS = 0.025
 const MAX_VISIBLE_THICKNESS = 0.35
@@ -119,10 +114,17 @@ export function FoldPreview({
         ? model.kinematics.rootFaceId
         : null)
 
-  const safeThicknessMm = isNonNegativeFinite(thicknessMm) ? thicknessMm : DEFAULT_THICKNESS_MM
+  const hasAuthoritativeThickness = isNonNegativeFinite(thicknessMm)
+  const safeThicknessMm = hasAuthoritativeThickness ? thicknessMm : DEFAULT_THICKNESS_MM
   const physicalPreviewThickness = model
     ? safeThicknessMm * model.worldUnitsPerMillimetre
     : 0
+  const requestedCollisionThickness = model && hasAuthoritativeThickness
+    ? thicknessMm * model.worldUnitsPerMillimetre
+    : null
+  const collisionThickness = isNonNegativeFinite(requestedCollisionThickness)
+    ? requestedCollisionThickness
+    : null
   const previewThickness = THREE.MathUtils.clamp(
     physicalPreviewThickness,
     MIN_VISIBLE_THICKNESS,
@@ -222,16 +224,41 @@ export function FoldPreview({
     let runtime: PreviewRuntime | null = null
     let poseFrameTask: LatestFrameTask<PendingPose> | null = null
     let disposed = false
-    const collisionAdjacencies: FoldPreviewCollisionAdjacency[] = model.kind === 'planar'
-      ? []
-      : (model.kind === 'single_fold' ? [model.hinge] : model.hinges).map((hinge) => ({
-          edgeId: hinge.edgeId,
-          firstFaceId: hinge.leftFaceId,
-          secondFaceId: hinge.rightFaceId,
-        }))
+    const hinges = model.kind === 'single_fold'
+      ? [model.hinge]
+      : model.kind === 'fold_graph'
+        ? model.hinges
+        : []
+    const collisionAdjacencies: FoldPreviewCollisionAdjacency[] = hinges.map((hinge) => ({
+      edgeId: hinge.edgeId,
+      firstFaceId: hinge.leftFaceId,
+      secondFaceId: hinge.rightFaceId,
+    }))
+    const collisionHingeConstraints: FoldPreviewHingeContactConstraint[] = hinges.map(
+      (hinge) => ({
+        edgeId: hinge.edgeId,
+        leftFaceId: hinge.leftFaceId,
+        rightFaceId: hinge.rightFaceId,
+        start: {
+          vertexId: hinge.start.vertexId,
+          x: hinge.start.x,
+          z: hinge.start.z,
+        },
+        end: {
+          vertexId: hinge.end.vertexId,
+          x: hinge.end.x,
+          z: hinge.end.z,
+        },
+        thicknessRule: 'centered_mid_surface_v1',
+      }),
+    )
     const collisionAnalyzer = (() => {
       try {
-        return prepareFoldPreviewNarrowPhase(model.faces, collisionAdjacencies)
+        return prepareFoldPreviewNarrowPhase(
+          model.faces,
+          collisionAdjacencies,
+          collisionHingeConstraints,
+        )
       } catch {
         return null
       }
@@ -246,10 +273,9 @@ export function FoldPreview({
       let nextSummary: CollisionSummary = { kind: 'unavailable', requestKey }
       let nextCollisionSeverityByFace = new Map<string, FoldPreviewFaceCollisionSeverity>()
       try {
-        const result = collisionAnalyzer?.analyze(
-          faceTransforms,
-          physicalPreviewThickness,
-        )
+        const result = collisionThickness === null
+          ? null
+          : collisionAnalyzer?.analyze(faceTransforms, collisionThickness)
         if (result) {
           const presentation = summarizeFoldPreviewCollision(result)
           nextCollisionSeverityByFace = new Map(presentation.faceSeverities)
@@ -263,6 +289,11 @@ export function FoldPreview({
             nonAdjacentPenetrations: presentation.nonAdjacentPenetrations,
             nonAdjacentContacts: presentation.nonAdjacentContacts,
             hingeInteractions: presentation.hingeInteractions,
+            hingeModelAllowedContacts: presentation.hingeModelAllowedContacts,
+            hingeModelCorridorOverlaps: presentation.hingeModelCorridorOverlaps,
+            hingeOutsidePenetrations: presentation.hingeOutsidePenetrations,
+            hingeOutsideContacts: presentation.hingeOutsideContacts,
+            hingeUnresolvedInteractions: presentation.hingeUnresolvedInteractions,
             indeterminateInteractions: presentation.indeterminateInteractions,
           }
         }
@@ -501,7 +532,7 @@ export function FoldPreview({
           ]), collisionPoseKey(
             model,
             resolvedFixedFaceId,
-            physicalPreviewThickness,
+            collisionThickness,
             nextAngle,
             undefined,
           ))
@@ -510,11 +541,6 @@ export function FoldPreview({
         if (!updatePose(angleRef.current)) throw new Error('invalid single-fold pose')
       }
 
-      const hinges = model.kind === 'single_fold'
-        ? [model.hinge]
-        : model.kind === 'fold_graph'
-          ? model.hinges
-          : []
       const hingePickObjects: FoldPreviewPickObject[] = []
       if (hinges.length > 0) {
         const createdHingeMaterial = new THREE.LineBasicMaterial({ color: 0x7a3f16 })
@@ -609,7 +635,7 @@ export function FoldPreview({
             updateCollision(pose.faceTransforms, collisionPoseKey(
               model,
               resolvedFixedFaceId,
-              physicalPreviewThickness,
+              collisionThickness,
               nextAngle,
               nextHingeAngles,
             ))
@@ -632,7 +658,7 @@ export function FoldPreview({
           collisionPoseKey(
             model,
             resolvedFixedFaceId,
-            physicalPreviewThickness,
+            collisionThickness,
             angleRef.current,
             hingeAnglesRef.current,
           ),
@@ -643,7 +669,7 @@ export function FoldPreview({
             collisionPoseKey(
               model,
               resolvedFixedFaceId,
-              physicalPreviewThickness,
+              collisionThickness,
               nextAngle,
               nextHingeAngles,
             ),
@@ -681,7 +707,7 @@ export function FoldPreview({
       let appliedPoseKey = collisionPoseKey(
         model,
         resolvedFixedFaceId,
-        physicalPreviewThickness,
+        collisionThickness,
         angleRef.current,
         hingeAnglesRef.current,
       )
@@ -716,7 +742,7 @@ export function FoldPreview({
         const requestKey = collisionPoseKey(
           model,
           resolvedFixedFaceId,
-          physicalPreviewThickness,
+          collisionThickness,
           nextAngle,
           nextHingeAngles,
         )
@@ -845,7 +871,7 @@ export function FoldPreview({
   }, [
     model,
     previewThickness,
-    physicalPreviewThickness,
+    collisionThickness,
     frontHex,
     frontOpacity,
     backHex,
@@ -889,11 +915,13 @@ export function FoldPreview({
     }
   }
 
-  const thicknessNote = thicknessIsEmphasised
-    ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示は視認用の最小厚）`
-    : thicknessIsLimited
-      ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示厚を上限調整）`
-      : `紙厚 ${formatMillimetres(safeThicknessMm)} mm`
+  const thicknessNote = !hasAuthoritativeThickness
+    ? `紙厚入力が無効なため3D表示のみ ${formatMillimetres(safeThicknessMm)} mm（衝突判定には不使用）`
+    : thicknessIsEmphasised
+      ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示は視認用の最小厚、衝突判定は入力紙厚を使用）`
+      : thicknessIsLimited
+        ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示厚を上限調整、衝突判定は入力紙厚を使用）`
+        : `紙厚 ${formatMillimetres(safeThicknessMm)} mm`
   const unavailableMessage = model && renderError
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
@@ -906,7 +934,7 @@ export function FoldPreview({
   const currentCollisionRequestKey = collisionPoseKey(
     model,
     resolvedFixedFaceId,
-    physicalPreviewThickness,
+    collisionThickness,
     safeAngle,
     hingeAngles,
   )
@@ -956,12 +984,20 @@ export function FoldPreview({
       data-fixed-face={resolvedFixedFaceId ?? undefined}
       data-interactive={Boolean(onSelectHinge || onChooseFixedFace)}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
+      data-collision-thickness-world={collisionThickness ?? undefined}
+      data-display-thickness-world={model ? previewThickness : undefined}
       data-collision-status={collisionDataStatus(currentCollisionSummary)}
       data-broad-phase-candidates={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.totalCandidates
         : undefined}
       data-non-adjacent-candidates={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.nonAdjacentCandidates
+        : undefined}
+      data-hinge-adjacent-candidates={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeAdjacentCandidates
+        : undefined}
+      data-narrow-interactions={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.narrowInteractions
         : undefined}
       data-non-adjacent-penetrations={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.nonAdjacentPenetrations
@@ -971,6 +1007,21 @@ export function FoldPreview({
         : undefined}
       data-hinge-interactions={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.hingeInteractions
+        : undefined}
+      data-hinge-model-allowed-contacts={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeModelAllowedContacts
+        : undefined}
+      data-hinge-model-corridor-overlaps={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeModelCorridorOverlaps
+        : undefined}
+      data-hinge-outside-penetrations={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeOutsidePenetrations
+        : undefined}
+      data-hinge-outside-contacts={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeOutsideContacts
+        : undefined}
+      data-hinge-unresolved-interactions={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeUnresolvedInteractions
         : undefined}
       data-indeterminate-interactions={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.indeterminateInteractions
@@ -1064,111 +1115,6 @@ function createFoldRotationTransform(
       THREE.MathUtils.degToRad(angle * rotationSign),
     ))
     .multiply(new THREE.Matrix4().makeTranslation(-start.x, 0, -start.z))
-}
-
-function collisionSummariesEqual(
-  first: CollisionSummary | null,
-  second: CollisionSummary,
-) {
-  if (
-    !first
-    || first.kind !== second.kind
-    || first.requestKey !== second.requestKey
-  ) return false
-  return first.kind === 'unavailable'
-    || (
-      second.kind === 'ready'
-      && first.totalCandidates === second.totalCandidates
-      && first.nonAdjacentCandidates === second.nonAdjacentCandidates
-      && first.hingeAdjacentCandidates === second.hingeAdjacentCandidates
-      && first.narrowInteractions === second.narrowInteractions
-      && first.nonAdjacentPenetrations === second.nonAdjacentPenetrations
-      && first.nonAdjacentContacts === second.nonAdjacentContacts
-      && first.hingeInteractions === second.hingeInteractions
-      && first.indeterminateInteractions === second.indeterminateInteractions
-    )
-}
-
-function collisionPoseKey(
-  model: FoldPreviewModel | null | undefined,
-  fixedFaceId: string | null,
-  thickness: number,
-  angle: number,
-  hingeAngles: readonly FoldPreviewHingeAngle[] | undefined,
-) {
-  if (!model) return ''
-  const orderedHingeAngles = hingeAngles
-    ? hingeAngles
-      .map(({ edgeId, angleDegrees }) => [edgeId, angleDegrees] as const)
-      .sort((first, second) => compareText(first[0], second[0]))
-    : null
-  return JSON.stringify([
-    model.projectId,
-    model.revision,
-    model.kind,
-    fixedFaceId,
-    thickness,
-    angle,
-    orderedHingeAngles,
-  ])
-}
-
-function compareText(first: string, second: string) {
-  return first < second ? -1 : first > second ? 1 : 0
-}
-
-function describeCollisionSummary(summary: CollisionSummary | null, accessible = false) {
-  if (!summary) return accessible ? '現在姿勢の衝突候補を判定中' : '衝突判定中'
-  if (summary.kind === 'unavailable') {
-    return accessible ? '現在姿勢の衝突判定は利用できません' : '衝突判定不能'
-  }
-  if (summary.totalCandidates === 0) {
-    return accessible
-      ? '現在姿勢の広域候補と狭域相互作用は0件。連続運動中の衝突は未検証です'
-      : '現在姿勢: 衝突候補 0（連続運動は未検証）'
-  }
-  return accessible
-    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、ヒンジ隣接の未解決相互作用${summary.hingeInteractions}件、数値不確定${summary.indeterminateInteractions}件。ヒンジ接触の許可判定と連続運動中の衝突は未検証です`
-    : `現在姿勢: 非隣接貫通 ${summary.nonAdjacentPenetrations}・接触 ${summary.nonAdjacentContacts}・ヒンジ未解決 ${summary.hingeInteractions}・不確定 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
-}
-
-function collisionDataStatus(summary: CollisionSummary | null) {
-  if (!summary) return 'pending'
-  if (summary.kind === 'unavailable') return 'unavailable'
-  if (summary.nonAdjacentPenetrations > 0) return 'penetrating'
-  if (summary.indeterminateInteractions > 0) return 'indeterminate'
-  if (summary.nonAdjacentContacts > 0) return 'contact'
-  if (summary.hingeInteractions > 0) return 'hinge-unresolved'
-  return 'clear'
-}
-
-function collisionBadgeClass(summary: CollisionSummary | null) {
-  if (!summary || summary.kind === 'unavailable') return 'is-unavailable'
-  if (summary.nonAdjacentPenetrations > 0) return 'has-penetrations'
-  if (summary.indeterminateInteractions > 0) return 'has-indeterminate'
-  if (summary.nonAdjacentContacts > 0) return 'has-contact'
-  if (summary.hingeInteractions > 0) return 'has-hinge-candidates'
-  return 'is-clear'
-}
-
-function collisionBadgeText(summary: CollisionSummary | null) {
-  if (!summary) return '衝突判定中'
-  if (summary.kind === 'unavailable') return '衝突判定不能'
-  if (summary.nonAdjacentPenetrations > 0) {
-    return `非隣接貫通 ${summary.nonAdjacentPenetrations}・接触 ${summary.nonAdjacentContacts}`
-  }
-  if (summary.indeterminateInteractions > 0) {
-    return `狭域不確定 ${summary.indeterminateInteractions}・広域 ${summary.totalCandidates}`
-  }
-  if (summary.nonAdjacentContacts > 0) {
-    return `非隣接接触 ${summary.nonAdjacentContacts}・貫通 0`
-  }
-  if (summary.hingeInteractions > 0) {
-    return `ヒンジ未解決 ${summary.hingeInteractions}・非隣接貫通 0`
-  }
-  return summary.totalCandidates === 0
-    ? '現在姿勢: 衝突候補 0'
-    : `広域 ${summary.totalCandidates} → 狭域相互作用 0`
 }
 
 function describeTreeAngles(

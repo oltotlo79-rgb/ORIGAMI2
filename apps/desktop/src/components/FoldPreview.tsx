@@ -98,6 +98,19 @@ import {
   createFoldPreviewTreeSceneCollisionPoseKey,
   lockFoldPreviewTreeSceneMatrixTarget,
 } from '../lib/foldPreviewTreeScenePose'
+import {
+  prepareFoldPreviewTreeMotionContext,
+} from '../lib/foldPreviewTreeMotionContext'
+import {
+  createFoldPreviewTreeMotionOwnerState,
+  transitionFoldPreviewTreeMotionOwner,
+  type FoldPreviewTreeMotionOwnerCommand,
+  type FoldPreviewTreeMotionOwnerState,
+} from '../lib/foldPreviewTreeMotionOwner'
+import {
+  createFoldPreviewTreeMotionRuntime,
+  type FoldPreviewTreeMotionRuntimeState,
+} from '../lib/foldPreviewTreeMotionRuntime'
 
 type FoldPreviewProps = {
   angle: number
@@ -127,6 +140,31 @@ type PreviewRuntime = {
 type PendingPose = Readonly<{
   angle: number
   hingeAngles?: readonly FoldPreviewHingeAngle[]
+  requestKey: string
+}>
+
+type PendingTreeDirectPose = Readonly<{
+  angle: number
+  hingeAngles: readonly FoldPreviewHingeAngle[]
+  requestKey: string
+  ownerToken: FoldPreviewTreeMotionOwnerState['ownerToken']
+  generation: number
+}>
+
+type RenderedTreePoseSnapshot = Readonly<{
+  model: FoldPreviewModel
+  fixedFaceId: string
+  collisionThickness: number | null
+  visualThickness: number
+  appliedAngles: readonly FoldPreviewHingeAngle[]
+  requestKey: string
+}>
+
+type LatestRequestedTreePose = Readonly<{
+  model: FoldPreviewModel
+  fixedFaceId: string
+  collisionThickness: number | null
+  visualThickness: number
   requestKey: string
 }>
 
@@ -188,6 +226,8 @@ export function FoldPreview({
   const [renderError, setRenderError] = useState<string | null>(null)
   const [collisionSummary, setCollisionSummary] = useState<CollisionSummary | null>(null)
   const [motionSnapshot, setMotionSnapshot] = useState<ContextualMotionState | null>(null)
+  const [renderedTreePoseSnapshot, setRenderedTreePoseSnapshot] =
+    useState<RenderedTreePoseSnapshot | null>(null)
   const [angleDragPresentation, setAngleDragPresentation] = useState(
     INITIAL_ANGLE_DRAG_PRESENTATION,
   )
@@ -248,16 +288,49 @@ export function FoldPreview({
   const { hex: backHex, opacity: backOpacity } = resolveColor(backColor, 0xfffdf9)
   const thicknessIsEmphasised = physicalPreviewThickness < MIN_VISIBLE_THICKNESS
   const thicknessIsLimited = physicalPreviewThickness > MAX_VISIBLE_THICKNESS
+  const latestRequestedTreePose = (() => {
+    if (
+      model?.kind !== 'fold_graph'
+      || model.kinematics.kind !== 'tree'
+    ) return null
+    const fixedFaceId =
+      resolvedFixedFaceId ?? model.kinematics.rootFaceId
+    const requestedAngles = hingeAngles
+      ?? model.kinematics.joints.map((joint) => ({
+        edgeId: joint.hinge.edgeId,
+        angleDegrees: safeAngle,
+      }))
+    const requestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+      model,
+      fixedFaceId,
+      collisionThickness,
+      requestedAngles,
+    )
+    return requestKey
+      ? {
+          model,
+          fixedFaceId,
+          collisionThickness,
+          visualThickness: previewThickness,
+          requestKey,
+        }
+      : null
+  })()
+  const latestRequestedTreePoseRef =
+    useRef<LatestRequestedTreePose | null>(latestRequestedTreePose)
+  latestRequestedTreePoseRef.current = latestRequestedTreePose
 
   useEffect(() => {
     const host = hostRef.current
     if (!host || !model) {
       runtimeRef.current = null
       setCollisionSummary(null)
+      setRenderedTreePoseSnapshot(null)
       return
     }
     setRenderError(null)
     setCollisionSummary(null)
+    setRenderedTreePoseSnapshot(null)
 
     const singleAnchor = model.kind === 'single_fold'
       ? resolveSingleFoldAnchor(model, resolvedFixedFaceId ?? model.fixedFace.id)
@@ -339,6 +412,16 @@ export function FoldPreview({
     let keyDownHandler: ((event: KeyboardEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
     let poseFrameTask: LatestFrameTask<PendingPose> | null = null
+    let treeDirectPoseFrameTask:
+      LatestFrameTask<PendingTreeDirectPose> | null = null
+    let treeMotionOwnerState:
+      FoldPreviewTreeMotionOwnerState | null = null
+    let treeMotionRuntimeState:
+      FoldPreviewTreeMotionRuntimeState | null = null
+    let renderedTreeAngles: readonly FoldPreviewHingeAngle[] | null = null
+    let renderedTreePoseKey: string | null = null
+    let selectedTreeHingeId = selectedHingeIdRef.current
+    let resetTreeOwnedGesture = () => undefined
     let continuousMotionRunner:
       FoldPreviewContinuousMotionRunner<FoldPreviewSingleFoldContinuousBlocker> | null = null
     let angleDragState: FoldPreviewAngleDragState = createFoldPreviewAngleDragState()
@@ -465,8 +548,41 @@ export function FoldPreview({
       }
     }
 
+    const executeTreeOwnershipCleanupCommand = (
+      command: FoldPreviewTreeMotionOwnerCommand,
+    ) => {
+      switch (command.kind) {
+        case 'reset_gesture':
+          resetTreeOwnedGesture()
+          return true
+        case 'dispose_runner':
+          // Runtime callbacks always consult the current state reference.
+          // Dropping this snapshot makes callbacks from the prior generation inert.
+          treeMotionRuntimeState = null
+          return true
+        case 'dispose_direct':
+          treeDirectPoseFrameTask?.dispose()
+          treeDirectPoseFrameTask = null
+          return true
+        default:
+          return false
+      }
+    }
+
     const dispose = () => {
       if (disposed) return
+      if (treeMotionOwnerState) {
+        const ownerPlan = transitionFoldPreviewTreeMotionOwner(
+          treeMotionOwnerState,
+          { kind: 'dispose' },
+        )
+        if (ownerPlan) {
+          treeMotionOwnerState = ownerPlan.state
+          for (const command of ownerPlan.commands) {
+            executeTreeOwnershipCleanupCommand(command)
+          }
+        }
+      }
       disposed = true
       angleDragState = reduceFoldPreviewAngleDrag(angleDragState, {
         kind: 'reset',
@@ -554,6 +670,7 @@ export function FoldPreview({
       attemptCleanup(() => controls?.dispose())
       attemptCleanup(() => observer?.disconnect())
       attemptCleanup(() => poseFrameTask?.dispose())
+      attemptCleanup(() => treeDirectPoseFrameTask?.dispose())
       attemptCleanup(() => continuousMotionRunner?.dispose())
       if (runtime && runtimeRef.current === runtime) runtimeRef.current = null
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
@@ -876,12 +993,28 @@ export function FoldPreview({
               hingeTargets: hingeMatrixTargets,
             })
             if (!application) return false
+            const confirmedAngles = application.appliedAngles.map(
+              (hingeAngle) => ({
+                edgeId: hingeAngle.edgeId,
+                angleDegrees: hingeAngle.angleDegrees,
+              }),
+            )
             for (const group of faceGroups.values()) {
               group.matrixWorldNeedsUpdate = true
             }
             for (const line of hingeLines.values()) {
               line.matrixWorldNeedsUpdate = true
             }
+            renderedTreeAngles = confirmedAngles
+            renderedTreePoseKey = requestKey
+            setRenderedTreePoseSnapshot({
+              model,
+              fixedFaceId: treeKinematics.rootFaceId,
+              collisionThickness,
+              visualThickness: previewThickness,
+              appliedAngles: confirmedAngles,
+              requestKey,
+            })
             updateCollision(application.faceTransforms, requestKey)
             return true
           }
@@ -1005,16 +1138,16 @@ export function FoldPreview({
           return accepted
             || createdContinuousMotionRunner.getState().status === 'indeterminate'
         }
-      } else {
-        const requestedPoseKey = (
+      } else if (
+        model.kind === 'fold_graph'
+        && model.kinematics.kind === 'tree'
+        && treeKinematics
+      ) {
+        const requestedTreePose = (
           requestedAngle: number,
           requestedHingeAngles?: readonly FoldPreviewHingeAngle[],
         ) => {
-          if (
-            model.kind === 'fold_graph'
-            && model.kinematics.kind === 'tree'
-            && treeKinematics
-          ) {
+          try {
             const completeAngles = requestedHingeAngles
               ? requestedHingeAngles.map((hingeAngle) => ({
                   edgeId: hingeAngle.edgeId,
@@ -1024,21 +1157,262 @@ export function FoldPreview({
                   edgeId: joint.hinge.edgeId,
                   angleDegrees: requestedAngle,
                 }))
-            return createFoldPreviewTreeSceneCollisionPoseKey(
+            const requestKey = createFoldPreviewTreeSceneCollisionPoseKey(
               model,
               treeKinematics.rootFaceId,
               collisionThickness,
               completeAngles,
             )
+            return requestKey
+              ? {
+                  angle: requestedAngle,
+                  hingeAngles: completeAngles,
+                  requestKey,
+                }
+              : null
+          } catch {
+            return null
           }
-          return collisionPoseKey(
+        }
+        const createIdleTreeOwner = () => {
+          const ownerState = createFoldPreviewTreeMotionOwnerState()
+          if (!ownerState) return false
+          treeMotionOwnerState = ownerState
+          treeMotionRuntimeState = null
+          return true
+        }
+        const resetTreeOwnerToIdle = () => {
+          if (treeMotionOwnerState) {
+            const ownerPlan = transitionFoldPreviewTreeMotionOwner(
+              treeMotionOwnerState,
+              { kind: 'dispose' },
+            )
+            if (!ownerPlan?.accepted) return false
+            treeMotionOwnerState = ownerPlan.state
+            for (const command of ownerPlan.commands) {
+              if (!executeTreeOwnershipCleanupCommand(command)) {
+                return false
+              }
+            }
+          }
+          return createIdleTreeOwner()
+        }
+        const prepareTreeMotionRuntime = (hingeEdgeId: string | null) => {
+          if (
+            !renderedTreeAngles
+            || renderedTreePoseKey === null
+            || collisionThickness === null
+            || !hingeEdgeId
+            || !treeKinematics.joints.some(
+              (joint) => joint.hinge.edgeId === hingeEdgeId,
+            )
+          ) {
+            if (
+              treeMotionRuntimeState
+              || treeMotionOwnerState?.owner === 'runner'
+            ) return resetTreeOwnerToIdle()
+            return treeMotionOwnerState ? true : createIdleTreeOwner()
+          }
+          if (
+            treeMotionRuntimeState
+            && treeMotionRuntimeState.hingeEdgeId === hingeEdgeId
+            && treeMotionRuntimeState.appliedAngles.length
+              === renderedTreeAngles.length
+            && treeMotionRuntimeState.appliedAngles.every(
+              (hingeAngle, index) =>
+                hingeAngle.edgeId === renderedTreeAngles?.[index]?.edgeId
+                && hingeAngle.angleDegrees
+                  === renderedTreeAngles[index]?.angleDegrees,
+            )
+          ) return true
+          if (!treeMotionOwnerState && !createIdleTreeOwner()) return false
+          const ownerState = treeMotionOwnerState
+          if (!ownerState) return false
+          if (ownerState.directPending) return true
+          const context = prepareFoldPreviewTreeMotionContext({
+            model,
+            fixedFaceId: treeKinematics.rootFaceId,
+            selectedHingeEdgeId: hingeEdgeId,
+            appliedAngles: renderedTreeAngles,
+            collisionThickness,
+            visualThickness: previewThickness,
+          })
+          if (!context) return false
+          const ownerPlan = transitionFoldPreviewTreeMotionOwner(ownerState, {
+            kind: 'prepare_runner',
+            ownerToken: ownerState.ownerToken,
+            generation: ownerState.generation,
+            contextKey: context.contextKey,
+            hingeEdgeId,
+          })
+          if (!ownerPlan?.accepted) return false
+          treeMotionOwnerState = ownerPlan.state
+          const prepareCommands = ownerPlan.commands.filter(
+            (command) => command.kind === 'prepare_runner',
+          )
+          if (
+            ownerPlan.commands.length !== 2
+            || prepareCommands.length !== 1
+            || ownerPlan.commands[0]?.kind !== 'dispose_runner'
+            || ownerPlan.commands[1]?.kind !== 'prepare_runner'
+          ) return false
+          if (!executeTreeOwnershipCleanupCommand(ownerPlan.commands[0])) {
+            return false
+          }
+          const prepareCommand = prepareCommands[0]
+          if (
+            !prepareCommand
+            || prepareCommand.ownerToken !== ownerPlan.state.ownerToken
+            || prepareCommand.generation !== ownerPlan.state.generation
+            || prepareCommand.contextKey !== context.contextKey
+            || prepareCommand.hingeEdgeId !== hingeEdgeId
+          ) return false
+          const motionRuntime = createFoldPreviewTreeMotionRuntime({
+            context,
+            ownerState: ownerPlan.state,
+          })
+          if (!motionRuntime) return false
+          treeMotionRuntimeState = motionRuntime
+          return true
+        }
+        const createTreeDirectPoseFrameTask = () =>
+          createLatestFrameTask<PendingTreeDirectPose>(
+            {
+              request: (callback) => window.requestAnimationFrame(callback),
+              cancel: (handle) => window.cancelAnimationFrame(handle),
+            },
+            (pendingPose) => {
+              if (disposed) return
+              const ownerState = treeMotionOwnerState
+              if (!ownerState) return
+              const ownerPlan = transitionFoldPreviewTreeMotionOwner(
+                ownerState,
+                {
+                  kind: 'direct_callback',
+                  ownerToken: pendingPose.ownerToken,
+                  generation: pendingPose.generation,
+                  key: pendingPose.requestKey,
+                },
+              )
+              if (!ownerPlan?.accepted) return
+              treeMotionOwnerState = ownerPlan.state
+              const latestRequest = latestRequestedTreePoseRef.current
+              if (
+                !latestRequest
+                || latestRequest.model !== model
+                || latestRequest.fixedFaceId !== treeKinematics.rootFaceId
+                || latestRequest.collisionThickness !== collisionThickness
+                || latestRequest.visualThickness !== previewThickness
+                || latestRequest.requestKey !== pendingPose.requestKey
+              ) return
+              const applyCommands = ownerPlan.commands.filter(
+                (command) => command.kind === 'apply_direct',
+              )
+              const applyCommand = applyCommands[0]
+              if (
+                ownerPlan.commands.length !== 1
+                || applyCommands.length !== 1
+                || !applyCommand
+                || applyCommand.ownerToken !== pendingPose.ownerToken
+                || applyCommand.generation !== pendingPose.generation
+                || applyCommand.key !== pendingPose.requestKey
+              ) throw new Error('invalid tree direct pose command')
+              if (
+                !updatePose(pendingPose.angle, pendingPose.hingeAngles)
+                || renderedTreePoseKey !== pendingPose.requestKey
+              ) throw new Error('invalid fold tree pose')
+              if (!prepareTreeMotionRuntime(selectedTreeHingeId)) {
+                throw new Error('tree motion runtime is unavailable')
+              }
+              render()
+            },
+            () => {
+              if (disposed) return
+              dispose()
+              setRenderError('3D描画を安全に継続できませんでした')
+            },
+          )
+        const ensureTreeDirectPoseFrameTask = () => {
+          if (!treeDirectPoseFrameTask) {
+            treeDirectPoseFrameTask = createTreeDirectPoseFrameTask()
+          }
+          return treeDirectPoseFrameTask
+        }
+
+        if (
+          renderedTreeAngles === null
+          || renderedTreePoseKey === null
+          || !createIdleTreeOwner()
+          || !prepareTreeMotionRuntime(selectedTreeHingeId)
+        ) throw new Error('tree motion runtime initialization failed')
+
+        const updateTreeSelectionVisual = updateSelection
+        updateSelection = (nextSelectedHingeId) => {
+          selectedTreeHingeId = nextSelectedHingeId
+          updateTreeSelectionVisual(nextSelectedHingeId)
+          if (!prepareTreeMotionRuntime(nextSelectedHingeId)) {
+            throw new Error('tree motion runtime selection failed')
+          }
+        }
+        schedulePose = (
+          nextAngle: number,
+          nextHingeAngles?: readonly FoldPreviewHingeAngle[],
+        ) => {
+          const requestedPose = requestedTreePose(
+            nextAngle,
+            nextHingeAngles,
+          )
+          if (!requestedPose) return false
+          if (
+            requestedPose.requestKey === renderedTreePoseKey
+            && !treeDirectPoseFrameTask?.hasPending()
+            && treeMotionRuntimeState?.activeRequestSequence === null
+          ) {
+            resetTreeOwnedGesture()
+            return prepareTreeMotionRuntime(selectedTreeHingeId)
+          }
+          if (!treeMotionOwnerState && !createIdleTreeOwner()) return false
+          const ownerState = treeMotionOwnerState
+          if (!ownerState) return false
+          const ownerPlan = transitionFoldPreviewTreeMotionOwner(ownerState, {
+            kind: 'external_direct_change',
+            key: requestedPose.requestKey,
+          })
+          if (!ownerPlan?.accepted) return false
+          treeMotionOwnerState = ownerPlan.state
+          if (
+            ownerPlan.commands.length !== 3
+            || ownerPlan.commands[0]?.kind !== 'reset_gesture'
+            || ownerPlan.commands[1]?.kind !== 'dispose_runner'
+            || ownerPlan.commands[2]?.kind !== 'schedule_direct'
+          ) return false
+          if (
+            !executeTreeOwnershipCleanupCommand(ownerPlan.commands[0])
+            || !executeTreeOwnershipCleanupCommand(ownerPlan.commands[1])
+          ) return false
+          const scheduleCommand = ownerPlan.commands[2]
+          if (
+            scheduleCommand.ownerToken !== ownerPlan.state.ownerToken
+            || scheduleCommand.generation !== ownerPlan.state.generation
+            || scheduleCommand.key !== requestedPose.requestKey
+          ) return false
+          return ensureTreeDirectPoseFrameTask().schedule({
+            ...requestedPose,
+            ownerToken: scheduleCommand.ownerToken,
+            generation: scheduleCommand.generation,
+          })
+        }
+      } else {
+        const requestedPoseKey = (
+          requestedAngle: number,
+          requestedHingeAngles?: readonly FoldPreviewHingeAngle[],
+        ) => collisionPoseKey(
             model,
             resolvedFixedFaceId,
             collisionThickness,
             requestedAngle,
             requestedHingeAngles,
           )
-        }
         let appliedPoseKey = requestedPoseKey(
           initialPoseAngle,
           hingeAnglesRef.current,
@@ -1524,6 +1898,9 @@ export function FoldPreview({
         const resetVertical = resetAngleDrag(reason)
         const resetPhysical = resetPhysicalGrab(reason)
         return resetVertical || resetPhysical
+      }
+      resetTreeOwnedGesture = () => {
+        resetFoldGestures('reset')
       }
 
       const consumePointerEvent = (event: PointerEvent) => {
@@ -2240,7 +2617,19 @@ export function FoldPreview({
   const unavailableMessage = model && renderError
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
-  const treeAngleNote = describeTreeAngles(hingeAngles, safeAngle)
+  const renderedTreePose =
+    model?.kind === 'fold_graph'
+    && model.kinematics.kind === 'tree'
+    && renderedTreePoseSnapshot?.model === model
+    && renderedTreePoseSnapshot.fixedFaceId
+      === (resolvedFixedFaceId ?? model.kinematics.rootFaceId)
+    && renderedTreePoseSnapshot.collisionThickness === collisionThickness
+    && renderedTreePoseSnapshot.visualThickness === previewThickness
+      ? renderedTreePoseSnapshot
+      : null
+  const treeAngleNote = renderedTreePose
+    ? describeTreeAngles(renderedTreePose.appliedAngles, 0)
+    : '姿勢を準備中'
   const fixedFaceIndex = model && resolvedFixedFaceId
     ? model.faces.findIndex((face) => face.id === resolvedFixedFaceId)
     : -1
@@ -2304,15 +2693,7 @@ export function FoldPreview({
   const currentCollisionRequestKey =
     model?.kind === 'fold_graph'
     && model.kinematics.kind === 'tree'
-    ? createFoldPreviewTreeSceneCollisionPoseKey(
-        model,
-        resolvedFixedFaceId ?? model.kinematics.rootFaceId,
-        collisionThickness,
-        hingeAngles ?? model.kinematics.joints.map((joint) => ({
-          edgeId: joint.hinge.edgeId,
-          angleDegrees: safeAngle,
-        })),
-      ) ?? ''
+    ? renderedTreePose?.requestKey ?? ''
     : collisionPoseKey(
         model,
         resolvedFixedFaceId,

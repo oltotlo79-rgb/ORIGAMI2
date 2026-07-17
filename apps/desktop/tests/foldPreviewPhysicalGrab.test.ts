@@ -234,6 +234,43 @@ test('unit pointer rays support the raycaster default infinite maximum distance'
   assert.equal(result.angleDegrees, 40)
 })
 
+test('finite ray near and far bounds include a best point exactly on either boundary', () => {
+  for (const bounds of [
+    { minimumDistance: 5, maximumDistance: 10 },
+    { minimumDistance: 0.1, maximumDistance: 5 },
+  ]) {
+    const input = prepareInput(30)
+    const prepared = prepareFoldPreviewPhysicalGrab({
+      ...input,
+      startRay: {
+        ...input.startRay,
+        ...bounds,
+      },
+    })
+    assert.equal(prepared.kind, 'ready')
+    if (prepared.kind !== 'ready') {
+      assert.fail(`prepare failed: ${prepared.reason}`)
+    }
+    const result = resolveFoldPreviewPhysicalGrabTarget(
+      prepared.session,
+      {
+        contextKey: 'context',
+        referenceAngleDegrees: 30,
+        ray: {
+          ...normalRayThrough(orbitPoint(40)),
+          ...bounds,
+        },
+      },
+    )
+    assert.equal(result.kind, 'unverified_target')
+    if (result.kind !== 'unverified_target') {
+      assert.fail(`resolve failed: ${result.reason}`)
+    }
+    assert.equal(result.angleDegrees, 40)
+    assert.equal(result.missDistance, 0)
+  }
+})
+
 test('side-on rays keep the branch clearly nearest the reference angle', () => {
   const session = readySession(40)
   const sideRay = sideRayThroughHeight(Math.sin(degreesToRadians(60)))

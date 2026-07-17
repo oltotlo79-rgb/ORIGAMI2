@@ -73,27 +73,40 @@ export function pickFoldPreviewFaceSurface(
   camera: Camera,
   pointer: Vector2,
   faces: readonly FoldPreviewPickObject[],
+  preferredFaceId?: string,
 ): FoldPreviewFaceSurfaceHit | null {
   if (
     !Number.isFinite(pointer.x)
     || !Number.isFinite(pointer.y)
     || Math.abs(pointer.x) > 1
     || Math.abs(pointer.y) > 1
+    || (
+      preferredFaceId !== undefined
+      && (
+        typeof preferredFaceId !== 'string'
+        || preferredFaceId.length === 0
+      )
+    )
   ) return null
   const faceIndex = indexTargets(faces)
   if (!faceIndex) return null
   try {
     raycaster.setFromCamera(pointer, camera)
-    const hit = raycaster.intersectObjects([...faceIndex.keys()], false)[0]
+    const hits = raycaster.intersectObjects([...faceIndex.keys()], false)
+    const nearestHit = hits[0]
+    if (!validSurfaceIntersection(nearestHit, faceIndex)) return null
+    const hit = preferredFaceId === undefined
+      ? nearestHit
+      : preferredSurfaceIntersection(
+          hits,
+          nearestHit.distance,
+          faceIndex,
+          preferredFaceId,
+        )
+    if (!hit || !validSurfaceIntersection(hit, faceIndex)) return null
     const materialIndex = hit?.face?.materialIndex
     if (
-      !hit
-      || !Number.isFinite(hit.distance)
-      || hit.distance < 0
-      || !Number.isFinite(hit.point.x)
-      || !Number.isFinite(hit.point.y)
-      || !Number.isFinite(hit.point.z)
-      || typeof materialIndex !== 'number'
+      typeof materialIndex !== 'number'
       || !Number.isSafeInteger(materialIndex)
       || materialIndex < 0
     ) return null
@@ -128,6 +141,48 @@ export function pickFoldPreviewFaceSurface(
   } catch {
     return null
   }
+}
+
+function preferredSurfaceIntersection(
+  hits: ReturnType<Raycaster['intersectObjects']>,
+  nearestDistance: number,
+  faceIndex: ReadonlyMap<Object3D, string>,
+  preferredFaceId: string,
+) {
+  const preferred = hits.find((hit) =>
+    faceIndex.get(hit.object) === preferredFaceId)
+  if (
+    !preferred
+    || !Number.isFinite(preferred.distance)
+    || preferred.distance < 0
+  ) return null
+  const distanceScale = Math.max(
+    1,
+    Math.abs(nearestDistance),
+    Math.abs(preferred.distance),
+  )
+  const coincidentTolerance =
+    distanceScale * Number.EPSILON * 1024
+  if (
+    !Number.isFinite(coincidentTolerance)
+    || preferred.distance - nearestDistance > coincidentTolerance
+  ) return null
+  return preferred
+}
+
+function validSurfaceIntersection(
+  hit: ReturnType<Raycaster['intersectObjects']>[number] | undefined,
+  faceIndex: ReadonlyMap<Object3D, string>,
+) {
+  return Boolean(
+    hit
+    && Number.isFinite(hit.distance)
+    && hit.distance >= 0
+    && Number.isFinite(hit.point.x)
+    && Number.isFinite(hit.point.y)
+    && Number.isFinite(hit.point.z)
+    && faceIndex.has(hit.object),
+  )
 }
 
 function indexTargets(targets: readonly FoldPreviewPickObject[]) {

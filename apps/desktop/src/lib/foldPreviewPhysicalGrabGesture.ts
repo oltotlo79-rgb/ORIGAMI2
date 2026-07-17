@@ -63,7 +63,7 @@ export type FoldPreviewPhysicalGrabGestureDraggingState =
 
 type FoldPreviewPhysicalGrabGesturePointerSample = Readonly<{
   pointerId: number
-  pointerType: FoldPreviewPhysicalGrabGesturePointerType
+  pointerType: FoldPreviewPhysicalGrabGesturePointerType | null
   clientX: number
   clientY: number
 }>
@@ -72,7 +72,7 @@ type FoldPreviewPhysicalGrabGestureGuardedSample =
   FoldPreviewPhysicalGrabGesturePointerSample & Readonly<{
     guardKey: string
     contextKey: string
-    ray: FoldPreviewPhysicalGrabRay
+    ray: FoldPreviewPhysicalGrabRay | null
     isInside: boolean
   }>
 
@@ -112,7 +112,7 @@ export type FoldPreviewPhysicalGrabGestureEvent =
   | Readonly<{
       kind: 'pointer_cancel'
       pointerId: number
-      pointerType: FoldPreviewPhysicalGrabGesturePointerType
+      pointerType: FoldPreviewPhysicalGrabGesturePointerType | null
       reason: 'pointer_cancel' | 'lost_pointer_capture'
     }>
   | Readonly<{
@@ -171,6 +171,7 @@ export type FoldPreviewPhysicalGrabGestureTransition = Readonly<{
 const MOUSE_AND_PEN_THRESHOLD_PIXELS = 6 as const
 const TOUCH_THRESHOLD_PIXELS = 10 as const
 const UNIT_TOLERANCE = 1e-10
+export const FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES = 32
 
 const EMPTY_POINTER_IDS: readonly number[] = Object.freeze([])
 const CLEAN_IDLE_STATE: FoldPreviewPhysicalGrabGestureIdleState = Object.freeze({
@@ -183,6 +184,25 @@ const NO_EFFECTS: readonly FoldPreviewPhysicalGrabGestureEffect[] =
 
 export function createFoldPreviewPhysicalGrabGestureState(): FoldPreviewPhysicalGrabGestureState {
   return CLEAN_IDLE_STATE
+}
+
+/**
+ * Keeps one browser pointer event inside a deterministic amount of solver
+ * work even when a user agent exposes high-frequency coalesced samples.
+ */
+export function collectFoldPreviewPhysicalGrabPointerSamples<Sample>(
+  currentSample: Sample,
+  coalescedSamples: readonly Sample[],
+): readonly Sample[] | null {
+  if (
+    !Array.isArray(coalescedSamples)
+    || coalescedSamples.length
+      >= FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES
+  ) return null
+  return Object.freeze([
+    ...coalescedSamples.filter((sample) => sample !== currentSample),
+    currentSample,
+  ])
 }
 
 /**
@@ -369,7 +389,8 @@ function reduceActive(
       false,
     )
   }
-  if (!validRay(event.ray)) {
+  const eventRay = event.ray
+  if (!validRay(eventRay)) {
     return failActive(
       state,
       event.kind,
@@ -404,13 +425,13 @@ function reduceActive(
     if (state.kind === 'armed' && !exceedsThreshold(state, event)) {
       return transition(state, [handled(event.pointerId)])
     }
-    const advanced = advanceMove(state, event)
+    const advanced = advanceMove(state, event, eventRay)
     return transition(
       advanced.state,
       [handled(event.pointerId), advanced.effect],
     )
   }
-  return finishPointerUp(state, event)
+  return finishPointerUp(state, event, eventRay)
 }
 
 function reducePointerCancel(
@@ -469,6 +490,7 @@ function advanceMove(
     FoldPreviewPhysicalGrabGestureEvent,
     { kind: 'pointer_move' }
   >,
+  ray: FoldPreviewPhysicalGrabRay,
 ): Readonly<{
   state: FoldPreviewPhysicalGrabGestureDraggingState
   effect: FoldPreviewPhysicalGrabGestureEffect
@@ -476,7 +498,7 @@ function advanceMove(
   const result = resolveFoldPreviewPhysicalGrabTarget(state.session, {
     contextKey: event.contextKey,
     referenceAngleDegrees: state.referenceAngleDegrees,
-    ray: event.ray,
+    ray,
   })
   if (result.kind === 'rejected') {
     const next = draggingState(state, state.referenceAngleDegrees, null)
@@ -506,6 +528,7 @@ function finishPointerUp(
     FoldPreviewPhysicalGrabGestureEvent,
     { kind: 'pointer_up' }
   >,
+  ray: FoldPreviewPhysicalGrabRay,
 ) {
   if (state.kind === 'armed' && !exceedsThreshold(state, event)) {
     return transition(
@@ -522,7 +545,7 @@ function finishPointerUp(
   const result = resolveFoldPreviewPhysicalGrabTarget(state.session, {
     contextKey: event.contextKey,
     referenceAngleDegrees: state.referenceAngleDegrees,
-    ray: event.ray,
+    ray,
   })
   const endEffect = result.kind === 'unverified_target'
     ? end(event.pointerId, 'drag', snapshotTarget(result), null)
@@ -592,7 +615,12 @@ function validStart(
     FoldPreviewPhysicalGrabGestureEvent,
     { kind: 'pointer_down' }
   >,
-) {
+): event is Extract<
+  FoldPreviewPhysicalGrabGestureEvent,
+  { kind: 'pointer_down' }
+> & Readonly<{
+  pointerType: FoldPreviewPhysicalGrabGesturePointerType
+}> {
   return validPointerCoordinates(event)
     && event.button === 0
     && event.buttons === 1

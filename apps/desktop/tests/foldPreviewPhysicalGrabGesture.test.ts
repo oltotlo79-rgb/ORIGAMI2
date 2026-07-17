@@ -7,6 +7,8 @@ import {
   type FoldPreviewPhysicalGrabRay,
 } from '../src/lib/foldPreviewPhysicalGrab.ts'
 import {
+  FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES,
+  collectFoldPreviewPhysicalGrabPointerSamples,
   createFoldPreviewPhysicalGrabGestureState,
   reduceFoldPreviewPhysicalGrabGesture,
   type FoldPreviewPhysicalGrabGestureEffect,
@@ -27,6 +29,71 @@ type UpEvent = Extract<
   FoldPreviewPhysicalGrabGestureEvent,
   { kind: 'pointer_up' }
 >
+
+test('coalesced pointer batches are ordered, detached, frozen, and strictly bounded', () => {
+  const current = { id: 'current' }
+  const empty: Array<{ id: string }> = []
+  const currentOnly =
+    collectFoldPreviewPhysicalGrabPointerSamples(current, empty)
+  assert.deepEqual(currentOnly, [current])
+  assert.ok(Object.isFrozen(currentOnly))
+
+  const maximumCoalesced = Array.from(
+    { length: FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES - 1 },
+    (_, index) => ({ id: `coalesced-${index}` }),
+  )
+  const maximum =
+    collectFoldPreviewPhysicalGrabPointerSamples(
+      current,
+      maximumCoalesced,
+    )
+  assert.equal(
+    maximum?.length,
+    FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES,
+  )
+  assert.strictEqual(maximum?.[0], maximumCoalesced[0])
+  assert.strictEqual(maximum?.at(-1), current)
+  assert.ok(Object.isFrozen(maximum))
+  maximumCoalesced.splice(0)
+  assert.equal(
+    maximum?.length,
+    FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES,
+  )
+
+  const includesCurrent = [
+    current,
+    ...Array.from(
+      { length: FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES - 2 },
+      (_, index) => ({ id: `distinct-${index}` }),
+    ),
+  ]
+  const deduplicated =
+    collectFoldPreviewPhysicalGrabPointerSamples(
+      current,
+      includesCurrent,
+    )
+  assert.equal(
+    deduplicated?.filter((sample) => sample === current).length,
+    1,
+  )
+  assert.strictEqual(deduplicated?.at(-1), current)
+
+  const excessive = Array.from(
+    { length: FOLD_PREVIEW_PHYSICAL_GRAB_MAX_POINTER_SAMPLES },
+    (_, index) => ({ id: `excessive-${index}` }),
+  )
+  assert.equal(
+    collectFoldPreviewPhysicalGrabPointerSamples(current, excessive),
+    null,
+  )
+  assert.equal(
+    collectFoldPreviewPhysicalGrabPointerSamples(
+      current,
+      { length: 0 } as unknown as ReadonlyArray<typeof current>,
+    ),
+    null,
+  )
+})
 
 test('accepted moves track forward and reverse branches by raw solver angle', () => {
   const armed = start(down({ session: readySession(30) }))
@@ -342,9 +409,31 @@ test('a second pointer cancels and suppresses the whole sequence', () => {
     { kind: 'cancel', pointerId: 1, reason: 'multiple_pointers' },
   ])
 
-  const pointerTwoEnded = reduceFoldPreviewPhysicalGrabGesture(
+  const suppressedMove = reduceFoldPreviewPhysicalGrabGesture(
     second.state,
-    up({ pointerId: 2, pointerType: 'touch' }),
+    move({
+      pointerId: 2,
+      pointerType: null,
+      clientX: -1_000,
+      clientY: -1_000,
+      ray: null,
+      isInside: false,
+    }),
+  )
+  assert.equal(suppressedMove.state.kind, 'idle')
+  if (suppressedMove.state.kind !== 'idle') assert.fail('expected idle')
+  assert.deepEqual(suppressedMove.state.suppressedPointerIds, [1, 2])
+
+  const pointerTwoEnded = reduceFoldPreviewPhysicalGrabGesture(
+    suppressedMove.state,
+    up({
+      pointerId: 2,
+      pointerType: null,
+      clientX: -1_000,
+      clientY: -1_000,
+      ray: null,
+      isInside: false,
+    }),
   )
   assert.equal(pointerTwoEnded.state.kind, 'idle')
   if (pointerTwoEnded.state.kind !== 'idle') assert.fail('expected idle')

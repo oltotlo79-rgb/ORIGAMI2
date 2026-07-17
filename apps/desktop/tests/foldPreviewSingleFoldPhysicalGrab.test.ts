@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { Vector3 } from 'three'
+import {
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  Raycaster,
+  Vector2,
+  Vector3,
+} from 'three'
 import {
   FOLD_PREVIEW_BACK_MATERIAL_INDEX,
   FOLD_PREVIEW_FRONT_MATERIAL_INDEX,
   FOLD_PREVIEW_SIDE_MATERIAL_INDEX,
+  createFoldPreviewFaceGeometry,
 } from '../src/lib/foldPreviewGeometry.ts'
 import type {
   FoldPreviewPhysicalGrabPoint,
@@ -15,7 +24,10 @@ import type {
   FoldPreviewFaceModel,
   SingleFoldPreviewModel,
 } from '../src/lib/foldPreviewModel.ts'
-import type { FoldPreviewFaceSurfaceHit } from '../src/lib/foldPreviewPicking.ts'
+import {
+  pickFoldPreviewFaceSurface,
+  type FoldPreviewFaceSurfaceHit,
+} from '../src/lib/foldPreviewPicking.ts'
 import { calculateSingleFoldPose } from '../src/lib/foldPreviewSingleFoldKinematics.ts'
 import {
   prepareFoldPreviewSingleFoldPhysicalGrab,
@@ -25,7 +37,7 @@ import {
 const VISUAL_THICKNESS = 0.1
 const MINIMUM_ORBIT_RADIUS = 0.01
 
-test('both fixed faces and assignments accept detached front and back cap hits', () => {
+test('both fixed faces and assignments accept front and back caps at 0, 60, and 180 degrees', () => {
   for (const rotationSign of [1, -1] as const) {
     const model = singleFoldModel(rotationSign)
     for (const fixedFaceId of ['left', 'right']) {
@@ -33,35 +45,141 @@ test('both fixed faces and assignments accept detached front and back cap hits',
         FOLD_PREVIEW_FRONT_MATERIAL_INDEX,
         FOLD_PREVIEW_BACK_MATERIAL_INDEX,
       ]) {
-        const input = validInput(model, fixedFaceId, 60, materialIndex)
-        const result = prepareFoldPreviewSingleFoldPhysicalGrab(input)
-        assert.equal(result.kind, 'ready')
-        if (result.kind !== 'ready') {
-          assert.fail(`${fixedFaceId}/${rotationSign}/${materialIndex}: ${result.reason}`)
+        for (const appliedAngleDegrees of [0, 60, 180]) {
+          const input = validInput(
+            model,
+            fixedFaceId,
+            appliedAngleDegrees,
+            materialIndex,
+          )
+          const result = prepareFoldPreviewSingleFoldPhysicalGrab(input)
+          assert.equal(result.kind, 'ready')
+          if (result.kind !== 'ready') {
+            assert.fail(
+              `${fixedFaceId}/${rotationSign}/${materialIndex}/${appliedAngleDegrees}: ${result.reason}`,
+            )
+          }
+          const expectedMovingFaceId = fixedFaceId === 'left' ? 'right' : 'left'
+          const expectedSign = fixedFaceId === 'left' ? rotationSign : -rotationSign
+          assert.equal(result.mapping, 'physical_grab_v2')
+          assert.equal(result.contextKey, 'context')
+          assert.equal(result.fixedFaceId, fixedFaceId)
+          assert.equal(result.movingFaceId, expectedMovingFaceId)
+          assert.equal(result.hingeEdgeId, 'hinge')
+          assert.equal(result.appliedAngleDegrees, appliedAngleDegrees)
+          assert.equal(result.materialIndex, materialIndex)
+          assert.equal(
+            result.surface,
+            materialIndex === FOLD_PREVIEW_FRONT_MATERIAL_INDEX ? 'front' : 'back',
+          )
+          assert.equal(result.session.movingRotationSign, expectedSign)
+          assert.deepEqual(result.grabLocalPoint, input.surfaceHit.localPoint)
+          assert.equal(
+            result.grabRestWorldPoint.y,
+            materialIndex === FOLD_PREVIEW_FRONT_MATERIAL_INDEX
+              ? Math.fround(VISUAL_THICKNESS / 2)
+              : Math.fround(-VISUAL_THICKNESS / 2),
+          )
         }
-        const expectedMovingFaceId = fixedFaceId === 'left' ? 'right' : 'left'
-        const expectedSign = fixedFaceId === 'left' ? rotationSign : -rotationSign
-        assert.equal(result.mapping, 'physical_grab_v2')
-        assert.equal(result.contextKey, 'context')
-        assert.equal(result.fixedFaceId, fixedFaceId)
-        assert.equal(result.movingFaceId, expectedMovingFaceId)
-        assert.equal(result.hingeEdgeId, 'hinge')
-        assert.equal(result.appliedAngleDegrees, 60)
-        assert.equal(result.materialIndex, materialIndex)
-        assert.equal(
-          result.surface,
-          materialIndex === FOLD_PREVIEW_FRONT_MATERIAL_INDEX ? 'front' : 'back',
-        )
-        assert.equal(result.session.movingRotationSign, expectedSign)
-        assert.deepEqual(result.grabLocalPoint, input.surfaceHit.localPoint)
-        assert.equal(
-          result.grabRestWorldPoint.y,
-          materialIndex === FOLD_PREVIEW_FRONT_MATERIAL_INDEX
-            ? Math.fround(VISUAL_THICKNESS / 2)
-            : Math.fround(-VISUAL_THICKNESS / 2),
-        )
       }
     }
+  }
+})
+
+test('a preferred closed-prism hit reaches the moving back cap at an exact 180-degree overlap', () => {
+  const model = singleFoldModel(1)
+  const materials = [
+    new MeshBasicMaterial(),
+    new MeshBasicMaterial(),
+    new MeshBasicMaterial(),
+  ]
+  const fixedGeometry = createFoldPreviewFaceGeometry(
+    model.faces[0].polygon,
+    VISUAL_THICKNESS,
+  )
+  const movingGeometry = createFoldPreviewFaceGeometry(
+    model.faces[1].polygon.map((point) => ({
+      x: point.x - model.hinge.start.x,
+      z: point.z - model.hinge.start.z,
+    })),
+    VISUAL_THICKNESS,
+  )
+  try {
+    const fixed = new Mesh(fixedGeometry, materials)
+    const moving = new Mesh(movingGeometry, materials)
+    const pivot = new Group()
+    pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
+    pivot.quaternion.setFromAxisAngle(
+      new Vector3(
+        model.hinge.end.x - model.hinge.start.x,
+        0,
+        model.hinge.end.z - model.hinge.start.z,
+      ).normalize(),
+      Math.PI,
+    )
+    pivot.add(moving)
+    fixed.updateMatrixWorld(true)
+    pivot.updateMatrixWorld(true)
+
+    const camera = new PerspectiveCamera(36, 1, 0.1, 100)
+    camera.position.set(5.4, 4.7, 6.4)
+    camera.lookAt(0, 0, 0)
+    camera.updateProjectionMatrix()
+    camera.updateMatrixWorld(true)
+    const expectedWorld = moving.localToWorld(new Vector3(
+      0.75,
+      Math.fround(-VISUAL_THICKNESS / 2),
+      1,
+    ))
+    const projected = expectedWorld.clone().project(camera)
+    const pointer = new Vector2(projected.x, projected.y)
+    const raycaster = new Raycaster()
+    const surfaceHit = pickFoldPreviewFaceSurface(
+      raycaster,
+      camera,
+      pointer,
+      [
+        { id: 'left', object: fixed },
+        { id: 'right', object: moving },
+      ],
+      'right',
+    )
+    assert.ok(surfaceHit)
+    assert.equal(surfaceHit.faceId, 'right')
+    assert.equal(
+      surfaceHit.materialIndex,
+      FOLD_PREVIEW_BACK_MATERIAL_INDEX,
+    )
+
+    raycaster.setFromCamera(pointer, camera)
+    const result = prepareFoldPreviewSingleFoldPhysicalGrab({
+      model,
+      fixedFaceId: 'left',
+      appliedAngleDegrees: 180,
+      contextKey: 'context',
+      surfaceHit,
+      visualThickness: VISUAL_THICKNESS,
+      startRay: {
+        origin: {
+          x: raycaster.ray.origin.x,
+          y: raycaster.ray.origin.y,
+          z: raycaster.ray.origin.z,
+        },
+        direction: {
+          x: raycaster.ray.direction.x,
+          y: raycaster.ray.direction.y,
+          z: raycaster.ray.direction.z,
+        },
+        minimumDistance: raycaster.near,
+        maximumDistance: raycaster.far,
+      },
+      minimumOrbitRadius: MINIMUM_ORBIT_RADIUS,
+    })
+    assert.equal(result.kind, 'ready')
+  } finally {
+    fixedGeometry.dispose()
+    movingGeometry.dispose()
+    for (const material of materials) material.dispose()
   }
 })
 

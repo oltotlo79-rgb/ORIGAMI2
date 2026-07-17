@@ -135,6 +135,44 @@ test('surface picking chooses the nearest face without exposing its intersection
   assert.equal(result?.distance, 5)
 })
 
+test('surface picking can prefer a coincident moving face without depending on object order', () => {
+  const { camera } = fixture()
+  const fixed = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  const moving = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  fixed.updateMatrixWorld(true)
+  moving.updateMatrixWorld(true)
+  const result = pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [
+      { id: 'fixed', object: fixed },
+      { id: 'moving', object: moving },
+    ],
+    'moving',
+  )
+
+  assert.equal(result?.faceId, 'moving')
+  assert.equal(result?.distance, 5)
+})
+
+test('preferred surface picking never reaches through a nearer visible face', () => {
+  const { camera, face } = fixture()
+  const hidden = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
+  hidden.position.z = -1
+  hidden.updateMatrixWorld(true)
+  assert.equal(pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [
+      { id: 'hidden', object: hidden },
+      { id: 'visible', object: face },
+    ],
+    'hidden',
+  ), null)
+})
+
 test('surface picking detaches the hit in both world and object-local coordinates', () => {
   const { camera } = fixture()
   const face = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial())
@@ -174,6 +212,13 @@ test('surface picking rejects invalid pointers, targets, and intersection values
       { id: 'same', object: face },
       { id: 'same', object: new Mesh(new PlaneGeometry()) },
     ],
+  ), null)
+  assert.equal(pickFoldPreviewFaceSurface(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [{ id: 'face', object: face }],
+    'missing',
   ), null)
 
   const malformedRaycaster = {

@@ -68,11 +68,17 @@ import {
   type FoldPreviewPhysicalGrabTarget,
 } from '../lib/foldPreviewPhysicalGrab'
 import {
+  collectFoldPreviewPhysicalGrabPointerSamples,
   createFoldPreviewPhysicalGrabGestureState,
   reduceFoldPreviewPhysicalGrabGesture,
   type FoldPreviewPhysicalGrabGestureEvent,
   type FoldPreviewPhysicalGrabGestureState,
 } from '../lib/foldPreviewPhysicalGrabGesture'
+import {
+  canBeginFoldPreviewPhysicalGrabInView,
+  snapshotFoldPreviewPhysicalGrabView,
+  type FoldPreviewPhysicalGrabViewport,
+} from '../lib/foldPreviewPhysicalGrabView'
 import {
   pickFoldPreviewFaceSurface,
   pickFoldPreviewTarget,
@@ -140,8 +146,6 @@ const MIN_VISIBLE_THICKNESS = 0.025
 const MAX_VISIBLE_THICKNESS = 0.35
 const MIN_ANGLE_DRAG_HINGE_LENGTH_CSS = 12
 const MAX_ANGLE_DRAG_HINGE_DISTANCE_CSS = 12
-const MIN_PHYSICAL_GRAB_RADIUS_CSS = 8
-const MIN_PHYSICAL_GRAB_ONE_DEGREE_MOTION_CSS = 0.2
 
 const INITIAL_ANGLE_DRAG_PRESENTATION: AngleDragPresentation = Object.freeze({
   state: 'idle',
@@ -341,7 +345,6 @@ export function FoldPreview({
     let angleDragCapturedPointerType: FoldPreviewAngleDragPointerType | null = null
     let angleDragContextKey: string | null = null
     let angleDragFrameHandle: number | null = null
-    let pendingAngleDragTarget: number | null = null
     let hasPendingAngleDragTarget = false
     let controlsEnabledBeforeAngleDrag: boolean | null = null
     let cursorBeforeAngleDrag: string | null = null
@@ -470,7 +473,6 @@ export function FoldPreview({
         attemptCleanup(() => window.cancelAnimationFrame(angleDragFrameHandle!))
         angleDragFrameHandle = null
       }
-      pendingAngleDragTarget = null
       hasPendingAngleDragTarget = false
       if (renderer) {
         const canvas = renderer.domElement
@@ -1056,7 +1058,11 @@ export function FoldPreview({
           return null
         }
       }
-      const pickSurfaceAt = (clientX: number, clientY: number) => {
+      const pickSurfaceAt = (
+        clientX: number,
+        clientY: number,
+        preferredFaceId?: string,
+      ) => {
         try {
           if (!setPointerFromClient(clientX, clientY)) return null
           scene.updateMatrixWorld(true)
@@ -1065,6 +1071,7 @@ export function FoldPreview({
             camera,
             pointer,
             facePickObjects,
+            preferredFaceId,
           )
         } catch {
           return null
@@ -1123,18 +1130,14 @@ export function FoldPreview({
           window.cancelAnimationFrame(angleDragFrameHandle)
           angleDragFrameHandle = null
         }
-        pendingAngleDragTarget = null
         hasPendingAngleDragTarget = false
       }
 
-      const queueAngleDragTargetPresentation = (targetAngle: number | null) => {
-        pendingAngleDragTarget = targetAngle
+      const queueAngleDragTargetPresentation = () => {
         hasPendingAngleDragTarget = true
         if (angleDragFrameHandle !== null) return
         angleDragFrameHandle = window.requestAnimationFrame(() => {
           angleDragFrameHandle = null
-          const pendingTarget = pendingAngleDragTarget
-          pendingAngleDragTarget = null
           const hadPendingTarget = hasPendingAngleDragTarget
           hasPendingAngleDragTarget = false
           if (
@@ -1145,15 +1148,7 @@ export function FoldPreview({
               && physicalGrabState.kind !== 'dragging'
             )
           ) return
-          setAngleDragPresentation((current) => current.state !== 'dragging'
-            || current.sequence !== angleDragSequenceRef.current
-            || current.target !== pendingTarget
-            ? {
-                ...current,
-                state: 'dragging',
-                target: pendingTarget,
-              }
-            : current)
+          syncAngleDragPresentation()
         })
       }
 
@@ -1293,7 +1288,7 @@ export function FoldPreview({
             continue
           }
           if (effect.kind === 'target') {
-            queueAngleDragTargetPresentation(effect.targetAngle)
+            queueAngleDragTargetPresentation()
             if (
               selectedHingeIdRef.current !== angleDragHingeId
               && angleDragHingeId
@@ -1344,6 +1339,18 @@ export function FoldPreview({
         return true
       }
 
+      const currentPhysicalGrabViewSnapshot = () => {
+        const viewport = readFoldPreviewPhysicalGrabViewport(canvas)
+        return viewport
+          ? snapshotFoldPreviewPhysicalGrabView(
+              camera,
+              createdControls.target,
+              viewport,
+              angleRef.current,
+            )
+          : null
+      }
+
       const physicalGrabExternalGuardIsCurrent = () =>
         physicalGrabGuardKey !== null
         && physicalGrabStartRunnerState !== null
@@ -1352,7 +1359,7 @@ export function FoldPreview({
         && angleDragContextKey === singleFoldMotionContextKey
         && angleDragContextKey === singleFoldMotionContextKeyRef.current
         && continuousMotionRunner?.getState() === physicalGrabStartRunnerState
-        && snapshotPhysicalGrabCamera(camera, createdControls, canvas)
+        && currentPhysicalGrabViewSnapshot()
           === physicalGrabCameraSnapshot
 
       const physicalGrabEventGuardKey = () =>
@@ -1369,9 +1376,9 @@ export function FoldPreview({
         }
       }
 
-      const submitPhysicalGrabTarget = (
+      const resolvePhysicalGrabSubmission = (
         target: FoldPreviewPhysicalGrabTarget,
-      ) => {
+      ): number | null => {
         if (
           disposed
           || model.kind !== 'single_fold'
@@ -1380,8 +1387,8 @@ export function FoldPreview({
           || angleDragHingeId !== model.hinge.edgeId
           || !physicalGrabExternalGuardIsCurrent()
           || !isFoldPreviewAngle(target.angleDegrees)
-        ) return
-        onRequestFoldAngleRef.current?.(target.angleDegrees)
+        ) return null
+        return target.angleDegrees
       }
 
       const applyPhysicalGrabTransition = (
@@ -1391,21 +1398,23 @@ export function FoldPreview({
         physicalGrabState = transition.state
         let handled = false
         let endedAsTap = false
+        let completionAngle: number | null = null
+        let queuedPresentation = false
         for (const effect of transition.effects) {
           if (effect.kind === 'handled') {
             if (effect.pointerId === eventPointerId) handled = true
             continue
           }
           if (effect.kind === 'presentation') {
-            queueAngleDragTargetPresentation(
-              effect.target?.angleDegrees ?? null,
-            )
+            queuedPresentation = true
+            queueAngleDragTargetPresentation()
             if (
               effect.target
               && selectedHingeIdRef.current !== angleDragHingeId
               && angleDragHingeId
             ) {
-              onSelectHingeRef.current?.(angleDragHingeId)
+              attemptCleanup(() =>
+                onSelectHingeRef.current?.(angleDragHingeId!))
             }
             continue
           }
@@ -1424,7 +1433,8 @@ export function FoldPreview({
             effect.outcome === 'drag'
             && effect.completionTarget !== null
           ) {
-            submitPhysicalGrabTarget(effect.completionTarget)
+            completionAngle =
+              resolvePhysicalGrabSubmission(effect.completionTarget)
           }
           angleDragHingeId = null
           angleDragContextKey = null
@@ -1435,7 +1445,16 @@ export function FoldPreview({
           clearPhysicalGrabGuards()
         }
         restoreCameraAfterAngleDrag()
-        syncAngleDragPresentation()
+        if (
+          !queuedPresentation
+          || physicalGrabState.kind !== 'dragging'
+        ) {
+          syncAngleDragPresentation()
+        }
+        if (completionAngle !== null) {
+          attemptCleanup(() =>
+            onRequestFoldAngleRef.current?.(completionAngle!))
+        }
         return { handled, endedAsTap }
       }
 
@@ -1511,7 +1530,7 @@ export function FoldPreview({
               || physicalGrabState.kind === 'dragging'
               ? physicalGrabState.session
               : physicalGrabSessionForEvents
-            if (!pointerType || !session) {
+            if (!session) {
               selectionGesture.reset()
               resetPhysicalGrab('reset')
               consumePointerEvent(event)
@@ -1581,6 +1600,7 @@ export function FoldPreview({
           }
           if (
             model.kind !== 'single_fold'
+            || !singleAnchor
             || !onRequestFoldAngleRef.current
             || !continuousMotionRunner
             || !singleFoldMotionContextKey
@@ -1656,7 +1676,11 @@ export function FoldPreview({
             || runnerState.status === 'disposed'
             || !isFoldPreviewAngle(runnerState.applied)
           ) return
-          const surfaceHit = pickSurfaceAt(event.clientX, event.clientY)
+          const surfaceHit = pickSurfaceAt(
+            event.clientX,
+            event.clientY,
+            singleAnchor.movingFace.id,
+          )
           const startRay = pointerRayAt(event.clientX, event.clientY)
           const minimumOrbitRadius =
             model.worldUnitsPerMillimetre * 0.001
@@ -1675,16 +1699,18 @@ export function FoldPreview({
             startRay,
             minimumOrbitRadius,
           })
+          const physicalGrabViewport =
+            readFoldPreviewPhysicalGrabViewport(canvas)
           if (
             prepared.kind !== 'ready'
-            || !canBeginSingleFoldPhysicalGrab(
+            || !physicalGrabViewport
+            || !canBeginFoldPreviewPhysicalGrabInView(
               camera,
               prepared.session,
-              bounds,
+              physicalGrabViewport,
             )
           ) return
-          const cameraSnapshot =
-            snapshotPhysicalGrabCamera(camera, createdControls, canvas)
+          const cameraSnapshot = currentPhysicalGrabViewSnapshot()
           if (!cameraSnapshot) return
           const guardKey =
             `physical-grab-${physicalGrabGuardSequence + 1}`
@@ -1753,13 +1779,68 @@ export function FoldPreview({
       pointerMoveHandler = (event) => {
         selectionGesture.pointerMove(pointerSample(event))
         if (!isCleanPhysicalGrabState(physicalGrabState)) {
+          if (physicalGrabState.kind === 'idle') {
+            const transition = reduceFoldPreviewPhysicalGrabGesture(
+              physicalGrabState,
+              {
+                kind: 'pointer_move',
+                pointerId: event.pointerId,
+                pointerType: angleDragPointerType(event),
+                clientX: event.clientX,
+                clientY: event.clientY,
+                guardKey: 'suppressed-physical-grab-guard',
+                contextKey:
+                  physicalGrabSessionForEvents?.contextKey
+                  ?? 'suppressed-physical-grab-context',
+                ray: null,
+                isInside: false,
+                buttons: event.buttons,
+              },
+            )
+            if (
+              applyPhysicalGrabTransition(
+                transition,
+                event.pointerId,
+              ).handled
+            ) {
+              consumePointerEvent(event)
+            }
+            return
+          }
           let handled = false
           let samples: readonly PointerEvent[] = [event]
           try {
             const coalesced = event.getCoalescedEvents()
-            if (coalesced.length > 0) {
-              samples = [...coalesced, event]
+            const collected =
+              collectFoldPreviewPhysicalGrabPointerSamples(
+                event,
+                coalesced,
+              )
+            if (!collected) {
+              selectionGesture.reset()
+              const transition = reduceFoldPreviewPhysicalGrabGesture(
+                physicalGrabState,
+                {
+                  kind: 'pointer_move',
+                  pointerId: event.pointerId,
+                  pointerType: angleDragPointerType(event),
+                  clientX: event.clientX,
+                  clientY: event.clientY,
+                  guardKey: physicalGrabEventGuardKey(),
+                  contextKey:
+                    singleFoldMotionContextKey
+                    ?? physicalGrabSessionForEvents?.contextKey
+                    ?? 'stale-physical-grab-context',
+                  ray: null,
+                  isInside: pointerWithinCanvas(event),
+                  buttons: event.buttons,
+                },
+              )
+              applyPhysicalGrabTransition(transition, event.pointerId)
+              consumePointerEvent(event)
+              return
             }
+            samples = collected
           } catch {
             // The current event remains a complete pointer sample.
           }
@@ -1767,12 +1848,6 @@ export function FoldPreview({
             if (isCleanPhysicalGrabState(physicalGrabState)) break
             const pointerType = angleDragPointerType(sample)
             const ray = pointerRayAt(sample.clientX, sample.clientY)
-            if (!pointerType || !ray) {
-              selectionGesture.reset()
-              resetPhysicalGrab('reset')
-              handled = true
-              break
-            }
             const transition = reduceFoldPreviewPhysicalGrabGesture(
               physicalGrabState,
               {
@@ -1838,12 +1913,6 @@ export function FoldPreview({
         if (!isCleanPhysicalGrabState(physicalGrabState)) {
           const pointerType = angleDragPointerType(event)
           const ray = pointerRayAt(event.clientX, event.clientY)
-          if (!pointerType || !ray) {
-            selectionGesture.reset()
-            resetPhysicalGrab('reset')
-            consumePointerEvent(event)
-            return
-          }
           const transition = reduceFoldPreviewPhysicalGrabGesture(
             physicalGrabState,
             {
@@ -1913,11 +1982,6 @@ export function FoldPreview({
         if (!isCleanPhysicalGrabState(physicalGrabState)) {
           const pointerType =
             angleDragPointerType(event) ?? angleDragCapturedPointerType
-          if (!pointerType) {
-            resetPhysicalGrab('reset')
-            consumePointerEvent(event)
-            return
-          }
           const transition = reduceFoldPreviewPhysicalGrabGesture(
             physicalGrabState,
             {
@@ -1958,10 +2022,6 @@ export function FoldPreview({
         if (!isCleanPhysicalGrabState(physicalGrabState)) {
           const pointerType =
             angleDragPointerType(event) ?? angleDragCapturedPointerType
-          if (!pointerType) {
-            resetPhysicalGrab('reset')
-            return
-          }
           const transition = reduceFoldPreviewPhysicalGrabGesture(
             physicalGrabState,
             {
@@ -2526,128 +2586,32 @@ function canBeginSingleFoldAngleDrag(
   })
 }
 
-function canBeginSingleFoldPhysicalGrab(
-  camera: THREE.Camera,
-  session: FoldPreviewPhysicalGrabSession,
-  bounds: Readonly<{
-    left: number
-    top: number
-    width: number
-    height: number
-  }>,
-) {
-  if (
-    !isPositiveFinite(bounds.width)
-    || !isPositiveFinite(bounds.height)
-  ) return false
-  const applied = session.appliedAngleDegrees
-  const current = physicalGrabOrbitPoint(session, applied)
-  const center = projectPhysicalGrabPoint(
-    camera,
-    session.orbitCenter,
-    bounds,
-  )
-  const currentProjected = current
-    ? projectPhysicalGrabPoint(camera, current, bounds)
-    : null
-  if (!center || !currentProjected) return false
-  const radiusPixels = Math.hypot(
-    currentProjected.x - center.x,
-    currentProjected.y - center.y,
-  )
-  if (
-    !Number.isFinite(radiusPixels)
-    || radiusPixels < MIN_PHYSICAL_GRAB_RADIUS_CSS
-  ) return false
-
-  const adjacentAngles = [
-    Math.max(0, applied - 1),
-    Math.min(180, applied + 1),
-  ].filter((angle) => angle !== applied)
-  let maximumMotionPixels = 0
-  for (const angle of adjacentAngles) {
-    const point = physicalGrabOrbitPoint(session, angle)
-    const projected = point
-      ? projectPhysicalGrabPoint(camera, point, bounds)
-      : null
-    if (!projected) return false
-    maximumMotionPixels = Math.max(
-      maximumMotionPixels,
-      Math.hypot(
-        projected.x - currentProjected.x,
-        projected.y - currentProjected.y,
-      ),
-    )
-  }
-  return Number.isFinite(maximumMotionPixels)
-    && maximumMotionPixels >= MIN_PHYSICAL_GRAB_ONE_DEGREE_MOTION_CSS
-}
-
-function physicalGrabOrbitPoint(
-  session: FoldPreviewPhysicalGrabSession,
-  angleDegrees: number,
-) {
-  if (!isFoldPreviewAngle(angleDegrees)) return null
-  const angle = THREE.MathUtils.degToRad(angleDegrees)
-  const cosine = Math.cos(angle)
-  const sine = Math.sin(angle)
-  const point = {
-    x: session.orbitCenter.x + session.orbitRadius * (
-      session.restRadialUnit.x * cosine
-      + session.positiveTangentUnit.x * sine
-    ),
-    y: session.orbitCenter.y + session.orbitRadius * (
-      session.restRadialUnit.y * cosine
-      + session.positiveTangentUnit.y * sine
-    ),
-    z: session.orbitCenter.z + session.orbitRadius * (
-      session.restRadialUnit.z * cosine
-      + session.positiveTangentUnit.z * sine
-    ),
-  }
-  return [point.x, point.y, point.z].every(Number.isFinite) ? point : null
-}
-
-function projectPhysicalGrabPoint(
-  camera: THREE.Camera,
-  point: Readonly<{ x: number; y: number; z: number }>,
-  bounds: Readonly<{
-    left: number
-    top: number
-    width: number
-    height: number
-  }>,
-) {
-  const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera)
-  if (
-    ![projected.x, projected.y, projected.z].every(Number.isFinite)
-    || projected.z < -1
-    || projected.z > 1
-  ) return null
-  return {
-    x: bounds.left + (projected.x + 1) * bounds.width / 2,
-    y: bounds.top + (1 - projected.y) * bounds.height / 2,
-  }
-}
-
-function snapshotPhysicalGrabCamera(
-  camera: THREE.Camera,
-  controls: Pick<OrbitControls, 'target'>,
+function readFoldPreviewPhysicalGrabViewport(
   canvas: HTMLCanvasElement,
-) {
-  camera.updateMatrixWorld(true)
-  const values = [
-    ...camera.matrixWorld.elements,
-    ...camera.projectionMatrix.elements,
-    controls.target.x,
-    controls.target.y,
-    controls.target.z,
-    canvas.clientWidth,
-    canvas.clientHeight,
-  ]
-  return values.every(Number.isFinite)
-    ? values.map((value) => Object.is(value, -0) ? 0 : value).join(',')
-    : null
+): FoldPreviewPhysicalGrabViewport | null {
+  try {
+    const bounds = canvas.getBoundingClientRect()
+    if (
+      !Number.isFinite(bounds.left)
+      || !Number.isFinite(bounds.top)
+      || !isPositiveFinite(bounds.width)
+      || !isPositiveFinite(bounds.height)
+      || !Number.isSafeInteger(canvas.clientWidth)
+      || canvas.clientWidth <= 0
+      || !Number.isSafeInteger(canvas.clientHeight)
+      || canvas.clientHeight <= 0
+    ) return null
+    return Object.freeze({
+      left: bounds.left,
+      top: bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+      clientWidth: canvas.clientWidth,
+      clientHeight: canvas.clientHeight,
+    })
+  } catch {
+    return null
+  }
 }
 
 function angleDragPresentationsEqual(

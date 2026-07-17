@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { Matrix4 } from 'three'
+import { Matrix4, Vector3 } from 'three'
 import type {
   FoldPreviewCollisionAdjacency,
   FoldPreviewCollisionPoseFace,
 } from '../src/lib/foldPreviewCollision.ts'
 import {
+  FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
   findFoldPreviewNarrowPhaseInteractions,
+  MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   prepareFoldPreviewNarrowPhase,
+  type FoldPreviewFullScanNonAdjacentWitnessJob,
+  type FoldPreviewFullScanNonAdjacentWitnessJobStep,
   type FoldPreviewFullScanNonAdjacentWitnessCoverage,
   type FoldPreviewFullScanNonAdjacentWitnessSet,
 } from '../src/lib/foldPreviewNarrowCollision.ts'
@@ -117,6 +121,27 @@ test('no broad-phase candidate returns an empty complete full scan', () => {
   })
   assertCoverageEquations(result)
   assertDeeplyFrozen(result)
+
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    transforms,
+    THICKNESS,
+  )
+  assert.ok(job)
+  assert.deepEqual(job.workBounds, {
+    expectedTrianglePairCount: 0,
+    maximumWitnessDerivations: 0,
+    maximumTotalWorkUnits: 0,
+  })
+  const terminal = job.step(1)
+  assert.equal(terminal.kind, 'complete')
+  assert.deepEqual(terminal.result, result)
+  assert.deepEqual(terminal.work, {
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(terminal.workBounds, job.workBounds)
+  assert.strictEqual(job.step(1), terminal)
 })
 
 test('hinge-adjacent pairs are excluded and zero thickness is rejected', () => {
@@ -148,6 +173,10 @@ test('hinge-adjacent pairs are excluded and zero thickness is rejected', () => {
 
   assert.equal(
     analyzer.collectFullScanNonAdjacentWitnessSet(transforms, 0),
+    null,
+  )
+  assert.equal(
+    analyzer.createFullScanNonAdjacentWitnessSetJob(transforms, 0),
     null,
   )
 })
@@ -336,6 +365,327 @@ test('the v2 boundary snapshots each hostile transform and matrix element once',
   assertDeeplyFrozen(result)
 })
 
+test('resumable full scans preserve synchronous output at every chunk size', () => {
+  const polygon = convexIntegerPolygon()
+  const faces = [face('a', polygon), face('b', polygon)]
+  const transforms = new Map([
+    ['a', new Matrix4()],
+    ['b', new Matrix4().makeTranslation(0, THICKNESS, 0)],
+  ])
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const synchronous = analyzer.collectFullScanNonAdjacentWitnessSet(
+    transforms,
+    THICKNESS,
+  )
+  assert.ok(synchronous)
+
+  for (const workBudget of [
+    1,
+    2,
+    17,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+      + MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+  ]) {
+    const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+      transforms,
+      THICKNESS,
+    )
+    assert.ok(job)
+    const terminal = drainFullScanJob(job, workBudget)
+    assert.equal(terminal.kind, 'complete')
+    assert.deepEqual(terminal.result, synchronous)
+    assert.equal(
+      terminal.work.trianglePairTests,
+      terminal.result.coverage.trianglePairTests,
+    )
+    assert.equal(
+      terminal.work.witnessDerivations,
+      terminal.result.coverage.attemptedPairCount,
+    )
+    assert.strictEqual(job.step(1), terminal)
+    job.cancel()
+    assert.strictEqual(job.step(17), terminal)
+    assertDeeplyFrozen(terminal)
+  }
+})
+
+test('cancellation is terminal during the triangle-pair scan', () => {
+  const faces = [face('a', SQUARE), face('b', SQUARE)]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    identityTransforms(faces),
+    THICKNESS,
+  )
+  assert.ok(job)
+
+  const first = job.step(1)
+  assert.equal(first.kind, 'pending')
+  assert.equal(first.phase, 'triangle_pair_scan')
+  assert.deepEqual(first.work, {
+    totalWorkUnits: 1,
+    trianglePairTests: 1,
+    witnessDerivations: 0,
+  })
+
+  job.cancel()
+  const cancelled = job.step(1)
+  assert.equal(cancelled.kind, 'cancelled')
+  assert.deepEqual(cancelled.work, first.work)
+  assert.strictEqual(job.step(17), cancelled)
+  job.cancel()
+  assert.strictEqual(job.step(1), cancelled)
+  assertDeeplyFrozen(cancelled)
+})
+
+test('cancellation is terminal during witness derivation', () => {
+  const faces = [face('a', SQUARE), face('b', SQUARE)]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    identityTransforms(faces),
+    THICKNESS,
+  )
+  assert.ok(job)
+
+  const afterPairs = job.step(4)
+  assert.equal(afterPairs.kind, 'pending')
+  assert.equal(afterPairs.phase, 'witness_derivation')
+  assert.deepEqual(afterPairs.work, {
+    totalWorkUnits: 4,
+    trianglePairTests: 4,
+    witnessDerivations: 0,
+  })
+  const afterWitness = job.step(1)
+  assert.equal(afterWitness.kind, 'pending')
+  assert.equal(afterWitness.phase, 'witness_derivation')
+  assert.deepEqual(afterWitness.work, {
+    totalWorkUnits: 5,
+    trianglePairTests: 4,
+    witnessDerivations: 1,
+  })
+
+  job.cancel()
+  const cancelled = job.step(1)
+  assert.equal(cancelled.kind, 'cancelled')
+  assert.deepEqual(cancelled.work, afterWitness.work)
+  assert.strictEqual(job.step(17), cancelled)
+  assertDeeplyFrozen(cancelled)
+})
+
+test('invalid work budgets fail closed with one stable terminal value', () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+
+  for (const workBudget of [
+    0,
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+      identityTransforms(faces),
+      THICKNESS,
+    )
+    assert.ok(job)
+    const terminal = job.step(workBudget)
+    assert.equal(terminal.kind, 'indeterminate')
+    assert.equal(terminal.reason, 'invalid_work_budget')
+    assert.deepEqual(terminal.work, {
+      totalWorkUnits: 0,
+      trianglePairTests: 0,
+      witnessDerivations: 0,
+    })
+    assert.strictEqual(job.step(1), terminal)
+    job.cancel()
+    assert.strictEqual(job.step(1), terminal)
+    assertDeeplyFrozen(terminal)
+  }
+})
+
+test('a reentrant step cancels the mutable full scan without outer overwrite', {
+  concurrency: false,
+}, () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    identityTransforms(faces),
+    THICKNESS,
+  )
+  assert.ok(job)
+
+  const originalDot = Vector3.prototype.dot
+  let reentered = false
+  let nested: FoldPreviewFullScanNonAdjacentWitnessJobStep | null = null
+  Vector3.prototype.dot = function dot(vector: Vector3) {
+    if (!reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalDot.call(this, vector)
+  }
+  let outer: FoldPreviewFullScanNonAdjacentWitnessJobStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Vector3.prototype.dot = originalDot
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.deepEqual(outer.work, {
+    totalWorkUnits: 1,
+    trianglePairTests: 1,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(job.step(1), outer)
+  assertDeeplyFrozen(outer)
+})
+
+test('a step-time classifier error fails closed after charging one pair visit', {
+  concurrency: false,
+}, () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    identityTransforms(faces),
+    THICKNESS,
+  )
+  assert.ok(job)
+
+  const originalDot = Vector3.prototype.dot
+  Vector3.prototype.dot = function dot() {
+    throw new Error('classifier failure')
+  }
+  let terminal: FoldPreviewFullScanNonAdjacentWitnessJobStep
+  try {
+    terminal = job.step(1)
+  } finally {
+    Vector3.prototype.dot = originalDot
+  }
+
+  assert.equal(terminal.kind, 'indeterminate')
+  assert.equal(terminal.reason, 'scan_error')
+  assert.deepEqual(terminal.work, {
+    totalWorkUnits: 1,
+    trianglePairTests: 1,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(terminal.workBounds, job.workBounds)
+  assert.strictEqual(job.step(1), terminal)
+  job.cancel()
+  assert.strictEqual(job.step(1), terminal)
+  assertDeeplyFrozen(terminal)
+})
+
+test('reentrant cancellation during witness derivation is terminal', {
+  concurrency: false,
+}, () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    identityTransforms(faces),
+    THICKNESS,
+  )
+  assert.ok(job)
+  const afterPair = job.step(1)
+  assert.equal(afterPair.kind, 'pending')
+  assert.equal(afterPair.phase, 'witness_derivation')
+
+  const originalIsFinite = Number.isFinite
+  let reentered = false
+  let nested: FoldPreviewFullScanNonAdjacentWitnessJobStep | null = null
+  Number.isFinite = function isFinite(value: unknown) {
+    if (!reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalIsFinite(value)
+  }
+  let outer: FoldPreviewFullScanNonAdjacentWitnessJobStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Number.isFinite = originalIsFinite
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.deepEqual(outer.work, {
+    totalWorkUnits: 2,
+    trianglePairTests: 1,
+    witnessDerivations: 1,
+  })
+  assert.strictEqual(outer.workBounds, job.workBounds)
+  assert.strictEqual(job.step(1), outer)
+  assertDeeplyFrozen(outer)
+})
+
+test('the resumable factory snapshots transforms once and rejects hostile maps', () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+
+  const reads = new Map<string, number>()
+  let sizeReads = 0
+  const transforms = {
+    get size() {
+      sizeReads += 1
+      return 2
+    },
+    get(faceId: string) {
+      reads.set(faceId, (reads.get(faceId) ?? 0) + 1)
+      return oneReadIdentityMatrix(`job.${faceId}`)
+    },
+  } as ReadonlyMap<string, Matrix4>
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    transforms,
+    THICKNESS,
+  )
+  assert.ok(job)
+  assert.equal(sizeReads, 1)
+  assert.deepEqual([...reads], [['a', 1], ['b', 1]])
+  const terminal = drainFullScanJob(job, 1)
+  assert.equal(terminal.kind, 'complete')
+  assert.equal(sizeReads, 1)
+  assert.deepEqual([...reads], [['a', 1], ['b', 1]])
+
+  const throwing = new Proxy(new Map<string, Matrix4>(), {
+    get() {
+      throw new Error('hostile map')
+    },
+  }) as ReadonlyMap<string, Matrix4>
+  assert.equal(
+    analyzer.createFullScanNonAdjacentWitnessSetJob(throwing, THICKNESS),
+    null,
+  )
+
+  const revocable = Proxy.revocable(
+    new Map<string, Matrix4>(),
+    {},
+  )
+  revocable.revoke()
+  assert.equal(
+    analyzer.createFullScanNonAdjacentWitnessSetJob(
+      revocable.proxy,
+      THICKNESS,
+    ),
+    null,
+  )
+})
+
 test('a full scan above the one-million pair work cap fails closed', () => {
   const faces = [
     face('a', regularPolygon(1_003)),
@@ -350,7 +700,77 @@ test('a full scan above the one-million pair work cap fails closed', () => {
     ),
     null,
   )
+  assert.equal(
+    analyzer.createFullScanNonAdjacentWitnessSetJob(
+      identityTransforms(faces),
+      THICKNESS,
+    ),
+    null,
+  )
 })
+
+function drainFullScanJob(
+  job: FoldPreviewFullScanNonAdjacentWitnessJob,
+  workBudget: number,
+): FoldPreviewFullScanNonAdjacentWitnessJobStep {
+  assert.ok(Number.isSafeInteger(job.workBounds.expectedTrianglePairCount))
+  assert.equal(
+    job.workBounds.maximumWitnessDerivations,
+    Math.min(
+      job.workBounds.expectedTrianglePairCount,
+      MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+    ),
+  )
+  assert.equal(
+    job.workBounds.maximumTotalWorkUnits,
+    job.workBounds.expectedTrianglePairCount
+      + job.workBounds.maximumWitnessDerivations,
+  )
+  assertDeeplyFrozen(job.workBounds)
+  let previous = {
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  }
+  for (let index = 0; index < 10_000; index += 1) {
+    const step = job.step(workBudget)
+    assert.equal(
+      step.version,
+      FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
+    )
+    assert.strictEqual(step.workBounds, job.workBounds)
+    const totalDelta =
+      step.work.totalWorkUnits - previous.totalWorkUnits
+    const trianglePairDelta =
+      step.work.trianglePairTests - previous.trianglePairTests
+    const witnessDelta =
+      step.work.witnessDerivations - previous.witnessDerivations
+    assert.ok(totalDelta >= 0 && totalDelta <= workBudget)
+    assert.ok(trianglePairDelta >= 0 && trianglePairDelta <= workBudget)
+    assert.ok(witnessDelta >= 0 && witnessDelta <= workBudget)
+    assert.equal(totalDelta, trianglePairDelta + witnessDelta)
+    assert.equal(
+      step.work.totalWorkUnits,
+      step.work.trianglePairTests + step.work.witnessDerivations,
+    )
+    assert.ok(
+      step.work.trianglePairTests
+        <= step.workBounds.expectedTrianglePairCount,
+    )
+    assert.ok(
+      step.work.witnessDerivations
+        <= step.workBounds.maximumWitnessDerivations,
+    )
+    assert.ok(
+      step.work.totalWorkUnits
+        <= step.workBounds.maximumTotalWorkUnits,
+    )
+    if (step.kind !== 'pending') return step
+    assert.ok(totalDelta > 0, 'a pending step must make bounded progress')
+    previous = step.work
+  }
+  assert.fail('full-scan job did not reach a terminal result')
+}
 
 function face(
   id: string,

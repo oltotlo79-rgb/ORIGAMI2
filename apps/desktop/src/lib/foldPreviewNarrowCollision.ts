@@ -34,6 +34,9 @@ export const MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES = 16
 const SAT_MARGIN_FACTOR = 4
 const PARALLEL_AXIS_TOLERANCE = Number.EPSILON * 128
 const RIGID_TRANSFORM_TOLERANCE = 1e-10
+const MAX_FOLD_PREVIEW_FULL_SCAN_JOB_WORK_UNITS =
+  MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+  + MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
 
 /**
  * Returns the exact SAT/hinge-policy margin for an upper bound on all absolute
@@ -154,6 +157,86 @@ export type FoldPreviewFullScanNonAdjacentWitnessSet =
       witnessSamples: readonly never[]
     }>)
 
+export const FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION =
+  'full_non_adjacent_prism_witness_scan_job_v1'
+
+export type FoldPreviewFullScanNonAdjacentWitnessJobWork = Readonly<{
+  /**
+   * Counts only resumable work. Transform snapshotting, broad phase, and prism
+   * preparation happen synchronously in the job factory and are not included.
+   */
+  totalWorkUnits: number
+  /** One visited triangle-prism pair consumes one work unit. */
+  trianglePairTests: number
+  /**
+   * One selected witness attempt consumes one work unit, including an attempt
+   * rejected before the witness helper because its prepared frame is absent.
+   */
+  witnessDerivations: number
+}>
+
+export type FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds = Readonly<{
+  /** Exact pair visits required after synchronous factory preparation. */
+  expectedTrianglePairCount: number
+  /** At most one derivation per eligible pair, capped by the sample limit. */
+  maximumWitnessDerivations: number
+  /** Finite upper bound for all resumable work after factory preparation. */
+  maximumTotalWorkUnits: number
+}>
+
+export type FoldPreviewFullScanNonAdjacentWitnessJobStep =
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION
+      kind: 'pending'
+      phase: 'triangle_pair_scan' | 'witness_derivation'
+      work: FoldPreviewFullScanNonAdjacentWitnessJobWork
+      workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION
+      kind: 'complete'
+      result: FoldPreviewFullScanNonAdjacentWitnessSet
+      work: FoldPreviewFullScanNonAdjacentWitnessJobWork
+      workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION
+      kind: 'indeterminate'
+      reason:
+        | 'invalid_work_budget'
+        | 'scan_error'
+        | 'work_accounting_error'
+      work: FoldPreviewFullScanNonAdjacentWitnessJobWork
+      workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION
+      kind: 'cancelled'
+      work: FoldPreviewFullScanNonAdjacentWitnessJobWork
+      workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+    }>
+
+export type FoldPreviewFullScanNonAdjacentWitnessJob = Readonly<{
+  /**
+   * Performs at most `workBudget` resumable units. One triangle-prism pair
+   * visit (including an AABB rejection) or one selected witness derivation is
+   * one unit.
+   *
+   * This does not bound the whole calling frame: transform snapshotting, broad
+   * phase, and prism construction are still synchronous in the factory.
+   */
+  step(
+    workBudget: number,
+  ): FoldPreviewFullScanNonAdjacentWitnessJobStep
+  /** Immutable finite bounds known after synchronous factory preparation. */
+  workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+  cancel(): void
+}>
+
 export type FoldPreviewNarrowPhaseResult = Readonly<{
   broadPhaseCandidates: number
   broadPhaseNonAdjacentCandidates: number
@@ -172,8 +255,18 @@ export type FoldPreviewNarrowPhaseAnalyzer = Readonly<{
     thickness: number,
   ): FoldPreviewNarrowPhaseResult | null
   /**
-   * Performs an on-demand, no-early-exit scan of every non-adjacent triangle
-   * pair admitted by the broad phase. This never changes analyze() semantics.
+   * Creates a resumable no-early-exit scan of every non-adjacent triangle pair
+   * admitted by the broad phase. Transform snapshotting, broad phase, and prism
+   * construction are synchronous factory work in this first-stage API; only
+   * triangle-pair classification and witness derivation are resumable.
+   */
+  createFullScanNonAdjacentWitnessSetJob(
+    faceTransforms: ReadonlyMap<string, Matrix4>,
+    thickness: number,
+  ): FoldPreviewFullScanNonAdjacentWitnessJob | null
+  /**
+   * Synchronously drains createFullScanNonAdjacentWitnessSetJob(). This keeps
+   * the legacy output and ordering but does not provide a frame-time bound.
    *
    * Positive thickness is required. A returned unavailable result is still a
    * complete classification scan, but must not seed a global correction.
@@ -223,6 +316,25 @@ type EligibleWitnessPairSeed = WitnessPairSeed & Readonly<{
   firstFaceId: string
   secondFaceId: string
   geometryClass: 'touching' | 'penetrating'
+}>
+
+type PreparedFullScanCandidate = Readonly<{
+  firstFaceId: string
+  secondFaceId: string
+  firstPrisms: readonly TrianglePrism[]
+  secondPrisms: readonly TrianglePrism[]
+}>
+
+type FullScanNonAdjacentWitnessCounts = Readonly<{
+  broadPhaseCandidateCount: number
+  expectedTrianglePairCount: number
+  trianglePairTests: number
+  aabbRejectedPairCount: number
+  satTests: number
+  satSeparatedPairCount: number
+  touchingPairCount: number
+  penetratingPairCount: number
+  indeterminatePairCount: number
 }>
 
 /**
@@ -302,6 +414,23 @@ export function prepareFoldPreviewNarrowPhase(
         return null
       }
     },
+    createFullScanNonAdjacentWitnessSetJob(
+      faceTransforms: ReadonlyMap<string, Matrix4>,
+      thickness: number,
+    ): FoldPreviewFullScanNonAdjacentWitnessJob | null {
+      try {
+        if (!Number.isFinite(thickness) || thickness <= 0) return null
+        return createPreparedFullScanNonAdjacentWitnessSetJob(
+          preparedFaces,
+          poseFaces,
+          adjacencySnapshot,
+          faceTransforms,
+          thickness,
+        )
+      } catch {
+        return null
+      }
+    },
     collectFullScanNonAdjacentWitnessSet(
       faceTransforms: ReadonlyMap<string, Matrix4>,
       thickness: number,
@@ -354,6 +483,27 @@ function collectPreparedFullScanNonAdjacentWitnessSet(
   faceTransforms: ReadonlyMap<string, Matrix4>,
   thickness: number,
 ): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+  const job = createPreparedFullScanNonAdjacentWitnessSetJob(
+    preparedFaces,
+    poseFaces,
+    adjacencies,
+    faceTransforms,
+    thickness,
+  )
+  if (!job) return null
+  const step = job.step(MAX_FOLD_PREVIEW_FULL_SCAN_JOB_WORK_UNITS)
+  if (step.kind === 'complete') return step.result
+  job.cancel()
+  return null
+}
+
+function createPreparedFullScanNonAdjacentWitnessSetJob(
+  preparedFaces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  poseFaces: readonly FoldPreviewCollisionPoseFace[],
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+): FoldPreviewFullScanNonAdjacentWitnessJob | null {
   const transformSnapshot = snapshotRigidFaceTransforms(
     preparedFaces,
     faceTransforms,
@@ -366,7 +516,7 @@ function collectPreparedFullScanNonAdjacentWitnessSet(
     adjacencies,
   )
   if (!broadPhase) return null
-  return collectFullScanNonAdjacentWitnessSet(
+  return createFullScanNonAdjacentWitnessSetJob(
     preparedFaces,
     transformSnapshot,
     thickness,
@@ -667,28 +817,21 @@ function refineFoldPreviewNarrowPhase(
   }
 }
 
-function collectFullScanNonAdjacentWitnessSet(
+function createFullScanNonAdjacentWitnessSetJob(
   faces: readonly PreparedFoldPreviewNarrowPhaseFace[],
   faceTransforms: ReadonlyMap<string, Matrix4>,
   thickness: number,
   broadPhase: FoldPreviewBroadPhaseResult,
-): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+): FoldPreviewFullScanNonAdjacentWitnessJob | null {
   const facesById = new Map(faces.map((face) => [face.id, face]))
   if (facesById.size !== faces.length) return null
   const numericalMargin = broadPhase.numericalMargin * SAT_MARGIN_FACTOR
   if (!Number.isFinite(numericalMargin) || thickness <= 0) return null
 
   const prismCache = new Map<string, readonly TrianglePrism[]>()
-  const eligibleSeeds: EligibleWitnessPairSeed[] = []
+  const preparedCandidates: PreparedFullScanCandidate[] = []
   let broadPhaseCandidateCount = 0
   let expectedTrianglePairCount = 0
-  let trianglePairTests = 0
-  let aabbRejectedPairCount = 0
-  let satTests = 0
-  let satSeparatedPairCount = 0
-  let touchingPairCount = 0
-  let penetratingPairCount = 0
-  let indeterminatePairCount = 0
 
   try {
     const prismsForFace = (faceId: string) => {
@@ -717,112 +860,394 @@ function collectFullScanNonAdjacentWitnessSet(
         || expectedTrianglePairCount
           > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
       ) return null
-
-      for (const first of firstPrisms) {
-        for (const second of secondPrisms) {
-          trianglePairTests += 1
-          if (
-            trianglePairTests
-            > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
-          ) return null
-          if (!boundsOverlap(first.bounds, second.bounds, numericalMargin)) {
-            aabbRejectedPairCount += 1
-            continue
-          }
-          satTests += 1
-          const intersection = classifyTrianglePrisms(
-            first,
-            second,
-            numericalMargin,
-          )
-          if (!intersection) return null
-          if (intersection === 'separated') {
-            satSeparatedPairCount += 1
-            continue
-          }
-          if (intersection === 'indeterminate') {
-            indeterminatePairCount += 1
-            continue
-          }
-
-          const seed = Object.freeze({
-            firstFaceId: candidate.firstFaceId,
-            secondFaceId: candidate.secondFaceId,
-            geometryClass: intersection,
-            first,
-            second,
-          })
-          if (intersection === 'penetrating') {
-            penetratingPairCount += 1
-          } else {
-            touchingPairCount += 1
-          }
-          if (
-            eligibleSeeds.length
-            < MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
-          ) eligibleSeeds.push(seed)
-        }
-      }
+      if (candidatePairCount === 0) continue
+      preparedCandidates.push(Object.freeze({
+        firstFaceId: candidate.firstFaceId,
+        secondFaceId: candidate.secondFaceId,
+        firstPrisms,
+        secondPrisms,
+      }))
     }
   } catch {
     return null
   }
 
-  const eligiblePairCount = touchingPairCount + penetratingPairCount
+  const maximumWitnessDerivations = Math.min(
+    expectedTrianglePairCount,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+  )
+  const maximumTotalWorkUnits =
+    expectedTrianglePairCount + maximumWitnessDerivations
+  if (!Number.isSafeInteger(maximumTotalWorkUnits)) return null
+  const workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds =
+    Object.freeze({
+      expectedTrianglePairCount,
+      maximumWitnessDerivations,
+      maximumTotalWorkUnits,
+    })
+
+  const eligibleSeeds: EligibleWitnessPairSeed[] = []
+  let candidateIndex = 0
+  let firstTriangleIndex = 0
+  let secondTriangleIndex = 0
+  let phase: 'triangle_pair_scan' | 'witness_derivation' =
+    'triangle_pair_scan'
+  let trianglePairTests = 0
+  let aabbRejectedPairCount = 0
+  let satTests = 0
+  let satSeparatedPairCount = 0
+  let touchingPairCount = 0
+  let penetratingPairCount = 0
+  let indeterminatePairCount = 0
+  let selectedSeeds: readonly EligibleWitnessPairSeed[] = []
+  let witnessIndex = 0
+  let witnessDerivations = 0
+  const witnessSamples: FoldPreviewNarrowPhaseWitnessSample[] = []
+  let unavailablePairCount = 0
+  let cancelled = false
+  let stepping = false
+  let terminal: FoldPreviewFullScanNonAdjacentWitnessJobStep | null = null
+
+  const work = (): FoldPreviewFullScanNonAdjacentWitnessJobWork =>
+    Object.freeze({
+      totalWorkUnits: trianglePairTests + witnessDerivations,
+      trianglePairTests,
+      witnessDerivations,
+    })
+
+  const freezeUnpublishedStep = (
+    value: FoldPreviewFullScanNonAdjacentWitnessJobStep,
+  ): FoldPreviewFullScanNonAdjacentWitnessJobStep => {
+    if (terminal) return terminal
+    return Object.freeze(value)
+  }
+
+  const publish = (
+    value: FoldPreviewFullScanNonAdjacentWitnessJobStep,
+  ): FoldPreviewFullScanNonAdjacentWitnessJobStep => {
+    if (terminal) return terminal
+    if (value.kind === 'pending') return value
+    terminal = value
+    return terminal
+  }
+
+  const indeterminateStep = (
+    reason: Extract<
+      FoldPreviewFullScanNonAdjacentWitnessJobStep,
+      { kind: 'indeterminate' }
+    >['reason'],
+  ) => freezeUnpublishedStep({
+    version: FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
+    kind: 'indeterminate',
+    reason,
+    work: work(),
+    workBounds,
+  })
+
+  const cancelledStep = () => freezeUnpublishedStep({
+    version: FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
+    kind: 'cancelled',
+    work: work(),
+    workBounds,
+  })
+
+  const completeStep = () => {
+    const result = createFullScanNonAdjacentWitnessSet({
+      thickness,
+      numericalMargin,
+      counts: {
+        broadPhaseCandidateCount,
+        expectedTrianglePairCount,
+        trianglePairTests,
+        aabbRejectedPairCount,
+        satTests,
+        satSeparatedPairCount,
+        touchingPairCount,
+        penetratingPairCount,
+        indeterminatePairCount,
+      },
+      witnessSamples,
+      unavailablePairCount,
+    })
+    if (!result) return indeterminateStep('scan_error')
+    return freezeUnpublishedStep({
+      version: FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
+      kind: 'complete',
+      result,
+      work: work(),
+      workBounds,
+    })
+  }
+
+  const enterWitnessDerivationPhase = () => {
+    phase = 'witness_derivation'
+    const eligiblePairCount = touchingPairCount + penetratingPairCount
+    if (!Number.isSafeInteger(eligiblePairCount)) {
+      return indeterminateStep('scan_error')
+    }
+    const attemptedPairCount = Math.min(
+      eligiblePairCount,
+      MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+    )
+    selectedSeeds = Object.freeze(eligibleSeeds.slice(0, attemptedPairCount))
+    if (selectedSeeds.length !== attemptedPairCount) {
+      return indeterminateStep('scan_error')
+    }
+    return selectedSeeds.length === 0 ? completeStep() : null
+  }
+
+  const advanceTrianglePairCursor = () => {
+    const candidate = preparedCandidates[candidateIndex]
+    if (!candidate) return false
+    secondTriangleIndex += 1
+    if (secondTriangleIndex < candidate.secondPrisms.length) return true
+    secondTriangleIndex = 0
+    firstTriangleIndex += 1
+    if (firstTriangleIndex < candidate.firstPrisms.length) return true
+    firstTriangleIndex = 0
+    candidateIndex += 1
+    return candidateIndex < preparedCandidates.length
+  }
+
+  const processTrianglePair = () => {
+    const candidate = preparedCandidates[candidateIndex]
+    const first = candidate?.firstPrisms[firstTriangleIndex]
+    const second = candidate?.secondPrisms[secondTriangleIndex]
+    if (!candidate || !first || !second) {
+      return indeterminateStep('scan_error')
+    }
+
+    trianglePairTests += 1
+    if (
+      trianglePairTests > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+    ) return indeterminateStep('work_accounting_error')
+
+    if (!boundsOverlap(first.bounds, second.bounds, numericalMargin)) {
+      aabbRejectedPairCount += 1
+    } else {
+      satTests += 1
+      const intersection = classifyTrianglePrisms(
+        first,
+        second,
+        numericalMargin,
+      )
+      if (terminal) return terminal
+      if (cancelled) return cancelledStep()
+      if (!intersection) return indeterminateStep('scan_error')
+      if (intersection === 'separated') {
+        satSeparatedPairCount += 1
+      } else if (intersection === 'indeterminate') {
+        indeterminatePairCount += 1
+      } else {
+        if (intersection === 'penetrating') {
+          penetratingPairCount += 1
+        } else {
+          touchingPairCount += 1
+        }
+        if (
+          eligibleSeeds.length
+          < MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+        ) {
+          eligibleSeeds.push(Object.freeze({
+            firstFaceId: candidate.firstFaceId,
+            secondFaceId: candidate.secondFaceId,
+            geometryClass: intersection,
+            first,
+            second,
+          }))
+        }
+      }
+    }
+
+    return advanceTrianglePairCursor()
+      ? null
+      : enterWitnessDerivationPhase()
+  }
+
+  const processWitnessDerivation = () => {
+    const seed = selectedSeeds[witnessIndex]
+    if (!seed) return indeterminateStep('scan_error')
+    witnessDerivations += 1
+
+    let witness: FoldPreviewTrianglePrismWitness | null = null
+    if (seed.first.witnessFrame) {
+      witness = deriveFoldPreviewTrianglePrismWitness({
+        firstVertices: seed.first.vertices,
+        secondVertices: seed.second.vertices,
+        firstFrame: seed.first.witnessFrame,
+        numericalMargin,
+        authoritativeGeometryClass: seed.geometryClass,
+      })
+      if (terminal) return terminal
+      if (cancelled) return cancelledStep()
+    }
+    if (!witness) {
+      unavailablePairCount += 1
+    } else {
+      witnessSamples.push(Object.freeze({
+        firstFaceId: seed.firstFaceId,
+        secondFaceId: seed.secondFaceId,
+        relation: 'non_adjacent',
+        firstTriangleIndex: seed.first.triangleIndex,
+        secondTriangleIndex: seed.second.triangleIndex,
+        geometryClass: seed.geometryClass,
+        witness,
+      }))
+    }
+
+    witnessIndex += 1
+    return witnessIndex === selectedSeeds.length ? completeStep() : null
+  }
+
+  const pending = () => Object.freeze({
+    version: FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
+    kind: 'pending' as const,
+    phase,
+    work: work(),
+    workBounds,
+  })
+
+  const checkedStep = (
+    value: FoldPreviewFullScanNonAdjacentWitnessJobStep,
+    previousWork: FoldPreviewFullScanNonAdjacentWitnessJobWork,
+    workBudget: number,
+    processed: number,
+  ) => {
+    const currentWork = work()
+    const totalDelta =
+      currentWork.totalWorkUnits - previousWork.totalWorkUnits
+    const trianglePairDelta =
+      currentWork.trianglePairTests - previousWork.trianglePairTests
+    const witnessDelta =
+      currentWork.witnessDerivations - previousWork.witnessDerivations
+    if (
+      !Number.isSafeInteger(currentWork.totalWorkUnits)
+      || currentWork.totalWorkUnits !== currentWork.trianglePairTests
+        + currentWork.witnessDerivations
+      || totalDelta < 0
+      || trianglePairDelta < 0
+      || witnessDelta < 0
+      || totalDelta !== trianglePairDelta + witnessDelta
+      || totalDelta !== processed
+      || totalDelta > workBudget
+      || trianglePairDelta > workBudget
+      || currentWork.trianglePairTests
+        > workBounds.expectedTrianglePairCount
+      || currentWork.witnessDerivations
+        > workBounds.maximumWitnessDerivations
+      || currentWork.totalWorkUnits > workBounds.maximumTotalWorkUnits
+      || value.work.totalWorkUnits !== currentWork.totalWorkUnits
+      || value.work.trianglePairTests !== currentWork.trianglePairTests
+      || value.work.witnessDerivations !== currentWork.witnessDerivations
+      || value.workBounds !== workBounds
+    ) return publish(indeterminateStep('work_accounting_error'))
+    return publish(value)
+  }
+
+  const runStep = (
+    workBudget: number,
+    previousWork: FoldPreviewFullScanNonAdjacentWitnessJobWork,
+  ): FoldPreviewFullScanNonAdjacentWitnessJobStep => {
+    let processed = 0
+    while (processed < workBudget) {
+      if (terminal) {
+        return checkedStep(terminal, previousWork, workBudget, processed)
+      }
+      if (cancelled) {
+        return checkedStep(
+          cancelledStep(),
+          previousWork,
+          workBudget,
+          processed,
+        )
+      }
+      if (
+        phase === 'triangle_pair_scan'
+        && candidateIndex >= preparedCandidates.length
+      ) {
+        const result = enterWitnessDerivationPhase()
+        if (result) {
+          return checkedStep(result, previousWork, workBudget, processed)
+        }
+        continue
+      }
+
+      const result = phase === 'triangle_pair_scan'
+        ? processTrianglePair()
+        : processWitnessDerivation()
+      processed += 1
+      if (result) {
+        return checkedStep(result, previousWork, workBudget, processed)
+      }
+    }
+    return checkedStep(pending(), previousWork, workBudget, processed)
+  }
+
+  return Object.freeze({
+    workBounds,
+    step(
+      workBudget: number,
+    ): FoldPreviewFullScanNonAdjacentWitnessJobStep {
+      if (terminal) return terminal
+      if (cancelled) return publish(cancelledStep())
+      if (stepping) {
+        cancelled = true
+        return publish(cancelledStep())
+      }
+      if (!Number.isSafeInteger(workBudget) || workBudget <= 0) {
+        return publish(indeterminateStep('invalid_work_budget'))
+      }
+
+      const previousWork = work()
+      stepping = true
+      try {
+        return runStep(workBudget, previousWork)
+      } catch {
+        return checkedStep(
+          indeterminateStep('scan_error'),
+          previousWork,
+          workBudget,
+          work().totalWorkUnits - previousWork.totalWorkUnits,
+        )
+      } finally {
+        stepping = false
+      }
+    },
+    cancel() {
+      if (!terminal) cancelled = true
+    },
+  })
+}
+
+function createFullScanNonAdjacentWitnessSet({
+  thickness,
+  numericalMargin,
+  counts,
+  witnessSamples,
+  unavailablePairCount,
+}: Readonly<{
+  thickness: number
+  numericalMargin: number
+  counts: FullScanNonAdjacentWitnessCounts
+  witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
+  unavailablePairCount: number
+}>): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+  const eligiblePairCount =
+    counts.touchingPairCount + counts.penetratingPairCount
   if (!Number.isSafeInteger(eligiblePairCount)) return null
   const attemptedPairCount = Math.min(
     eligiblePairCount,
     MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   )
-  const selectedSeeds = eligibleSeeds.slice(0, attemptedPairCount)
-  if (selectedSeeds.length !== attemptedPairCount) return null
-
-  const witnessSamples: FoldPreviewNarrowPhaseWitnessSample[] = []
-  let unavailablePairCount = 0
-  for (const seed of selectedSeeds) {
-    if (!seed.first.witnessFrame) {
-      unavailablePairCount += 1
-      continue
-    }
-    const witness = deriveFoldPreviewTrianglePrismWitness({
-      firstVertices: seed.first.vertices,
-      secondVertices: seed.second.vertices,
-      firstFrame: seed.first.witnessFrame,
-      numericalMargin,
-      authoritativeGeometryClass: seed.geometryClass,
-    })
-    if (!witness) {
-      unavailablePairCount += 1
-      continue
-    }
-    witnessSamples.push(Object.freeze({
-      firstFaceId: seed.firstFaceId,
-      secondFaceId: seed.secondFaceId,
-      relation: 'non_adjacent',
-      firstTriangleIndex: seed.first.triangleIndex,
-      secondTriangleIndex: seed.second.triangleIndex,
-      geometryClass: seed.geometryClass,
-      witness,
-    }))
-  }
-
   const availablePairCount = witnessSamples.length
   const omittedByLimitCount = eligiblePairCount - attemptedPairCount
   const allCollisionConstraintsRepresented =
-    indeterminatePairCount === 0
+    counts.indeterminatePairCount === 0
     && unavailablePairCount === 0
     && omittedByLimitCount === 0
     && availablePairCount === eligiblePairCount
   const coverage = freezeFullScanNonAdjacentWitnessCoverage({
-    broadPhaseCandidateCount,
-    expectedTrianglePairCount,
-    trianglePairTests,
-    aabbRejectedPairCount,
-    satTests,
-    satSeparatedPairCount,
-    touchingPairCount,
-    penetratingPairCount,
-    indeterminatePairCount,
+    ...counts,
     eligiblePairCount,
     attemptedPairCount,
     availablePairCount,
@@ -847,12 +1272,12 @@ function collectFullScanNonAdjacentWitnessSet(
       kind: 'complete',
       coverage:
         coverage as FoldPreviewFullScanNonAdjacentWitnessCoverage<true>,
-      witnessSamples: Object.freeze(witnessSamples),
+      witnessSamples: Object.freeze([...witnessSamples]),
     })
   }
 
   const reasons: FoldPreviewFullScanNonAdjacentWitnessUnavailableReason[] = []
-  if (indeterminatePairCount > 0) reasons.push('indeterminate_pair')
+  if (counts.indeterminatePairCount > 0) reasons.push('indeterminate_pair')
   if (omittedByLimitCount > 0) reasons.push('witness_limit_exceeded')
   if (unavailablePairCount > 0) reasons.push('witness_derivation_failed')
   if (reasons.length === 0) return null

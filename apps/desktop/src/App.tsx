@@ -1230,6 +1230,11 @@ function App() {
                       faceId,
                     })
                   }}
+              onRequestFoldAngle={
+                !benchmarkRun && foldPreviewModel?.kind === 'single_fold'
+                  ? updateUniformFoldAngle
+                  : undefined
+              }
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
@@ -1264,7 +1269,7 @@ function App() {
                 {foldPreviewModel?.kind === 'fold_graph'
                   && foldPreviewModel.kinematics.kind === 'tree'
                   ? '全ヒンジ'
-                  : '折り量'}
+                  : '指定折り量'}
               </label>
               <input
                 id="fold-angle"
@@ -1283,7 +1288,11 @@ function App() {
                     min="0"
                     max="180"
                     step="0.1"
-                    aria-label="全体の折り角度"
+                    aria-label={
+                      foldPreviewModel?.kind === 'fold_graph'
+                        ? '全ヒンジの指定折り量（度）'
+                        : '指定折り量（度）'
+                    }
                     value={foldAngle}
                     onChange={(event) => updateUniformFoldAngle(event.currentTarget.valueAsNumber)}
                   />

@@ -35,7 +35,14 @@ export function calculateSingleFoldPose(
   const anchor = resolveSingleFoldAnchor(model, fixedFaceId)
   if (!anchor || !validHinge(model.hinge)) return null
 
-  const axis = new Vector3(model.hinge.axis.x, 0, model.hinge.axis.z)
+  // Derive the actual rotation axis from the two verified hinge endpoints.
+  // The model axis remains orientation metadata; using it directly could let
+  // a tolerated round-off mismatch move the second endpoint off the hinge.
+  const axis = new Vector3(
+    model.hinge.end.x - model.hinge.start.x,
+    0,
+    model.hinge.end.z - model.hinge.start.z,
+  )
   const axisLength = axis.length()
   if (!Number.isFinite(axisLength) || axisLength <= 0) return null
   axis.multiplyScalar(1 / axisLength)

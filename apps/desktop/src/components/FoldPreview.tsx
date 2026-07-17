@@ -518,7 +518,11 @@ export function FoldPreview({
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
         pivot.add(makeFace(movingGeometry, singleAnchor.movingFace))
-        axis = new THREE.Vector3(model.hinge.axis.x, 0, model.hinge.axis.z).normalize()
+        axis = new THREE.Vector3(
+          model.hinge.end.x - model.hinge.start.x,
+          0,
+          model.hinge.end.z - model.hinge.start.z,
+        ).normalize()
         rotationSign = singleAnchor.movingRotationSign
         scene.add(pivot)
         updatePose = (nextAngle) => {

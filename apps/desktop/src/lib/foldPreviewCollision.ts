@@ -7,6 +7,19 @@ export const MAX_FOLD_PREVIEW_BROAD_PHASE_CANDIDATES = 100_000
 
 const NUMERICAL_MARGIN_FACTOR = 64
 
+/**
+ * Returns the exact broad-phase margin used for a known upper bound on every
+ * absolute world coordinate. Continuous callers use this to prove that an
+ * analytic contact model remains inside the pointwise numeric guarantee.
+ */
+export function calculateFoldPreviewBroadPhaseNumericalMargin(
+  coordinateScale: number,
+): number | null {
+  if (!Number.isFinite(coordinateScale) || coordinateScale < 1) return null
+  const margin = coordinateScale * Number.EPSILON * NUMERICAL_MARGIN_FACTOR
+  return Number.isFinite(margin) ? margin : null
+}
+
 export type FoldPreviewCollisionPoint = Readonly<{
   /** Optional stable identity used by the shared-hinge contact policy. */
   vertexId?: string
@@ -153,8 +166,9 @@ export function findFoldPreviewBroadPhaseCandidates(
 
   const adjacencyByPair = indexAdjacencies(adjacencies, faceIds)
   if (!adjacencyByPair) return null
-  const numericalMargin = coordinateScale * Number.EPSILON * NUMERICAL_MARGIN_FACTOR
-  if (!Number.isFinite(numericalMargin)) return null
+  const numericalMargin =
+    calculateFoldPreviewBroadPhaseNumericalMargin(coordinateScale)
+  if (numericalMargin === null) return null
 
   const sweepBounds = [...bounds].sort(compareSweepBounds)
   const candidates: FoldPreviewBroadPhaseCandidate[] = []

@@ -124,6 +124,27 @@ test('ordinary 60 and 90 degree folds allow the analytic centered-slab overlap',
   }
 })
 
+test('every representable positive micro-fold is distinct from the exact flat pose', () => {
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    faces,
+    adjacency,
+    [constraint],
+  )
+  assert.ok(analyzer)
+  for (const sign of [-1, 1]) {
+    for (const degrees of [1e-12, 1e-10, 1e-8, 1e-6, 0.0005]) {
+      const result = analyzer.analyze(foldedPose(sign * degrees), 0.1)
+      assert.ok(result)
+      assert.deepEqual(result.interactions[0]?.hingeDecision, {
+        kind: 'allowed_by_hinge_model',
+        hingeEdgeId: 'hinge',
+        geometry: 'corridor_overlap',
+        thicknessRule: 'centered_mid_surface_v1',
+      })
+    }
+  }
+})
+
 test('hinge decisions are invariant under one shared non-trivial rigid world transform', () => {
   const rectangleFaces = rectangleHingeFaces()
   const analyzer = prepareFoldPreviewNarrowPhase(

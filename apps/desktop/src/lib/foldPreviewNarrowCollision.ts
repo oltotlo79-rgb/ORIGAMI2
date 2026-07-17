@@ -2,6 +2,7 @@ import { Vector3, type Matrix4 } from 'three'
 import {
   MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES,
   MAX_FOLD_PREVIEW_COLLISION_FACES,
+  calculateFoldPreviewBroadPhaseNumericalMargin,
   findFoldPreviewPoseBroadPhaseCandidates,
   type FoldPreviewBroadPhaseResult,
   type FoldPreviewCollisionAdjacency,
@@ -26,6 +27,20 @@ export const MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES = 100_000
 const SAT_MARGIN_FACTOR = 4
 const PARALLEL_AXIS_TOLERANCE = Number.EPSILON * 128
 const RIGID_TRANSFORM_TOLERANCE = 1e-10
+
+/**
+ * Returns the exact SAT/hinge-policy margin for an upper bound on all absolute
+ * world coordinates in a pose.
+ */
+export function calculateFoldPreviewNarrowPhaseNumericalMargin(
+  coordinateScale: number,
+): number | null {
+  const broadPhaseMargin =
+    calculateFoldPreviewBroadPhaseNumericalMargin(coordinateScale)
+  if (broadPhaseMargin === null) return null
+  const margin = broadPhaseMargin * SAT_MARGIN_FACTOR
+  return Number.isFinite(margin) ? margin : null
+}
 
 export type FoldPreviewNarrowPhaseInteraction = Readonly<{
   firstFaceId: string

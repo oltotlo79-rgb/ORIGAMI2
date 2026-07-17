@@ -633,7 +633,8 @@ function createHingeFrame(
   binormal.multiplyScalar(1 / binormalLength)
 
   const rawNormalDot = leftNormal.dot(rightNormal)
-  if (!Number.isFinite(rawNormalDot)) {
+  const normalCross = leftNormal.clone().cross(rightNormal)
+  if (!Number.isFinite(rawNormalDot) || !finiteVector(normalCross)) {
     return { kind: 'error', reason: 'numerical_geometry' }
   }
   const normalDot = Math.max(-1, Math.min(1, rawNormalDot))
@@ -645,7 +646,15 @@ function createHingeFrame(
   const radius = (thickness / 2) / cosineHalfAngle
   const poseError = Math.max(startError, endError)
   const outerMargin = margin + poseError
-  const flat = 1 - normalDot <= RIGID_TRANSFORM_TOLERANCE
+  // A dot-product tolerance alone creates a finite "flat" angle band even
+  // though every representable non-zero fold has a valid analytic corridor.
+  // Exact parallelism is tested component-wise so subnormal cross components
+  // are not lost by squaring them in Vector3.length().
+  const exactlyParallel = normalCross.x === 0
+    && normalCross.y === 0
+    && normalCross.z === 0
+  const flat = exactlyParallel
+    && 1 - normalDot <= RIGID_TRANSFORM_TOLERANCE
     && poseError <= margin
   const innerRadius = flat ? radius : radius - outerMargin
   const outerRadius = radius + outerMargin

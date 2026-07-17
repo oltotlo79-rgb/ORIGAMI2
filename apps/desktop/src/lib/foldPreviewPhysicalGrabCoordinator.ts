@@ -2,10 +2,20 @@ import {
   FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING,
   type FoldPreviewPhysicalGrabTarget,
 } from './foldPreviewPhysicalGrab.ts'
-import type {
-  FoldPreviewPhysicalGrabGestureState,
-  FoldPreviewPhysicalGrabGestureTransition,
+import {
+  createFoldPreviewPhysicalGrabGestureState,
+  type FoldPreviewPhysicalGrabGestureEffect,
+  type FoldPreviewPhysicalGrabGestureState,
+  type FoldPreviewPhysicalGrabGestureTransition,
 } from './foldPreviewPhysicalGrabGesture.ts'
+import {
+  MAX_FOLD_PREVIEW_TREE_MOTION_CONTEXT_KEY_LENGTH,
+} from './foldPreviewTreeMotionContext.ts'
+
+export const MAX_FOLD_PREVIEW_PHYSICAL_GRAB_COORDINATOR_ID_LENGTH = 1_024
+export const MAX_FOLD_PREVIEW_PHYSICAL_GRAB_COORDINATOR_KEY_LENGTH =
+  MAX_FOLD_PREVIEW_TREE_MOTION_CONTEXT_KEY_LENGTH
+export const MAX_FOLD_PREVIEW_PHYSICAL_GRAB_COORDINATOR_EFFECTS = 64
 
 export type FoldPreviewPhysicalGrabGuardSnapshot<RunnerState> = Readonly<{
   guardKey: string | null
@@ -45,6 +55,8 @@ export type FoldPreviewPhysicalGrabCommand =
     }>
   | Readonly<{
       kind: 'request_fold_angle'
+      hingeEdgeId: string
+      contextKey: string
       angleDegrees: number
     }>
 
@@ -74,17 +86,33 @@ export type FoldPreviewPhysicalGrabTransitionPlan = Readonly<{
 export function currentFoldPreviewPhysicalGrabGuardKey<RunnerState>(
   snapshot: FoldPreviewPhysicalGrabGuardSnapshot<RunnerState>,
 ): string | null {
-  if (
-    snapshot.guardKey === null
-    || snapshot.startedRunnerState === null
-    || snapshot.startedViewKey === null
-    || snapshot.activeContextKey === null
-    || snapshot.activeContextKey !== snapshot.renderedContextKey
-    || snapshot.activeContextKey !== snapshot.latestContextKey
-    || snapshot.currentRunnerState !== snapshot.startedRunnerState
-    || snapshot.currentViewKey !== snapshot.startedViewKey
-  ) return null
-  return snapshot.guardKey
+  try {
+    if (!isRecord(snapshot)) return null
+    const guardKey = snapshot.guardKey
+    const startedRunnerState = snapshot.startedRunnerState
+    const currentRunnerState = snapshot.currentRunnerState
+    const startedViewKey = snapshot.startedViewKey
+    const currentViewKey = snapshot.currentViewKey
+    const activeContextKey = snapshot.activeContextKey
+    const renderedContextKey = snapshot.renderedContextKey
+    const latestContextKey = snapshot.latestContextKey
+    if (
+      !validCoordinatorKey(guardKey)
+      || !isIdentityObject(startedRunnerState)
+      || !validCoordinatorKey(startedViewKey)
+      || !validCoordinatorKey(currentViewKey)
+      || !validCoordinatorKey(activeContextKey)
+      || !validCoordinatorKey(renderedContextKey)
+      || !validCoordinatorKey(latestContextKey)
+      || activeContextKey !== renderedContextKey
+      || activeContextKey !== latestContextKey
+      || currentRunnerState !== startedRunnerState
+      || currentViewKey !== startedViewKey
+    ) return null
+    return guardKey
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -95,23 +123,67 @@ export function currentFoldPreviewPhysicalGrabGuardKey<RunnerState>(
 export function planFoldPreviewPhysicalGrabTransition(
   input: FoldPreviewPhysicalGrabTransitionPlanInput,
 ): FoldPreviewPhysicalGrabTransitionPlan {
-  const state = input.transition.state
-  const cleanState = isCleanPhysicalGrabState(state)
+  try {
+    return planTransition(input)
+  } catch {
+    return invalidTransitionPlan()
+  }
+}
+
+function planTransition(
+  input: FoldPreviewPhysicalGrabTransitionPlanInput,
+): FoldPreviewPhysicalGrabTransitionPlan {
+  if (!isRecord(input)) return invalidTransitionPlan()
+  const transition = input.transition
+  const eventPointerId = input.eventPointerId
+  const selectedHingeId = input.selectedHingeId
+  const activeHingeId = input.activeHingeId
+  const modelHingeId = input.modelHingeId
+  const activeContextKey = input.activeContextKey
+  const rawDisposed = input.disposed
+  const rawGuardIsCurrent = input.guardIsCurrent
+  const disposed = typeof rawDisposed === 'boolean'
+    ? rawDisposed
+    : true
+  const guardIsCurrent = typeof rawGuardIsCurrent === 'boolean'
+    ? rawGuardIsCurrent
+    : false
+  if (!isRecord(transition)) return invalidTransitionPlan()
+  const state = transition.state
+  const rawEffects = transition.effects
+  const stateKind = snapshotStateKind(state)
+  const cleanState = isCleanPhysicalGrabState(state, stateKind)
+  if (!Array.isArray(rawEffects)) return invalidTransitionPlan()
+  const effectCount = rawEffects.length
+  if (
+    !Number.isSafeInteger(effectCount)
+    || effectCount < 0
+    || effectCount > MAX_FOLD_PREVIEW_PHYSICAL_GRAB_COORDINATOR_EFFECTS
+  ) return invalidTransitionPlan()
+  const effects: FoldPreviewPhysicalGrabGestureEffectSnapshot[] = []
+  for (let effectIndex = 0; effectIndex < effectCount; effectIndex += 1) {
+    const effect = snapshotEffect(rawEffects[effectIndex])
+    if (!effect) return invalidTransitionPlan()
+    effects.push(effect)
+  }
   const commands: FoldPreviewPhysicalGrabCommand[] = []
   let handled = false
   let endedAsTap = false
   let queuedPresentation = false
   let clearedInteraction = false
-  let completionAngle: number | null = null
-  const terminalEffectCount = input.transition.effects.reduce(
+  let completionRequest: Extract<
+    FoldPreviewPhysicalGrabCommand,
+    { kind: 'request_fold_angle' }
+  > | null = null
+  const terminalEffectCount = effects.reduce(
     (count, effect) =>
       count + Number(effect.kind === 'cancel' || effect.kind === 'end'),
     0,
   )
 
-  for (const effect of input.transition.effects) {
+  for (const effect of effects) {
     if (effect.kind === 'handled') {
-      if (effect.pointerId === input.eventPointerId) handled = true
+      if (effect.pointerId === eventPointerId) handled = true
       continue
     }
     if (effect.kind === 'presentation') {
@@ -119,12 +191,12 @@ export function planFoldPreviewPhysicalGrabTransition(
       commands.push(command({ kind: 'queue_presentation' }))
       if (
         effect.target !== null
-        && input.activeHingeId
-        && input.selectedHingeId !== input.activeHingeId
+        && validCoordinatorId(activeHingeId)
+        && selectedHingeId !== activeHingeId
       ) {
         commands.push(command({
           kind: 'select_hinge',
-          hingeId: input.activeHingeId,
+          hingeId: activeHingeId,
         }))
       }
       continue
@@ -149,9 +221,15 @@ export function planFoldPreviewPhysicalGrabTransition(
       && cleanState
       && terminalEffectCount === 1
     ) {
-      completionAngle = resolveCompletionAngle(
+      completionRequest = resolveCompletionRequest(
         effect.completionTarget,
-        input,
+        {
+          activeHingeId,
+          modelHingeId,
+          activeContextKey,
+          disposed,
+          guardIsCurrent,
+        },
       )
     }
   }
@@ -164,14 +242,11 @@ export function planFoldPreviewPhysicalGrabTransition(
   }
 
   commands.push(command({ kind: 'restore_camera' }))
-  if (!queuedPresentation || state.kind !== 'dragging') {
+  if (!queuedPresentation || stateKind !== 'dragging') {
     commands.push(command({ kind: 'sync_presentation' }))
   }
-  if (completionAngle !== null) {
-    commands.push(command({
-      kind: 'request_fold_angle',
-      angleDegrees: completionAngle,
-    }))
+  if (completionRequest !== null) {
+    commands.push(completionRequest)
   }
 
   return Object.freeze({
@@ -182,32 +257,200 @@ export function planFoldPreviewPhysicalGrabTransition(
   })
 }
 
-function resolveCompletionAngle(
+type FoldPreviewPhysicalGrabCompletionIdentity = Readonly<{
+  activeHingeId: string | null
+  modelHingeId: string | null
+  activeContextKey: string | null
+  disposed: boolean
+  guardIsCurrent: boolean
+}>
+
+function resolveCompletionRequest(
   target: FoldPreviewPhysicalGrabTarget,
-  input: FoldPreviewPhysicalGrabTransitionPlanInput,
-): number | null {
+  identity: FoldPreviewPhysicalGrabCompletionIdentity,
+): Extract<
+  FoldPreviewPhysicalGrabCommand,
+  { kind: 'request_fold_angle' }
+> | null {
+  try {
+    const targetKind = target.kind
+    const mapping = target.mapping
+    const targetContextKey = target.contextKey
+    const angleDegrees = target.angleDegrees
+    const {
+      activeHingeId,
+      modelHingeId,
+      activeContextKey,
+      disposed,
+      guardIsCurrent,
+    } = identity
+    if (
+      disposed
+      || !validCoordinatorId(activeHingeId)
+      || !validCoordinatorId(modelHingeId)
+      || activeHingeId !== modelHingeId
+      || targetKind !== 'unverified_target'
+      || mapping !== FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING
+      || !validCoordinatorKey(targetContextKey)
+      || !validCoordinatorKey(activeContextKey)
+      || targetContextKey !== activeContextKey
+      || !guardIsCurrent
+      || !isFoldPreviewAngle(angleDegrees)
+    ) return null
+    return command({
+      kind: 'request_fold_angle',
+      hingeEdgeId: activeHingeId,
+      contextKey: activeContextKey,
+      angleDegrees,
+    })
+  } catch {
+    return null
+  }
+}
+
+type FoldPreviewPhysicalGrabGestureEffectSnapshot =
+  | Readonly<{ kind: 'handled'; pointerId: number }>
+  | Readonly<{
+      kind: 'presentation'
+      target: FoldPreviewPhysicalGrabTarget | null
+    }>
+  | Readonly<{ kind: 'cancel'; pointerId: number }>
+  | Readonly<{
+      kind: 'end'
+      pointerId: number
+      outcome: 'tap' | 'drag'
+      completionTarget: FoldPreviewPhysicalGrabTarget | null
+    }>
+
+function snapshotEffect(
+  effect: FoldPreviewPhysicalGrabGestureEffect,
+): FoldPreviewPhysicalGrabGestureEffectSnapshot | null {
+  if (!isRecord(effect)) return null
+  const kind = effect.kind
+  if (kind === 'handled') {
+    const pointerId = effect.pointerId
+    if (!validPointerId(pointerId)) return null
+    return { kind, pointerId }
+  }
+  if (kind === 'presentation') {
+    const target = effect.target
+    if (target !== null && !isRecord(target)) return null
+    return { kind, target }
+  }
+  if (kind === 'cancel') {
+    const pointerId = effect.pointerId
+    if (!validPointerId(pointerId)) return null
+    return { kind, pointerId }
+  }
+  if (kind !== 'end') return null
+  const pointerId = effect.pointerId
+  const outcome = effect.outcome
+  const completionTarget = effect.completionTarget
   if (
-    input.disposed
-    || input.modelHingeId === null
-    || target.mapping !== FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING
-    || target.contextKey !== input.activeContextKey
-    || input.activeHingeId !== input.modelHingeId
-    || !input.guardIsCurrent
-    || !isFoldPreviewAngle(target.angleDegrees)
+    !validPointerId(pointerId)
+    || (outcome !== 'tap' && outcome !== 'drag')
+    || (completionTarget !== null && !isRecord(completionTarget))
   ) return null
-  return target.angleDegrees
+  return { kind, pointerId, outcome, completionTarget }
 }
 
 function isCleanPhysicalGrabState(
   state: FoldPreviewPhysicalGrabGestureState,
+  kind: FoldPreviewPhysicalGrabGestureState['kind'],
 ) {
-  return state.kind === 'idle'
-    && state.suppressedPointerIds.length === 0
-    && !state.requiresReset
+  if (kind !== 'idle') return false
+  const idleState = state as Extract<
+    FoldPreviewPhysicalGrabGestureState,
+    { kind: 'idle' }
+  >
+  const suppressedPointerIds = idleState.suppressedPointerIds
+  const requiresReset = idleState.requiresReset
+  if (
+    !Array.isArray(suppressedPointerIds)
+    || typeof requiresReset !== 'boolean'
+  ) throw new TypeError('invalid physical grab state')
+  const suppressedPointerCount = suppressedPointerIds.length
+  if (
+    !Number.isSafeInteger(suppressedPointerCount)
+    || suppressedPointerCount < 0
+  ) throw new TypeError('invalid physical grab state')
+  return suppressedPointerCount === 0 && !requiresReset
 }
 
-function isFoldPreviewAngle(value: number) {
-  return Number.isFinite(value) && value >= 0 && value <= 180
+function snapshotStateKind(
+  state: FoldPreviewPhysicalGrabGestureState,
+): FoldPreviewPhysicalGrabGestureState['kind'] {
+  if (!isRecord(state)) throw new TypeError('invalid physical grab state')
+  const kind = state.kind
+  if (kind !== 'idle' && kind !== 'armed' && kind !== 'dragging') {
+    throw new TypeError('invalid physical grab state')
+  }
+  return kind
+}
+
+function invalidTransitionPlan(): FoldPreviewPhysicalGrabTransitionPlan {
+  return Object.freeze({
+    state: createFoldPreviewPhysicalGrabGestureState(),
+    handled: false,
+    endedAsTap: false,
+    commands: Object.freeze([
+      command({ kind: 'discard_presentation' }),
+      command({
+        kind: 'clear_interaction',
+        clearEventSession: true,
+      }),
+      command({ kind: 'restore_camera' }),
+      command({ kind: 'sync_presentation' }),
+    ]),
+  })
+}
+
+function isFoldPreviewAngle(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 180
+}
+
+function validCoordinatorId(value: unknown): value is string {
+  return validCoordinatorString(
+    value,
+    MAX_FOLD_PREVIEW_PHYSICAL_GRAB_COORDINATOR_ID_LENGTH,
+  )
+}
+
+function validCoordinatorKey(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length
+      <= MAX_FOLD_PREVIEW_PHYSICAL_GRAB_COORDINATOR_KEY_LENGTH
+    // Runtime-generated context, view, and guard keys never start blank.
+    // Checking one code unit keeps pointer guards O(1) for large tree keys.
+    && value[0].trim().length > 0
+}
+
+function validCoordinatorString(
+  value: unknown,
+  maximumLength: number,
+): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= maximumLength
+    && value.trim().length > 0
+}
+
+function validPointerId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+}
+
+function isIdentityObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null
 }
 
 function command<Command extends FoldPreviewPhysicalGrabCommand>(

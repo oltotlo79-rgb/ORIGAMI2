@@ -1720,7 +1720,7 @@ export function FoldPreview({
           if (!context) return false
           const analyzer =
             prepareFoldPreviewTreeSingleHingeContinuousCollision(
-              model,
+              context.model,
               treeKinematics.rootFaceId,
               hingeEdgeId,
             )

@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION,
   isFoldPreviewTreeTerminalFullScanBindingAuthentic,
+  isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_CROSS_TRIANGLE_PAIRS,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS,
   prepareFoldPreviewTreeSingleHingeContinuousCollision,
@@ -360,12 +361,23 @@ test('a terminal block retains exact sample and binding provenance', () => {
     isFoldPreviewTreeTerminalFullScanBindingAuthentic(terminalBinding),
     true,
   )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+      model,
+      terminalBinding,
+    ),
+    true,
+  )
 
   const clonedBinding = structuredClone(terminalBinding)
   const spreadBinding = Object.freeze({ ...terminalBinding })
   const inheritedBinding = Object.create(terminalBinding)
+  const clonedModel = structuredClone(model)
+  const spreadModel = { ...model }
   assert.deepEqual(clonedBinding, terminalBinding)
   assert.deepEqual(spreadBinding, terminalBinding)
+  assert.deepEqual(clonedModel, model)
+  assert.deepEqual(spreadModel, model)
   assert.equal(
     isFoldPreviewTreeTerminalFullScanBindingAuthentic(clonedBinding),
     false,
@@ -376,6 +388,92 @@ test('a terminal block retains exact sample and binding provenance', () => {
   )
   assert.equal(
     isFoldPreviewTreeTerminalFullScanBindingAuthentic(inheritedBinding),
+    false,
+  )
+  for (const equivalentBinding of [
+    clonedBinding,
+    spreadBinding,
+    inheritedBinding,
+  ]) {
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        model,
+        equivalentBinding,
+      ),
+      false,
+    )
+  }
+  for (const equivalentModel of [clonedModel, spreadModel]) {
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        equivalentModel,
+        terminalBinding,
+      ),
+      false,
+    )
+  }
+
+  const clonedAnalyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    clonedModel,
+    'root',
+    'selected',
+  )
+  assert.ok(clonedAnalyzer)
+  const clonedSourcePoseRequestKey =
+    createFoldPreviewTreeSceneCollisionPoseKey(
+      clonedModel,
+      'root',
+      thickness,
+      startAngles,
+    )
+  assert.equal(clonedSourcePoseRequestKey, sourcePoseRequestKey)
+  assert.ok(clonedSourcePoseRequestKey)
+  const clonedJob = clonedAnalyzer.createJob(
+    startAngles,
+    targetSelectedAngleDegrees,
+    thickness,
+    {
+      maxDepth: 18,
+      minTimeSpan: 2 ** -22,
+      maxIntervalTests: 10_000,
+      requestIdentity: {
+        ...expectedRequestIdentity,
+        sourcePoseRequestKey: clonedSourcePoseRequestKey,
+      },
+    },
+  )
+  assert.ok(clonedJob)
+  const clonedResult = run(clonedJob)
+  assert.equal(clonedResult.kind, 'blocked', JSON.stringify(clonedResult))
+  const clonedModelBinding = clonedResult.kind === 'blocked'
+    ? clonedResult.blocker?.blockingSample?.terminalFullScanBinding
+    : null
+  assert.ok(clonedModelBinding)
+  assert.notStrictEqual(clonedModelBinding, terminalBinding)
+  assert.deepEqual(clonedModelBinding, terminalBinding)
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(clonedModelBinding),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+      clonedModel,
+      clonedModelBinding,
+    ),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+      model,
+      clonedModelBinding,
+    ),
+    false,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+      clonedModel,
+      terminalBinding,
+    ),
     false,
   )
 
@@ -394,8 +492,24 @@ test('a terminal block retains exact sample and binding provenance', () => {
       throw new Error('binding ownKeys read')
     },
   })
+  const hostileModelWrapper = new Proxy(model, {
+    get() {
+      hostilePropertyReads += 1
+      throw new Error('model property read')
+    },
+    getOwnPropertyDescriptor() {
+      hostilePropertyReads += 1
+      throw new Error('model descriptor read')
+    },
+    ownKeys() {
+      hostilePropertyReads += 1
+      throw new Error('model ownKeys read')
+    },
+  })
   const revokedBinding = Proxy.revocable(terminalBinding, {})
+  const revokedModel = Proxy.revocable(model, {})
   revokedBinding.revoke()
+  revokedModel.revoke()
   assert.doesNotThrow(() => {
     assert.equal(
       isFoldPreviewTreeTerminalFullScanBindingAuthentic(hostileWrapper),
@@ -404,6 +518,34 @@ test('a terminal block retains exact sample and binding provenance', () => {
     assert.equal(
       isFoldPreviewTreeTerminalFullScanBindingAuthentic(
         revokedBinding.proxy,
+      ),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        model,
+        hostileWrapper,
+      ),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        hostileModelWrapper,
+        terminalBinding,
+      ),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        model,
+        revokedBinding.proxy,
+      ),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        revokedModel.proxy,
+        terminalBinding,
       ),
       false,
     )
@@ -429,6 +571,30 @@ test('a terminal block retains exact sample and binding provenance', () => {
       isFoldPreviewTreeTerminalFullScanBindingAuthentic(nonBinding),
       false,
     )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        model,
+        nonBinding,
+      ),
+      false,
+    )
+  }
+  for (const nonModel of [
+    null,
+    undefined,
+    false,
+    0,
+    '',
+    Symbol('model'),
+    0n,
+  ]) {
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        nonModel as FoldGraphPreviewModel,
+        terminalBinding,
+      ),
+      false,
+    )
   }
 
   const repeatedTerminalResult = job.step(1)
@@ -441,6 +607,16 @@ test('a terminal block retains exact sample and binding provenance', () => {
   )
   assert.equal(
     isFoldPreviewTreeTerminalFullScanBindingAuthentic(
+      repeatedTerminalResult.kind === 'blocked'
+        ? repeatedTerminalResult.blocker?.blockingSample
+          ?.terminalFullScanBinding
+        : null,
+    ),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+      model,
       repeatedTerminalResult.kind === 'blocked'
         ? repeatedTerminalResult.blocker?.blockingSample
           ?.terminalFullScanBinding

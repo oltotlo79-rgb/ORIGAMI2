@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約38.2%（2026-07-18）**
+**全体完成率: 約38.4%（2026-07-18）**
 
 完成率は画面数ではなく、要件定義書のMUST 86件、FUTURE 14件、品質検証、両OS配布を含む総工数の概算である。研究要素の結果によって見積もりを更新する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計38.24%を小数第1位へ丸めて全体完成率としている。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計38.42%を小数第1位へ丸めて全体完成率としている。
 
 ## 重み付け
 
@@ -17,12 +17,12 @@
 | 2D展開図エディター | 15% | 52% | 7.80% | 基本編集、任意多角形用紙、9種のスナップに加え、2D・角度一覧・3Dヒンジの選択同期を実装 |
 | 数式・幾何制約 | 9% | 59% | 5.31% | 共通並進を有限回転の二次調波最小二乗へ写像し、最大6件の未検証1ヒンジ角度seedを導出 |
 | 3D折り・紙厚・衝突 | 17% | 52% | 8.84% | 合法な1ヒンジ補正姿勢を非隣接全走査と共有ヒンジ規則で静的再検証 |
-| 折り可能性・経路探索 | 18% | 18% | 3.24% | 静的安全候補を順位順に試し、source完全角度vectorからの連続安全経路を認定 |
+| 折り可能性・経路探索 | 18% | 19% | 3.42% | 真正blocked終端から補正解析requestを再構成し、full-scanのpair/witness走査を中断可能化 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 16% | 0.80% | 安全制限付き`.ori2`、実パス読込・保存・再上書き・全OSの原子的置換を実装 |
-| 多言語・設定・配布・QA | 5% | 77% | 3.85% | frontend 612件、独立監査3系統、Windows/macOS Rust、macOS `.app`をCI検証 |
+| 多言語・設定・配布・QA | 5% | 77% | 3.85% | frontend 628件、独立監査3系統、Windows/macOS Rust、macOS `.app`をCI検証 |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **38.24%** | — |
+| **合計** | **100%** | — | **38.42%** | — |
 
 ## 完了
 
@@ -160,7 +160,8 @@
 - 全走査coverage方程式、100万pair上限、16 witness上限、未確定・導出不能・上限省略を検証し、不完全時は件数と理由だけを返して部分witnessを非公開。状態依存Map・行列要素は公開境界で一度だけsnapshot
 - request付きterminal blockの同一危険角でfull-scanを一度だけ再構成し、project・revision・request、開始/目標/危険角vector、危険姿勢key、固定/可動partition、v1 primary witnessへ結合する独立versionのnullable binding
 - requestなし、10万pairのterminal上限超過、v2 unavailable、pose・blocker不一致ではfull-scanまたはbindingだけを省略し、v1 block・停止時刻・bracket・statsを不変に維持。same-body witnessは説明に保持しつつ二体並進solver適格性をfalseに固定
-- 完全構築・deep freeze済みのterminal bindingだけをprivate provenanceへ登録し、exact発行objectだけをproperty非参照で受理。clone、spread、prototype wrapper、hostile・revoked Proxy、primitive、非binding terminal要素を真正入力から除外
+- 完全構築・deep freeze済みのterminal bindingだけを元model exact参照とともにprivate `WeakMap` provenanceへ登録し、exact発行object・modelの組だけをproperty非参照で受理。clone、spread、prototype wrapper、同値別model、hostile・revoked Proxy、primitive、非binding terminal要素を真正入力から除外
+- exact terminal binding、blocked runner state、request evidenceを一度だけsnapshotして照合し、terminalのstart完全角度vectorからfresh motion contextを再生成する内部補正解析request。exact context・bindingはmodule-private authorityへ隔離し、公開tokenをdetached scalar/policyだけに限定。固定長をindex読取前に検証し、current lease・scene姿勢・適用権限を未結合に固定。frontend 628件と独立再監査C0/H0/M0で確認
 - terminal bindingのstart/sample pose key、全coverage式・class件数、partition、support・position generators・局所hintを再検証し、全witnessがcross-partitionの場合だけmoving subtreeの共通並進候補を導出
 - 最大16制約のactive setを1〜3本、最大696組まで決定順に列挙し、KKT最小ノルムseedから認定用外向き候補を生成。必要量は上向き、各内積は下向きに囲い、射影下限がclearanceを厳密に超え、L1移動量上限が指定上限内の場合だけ返す
 - 候補は非隣接pairの線形制約だけを満たす解析結果としてdeep freezeし、合法角度生成、全scene静的再判定、連続経路認定、全体constraint、共有ヒンジ、材料変形を未検証の`autoApplicable: false`に固定
@@ -175,6 +176,7 @@
 - source/blocking/target pose key、完全角度vector、実partition、負回転符号、危険blocking開始との対照、tight cap、deep freezeをfrontend 606件と独立監査3系統C0/H0/M0で確認し、runtime request・現在scene・scene適用・自動適用はfalseを固定
 - 連続経路certificateをexact contextとのprivate provenanceで照合してから、候補順位、source/target角、静的・連続検査集計だけを切り離す読み取り専用表示DTOへ投影。face ID、完全角度vector、pose key、scene/runtime命令を非公開
 - badge単独で「解析上」「静的／連続経路確認済み」「現在姿勢未照合」を示し、現在有効とは限らず、この表示から3Dまたは設計dataへ適用できない制限を固定。clone、同値別context、hostile・revoked Proxy、権限情報漏洩をfrontend 612件と独立再監査C0/H0/M0で確認
+- 全非隣接full-scanをcandidate・first triangle・second triangleのcursorへ分解し、AABB rejectを含むpair visitまたはwitness導出を1 work unitとして中断・再開。凍結work bounds、chunk非依存の同期互換、両phase cancel・再入・例外をfrontend 628件で回帰
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -282,10 +284,12 @@
 - コミット`63a3846`のCI Run `29612236508`全ジョブ完走（モデル束縛済み1ヒンジ静的補正候補、負回転符号・stale identity・偽造partition・hostile Proxy回帰、frontend 597件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`ca74db2`のCI Run `29614029539`全ジョブ完走（静的候補への連続経路認定、真正provenance・危険開始対照・増分取消・作業上限回帰、frontend 606件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`a402f7d`のCI Run `29615389465`全ジョブ完走（連続経路certificateの真正性照合・読み取り専用表示DTO・非適用文言、frontend 612件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`227b649`のCI Run `29615862477`全ジョブ完走（terminal full-scan bindingのexact-object真正性guard、clone・wrapper・hostile Proxy拒否、frontend 612件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`d179c73`のCI Run `29617603356`全ジョブ完走（full-scanのpair/witness増分job、cancel・再入・例外・同期互換回帰、frontend 620件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
-- blocked terminal bindingを真正発行物へ限定し、static候補生成と連続経路certificateをstale contextで取消しながらincremental実行して、読み取り専用表示DTOを現在request lease内だけで提示するcoordinator
+- full-scanの同期factory前処理と通常narrow scanをさらに増分化し、static候補生成と連続経路certificateをstale contextで取消しながら実行して、読み取り専用表示DTOを現在request lease内だけで提示するcoordinator
 - 単一折りの紙面ドラッグをWindows/macOS実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows/macOS実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
 - macOSのDockメニュー終了・OS終了要求でも未保存データを保護する方式の検証
@@ -299,7 +303,7 @@
 ## 次の作業
 
 1. OQ-002の物理的な厚さoffset・層ずれ規則を確定し、中央面基準の近似分類と選択可能にする
-2. 読み取り専用の補正候補表示DTOを真正binding・現在request lease・増分取消coordinatorへ接続し、stale・作業中・候補なしを明示する
+2. 補正解析requestを通常narrow scan・static候補の増分jobと現在request lease coordinatorへ接続し、stale・作業中・候補なしを明示する
 3. 三角柱の局所形状再利用、広域・狭域の差分更新、worker分離により、大規模な面・ヒンジの判定を最適化する
 4. 閉路拘束の診断と将来ソルバー境界を詳細化する
 5. 3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める

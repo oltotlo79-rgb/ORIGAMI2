@@ -308,6 +308,8 @@ solve(current geometry, constraints, edited targets, policy)
 - 公開境界でface transform map、各16行列要素を一度だけ読み、切り離した倍精度行列snapshotを広域判定、剛体検証、三角柱構築、SATの全段へ渡す。状態依存Mapやgetterが段間で姿勢を差し替えてもcomplete認定しない。
 - coverageは`expectedTrianglePairCount = trianglePairTests`、`trianglePairTests = aabbRejectedPairCount + satTests`、`satTests = satSeparated + touching + penetrating + indeterminate`、`eligible = attempted + omitted`、`attempted = available + unavailable`を必須とする。返却できた全走査結果だけが`authoritativePairScanComplete: true`を持つ。
 - triangle-pair走査は最大1,000,000、witness導出は走査順の最大16件に固定する。未確定pair、17件目以降、witness導出不能のいずれかがあれば`kind: unavailable`とし、件数と理由だけを返して部分witnessを公開しない。完全な場合だけ`kind: complete`と全witnessをdeep freezeして返す。両variantとも`autoApplicable: false`である。
+- `full_non_adjacent_prism_witness_scan_job_v1`はcandidate、first triangle、second triangleのcursorを保持し、AABB rejectを含むtriangle-pair visit 1件または選択済みwitness導出1件を1 work unitとして中断・再開する。exact pair数、最大witness導出数、合計work上限を不変`workBounds`で公開し、各`step`の増分、累積値、終端snapshotを照合してからだけ結果を確定する。cancel、再入、不正budget、走査例外は部分witnessを公開せず同一参照の終端へ退避する。
+- 既存の同期full-scan APIは同じjobを最大1,000,016 unitsでdrainする互換wrapperとし、走査順・coverage・witnessを維持する。この初期jobのfactoryではtransform snapshot、broad phase、triangle-prism準備を同期実行するため、triangle-pair/witness部分だけが増分化済みであり、描画frame全体の時間上限はまだ主張しない。後続でbroad phase、prism準備、通常narrow scanもcursor化する。
 - `complete`が保証するのは、同じ解析姿勢で全非隣接衝突pairの局所制約を取り出せたことだけであり、出力は`requestIdentityBound: false`を固定する。次層でproject・revision・request・完全角度vector・危険時刻へ再結合するまではsolver入力にしない。固定側・可動subtreeのpartition、正のclearance、合法なヒンジ角への投影、新規衝突の全面再検証、そこまでの連続経路認定、層順・材料変形は別段階とし、raw translationや局所hintを3D姿勢またはプロジェクトへ適用しない。
 
 #### 8.2.4 危険姿勢への終端full-scan結合
@@ -316,7 +318,7 @@ solve(current geometry, constraints, edited targets, policy)
 
 - 外側の`tree_single_hinge_blocking_sample_v1`を維持し、独立versionのnullableな`terminalFullScanBinding`を追加する。full-scanの例外、`unavailable`、identity不一致はこのfieldだけを`null`にし、block、停止時刻、v1 witness・coverage、motion stats、停止詳細UIを変更しない。反復`step()`はcache済みの同一terminal objectを返し、再走査しない。
 - request identityがない純粋analyzer呼出ではfull-scanを開始しない。request付きでは開始角vectorから`sourcePoseRequestKey`を再確認し、危険角vectorから別の`blockingPoseRequestKey`を生成する。project、revision、固定面、選択ヒンジ、危険時刻、危険角、紙厚、start・target・sample全vectorを同じbindingへdeep freezeする。
-- 完全構築・deep freezeしたbindingだけを公開前にprivate provenanceへ登録する。exact objectだけがproperty非参照guardを通り、structured clone、spread、prototype wrapper、同内容の別発行物、hostile・revoked Proxy、primitive、binding以外のterminal要素は真正性を持たない。補正解析coordinatorはこのguardを入力境界で通した後も、別途exact motion contextと全identity・pose keyを再照合する。
+- 完全構築・deep freezeしたbindingだけを公開前にprivate `WeakMap` provenanceへ登録し、analyzer準備時に受け取った元modelのexact参照を公開fieldにせず結合する。exact binding単独のguardに加え、exact modelとbindingの組だけをproperty非参照で受理するguardを設ける。structured clone、spread、prototype wrapper、同内容の別発行model・binding、hostile・revoked Proxy、primitive、binding以外のterminal要素は真正性を持たない。補正解析coordinatorは両guardを入力境界で通した後も、motion contextと全identity・pose keyを再照合する。
 - `faceTransformsAt(危険角)`で全姿勢を再構成し、保存済みprimary blocker 2面の16要素と完全一致してからv2を呼ぶ。`kind: complete`、raw setの`requestIdentityBound: false`、紙厚、coverage全式、terminal blockerのface pair・class、v1 primary witnessのtriangle identityが一致した場合だけ、外側wrapperを`requestIdentityBound: true`とする。
 - reroot済みのstationary・moving face集合は重複・交差・欠落を許さず全faceを一度だけ覆い、固定面と選択ヒンジのparentをstationary、childをmovingへ結合する。各witnessにはfirst/second面のbody所属と`cross_partition`、`stationary_internal`、`moving_internal`を記録する。
 - same-body witnessが1件でもあれば説明bindingは保持するが、共通二体並進の入力には不適格とする。全witnessがcross-partitionの場合だけ`twoBodyTranslationInputEligible: true`にできる。ただし非隣接pair限定のため`wholeSceneConstraintsRepresented: false`、`hingeAdjacentPairsIncluded: false`、未生成・未再検証・未経路認定・`autoApplicable: false`を固定する。
@@ -375,6 +377,15 @@ solve(current geometry, constraints, edited targets, policy)
 - badge単独でも「解析上」「静的・連続経路確認済み」「現在姿勢未照合」を示す。制限文は解析結果が現在も有効とは限らず、現在姿勢からの安全移動、層順、材料変形を証明せず、この表示から3D sceneまたは設計dataへ適用できないことを示す。DTOはdeep freezeし、`analysisOnly: true`、`runtimeRequestBound: false`、`activeRequestLeaseBound: false`、`startScenePoseMatched: false`、`sceneApplied: false`、`autoApplicable: false`を維持する。
 - DTO単独を保存・再表示しない。UI coordinatorはowner/requestの非公開leaseとしてexact context、fixed face、collision thickness、generation/request sequence、source poseを保持し、各RAFの前後とpublish/render直前に現在値を照合する。新request、直接角度変更、model/revision・fixed face・selected hinge・thickness変更、disposeでは、古い表示を先にclearしてからjobをcancelする。lease不一致の結果はpresentation factoryへ渡さず公開しない。
 - presentation moduleはThree.js、motion owner、runtime、scene pose適用、project commandをimportしない。将来の適用は、真正runtimeの現在完全角度vectorとsource pose keyを再確認し、新しいowner request・application tokenを発行して既存の原子的scene commitへ渡す別境界とする。
+
+#### 8.2.10 補正解析requestの準備境界
+
+`tree_single_hinge_correction_analysis_request_v1`は、blocked runner終端から補正解析coordinatorへ渡す内部専用requestである。raw bindingを最初にexact-object真正性guardへ通し、runner状態、危険時刻、start・target・sample完全角度vector、project/revision、固定面、選択ヒンジ、context key、source/blocking pose key、generation/request sequence、紙厚、二体並進適格性を一致確認する。
+
+- 元のmotion contextの`appliedAngles`や現在sceneの安全停止角を解析開始姿勢に流用しない。terminal bindingの`angleVectors.start`から新しい真正motion contextを作り直し、source pose keyとcontext keyを再計算する。したがって解析requestは元terminal identityを検証済みでも、現在scene開始姿勢との一致を主張しない。
+- clearance、最大並進量、最大角度差、連続経路の深度・interval・時間幅・triangle作業上限をversion付きpolicyとしてown data fieldから一度だけsnapshotし、後続変更から切り離す。untrustedなrunner/evidence/policy/角度配列はgetterを使わず各fieldを一度だけ読み、固定長のbracketと完全角度vectorは期待長を照合してからindexを読む。clone、wrapper、stale値、異常長配列、hostile・revoked Proxyは`null`へ退避する。
+- bindingのprivate provenanceに結合された元modelとsource contextのmodelがexact参照で一致する場合だけ受理する。正規UIはmotion contextを先に準備し、その`context.model`からcontinuous analyzerを準備する。同じcontext key・project・revision・角度を持つ別発行contextでも、model参照が異なれば補正権限を継承しない。
+- 返却値のown propertyはdetached scalar summary、policy、安全flagだけとし、fresh contextとexact terminal bindingはmodule-private `WeakMap` authorityに保持する。返却tokenのcloneまたはserialize結果は真正性とauthorityを回復できず、React state、保存data、表示DTOへexact context・bindingを流出させない。`activeRequestLeaseBound: false`、`startScenePoseMatched: false`、`sceneApplied: false`、`autoApplicable: false`を固定する。
 
 ### 8.3 衝突前停止
 

@@ -133,7 +133,10 @@ export type FoldPreviewTreeTerminalFullScanBinding = Readonly<{
   }>
 }>
 
-const authenticTerminalFullScanBindings = new WeakSet<object>()
+const terminalFullScanBindingSourceModels = new WeakMap<
+  object,
+  FoldGraphPreviewModel
+>()
 
 /**
  * Confirms that this exact binding was issued by a completed terminal
@@ -146,7 +149,26 @@ export function isFoldPreviewTreeTerminalFullScanBindingAuthentic(
   try {
     return typeof value === 'object'
       && value !== null
-      && authenticTerminalFullScanBindings.has(value)
+      && terminalFullScanBindingSourceModels.has(value)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Confirms that this exact binding was issued from an analyzer prepared with
+ * this exact source model. Neither argument is inspected structurally.
+ */
+export function isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+  model: FoldGraphPreviewModel,
+  value: unknown,
+): value is FoldPreviewTreeTerminalFullScanBinding {
+  try {
+    return typeof model === 'object'
+      && model !== null
+      && typeof value === 'object'
+      && value !== null
+      && terminalFullScanBindingSourceModels.get(value) === model
   } catch {
     return false
   }
@@ -806,6 +828,7 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
               )
             },
             snapshot,
+            model,
             tree.rootFaceId,
             selectedHingeEdgeId,
             selectedJoint.parentFaceId,
@@ -1031,6 +1054,7 @@ function attachBlockingSampleToJob(
     seed: BlockingSampleSeed,
   ) => FoldPreviewFullScanNonAdjacentWitnessSet | null,
   model: FoldGraphPreviewModel,
+  sourceModel: FoldGraphPreviewModel,
   fixedFaceId: string,
   selectedHingeEdgeId: string,
   parentFaceId: string,
@@ -1100,6 +1124,7 @@ function attachBlockingSampleToJob(
                 seed,
                 baseBlockingSample,
                 model,
+                sourceModel,
                 fixedFaceId,
                 selectedHingeEdgeId,
                 parentFaceId,
@@ -1229,6 +1254,7 @@ function buildTerminalFullScanBinding(
   seed: BlockingSampleSeed,
   blockingSample: FoldPreviewTreeSingleHingeBlockingSample,
   model: FoldGraphPreviewModel,
+  sourceModel: FoldGraphPreviewModel,
   fixedFaceId: string,
   selectedHingeEdgeId: string,
   parentFaceId: string,
@@ -1396,7 +1422,7 @@ function buildTerminalFullScanBinding(
       autoApplicable: false,
     },
   }) satisfies FoldPreviewTreeTerminalFullScanBinding
-  authenticTerminalFullScanBindings.add(binding)
+  terminalFullScanBindingSourceModels.set(binding, sourceModel)
   return binding
 }
 

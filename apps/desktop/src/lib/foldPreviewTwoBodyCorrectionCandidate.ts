@@ -37,6 +37,12 @@ export type FoldPreviewTwoBodyCorrectionConstraint = Readonly<{
   certifiedProjectionLowerBound: number
 }>
 
+export type FoldPreviewTwoBodyCorrectionSourcePartition = Readonly<{
+  version: 'rerooted_selected_hinge_partition_v1'
+  stationaryFaceIds: readonly string[]
+  movingFaceIds: readonly string[]
+}>
+
 export type FoldPreviewTwoBodyCorrectionCandidate = Readonly<{
   version: typeof FOLD_PREVIEW_TWO_BODY_CORRECTION_CANDIDATE_VERSION
   kind: 'unverified_two_body_translation_candidate'
@@ -55,6 +61,7 @@ export type FoldPreviewTwoBodyCorrectionCandidate = Readonly<{
     selectedAngleDegrees: number
     collisionThickness: number
   }>
+  sourcePartition: FoldPreviewTwoBodyCorrectionSourcePartition
   translation: Point
   magnitude: number
   certifiedMagnitudeUpperBound: number
@@ -111,6 +118,7 @@ type SnapshotConstraint = Readonly<{
 
 type BindingSnapshot = Readonly<{
   identity: SnapshotIdentity
+  sourcePartition: FoldPreviewTwoBodyCorrectionSourcePartition
   numericalMargin: number
   constraints: readonly SnapshotConstraint[]
 }>
@@ -267,6 +275,7 @@ export function deriveFoldPreviewTwoBodyCorrectionCandidate(
       version: FOLD_PREVIEW_TWO_BODY_CORRECTION_CANDIDATE_VERSION,
       kind: 'unverified_two_body_translation_candidate',
       sourceIdentity: snapshot.identity,
+      sourcePartition: snapshot.sourcePartition,
       translation: best.translation,
       magnitude: best.magnitude,
       certifiedMagnitudeUpperBound: best.certifiedMagnitudeUpperBound,
@@ -436,8 +445,14 @@ function snapshotBinding(value: unknown): BindingSnapshot | null {
       requiredBaseWithoutClearance,
     }))
   }
+  const sourcePartition = Object.freeze({
+    version: partition.version,
+    stationaryFaceIds: partition.stationaryFaceIds,
+    movingFaceIds: partition.movingFaceIds,
+  })
   return Object.freeze({
     identity,
+    sourcePartition,
     numericalMargin: evidence.numericalMargin,
     constraints: Object.freeze(constraints),
   })
@@ -577,6 +592,7 @@ function snapshotAngles(value: unknown): readonly AngleSnapshot[] | null {
 }
 
 type PartitionSnapshot = Readonly<{
+  version: 'rerooted_selected_hinge_partition_v1'
   stationaryFaceIds: readonly string[]
   movingFaceIds: readonly string[]
   relations: readonly Readonly<{
@@ -630,6 +646,7 @@ function snapshotPartition(value: unknown): PartitionSnapshot | null {
     }))
   }
   return Object.freeze({
+    version,
     stationaryFaceIds,
     movingFaceIds,
     relations: Object.freeze(relations),

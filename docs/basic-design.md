@@ -326,6 +326,7 @@ solve(current geometry, constraints, edited targets, policy)
 `two_body_translation_candidate_v1`は、危険姿勢へrequest結合済みで、全witnessがstationary/moving間をまたぐterminal full-scan bindingだけから、moving partition全体へ加える共通並進の解析候補を導出する純粋境界である。これは衝突局所制約を満たす三次元ベクトルであって、ヒンジだけで到達できる合法な折り姿勢ではない。
 
 - 入力時にbinding version、project/revision、固定面、選択ヒンジ、危険時刻、紙厚、start・target・sample角度vectorを一度だけsnapshotする。startとsampleのpose keyを再計算してrequest keyと照合し、100,000 pair以下のcomplete coverage全式、class別件数、partition所属、連番witness index、安全フラグを再検証する。
+- 同じ一回のbinding snapshotから、検証済み`rerooted_selected_hinge_partition_v1`のstationary/moving face ID列を`sourcePartition`として候補へ切り離して保持する。後続のモデル束縛層はraw bindingを再読せず、このdeep-frozen partitionとcontextから再導出した実subtreeを照合する。
 - 各witnessは法線・escape・marginだけでなく、各4点以下の両support、最大16点のsupport midpoint generators、position source、局所hint translationまで再検証する。欠落、差し替え、非有限値、同一body、raw/unavailable集合、17制約以上は`null`へ退避する。
 - 第2面がmovingならwitness法線、第1面がmovingなら反転法線を制約方向とする。必要射影は`escapeDistance + (numericalMargin - toleratedGap) + clearance`であり、非負減算と各加算を安全側へ上向き丸めする。clearanceは有限の正値を必須とする。
 - 最大16制約についてactive setを1〜3本まで決定順に全列挙する。上限は`C(16,1)+C(16,2)+C(16,3)=696`で、Gram連立系と非負KKT multiplierから最小ノルムseedを求める。線形従属、負multiplier、矛盾、非有限値、作業上限超過は推測せずfail-closedとする。

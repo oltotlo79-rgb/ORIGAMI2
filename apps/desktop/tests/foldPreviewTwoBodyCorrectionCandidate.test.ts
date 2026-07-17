@@ -536,6 +536,68 @@ test('output is deterministic, detached, deeply frozen, and explicitly unsafe', 
   assertDeeplyFrozen(first)
 })
 
+test('source partition preserves validated order and is detached from later forgery', () => {
+  const binding = bindingFor([
+    { normal: X },
+    { normal: Y },
+  ])
+  const stationaryInput =
+    binding.partition.stationaryFaceIds as string[]
+  const movingInput = binding.partition.movingFaceIds as string[]
+  stationaryInput.reverse()
+  movingInput.reverse()
+
+  const candidate = deriveFoldPreviewTwoBodyCorrectionCandidate(
+    binding,
+    0.25,
+    10,
+  )
+  assert.ok(candidate)
+  assert.deepEqual(candidate.sourcePartition, {
+    version: 'rerooted_selected_hinge_partition_v1',
+    stationaryFaceIds: [
+      'stationary-first-1',
+      'stationary-first-0',
+      'fixed-face',
+    ],
+    movingFaceIds: [
+      'moving-second-1',
+      'moving-second-0',
+      'moving-anchor',
+    ],
+  })
+  assert.notStrictEqual(candidate.sourcePartition, binding.partition)
+  assert.notStrictEqual(
+    candidate.sourcePartition.stationaryFaceIds,
+    stationaryInput,
+  )
+  assert.notStrictEqual(
+    candidate.sourcePartition.movingFaceIds,
+    movingInput,
+  )
+  assertDeeplyFrozen(candidate.sourcePartition)
+
+  stationaryInput[0] = 'forged-overlap'
+  movingInput[0] = 'forged-overlap'
+  assert.deepEqual(candidate.sourcePartition, {
+    version: 'rerooted_selected_hinge_partition_v1',
+    stationaryFaceIds: [
+      'stationary-first-1',
+      'stationary-first-0',
+      'fixed-face',
+    ],
+    movingFaceIds: [
+      'moving-second-1',
+      'moving-second-0',
+      'moving-anchor',
+    ],
+  })
+  assert.equal(
+    deriveFoldPreviewTwoBodyCorrectionCandidate(binding, 0.25, 10),
+    null,
+  )
+})
+
 test('public input is snapshotted once and hostile proxies fail closed', () => {
   const binding = bindingFor([{ normal: X }])
   const topLevelReads = new Map<PropertyKey, number>()

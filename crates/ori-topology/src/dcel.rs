@@ -1,9 +1,9 @@
 //! Deterministic half-edge embedding for topology-participating source edges.
 //!
-//! This module deliberately stops before walk enumeration and material-face
-//! classification. It establishes the exact rotation system and `next`
-//! relation that those stages will consume without changing the crate's
-//! current public boundary/single-fold behavior.
+//! This module deliberately stops before material-face classification. It
+//! establishes the exact rotation system, `next` relation, and canonical
+//! walks that later stages will consume without changing the crate's current
+//! public boundary/single-fold behavior.
 
 use std::{
     cmp::Ordering,
@@ -11,7 +11,9 @@ use std::{
 };
 
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Point2, VertexId};
-use ori_geometry::{Orientation, exact_orientation};
+use ori_geometry::{
+    Orientation, exact_orientation, exact_polygon_orientation, polygon_signed_double_area,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct HalfEdgeIndex(pub(crate) usize);
@@ -23,6 +25,7 @@ pub(crate) struct EmbeddedHalfEdge {
     pub(crate) destination: VertexId,
     pub(crate) twin: HalfEdgeIndex,
     pub(crate) next: HalfEdgeIndex,
+    origin_position: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +42,41 @@ pub(crate) struct DcelEmbedding {
     /// Sorted by canonical `VertexId` bytes. Vertices without participating
     /// incident edges are intentionally absent.
     pub(crate) rotations: Vec<VertexRotation>,
+    /// Exact binary64 positions for the same sorted participating vertices.
+    /// Keeping these inside the embedding prevents a walk from accidentally
+    /// being measured against a different crease-pattern snapshot.
+    participant_vertices: Vec<EmbeddedVertexPosition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EmbeddedVertexPosition {
+    vertex: VertexId,
+    x_bits: u64,
+    y_bits: u64,
+}
+
+impl EmbeddedVertexPosition {
+    fn new(vertex: VertexId, position: Point2) -> Self {
+        Self {
+            vertex,
+            x_bits: position.x.to_bits(),
+            y_bits: position.y.to_bits(),
+        }
+    }
+
+    fn position(self) -> Point2 {
+        Point2::new(f64::from_bits(self.x_bits), f64::from_bits(self.y_bits))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CanonicalWalk {
+    pub(crate) half_edges: Vec<HalfEdgeIndex>,
+    /// Exact topological orientation, preserved even when the measured area
+    /// rounds to signed zero.
+    pub(crate) orientation: Orientation,
+    /// Binary64 measurement only; never use its sign for classification.
+    pub(crate) signed_double_area: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +109,7 @@ pub(crate) enum DcelBuildError {
     PredicateFailure {
         vertex: VertexId,
     },
+    AreaFailure,
     InternalInvariant,
 }
 
@@ -204,23 +243,44 @@ pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, 
         }
     }
 
+    let participant_vertices = rotations
+        .iter()
+        .map(|rotation| {
+            let position = positions
+                .get(&rotation.vertex)
+                .copied()
+                .ok_or(DcelBuildError::InternalInvariant)?;
+            Ok(EmbeddedVertexPosition::new(rotation.vertex, position))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let participant_indices = participant_vertices
+        .iter()
+        .enumerate()
+        .map(|(index, participant)| (participant.vertex, index))
+        .collect::<HashMap<_, _>>();
     let half_edges = pending
         .into_iter()
         .enumerate()
         .map(|(index, half_edge)| {
             let next = next[index].ok_or(DcelBuildError::InternalInvariant)?;
+            let origin_position = participant_indices
+                .get(&half_edge.origin)
+                .copied()
+                .ok_or(DcelBuildError::InternalInvariant)?;
             Ok(EmbeddedHalfEdge {
                 edge: half_edge.edge,
                 origin: half_edge.origin,
                 destination: half_edge.destination,
                 twin: half_edge.twin,
                 next,
+                origin_position,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let embedding = DcelEmbedding {
         half_edges,
         rotations,
+        participant_vertices,
     };
     verify_embedding(&embedding)?;
     Ok(embedding)
@@ -393,7 +453,182 @@ fn half_edge_token(half_edge: &PendingHalfEdge) -> [u8; 48] {
     token
 }
 
+fn embedded_half_edge_token(half_edge: &EmbeddedHalfEdge) -> [u8; 48] {
+    let mut token = [0_u8; 48];
+    token[..16].copy_from_slice(&half_edge.edge.canonical_bytes());
+    token[16..32].copy_from_slice(&half_edge.origin.canonical_bytes());
+    token[32..].copy_from_slice(&half_edge.destination.canonical_bytes());
+    token
+}
+
+struct PendingCanonicalWalk {
+    walk: CanonicalWalk,
+    tokens: Vec<[u8; 48]>,
+}
+
+/// Enumerates every `next` cycle exactly once and returns a canonical ordering
+/// that is independent of source record order and edge direction.
+///
+/// The embedding owns the positions used for area evaluation, so callers
+/// cannot combine half-edges from one snapshot with coordinates from another.
+pub(crate) fn canonical_walks(
+    embedding: &DcelEmbedding,
+) -> Result<Vec<CanonicalWalk>, DcelBuildError> {
+    verify_embedding(embedding)?;
+
+    const UNSEEN: u8 = 0;
+    const VISITING: u8 = 1;
+    const COMPLETE: u8 = 2;
+    let half_edge_count = embedding.half_edges.len();
+    let mut states = vec![UNSEEN; half_edge_count];
+    let mut pending_walks = Vec::new();
+
+    for start in 0..half_edge_count {
+        if states[start] == COMPLETE {
+            continue;
+        }
+        if states[start] != UNSEEN {
+            return Err(DcelBuildError::InternalInvariant);
+        }
+
+        let mut indices = Vec::new();
+        let mut current = start;
+        loop {
+            let state = states
+                .get_mut(current)
+                .ok_or(DcelBuildError::InternalInvariant)?;
+            match *state {
+                UNSEEN => {
+                    *state = VISITING;
+                    indices.push(HalfEdgeIndex(current));
+                    if indices.len() > half_edge_count {
+                        return Err(DcelBuildError::InternalInvariant);
+                    }
+                    current = embedding
+                        .half_edges
+                        .get(current)
+                        .ok_or(DcelBuildError::InternalInvariant)?
+                        .next
+                        .0;
+                }
+                VISITING if current == start => break,
+                // Re-entering a different point of this traversal forms a
+                // lasso; entering COMPLETE merges into an earlier cycle.
+                VISITING | COMPLETE => return Err(DcelBuildError::InternalInvariant),
+                _ => return Err(DcelBuildError::InternalInvariant),
+            }
+        }
+
+        for index in &indices {
+            let state = states
+                .get_mut(index.0)
+                .ok_or(DcelBuildError::InternalInvariant)?;
+            if *state != VISITING {
+                return Err(DcelBuildError::InternalInvariant);
+            }
+            *state = COMPLETE;
+        }
+        pending_walks.push(canonicalize_and_measure_walk(embedding, indices)?);
+    }
+
+    if states.iter().any(|state| *state != COMPLETE)
+        || pending_walks
+            .iter()
+            .map(|pending| pending.walk.half_edges.len())
+            .sum::<usize>()
+            != half_edge_count
+    {
+        return Err(DcelBuildError::InternalInvariant);
+    }
+
+    pending_walks.sort_by(|left, right| left.tokens.cmp(&right.tokens));
+    Ok(pending_walks
+        .into_iter()
+        .map(|pending| pending.walk)
+        .collect())
+}
+
+fn canonicalize_and_measure_walk(
+    embedding: &DcelEmbedding,
+    mut half_edges: Vec<HalfEdgeIndex>,
+) -> Result<PendingCanonicalWalk, DcelBuildError> {
+    if half_edges.is_empty() {
+        return Err(DcelBuildError::InternalInvariant);
+    }
+    let mut tokens = half_edges
+        .iter()
+        .map(|index| {
+            embedding
+                .half_edges
+                .get(index.0)
+                .map(embedded_half_edge_token)
+                .ok_or(DcelBuildError::InternalInvariant)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let minimum = tokens
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, token)| *token)
+        .map(|(index, _)| index)
+        .ok_or(DcelBuildError::InternalInvariant)?;
+    half_edges.rotate_left(minimum);
+    tokens.rotate_left(minimum);
+
+    if tokens.iter().skip(1).any(|token| token == &tokens[0]) {
+        return Err(DcelBuildError::InternalInvariant);
+    }
+    let positions = half_edges
+        .iter()
+        .map(|index| {
+            let half_edge = embedding
+                .half_edges
+                .get(index.0)
+                .ok_or(DcelBuildError::InternalInvariant)?;
+            embedding
+                .participant_vertices
+                .get(half_edge.origin_position)
+                .copied()
+                .map(EmbeddedVertexPosition::position)
+                .ok_or(DcelBuildError::InternalInvariant)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let orientation =
+        exact_polygon_orientation(&positions).map_err(|_| DcelBuildError::AreaFailure)?;
+    let signed_double_area =
+        polygon_signed_double_area(&positions).map_err(|_| DcelBuildError::AreaFailure)?;
+    if !signed_double_area.is_finite() {
+        return Err(DcelBuildError::AreaFailure);
+    }
+
+    Ok(PendingCanonicalWalk {
+        walk: CanonicalWalk {
+            half_edges,
+            orientation,
+            signed_double_area,
+        },
+        tokens,
+    })
+}
+
 fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
+    if embedding.participant_vertices.len() != embedding.rotations.len() {
+        return Err(DcelBuildError::InternalInvariant);
+    }
+    for (index, participant) in embedding.participant_vertices.iter().enumerate() {
+        let position = participant.position();
+        if embedding.rotations[index].vertex != participant.vertex
+            || !position.x.is_finite()
+            || !position.y.is_finite()
+            || index > 0
+                && embedding.participant_vertices[index - 1]
+                    .vertex
+                    .canonical_bytes()
+                    >= participant.vertex.canonical_bytes()
+        {
+            return Err(DcelBuildError::InternalInvariant);
+        }
+    }
+
     let mut seen_outgoing = vec![false; embedding.half_edges.len()];
     for rotation in &embedding.rotations {
         if rotation.outgoing.is_empty() {
@@ -415,6 +650,7 @@ fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
     }
 
     let mut seen_next = vec![false; embedding.half_edges.len()];
+    let mut seen_tokens = HashSet::with_capacity(embedding.half_edges.len());
     for (index, half_edge) in embedding.half_edges.iter().enumerate() {
         let twin = embedding
             .half_edges
@@ -424,12 +660,18 @@ fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
             .half_edges
             .get(half_edge.next.0)
             .ok_or(DcelBuildError::InternalInvariant)?;
+        let origin_position = embedding
+            .participant_vertices
+            .get(half_edge.origin_position)
+            .ok_or(DcelBuildError::InternalInvariant)?;
         if twin.twin != HalfEdgeIndex(index)
             || twin.edge != half_edge.edge
             || twin.origin != half_edge.destination
             || twin.destination != half_edge.origin
             || next.origin != half_edge.destination
+            || origin_position.vertex != half_edge.origin
             || seen_next[half_edge.next.0]
+            || !seen_tokens.insert(embedded_half_edge_token(half_edge))
         {
             return Err(DcelBuildError::InternalInvariant);
         }
@@ -482,6 +724,40 @@ mod tests {
                         && half_edge.next.0 < embedding.half_edges.len()
                 })
         );
+    }
+
+    fn assert_walk_invariants(embedding: &DcelEmbedding, walks: &[CanonicalWalk]) {
+        assert_eq!(
+            walks
+                .iter()
+                .map(|walk| walk.half_edges.len())
+                .sum::<usize>(),
+            embedding.half_edges.len()
+        );
+        let mut seen = vec![false; embedding.half_edges.len()];
+        let token_sequences = walks
+            .iter()
+            .map(|walk| {
+                assert!(!walk.half_edges.is_empty());
+                let tokens = walk
+                    .half_edges
+                    .iter()
+                    .map(|index| {
+                        assert!(!std::mem::replace(&mut seen[index.0], true));
+                        embedded_half_edge_token(&embedding.half_edges[index.0])
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(tokens[0], *tokens.iter().min().expect("minimum token"));
+                for position in 0..walk.half_edges.len() {
+                    let current = walk.half_edges[position];
+                    let following = walk.half_edges[(position + 1) % walk.half_edges.len()];
+                    assert_eq!(embedding.half_edges[current.0].next, following);
+                }
+                tokens
+            })
+            .collect::<Vec<_>>();
+        assert!(seen.into_iter().all(|was_seen| was_seen));
+        assert!(token_sequences.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     fn outgoing_destinations(embedding: &DcelEmbedding, vertex: VertexId) -> Vec<VertexId> {
@@ -548,6 +824,29 @@ mod tests {
             embedding.half_edges[b_to_a.0].next,
             half_edge(&embedding, a.id, d.id)
         );
+
+        let walks = canonical_walks(&embedding).expect("square walks");
+        assert_walk_invariants(&embedding, &walks);
+        let mut areas = walks
+            .iter()
+            .map(|walk| walk.signed_double_area)
+            .collect::<Vec<_>>();
+        areas.sort_by(f64::total_cmp);
+        assert_eq!(areas, vec![-32.0, 32.0]);
+        assert_eq!(
+            walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::CounterClockwise)
+                .count(),
+            1
+        );
+        assert_eq!(
+            walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::Clockwise)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -578,6 +877,79 @@ mod tests {
         assert_eq!(
             outgoing_destinations(&embedding, center.id),
             vec![east.id, north.id, west.id]
+        );
+        let walks = canonical_walks(&embedding).expect("tree walk");
+        assert_walk_invariants(&embedding, &walks);
+        assert_eq!(walks.len(), 1);
+        assert_eq!(walks[0].half_edges.len(), 6);
+        assert_eq!(walks[0].signed_double_area, 0.0);
+        assert_eq!(walks[0].orientation, Orientation::Collinear);
+    }
+
+    #[test]
+    fn disconnected_parallel_edges_produce_two_zero_area_walks() {
+        let lower_left = vertex(0x180, 0.0, 0.0);
+        let lower_right = vertex(0x181, 1.0, 0.0);
+        let upper_left = vertex(0x182, 0.0, 2.0);
+        let upper_right = vertex(0x183, 1.0, 2.0);
+        let pattern = CreasePattern {
+            vertices: vec![
+                upper_right.clone(),
+                lower_left.clone(),
+                upper_left.clone(),
+                lower_right.clone(),
+            ],
+            edges: vec![
+                edge(0xa02, &upper_right, &upper_left, EdgeKind::Cut),
+                edge(0xa01, &lower_left, &lower_right, EdgeKind::Mountain),
+            ],
+        };
+
+        let embedding = build_embedding(&pattern).expect("disconnected embedding");
+        let walks = canonical_walks(&embedding).expect("disconnected walks");
+
+        assert_walk_invariants(&embedding, &walks);
+        assert_eq!(walks.len(), 2);
+        assert!(walks.iter().all(|walk| {
+            walk.half_edges.len() == 2
+                && walk.signed_double_area == 0.0
+                && walk.orientation == Orientation::Collinear
+        }));
+    }
+
+    #[test]
+    fn exact_walk_orientation_survives_binary64_area_underflow() {
+        let origin = vertex(0x190, 0.0, 0.0);
+        let east = vertex(0x191, f64::MIN_POSITIVE, 0.0);
+        let north = vertex(0x192, 0.0, f64::MIN_POSITIVE);
+        let pattern = CreasePattern {
+            vertices: vec![north.clone(), origin.clone(), east.clone()],
+            edges: vec![
+                edge(0xb03, &north, &origin, EdgeKind::Boundary),
+                edge(0xb01, &origin, &east, EdgeKind::Boundary),
+                edge(0xb02, &east, &north, EdgeKind::Boundary),
+            ],
+        };
+
+        let embedding = build_embedding(&pattern).expect("underflow triangle embedding");
+        let walks = canonical_walks(&embedding).expect("underflow triangle walks");
+
+        assert_walk_invariants(&embedding, &walks);
+        assert_eq!(walks.len(), 2);
+        assert!(walks.iter().all(|walk| walk.signed_double_area == 0.0));
+        assert_eq!(
+            walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::CounterClockwise)
+                .count(),
+            1
+        );
+        assert_eq!(
+            walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::Clockwise)
+                .count(),
+            1
         );
     }
 
@@ -663,6 +1035,125 @@ mod tests {
         assert_eq!(
             embedding.half_edges[west_to_center.0].next,
             half_edge(&embedding, center.id, north.id)
+        );
+    }
+
+    #[test]
+    fn split_square_walks_are_canonical_across_storage_kind_and_auxiliary_changes() {
+        let south_west = vertex(0x160, -2.0, -2.0);
+        let south_east = vertex(0x161, 2.0, -2.0);
+        let north_east = vertex(0x162, 2.0, 2.0);
+        let north_west = vertex(0x163, -2.0, 2.0);
+        let center = vertex(0x164, 0.0, 0.0);
+        let vertices = vec![
+            south_west.clone(),
+            south_east.clone(),
+            north_east.clone(),
+            north_west.clone(),
+            center.clone(),
+        ];
+        let edges = vec![
+            edge(0x801, &south_west, &south_east, EdgeKind::Boundary),
+            edge(0x802, &south_east, &north_east, EdgeKind::Boundary),
+            edge(0x803, &north_east, &north_west, EdgeKind::Boundary),
+            edge(0x804, &north_west, &south_west, EdgeKind::Boundary),
+            edge(0x805, &center, &south_west, EdgeKind::Mountain),
+            edge(0x806, &center, &south_east, EdgeKind::Mountain),
+            edge(0x807, &center, &north_east, EdgeKind::Mountain),
+            edge(0x808, &center, &north_west, EdgeKind::Mountain),
+        ];
+        let baseline = CreasePattern {
+            vertices: vertices.clone(),
+            edges: edges.clone(),
+        };
+
+        let mut transformed_vertices = vertices;
+        transformed_vertices.reverse();
+        let mut transformed_edges = edges;
+        transformed_edges.reverse();
+        for edge in &mut transformed_edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+            if edge.kind == EdgeKind::Mountain {
+                edge.kind = EdgeKind::Cut;
+            }
+        }
+        transformed_edges.push(Edge {
+            id: fixed_id(0x8ff),
+            start: fixed_id(0xcafe),
+            end: fixed_id(0xbabe),
+            kind: EdgeKind::Auxiliary,
+        });
+        let transformed = CreasePattern {
+            vertices: transformed_vertices,
+            edges: transformed_edges,
+        };
+
+        let baseline_embedding = build_embedding(&baseline).expect("split-square embedding");
+        let transformed_embedding =
+            build_embedding(&transformed).expect("transformed split-square embedding");
+        let baseline_walks = canonical_walks(&baseline_embedding).expect("split-square walks");
+        let transformed_walks =
+            canonical_walks(&transformed_embedding).expect("transformed split-square walks");
+
+        assert_eq!(transformed_embedding, baseline_embedding);
+        assert_eq!(transformed_walks, baseline_walks);
+        assert_walk_invariants(&baseline_embedding, &baseline_walks);
+        assert_eq!(baseline_walks.len(), 5);
+        let mut areas = baseline_walks
+            .iter()
+            .map(|walk| walk.signed_double_area)
+            .collect::<Vec<_>>();
+        areas.sort_by(f64::total_cmp);
+        assert_eq!(areas, vec![-32.0, 8.0, 8.0, 8.0, 8.0]);
+        assert_eq!(
+            baseline_walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::CounterClockwise)
+                .count(),
+            4
+        );
+        assert_eq!(
+            baseline_walks
+                .iter()
+                .filter(|walk| walk.orientation == Orientation::Clockwise)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn walk_enumeration_fails_closed_on_invalid_next_and_area_overflow() {
+        let a = vertex(0x170, -f64::MAX, -f64::MAX);
+        let b = vertex(0x171, f64::MAX, -f64::MAX);
+        let c = vertex(0x172, f64::MAX, f64::MAX);
+        let d = vertex(0x173, -f64::MAX, f64::MAX);
+        let huge = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone()],
+            edges: vec![
+                edge(0x901, &a, &b, EdgeKind::Boundary),
+                edge(0x902, &b, &c, EdgeKind::Boundary),
+                edge(0x903, &c, &d, EdgeKind::Boundary),
+                edge(0x904, &d, &a, EdgeKind::Boundary),
+            ],
+        };
+        let embedding = build_embedding(&huge).expect("finite extreme embedding");
+        assert_eq!(
+            canonical_walks(&embedding),
+            Err(DcelBuildError::AreaFailure)
+        );
+
+        let mut invalid_index = embedding.clone();
+        invalid_index.half_edges[0].next = HalfEdgeIndex(invalid_index.half_edges.len());
+        assert_eq!(
+            canonical_walks(&invalid_index),
+            Err(DcelBuildError::InternalInvariant)
+        );
+
+        let mut merged_cycle = embedding;
+        merged_cycle.half_edges[0].next = merged_cycle.half_edges[1].next;
+        assert_eq!(
+            canonical_walks(&merged_cycle),
+            Err(DcelBuildError::InternalInvariant)
         );
     }
 

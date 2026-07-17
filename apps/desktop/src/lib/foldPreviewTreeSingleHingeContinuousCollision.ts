@@ -133,6 +133,25 @@ export type FoldPreviewTreeTerminalFullScanBinding = Readonly<{
   }>
 }>
 
+const authenticTerminalFullScanBindings = new WeakSet<object>()
+
+/**
+ * Confirms that this exact binding was issued by a completed terminal
+ * full-scan. Structural equivalents and wrappers deliberately have no
+ * provenance, and the check never reads an input property.
+ */
+export function isFoldPreviewTreeTerminalFullScanBindingAuthentic(
+  value: unknown,
+): value is FoldPreviewTreeTerminalFullScanBinding {
+  try {
+    return typeof value === 'object'
+      && value !== null
+      && authenticTerminalFullScanBindings.has(value)
+  } catch {
+    return false
+  }
+}
+
 export type FoldPreviewTreeSingleHingeBlockingSample = Readonly<{
   version: typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_BLOCKING_SAMPLE_VERSION
   sourcePose: 'blocking_evaluate_point_pose'
@@ -1338,7 +1357,7 @@ function buildTerminalFullScanBinding(
     }))
   }
   const allWitnessesCrossPartition = sameBodyWitnessCount === 0
-  return deepFreeze({
+  const binding = deepFreeze({
     version: FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION,
     sourcePose: 'blocking_evaluate_point_pose',
     requestIdentityBound: true,
@@ -1376,7 +1395,9 @@ function buildTerminalFullScanBinding(
       continuousCandidatePathCertified: false,
       autoApplicable: false,
     },
-  })
+  }) satisfies FoldPreviewTreeTerminalFullScanBinding
+  authenticTerminalFullScanBindings.add(binding)
+  return binding
 }
 
 function validCompleteFullScanCoverage(

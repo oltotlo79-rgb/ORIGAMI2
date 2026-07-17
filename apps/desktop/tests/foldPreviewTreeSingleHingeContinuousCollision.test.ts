@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION,
+  isFoldPreviewTreeTerminalFullScanBindingAuthentic,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_CROSS_TRIANGLE_PAIRS,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_TERMINAL_EVIDENCE_TRIANGLE_PAIRS,
   prepareFoldPreviewTreeSingleHingeContinuousCollision,
@@ -96,7 +97,7 @@ test('full-face point analysis blocks a collision with a stationary branch', () 
   assert.equal(result.blocker?.geometryClass, 'penetrating')
 })
 
-test('a terminal block retains its exact request-bound collision sample', () => {
+test('a terminal block retains exact sample and binding provenance', () => {
   const model = stationaryBranchCollisionModel()
   const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
     model,
@@ -355,6 +356,80 @@ test('a terminal block retains its exact request-bound collision sample', () => 
     autoApplicable: false,
   })
   assertDeeplyFrozen(sample)
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(terminalBinding),
+    true,
+  )
+
+  const clonedBinding = structuredClone(terminalBinding)
+  const spreadBinding = Object.freeze({ ...terminalBinding })
+  const inheritedBinding = Object.create(terminalBinding)
+  assert.deepEqual(clonedBinding, terminalBinding)
+  assert.deepEqual(spreadBinding, terminalBinding)
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(clonedBinding),
+    false,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(spreadBinding),
+    false,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(inheritedBinding),
+    false,
+  )
+
+  let hostilePropertyReads = 0
+  const hostileWrapper = new Proxy(terminalBinding, {
+    get() {
+      hostilePropertyReads += 1
+      throw new Error('binding property read')
+    },
+    getOwnPropertyDescriptor() {
+      hostilePropertyReads += 1
+      throw new Error('binding descriptor read')
+    },
+    ownKeys() {
+      hostilePropertyReads += 1
+      throw new Error('binding ownKeys read')
+    },
+  })
+  const revokedBinding = Proxy.revocable(terminalBinding, {})
+  revokedBinding.revoke()
+  assert.doesNotThrow(() => {
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthentic(hostileWrapper),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthentic(
+        revokedBinding.proxy,
+      ),
+      false,
+    )
+  })
+  assert.equal(hostilePropertyReads, 0)
+
+  for (const nonBinding of [
+    result,
+    blocker,
+    sample,
+    terminalBinding.evidence,
+    job,
+    analyzer,
+    null,
+    undefined,
+    false,
+    0,
+    '',
+    Symbol('binding'),
+    0n,
+  ]) {
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthentic(nonBinding),
+      false,
+    )
+  }
 
   const repeatedTerminalResult = job.step(1)
   assert.strictEqual(repeatedTerminalResult, result)
@@ -363,6 +438,15 @@ test('a terminal block retains its exact request-bound collision sample', () => 
       ? repeatedTerminalResult.blocker?.blockingSample
       : null,
     sample,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(
+      repeatedTerminalResult.kind === 'blocked'
+        ? repeatedTerminalResult.blocker?.blockingSample
+          ?.terminalFullScanBinding
+        : null,
+    ),
+    true,
   )
 
   const detail = describeFoldPreviewContinuousMotionDetail({

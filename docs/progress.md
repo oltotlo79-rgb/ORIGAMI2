@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約37.4%（2026-07-18）**
+**全体完成率: 約37.6%（2026-07-18）**
 
 完成率は画面数ではなく、要件定義書のMUST 86件、FUTURE 14件、品質検証、両OS配布を含む総工数の概算である。研究要素の結果によって見積もりを更新する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計37.42%を小数第1位へ丸めて全体完成率としている。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計37.56%を小数第1位へ丸めて全体完成率としている。
 
 ## 重み付け
 
@@ -15,14 +15,14 @@
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 固定面契約に加え、ヒンジ優先・面フォールバック・不正入力遮断を持つ3D picking境界を実装検証 |
 | プロジェクト・保存・履歴 | 8% | 60% | 4.80% | 原子的編集とUndo/Redo、ネイティブ`.ori2`実ファイル操作、全OSの原子的上書きと失敗時保護を実装 |
 | 2D展開図エディター | 15% | 52% | 7.80% | 基本編集、任意多角形用紙、9種のスナップに加え、2D・角度一覧・3Dヒンジの選択同期を実装 |
-| 数式・幾何制約 | 9% | 58% | 5.22% | terminal全制約からKKT seedを列挙し、有向丸めの射影下限と移動量上限を持つ二体補正候補を導出 |
+| 数式・幾何制約 | 9% | 59% | 5.31% | 共通並進を有限回転の二次調波最小二乗へ写像し、最大6件の未検証1ヒンジ角度seedを導出 |
 | 3D折り・紙厚・衝突 | 17% | 51% | 8.67% | full-scan集合を危険時刻の完全角度vector・固定/可動partition・primary witnessへ結合 |
 | 折り可能性・経路探索 | 18% | 16% | 2.88% | request結合済み・全witness cross-partitionの場合だけ、解析専用の共通並進候補を生成 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 16% | 0.80% | 安全制限付き`.ori2`、実パス読込・保存・再上書き・全OSの原子的置換を実装 |
-| 多言語・設定・配布・QA | 5% | 73% | 3.65% | frontend 575件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app`をCI検証 |
+| 多言語・設定・配布・QA | 5% | 74% | 3.70% | frontend 588件、決定論的2,500ジョブ差分、Windows/macOS Rust、macOS `.app`をCI検証 |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **37.42%** | — |
+| **合計** | **100%** | — | **37.56%** | — |
 
 ## 完了
 
@@ -163,6 +163,8 @@
 - terminal bindingのstart/sample pose key、全coverage式・class件数、partition、support・position generators・局所hintを再検証し、全witnessがcross-partitionの場合だけmoving subtreeの共通並進候補を導出
 - 最大16制約のactive setを1〜3本、最大696組まで決定順に列挙し、KKT最小ノルムseedから認定用外向き候補を生成。必要量は上向き、各内積は下向きに囲い、射影下限がclearanceを厳密に超え、L1移動量上限が指定上限内の場合だけ返す
 - 候補は非隣接pairの線形制約だけを満たす解析結果としてdeep freezeし、合法角度生成、全scene静的再判定、連続経路認定、全体constraint、共有ヒンジ、材料変形を未検証の`autoApplicable: false`に固定
+- world軸・回転符号・危険角・最大角度差・共通並進・最大10万moving pointから、有限回転残差の端点と二次調波停留点を最大6件へ限定して未検証1ヒンジ角度seedを導出
+- near-unit軸の正規化、単位軸の二次調波丸め境界、0.01度から0.000001度の安定な一次調波解析根、0/180度・符号反転・domain端点・overflow・hostile Proxyを回帰し、モデル束縛・合法姿勢・静的安全・連続安全・自動適用をすべてfalseに固定
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -266,10 +268,11 @@
 - コミット`7de8897`のCI Run `29606086440`全ジョブ完走（全非隣接pairのfull-scan v2、hostile pose snapshot、frontend 561件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`59e81ef`のCI Run `29607122375`全ジョブ完走（terminal full-scan binding、same-body・unavailable・独立cap回帰、frontend 564件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`a5921b4`のCI Run `29609027499`全ジョブ完走（認定付き二体補正候補、有向丸め数値反例・偽造binding・hostile Proxy回帰、frontend 575件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`a2fe970`のCI Run `29610764873`全ジョブ完走（未検証1ヒンジ有限回転seed、near-unit軸・極小角・二次調波・hostile Proxy回帰、frontend 588件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
-- 二体並進候補を選択1ヒンジの有限な角度seedへ変換し、候補生成・全scene静的再検証・既存continuous jobによる経路認定を分離する安全な縦スライス
+- 未検証角度seedをterminal binding・実worldヒンジ軸・moving subtreeへ結合し、合法な完全角度vectorを生成して全scene静的再検証するモデル束縛層
 - 単一折りの紙面ドラッグをWindows/macOS実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows/macOS実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
 - macOSのDockメニュー終了・OS終了要求でも未保存データを保護する方式の検証
@@ -283,7 +286,7 @@
 ## 次の作業
 
 1. OQ-002の物理的な厚さoffset・層ずれ規則を確定し、中央面基準の近似分類と選択可能にする
-2. terminal結合済みで全witnessがcross-partitionの集合だけから、非自動適用の二体間修正候補をbounded active-set法で生成する
+2. 二体並進候補と未検証1ヒンジ角度seedを同じterminal identity・実partitionへ結合し、合法な完全角度vectorと全scene静的再検証済み候補へ昇格する
 3. 三角柱の局所形状再利用、広域・狭域の差分更新、worker分離により、大規模な面・ヒンジの判定を最適化する
 4. 閉路拘束の診断と将来ソルバー境界を詳細化する
 5. 3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める

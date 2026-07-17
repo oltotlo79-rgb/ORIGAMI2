@@ -44,6 +44,7 @@ import {
   pickFoldPreviewTarget,
   type FoldPreviewPickObject,
 } from '../lib/foldPreviewPicking'
+import { calculateSingleFoldPose } from '../lib/foldPreviewSingleFoldKinematics'
 
 type FoldPreviewProps = {
   angle: number
@@ -522,14 +523,18 @@ export function FoldPreview({
         scene.add(pivot)
         updatePose = (nextAngle) => {
           if (!pivot || !axis) return false
+          const pose = calculateSingleFoldPose(
+            model,
+            resolvedFixedFaceId ?? model.fixedFace.id,
+            nextAngle,
+          )
+          if (
+            !pose
+            || pose.fixedFaceId !== singleAnchor.fixedFace.id
+            || pose.movingFaceId !== singleAnchor.movingFace.id
+          ) return false
           applyFoldRotation(pivot, axis, rotationSign, nextAngle)
-          updateCollision(new Map([
-            [singleAnchor.fixedFace.id, new THREE.Matrix4()],
-            [
-              singleAnchor.movingFace.id,
-              createFoldRotationTransform(model.hinge.start, axis, rotationSign, nextAngle),
-            ],
-          ]), collisionPoseKey(
+          updateCollision(pose.faceTransforms, collisionPoseKey(
             model,
             resolvedFixedFaceId,
             collisionThickness,
@@ -1100,21 +1105,6 @@ function applyFoldRotation(
     axis,
     THREE.MathUtils.degToRad(angle * rotationSign),
   )
-}
-
-function createFoldRotationTransform(
-  start: Readonly<{ x: number; z: number }>,
-  axis: THREE.Vector3,
-  rotationSign: 1 | -1,
-  angle: number,
-) {
-  return new THREE.Matrix4()
-    .makeTranslation(start.x, 0, start.z)
-    .multiply(new THREE.Matrix4().makeRotationAxis(
-      axis,
-      THREE.MathUtils.degToRad(angle * rotationSign),
-    ))
-    .multiply(new THREE.Matrix4().makeTranslation(-start.x, 0, -start.z))
 }
 
 function describeTreeAngles(

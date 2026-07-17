@@ -62,6 +62,33 @@ export type FoldPreviewHingeContactPair = Readonly<{
   geometryClass: 'touching' | 'penetrating' | 'indeterminate'
 }>
 
+export type FoldPreviewStaticHingeTrianglePairSupportDecision =
+  | Readonly<{
+      kind: 'proven_static_hinge_support'
+      hingeEdgeId: string
+      thicknessRule: 'centered_mid_surface_v1'
+    }>
+  | Readonly<{
+      kind: 'not_proven'
+      hingeEdgeIds: readonly string[]
+      reason:
+        | 'missing_constraint'
+        | 'multiple_shared_hinges'
+        | 'malformed_request'
+        | 'face_pair_mismatch'
+        | 'triangle_index_out_of_range'
+        | 'material_half_slabs_not_proven'
+        | 'finite_hinge_segment_not_proven'
+    }>
+
+export type FoldPreviewStaticHingeTrianglePairSupportRequest = Readonly<{
+  firstFaceId: string
+  secondFaceId: string
+  hingeEdgeIds: readonly string[]
+  firstTriangleIndex: number
+  secondTriangleIndex: number
+}>
+
 export type FoldPreviewHingeContactPolicy = Readonly<{
   classify(input: Readonly<{
     firstFaceId: string
@@ -73,6 +100,18 @@ export type FoldPreviewHingeContactPolicy = Readonly<{
     testedTrianglePairs: number
     pairs: readonly FoldPreviewHingeContactPair[]
   }>): FoldPreviewHingeContactDecision
+  /**
+   * Proves only a pose-independent source-geometry property: both requested
+   * triangles lie wholly in their opposing material half-slabs and between
+   * the finite hinge endpoints for centered_mid_surface_v1.
+   *
+   * This is not a motion-safety certificate. A continuous caller must
+   * separately prove a rigid shared-axis path and reject any interval that
+   * reaches the 180-degree centered-slab singularity.
+   */
+  proveStaticTrianglePairSupport(
+    input: FoldPreviewStaticHingeTrianglePairSupportRequest,
+  ): FoldPreviewStaticHingeTrianglePairSupportDecision
 }>
 
 export type FoldPreviewHingePolicyFace = Readonly<{
@@ -244,9 +283,100 @@ export function prepareFoldPreviewHingeContactPolicy(
       classify(input) {
         return classifyHingeContact(facesById, constraintsById, input)
       },
+      proveStaticTrianglePairSupport(input) {
+        try {
+          return proveStaticTrianglePairSupport(
+            facesById,
+            constraintsById,
+            input,
+          )
+        } catch {
+          return staticSupportNotProven([], 'malformed_request')
+        }
+      },
     })
   } catch {
     return null
+  }
+}
+
+function proveStaticTrianglePairSupport(
+  facesById: ReadonlyMap<string, PreparedPolicyFace>,
+  constraintsById: ReadonlyMap<string, PreparedConstraint>,
+  input: FoldPreviewStaticHingeTrianglePairSupportRequest,
+): FoldPreviewStaticHingeTrianglePairSupportDecision {
+  if (!input || !Array.isArray(input.hingeEdgeIds)) {
+    return staticSupportNotProven([], 'malformed_request')
+  }
+  const hingeEdgeIds = [...input.hingeEdgeIds]
+  if (hingeEdgeIds.length !== 1) {
+    return staticSupportNotProven(
+      hingeEdgeIds.filter(validId),
+      hingeEdgeIds.length === 0
+        ? 'missing_constraint'
+        : 'multiple_shared_hinges',
+    )
+  }
+  const hingeEdgeId = hingeEdgeIds[0]
+  if (!validId(hingeEdgeId)) {
+    return staticSupportNotProven([], 'malformed_request')
+  }
+  const constraint = constraintsById.get(hingeEdgeId)
+  if (!constraint) {
+    return staticSupportNotProven(hingeEdgeIds, 'missing_constraint')
+  }
+  if (
+    !validId(input.firstFaceId)
+    || !validId(input.secondFaceId)
+    || !sameIds(
+      input.firstFaceId,
+      input.secondFaceId,
+      constraint.leftFaceId,
+      constraint.rightFaceId,
+    )
+  ) {
+    return staticSupportNotProven(hingeEdgeIds, 'face_pair_mismatch')
+  }
+  const firstFace = facesById.get(input.firstFaceId)
+  const secondFace = facesById.get(input.secondFaceId)
+  if (!firstFace || !secondFace) {
+    return staticSupportNotProven(hingeEdgeIds, 'face_pair_mismatch')
+  }
+  if (
+    !Number.isSafeInteger(input.firstTriangleIndex)
+    || input.firstTriangleIndex < 0
+    || input.firstTriangleIndex >= firstFace.triangles.length
+    || !Number.isSafeInteger(input.secondTriangleIndex)
+    || input.secondTriangleIndex < 0
+    || input.secondTriangleIndex >= secondFace.triangles.length
+  ) {
+    return staticSupportNotProven(hingeEdgeIds, 'triangle_index_out_of_range')
+  }
+  const proof = staticPairHingeProof(
+    input.firstTriangleIndex,
+    input.secondTriangleIndex,
+    constraint,
+    input.firstFaceId,
+  )
+  if (!proof.left || !proof.right) {
+    return staticSupportNotProven(hingeEdgeIds, 'triangle_index_out_of_range')
+  }
+  if (!proof.left.materialSide || !proof.right.materialSide) {
+    return staticSupportNotProven(
+      hingeEdgeIds,
+      'material_half_slabs_not_proven',
+    )
+  }
+  if (!proof.left.axiallyBounded || !proof.right.axiallyBounded) {
+    return staticSupportNotProven(
+      hingeEdgeIds,
+      'finite_hinge_segment_not_proven',
+    )
+  }
+  return {
+    kind: 'proven_static_hinge_support',
+    hingeEdgeId,
+    thicknessRule: constraint.thicknessRule,
   }
 }
 
@@ -657,17 +787,39 @@ function pairHingeProof(
   constraint: PreparedConstraint,
   firstFaceId: string,
 ) {
+  const proof = staticPairHingeProof(
+    pair.firstTriangleIndex,
+    pair.secondTriangleIndex,
+    constraint,
+    firstFaceId,
+  )
+  return {
+    radiallyBounded: Boolean(
+      proof.left?.materialSide && proof.right?.materialSide,
+    ),
+    axiallyBounded: Boolean(
+      proof.left?.axiallyBounded && proof.right?.axiallyBounded,
+    ),
+  }
+}
+
+function staticPairHingeProof(
+  firstTriangleIndex: number,
+  secondTriangleIndex: number,
+  constraint: PreparedConstraint,
+  firstFaceId: string,
+): Readonly<{
+  left: PreparedTriangleHingeProof | undefined
+  right: PreparedTriangleHingeProof | undefined
+}> {
   const firstIsLeft = firstFaceId === constraint.leftFaceId
   const left = firstIsLeft
-    ? constraint.leftTriangleProofs[pair.firstTriangleIndex]
-    : constraint.leftTriangleProofs[pair.secondTriangleIndex]
+    ? constraint.leftTriangleProofs[firstTriangleIndex]
+    : constraint.leftTriangleProofs[secondTriangleIndex]
   const right = firstIsLeft
-    ? constraint.rightTriangleProofs[pair.secondTriangleIndex]
-    : constraint.rightTriangleProofs[pair.firstTriangleIndex]
-  return {
-    radiallyBounded: Boolean(left?.materialSide && right?.materialSide),
-    axiallyBounded: Boolean(left?.axiallyBounded && right?.axiallyBounded),
-  }
+    ? constraint.rightTriangleProofs[secondTriangleIndex]
+    : constraint.rightTriangleProofs[firstTriangleIndex]
+  return { left, right }
 }
 
 function proveFaceTrianglesWithinHingeHalfSlab(
@@ -947,6 +1099,20 @@ function indeterminate(
 ): FoldPreviewHingeContactDecision {
   return {
     kind: 'indeterminate',
+    hingeEdgeIds: [...hingeEdgeIds],
+    reason,
+  }
+}
+
+function staticSupportNotProven(
+  hingeEdgeIds: readonly string[],
+  reason: Extract<
+    FoldPreviewStaticHingeTrianglePairSupportDecision,
+    { kind: 'not_proven' }
+  >['reason'],
+): FoldPreviewStaticHingeTrianglePairSupportDecision {
+  return {
+    kind: 'not_proven',
     hingeEdgeIds: [...hingeEdgeIds],
     reason,
   }

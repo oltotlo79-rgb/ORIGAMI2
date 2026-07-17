@@ -7,7 +7,9 @@ import {
   prepareFoldPreviewHingeContactPolicy,
   type FoldPreviewHingeContactConstraint,
   type FoldPreviewHingePolicyFace,
+  type FoldPreviewStaticHingeTrianglePairSupportRequest,
 } from '../src/lib/foldPreviewHingeCollision.ts'
+import { triangulateFoldPreviewPolygon } from '../src/lib/foldPreviewGeometry.ts'
 import { prepareFoldPreviewNarrowPhase } from '../src/lib/foldPreviewNarrowCollision.ts'
 
 const start = { vertexId: 'start', x: 0, z: 0 } as const
@@ -396,6 +398,149 @@ test('rectangular hinge faces allow every pair at ordinary and near-limit angles
   }
 })
 
+test('static finite-hinge support proves all rectangle pairs in either face order', () => {
+  const rectangleFaces = triangulatedPolicyFaces(rectangleHingeFaces())
+  const policy = prepareFoldPreviewHingeContactPolicy(
+    rectangleFaces,
+    adjacency,
+    [constraint],
+  )
+  assert.ok(policy)
+  for (let leftIndex = 0; leftIndex < 2; leftIndex += 1) {
+    for (let rightIndex = 0; rightIndex < 2; rightIndex += 1) {
+      const expected = {
+        kind: 'proven_static_hinge_support',
+        hingeEdgeId: 'hinge',
+        thicknessRule: 'centered_mid_surface_v1',
+      } as const
+      assert.deepEqual(policy.proveStaticTrianglePairSupport({
+        firstFaceId: 'left',
+        secondFaceId: 'right',
+        hingeEdgeIds: ['hinge'],
+        firstTriangleIndex: leftIndex,
+        secondTriangleIndex: rightIndex,
+      }), expected)
+      assert.deepEqual(policy.proveStaticTrianglePairSupport({
+        firstFaceId: 'right',
+        secondFaceId: 'left',
+        hingeEdgeIds: ['hinge'],
+        firstTriangleIndex: rightIndex,
+        secondTriangleIndex: leftIndex,
+      }), expected)
+    }
+  }
+})
+
+test('static finite-hinge support fails closed for malformed pair requests', () => {
+  const rectangleFaces = triangulatedPolicyFaces(rectangleHingeFaces())
+  const policy = prepareFoldPreviewHingeContactPolicy(
+    rectangleFaces,
+    adjacency,
+    [constraint],
+  )
+  assert.ok(policy)
+  const common = {
+    firstFaceId: 'left',
+    secondFaceId: 'right',
+    hingeEdgeIds: ['hinge'],
+    firstTriangleIndex: 0,
+    secondTriangleIndex: 0,
+  } as const
+  const cases: readonly [
+    FoldPreviewStaticHingeTrianglePairSupportRequest,
+    string,
+  ][] = [
+    [{ ...common, hingeEdgeIds: [] }, 'missing_constraint'],
+    [{
+      ...common,
+      hingeEdgeIds: ['hinge', 'another-hinge'],
+    }, 'multiple_shared_hinges'],
+    [{ ...common, hingeEdgeIds: ['missing'] }, 'missing_constraint'],
+    [{ ...common, firstFaceId: 'missing' }, 'face_pair_mismatch'],
+    [{ ...common, secondFaceId: 'left' }, 'face_pair_mismatch'],
+    [{ ...common, firstTriangleIndex: -1 }, 'triangle_index_out_of_range'],
+    [{ ...common, firstTriangleIndex: 0.5 }, 'triangle_index_out_of_range'],
+    [{ ...common, secondTriangleIndex: 2 }, 'triangle_index_out_of_range'],
+  ]
+  for (const [request, reason] of cases) {
+    const decision = policy.proveStaticTrianglePairSupport(request)
+    assert.equal(decision.kind, 'not_proven')
+    assert.equal(decision.kind === 'not_proven' && decision.reason, reason)
+  }
+
+  assert.deepEqual(policy.proveStaticTrianglePairSupport(
+    null as unknown as FoldPreviewStaticHingeTrianglePairSupportRequest,
+  ), {
+    kind: 'not_proven',
+    hingeEdgeIds: [],
+    reason: 'malformed_request',
+  })
+})
+
+test('static finite-hinge support does not prove every endpoint-outside concave pair', () => {
+  const concaveFaces = triangulatedPolicyFaces(concaveOutsideHingeFaces())
+  const policy = prepareFoldPreviewHingeContactPolicy(
+    concaveFaces,
+    adjacency,
+    [constraint],
+  )
+  assert.ok(policy)
+  const decisions = concaveFaces[0].triangles.flatMap((_, firstTriangleIndex) =>
+    concaveFaces[1].triangles.map((__, secondTriangleIndex) =>
+      policy.proveStaticTrianglePairSupport({
+        firstFaceId: 'left',
+        secondFaceId: 'right',
+        hingeEdgeIds: ['hinge'],
+        firstTriangleIndex,
+        secondTriangleIndex,
+      })))
+  assert.ok(decisions.some((decision) =>
+    decision.kind === 'not_proven'
+    && (
+      decision.reason === 'material_half_slabs_not_proven'
+      || decision.reason === 'finite_hinge_segment_not_proven'
+    )))
+})
+
+test('static finite-hinge support uses immutable prepared proofs', () => {
+  const mutableFaces = triangulatedPolicyFaces(rectangleHingeFaces())
+    .map((face) => ({
+      id: face.id,
+      polygon: face.polygon.map((point) => ({ ...point })),
+      triangles: face.triangles.map((triangle) => [...triangle]),
+    }))
+  const mutableConstraint = {
+    ...constraint,
+    start: { ...constraint.start },
+    end: { ...constraint.end },
+  }
+  const policy = prepareFoldPreviewHingeContactPolicy(
+    mutableFaces,
+    adjacency,
+    [mutableConstraint],
+  )
+  assert.ok(policy)
+  const request = {
+    firstFaceId: 'left',
+    secondFaceId: 'right',
+    hingeEdgeIds: ['hinge'],
+    firstTriangleIndex: 1,
+    secondTriangleIndex: 1,
+  } as const
+  const expected = policy.proveStaticTrianglePairSupport(request)
+  assert.equal(expected.kind, 'proven_static_hinge_support')
+
+  mutableFaces[0].polygon[0].x = 100
+  mutableFaces[0].triangles[1][0] = 99
+  mutableFaces[1].polygon[2].z = 100
+  mutableFaces[1].triangles.reverse()
+  mutableConstraint.edgeId = 'mutated-hinge'
+  mutableConstraint.start.x = 100
+  mutableConstraint.end.z = 100
+
+  assert.deepEqual(policy.proveStaticTrianglePairSupport(request), expected)
+})
+
 test('prepared hinge geometry and constraints are immutable snapshots', () => {
   const mutableFaces = faces.map((face) => ({
     id: face.id,
@@ -538,6 +683,19 @@ function rectangleHingeFaces() {
       ],
     },
   ]
+}
+
+function triangulatedPolicyFaces(
+  sourceFaces: readonly {
+    id: string
+    polygon: readonly FoldPreviewHingePolicyFace['polygon'][number][]
+  }[],
+): FoldPreviewHingePolicyFace[] {
+  return sourceFaces.map((face) => ({
+    id: face.id,
+    polygon: face.polygon,
+    triangles: triangulateFoldPreviewPolygon(face.polygon),
+  }))
 }
 
 function concaveOutsideHingeFaces() {

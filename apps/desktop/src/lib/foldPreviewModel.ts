@@ -26,9 +26,29 @@ export type FoldPreviewHingeModel = Readonly<{
   /** Unit vector in the world XZ plane; Three.js uses `(x, 0, z)`. */
   axis: Readonly<{ x: number; z: number }>
   assignment: FoldAssignment
-  /** Right-hand rotation multiplier around `axis`: mountain +1, valley -1. */
+  /** Right-face rotation relative to the left face around `axis`. */
   rotationSign: 1 | -1
 }>
+
+export type FoldPreviewTreeJointModel = Readonly<{
+  parentFaceId: string
+  childFaceId: string
+  hinge: FoldPreviewHingeModel
+  /** Right-hand rotation multiplier for the child relative to its parent. */
+  childRotationSign: 1 | -1
+}>
+
+export type FoldPreviewGraphKinematics =
+  | Readonly<{
+      kind: 'tree'
+      rootFaceId: string
+      /** Parent-before-child traversal in deterministic breadth-first order. */
+      joints: readonly FoldPreviewTreeJointModel[]
+    }>
+  | Readonly<{
+      kind: 'static_cycle'
+      reason: 'cyclic_hinge_graph'
+    }>
 
 type FoldPreviewModelBase = Readonly<{
   projectId: string
@@ -67,6 +87,8 @@ export type FoldGraphPreviewModel = FoldPreviewModelBase & Readonly<{
   faces: readonly FoldPreviewFaceModel[]
   /** Canonical adjacency order: first FaceKey, second FaceKey, then edge ID. */
   hinges: readonly FoldPreviewHingeModel[]
+  /** Safe motion subset; cyclic constraints remain an explicit static view. */
+  kinematics: FoldPreviewGraphKinematics
 }>
 
 export type FoldPreviewModel =
@@ -209,12 +231,65 @@ export function buildFoldPreviewModel(
 
   if (faces.length < 2 || validatedHinges.length < 2) return null
   if (!hasCanonicalFaceOrder(faces)) return null
+  const kinematics = classifyFoldGraphKinematics(validatedHinges, faces)
+  if (!kinematics) return null
   return {
     ...base,
     kind: 'fold_graph',
     faces: faces.map((face) => face.worldFace),
     hinges: validatedHinges.map((hinge) => hinge.model),
+    kinematics,
   }
+}
+
+function classifyFoldGraphKinematics(
+  hinges: readonly ValidatedHinge[],
+  faces: readonly ParsedFace[],
+): FoldPreviewGraphKinematics | null {
+  const root = faces[0]
+  if (!root || hinges.length < faces.length - 1) return null
+  if (hinges.length >= faces.length) {
+    return { kind: 'static_cycle', reason: 'cyclic_hinge_graph' }
+  }
+
+  const hingesByFace = new Map(faces.map((face) => [face.id, [] as ValidatedHinge[]]))
+  for (const hinge of hinges) {
+    const left = hingesByFace.get(hinge.incidence.left)
+    const right = hingesByFace.get(hinge.incidence.right)
+    if (!left || !right) return null
+    left.push(hinge)
+    right.push(hinge)
+  }
+  const reached = new Set([root.id])
+  const pending = [root.id]
+  const joints: FoldPreviewTreeJointModel[] = []
+  for (let cursor = 0; cursor < pending.length; cursor += 1) {
+    const parentFaceId = pending[cursor]
+    const incidentHinges = hingesByFace.get(parentFaceId)
+    if (!incidentHinges) return null
+    for (const hinge of incidentHinges) {
+      const { incidence, model } = hinge
+      const childFaceId = incidence.left === parentFaceId
+        ? incidence.right
+        : incidence.right === parentFaceId
+          ? incidence.left
+          : null
+      if (!childFaceId || reached.has(childFaceId)) continue
+      reached.add(childFaceId)
+      pending.push(childFaceId)
+      joints.push({
+        parentFaceId,
+        childFaceId,
+        hinge: model,
+        childRotationSign: incidence.left === parentFaceId
+          ? model.rotationSign
+          : model.rotationSign === 1 ? -1 : 1,
+      })
+    }
+  }
+  return reached.size === faces.length && joints.length === faces.length - 1
+    ? { kind: 'tree', rootFaceId: root.id, joints }
+    : null
 }
 
 function validateHinges(

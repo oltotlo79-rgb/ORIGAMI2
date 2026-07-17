@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { RgbaColor } from '../lib/coreClient'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
+import { calculateFoldTreePose } from '../lib/foldPreviewKinematics'
 import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewModel'
 
 type FoldPreviewProps = {
@@ -14,9 +15,7 @@ type FoldPreviewProps = {
 }
 
 type PreviewRuntime = {
-  pivot: THREE.Group | null
-  axis: THREE.Vector3 | null
-  rotationSign: 1 | -1
+  updateAngle: (angle: number) => boolean
   render: () => void
   dispose: () => void
 }
@@ -65,6 +64,7 @@ export function FoldPreview({
 
     const geometries: THREE.BufferGeometry[] = []
     const edgeGeometries: THREE.EdgesGeometry[] = []
+    const hingeGeometries: THREE.BufferGeometry[] = []
     const staticFaces: Array<{
       face: FoldPreviewFaceModel
       geometry: THREE.BufferGeometry
@@ -107,7 +107,6 @@ export function FoldPreview({
     let backMaterial: THREE.MeshStandardMaterial | null = null
     let sideMaterial: THREE.MeshStandardMaterial | null = null
     let edgeMaterial: THREE.LineBasicMaterial | null = null
-    let hingeGeometry: THREE.BufferGeometry | null = null
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
     let runtime: PreviewRuntime | null = null
@@ -120,7 +119,7 @@ export function FoldPreview({
       if (runtime && runtimeRef.current === runtime) runtimeRef.current = null
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
       for (const geometry of edgeGeometries) attemptCleanup(() => geometry.dispose())
-      attemptCleanup(() => hingeGeometry?.dispose())
+      for (const geometry of hingeGeometries) attemptCleanup(() => geometry.dispose())
       if (grid) {
         attemptCleanup(() => grid?.geometry.dispose())
         attemptCleanup(() => disposeMaterial(grid?.material ?? []))
@@ -198,13 +197,20 @@ export function FoldPreview({
         return group
       }
 
+      const faceGroups = new Map<string, THREE.Group>()
       for (const { face, geometry } of staticFaces) {
-        scene.add(makeFace(geometry, face))
+        const group = makeFace(geometry, face)
+        if (model.kind === 'fold_graph') {
+          group.matrixAutoUpdate = false
+          faceGroups.set(face.id, group)
+        }
+        scene.add(group)
       }
 
       let pivot: THREE.Group | null = null
       let axis: THREE.Vector3 | null = null
       let rotationSign: 1 | -1 = 1
+      let updateAngle = (_angle: number) => true
       if (model.kind === 'single_fold' && movingGeometry) {
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
@@ -213,6 +219,11 @@ export function FoldPreview({
         rotationSign = model.hinge.rotationSign
         applyFoldRotation(pivot, axis, rotationSign, angleRef.current)
         scene.add(pivot)
+        updateAngle = (nextAngle) => {
+          if (!pivot || !axis) return false
+          applyFoldRotation(pivot, axis, rotationSign, nextAngle)
+          return true
+        }
       }
 
       const hinges = model.kind === 'single_fold'
@@ -223,25 +234,59 @@ export function FoldPreview({
       if (hinges.length > 0) {
         const createdHingeMaterial = new THREE.LineBasicMaterial({ color: 0x7a3f16 })
         hingeMaterial = createdHingeMaterial
-        const createdHingeGeometry = new THREE.BufferGeometry()
-        hingeGeometry = createdHingeGeometry
-        createdHingeGeometry.setFromPoints(hinges.flatMap((hinge) => [
-          new THREE.Vector3(
-            hinge.start.x,
-            previewThickness / 2 + 0.008,
-            hinge.start.z,
-          ),
-          new THREE.Vector3(
-            hinge.end.x,
-            previewThickness / 2 + 0.008,
-            hinge.end.z,
-          ),
-        ]))
-        scene.add(new THREE.LineSegments(createdHingeGeometry, createdHingeMaterial))
+        const hingeLines = new Map<string, THREE.LineSegments>()
+        for (const hinge of hinges) {
+          const geometry = new THREE.BufferGeometry()
+          hingeGeometries.push(geometry)
+          geometry.setFromPoints([
+            new THREE.Vector3(
+              hinge.start.x,
+              previewThickness / 2 + 0.008,
+              hinge.start.z,
+            ),
+            new THREE.Vector3(
+              hinge.end.x,
+              previewThickness / 2 + 0.008,
+              hinge.end.z,
+            ),
+          ])
+          const line = new THREE.LineSegments(geometry, createdHingeMaterial)
+          if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
+            line.matrixAutoUpdate = false
+            hingeLines.set(hinge.edgeId, line)
+          }
+          scene.add(line)
+        }
+
+        if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
+          const treeKinematics = model.kinematics
+          updateAngle = (nextAngle) => {
+            const pose = calculateFoldTreePose(treeKinematics, nextAngle)
+            if (
+              !pose
+              || pose.faceTransforms.size !== faceGroups.size
+              || pose.hingeTransforms.size !== hingeLines.size
+            ) return false
+            for (const [faceId, transform] of pose.faceTransforms) {
+              const group = faceGroups.get(faceId)
+              if (!group) return false
+              group.matrix.copy(transform)
+              group.matrixWorldNeedsUpdate = true
+            }
+            for (const [edgeId, transform] of pose.hingeTransforms) {
+              const line = hingeLines.get(edgeId)
+              if (!line) return false
+              line.matrix.copy(transform)
+              line.matrixWorldNeedsUpdate = true
+            }
+            return true
+          }
+          if (!updateAngle(angleRef.current)) throw new Error('invalid fold tree pose')
+        }
       }
 
       const render = () => createdRenderer.render(scene, camera)
-      runtime = { pivot, axis, rotationSign, render, dispose }
+      runtime = { updateAngle, render, dispose }
       runtimeRef.current = runtime
 
       const resize = () => {
@@ -282,9 +327,7 @@ export function FoldPreview({
     const runtime = runtimeRef.current
     if (!runtime) return
     try {
-      if (runtime.pivot && runtime.axis) {
-        applyFoldRotation(runtime.pivot, runtime.axis, runtime.rotationSign, safeAngle)
-      }
+      if (!runtime.updateAngle(safeAngle)) throw new Error('invalid fold pose')
       runtime.render()
     } catch {
       runtime.dispose()
@@ -300,13 +343,17 @@ export function FoldPreview({
   const unavailableMessage = model && renderError
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
-  const previewNote = model?.kind === 'fold_graph'
-    ? `${model.faces.length}面・${model.hinges.length}ヒンジは平面確認段階（折り動作は未適用）・${thicknessNote}`
-    : thicknessNote
+  const previewNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
+    ? `${model.faces.length}面・${model.hinges.length}ヒンジを一括 ${safeAngle}度（衝突未検証）・${thicknessNote}`
+    : model?.kind === 'fold_graph'
+      ? `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階・${thicknessNote}`
+      : thicknessNote
   const previewDescription = model?.kind === 'single_fold' && !renderError
     ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度、${thicknessNote}`
-    : model?.kind === 'fold_graph' && !renderError
-      ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、折り動作は未適用、${thicknessNote}`
+    : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
+      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、一括折り角${safeAngle}度、衝突未検証、${thicknessNote}`
+      : model?.kind === 'fold_graph' && !renderError
+        ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
       ? `実展開図の平面3Dプレビュー、${thicknessNote}`
       : `3D折りプレビューは利用できません。${unavailableMessage}`

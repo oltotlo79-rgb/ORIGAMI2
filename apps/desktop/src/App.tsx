@@ -242,6 +242,11 @@ function App() {
     : topologyResponse
       ? 'status-invalid'
       : 'status-ready'
+  const foldAngleEnabled = foldPreviewModel?.kind === 'single_fold'
+    || (
+      foldPreviewModel?.kind === 'fold_graph'
+      && foldPreviewModel.kinematics.kind === 'tree'
+    )
   const paperSizeLabel = paperBounds
     ? `${formatMillimetres(paperBounds.maxX - paperBounds.minX)} × ${formatMillimetres(paperBounds.maxY - paperBounds.minY)} mm`
     : '寸法不明'
@@ -1105,17 +1110,22 @@ function App() {
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
             />
             <div className="fold-control">
-              <label htmlFor="fold-angle">折り量</label>
+              <label htmlFor="fold-angle">
+                {foldPreviewModel?.kind === 'fold_graph'
+                  && foldPreviewModel.kinematics.kind === 'tree'
+                  ? '一括折り量'
+                  : '折り量'}
+              </label>
               <input
                 id="fold-angle"
                 type="range"
                 min="0"
                 max="180"
-                disabled={foldPreviewModel?.kind !== 'single_fold'}
+                disabled={!foldAngleEnabled}
                 value={foldAngle}
                 onChange={(event) => setFoldAngle(Number(event.target.value))}
               />
-              <output>{foldAngle}°</output>
+              <output>{foldAngleEnabled ? `${foldAngle}°` : '—'}</output>
             </div>
           </article>
         </section>

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Vector3 } from 'three'
 
+import { calculateFoldTreePose } from '../src/lib/foldPreviewKinematics.ts'
 import {
   MAX_FOLD_PREVIEW_WORLD_SIZE,
   buildFoldPreviewModel,
@@ -40,6 +42,10 @@ const ids = {
   foldDg: id(0x305),
   foldCg: id(0x306),
   foldFg: id(0x307),
+  extraBoundaryOne: id(0x207),
+  extraBoundaryTwo: id(0x208),
+  parallelFoldOne: id(0x308),
+  parallelFoldTwo: id(0x309),
 } as const
 
 const boundaryEdgeIds = [ids.ab, ids.bc, ids.cd, ids.de, ids.ef, ids.fa] as const
@@ -273,6 +279,160 @@ function foldGraphFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
   }]
 }
 
+function foldTreeFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
+  const vertexIds = [
+    ids.a,
+    ids.b,
+    ids.c,
+    ids.d,
+    ids.e,
+    ids.f,
+    ids.auxiliaryVertex,
+    ids.missingVertex,
+  ]
+  const boundaryIds = [
+    ids.ab,
+    ids.bc,
+    ids.cd,
+    ids.de,
+    ids.ef,
+    ids.fa,
+    ids.extraBoundaryOne,
+    ids.extraBoundaryTwo,
+  ]
+  const positions = [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 3, y: 0 },
+    { x: 4, y: 0 },
+    { x: 4, y: 4 },
+    { x: 3, y: 4 },
+    { x: 1, y: 4 },
+    { x: 0, y: 4 },
+  ]
+  const project: ProjectSnapshot = {
+    ...projectFixture(),
+    name: 'three-face fold tree',
+    crease_pattern: {
+      vertices: vertexIds.map((vertexId, index) => ({
+        id: vertexId,
+        position: positions[index],
+      })),
+      edges: [
+        ...boundaryIds.map((edgeId, index) => ({
+          id: edgeId,
+          start: vertexIds[index],
+          end: vertexIds[(index + 1) % vertexIds.length],
+          kind: 'boundary' as const,
+        })),
+        {
+          id: ids.parallelFoldOne,
+          start: ids.auxiliaryVertex,
+          end: ids.b,
+          kind: 'mountain',
+        },
+        {
+          id: ids.parallelFoldTwo,
+          start: ids.f,
+          end: ids.c,
+          kind: 'valley',
+        },
+      ],
+    },
+    paper: {
+      ...projectFixture().paper,
+      boundary_vertices: vertexIds,
+    },
+  }
+
+  const face = (
+    faceId: string,
+    keyByte: number,
+    signedDoubleArea: number,
+    halfEdges: TopologyFace['outer']['half_edges'],
+  ): TopologyFace => ({
+    id: faceId,
+    key: [keyByte, ...Array<number>(31).fill(0)],
+    outer: { signed_double_area: signedDoubleArea, half_edges: halfEdges },
+    area: signedDoubleArea / 2,
+  })
+  const west = face(ids.west, 1, 8, [
+    { edge: ids.ab, origin: ids.a, destination: ids.b },
+    { edge: ids.parallelFoldOne, origin: ids.b, destination: ids.auxiliaryVertex },
+    {
+      edge: ids.extraBoundaryOne,
+      origin: ids.auxiliaryVertex,
+      destination: ids.missingVertex,
+    },
+    { edge: ids.extraBoundaryTwo, origin: ids.missingVertex, destination: ids.a },
+  ])
+  const middle = face(ids.south, 2, 16, [
+    { edge: ids.bc, origin: ids.b, destination: ids.c },
+    { edge: ids.parallelFoldTwo, origin: ids.c, destination: ids.f },
+    { edge: ids.fa, origin: ids.f, destination: ids.auxiliaryVertex },
+    { edge: ids.parallelFoldOne, origin: ids.auxiliaryVertex, destination: ids.b },
+  ])
+  const east = face(ids.east, 3, 8, [
+    { edge: ids.cd, origin: ids.c, destination: ids.d },
+    { edge: ids.de, origin: ids.d, destination: ids.e },
+    { edge: ids.ef, origin: ids.e, destination: ids.f },
+    { edge: ids.parallelFoldTwo, origin: ids.f, destination: ids.c },
+  ])
+  const materialByBoundary = [
+    ids.west,
+    ids.south,
+    ids.east,
+    ids.east,
+    ids.east,
+    ids.south,
+    ids.west,
+    ids.west,
+  ]
+  const topology: ProjectTopologyResponse = {
+    project_id: ids.project,
+    revision: 7,
+    simulation_ready: true,
+    snapshot: {
+      source_revision: 7,
+      faces: [west, middle, east],
+      edge_incidence: [
+        ...boundaryIds.map((edgeId, index) => [
+          edgeId,
+          { kind: 'boundary' as const, material: materialByBoundary[index] },
+        ] as const),
+        [ids.parallelFoldOne, {
+          kind: 'hinge',
+          left: ids.west,
+          right: ids.south,
+          assignment: 'mountain',
+        }],
+        [ids.parallelFoldTwo, {
+          kind: 'hinge',
+          left: ids.south,
+          right: ids.east,
+          assignment: 'valley',
+        }],
+      ],
+      hinge_adjacency: [
+        {
+          edge: ids.parallelFoldOne,
+          first: ids.west,
+          second: ids.south,
+          assignment: 'mountain',
+        },
+        {
+          edge: ids.parallelFoldTwo,
+          first: ids.south,
+          second: ids.east,
+          assignment: 'valley',
+        },
+      ],
+    },
+    issues: [],
+  }
+  return [project, topology]
+}
+
 function flatFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
   const project = projectFixture()
   project.crease_pattern.edges.pop()
@@ -407,6 +567,10 @@ test('a cellular fold graph preserves every face and validated hinge in canonica
     model.hinges.map((hinge) => hinge.edgeId),
     [ids.foldAg, ids.foldFg, ids.foldCg, ids.foldDg],
   )
+  assert.deepEqual(model.kinematics, {
+    kind: 'static_cycle',
+    reason: 'cyclic_hinge_graph',
+  })
   assert.deepEqual(
     model.hinges.map((hinge) => [
       hinge.start.vertexId,
@@ -431,6 +595,95 @@ test('a cellular fold graph preserves every face and validated hinge in canonica
   project.paper.boundary_vertices.push(...project.paper.boundary_vertices.splice(0, 3))
   topology.snapshot?.edge_incidence.reverse()
   assert.deepEqual(buildFoldPreviewModel(project, topology), expected)
+})
+
+test('an acyclic fold graph exposes a deterministic parent-before-child motion tree', () => {
+  const [project, topology] = foldTreeFixtures()
+
+  const model = buildFoldPreviewModel(project, topology)
+
+  assert.ok(model?.kind === 'fold_graph')
+  assert.deepEqual(model.kinematics, {
+    kind: 'tree',
+    rootFaceId: ids.west,
+    joints: [
+      {
+        parentFaceId: ids.west,
+        childFaceId: ids.south,
+        hinge: model.hinges[0],
+        childRotationSign: 1,
+      },
+      {
+        parentFaceId: ids.south,
+        childFaceId: ids.east,
+        hinge: model.hinges[1],
+        childRotationSign: -1,
+      },
+    ],
+  })
+})
+
+test('tree traversal reverses relative hinge rotation when the canonical root is on the right', () => {
+  const [project, topology] = foldTreeFixtures()
+  assert.ok(topology.snapshot)
+  const [west, middle, east] = topology.snapshot.faces
+  west.key[0] = 3
+  middle.key[0] = 2
+  east.key[0] = 1
+  topology.snapshot.faces = [east, middle, west]
+  topology.snapshot.hinge_adjacency = [
+    {
+      edge: ids.parallelFoldTwo,
+      first: ids.east,
+      second: ids.south,
+      assignment: 'valley',
+    },
+    {
+      edge: ids.parallelFoldOne,
+      first: ids.south,
+      second: ids.west,
+      assignment: 'mountain',
+    },
+  ]
+
+  const model = buildFoldPreviewModel(project, topology)
+
+  assert.ok(model?.kind === 'fold_graph' && model.kinematics.kind === 'tree')
+  assert.equal(model.kinematics.rootFaceId, ids.east)
+  assert.deepEqual(
+    model.kinematics.joints.map((joint) => [
+      joint.parentFaceId,
+      joint.childFaceId,
+      joint.hinge.edgeId,
+      joint.childRotationSign,
+    ]),
+    [
+      [ids.east, ids.south, ids.parallelFoldTwo, 1],
+      [ids.south, ids.west, ids.parallelFoldOne, -1],
+    ],
+  )
+})
+
+test('validated tree metadata feeds a pose whose parent and child hinge axes stay coincident', () => {
+  const [project, topology] = foldTreeFixtures()
+  const model = buildFoldPreviewModel(project, topology)
+  assert.ok(model?.kind === 'fold_graph' && model.kinematics.kind === 'tree')
+
+  const pose = calculateFoldTreePose(model.kinematics, 63)
+
+  assert.ok(pose)
+  assert.equal(pose.faceTransforms.size, model.faces.length)
+  for (const joint of model.kinematics.joints) {
+    const parent = pose.faceTransforms.get(joint.parentFaceId)
+    const child = pose.faceTransforms.get(joint.childFaceId)
+    assert.ok(parent && child)
+    for (const endpoint of [joint.hinge.start, joint.hinge.end]) {
+      const rest = new Vector3(endpoint.x, 0, endpoint.z)
+      const fromParent = rest.clone().applyMatrix4(parent)
+      const fromChild = rest.clone().applyMatrix4(child)
+      assert.ok(fromParent.distanceTo(fromChild) < 1e-12)
+    }
+  }
 })
 
 test('every fold-graph hinge must match incidence, adjacency, source, and oriented boundaries', () => {

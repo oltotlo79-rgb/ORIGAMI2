@@ -19,6 +19,9 @@ import type {
 import {
   MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
 } from '../src/lib/foldPreviewNarrowCollision.ts'
+import {
+  createFoldPreviewTreeSceneCollisionPoseKey,
+} from '../src/lib/foldPreviewTreeScenePose.ts'
 
 const THICKNESS = 0.1
 
@@ -82,6 +85,352 @@ test('full-face point analysis blocks a collision with a stationary branch', () 
     new Set(['moving', 'obstacle']),
   )
   assert.equal(result.blocker?.geometryClass, 'penetrating')
+})
+
+test('a terminal block retains its exact request-bound collision sample', () => {
+  const model = stationaryBranchCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'frozen', angleDegrees: 90 },
+    { edgeId: 'selected', angleDegrees: 0 },
+  ] as const
+  const targetSelectedAngleDegrees = 120
+  const thickness = 0.02
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const expectedRequestIdentity = {
+    contextKey: 'stationary-branch-context',
+    sourcePoseRequestKey,
+    generation: 7,
+    requestSequence: 11,
+  } as const
+  const requestIdentity = { ...expectedRequestIdentity }
+  const job = analyzer.createJob(
+    startAngles,
+    targetSelectedAngleDegrees,
+    thickness,
+    {
+      maxDepth: 18,
+      minTimeSpan: 2 ** -22,
+      maxIntervalTests: 10_000,
+      requestIdentity,
+    },
+  )
+  assert.ok(job)
+  requestIdentity.contextKey = 'mutated-after-job-creation'
+  requestIdentity.generation = 99
+
+  const result = run(job)
+  assert.equal(result.kind, 'blocked', JSON.stringify(result))
+  assert.ok(result.kind === 'blocked')
+  assert.equal(result.blockingSampleTime, result.unsafeBracket[1])
+  const blocker = result.blocker
+  const sample = blocker?.blockingSample
+  assert.ok(blocker && sample)
+  assert.equal(sample.blockingSampleTime, result.blockingSampleTime)
+  assert.equal(
+    sample.selectedAngleDegrees,
+    (
+      targetSelectedAngleDegrees
+      - startAngles[1].angleDegrees
+    ) * result.blockingSampleTime,
+  )
+  assert.equal(sample.collisionThickness, thickness)
+  assert.deepEqual(sample.identity, {
+    projectId: 'stationary-branch-project',
+    revision: 1,
+    revisionBinding: 'project_response_source_equal_v1',
+    fixedFaceId: 'root',
+    selectedHingeEdgeId: 'selected',
+    request: expectedRequestIdentity,
+  })
+  assert.notStrictEqual(sample.identity.request, requestIdentity)
+
+  const expectedStart = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ]
+  const expectedTarget = [
+    { edgeId: 'selected', angleDegrees: targetSelectedAngleDegrees },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ]
+  const expectedSample = [
+    {
+      edgeId: 'selected',
+      angleDegrees: sample.selectedAngleDegrees,
+    },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ]
+  assert.deepEqual(sample.angleVectors.start, expectedStart)
+  assert.deepEqual(sample.angleVectors.target, expectedTarget)
+  assert.deepEqual(sample.angleVectors.sample, expectedSample)
+
+  assert.equal(sample.faceTransforms.length, 2)
+  assert.deepEqual(
+    sample.faceTransforms.map((transform) => transform.faceId),
+    [blocker.firstFaceId, blocker.secondFaceId],
+  )
+  for (const transform of sample.faceTransforms) {
+    assert.equal(transform.elements.length, 16)
+    assert.ok(transform.elements.every(Number.isFinite))
+  }
+
+  const coverage = sample.witnessCoverage
+  assert.equal(
+    coverage.scope,
+    'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',
+  )
+  assert.equal(
+    coverage.eligiblePairCount,
+    coverage.attemptedPairCount + coverage.omittedByLimitCount,
+  )
+  assert.equal(
+    coverage.attemptedPairCount,
+    sample.witnessSamples.length + coverage.unavailablePairCount,
+  )
+  assert.ok(coverage.attemptedPairCount <= 16)
+  assert.equal(typeof coverage.authoritativePairScanComplete, 'boolean')
+  for (const witnessSample of sample.witnessSamples) {
+    assert.equal(witnessSample.relation, 'non_adjacent')
+    assert.ok(Number.isSafeInteger(witnessSample.firstTriangleIndex))
+    assert.ok(witnessSample.firstTriangleIndex >= 0)
+    assert.ok(Number.isSafeInteger(witnessSample.secondTriangleIndex))
+    assert.ok(witnessSample.secondTriangleIndex >= 0)
+    assert.equal(
+      witnessSample.witness.geometryClass,
+      witnessSample.geometryClass,
+    )
+    assert.equal(
+      witnessSample.witness.algorithm,
+      'triangle_prism_sat_witness_v1',
+    )
+    assert.ok(Number.isFinite(witnessSample.witness.numericalMargin))
+    assert.ok(witnessSample.witness.numericalMargin >= 0)
+    assert.ok(Number.isFinite(witnessSample.witness.escapeDistance))
+    assert.ok(witnessSample.witness.escapeDistance >= 0)
+    assert.ok(Number.isFinite(witnessSample.witness.toleratedGap))
+    assert.ok(witnessSample.witness.toleratedGap >= 0)
+    assert.equal(
+      witnessSample.witness.localSeparationHint.distance,
+      witnessSample.witness.escapeDistance,
+    )
+    assert.equal(
+      witnessSample.witness.localSeparationHint.scope,
+      'selected_triangle_prism_pair_only',
+    )
+    assert.equal(
+      witnessSample.witness.localSeparationHint.autoApplicable,
+      false,
+    )
+    assert.equal(
+      witnessSample.witness.positionRegion.sourcePose,
+      'analyzed_input_pose',
+    )
+    assert.ok(witnessSample.witness.firstSupport.length > 0)
+    assert.ok(witnessSample.witness.secondSupport.length > 0)
+    assert.ok(witnessSample.witness.positionRegion.generators.length > 0)
+    assertFinitePoint(witnessSample.witness.normal.vector)
+    assertFinitePoint(
+      witnessSample.witness.localSeparationHint.translation,
+    )
+    for (const point of witnessSample.witness.firstSupport) {
+      assertFinitePoint(point)
+    }
+    for (const point of witnessSample.witness.secondSupport) {
+      assertFinitePoint(point)
+    }
+    for (const point of witnessSample.witness.positionRegion.generators) {
+      assertFinitePoint(point)
+    }
+  }
+
+  assert.notEqual(sample.primaryWitnessIndex, null)
+  const primary = sample.primaryWitnessIndex === null
+    ? undefined
+    : sample.witnessSamples[sample.primaryWitnessIndex]
+  assert.ok(primary)
+  assert.equal(primary.firstFaceId, blocker.firstFaceId)
+  assert.equal(primary.secondFaceId, blocker.secondFaceId)
+  assert.equal(primary.geometryClass, blocker.geometryClass)
+  assert.equal(primary.relation, 'non_adjacent')
+  assertDeeplyFrozen(sample)
+
+  const repeatedTerminalResult = job.step(1)
+  assert.strictEqual(repeatedTerminalResult, result)
+  assert.strictEqual(
+    repeatedTerminalResult.kind === 'blocked'
+      ? repeatedTerminalResult.blocker?.blockingSample
+      : null,
+    sample,
+  )
+})
+
+test('request identity mismatches and malformed values reject job creation', () => {
+  const model = stationaryBranchCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const thickness = 0.02
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+
+  assert.equal(analyzer.createJob(startAngles, 120, thickness, {
+    requestIdentity: {
+      contextKey: 'context',
+      sourcePoseRequestKey: `${sourcePoseRequestKey}:mismatch`,
+      generation: 0,
+      requestSequence: 1,
+    },
+  }), null)
+  for (const requestIdentity of [
+    {
+      contextKey: '',
+      sourcePoseRequestKey,
+      generation: 0,
+      requestSequence: 1,
+    },
+    {
+      contextKey: 'context',
+      sourcePoseRequestKey,
+      generation: -1,
+      requestSequence: 1,
+    },
+    {
+      contextKey: 'context',
+      sourcePoseRequestKey,
+      generation: 0,
+      requestSequence: 0,
+    },
+  ]) {
+    assert.equal(analyzer.createJob(startAngles, 120, thickness, {
+      requestIdentity,
+    }), null)
+  }
+})
+
+test('a requestless pure analyzer still retains a complete blocking snapshot', () => {
+  const model = stationaryBranchCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const job = analyzer.createJob(startAngles, 120, 0.02, {
+    maxDepth: 18,
+    minTimeSpan: 2 ** -22,
+    maxIntervalTests: 10_000,
+  })
+  assert.ok(job)
+
+  const result = run(job)
+  assert.equal(result.kind, 'blocked', JSON.stringify(result))
+  const sample = result.kind === 'blocked'
+    ? result.blocker?.blockingSample
+    : null
+  assert.ok(sample)
+  assert.equal(sample.identity.request, null)
+  assert.deepEqual(sample.identity, {
+    projectId: model.projectId,
+    revision: model.revision,
+    revisionBinding: 'project_response_source_equal_v1',
+    fixedFaceId: 'root',
+    selectedHingeEdgeId: 'selected',
+    request: null,
+  })
+  assert.equal(sample.blockingSampleTime, result.blockingSampleTime)
+  assert.deepEqual(sample.angleVectors.start, startAngles)
+  assert.deepEqual(sample.angleVectors.target, [
+    { edgeId: 'selected', angleDegrees: 120 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ])
+  assert.equal(sample.faceTransforms.length, 2)
+  assert.ok(sample.faceTransforms.every(
+    (transform) => transform.elements.length === 16,
+  ))
+  assert.ok(sample.witnessSamples.length > 0)
+  assertDeeplyFrozen(sample)
+})
+
+test('blocking samples bind exact start and target endpoint times', () => {
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    stationaryBranchCollisionModel(),
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const safeStart = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const targetEndpointJob = analyzer.createJob(
+    safeStart,
+    120,
+    0.02,
+    { maxDepth: 0 },
+  )
+  assert.ok(targetEndpointJob)
+  const targetEndpoint = run(targetEndpointJob)
+  assert.equal(targetEndpoint.kind, 'blocked')
+  assert.ok(targetEndpoint.kind === 'blocked')
+  assert.equal(targetEndpoint.blockingSampleTime, 1)
+  assert.equal(
+    targetEndpoint.blocker?.blockingSample?.blockingSampleTime,
+    1,
+  )
+  assert.equal(
+    targetEndpoint.blocker?.blockingSample?.selectedAngleDegrees,
+    120,
+  )
+
+  const blockedStart = [
+    { edgeId: 'selected', angleDegrees: 120 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const reverseJob = analyzer.createJob(blockedStart, 0, 0.02)
+  assert.ok(reverseJob)
+  const reverse = run(reverseJob)
+  assert.equal(reverse.kind, 'blocked')
+  assert.ok(reverse.kind === 'blocked')
+  assert.equal(reverse.blockingSampleTime, 0)
+  assert.equal(reverse.blocker?.blockingSample?.blockingSampleTime, 0)
+  assert.equal(
+    reverse.blocker?.blockingSample?.selectedAngleDegrees,
+    120,
+  )
+  assert.deepEqual(
+    reverse.blocker?.blockingSample?.angleVectors.target,
+    [
+      { edgeId: 'selected', angleDegrees: 0 },
+      { edgeId: 'frozen', angleDegrees: 90 },
+    ],
+  )
 })
 
 test('rerooting selects the opposite side without changing other hinge angles', () => {
@@ -616,6 +965,24 @@ function run(
     if (result.kind !== 'pending') return result
   }
   throw new Error('tree single-hinge continuous job did not terminate')
+}
+
+function assertFinitePoint(
+  point: Readonly<{ x: number; y: number; z: number }>,
+) {
+  assert.ok([point.x, point.y, point.z].every(Number.isFinite))
+}
+
+function assertDeeplyFrozen(value: unknown, seen = new Set<object>()) {
+  if (typeof value !== 'object' || value === null || seen.has(value)) return
+  seen.add(value)
+  assert.ok(Object.isFrozen(value))
+  for (const key of Reflect.ownKeys(value)) {
+    assertDeeplyFrozen(
+      (value as Record<PropertyKey, unknown>)[key],
+      seen,
+    )
+  }
 }
 
 function guardedSparseArray<T>(length: number): Readonly<{

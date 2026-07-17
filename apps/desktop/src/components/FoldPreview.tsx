@@ -1721,8 +1721,11 @@ export function FoldPreview({
             schedule: (callback) => window.requestAnimationFrame(callback),
             cancel: (handle) => window.cancelAnimationFrame(handle),
             jobFactory: (startAngle, targetAngle) => {
+              const requestSequence =
+                binding.runtimeState.activeRequestSequence
               if (
                 !treeBindingIsCurrent(binding)
+                || requestSequence === null
                 || selectedTreeAngle(
                   binding.runtimeState.appliedAngles,
                   binding.context.selectedHingeEdgeId,
@@ -1732,6 +1735,14 @@ export function FoldPreview({
                 binding.runtimeState.appliedAngles,
                 targetAngle,
                 binding.context.collisionThickness,
+                {
+                  requestIdentity: {
+                    contextKey: binding.context.contextKey,
+                    sourcePoseRequestKey: binding.externalRequestKey,
+                    generation: binding.runtimeState.generation,
+                    requestSequence,
+                  },
+                },
               )
             },
             applyAngle: (nextAngle) =>

@@ -13,6 +13,8 @@ import {
   type FoldPreviewContinuousMotionJob,
   type FoldPreviewContinuousMotionOptions,
   type FoldPreviewContinuousPointDecision,
+  type FoldPreviewContinuousMotionResult,
+  type FoldPreviewContinuousMotionStep,
 } from './foldPreviewContinuousMotion.ts'
 import { findFoldPreviewSingleAxisSweptAabb } from './foldPreviewContinuousInterval.ts'
 import {
@@ -34,10 +36,15 @@ import type {
   FoldPreviewFaceModel,
   FoldPreviewHingeModel,
 } from './foldPreviewModel.ts'
+import { createFoldPreviewTreeSceneCollisionPoseKey } from './foldPreviewTreeScenePose.ts'
 import {
   MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
+  MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   calculateFoldPreviewNarrowPhaseNumericalMargin,
   prepareFoldPreviewNarrowPhase,
+  type FoldPreviewNarrowPhaseInteraction,
+  type FoldPreviewNarrowPhaseWitnessCoverage,
+  type FoldPreviewNarrowPhaseWitnessSample,
 } from './foldPreviewNarrowCollision.ts'
 
 export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_CROSS_TRIANGLE_PAIRS =
@@ -46,9 +53,59 @@ export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_INTERVAL_PAIR_VISITS 
   1_000_000
 export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_POINT_TRIANGLE_TESTS =
   1_000_000
+export const FOLD_PREVIEW_TREE_SINGLE_HINGE_BLOCKING_SAMPLE_VERSION =
+  'tree_single_hinge_blocking_sample_v1'
 
 const HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR = 8
 const MOTION_POSE_EQUIVALENCE_FACTOR = 1_024
+const MAX_BLOCKING_SAMPLE_REQUEST_KEY_LENGTH = 8 * 1_024 * 1_024
+
+export type FoldPreviewTreeSingleHingeContinuousRequestIdentity = Readonly<{
+  contextKey: string
+  sourcePoseRequestKey: string
+  generation: number
+  requestSequence: number
+}>
+
+export type FoldPreviewTreeSingleHingeBlockingFaceTransform = Readonly<{
+  faceId: string
+  /** Exact detached column-major Matrix4 elements used by the point check. */
+  elements: readonly number[]
+}>
+
+export type FoldPreviewTreeSingleHingeBlockingSample = Readonly<{
+  version: typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_BLOCKING_SAMPLE_VERSION
+  sourcePose: 'blocking_evaluate_point_pose'
+  blockingSampleTime: number
+  selectedAngleDegrees: number
+  collisionThickness: number
+  identity: Readonly<{
+    projectId: string
+    revision: number
+    revisionBinding: 'project_response_source_equal_v1'
+    fixedFaceId: string
+    selectedHingeEdgeId: string
+    request: FoldPreviewTreeSingleHingeContinuousRequestIdentity | null
+  }>
+  angleVectors: Readonly<{
+    start: readonly FoldPreviewHingeAngle[]
+    target: readonly FoldPreviewHingeAngle[]
+    sample: readonly FoldPreviewHingeAngle[]
+  }>
+  /** Only the primary blocker's two face transforms are retained. */
+  faceTransforms: readonly [
+    FoldPreviewTreeSingleHingeBlockingFaceTransform,
+    FoldPreviewTreeSingleHingeBlockingFaceTransform,
+  ]
+  /** Full bounded list, so its global coverage equations remain meaningful. */
+  witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
+  witnessCoverage: FoldPreviewNarrowPhaseWitnessCoverage
+  /**
+   * The first sample matching the blocking face pair and class, or null when
+   * that pair was omitted by the cap or conservative derivation was unavailable.
+   */
+  primaryWitnessIndex: number | null
+}>
 
 export type FoldPreviewTreeSingleHingeContinuousBlocker = Readonly<{
   firstFaceId: string
@@ -56,6 +113,11 @@ export type FoldPreviewTreeSingleHingeContinuousBlocker = Readonly<{
   relation: 'hinge_adjacent' | 'non_adjacent'
   geometryClass: 'touching' | 'penetrating' | 'indeterminate'
   hingeDecisionKind?: string
+  /**
+   * Detached analysis-only unsafe pose. Its transforms and pair-local hint
+   * must never be sent through the certified scene-application path.
+   */
+  blockingSample: FoldPreviewTreeSingleHingeBlockingSample | null
 }>
 
 export type FoldPreviewTreeSingleHingeContinuousOptions =
@@ -71,6 +133,11 @@ export type FoldPreviewTreeSingleHingeContinuousOptions =
      * fits in the remaining budget.
      */
     maxPointTriangleTests?: number
+    /**
+     * Optional UI/runtime identity for the exact request that created the job.
+     * Direct pure-analyzer callers may omit it; UI publication must not.
+     */
+    requestIdentity?: FoldPreviewTreeSingleHingeContinuousRequestIdentity
   }>
 
 export type FoldPreviewTreeSingleHingeContinuousAnalyzer = Readonly<{
@@ -116,6 +183,22 @@ type ResolvedJobOptions = Readonly<{
   motion: FoldPreviewContinuousMotionOptions
   maxIntervalPairVisits: number
   maxPointTriangleTests: number
+  requestIdentity: FoldPreviewTreeSingleHingeContinuousRequestIdentity | null
+}>
+
+type LightweightBlocker = Omit<
+  FoldPreviewTreeSingleHingeContinuousBlocker,
+  'blockingSample'
+>
+
+type BlockingSampleSeed = Readonly<{
+  blockingSampleTime: number
+  selectedAngleDegrees: number
+  blocker: LightweightBlocker
+  faceTransforms: FoldPreviewTreeSingleHingeBlockingSample['faceTransforms']
+  witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
+  witnessCoverage: FoldPreviewNarrowPhaseWitnessCoverage
+  primaryWitnessIndex: number | null
 }>
 
 /**
@@ -299,6 +382,15 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
           || !Number.isFinite(thickness)
           || thickness < 0
         ) return null
+        if (
+          resolvedOptions.requestIdentity
+          && createFoldPreviewTreeSceneCollisionPoseKey(
+            snapshot,
+            tree.rootFaceId,
+            thickness,
+            normalizedAngles,
+          ) !== resolvedOptions.requestIdentity.sourcePoseRequestKey
+        ) return null
         const startSelectedAngle = normalizedAngles.find(
           (angle) => angle.edgeId === selectedHingeEdgeId,
         )?.angleDegrees
@@ -393,10 +485,11 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
 
         let pointTriangleTests = 0
         let intervalPairVisits = 0
+        let earliestBlockingSampleSeed: BlockingSampleSeed | null = null
         const pointDecision = (
           time: number,
         ): FoldPreviewContinuousPointDecision<
-          FoldPreviewTreeSingleHingeContinuousBlocker
+          LightweightBlocker
         > => {
           const angle = angleAt(time)
           if (!validAngle(angle)) {
@@ -457,9 +550,28 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
             if (interaction.geometryClass === 'indeterminate') {
               unknownReason ??= 'non_adjacent_geometry_indeterminate'
             } else {
+              const blocker = blockerFor(interaction)
+              const seed = captureBlockingSampleSeed(
+                time,
+                angle,
+                blocker,
+                faceTransforms,
+                result.witnessSamples,
+                result.witnessCoverage,
+              )
+              if (
+                seed
+                && (
+                  !earliestBlockingSampleSeed
+                  || seed.blockingSampleTime
+                    < earliestBlockingSampleSeed.blockingSampleTime
+                )
+              ) {
+                earliestBlockingSampleSeed = seed
+              }
               return {
                 kind: 'blocked',
-                blocker: blockerFor(interaction),
+                blocker,
               }
             }
           }
@@ -468,7 +580,7 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
             : { kind: 'safe' }
         }
 
-          return createFoldPreviewContinuousMotionJob({
+          const innerJob = createFoldPreviewContinuousMotionJob({
             evaluatePoint: pointDecision,
             certifyInterval(startTime, endTime) {
             const startAngle = angleAt(startTime)
@@ -575,6 +687,18 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
             return { kind: 'clear' }
             },
           }, resolvedOptions.motion)
+          if (!innerJob) return null
+          return attachBlockingSampleToJob(
+            innerJob,
+            () => earliestBlockingSampleSeed,
+            snapshot,
+            tree.rootFaceId,
+            selectedHingeEdgeId,
+            normalizedAngles,
+            targetSelectedAngleDegrees,
+            thickness,
+            resolvedOptions.requestIdentity,
+          )
         } catch {
           return null
         }
@@ -733,15 +857,304 @@ function continuousCoordinateScaleUpperBound(
   return Number.isFinite(scale) ? scale : null
 }
 
+function captureBlockingSampleSeed(
+  blockingSampleTime: number,
+  selectedAngleDegrees: number,
+  blocker: LightweightBlocker,
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[],
+  witnessCoverage: FoldPreviewNarrowPhaseWitnessCoverage,
+): BlockingSampleSeed | null {
+  if (
+    blocker.relation !== 'non_adjacent'
+    || (
+      blocker.geometryClass !== 'touching'
+      && blocker.geometryClass !== 'penetrating'
+    )
+    || !validUnitTime(blockingSampleTime)
+    || !validAngle(selectedAngleDegrees)
+    || !validWitnessCoverage(witnessCoverage, witnessSamples.length)
+  ) return null
+  const firstTransform = snapshotBlockingFaceTransform(
+    blocker.firstFaceId,
+    faceTransforms.get(blocker.firstFaceId),
+  )
+  const secondTransform = snapshotBlockingFaceTransform(
+    blocker.secondFaceId,
+    faceTransforms.get(blocker.secondFaceId),
+  )
+  if (!firstTransform || !secondTransform) return null
+  const samples = Object.freeze([...witnessSamples])
+  const primaryWitnessIndex = samples.findIndex(
+    (sample) =>
+      sample.firstFaceId === blocker.firstFaceId
+      && sample.secondFaceId === blocker.secondFaceId
+      && sample.geometryClass === blocker.geometryClass,
+  )
+  return Object.freeze({
+    blockingSampleTime,
+    selectedAngleDegrees,
+    blocker,
+    faceTransforms: Object.freeze([
+      firstTransform,
+      secondTransform,
+    ] as const),
+    witnessSamples: samples,
+    witnessCoverage: Object.freeze({ ...witnessCoverage }),
+    primaryWitnessIndex:
+      primaryWitnessIndex >= 0 ? primaryWitnessIndex : null,
+  })
+}
+
+function attachBlockingSampleToJob(
+  innerJob: FoldPreviewContinuousMotionJob<LightweightBlocker>,
+  getSeed: () => BlockingSampleSeed | null,
+  model: FoldGraphPreviewModel,
+  fixedFaceId: string,
+  selectedHingeEdgeId: string,
+  startAngles: readonly FoldPreviewHingeAngle[],
+  targetSelectedAngleDegrees: number,
+  collisionThickness: number,
+  requestIdentity:
+    FoldPreviewTreeSingleHingeContinuousRequestIdentity | null,
+): FoldPreviewContinuousMotionJob<
+  FoldPreviewTreeSingleHingeContinuousBlocker
+> {
+  type BlockedResult = Extract<
+    FoldPreviewContinuousMotionResult<
+      FoldPreviewTreeSingleHingeContinuousBlocker
+    >,
+    { kind: 'blocked' }
+  >
+  let wrappedBlocked: BlockedResult | null = null
+
+  return Object.freeze({
+    step(workBudget: number): FoldPreviewContinuousMotionStep<
+      FoldPreviewTreeSingleHingeContinuousBlocker
+    > {
+      if (wrappedBlocked) return wrappedBlocked
+      const step = innerJob.step(workBudget)
+      if (step.kind !== 'blocked') return step
+      if (!Object.hasOwn(step, 'blocker') || !step.blocker) {
+        const result: BlockedResult = Object.freeze({
+          kind: 'blocked',
+          certifiedSafeThrough: step.certifiedSafeThrough,
+          stopTime: step.stopTime,
+          unsafeBracket: step.unsafeBracket,
+          blockingSampleTime: step.blockingSampleTime,
+          stats: step.stats,
+        })
+        wrappedBlocked = result
+        return result
+      }
+      const lightweight = step.blocker
+      let blockingSample: FoldPreviewTreeSingleHingeBlockingSample | null = null
+      try {
+        const seed = getSeed()
+        blockingSample = seed
+          && seed.blockingSampleTime === step.blockingSampleTime
+          && sameLightweightBlocker(seed.blocker, lightweight)
+          ? buildBlockingSample(
+              seed,
+              model,
+              fixedFaceId,
+              selectedHingeEdgeId,
+              startAngles,
+              targetSelectedAngleDegrees,
+              collisionThickness,
+              requestIdentity,
+            )
+          : null
+      } catch {
+        // Explanation failure must never weaken or replace the block itself.
+      }
+      const blocker: FoldPreviewTreeSingleHingeContinuousBlocker =
+        Object.freeze({
+          ...lightweight,
+          blockingSample,
+        })
+      const result: BlockedResult = Object.freeze({
+        ...step,
+        blocker,
+      })
+      wrappedBlocked = result
+      return result
+    },
+    cancel() {
+      innerJob.cancel()
+    },
+  })
+}
+
+function buildBlockingSample(
+  seed: BlockingSampleSeed,
+  model: FoldGraphPreviewModel,
+  fixedFaceId: string,
+  selectedHingeEdgeId: string,
+  startAngles: readonly FoldPreviewHingeAngle[],
+  targetSelectedAngleDegrees: number,
+  collisionThickness: number,
+  requestIdentity:
+    FoldPreviewTreeSingleHingeContinuousRequestIdentity | null,
+): FoldPreviewTreeSingleHingeBlockingSample | null {
+  const startSelectedAngleDegrees = startAngles.find(
+    (angle) => angle.edgeId === selectedHingeEdgeId,
+  )?.angleDegrees
+  const expectedPrimaryWitnessIndex = seed.witnessSamples.findIndex(
+    (sample) => witnessMatchesBlocker(sample, seed.blocker),
+  )
+  if (
+    !validAngle(startSelectedAngleDegrees)
+    || !validAngle(targetSelectedAngleDegrees)
+    || !validAngle(seed.selectedAngleDegrees)
+    || !validUnitTime(seed.blockingSampleTime)
+    || seed.selectedAngleDegrees !== (
+      startSelectedAngleDegrees
+      + (
+        targetSelectedAngleDegrees - startSelectedAngleDegrees
+      ) * seed.blockingSampleTime
+    )
+    || !Number.isFinite(collisionThickness)
+    || collisionThickness < 0
+    || seed.faceTransforms[0].faceId !== seed.blocker.firstFaceId
+    || seed.faceTransforms[1].faceId !== seed.blocker.secondFaceId
+    || !validWitnessCoverage(
+      seed.witnessCoverage,
+      seed.witnessSamples.length,
+    )
+    || seed.primaryWitnessIndex !== (
+      expectedPrimaryWitnessIndex >= 0
+        ? expectedPrimaryWitnessIndex
+        : null
+    )
+  ) return null
+  const start = angleVectorAt(
+    startAngles,
+    selectedHingeEdgeId,
+    startSelectedAngleDegrees,
+  )
+  const target = angleVectorAt(
+    startAngles,
+    selectedHingeEdgeId,
+    targetSelectedAngleDegrees,
+  )
+  const sample = angleVectorAt(
+    startAngles,
+    selectedHingeEdgeId,
+    seed.selectedAngleDegrees,
+  )
+  if (!start || !target || !sample) return null
+  return deepFreeze({
+    version: FOLD_PREVIEW_TREE_SINGLE_HINGE_BLOCKING_SAMPLE_VERSION,
+    sourcePose: 'blocking_evaluate_point_pose',
+    blockingSampleTime: seed.blockingSampleTime,
+    selectedAngleDegrees: seed.selectedAngleDegrees,
+    collisionThickness,
+    identity: {
+      projectId: model.projectId,
+      revision: model.revision,
+      revisionBinding: 'project_response_source_equal_v1',
+      fixedFaceId,
+      selectedHingeEdgeId,
+      request: requestIdentity,
+    },
+    angleVectors: {
+      start,
+      target,
+      sample,
+    },
+    faceTransforms: seed.faceTransforms,
+    witnessSamples: seed.witnessSamples,
+    witnessCoverage: seed.witnessCoverage,
+    primaryWitnessIndex: seed.primaryWitnessIndex,
+  })
+}
+
+function snapshotBlockingFaceTransform(
+  faceId: string,
+  transform: Matrix4 | undefined,
+): FoldPreviewTreeSingleHingeBlockingFaceTransform | null {
+  if (!transform || !Array.isArray(transform.elements)) return null
+  const elements = transform.elements
+  if (elements.length !== 16) return null
+  const snapshot: number[] = []
+  for (let index = 0; index < 16; index += 1) {
+    const value = elements[index]
+    if (!Number.isFinite(value)) return null
+    snapshot.push(value)
+  }
+  return Object.freeze({
+    faceId,
+    elements: Object.freeze(snapshot),
+  })
+}
+
+function angleVectorAt(
+  startAngles: readonly FoldPreviewHingeAngle[],
+  selectedHingeEdgeId: string,
+  selectedAngleDegrees: number,
+): readonly FoldPreviewHingeAngle[] | null {
+  if (!validAngle(selectedAngleDegrees)) return null
+  let replacements = 0
+  const angles = startAngles.map((angle) => {
+    const isSelected = angle.edgeId === selectedHingeEdgeId
+    if (isSelected) replacements += 1
+    return Object.freeze({
+      edgeId: angle.edgeId,
+      angleDegrees: isSelected
+        ? selectedAngleDegrees
+        : angle.angleDegrees,
+    })
+  })
+  return replacements === 1 ? Object.freeze(angles) : null
+}
+
+function witnessMatchesBlocker(
+  sample: FoldPreviewNarrowPhaseWitnessSample | undefined,
+  blocker: LightweightBlocker,
+) {
+  return sample?.firstFaceId === blocker.firstFaceId
+    && sample.secondFaceId === blocker.secondFaceId
+    && sample.relation === 'non_adjacent'
+    && sample.geometryClass === blocker.geometryClass
+}
+
+function validWitnessCoverage(
+  coverage: FoldPreviewNarrowPhaseWitnessCoverage,
+  sampleCount: number,
+) {
+  return coverage
+    && validCount(sampleCount)
+    && sampleCount <= MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+    && coverage.scope
+      === 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1'
+    && validCount(coverage.eligiblePairCount)
+    && validCount(coverage.attemptedPairCount)
+    && validCount(coverage.unavailablePairCount)
+    && validCount(coverage.omittedByLimitCount)
+    && coverage.eligiblePairCount
+      === coverage.attemptedPairCount + coverage.omittedByLimitCount
+    && coverage.attemptedPairCount
+      === sampleCount + coverage.unavailablePairCount
+    && coverage.attemptedPairCount
+      <= MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+    && typeof coverage.authoritativePairScanComplete === 'boolean'
+}
+
+function sameLightweightBlocker(
+  first: LightweightBlocker,
+  second: LightweightBlocker,
+) {
+  return first.firstFaceId === second.firstFaceId
+    && first.secondFaceId === second.secondFaceId
+    && first.relation === second.relation
+    && first.geometryClass === second.geometryClass
+    && first.hingeDecisionKind === second.hingeDecisionKind
+}
+
 function blockerFor(
-  interaction: Readonly<{
-    firstFaceId: string
-    secondFaceId: string
-    relation: 'hinge_adjacent' | 'non_adjacent'
-    geometryClass: 'touching' | 'penetrating' | 'indeterminate'
-    hingeDecision?: Readonly<{ kind: string }>
-  }>,
-): FoldPreviewTreeSingleHingeContinuousBlocker {
+  interaction: FoldPreviewNarrowPhaseInteraction,
+): LightweightBlocker {
   return Object.freeze({
     firstFaceId: interaction.firstFaceId,
     secondFaceId: interaction.secondFaceId,
@@ -831,6 +1244,10 @@ function resolveJobOptions(
     ?? MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_INTERVAL_PAIR_VISITS
   const maxPointTriangleTests = options.maxPointTriangleTests
     ?? MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_POINT_TRIANGLE_TESTS
+  const rawRequestIdentity = options.requestIdentity
+  const requestIdentity = rawRequestIdentity === undefined
+    ? null
+    : snapshotRequestIdentity(rawRequestIdentity)
   if (
     !Number.isSafeInteger(maxIntervalPairVisits)
     || maxIntervalPairVisits <= 0
@@ -840,6 +1257,7 @@ function resolveJobOptions(
     || maxPointTriangleTests <= 0
     || maxPointTriangleTests
       > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_CONTINUOUS_POINT_TRIANGLE_TESTS
+    || (rawRequestIdentity !== undefined && !requestIdentity)
   ) return null
   return {
     motion: {
@@ -849,7 +1267,39 @@ function resolveJobOptions(
     },
     maxIntervalPairVisits,
     maxPointTriangleTests,
+    requestIdentity,
   }
+}
+
+function snapshotRequestIdentity(
+  value: unknown,
+): FoldPreviewTreeSingleHingeContinuousRequestIdentity | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const source = value as Record<string, unknown>
+  const contextKey = source.contextKey
+  const sourcePoseRequestKey = source.sourcePoseRequestKey
+  const generation = source.generation
+  const requestSequence = source.requestSequence
+  if (
+    !validBoundedKey(contextKey)
+    || !validBoundedKey(sourcePoseRequestKey)
+    || !Number.isSafeInteger(generation)
+    || (generation as number) < 0
+    || !Number.isSafeInteger(requestSequence)
+    || (requestSequence as number) <= 0
+  ) return null
+  return Object.freeze({
+    contextKey,
+    sourcePoseRequestKey,
+    generation: generation as number,
+    requestSequence: requestSequence as number,
+  })
+}
+
+function validBoundedKey(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_BLOCKING_SAMPLE_REQUEST_KEY_LENGTH
 }
 
 function trianglePairProduct(
@@ -913,6 +1363,17 @@ function validAngle(value: unknown): value is number {
   return Number.isFinite(value)
     && (value as number) >= 0
     && (value as number) <= 180
+}
+
+function validUnitTime(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 1
+}
+
+function validCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
 function snapshotModel(
@@ -1235,4 +1696,18 @@ function sameHinge(
     && first.axis.z === second.axis.z
     && first.assignment === second.assignment
     && first.rotationSign === second.rotationSign
+}
+
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (typeof value !== 'object' || value === null) return value
+  const object = value as object
+  if (seen.has(object)) return value
+  seen.add(object)
+  for (const key of Reflect.ownKeys(object)) {
+    deepFreeze(
+      (object as Record<PropertyKey, unknown>)[key],
+      seen,
+    )
+  }
+  return Object.freeze(value)
 }

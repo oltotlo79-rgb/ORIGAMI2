@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約38.4%（2026-07-18）**
+**全体完成率: 約38.6%（2026-07-18）**
 
 完成率は画面数ではなく、要件定義書のMUST 86件、FUTURE 14件、品質検証、両OS配布を含む総工数の概算である。研究要素の結果によって見積もりを更新する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計38.42%を小数第1位へ丸めて全体完成率としている。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」であり、合計38.60%を小数第1位へ丸めて全体完成率としている。
 
 ## 重み付け
 
@@ -17,12 +17,12 @@
 | 2D展開図エディター | 15% | 52% | 7.80% | 基本編集、任意多角形用紙、9種のスナップに加え、2D・角度一覧・3Dヒンジの選択同期を実装 |
 | 数式・幾何制約 | 9% | 59% | 5.31% | 共通並進を有限回転の二次調波最小二乗へ写像し、最大6件の未検証1ヒンジ角度seedを導出 |
 | 3D折り・紙厚・衝突 | 17% | 52% | 8.84% | 合法な1ヒンジ補正姿勢を非隣接全走査と共有ヒンジ規則で静的再検証 |
-| 折り可能性・経路探索 | 18% | 19% | 3.42% | 真正blocked終端から補正解析requestを再構成し、full-scanのpair/witness走査を中断可能化 |
+| 折り可能性・経路探索 | 18% | 20% | 3.60% | 真正blocked終端から補正解析requestを再構成し、full/通常narrowのpair・witness走査を中断可能化 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 16% | 0.80% | 安全制限付き`.ori2`、実パス読込・保存・再上書き・全OSの原子的置換を実装 |
-| 多言語・設定・配布・QA | 5% | 77% | 3.85% | frontend 628件、独立監査3系統、Windows/macOS Rust、macOS `.app`をCI検証 |
+| 多言語・設定・配布・QA | 5% | 77% | 3.85% | frontend 646件、独立監査3系統、Windows/macOS Rust、macOS `.app`をCI検証 |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **38.42%** | — |
+| **合計** | **100%** | — | **38.60%** | — |
 
 ## 完了
 
@@ -177,6 +177,8 @@
 - 連続経路certificateをexact contextとのprivate provenanceで照合してから、候補順位、source/target角、静的・連続検査集計だけを切り離す読み取り専用表示DTOへ投影。face ID、完全角度vector、pose key、scene/runtime命令を非公開
 - badge単独で「解析上」「静的／連続経路確認済み」「現在姿勢未照合」を示し、現在有効とは限らず、この表示から3Dまたは設計dataへ適用できない制限を固定。clone、同値別context、hostile・revoked Proxy、権限情報漏洩をfrontend 612件と独立再監査C0/H0/M0で確認
 - 全非隣接full-scanをcandidate・first triangle・second triangleのcursorへ分解し、AABB rejectを含むpair visitまたはwitness導出を1 work unitとして中断・再開。凍結work bounds、chunk非依存の同期互換、両phase cancel・再入・例外をfrontend 628件で回帰
+- 通常narrow scanもSAT pair・witness cursorへ分解し、candidate内のpenetration早期停止、後続candidate継続、最終severity別のpenetrating優先witness順を同期`analyze()`と一致。potential 100万超の早期成功、100万ちょうどの完了、次pair未課金の上限停止を回帰
+- 通常/full-scan両jobでbudget検証前から再入を遮断し、validation・SAT・hinge policy・witness中のcancel、再入、例外、cancel後throwを会計済み同一terminalへ固定。通常resultを切り離してdeep freezeし、同期factory・hinge policy・result finalizationがframe時間上限外であることをliteral flagsへ明示。frontend 646件、乱択one-shot差分250件、独立再監査2系統C0/H0/M0で確認
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -286,10 +288,11 @@
 - コミット`a402f7d`のCI Run `29615389465`全ジョブ完走（連続経路certificateの真正性照合・読み取り専用表示DTO・非適用文言、frontend 612件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`227b649`のCI Run `29615862477`全ジョブ完走（terminal full-scan bindingのexact-object真正性guard、clone・wrapper・hostile Proxy拒否、frontend 612件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`d179c73`のCI Run `29617603356`全ジョブ完走（full-scanのpair/witness増分job、cancel・再入・例外・同期互換回帰、frontend 620件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`1bcc3d2`のCI Run `29617818861`全ジョブ完走（model-bound terminal provenance、private補正解析authority、固定長先行検証、frontend 628件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
-- full-scanの同期factory前処理と通常narrow scanをさらに増分化し、static候補生成と連続経路certificateをstale contextで取消しながら実行して、読み取り専用表示DTOを現在request lease内だけで提示するcoordinator
+- full/通常narrowの同期factory前処理・hinge policy・result finalizationをさらに増分化し、static候補生成と連続経路certificateをstale contextで取消しながら実行して、読み取り専用表示DTOを現在request lease内だけで提示するcoordinator
 - 単一折りの紙面ドラッグをWindows/macOS実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows/macOS実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
 - macOSのDockメニュー終了・OS終了要求でも未保存データを保護する方式の検証
@@ -303,7 +306,7 @@
 ## 次の作業
 
 1. OQ-002の物理的な厚さoffset・層ずれ規則を確定し、中央面基準の近似分類と選択可能にする
-2. 補正解析requestを通常narrow scan・static候補の増分jobと現在request lease coordinatorへ接続し、stale・作業中・候補なしを明示する
+2. 補正解析requestをstatic候補の増分jobと現在request lease coordinatorへ接続し、stale・作業中・候補なしを明示する
 3. 三角柱の局所形状再利用、広域・狭域の差分更新、worker分離により、大規模な面・ヒンジの判定を最適化する
 4. 閉路拘束の診断と将来ソルバー境界を詳細化する
 5. 3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める

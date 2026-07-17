@@ -550,6 +550,48 @@ test('a reentrant step cancels the mutable full scan without outer overwrite', {
   assertDeeplyFrozen(outer)
 })
 
+test('budget-validation reentry cancels a full scan before charging work', {
+  concurrency: false,
+}, () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+  const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+    identityTransforms(faces),
+    THICKNESS,
+  )
+  assert.ok(job)
+
+  const originalIsSafeInteger = Number.isSafeInteger
+  let reentered = false
+  let nested: FoldPreviewFullScanNonAdjacentWitnessJobStep | null = null
+  Number.isSafeInteger = function isSafeInteger(value: unknown) {
+    if (!reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalIsSafeInteger(value)
+  }
+  let outer: FoldPreviewFullScanNonAdjacentWitnessJobStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Number.isSafeInteger = originalIsSafeInteger
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.deepEqual(outer.work, {
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(job.step(1), outer)
+  assertDeeplyFrozen(outer)
+})
+
 test('a step-time classifier error fails closed after charging one pair visit', {
   concurrency: false,
 }, () => {
@@ -585,6 +627,68 @@ test('a step-time classifier error fails closed after charging one pair visit', 
   job.cancel()
   assert.strictEqual(job.step(1), terminal)
   assertDeeplyFrozen(terminal)
+})
+
+test('full-scan cancellation outranks validation and charged-work throws', {
+  concurrency: false,
+}, () => {
+  const faces = [face('a'), face('b')]
+  const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
+  assert.ok(analyzer)
+
+  {
+    const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+      identityTransforms(faces),
+      THICKNESS,
+    )
+    assert.ok(job)
+    const originalIsSafeInteger = Number.isSafeInteger
+    Number.isSafeInteger = function isSafeInteger() {
+      job.cancel()
+      throw new Error('validation cancellation')
+    }
+    let terminal: FoldPreviewFullScanNonAdjacentWitnessJobStep
+    try {
+      terminal = job.step(1)
+    } finally {
+      Number.isSafeInteger = originalIsSafeInteger
+    }
+    assert.equal(terminal.kind, 'cancelled')
+    assert.deepEqual(terminal.work, {
+      totalWorkUnits: 0,
+      trianglePairTests: 0,
+      witnessDerivations: 0,
+    })
+    assert.strictEqual(job.step(1), terminal)
+    assertDeeplyFrozen(terminal)
+  }
+
+  {
+    const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+      identityTransforms(faces),
+      THICKNESS,
+    )
+    assert.ok(job)
+    const originalDot = Vector3.prototype.dot
+    Vector3.prototype.dot = function dot() {
+      job.cancel()
+      throw new Error('pair cancellation')
+    }
+    let terminal: FoldPreviewFullScanNonAdjacentWitnessJobStep
+    try {
+      terminal = job.step(1)
+    } finally {
+      Vector3.prototype.dot = originalDot
+    }
+    assert.equal(terminal.kind, 'cancelled')
+    assert.deepEqual(terminal.work, {
+      totalWorkUnits: 1,
+      trianglePairTests: 1,
+      witnessDerivations: 0,
+    })
+    assert.strictEqual(job.step(1), terminal)
+    assertDeeplyFrozen(terminal)
+  }
 })
 
 test('reentrant cancellation during witness derivation is terminal', {

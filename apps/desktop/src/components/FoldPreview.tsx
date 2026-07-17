@@ -256,6 +256,11 @@ export function FoldPreview({
           refreshFaceHighlights()
         } catch {
           collisionSeverityByFace = new Map()
+          try {
+            refreshFaceHighlights()
+          } catch {
+            // Highlight recovery is best-effort and must not break the 3D preview.
+          }
         }
         setCollisionSummary((current) =>
           collisionSummariesEqual(current, nextSummary) ? current : nextSummary)

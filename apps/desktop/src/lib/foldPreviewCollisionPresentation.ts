@@ -5,6 +5,15 @@ import type {
 
 export type FoldPreviewFaceCollisionSeverity = 'contact' | 'indeterminate' | 'penetrating'
 
+const FACE_COLLISION_SEVERITY_RANK: Readonly<Record<
+  FoldPreviewFaceCollisionSeverity,
+  number
+>> = {
+  contact: 1,
+  indeterminate: 2,
+  penetrating: 3,
+}
+
 export type FoldPreviewCollisionPresentation = Readonly<{
   totalCandidates: number
   nonAdjacentCandidates: number
@@ -68,11 +77,9 @@ function raiseSeverity(
   faceId: string,
   severity: FoldPreviewFaceCollisionSeverity,
 ) {
-  const rank: Record<FoldPreviewFaceCollisionSeverity, number> = {
-    contact: 1,
-    indeterminate: 2,
-    penetrating: 3,
-  }
   const current = severities.get(faceId)
-  if (!current || rank[severity] > rank[current]) severities.set(faceId, severity)
+  if (
+    !current
+    || FACE_COLLISION_SEVERITY_RANK[severity] > FACE_COLLISION_SEVERITY_RANK[current]
+  ) severities.set(faceId, severity)
 }

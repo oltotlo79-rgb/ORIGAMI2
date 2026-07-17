@@ -299,6 +299,17 @@ solve(current geometry, constraints, edited targets, policy)
 - 連続運動層はproject/revision、固定面、選択ヒンジ、紙厚、request context、完全な開始・目標・危険角度vector、`blockingSampleTime`、危険側2面の変換をface・triangle identityへ結び付ける。終端時刻とblockerが一致した場合だけ説明snapshotを保持し、不一致や説明生成失敗ではauthoritativeな停止を維持したまま説明だけを破棄する。
 - UI境界はrequest identity、全角度vector、2面変換、全witness、coverage方程式、primary witnessを再検証する。有効な場合だけ危険解析角、三角形番号、位置候補数、法線、局所分離距離を解析情報として提示し、保存した危険側の面行列を3D表示の更新には使用していないこと、候補が三角柱1組だけを対象とし自動適用できないことを明示する。時刻0では現在の表示姿勢自体と危険解析角が一致し得るため、「危険姿勢は表示されていない」とは表現しない。内部ID・context keyは表示しない。
 
+#### 8.2.3 非隣接pairの全走査witness集合
+
+全体修正候補の入力には、通常解析が説明用に返す最大16件の`witnessSamples`をそのまま使用しない。通常解析は非隣接pairの最初の貫通で早期終了でき、最終face severityと異なる接触pairも説明対象外になるため、そのcoverageは全衝突pairの網羅を意味しない。
+
+- prepared analyzerの`collectFullScanNonAdjacentWitnessSet`をオンデマンド診断として分離し、通常の`analyze()`、連続運動の各点判定、既存v1 witness順序・coverage・作業量を変更しない。
+- 正厚の同一入力姿勢について、広域候補に残った全非隣接face pairの全triangle-pairを元の決定順で走査する。貫通を検出しても早期終了せず、同じface pair内の`touching`と`penetrating`をともに収録対象とする。共有ヒンジpairはこの集合のscope外である。
+- 公開境界でface transform map、各16行列要素を一度だけ読み、切り離した倍精度行列snapshotを広域判定、剛体検証、三角柱構築、SATの全段へ渡す。状態依存Mapやgetterが段間で姿勢を差し替えてもcomplete認定しない。
+- coverageは`expectedTrianglePairCount = trianglePairTests`、`trianglePairTests = aabbRejectedPairCount + satTests`、`satTests = satSeparated + touching + penetrating + indeterminate`、`eligible = attempted + omitted`、`attempted = available + unavailable`を必須とする。返却できた全走査結果だけが`authoritativePairScanComplete: true`を持つ。
+- triangle-pair走査は最大1,000,000、witness導出は走査順の最大16件に固定する。未確定pair、17件目以降、witness導出不能のいずれかがあれば`kind: unavailable`とし、件数と理由だけを返して部分witnessを公開しない。完全な場合だけ`kind: complete`と全witnessをdeep freezeして返す。両variantとも`autoApplicable: false`である。
+- `complete`が保証するのは、同じ解析姿勢で全非隣接衝突pairの局所制約を取り出せたことだけであり、出力は`requestIdentityBound: false`を固定する。次層でproject・revision・request・完全角度vector・危険時刻へ再結合するまではsolver入力にしない。固定側・可動subtreeのpartition、正のclearance、合法なヒンジ角への投影、新規衝突の全面再検証、そこまでの連続経路認定、層順・材料変形は別段階とし、raw translationや局所hintを3D姿勢またはプロジェクトへ適用しない。
+
 ### 8.3 衝突前停止
 
 最終目標では、現在角から目標角までの連続運動を判定し、連続安全を証明できた下限と、その直後の危険または未確定な探索区間を求める。確認済み境界で停止し、対象面、接触点、法線、折り角、分類をUIへ返す。

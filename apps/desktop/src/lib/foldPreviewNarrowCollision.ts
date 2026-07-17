@@ -1,4 +1,4 @@
-import { Vector3, type Matrix4 } from 'three'
+import { Matrix4, Vector3 } from 'three'
 import {
   MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES,
   MAX_FOLD_PREVIEW_COLLISION_FACES,
@@ -85,6 +85,75 @@ export type FoldPreviewNarrowPhaseWitnessCoverage = Readonly<{
   authoritativePairScanComplete: boolean
 }>
 
+export type FoldPreviewFullScanNonAdjacentWitnessCoverage<
+  ConstraintsRepresented extends boolean = boolean,
+> = Readonly<{
+  scope: 'all_broad_phase_non_adjacent_triangle_pairs_full_scan_v2'
+  /** Non-adjacent face pairs not rejected by the conservative broad phase. */
+  broadPhaseCandidateCount: number
+  /** Every triangle pair belonging to those face pairs. */
+  expectedTrianglePairCount: number
+  /** Every triangle pair actually visited by the no-early-exit loop. */
+  trianglePairTests: number
+  /** Triangle pairs rejected by their exact world-space prism AABBs. */
+  aabbRejectedPairCount: number
+  /** Triangle pairs submitted to the authoritative prism SAT classifier. */
+  satTests: number
+  satSeparatedPairCount: number
+  touchingPairCount: number
+  penetratingPairCount: number
+  indeterminatePairCount: number
+  /** All definitive touching and penetrating pairs, regardless of face severity. */
+  eligiblePairCount: number
+  /** Eligible pairs submitted to the independently bounded witness helper. */
+  attemptedPairCount: number
+  /** Attempted pairs with a conservative witness result. */
+  availablePairCount: number
+  /** Attempted pairs for which conservative witness derivation returned null. */
+  unavailablePairCount: number
+  /** Eligible pairs not attempted because the independent limit was reached. */
+  omittedByLimitCount: number
+  /** Always true for a returned v2 result; work-limit failures return null. */
+  authoritativePairScanComplete: true
+  /**
+   * True only when no pair is indeterminate and every definitive collision
+   * pair has an available witness in the returned complete variant.
+   */
+  allCollisionConstraintsRepresented: ConstraintsRepresented
+}>
+
+export type FoldPreviewFullScanNonAdjacentWitnessUnavailableReason =
+  | 'indeterminate_pair'
+  | 'witness_limit_exceeded'
+  | 'witness_derivation_failed'
+
+type FoldPreviewFullScanNonAdjacentWitnessBase = Readonly<{
+  algorithm: 'full_non_adjacent_prism_witness_scan_v2'
+  sourcePose: 'analyzed_input_pose'
+  requestIdentityBound: false
+  collisionThickness: number
+  numericalMargin: number
+  /**
+   * This is diagnostic geometry only. It is not a legal origami movement and
+   * must be rebound to an immutable pose before any later verification.
+   */
+  autoApplicable: false
+}>
+
+export type FoldPreviewFullScanNonAdjacentWitnessSet =
+  | (FoldPreviewFullScanNonAdjacentWitnessBase & Readonly<{
+      kind: 'complete'
+      coverage: FoldPreviewFullScanNonAdjacentWitnessCoverage<true>
+      witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
+    }>)
+  | (FoldPreviewFullScanNonAdjacentWitnessBase & Readonly<{
+      kind: 'unavailable'
+      coverage: FoldPreviewFullScanNonAdjacentWitnessCoverage<false>
+      reasons: readonly FoldPreviewFullScanNonAdjacentWitnessUnavailableReason[]
+      /** Partial samples are intentionally withheld from correction callers. */
+      witnessSamples: readonly never[]
+    }>)
+
 export type FoldPreviewNarrowPhaseResult = Readonly<{
   broadPhaseCandidates: number
   broadPhaseNonAdjacentCandidates: number
@@ -102,6 +171,17 @@ export type FoldPreviewNarrowPhaseAnalyzer = Readonly<{
     faceTransforms: ReadonlyMap<string, Matrix4>,
     thickness: number,
   ): FoldPreviewNarrowPhaseResult | null
+  /**
+   * Performs an on-demand, no-early-exit scan of every non-adjacent triangle
+   * pair admitted by the broad phase. This never changes analyze() semantics.
+   *
+   * Positive thickness is required. A returned unavailable result is still a
+   * complete classification scan, but must not seed a global correction.
+   */
+  collectFullScanNonAdjacentWitnessSet(
+    faceTransforms: ReadonlyMap<string, Matrix4>,
+    thickness: number,
+  ): FoldPreviewFullScanNonAdjacentWitnessSet | null
 }>
 
 type PreparedFoldPreviewNarrowPhaseFace = Readonly<{
@@ -222,6 +302,23 @@ export function prepareFoldPreviewNarrowPhase(
         return null
       }
     },
+    collectFullScanNonAdjacentWitnessSet(
+      faceTransforms: ReadonlyMap<string, Matrix4>,
+      thickness: number,
+    ): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+      try {
+        if (!Number.isFinite(thickness) || thickness <= 0) return null
+        return collectPreparedFullScanNonAdjacentWitnessSet(
+          preparedFaces,
+          poseFaces,
+          adjacencySnapshot,
+          faceTransforms,
+          thickness,
+        )
+      } catch {
+        return null
+      }
+    },
   })
 }
 
@@ -247,6 +344,33 @@ function analyzePreparedFoldPreviewNarrowPhase(
     thickness,
     broadPhase,
     hingeContactPolicy,
+  )
+}
+
+function collectPreparedFullScanNonAdjacentWitnessSet(
+  preparedFaces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  poseFaces: readonly FoldPreviewCollisionPoseFace[],
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+  const transformSnapshot = snapshotRigidFaceTransforms(
+    preparedFaces,
+    faceTransforms,
+  )
+  if (!transformSnapshot) return null
+  const broadPhase = findFoldPreviewPoseBroadPhaseCandidates(
+    poseFaces,
+    transformSnapshot,
+    thickness,
+    adjacencies,
+  )
+  if (!broadPhase) return null
+  return collectFullScanNonAdjacentWitnessSet(
+    preparedFaces,
+    transformSnapshot,
+    thickness,
+    broadPhase,
   )
 }
 
@@ -543,6 +667,205 @@ function refineFoldPreviewNarrowPhase(
   }
 }
 
+function collectFullScanNonAdjacentWitnessSet(
+  faces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+  broadPhase: FoldPreviewBroadPhaseResult,
+): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+  const facesById = new Map(faces.map((face) => [face.id, face]))
+  if (facesById.size !== faces.length) return null
+  const numericalMargin = broadPhase.numericalMargin * SAT_MARGIN_FACTOR
+  if (!Number.isFinite(numericalMargin) || thickness <= 0) return null
+
+  const prismCache = new Map<string, readonly TrianglePrism[]>()
+  const eligibleSeeds: EligibleWitnessPairSeed[] = []
+  let broadPhaseCandidateCount = 0
+  let expectedTrianglePairCount = 0
+  let trianglePairTests = 0
+  let aabbRejectedPairCount = 0
+  let satTests = 0
+  let satSeparatedPairCount = 0
+  let touchingPairCount = 0
+  let penetratingPairCount = 0
+  let indeterminatePairCount = 0
+
+  try {
+    const prismsForFace = (faceId: string) => {
+      const cached = prismCache.get(faceId)
+      if (cached) return cached
+      const face = facesById.get(faceId)
+      const transform = faceTransforms.get(faceId)
+      if (!face || !transform) return null
+      const prisms = buildTrianglePrisms(face, transform, thickness)
+      if (!prisms) return null
+      prismCache.set(faceId, prisms)
+      return prisms
+    }
+
+    for (const candidate of broadPhase.candidates) {
+      if (candidate.relation !== 'non_adjacent') continue
+      broadPhaseCandidateCount += 1
+      const firstPrisms = prismsForFace(candidate.firstFaceId)
+      const secondPrisms = prismsForFace(candidate.secondFaceId)
+      if (!firstPrisms || !secondPrisms) return null
+      const candidatePairCount = firstPrisms.length * secondPrisms.length
+      if (!Number.isSafeInteger(candidatePairCount)) return null
+      expectedTrianglePairCount += candidatePairCount
+      if (
+        !Number.isSafeInteger(expectedTrianglePairCount)
+        || expectedTrianglePairCount
+          > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+      ) return null
+
+      for (const first of firstPrisms) {
+        for (const second of secondPrisms) {
+          trianglePairTests += 1
+          if (
+            trianglePairTests
+            > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+          ) return null
+          if (!boundsOverlap(first.bounds, second.bounds, numericalMargin)) {
+            aabbRejectedPairCount += 1
+            continue
+          }
+          satTests += 1
+          const intersection = classifyTrianglePrisms(
+            first,
+            second,
+            numericalMargin,
+          )
+          if (!intersection) return null
+          if (intersection === 'separated') {
+            satSeparatedPairCount += 1
+            continue
+          }
+          if (intersection === 'indeterminate') {
+            indeterminatePairCount += 1
+            continue
+          }
+
+          const seed = Object.freeze({
+            firstFaceId: candidate.firstFaceId,
+            secondFaceId: candidate.secondFaceId,
+            geometryClass: intersection,
+            first,
+            second,
+          })
+          if (intersection === 'penetrating') {
+            penetratingPairCount += 1
+          } else {
+            touchingPairCount += 1
+          }
+          if (
+            eligibleSeeds.length
+            < MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+          ) eligibleSeeds.push(seed)
+        }
+      }
+    }
+  } catch {
+    return null
+  }
+
+  const eligiblePairCount = touchingPairCount + penetratingPairCount
+  if (!Number.isSafeInteger(eligiblePairCount)) return null
+  const attemptedPairCount = Math.min(
+    eligiblePairCount,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+  )
+  const selectedSeeds = eligibleSeeds.slice(0, attemptedPairCount)
+  if (selectedSeeds.length !== attemptedPairCount) return null
+
+  const witnessSamples: FoldPreviewNarrowPhaseWitnessSample[] = []
+  let unavailablePairCount = 0
+  for (const seed of selectedSeeds) {
+    if (!seed.first.witnessFrame) {
+      unavailablePairCount += 1
+      continue
+    }
+    const witness = deriveFoldPreviewTrianglePrismWitness({
+      firstVertices: seed.first.vertices,
+      secondVertices: seed.second.vertices,
+      firstFrame: seed.first.witnessFrame,
+      numericalMargin,
+      authoritativeGeometryClass: seed.geometryClass,
+    })
+    if (!witness) {
+      unavailablePairCount += 1
+      continue
+    }
+    witnessSamples.push(Object.freeze({
+      firstFaceId: seed.firstFaceId,
+      secondFaceId: seed.secondFaceId,
+      relation: 'non_adjacent',
+      firstTriangleIndex: seed.first.triangleIndex,
+      secondTriangleIndex: seed.second.triangleIndex,
+      geometryClass: seed.geometryClass,
+      witness,
+    }))
+  }
+
+  const availablePairCount = witnessSamples.length
+  const omittedByLimitCount = eligiblePairCount - attemptedPairCount
+  const allCollisionConstraintsRepresented =
+    indeterminatePairCount === 0
+    && unavailablePairCount === 0
+    && omittedByLimitCount === 0
+    && availablePairCount === eligiblePairCount
+  const coverage = freezeFullScanNonAdjacentWitnessCoverage({
+    broadPhaseCandidateCount,
+    expectedTrianglePairCount,
+    trianglePairTests,
+    aabbRejectedPairCount,
+    satTests,
+    satSeparatedPairCount,
+    touchingPairCount,
+    penetratingPairCount,
+    indeterminatePairCount,
+    eligiblePairCount,
+    attemptedPairCount,
+    availablePairCount,
+    unavailablePairCount,
+    omittedByLimitCount,
+    authoritativePairScanComplete: true,
+    allCollisionConstraintsRepresented,
+  })
+  if (!coverage) return null
+
+  const base = {
+    algorithm: 'full_non_adjacent_prism_witness_scan_v2' as const,
+    sourcePose: 'analyzed_input_pose' as const,
+    requestIdentityBound: false as const,
+    collisionThickness: thickness,
+    numericalMargin,
+    autoApplicable: false as const,
+  }
+  if (allCollisionConstraintsRepresented) {
+    return Object.freeze({
+      ...base,
+      kind: 'complete',
+      coverage:
+        coverage as FoldPreviewFullScanNonAdjacentWitnessCoverage<true>,
+      witnessSamples: Object.freeze(witnessSamples),
+    })
+  }
+
+  const reasons: FoldPreviewFullScanNonAdjacentWitnessUnavailableReason[] = []
+  if (indeterminatePairCount > 0) reasons.push('indeterminate_pair')
+  if (omittedByLimitCount > 0) reasons.push('witness_limit_exceeded')
+  if (unavailablePairCount > 0) reasons.push('witness_derivation_failed')
+  if (reasons.length === 0) return null
+  return Object.freeze({
+    ...base,
+    kind: 'unavailable',
+    coverage:
+      coverage as FoldPreviewFullScanNonAdjacentWitnessCoverage<false>,
+    reasons: Object.freeze(reasons),
+    witnessSamples: Object.freeze([]),
+  })
+}
+
 function snapshotNarrowPhaseInputs(
   faces: readonly FoldPreviewCollisionPoseFace[],
   adjacencies: readonly FoldPreviewCollisionAdjacency[],
@@ -650,6 +973,41 @@ function validateRigidTransforms(
     if (!transform || !rigidTransform(transform)) return false
   }
   return true
+}
+
+function snapshotRigidFaceTransforms(
+  faces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+): ReadonlyMap<string, Matrix4> | null {
+  try {
+    if (!faceTransforms) return null
+    const size = faceTransforms.size
+    const get = faceTransforms.get
+    if (
+      size !== faces.length
+      || typeof get !== 'function'
+    ) return null
+
+    const snapshot = new Map<string, Matrix4>()
+    for (const face of faces) {
+      const rawTransform = get.call(faceTransforms, face.id)
+      if (!rawTransform) return null
+      const rawElements = rawTransform.elements
+      if (!Array.isArray(rawElements) || rawElements.length !== 16) return null
+      const elements: number[] = []
+      for (let index = 0; index < 16; index += 1) {
+        const element = rawElements[index]
+        if (typeof element !== 'number' || !Number.isFinite(element)) return null
+        elements.push(element)
+      }
+      const transform = new Matrix4().fromArray(elements)
+      if (!rigidTransform(transform)) return null
+      snapshot.set(face.id, transform)
+    }
+    return snapshot.size === faces.length ? snapshot : null
+  } catch {
+    return null
+  }
 }
 
 function buildTrianglePrisms(
@@ -862,6 +1220,60 @@ function freezeWitnessCoverage(
 ): FoldPreviewNarrowPhaseWitnessCoverage {
   return Object.freeze({
     scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',
+    ...value,
+  })
+}
+
+function freezeFullScanNonAdjacentWitnessCoverage(
+  value: Omit<FoldPreviewFullScanNonAdjacentWitnessCoverage, 'scope'>,
+): FoldPreviewFullScanNonAdjacentWitnessCoverage | null {
+  const counts = [
+    value.broadPhaseCandidateCount,
+    value.expectedTrianglePairCount,
+    value.trianglePairTests,
+    value.aabbRejectedPairCount,
+    value.satTests,
+    value.satSeparatedPairCount,
+    value.touchingPairCount,
+    value.penetratingPairCount,
+    value.indeterminatePairCount,
+    value.eligiblePairCount,
+    value.attemptedPairCount,
+    value.availablePairCount,
+    value.unavailablePairCount,
+    value.omittedByLimitCount,
+  ]
+  const expectedComplete =
+    value.indeterminatePairCount === 0
+    && value.unavailablePairCount === 0
+    && value.omittedByLimitCount === 0
+    && value.availablePairCount === value.eligiblePairCount
+  if (
+    counts.some((count) =>
+      !Number.isSafeInteger(count)
+      || count < 0
+      || count > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+    )
+    || value.expectedTrianglePairCount !== value.trianglePairTests
+    || value.trianglePairTests
+      !== value.aabbRejectedPairCount + value.satTests
+    || value.satTests !== value.satSeparatedPairCount
+      + value.touchingPairCount
+      + value.penetratingPairCount
+      + value.indeterminatePairCount
+    || value.eligiblePairCount
+      !== value.touchingPairCount + value.penetratingPairCount
+    || value.eligiblePairCount
+      !== value.attemptedPairCount + value.omittedByLimitCount
+    || value.attemptedPairCount
+      !== value.availablePairCount + value.unavailablePairCount
+    || value.attemptedPairCount
+      > MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+    || value.authoritativePairScanComplete !== true
+    || value.allCollisionConstraintsRepresented !== expectedComplete
+  ) return null
+  return Object.freeze({
+    scope: 'all_broad_phase_non_adjacent_triangle_pairs_full_scan_v2',
     ...value,
   })
 }

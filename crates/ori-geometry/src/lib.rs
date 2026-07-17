@@ -191,6 +191,93 @@ pub enum PointSegmentRelation {
     StrictInterior,
 }
 
+/// The exact topological relation between a point and a closed polygon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointPolygonRelation {
+    Outside,
+    Boundary,
+    Inside,
+}
+
+/// Classifies `point` against an ordered polygon using an exact winding test.
+///
+/// The last vertex is implicitly connected back to the first. Boundary is
+/// checked first with exact point/segment predicates, then interior is defined
+/// by the non-zero winding rule. Horizontal edges and vertices on the winding
+/// ray follow the standard half-open rule, so the returned relation is
+/// invariant under cycle rotation and reversal. Empty and degenerate polygons
+/// retain only their exact point/segment boundary; all other points are
+/// outside. Callers that require a material sheet must separately validate
+/// that `polygon` is simple and has a non-zero area.
+pub fn point_polygon_relation(
+    point: Point2,
+    polygon: &[Point2],
+) -> Result<PointPolygonRelation, GeometryError> {
+    ensure_finite("point", point)?;
+    for vertex in polygon {
+        ensure_finite("polygon point", *vertex)?;
+    }
+    if polygon.is_empty() {
+        return Ok(PointPolygonRelation::Outside);
+    }
+
+    for index in 0..polygon.len() {
+        let start = polygon[index];
+        let end = polygon[(index + 1) % polygon.len()];
+        if point_segment_relation(point, start, end)? != PointSegmentRelation::Outside {
+            return Ok(PointPolygonRelation::Boundary);
+        }
+    }
+
+    let mut winding = 0_i128;
+    for index in 0..polygon.len() {
+        let start = polygon[index];
+        let end = polygon[(index + 1) % polygon.len()];
+        if start.y <= point.y {
+            if end.y > point.y
+                && exact_orientation(start, end, point)? == Orientation::CounterClockwise
+            {
+                winding += 1;
+            }
+        } else if end.y <= point.y
+            && exact_orientation(start, end, point)? == Orientation::Clockwise
+        {
+            winding -= 1;
+        }
+    }
+
+    Ok(if winding == 0 {
+        PointPolygonRelation::Outside
+    } else {
+        PointPolygonRelation::Inside
+    })
+}
+
+/// Classifies the exact mathematical midpoint of `start` and `end` against a
+/// closed polygon.
+///
+/// The midpoint remains an exact dyadic rational throughout the boundary and
+/// winding tests. No `f64` midpoint is constructed, so adjacent binary64
+/// endpoints, subnormal coordinates, and opposite extreme coordinates cannot
+/// round the query onto an endpoint or overflow while averaging. Callers that
+/// require a material sheet must separately validate that `polygon` is simple
+/// and has a non-zero area. This classifies one point only; it does not by
+/// itself prove that the entire source segment is contained by the polygon.
+pub fn segment_midpoint_polygon_relation(
+    start: Point2,
+    end: Point2,
+    polygon: &[Point2],
+) -> Result<PointPolygonRelation, GeometryError> {
+    ensure_finite("start", start)?;
+    ensure_finite("end", end)?;
+    for vertex in polygon {
+        ensure_finite("polygon point", *vertex)?;
+    }
+    Ok(validation::exact_segment_midpoint_polygon_relation(
+        start, end, polygon,
+    ))
+}
+
 /// Classifies `point` against the directed segment `start -> end`.
 ///
 /// Endpoint identity is checked before collinearity so callers can preserve
@@ -758,6 +845,236 @@ mod tests {
             ),
             Ok(PointSegmentRelation::StrictInterior)
         );
+    }
+
+    #[test]
+    fn point_polygon_relation_handles_concavity_boundary_and_orientation() {
+        let mut polygon = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(2.0, 2.0),
+            Point2::new(0.0, 4.0),
+        ];
+        let cases = [
+            (Point2::new(1.0, 1.0), PointPolygonRelation::Inside),
+            (Point2::new(3.0, 3.5), PointPolygonRelation::Outside),
+            (Point2::new(3.0, 3.0), PointPolygonRelation::Boundary),
+            (Point2::new(2.0, 2.0), PointPolygonRelation::Boundary),
+            (Point2::new(-1.0, 2.0), PointPolygonRelation::Outside),
+        ];
+
+        for _ in 0..polygon.len() {
+            for (point, expected) in cases {
+                assert_eq!(point_polygon_relation(point, &polygon), Ok(expected));
+            }
+            polygon.rotate_left(1);
+        }
+        polygon.reverse();
+        for (point, expected) in cases {
+            assert_eq!(point_polygon_relation(point, &polygon), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn point_polygon_relation_is_exact_for_tiny_and_extreme_polygons() {
+        let side = f64::from_bits(485_u64 << 52);
+        let tiny = [
+            Point2::new(0.0, 0.0),
+            Point2::new(side, 0.0),
+            Point2::new(0.0, side),
+        ];
+        assert_eq!(
+            point_polygon_relation(Point2::new(side, side), &tiny),
+            Ok(PointPolygonRelation::Outside)
+        );
+        assert_eq!(
+            point_polygon_relation(Point2::new(side, 0.0), &tiny),
+            Ok(PointPolygonRelation::Boundary)
+        );
+
+        let extreme = [
+            Point2::new(-f64::MAX, -f64::MAX),
+            Point2::new(f64::MAX, -f64::MAX),
+            Point2::new(f64::MAX, f64::MAX),
+            Point2::new(-f64::MAX, f64::MAX),
+        ];
+        assert_eq!(
+            point_polygon_relation(Point2::new(0.0, 0.0), &extreme),
+            Ok(PointPolygonRelation::Inside)
+        );
+        assert_eq!(
+            point_polygon_relation(Point2::new(f64::MAX, 0.0), &extreme),
+            Ok(PointPolygonRelation::Boundary)
+        );
+    }
+
+    #[test]
+    fn point_polygon_relation_rejects_non_finite_inputs() {
+        assert!(matches!(
+            point_polygon_relation(Point2::new(f64::NAN, 0.0), &[]),
+            Err(GeometryError::NonFinitePoint {
+                argument: "point",
+                ..
+            })
+        ));
+        assert!(matches!(
+            point_polygon_relation(Point2::new(0.0, 0.0), &[Point2::new(0.0, f64::INFINITY)]),
+            Err(GeometryError::NonFinitePoint {
+                argument: "polygon point",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn exact_segment_midpoint_relation_does_not_round_onto_an_endpoint() {
+        let next_after_one = f64::from_bits(1.0_f64.to_bits() + 1);
+        let square = [
+            Point2::new(1.0, 0.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(2.0, 2.0),
+            Point2::new(1.0, 2.0),
+        ];
+        let start = Point2::new(1.0, 1.0);
+        let end = Point2::new(next_after_one, 1.0);
+
+        assert_eq!((start.x + end.x) / 2.0, start.x);
+        assert_eq!(
+            segment_midpoint_polygon_relation(start, end, &square),
+            Ok(PointPolygonRelation::Inside)
+        );
+        assert_eq!(
+            segment_midpoint_polygon_relation(end, start, &square),
+            Ok(PointPolygonRelation::Inside)
+        );
+
+        let slanted_boundary = [
+            Point2::new(1.0, 0.0),
+            Point2::new(next_after_one, 2.0),
+            Point2::new(2.0, 0.0),
+        ];
+        let rounded_midpoint =
+            Point2::new((slanted_boundary[0].x + slanted_boundary[1].x) / 2.0, 1.0);
+        assert_eq!(
+            point_polygon_relation(rounded_midpoint, &slanted_boundary),
+            Ok(PointPolygonRelation::Outside)
+        );
+        assert_eq!(
+            segment_midpoint_polygon_relation(
+                slanted_boundary[0],
+                slanted_boundary[1],
+                &slanted_boundary
+            ),
+            Ok(PointPolygonRelation::Boundary)
+        );
+    }
+
+    #[test]
+    fn exact_segment_midpoint_relation_handles_subnormal_and_extreme_averages() {
+        let unit = f64::from_bits(1);
+        let tiny_square = [
+            Point2::new(0.0, 0.0),
+            Point2::new(2.0 * unit, 0.0),
+            Point2::new(2.0 * unit, 2.0 * unit),
+            Point2::new(0.0, 2.0 * unit),
+        ];
+        let tiny_start = Point2::new(0.0, unit);
+        let tiny_end = Point2::new(unit, unit);
+        assert_eq!((tiny_start.x + tiny_end.x) / 2.0, 0.0);
+        assert_eq!(
+            segment_midpoint_polygon_relation(tiny_start, tiny_end, &tiny_square),
+            Ok(PointPolygonRelation::Inside)
+        );
+
+        let extreme_square = [
+            Point2::new(-f64::MAX, -1.0),
+            Point2::new(f64::MAX, -1.0),
+            Point2::new(f64::MAX, 1.0),
+            Point2::new(-f64::MAX, 1.0),
+        ];
+        let extreme_start = Point2::new(-f64::MAX, 0.0);
+        let extreme_end = Point2::new(f64::MAX, 0.0);
+        assert!((extreme_start.x + extreme_end.x).is_finite());
+        assert_eq!(
+            segment_midpoint_polygon_relation(extreme_start, extreme_end, &extreme_square),
+            Ok(PointPolygonRelation::Inside)
+        );
+        let max_edge_start = Point2::new(f64::MAX, -1.0);
+        let max_edge_end = Point2::new(f64::MAX, 1.0);
+        assert!((max_edge_start.x + max_edge_end.x).is_infinite());
+        assert_eq!(
+            segment_midpoint_polygon_relation(max_edge_start, max_edge_end, &extreme_square),
+            Ok(PointPolygonRelation::Boundary)
+        );
+    }
+
+    #[test]
+    fn exact_segment_midpoint_relation_handles_concavity_boundary_and_reversal() {
+        let mut polygon = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(2.0, 2.0),
+            Point2::new(0.0, 4.0),
+        ];
+        let outside_chord = (Point2::new(4.0, 4.0), Point2::new(0.0, 4.0));
+        let boundary_crossing = (Point2::new(-1.0, 2.0), Point2::new(1.0, 2.0));
+
+        for _ in 0..polygon.len() {
+            assert_eq!(
+                segment_midpoint_polygon_relation(outside_chord.0, outside_chord.1, &polygon),
+                Ok(PointPolygonRelation::Outside)
+            );
+            assert_eq!(
+                segment_midpoint_polygon_relation(
+                    boundary_crossing.0,
+                    boundary_crossing.1,
+                    &polygon
+                ),
+                Ok(PointPolygonRelation::Boundary)
+            );
+            polygon.rotate_left(1);
+        }
+        polygon.reverse();
+        assert_eq!(
+            segment_midpoint_polygon_relation(outside_chord.1, outside_chord.0, &polygon),
+            Ok(PointPolygonRelation::Outside)
+        );
+        assert_eq!(
+            segment_midpoint_polygon_relation(
+                Point2::new(0.0, 0.0),
+                Point2::new(2.0, 2.0),
+                &polygon
+            ),
+            Ok(PointPolygonRelation::Inside)
+        );
+    }
+
+    #[test]
+    fn exact_segment_midpoint_relation_rejects_non_finite_inputs() {
+        assert!(matches!(
+            segment_midpoint_polygon_relation(
+                Point2::new(f64::INFINITY, 0.0),
+                Point2::new(0.0, 0.0),
+                &[]
+            ),
+            Err(GeometryError::NonFinitePoint {
+                argument: "start",
+                ..
+            })
+        ));
+        assert!(matches!(
+            segment_midpoint_polygon_relation(
+                Point2::new(0.0, 0.0),
+                Point2::new(f64::NAN, 0.0),
+                &[]
+            ),
+            Err(GeometryError::NonFinitePoint {
+                argument: "end",
+                ..
+            })
+        ));
     }
 
     #[test]

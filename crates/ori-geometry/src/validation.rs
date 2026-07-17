@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use num_bigint::{BigInt, BigUint, Sign};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 
-use crate::{GeometryError, Orientation, SegmentIntersection, ensure_finite, segment_intersection};
+use crate::{
+    GeometryError, Orientation, PointPolygonRelation, SegmentIntersection, ensure_finite,
+    segment_intersection,
+};
 
 // The smallest binary64 value is 2^-1074, so every coordinate product can be
 // represented as one integer multiple of this shared exponent.
@@ -701,6 +704,113 @@ pub(super) fn exact_triangle_orientation(a: Point2, b: Point2, c: Point2) -> Ori
         Sign::NoSign => Orientation::Collinear,
         Sign::Plus => Orientation::CounterClockwise,
     }
+}
+
+/// Classifies the midpoint `(start + end) / 2` without first rounding it to
+/// binary64. All coordinates use integer units of 2^-1074 and the midpoint
+/// numerator keeps its denominator of two through every comparison.
+pub(super) fn exact_segment_midpoint_polygon_relation(
+    start: Point2,
+    end: Point2,
+    polygon: &[Point2],
+) -> PointPolygonRelation {
+    debug_assert!(start.x.is_finite() && start.y.is_finite());
+    debug_assert!(end.x.is_finite() && end.y.is_finite());
+    debug_assert!(
+        polygon
+            .iter()
+            .all(|point| point.x.is_finite() && point.y.is_finite())
+    );
+
+    if polygon.is_empty() {
+        return PointPolygonRelation::Outside;
+    }
+
+    let midpoint_x = exact_coordinate_units(start.x) + exact_coordinate_units(end.x);
+    let midpoint_y = exact_coordinate_units(start.y) + exact_coordinate_units(end.y);
+    let exact_polygon = polygon
+        .iter()
+        .map(|point| {
+            (
+                exact_coordinate_units(point.x),
+                exact_coordinate_units(point.y),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for index in 0..exact_polygon.len() {
+        let edge_start = &exact_polygon[index];
+        let edge_end = &exact_polygon[(index + 1) % exact_polygon.len()];
+        if rational_midpoint_on_segment(&midpoint_x, &midpoint_y, edge_start, edge_end) {
+            return PointPolygonRelation::Boundary;
+        }
+    }
+
+    let mut winding = 0_i128;
+    for index in 0..exact_polygon.len() {
+        let edge_start = &exact_polygon[index];
+        let edge_end = &exact_polygon[(index + 1) % exact_polygon.len()];
+        let start_y_scaled = &edge_start.1 << 1_usize;
+        let end_y_scaled = &edge_end.1 << 1_usize;
+        let orientation =
+            rational_midpoint_orientation(&midpoint_x, &midpoint_y, edge_start, edge_end);
+        if start_y_scaled <= midpoint_y {
+            if end_y_scaled > midpoint_y && orientation == Sign::Plus {
+                winding += 1;
+            }
+        } else if end_y_scaled <= midpoint_y && orientation == Sign::Minus {
+            winding -= 1;
+        }
+    }
+
+    if winding == 0 {
+        PointPolygonRelation::Outside
+    } else {
+        PointPolygonRelation::Inside
+    }
+}
+
+fn rational_midpoint_orientation(
+    midpoint_x: &BigInt,
+    midpoint_y: &BigInt,
+    edge_start: &(BigInt, BigInt),
+    edge_end: &(BigInt, BigInt),
+) -> Sign {
+    let direction_x = &edge_end.0 - &edge_start.0;
+    let direction_y = &edge_end.1 - &edge_start.1;
+    let offset_x = midpoint_x - (&edge_start.0 << 1_usize);
+    let offset_y = midpoint_y - (&edge_start.1 << 1_usize);
+    (direction_x * offset_y - direction_y * offset_x).sign()
+}
+
+fn rational_midpoint_on_segment(
+    midpoint_x: &BigInt,
+    midpoint_y: &BigInt,
+    edge_start: &(BigInt, BigInt),
+    edge_end: &(BigInt, BigInt),
+) -> bool {
+    if rational_midpoint_orientation(midpoint_x, midpoint_y, edge_start, edge_end) != Sign::NoSign {
+        return false;
+    }
+
+    let start_x_scaled = &edge_start.0 << 1_usize;
+    let end_x_scaled = &edge_end.0 << 1_usize;
+    let start_y_scaled = &edge_start.1 << 1_usize;
+    let end_y_scaled = &edge_end.1 << 1_usize;
+    let (minimum_x, maximum_x) = if start_x_scaled <= end_x_scaled {
+        (&start_x_scaled, &end_x_scaled)
+    } else {
+        (&end_x_scaled, &start_x_scaled)
+    };
+    let (minimum_y, maximum_y) = if start_y_scaled <= end_y_scaled {
+        (&start_y_scaled, &end_y_scaled)
+    } else {
+        (&end_y_scaled, &start_y_scaled)
+    };
+    midpoint_x >= minimum_x
+        && midpoint_x <= maximum_x
+        && midpoint_y >= minimum_y
+        && midpoint_y <= maximum_y
 }
 
 /// Returns the correctly rounded binary64 intersection of two finite

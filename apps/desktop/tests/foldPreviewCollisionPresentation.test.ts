@@ -175,6 +175,15 @@ function result(
     trianglePairTests: interactions.length,
     satTests: interactions.length,
     numericalMargin: Number.EPSILON * 64,
+    witnessSamples: [],
+    witnessCoverage: {
+      scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',
+      eligiblePairCount: 0,
+      attemptedPairCount: 0,
+      unavailablePairCount: 0,
+      omittedByLimitCount: 0,
+      authoritativePairScanComplete: false,
+    },
   }
 }
 

@@ -19,10 +19,17 @@ import {
   type FoldPreviewHingeContactPair,
   type FoldPreviewHingeContactPolicy,
 } from './foldPreviewHingeCollision.ts'
+import {
+  deriveFoldPreviewTrianglePrismWitness,
+  type FoldPreviewTrianglePrismWitness,
+  type FoldPreviewWitnessFrame,
+} from './foldPreviewNarrowCollisionWitness.ts'
 
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS = 1_000_000
 /** Bounds synchronous deep-copy and triangulation during preview setup. */
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES = 100_000
+/** Bounds explanatory derivation work independently of collision classification. */
+export const MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES = 16
 
 const SAT_MARGIN_FACTOR = 4
 const PARALLEL_AXIS_TOLERANCE = Number.EPSILON * 128
@@ -51,6 +58,33 @@ export type FoldPreviewNarrowPhaseInteraction = Readonly<{
   hingeDecision?: FoldPreviewHingeContactDecision
 }>
 
+export type FoldPreviewNarrowPhaseWitnessSample = Readonly<{
+  firstFaceId: string
+  secondFaceId: string
+  relation: 'non_adjacent'
+  firstTriangleIndex: number
+  secondTriangleIndex: number
+  geometryClass: 'touching' | 'penetrating'
+  witness: FoldPreviewTrianglePrismWitness
+}>
+
+export type FoldPreviewNarrowPhaseWitnessCoverage = Readonly<{
+  scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1'
+  /** Definitive tested pairs matching their final face-interaction severity. */
+  eligiblePairCount: number
+  /** Eligible pairs submitted to the bounded witness derivation helper. */
+  attemptedPairCount: number
+  /** Attempted pairs for which conservative witness derivation returned null. */
+  unavailablePairCount: number
+  /** Eligible pairs not submitted because the independent limit was reached. */
+  omittedByLimitCount: number
+  /**
+   * False when an authoritative non-adjacent scan stopped at its first
+   * penetration or no positive-thickness SAT scan was performed.
+   */
+  authoritativePairScanComplete: boolean
+}>
+
 export type FoldPreviewNarrowPhaseResult = Readonly<{
   broadPhaseCandidates: number
   broadPhaseNonAdjacentCandidates: number
@@ -59,6 +93,8 @@ export type FoldPreviewNarrowPhaseResult = Readonly<{
   trianglePairTests: number
   satTests: number
   numericalMargin: number
+  witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
+  witnessCoverage: FoldPreviewNarrowPhaseWitnessCoverage
 }>
 
 export type FoldPreviewNarrowPhaseAnalyzer = Readonly<{
@@ -85,6 +121,7 @@ type TrianglePrism = Readonly<{
   vertices: readonly Vector3[]
   faceAxes: readonly Vector3[]
   edgeDirections: readonly Vector3[]
+  witnessFrame: FoldPreviewWitnessFrame | null
   bounds: Readonly<{
     minX: number
     minY: number
@@ -96,6 +133,17 @@ type TrianglePrism = Readonly<{
 }>
 
 type PrismIntersection = 'separated' | 'touching' | 'penetrating' | 'indeterminate'
+
+type WitnessPairSeed = Readonly<{
+  first: TrianglePrism
+  second: TrianglePrism
+}>
+
+type EligibleWitnessPairSeed = WitnessPairSeed & Readonly<{
+  firstFaceId: string
+  secondFaceId: string
+  geometryClass: 'touching' | 'penetrating'
+}>
 
 /**
  * Refines conservative face AABBs with SAT tests between triangulated paper
@@ -252,6 +300,14 @@ function refineFoldPreviewNarrowPhase(
       trianglePairTests: 0,
       satTests: 0,
       numericalMargin,
+      witnessSamples: Object.freeze([]),
+      witnessCoverage: freezeWitnessCoverage({
+        eligiblePairCount: 0,
+        attemptedPairCount: 0,
+        unavailablePairCount: 0,
+        omittedByLimitCount: 0,
+        authoritativePairScanComplete: false,
+      }),
     }
   }
 
@@ -259,6 +315,14 @@ function refineFoldPreviewNarrowPhase(
   let trianglePairTests = 0
   let satTests = 0
   const interactions: FoldPreviewNarrowPhaseInteraction[] = []
+  const witnessSamples: FoldPreviewNarrowPhaseWitnessSample[] = []
+  const penetratingEligibleSeeds: EligibleWitnessPairSeed[] = []
+  const touchingEligibleSeeds: EligibleWitnessPairSeed[] = []
+  let eligibleWitnessPairCount = 0
+  let attemptedWitnessPairCount = 0
+  let unavailableWitnessPairCount = 0
+  let performedNonAdjacentSatScan = false
+  let nonAdjacentPairScansComplete = true
 
   try {
     const prismsForFace = (faceId: string) => {
@@ -280,6 +344,10 @@ function refineFoldPreviewNarrowPhase(
 
       let geometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass'] | null = null
       const hingePairs: FoldPreviewHingeContactPair[] = []
+      const touchingWitnessSeeds: WitnessPairSeed[] = []
+      const penetratingWitnessSeeds: WitnessPairSeed[] = []
+      let touchingWitnessPairCount = 0
+      let penetratingWitnessPairCount = 0
       let candidateTrianglePairTests = 0
       pairSearch:
       for (const first of firstPrisms) {
@@ -289,9 +357,31 @@ function refineFoldPreviewNarrowPhase(
           if (trianglePairTests > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS) return null
           if (!boundsOverlap(first.bounds, second.bounds, numericalMargin)) continue
           satTests += 1
+          if (candidate.relation === 'non_adjacent') {
+            performedNonAdjacentSatScan = true
+          }
           const intersection = classifyTrianglePrisms(first, second, numericalMargin)
           if (!intersection) return null
           if (intersection === 'separated') continue
+          if (candidate.relation === 'non_adjacent') {
+            if (intersection === 'touching') {
+              touchingWitnessPairCount += 1
+              if (
+                touchingWitnessSeeds.length
+                < MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+              ) {
+                touchingWitnessSeeds.push(Object.freeze({ first, second }))
+              }
+            } else if (intersection === 'penetrating') {
+              penetratingWitnessPairCount += 1
+              if (
+                penetratingWitnessSeeds.length
+                < MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+              ) {
+                penetratingWitnessSeeds.push(Object.freeze({ first, second }))
+              }
+            }
+          }
           if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
             hingePairs.push({
               firstTriangleIndex: first.triangleIndex,
@@ -316,6 +406,45 @@ function refineFoldPreviewNarrowPhase(
             geometryClass = 'indeterminate'
           } else if (intersection === 'touching' && !geometryClass) {
             geometryClass = 'touching'
+          }
+        }
+      }
+      if (candidate.relation === 'non_adjacent') {
+        const candidatePairCount = firstPrisms.length * secondPrisms.length
+        if (
+          !Number.isSafeInteger(candidatePairCount)
+          || candidatePairCount < candidateTrianglePairTests
+        ) return null
+        if (candidateTrianglePairTests !== candidatePairCount) {
+          nonAdjacentPairScansComplete = false
+        }
+        const definitiveClass = geometryClass === 'touching'
+          || geometryClass === 'penetrating'
+          ? geometryClass
+          : null
+        if (definitiveClass) {
+          const pairCount = definitiveClass === 'penetrating'
+            ? penetratingWitnessPairCount
+            : touchingWitnessPairCount
+          const seeds = definitiveClass === 'penetrating'
+            ? penetratingWitnessSeeds
+            : touchingWitnessSeeds
+          eligibleWitnessPairCount += pairCount
+          const eligibleSeeds = definitiveClass === 'penetrating'
+            ? penetratingEligibleSeeds
+            : touchingEligibleSeeds
+          for (const seed of seeds) {
+            if (
+              eligibleSeeds.length
+              >= MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+            ) break
+            eligibleSeeds.push(Object.freeze({
+              firstFaceId: candidate.firstFaceId,
+              secondFaceId: candidate.secondFaceId,
+              geometryClass: definitiveClass,
+              first: seed.first,
+              second: seed.second,
+            }))
           }
         }
       }
@@ -351,6 +480,44 @@ function refineFoldPreviewNarrowPhase(
         interactions.push(interaction)
       }
     }
+
+    for (const eligibleSeeds of [
+      penetratingEligibleSeeds,
+      touchingEligibleSeeds,
+    ]) {
+      const remainingAttempts =
+        MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+        - attemptedWitnessPairCount
+      const attemptCount = Math.min(eligibleSeeds.length, remainingAttempts)
+      attemptedWitnessPairCount += attemptCount
+      for (let index = 0; index < attemptCount; index += 1) {
+        const seed = eligibleSeeds[index]
+        if (!seed.first.witnessFrame) {
+          unavailableWitnessPairCount += 1
+          continue
+        }
+        const witness = deriveFoldPreviewTrianglePrismWitness({
+          firstVertices: seed.first.vertices,
+          secondVertices: seed.second.vertices,
+          firstFrame: seed.first.witnessFrame,
+          numericalMargin,
+          authoritativeGeometryClass: seed.geometryClass,
+        })
+        if (!witness) {
+          unavailableWitnessPairCount += 1
+          continue
+        }
+        witnessSamples.push(Object.freeze({
+          firstFaceId: seed.firstFaceId,
+          secondFaceId: seed.secondFaceId,
+          relation: 'non_adjacent',
+          firstTriangleIndex: seed.first.triangleIndex,
+          secondTriangleIndex: seed.second.triangleIndex,
+          geometryClass: seed.geometryClass,
+          witness,
+        }))
+      }
+    }
   } catch {
     return null
   }
@@ -363,6 +530,16 @@ function refineFoldPreviewNarrowPhase(
     trianglePairTests,
     satTests,
     numericalMargin,
+    witnessSamples: Object.freeze(witnessSamples),
+    witnessCoverage: freezeWitnessCoverage({
+      eligiblePairCount: eligibleWitnessPairCount,
+      attemptedPairCount: attemptedWitnessPairCount,
+      unavailablePairCount: unavailableWitnessPairCount,
+      omittedByLimitCount:
+        eligibleWitnessPairCount - attemptedWitnessPairCount,
+      authoritativePairScanComplete:
+        performedNonAdjacentSatScan && nonAdjacentPairScansComplete,
+    }),
   }
 }
 
@@ -483,6 +660,7 @@ function buildTrianglePrisms(
   const triangles = face.triangles ?? triangulateFoldPreviewPolygon(face.polygon)
   const halfThickness = thickness / 2
   if (!Number.isFinite(halfThickness) || halfThickness < 0) return null
+  const witnessFrame = witnessFrameForTransform(transform)
   const prisms: TrianglePrism[] = []
   for (let triangleIndex = 0; triangleIndex < triangles.length; triangleIndex += 1) {
     const triangle = triangles[triangleIndex]
@@ -527,7 +705,14 @@ function buildTrianglePrisms(
     }
     const bounds = boundsForVertices(vertices)
     if (!bounds) return null
-    prisms.push({ triangleIndex, vertices, faceAxes, edgeDirections, bounds })
+    prisms.push({
+      triangleIndex,
+      vertices,
+      faceAxes,
+      edgeDirections,
+      witnessFrame,
+      bounds,
+    })
   }
   return prisms.length === triangles.length && prisms.length > 0 ? prisms : null
 }
@@ -621,6 +806,64 @@ function projectVertices(vertices: readonly Vector3[], axis: Vector3) {
 function transformedPoint(x: number, y: number, z: number, transform: Matrix4) {
   const point = new Vector3(x, y, z).applyMatrix4(transform)
   return [point.x, point.y, point.z].every(Number.isFinite) ? point : null
+}
+
+function witnessFrameForTransform(
+  transform: Matrix4,
+): FoldPreviewWitnessFrame | null {
+  try {
+    const elements = transform.elements
+    if (!Array.isArray(elements) || elements.length !== 16) return null
+    const xAxisX = elements[0]
+    const xAxisY = elements[1]
+    const xAxisZ = elements[2]
+    const yAxisX = elements[4]
+    const yAxisY = elements[5]
+    const yAxisZ = elements[6]
+    const zAxisX = elements[8]
+    const zAxisY = elements[9]
+    const zAxisZ = elements[10]
+    const values = [
+      xAxisX,
+      xAxisY,
+      xAxisZ,
+      yAxisX,
+      yAxisY,
+      yAxisZ,
+      zAxisX,
+      zAxisY,
+      zAxisZ,
+    ]
+    if (!values.every(Number.isFinite)) return null
+    return Object.freeze({
+      xAxis: Object.freeze({
+        x: xAxisX,
+        y: xAxisY,
+        z: xAxisZ,
+      }),
+      yAxis: Object.freeze({
+        x: yAxisX,
+        y: yAxisY,
+        z: yAxisZ,
+      }),
+      zAxis: Object.freeze({
+        x: zAxisX,
+        y: zAxisY,
+        z: zAxisZ,
+      }),
+    })
+  } catch {
+    return null
+  }
+}
+
+function freezeWitnessCoverage(
+  value: Omit<FoldPreviewNarrowPhaseWitnessCoverage, 'scope'>,
+): FoldPreviewNarrowPhaseWitnessCoverage {
+  return Object.freeze({
+    scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',
+    ...value,
+  })
 }
 
 function normalized(vector: Vector3) {

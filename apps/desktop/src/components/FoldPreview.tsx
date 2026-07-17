@@ -28,6 +28,14 @@ import {
   describeCollisionSummary,
   type CollisionSummary,
 } from '../lib/foldPreviewCollisionView'
+import {
+  createFoldPreviewContinuousMotionRunner,
+  type FoldPreviewContinuousMotionRunner,
+  type FoldPreviewContinuousMotionRunnerState,
+} from '../lib/foldPreviewContinuousMotionRunner'
+import {
+  describeFoldPreviewContinuousMotion,
+} from '../lib/foldPreviewContinuousMotionView'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import type { FoldPreviewHingeContactConstraint } from '../lib/foldPreviewHingeCollision'
 import {
@@ -45,6 +53,9 @@ import {
   type FoldPreviewPickObject,
 } from '../lib/foldPreviewPicking'
 import { calculateSingleFoldPose } from '../lib/foldPreviewSingleFoldKinematics'
+import {
+  prepareFoldPreviewSingleFoldContinuousCollision,
+} from '../lib/foldPreviewSingleFoldContinuousCollision'
 
 type FoldPreviewProps = {
   angle: number
@@ -74,6 +85,11 @@ type PendingPose = Readonly<{
   requestKey: string
 }>
 
+type ContextualMotionState = Readonly<{
+  contextKey: string
+  state: FoldPreviewContinuousMotionRunnerState
+}>
+
 const DEFAULT_THICKNESS_MM = 0.1
 const MIN_VISIBLE_THICKNESS = 0.025
 const MAX_VISIBLE_THICKNESS = 0.35
@@ -96,6 +112,9 @@ export function FoldPreview({
   const descriptionId = useId()
   const [renderError, setRenderError] = useState<string | null>(null)
   const [collisionSummary, setCollisionSummary] = useState<CollisionSummary | null>(null)
+  const [motionSnapshot, setMotionSnapshot] = useState<ContextualMotionState | null>(null)
+  const motionSnapshotRef = useRef(motionSnapshot)
+  motionSnapshotRef.current = motionSnapshot
   // Assignment selects the fold direction; the control supplies only its magnitude.
   const safeAngle = Number.isFinite(angle) ? THREE.MathUtils.clamp(angle, 0, 180) : 0
   const angleRef = useRef(safeAngle)
@@ -125,6 +144,15 @@ export function FoldPreview({
     : null
   const collisionThickness = isNonNegativeFinite(requestedCollisionThickness)
     ? requestedCollisionThickness
+    : null
+  const singleFoldMotionContextKey = model?.kind === 'single_fold'
+    ? collisionPoseKey(
+        model,
+        resolvedFixedFaceId,
+        collisionThickness,
+        0,
+        undefined,
+      )
     : null
   const previewThickness = THREE.MathUtils.clamp(
     physicalPreviewThickness,
@@ -224,6 +252,7 @@ export function FoldPreview({
     let keyDownHandler: ((event: KeyboardEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
     let poseFrameTask: LatestFrameTask<PendingPose> | null = null
+    let continuousMotionRunner: FoldPreviewContinuousMotionRunner | null = null
     let disposed = false
     const hinges = model.kind === 'single_fold'
       ? [model.hinge]
@@ -259,6 +288,17 @@ export function FoldPreview({
           model.faces,
           collisionAdjacencies,
           collisionHingeConstraints,
+        )
+      } catch {
+        return null
+      }
+    })()
+    const singleFoldContinuousAnalyzer = (() => {
+      if (model.kind !== 'single_fold') return null
+      try {
+        return prepareFoldPreviewSingleFoldContinuousCollision(
+          model,
+          resolvedFixedFaceId ?? model.fixedFace.id,
         )
       } catch {
         return null
@@ -348,6 +388,7 @@ export function FoldPreview({
       attemptCleanup(() => controls?.dispose())
       attemptCleanup(() => observer?.disconnect())
       attemptCleanup(() => poseFrameTask?.dispose())
+      attemptCleanup(() => continuousMotionRunner?.dispose())
       if (runtime && runtimeRef.current === runtime) runtimeRef.current = null
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
       for (const geometry of edgeGeometries) attemptCleanup(() => geometry.dispose())
@@ -511,6 +552,7 @@ export function FoldPreview({
       let pivot: THREE.Group | null = null
       let axis: THREE.Vector3 | null = null
       let rotationSign: 1 | -1 = 1
+      let initialPoseAngle = angleRef.current
       let updatePose = (_angle: number, _hingeAngles?: readonly FoldPreviewHingeAngle[]) => true
       let updateSelection = (_selectedHingeId: string | null) => undefined
       if (model.kind === 'single_fold' && movingGeometry) {
@@ -525,6 +567,11 @@ export function FoldPreview({
         ).normalize()
         rotationSign = singleAnchor.movingRotationSign
         scene.add(pivot)
+        const preservedMotion = motionSnapshotRef.current
+        initialPoseAngle = preservedMotion?.contextKey === singleFoldMotionContextKey
+          && isFoldPreviewAngle(preservedMotion.state.applied)
+          ? preservedMotion.state.applied
+          : 0
         updatePose = (nextAngle) => {
           if (!pivot || !axis) return false
           const pose = calculateSingleFoldPose(
@@ -547,7 +594,7 @@ export function FoldPreview({
           ))
           return true
         }
-        if (!updatePose(angleRef.current)) throw new Error('invalid single-fold pose')
+        if (!updatePose(initialPoseAngle)) throw new Error('invalid single-fold pose')
       }
 
       const hingePickObjects: FoldPreviewPickObject[] = []
@@ -713,54 +760,109 @@ export function FoldPreview({
         }
       }
       createdControls.addEventListener('change', controlsChangeHandler)
-      let appliedPoseKey = collisionPoseKey(
-        model,
-        resolvedFixedFaceId,
-        collisionThickness,
-        angleRef.current,
-        hingeAnglesRef.current,
-      )
       if (
         typeof window.requestAnimationFrame !== 'function'
         || typeof window.cancelAnimationFrame !== 'function'
       ) throw new Error('animation frame scheduling is unavailable')
-      const createdPoseFrameTask = createLatestFrameTask<PendingPose>(
-        {
-          request: (callback) => window.requestAnimationFrame(callback),
+      let schedulePose: PreviewRuntime['schedulePose']
+      if (model.kind === 'single_fold') {
+        if (!singleFoldMotionContextKey) {
+          throw new Error('missing single-fold motion context')
+        }
+        const createdContinuousMotionRunner = createFoldPreviewContinuousMotionRunner({
+          initialAngle: initialPoseAngle,
+          schedule: (callback) => window.requestAnimationFrame(callback),
           cancel: (handle) => window.cancelAnimationFrame(handle),
-        },
-        (pendingPose) => {
-          if (disposed) return
-          if (!updatePose(pendingPose.angle, pendingPose.hingeAngles)) {
-            throw new Error('invalid fold pose')
-          }
-          appliedPoseKey = pendingPose.requestKey
-          render()
-        },
-        () => {
-          if (disposed) return
-          dispose()
-          setRenderError('3D描画を安全に継続できませんでした')
-        },
-      )
-      poseFrameTask = createdPoseFrameTask
-      const schedulePose = (
-        nextAngle: number,
-        nextHingeAngles?: readonly FoldPreviewHingeAngle[],
-      ) => {
-        const requestKey = collisionPoseKey(
+          jobFactory: (startAngle, targetAngle) => collisionThickness === null
+            ? null
+            : singleFoldContinuousAnalyzer?.createJob(
+                startAngle,
+                targetAngle,
+                collisionThickness,
+              ) ?? null,
+          applyAngle: (certifiedAngle) => {
+            if (!updatePose(certifiedAngle)) return false
+            render()
+            return true
+          },
+          onState: (state) => {
+            if (disposed) return
+            if (
+              state.status === 'indeterminate'
+              && (
+                state.reason === 'apply_angle_error'
+                || state.reason === 'apply_angle_rejected'
+              )
+            ) {
+              dispose()
+              setRenderError('3D描画を安全に継続できませんでした')
+              return
+            }
+            setMotionSnapshot({
+              contextKey: singleFoldMotionContextKey,
+              state,
+            })
+          },
+        })
+        if (!createdContinuousMotionRunner) {
+          throw new Error('continuous motion runner is unavailable')
+        }
+        continuousMotionRunner = createdContinuousMotionRunner
+        setMotionSnapshot({
+          contextKey: singleFoldMotionContextKey,
+          state: createdContinuousMotionRunner.getState(),
+        })
+        schedulePose = (nextAngle) => {
+          const accepted = createdContinuousMotionRunner.request(nextAngle)
+          return accepted
+            || createdContinuousMotionRunner.getState().status === 'indeterminate'
+        }
+      } else {
+        let appliedPoseKey = collisionPoseKey(
           model,
           resolvedFixedFaceId,
           collisionThickness,
-          nextAngle,
-          nextHingeAngles,
+          initialPoseAngle,
+          hingeAnglesRef.current,
         )
-        if (requestKey === appliedPoseKey && !createdPoseFrameTask.hasPending()) return true
-        return createdPoseFrameTask.schedule({
-          angle: nextAngle,
-          hingeAngles: nextHingeAngles?.map((hingeAngle) => ({ ...hingeAngle })),
-          requestKey,
-        })
+        const createdPoseFrameTask = createLatestFrameTask<PendingPose>(
+          {
+            request: (callback) => window.requestAnimationFrame(callback),
+            cancel: (handle) => window.cancelAnimationFrame(handle),
+          },
+          (pendingPose) => {
+            if (disposed) return
+            if (!updatePose(pendingPose.angle, pendingPose.hingeAngles)) {
+              throw new Error('invalid fold pose')
+            }
+            appliedPoseKey = pendingPose.requestKey
+            render()
+          },
+          () => {
+            if (disposed) return
+            dispose()
+            setRenderError('3D描画を安全に継続できませんでした')
+          },
+        )
+        poseFrameTask = createdPoseFrameTask
+        schedulePose = (
+          nextAngle: number,
+          nextHingeAngles?: readonly FoldPreviewHingeAngle[],
+        ) => {
+          const requestKey = collisionPoseKey(
+            model,
+            resolvedFixedFaceId,
+            collisionThickness,
+            nextAngle,
+            nextHingeAngles,
+          )
+          if (requestKey === appliedPoseKey && !createdPoseFrameTask.hasPending()) return true
+          return createdPoseFrameTask.schedule({
+            angle: nextAngle,
+            hingeAngles: nextHingeAngles?.map((hingeAngle) => ({ ...hingeAngle })),
+            requestKey,
+          })
+        }
       }
       const raycaster = new THREE.Raycaster()
       const pointer = new THREE.Vector2()
@@ -886,6 +988,7 @@ export function FoldPreview({
     backHex,
     backOpacity,
     resolvedFixedFaceId,
+    singleFoldMotionContextKey,
   ])
 
   useEffect(() => {
@@ -899,7 +1002,19 @@ export function FoldPreview({
       runtime.dispose()
       setRenderError('3D描画を安全に継続できませんでした')
     }
-  }, [safeAngle, hingeAngles])
+  }, [
+    safeAngle,
+    hingeAngles,
+    model,
+    previewThickness,
+    collisionThickness,
+    frontHex,
+    frontOpacity,
+    backHex,
+    backOpacity,
+    resolvedFixedFaceId,
+    singleFoldMotionContextKey,
+  ])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -940,17 +1055,50 @@ export function FoldPreview({
     : -1
   const fixedFaceLabel = fixedFaceIndex >= 0 ? `固定面 ${fixedFaceIndex + 1}` : null
   const fixedFaceNote = fixedFaceLabel ? `・${fixedFaceLabel}` : ''
+  const contextualMotionState = model?.kind === 'single_fold'
+    && singleFoldMotionContextKey
+    && motionSnapshot?.contextKey === singleFoldMotionContextKey
+    ? motionSnapshot.state
+    : null
+  const displayedAngle = model?.kind === 'single_fold'
+    ? contextualMotionState?.applied ?? 0
+    : safeAngle
+  const currentMotionState = model?.kind === 'single_fold'
+    ? contextualMotionState
+      ? contextualMotionState.requested === safeAngle
+        ? contextualMotionState
+        : {
+            ...contextualMotionState,
+            requested: safeAngle,
+            applied: displayedAngle,
+            start: displayedAngle,
+            status: 'running' as const,
+            reason: null,
+            result: null,
+          }
+      : null
+    : null
+  const motionView = model?.kind === 'single_fold' && !renderError
+    ? describeFoldPreviewContinuousMotion(currentMotionState)
+    : null
   const currentCollisionRequestKey = collisionPoseKey(
     model,
     resolvedFixedFaceId,
     collisionThickness,
-    safeAngle,
-    hingeAngles,
+    displayedAngle,
+    model?.kind === 'single_fold' ? undefined : hingeAngles,
   )
   const currentCollisionSummary = collisionSummary?.requestKey === currentCollisionRequestKey
     ? collisionSummary
     : null
-  const collisionNote = describeCollisionSummary(currentCollisionSummary)
+  const collisionPathDisclosure = model?.kind === 'single_fold'
+    ? 'separately_reported'
+    : 'unverified'
+  const collisionNote = describeCollisionSummary(
+    currentCollisionSummary,
+    false,
+    collisionPathDisclosure,
+  )
   const previewPoseNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
     ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}`
     : model?.kind === 'fold_graph'
@@ -958,12 +1106,19 @@ export function FoldPreview({
       : model?.kind === 'single_fold' && fixedFaceLabel
         ? fixedFaceLabel
         : thicknessNote
-  const previewNote = previewPoseNote === thicknessNote
+  const basePreviewNote = previewPoseNote === thicknessNote
     ? `${previewPoseNote}・${collisionNote}`
     : `${previewPoseNote}・${collisionNote}・${thicknessNote}`
-  const collisionDescription = describeCollisionSummary(currentCollisionSummary, true)
+  const previewNote = model?.kind === 'single_fold'
+    ? `${basePreviewNote}・中央面・単一線形経路のみ`
+    : basePreviewNote
+  const collisionDescription = describeCollisionSummary(
+    currentCollisionSummary,
+    true,
+    collisionPathDisclosure,
+  )
   const previewImageDescription = model?.kind === 'single_fold' && !renderError
-    ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度${fixedFaceNote}、${collisionDescription}、${thicknessNote}`
+    ? `実展開図の3D折りプレビュー、表示角 ${displayedAngle}度、指定角 ${safeAngle}度${fixedFaceNote}、${motionView?.accessibleText ?? ''}、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
       ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、${collisionDescription}、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
@@ -987,7 +1142,12 @@ export function FoldPreview({
   return (
     <div
       className="fold-preview"
-      data-angle={safeAngle}
+      data-angle={displayedAngle}
+      data-requested-angle={model?.kind === 'single_fold' ? safeAngle : undefined}
+      data-applied-angle={model?.kind === 'single_fold' ? displayedAngle : undefined}
+      data-motion-status={model?.kind === 'single_fold'
+        ? previewAvailable ? motionView?.status : 'unavailable'
+        : undefined}
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
       data-selected-hinge={selectedHingeId ?? undefined}
       data-fixed-face={resolvedFixedFaceId ?? undefined}
@@ -995,7 +1155,9 @@ export function FoldPreview({
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
       data-collision-thickness-world={collisionThickness ?? undefined}
       data-display-thickness-world={model ? previewThickness : undefined}
-      data-collision-status={collisionDataStatus(currentCollisionSummary)}
+      data-collision-status={previewAvailable
+        ? collisionDataStatus(currentCollisionSummary)
+        : 'unavailable'}
       data-broad-phase-candidates={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.totalCandidates
         : undefined}
@@ -1061,12 +1223,26 @@ export function FoldPreview({
             {collisionBadgeText(currentCollisionSummary)}
           </span>
         ) : null}
+        {previewAvailable && motionView ? (
+          <span
+            className={`fold-preview-motion ${motionView.badgeClass}`}
+            title={motionView.accessibleText}
+            aria-hidden="true"
+          >
+            {motionView.badgeText}
+          </span>
+        ) : null}
         {previewAvailable ? (
           <span className="fold-preview-note" aria-hidden="true">{previewNote}</span>
         ) : null}
       </div>
       {previewAvailable ? (
         <span id={descriptionId} className="visually-hidden">{previewDescription}</span>
+      ) : null}
+      {previewAvailable && motionView ? (
+        <span className="visually-hidden" aria-live="polite" aria-atomic="true">
+          {motionView.terminalAnnouncement ?? ''}
+        </span>
       ) : null}
       <button
         type="button"
@@ -1186,6 +1362,10 @@ function isPositiveFinite(value: number): value is number {
 
 function isNonNegativeFinite(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function isFoldPreviewAngle(value: number) {
+  return Number.isFinite(value) && value >= 0 && value <= 180
 }
 
 function formatMillimetres(value: number) {

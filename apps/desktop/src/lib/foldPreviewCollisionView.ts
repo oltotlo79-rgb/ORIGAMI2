@@ -21,6 +21,8 @@ export type CollisionSummary =
     }>
   | Readonly<{ kind: 'unavailable'; requestKey: string }>
 
+export type CollisionPathDisclosure = 'unverified' | 'separately_reported'
+
 export function collisionSummariesEqual(
   first: CollisionSummary | null,
   second: CollisionSummary,
@@ -76,12 +78,18 @@ export function collisionPoseKey(
 export function describeCollisionSummary(
   summary: CollisionSummary | null,
   accessible = false,
+  pathDisclosure: CollisionPathDisclosure = 'unverified',
 ) {
   if (!summary) return accessible ? '現在姿勢の衝突候補を判定中' : '衝突判定中'
   if (summary.kind === 'unavailable') {
     return accessible ? '現在姿勢の衝突判定は利用できません' : '衝突判定不能'
   }
   if (summary.totalCandidates === 0) {
+    if (pathDisclosure === 'separately_reported') {
+      return accessible
+        ? '現在姿勢の広域候補と狭域相互作用は0件。単一ヒンジの連続経路判定は別に表示しています'
+        : '現在姿勢: 衝突候補 0（経路判定は別表示）'
+    }
     return accessible
       ? '現在姿勢の広域候補と狭域相互作用は0件。連続運動中の衝突は未検証です'
       : '現在姿勢: 衝突候補 0（連続運動は未検証）'
@@ -91,8 +99,11 @@ export function describeCollisionSummary(
   const contactCount = summary.nonAdjacentContacts + summary.hingeOutsideContacts
   const hingeModelCount = summary.hingeModelAllowedContacts
     + summary.hingeModelCorridorOverlaps
+  const limitation = pathDisclosure === 'separately_reported'
+    ? 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖と層ずれは未検証です。単一ヒンジの連続経路判定は別に表示しています'
+    : 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖、層ずれ、連続運動中の衝突は未検証です'
   return accessible
-    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、数値または方針不確定${summary.indeterminateInteractions}件。これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖、層ずれ、連続運動中の衝突は未検証です`
+    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、数値または方針不確定${summary.indeterminateInteractions}件。${limitation}`
     : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・不確定 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
 }
 

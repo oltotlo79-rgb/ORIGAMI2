@@ -159,6 +159,14 @@ test('pending, unavailable, clear, and detailed descriptions retain safety wordi
     '現在姿勢の衝突判定は利用できません',
   )
   assert.match(describeCollisionSummary(ready(), true), /連続運動中の衝突は未検証/)
+  assert.equal(
+    describeCollisionSummary(ready(), true, 'separately_reported'),
+    '現在姿勢の広域候補と狭域相互作用は0件。単一ヒンジの連続経路判定は別に表示しています',
+  )
+  assert.equal(
+    describeCollisionSummary(ready(), false, 'separately_reported'),
+    '現在姿勢: 衝突候補 0（経路判定は別表示）',
+  )
 
   const detailed = ready({
     totalCandidates: 5,
@@ -179,6 +187,14 @@ test('pending, unavailable, clear, and detailed descriptions retain safety wordi
   assert.match(accessible, /共有ヒンジモデル外接触1件/)
   assert.match(accessible, /現在姿勢に対する中央面基準の近似判定/)
   assert.match(accessible, /実際の折り癖、層ずれ、連続運動中の衝突は未検証/)
+  const separatelyReported = describeCollisionSummary(
+    detailed,
+    true,
+    'separately_reported',
+  )
+  assert.match(separatelyReported, /実際の折り癖と層ずれは未検証/)
+  assert.match(separatelyReported, /単一ヒンジの連続経路判定は別に表示/)
+  assert.doesNotMatch(separatelyReported, /連続運動中の衝突は未検証/)
 })
 
 function ready(overrides: Partial<ReadyCollisionSummary> = {}): ReadyCollisionSummary {

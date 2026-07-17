@@ -267,6 +267,30 @@ button { color: inherit; }
 .fold-preview-collision.has-contact { border-color: rgb(190 101 40 / 55%); background: rgb(255 247 238 / 92%); color: #9a4b1f; }
 .fold-preview-collision.has-indeterminate { border-color: rgb(163 124 28 / 55%); background: rgb(255 250 224 / 94%); color: #76580d; }
 .fold-preview-collision.has-penetrations { border-color: rgb(179 65 65 / 62%); background: rgb(255 239 239 / 94%); color: #9f3030; font-weight: 650; }
+.fold-preview-motion {
+  position: absolute;
+  top: 32px;
+  left: 8px;
+  right: 116px;
+  z-index: 1;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 1px solid rgb(82 97 109 / 40%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 88%);
+  color: #52616d;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.fold-preview-motion.is-pending,
+.fold-preview-motion.is-running { border-color: rgb(22 113 184 / 45%); color: #165f99; }
+.fold-preview-motion.is-clear { border-color: rgb(40 114 73 / 45%); color: #287249; }
+.fold-preview-motion.is-blocked { border-color: rgb(179 65 65 / 62%); background: rgb(255 239 239 / 94%); color: #9f3030; font-weight: 650; }
+.fold-preview-motion.is-indeterminate { border-color: rgb(163 124 28 / 55%); background: rgb(255 250 224 / 94%); color: #76580d; }
+.fold-preview-motion.is-unavailable { border-color: rgb(82 97 109 / 40%); color: #52616d; }
 .fold-control { display: grid; grid-template-columns: auto minmax(70px, 1fr) 78px; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
 .fold-control label { font-size: 12px; }
 .fold-angle-number { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px; font-size: 12px; font-variant-numeric: tabular-nums; }

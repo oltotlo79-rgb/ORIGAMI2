@@ -362,6 +362,8 @@ function normalizeBlockedResult(result: unknown) {
     || record.stopTime !== record.certifiedSafeThrough
     || !validBracket(record.unsafeBracket)
     || record.unsafeBracket[0] !== record.certifiedSafeThrough
+    || !validUnitTime(record.blockingSampleTime)
+    || record.blockingSampleTime !== record.unsafeBracket[1]
   ) return null
   const stats = normalizeStats(record.stats)
   if (!stats) return null

@@ -32,6 +32,7 @@ test('forward blocked motion preserves the certified boundary and search bracket
       certifiedSafeThrough: 0.5,
       stopTime: 0.5,
       unsafeBracket: [0.5, 0.625],
+      blockingSampleTime: 0.625,
       blocker: {
         firstFaceId: 'fixed-face',
         secondFaceId: 'moving-face',
@@ -82,6 +83,7 @@ test('reverse blocked motion keeps bracket angles in path order', () => {
       certifiedSafeThrough: 0.25,
       stopTime: 0.25,
       unsafeBracket: [0.25, 0.5],
+      blockingSampleTime: 0.5,
       blocker: {
         firstFaceId: 'moving-face',
         secondFaceId: 'fixed-face',
@@ -116,6 +118,7 @@ test('zero-width and positive-width time-zero brackets have distinct certificati
       certifiedSafeThrough: 0,
       stopTime: 0,
       unsafeBracket: [0, 0],
+      blockingSampleTime: 0,
       stats,
     },
   }))
@@ -129,6 +132,7 @@ test('zero-width and positive-width time-zero brackets have distinct certificati
       certifiedSafeThrough: 0,
       stopTime: 0,
       unsafeBracket: [0, 0.1],
+      blockingSampleTime: 0.1,
       stats,
     },
   }))
@@ -223,6 +227,27 @@ test('inconsistent terminal contracts fail closed', () => {
       status: 'blocked',
       reason: 'motion_blocked',
       result: blockedResult({ unsafeBracket: [0.5, 0.5] }),
+    }),
+    state({
+      requested: 100,
+      applied: 50,
+      status: 'blocked',
+      reason: 'motion_blocked',
+      result: blockedResult({ blockingSampleTime: 0.59 }),
+    }),
+    state({
+      requested: 100,
+      applied: 50,
+      status: 'blocked',
+      reason: 'motion_blocked',
+      result: blockedResult({ blockingSampleTime: undefined }),
+    }),
+    state({
+      requested: 100,
+      applied: 50,
+      status: 'blocked',
+      reason: 'motion_blocked',
+      result: blockedResult({ blockingSampleTime: Number.NaN }),
     }),
     state({
       requested: 100,
@@ -344,6 +369,7 @@ function blockedResult(overrides: Record<string, unknown> = {}) {
     certifiedSafeThrough: 0.5,
     stopTime: 0.5,
     unsafeBracket: [0.5, 0.6],
+    blockingSampleTime: 0.6,
     stats,
     ...overrides,
   }

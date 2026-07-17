@@ -184,6 +184,7 @@ test('an endpoint-outside concave overlap is blocking before motion', () => {
   assert.ok(result.kind === 'blocked')
   assert.equal(result.certifiedSafeThrough, 0)
   assert.deepEqual(result.unsafeBracket, [0, 0])
+  assert.equal(result.blockingSampleTime, 0)
   assert.equal(result.blocker?.hingeDecisionKind, 'outside_hinge_penetration')
   assert.ok(Object.isFrozen(result.blocker))
 })

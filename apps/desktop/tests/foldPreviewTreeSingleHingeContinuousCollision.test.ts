@@ -72,6 +72,7 @@ test('full-face point analysis blocks a collision with a stationary branch', () 
   assert.ok(result.kind === 'blocked')
   assert.ok(result.certifiedSafeThrough > 0)
   assert.ok(result.certifiedSafeThrough < 1)
+  assert.equal(result.blockingSampleTime, result.unsafeBracket[1])
   assert.equal(result.blocker?.relation, 'non_adjacent')
   assert.deepEqual(
     new Set([

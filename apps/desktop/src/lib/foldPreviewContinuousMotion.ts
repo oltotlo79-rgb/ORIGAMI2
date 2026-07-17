@@ -27,6 +27,11 @@ export type FoldPreviewContinuousMotionResult<Blocker = unknown> =
       certifiedSafeThrough: number
       stopTime: number
       unsafeBracket: readonly [number, number]
+      /**
+       * Exact `evaluatePoint` time that returned the blocking decision.
+       * This always equals `unsafeBracket[1]`.
+       */
+      blockingSampleTime: number
       blocker?: Blocker
       stats: FoldPreviewContinuousMotionStats
     }>
@@ -162,6 +167,25 @@ export function createFoldPreviewContinuousMotionJob<Blocker = unknown>(
     stats: stats(),
   })
 
+  const finishBlocked = (
+    blockingSampleTime: number,
+    decision: Extract<
+      FoldPreviewContinuousPointDecision<Blocker>,
+      { kind: 'blocked' }
+    >,
+  ) => finish({
+    kind: 'blocked',
+    certifiedSafeThrough,
+    stopTime: certifiedSafeThrough,
+    unsafeBracket: Object.freeze([
+      certifiedSafeThrough,
+      blockingSampleTime,
+    ]),
+    blockingSampleTime,
+    ...('blocker' in decision ? { blocker: decision.blocker } : {}),
+    stats: stats(),
+  })
+
   const evaluatePoint = (time: number) => {
     const cached = pointCache.get(time)
     if (cached) {
@@ -206,14 +230,7 @@ export function createFoldPreviewContinuousMotionJob<Blocker = unknown>(
     if (cancelled) return finishCancelled()
     if (initial.kind === 'safe') return null
     if (initial.kind === 'blocked') {
-      return finish({
-        kind: 'blocked',
-        certifiedSafeThrough: 0,
-        stopTime: 0,
-        unsafeBracket: Object.freeze([0, 0]),
-        ...('blocker' in initial ? { blocker: initial.blocker } : {}),
-        stats: stats(),
-      })
+      return finishBlocked(0, initial)
     }
     return finishIndeterminate([0, 0], initial.reason)
   }
@@ -248,17 +265,7 @@ export function createFoldPreviewContinuousMotionJob<Blocker = unknown>(
         const endpoint = evaluatePoint(interval.end)
         if (cancelled) return finishCancelled()
         if (endpoint.kind === 'blocked') {
-          return finish({
-            kind: 'blocked',
-            certifiedSafeThrough,
-            stopTime: certifiedSafeThrough,
-            unsafeBracket: Object.freeze([
-              interval.start,
-              interval.end,
-            ]),
-            ...('blocker' in endpoint ? { blocker: endpoint.blocker } : {}),
-            stats: stats(),
-          })
+          return finishBlocked(interval.end, endpoint)
         }
         if (endpoint.kind === 'indeterminate') {
           return finishIndeterminate(
@@ -303,14 +310,7 @@ export function createFoldPreviewContinuousMotionJob<Blocker = unknown>(
           const target = evaluatePoint(1)
           if (cancelled) return finishCancelled()
           if (target.kind === 'blocked') {
-            return finish({
-              kind: 'blocked',
-              certifiedSafeThrough,
-              stopTime: certifiedSafeThrough,
-              unsafeBracket: Object.freeze([interval.start, 1]),
-              ...('blocker' in target ? { blocker: target.blocker } : {}),
-              stats: stats(),
-            })
+            return finishBlocked(1, target)
           }
           if (target.kind === 'indeterminate') {
             return finishIndeterminate(
@@ -337,17 +337,7 @@ export function createFoldPreviewContinuousMotionJob<Blocker = unknown>(
         const endpoint = evaluatePoint(interval.end)
         if (cancelled) return finishCancelled()
         if (endpoint.kind === 'blocked') {
-          return finish({
-            kind: 'blocked',
-            certifiedSafeThrough,
-            stopTime: certifiedSafeThrough,
-            unsafeBracket: Object.freeze([
-              interval.start,
-              interval.end,
-            ]),
-            ...('blocker' in endpoint ? { blocker: endpoint.blocker } : {}),
-            stats: stats(),
-          })
+          return finishBlocked(interval.end, endpoint)
         }
         if (endpoint.kind === 'indeterminate') {
           return finishIndeterminate(

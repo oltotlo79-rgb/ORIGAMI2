@@ -233,6 +233,8 @@ function validBlockedResult(
     && result.stopTime === result.certifiedSafeThrough
     && validBracket(result.unsafeBracket)
     && result.unsafeBracket[0] === result.certifiedSafeThrough
+    && validUnitTime(result.blockingSampleTime)
+    && result.blockingSampleTime === result.unsafeBracket[1]
     && validStats(result.stats)
 }
 

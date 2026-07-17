@@ -626,6 +626,8 @@ function normalizeStep<Blocker>(
       || record.stopTime !== certifiedSafeThrough
       || !validBracket(record.unsafeBracket)
       || record.unsafeBracket[0] !== certifiedSafeThrough
+      || !validUnitTime(record.blockingSampleTime)
+      || record.blockingSampleTime !== record.unsafeBracket[1]
     ) return null
     const result = Object.freeze(
       Object.hasOwn(record, 'blocker')
@@ -634,6 +636,7 @@ function normalizeStep<Blocker>(
             certifiedSafeThrough,
             stopTime: certifiedSafeThrough,
             unsafeBracket: freezeBracket(record.unsafeBracket),
+            blockingSampleTime: record.blockingSampleTime,
             blocker: record.blocker as Blocker,
             stats,
           }
@@ -642,6 +645,7 @@ function normalizeStep<Blocker>(
             certifiedSafeThrough,
             stopTime: certifiedSafeThrough,
             unsafeBracket: freezeBracket(record.unsafeBracket),
+            blockingSampleTime: record.blockingSampleTime,
             stats,
           },
     )

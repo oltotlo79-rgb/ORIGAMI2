@@ -32,11 +32,13 @@ test('unsafe or indeterminate start poses allow no positive motion', () => {
     certifyInterval: () => ({ kind: 'clear' }),
   })
   assert.ok(blocked)
-  assert.deepEqual(blocked.step(1), {
+  const blockedResult = blocked.step(1)
+  assert.deepEqual(blockedResult, {
     kind: 'blocked',
     certifiedSafeThrough: 0,
     stopTime: 0,
     unsafeBracket: [0, 0],
+    blockingSampleTime: 0,
     blocker: 'start-contact',
     stats: {
       intervalTests: 0,
@@ -45,6 +47,10 @@ test('unsafe or indeterminate start poses allow no positive motion', () => {
       maximumDepthReached: 0,
     },
   })
+  assert.ok(Object.isFrozen(blockedResult))
+  assert.ok(blockedResult.kind === 'blocked')
+  assert.ok(Object.isFrozen(blockedResult.unsafeBracket))
+  assert.ok(Object.isFrozen(blockedResult.stats))
 
   const indeterminate = createFoldPreviewContinuousMotionJob({
     evaluatePoint: () => ({ kind: 'indeterminate', reason: 'start-unknown' }),
@@ -67,10 +73,14 @@ test('unsafe or indeterminate start poses allow no positive motion', () => {
 })
 
 test('safe endpoints cannot hide a blocking midpoint', () => {
+  const evaluatedTimes = new Set<number>()
   const job = createFoldPreviewContinuousMotionJob({
-    evaluatePoint: (time) => time >= 0.49 && time <= 0.51
-      ? { kind: 'blocked' }
-      : { kind: 'safe' },
+    evaluatePoint: (time) => {
+      evaluatedTimes.add(time)
+      return time >= 0.49 && time <= 0.51
+        ? { kind: 'blocked' }
+        : { kind: 'safe' }
+    },
     certifyInterval: (start, end) =>
       end < 0.49 || start > 0.51
         ? { kind: 'clear' }
@@ -87,6 +97,8 @@ test('safe endpoints cannot hide a blocking midpoint', () => {
   assert.ok(result.certifiedSafeThrough < 0.49)
   assert.ok(result.unsafeBracket[0] <= 0.5)
   assert.ok(result.unsafeBracket[1] >= 0.49)
+  assert.equal(result.blockingSampleTime, result.unsafeBracket[1])
+  assert.ok(evaluatedTimes.has(result.blockingSampleTime))
   assert.equal(result.stopTime, result.certifiedSafeThrough)
 })
 
@@ -111,6 +123,7 @@ test('chronological search stops at the first collision before later separation'
   assert.equal(result.blocker, 'first-window')
   assert.ok(result.certifiedSafeThrough < 0.4)
   assert.ok(result.unsafeBracket[1] <= 0.4)
+  assert.equal(result.blockingSampleTime, result.unsafeBracket[1])
 })
 
 test('safe samples without an interval proof remain indeterminate', () => {
@@ -182,6 +195,7 @@ test('a blocking work-limit endpoint returns an unsafe bracket', () => {
   assert.equal(result.kind, 'blocked')
   assert.ok(result.kind === 'blocked')
   assert.deepEqual(result.unsafeBracket, [0, 0.5])
+  assert.equal(result.blockingSampleTime, 0.5)
   assert.equal(result.blocker, 'limit-endpoint')
 })
 
@@ -382,6 +396,9 @@ test('a clear interval cannot bypass an unsafe or unknown target pose', () => {
     const result = job.step(1)
     assert.equal(result.kind, terminal)
     assert.equal(result.certifiedSafeThrough, 0)
+    if (result.kind === 'blocked') {
+      assert.equal(result.blockingSampleTime, 1)
+    }
     assert.deepEqual(
       result.kind === 'blocked'
         ? result.unsafeBracket

@@ -66,6 +66,7 @@ test('clear, blocked, and indeterminate states report only the applied safe angl
       certifiedSafeThrough: 0.58375,
       stopTime: 0.58375,
       unsafeBracket: [0.58375, 0.6],
+      blockingSampleTime: 0.6,
       stats,
     },
   }))
@@ -118,6 +119,7 @@ test('unverified and unsafe starts never claim a certified display angle', () =>
       certifiedSafeThrough: 0,
       stopTime: 0,
       unsafeBracket: [0, 0],
+      blockingSampleTime: 0,
       stats,
     },
   }))
@@ -136,6 +138,7 @@ test('unverified and unsafe starts never claim a certified display angle', () =>
       certifiedSafeThrough: 0,
       stopTime: 0,
       unsafeBracket: [0, 0.01],
+      blockingSampleTime: 0.01,
       stats,
     },
   }))
@@ -205,6 +208,7 @@ test('malformed or disposed snapshots fail closed and all copy retains scope lim
       certifiedSafeThrough: 0.5,
       stopTime: 0.5,
       unsafeBracket: [0.5, 0.6],
+      blockingSampleTime: 0.6,
       stats,
     },
   }))
@@ -222,10 +226,47 @@ test('malformed or disposed snapshots fail closed and all copy retains scope lim
       certifiedSafeThrough: 0.5,
       stopTime: 0.5,
       unsafeBracket: [0.5, 0.6],
+      blockingSampleTime: 0.6,
       stats,
     },
   }))
   assert.equal(mismatchedReason.status, 'unavailable')
+
+  const mismatchedBlockingSample = describeFoldPreviewContinuousMotion(state({
+    requested: 100,
+    applied: 50,
+    start: 0,
+    status: 'blocked',
+    reason: 'motion_blocked',
+    result: {
+      kind: 'blocked',
+      certifiedSafeThrough: 0.5,
+      stopTime: 0.5,
+      unsafeBracket: [0.5, 0.6],
+      blockingSampleTime: 0.59,
+      stats,
+    },
+  }))
+  assert.equal(mismatchedBlockingSample.status, 'unavailable')
+
+  for (const blockingSampleTime of [undefined, Number.NaN]) {
+    const invalidBlockingSample = describeFoldPreviewContinuousMotion(state({
+      requested: 100,
+      applied: 50,
+      start: 0,
+      status: 'blocked',
+      reason: 'motion_blocked',
+      result: {
+        kind: 'blocked',
+        certifiedSafeThrough: 0.5,
+        stopTime: 0.5,
+        unsafeBracket: [0.5, 0.6],
+        blockingSampleTime,
+        stats,
+      } as never,
+    }))
+    assert.equal(invalidBlockingSample.status, 'unavailable')
+  }
 
   const nonzeroPointBracket = describeFoldPreviewContinuousMotion(state({
     requested: 100,

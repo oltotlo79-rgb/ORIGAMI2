@@ -20,6 +20,8 @@ const FACE_KEY_DOMAIN: &[u8] = b"ORIGAMI2_FACE_KEY_V1";
 // boundary/single-fold public paths until material-face classification is
 // implemented and admitted into the production analysis route.
 #[allow(dead_code)]
+mod admission;
+#[allow(dead_code)]
 mod dcel;
 mod single_fold;
 

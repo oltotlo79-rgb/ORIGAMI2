@@ -596,8 +596,9 @@ pub(crate) fn canonical_walks(
 /// policy, and containment of every non-boundary edge are mandatory
 /// preconditions before this result can enter the production extraction route.
 /// In particular, a disconnected component outside the sheet is invisible to
-/// the anchored boundary cycle.
-pub(crate) fn build_paper_walks(
+/// the anchored boundary cycle. Production code must enter through the
+/// admission wrapper; the `unchecked` name makes direct internal use explicit.
+pub(super) fn build_paper_walks_unchecked(
     pattern: &CreasePattern,
     paper: &Paper,
 ) -> Result<PaperWalkSet, DcelBuildError> {
@@ -631,6 +632,14 @@ pub(crate) fn build_paper_walks(
         half_edge_to_walk,
         exterior,
     })
+}
+
+#[cfg(test)]
+fn build_paper_walks(
+    pattern: &CreasePattern,
+    paper: &Paper,
+) -> Result<PaperWalkSet, DcelBuildError> {
+    build_paper_walks_unchecked(pattern, paper)
 }
 
 fn normalized_ccw_paper_boundary(

@@ -369,7 +369,7 @@ function blockerFor(
     hingeDecision?: Readonly<{ kind: string }>
   }>,
 ): FoldPreviewSingleFoldContinuousBlocker {
-  return {
+  return Object.freeze({
     firstFaceId: interaction.firstFaceId,
     secondFaceId: interaction.secondFaceId,
     relation: interaction.relation,
@@ -377,7 +377,7 @@ function blockerFor(
     ...(interaction.hingeDecision
       ? { hingeDecisionKind: interaction.hingeDecision.kind }
       : {}),
-  }
+  })
 }
 
 function strictlySeparated(first: Bounds, second: Bounds) {

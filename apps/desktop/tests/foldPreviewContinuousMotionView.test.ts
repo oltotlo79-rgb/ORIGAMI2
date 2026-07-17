@@ -60,6 +60,7 @@ test('clear, blocked, and indeterminate states report only the applied safe angl
     requested: 100,
     applied: 58.375,
     status: 'blocked',
+    reason: 'motion_blocked',
     result: {
       kind: 'blocked',
       certifiedSafeThrough: 0.58375,
@@ -70,9 +71,10 @@ test('clear, blocked, and indeterminate states report only the applied safe angl
   }))
   assert.equal(
     blocked.badgeText,
-    '衝突手前で停止・表示 58.375° / 指定 100°',
+    '経路確認済み境界で停止・表示 58.375° / 指定 100°',
   )
   assert.match(blocked.accessibleText, /最後に経路を確認できた58\.375度で停止/u)
+  assert.match(blocked.accessibleText, /衝突開始角は確定していません/u)
 
   const indeterminate = describeFoldPreviewContinuousMotion(state({
     requested: 180,
@@ -137,7 +139,7 @@ test('unverified and unsafe starts never claim a certified display angle', () =>
       stats,
     },
   }))
-  assert.match(blockedImmediately.badgeText, /開始直後の区間で衝突/u)
+  assert.match(blockedImmediately.badgeText, /開始角からの範囲で衝突/u)
   assert.match(blockedImmediately.accessibleText, /開始姿勢の点判定は通過/u)
   assert.doesNotMatch(blockedImmediately.accessibleText, /開始姿勢で衝突を検出/u)
 
@@ -172,7 +174,7 @@ test('unverified and unsafe starts never claim a certified display angle', () =>
       stats,
     },
   }))
-  assert.match(unknownImmediately.badgeText, /開始直後の区間を判定不能/u)
+  assert.match(unknownImmediately.badgeText, /開始角からの範囲を判定不能/u)
   assert.match(unknownImmediately.accessibleText, /開始姿勢の点判定は通過/u)
 })
 
@@ -197,6 +199,7 @@ test('malformed or disposed snapshots fail closed and all copy retains scope lim
     applied: 80,
     start: 0,
     status: 'blocked',
+    reason: 'motion_blocked',
     result: {
       kind: 'blocked',
       certifiedSafeThrough: 0.5,
@@ -207,6 +210,39 @@ test('malformed or disposed snapshots fail closed and all copy retains scope lim
   }))
   assert.equal(mismatchedBoundary.status, 'unavailable')
   assert.doesNotMatch(mismatchedBoundary.accessibleText, /最後に経路を確認/u)
+
+  const mismatchedReason = describeFoldPreviewContinuousMotion(state({
+    requested: 100,
+    applied: 50,
+    start: 0,
+    status: 'blocked',
+    reason: 'wrong_reason',
+    result: {
+      kind: 'blocked',
+      certifiedSafeThrough: 0.5,
+      stopTime: 0.5,
+      unsafeBracket: [0.5, 0.6],
+      stats,
+    },
+  }))
+  assert.equal(mismatchedReason.status, 'unavailable')
+
+  const nonzeroPointBracket = describeFoldPreviewContinuousMotion(state({
+    requested: 100,
+    applied: 50,
+    start: 0,
+    status: 'indeterminate',
+    reason: 'uncertified_interval',
+    result: {
+      kind: 'indeterminate',
+      certifiedSafeThrough: 0.5,
+      stopTime: 0.5,
+      unresolvedBracket: [0.5, 0.5],
+      reason: 'uncertified_interval',
+      stats,
+    },
+  }))
+  assert.equal(nonzeroPointBracket.status, 'unavailable')
 
   const disposed = describeFoldPreviewContinuousMotion(state({
     requested: 50,

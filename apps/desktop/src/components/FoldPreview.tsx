@@ -34,6 +34,10 @@ import {
   type FoldPreviewContinuousMotionRunnerState,
 } from '../lib/foldPreviewContinuousMotionRunner'
 import {
+  describeFoldPreviewContinuousMotionDetail,
+  type FoldPreviewMotionFaceLabel,
+} from '../lib/foldPreviewContinuousMotionDetail'
+import {
   describeFoldPreviewContinuousMotion,
 } from '../lib/foldPreviewContinuousMotionView'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
@@ -55,6 +59,7 @@ import {
 import { calculateSingleFoldPose } from '../lib/foldPreviewSingleFoldKinematics'
 import {
   prepareFoldPreviewSingleFoldContinuousCollision,
+  type FoldPreviewSingleFoldContinuousBlocker,
 } from '../lib/foldPreviewSingleFoldContinuousCollision'
 
 type FoldPreviewProps = {
@@ -87,7 +92,7 @@ type PendingPose = Readonly<{
 
 type ContextualMotionState = Readonly<{
   contextKey: string
-  state: FoldPreviewContinuousMotionRunnerState
+  state: FoldPreviewContinuousMotionRunnerState<FoldPreviewSingleFoldContinuousBlocker>
 }>
 
 const DEFAULT_THICKNESS_MM = 0.1
@@ -252,7 +257,8 @@ export function FoldPreview({
     let keyDownHandler: ((event: KeyboardEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
     let poseFrameTask: LatestFrameTask<PendingPose> | null = null
-    let continuousMotionRunner: FoldPreviewContinuousMotionRunner | null = null
+    let continuousMotionRunner:
+      FoldPreviewContinuousMotionRunner<FoldPreviewSingleFoldContinuousBlocker> | null = null
     let disposed = false
     const hinges = model.kind === 'single_fold'
       ? [model.hinge]
@@ -1078,8 +1084,19 @@ export function FoldPreview({
           }
       : null
     : null
+  const motionFaceLabels: readonly FoldPreviewMotionFaceLabel[] =
+    model?.kind === 'single_fold'
+      ? model.faces.map((face, index) => ({
+          id: face.id,
+          number: index + 1,
+          label: `面 ${index + 1}${face.id === resolvedFixedFaceId ? '（固定）' : ''}`,
+        }))
+      : []
   const motionView = model?.kind === 'single_fold' && !renderError
     ? describeFoldPreviewContinuousMotion(currentMotionState)
+    : null
+  const motionDetail = model?.kind === 'single_fold' && !renderError
+    ? describeFoldPreviewContinuousMotionDetail(currentMotionState, motionFaceLabels)
     : null
   const currentCollisionRequestKey = collisionPoseKey(
     model,
@@ -1118,7 +1135,7 @@ export function FoldPreview({
     collisionPathDisclosure,
   )
   const previewImageDescription = model?.kind === 'single_fold' && !renderError
-    ? `実展開図の3D折りプレビュー、表示角 ${displayedAngle}度、指定角 ${safeAngle}度${fixedFaceNote}、${motionView?.accessibleText ?? ''}、${collisionDescription}、${thicknessNote}`
+    ? `実展開図の3D折りプレビュー、表示角 ${displayedAngle}度、指定角 ${safeAngle}度${fixedFaceNote}、${motionView?.accessibleText ?? ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
       ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、${collisionDescription}、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
@@ -1148,6 +1165,28 @@ export function FoldPreview({
       data-motion-status={model?.kind === 'single_fold'
         ? previewAvailable ? motionView?.status : 'unavailable'
         : undefined}
+      data-motion-runner-status={model?.kind === 'single_fold'
+        ? currentMotionState?.status ?? (previewAvailable ? 'preparing' : 'unavailable')
+        : undefined}
+      data-motion-result-kind={
+        motionDetail?.resultKind ?? currentMotionState?.result?.kind
+      }
+      data-motion-start-angle={currentMotionState?.start ?? undefined}
+      data-motion-certified-safe-through={
+        motionDetail?.certifiedSafeThrough
+          ?? currentMotionState?.result?.certifiedSafeThrough
+          ?? undefined
+      }
+      data-motion-bracket-start-time={motionDetail?.bracket?.progress[0]}
+      data-motion-bracket-end-time={motionDetail?.bracket?.progress[1]}
+      data-motion-bracket-start-angle={motionDetail?.bracket?.anglesInPathOrder[0]}
+      data-motion-bracket-end-angle={motionDetail?.bracket?.anglesInPathOrder[1]}
+      data-motion-reason={motionDetail?.reasonCode}
+      data-motion-blocker-first-face-number={motionDetail?.firstFaceNumber ?? undefined}
+      data-motion-blocker-second-face-number={motionDetail?.secondFaceNumber ?? undefined}
+      data-motion-relation={motionDetail?.relation ?? undefined}
+      data-motion-geometry-class={motionDetail?.geometryClass ?? undefined}
+      data-motion-hinge-decision={motionDetail?.hingeDecision ?? undefined}
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
       data-selected-hinge={selectedHingeId ?? undefined}
       data-fixed-face={resolvedFixedFaceId ?? undefined}
@@ -1215,22 +1254,38 @@ export function FoldPreview({
           <span className="fold-preview-empty" aria-hidden="true">{unavailableMessage}</span>
         ) : null}
         {previewAvailable ? (
-          <span
-            className={`fold-preview-collision ${collisionBadgeClass(currentCollisionSummary)}`}
-            title={collisionDescription}
-            aria-hidden="true"
-          >
-            {collisionBadgeText(currentCollisionSummary)}
-          </span>
+          <div className="fold-preview-status-stack" aria-hidden="true">
+            <span
+              className={`fold-preview-collision ${collisionBadgeClass(currentCollisionSummary)}`}
+              title={collisionDescription}
+            >
+              表示姿勢｜{collisionBadgeText(currentCollisionSummary)}
+            </span>
+            {motionView ? (
+              <span
+                className={`fold-preview-motion ${motionView.badgeClass}`}
+                title={motionView.accessibleText}
+              >
+                移動経路｜{motionView.badgeText}
+              </span>
+            ) : null}
+          </div>
         ) : null}
-        {previewAvailable && motionView ? (
-          <span
-            className={`fold-preview-motion ${motionView.badgeClass}`}
-            title={motionView.accessibleText}
-            aria-hidden="true"
+        {previewAvailable && motionDetail ? (
+          <details
+            className={`fold-preview-motion-detail is-${motionDetail.kind}`}
+            open
           >
-            {motionView.badgeText}
-          </span>
+            <summary>{motionDetail.title}</summary>
+            <dl>
+              {motionDetail.rows.map((row, index) => (
+                <div className={`is-${row.kind}`} key={`${row.label}-${index}`}>
+                  <dt>{row.label}</dt>
+                  <dd>{row.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         ) : null}
         {previewAvailable ? (
           <span className="fold-preview-note" aria-hidden="true">{previewNote}</span>

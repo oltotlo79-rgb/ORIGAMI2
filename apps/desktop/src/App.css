@@ -192,7 +192,12 @@ button { color: inherit; }
 .crease-canvas.tool-vertex { cursor: cell; }
 .crease-canvas.tool-measure { cursor: crosshair; }
 .crease-canvas.is-disabled { cursor: progress; }
-.fold-preview { position: relative; overflow: hidden; background: #eef2f5; }
+.fold-preview {
+  position: relative;
+  overflow: hidden;
+  container-type: inline-size;
+  background: #eef2f5;
+}
 .fold-preview-viewport {
   position: absolute;
   inset: 0;
@@ -244,12 +249,19 @@ button { color: inherit; }
   line-height: 1.35;
   pointer-events: none;
 }
-.fold-preview-collision {
+.fold-preview-status-stack {
   position: absolute;
   top: 7px;
   left: 8px;
   right: 116px;
   z-index: 1;
+  display: grid;
+  gap: 4px;
+  pointer-events: none;
+}
+.fold-preview-collision,
+.fold-preview-motion {
+  min-width: 0;
   overflow: hidden;
   padding: 3px 6px;
   border: 1px solid rgb(82 97 109 / 40%);
@@ -267,23 +279,62 @@ button { color: inherit; }
 .fold-preview-collision.has-contact { border-color: rgb(190 101 40 / 55%); background: rgb(255 247 238 / 92%); color: #9a4b1f; }
 .fold-preview-collision.has-indeterminate { border-color: rgb(163 124 28 / 55%); background: rgb(255 250 224 / 94%); color: #76580d; }
 .fold-preview-collision.has-penetrations { border-color: rgb(179 65 65 / 62%); background: rgb(255 239 239 / 94%); color: #9f3030; font-weight: 650; }
-.fold-preview-motion {
+.fold-preview-motion-detail {
   position: absolute;
-  top: 32px;
+  bottom: 34px;
   left: 8px;
-  right: 116px;
-  z-index: 1;
-  overflow: hidden;
-  padding: 3px 6px;
+  right: 8px;
+  z-index: 3;
+  max-height: min(45%, 170px);
+  overflow: auto;
   border: 1px solid rgb(82 97 109 / 40%);
-  border-radius: 999px;
-  background: rgb(255 255 255 / 88%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 94%);
   color: #52616d;
   font-size: 10px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  pointer-events: none;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px rgb(34 49 59 / 12%);
+}
+.fold-preview-motion-detail.is-blocked {
+  border-color: rgb(179 65 65 / 62%);
+}
+.fold-preview-motion-detail.is-indeterminate {
+  border-color: rgb(163 124 28 / 55%);
+}
+.fold-preview-motion-detail summary {
+  position: sticky;
+  top: 0;
+  padding: 5px 7px;
+  background: inherit;
+  color: #3f505c;
+  font-weight: 650;
+  cursor: pointer;
+}
+.fold-preview-motion-detail dl {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0 7px 6px;
+}
+.fold-preview-motion-detail dl div {
+  display: grid;
+  grid-template-columns: minmax(84px, .75fr) minmax(0, 1.25fr);
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px solid rgb(122 135 147 / 20%);
+}
+.fold-preview-motion-detail dt {
+  color: #667682;
+}
+.fold-preview-motion-detail dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.fold-preview-motion-detail .is-diagnostic {
+  color: #667682;
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
 }
 .fold-preview-motion.is-pending,
 .fold-preview-motion.is-running { border-color: rgb(22 113 184 / 45%); color: #165f99; }
@@ -291,6 +342,16 @@ button { color: inherit; }
 .fold-preview-motion.is-blocked { border-color: rgb(179 65 65 / 62%); background: rgb(255 239 239 / 94%); color: #9f3030; font-weight: 650; }
 .fold-preview-motion.is-indeterminate { border-color: rgb(163 124 28 / 55%); background: rgb(255 250 224 / 94%); color: #76580d; }
 .fold-preview-motion.is-unavailable { border-color: rgb(82 97 109 / 40%); color: #52616d; }
+@container (max-width: 360px) {
+  .fold-preview-status-stack {
+    top: 47px;
+    right: 8px;
+  }
+
+  .fold-preview-motion-detail {
+    max-height: min(42%, 150px);
+  }
+}
 .fold-control { display: grid; grid-template-columns: auto minmax(70px, 1fr) 78px; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
 .fold-control label { font-size: 12px; }
 .fold-angle-number { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px; font-size: 12px; font-variant-numeric: tabular-nums; }

@@ -71,6 +71,7 @@ export function describeFoldPreviewContinuousMotion(
   if (
     state.status === 'clear'
     && requested !== null
+    && state.reason === null
     && validClearResult(state.result)
     && state.applied === state.requested
   ) {
@@ -87,6 +88,7 @@ export function describeFoldPreviewContinuousMotion(
   if (
     state.status === 'blocked'
     && requested !== null
+    && state.reason === 'motion_blocked'
     && validBlockedResult(state.result)
     && appliedMatchesCertifiedTime(state, state.result.certifiedSafeThrough)
   ) {
@@ -106,21 +108,21 @@ export function describeFoldPreviewContinuousMotion(
     }
     if (state.result.certifiedSafeThrough === 0) {
       const text =
-        `開始姿勢の点判定は通過しましたが、直後の区間で衝突を検出したため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${LIMITATION}`
+        `開始姿勢の点判定は通過しましたが、開始角からの未確認範囲で衝突姿勢を検出したため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${LIMITATION}`
       return view(
         'blocked',
         'is-blocked',
-        `開始直後の区間で衝突・移動なし / 指定 ${requested}°`,
+        `開始角からの範囲で衝突・移動なし / 指定 ${requested}°`,
         text,
         text,
       )
     }
     const text =
-      `指定角${requested}度への経路で衝突を検出したため、最後に経路を確認できた${applied}度で停止しました。${LIMITATION}`
+      `指定角${requested}度への探索区間内で衝突姿勢を検出したため、最後に経路を確認できた${applied}度で停止しました。衝突開始角は確定していません。${LIMITATION}`
     return view(
       'blocked',
       'is-blocked',
-      `衝突手前で停止・表示 ${applied}° / 指定 ${requested}°`,
+      `経路確認済み境界で停止・表示 ${applied}° / 指定 ${requested}°`,
       text,
       text,
     )
@@ -129,6 +131,7 @@ export function describeFoldPreviewContinuousMotion(
     state.status === 'indeterminate'
     && requested !== null
     && state.result === null
+    && validReason(state.reason)
   ) {
     const text =
       `指定角${requested}度への経路判定を開始または継続できないため、現在の表示角${applied}度から進めません。表示角は安全確認済みとして扱いません。${LIMITATION}`
@@ -144,6 +147,7 @@ export function describeFoldPreviewContinuousMotion(
     state.status === 'indeterminate'
     && requested !== null
     && validIndeterminateResult(state.result)
+    && state.reason === state.result.reason
     && appliedMatchesCertifiedTime(state, state.result.certifiedSafeThrough)
   ) {
     if (
@@ -162,11 +166,11 @@ export function describeFoldPreviewContinuousMotion(
     }
     if (state.result.certifiedSafeThrough === 0) {
       const text =
-        `開始姿勢の点判定は通過しましたが、直後の区間を確認できないため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${LIMITATION}`
+        `開始姿勢の点判定は通過しましたが、開始角からの未確認範囲を確認できないため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${LIMITATION}`
       return view(
         'indeterminate',
         'is-indeterminate',
-        `開始直後の区間を判定不能・移動なし / 指定 ${requested}°`,
+        `開始角からの範囲を判定不能・移動なし / 指定 ${requested}°`,
         text,
         text,
       )
@@ -215,6 +219,7 @@ function validClearResult(
   return result?.kind === 'clear'
     && result.certifiedSafeThrough === 1
     && result.stopTime === 1
+    && validStats(result.stats)
 }
 
 function validBlockedResult(
@@ -228,6 +233,7 @@ function validBlockedResult(
     && result.stopTime === result.certifiedSafeThrough
     && validBracket(result.unsafeBracket)
     && result.unsafeBracket[0] === result.certifiedSafeThrough
+    && validStats(result.stats)
 }
 
 function validIndeterminateResult(
@@ -243,6 +249,7 @@ function validIndeterminateResult(
     && result.unresolvedBracket[0] === result.certifiedSafeThrough
     && typeof result.reason === 'string'
     && result.reason.length > 0
+    && validStats(result.stats)
 }
 
 function validBracket(value: readonly [number, number]) {
@@ -251,6 +258,7 @@ function validBracket(value: readonly [number, number]) {
     && validUnitTime(value[0])
     && validUnitTime(value[1])
     && value[0] <= value[1]
+    && (value[0] < value[1] || value[0] === 0)
 }
 
 function validUnitTime(value: number) {
@@ -259,6 +267,23 @@ function validUnitTime(value: number) {
 
 function validNonTerminalTime(value: number) {
   return validUnitTime(value) && value < 1
+}
+
+function validReason(value: string | null) {
+  return typeof value === 'string' && value.length > 0
+}
+
+function validStats(value: unknown) {
+  if (!value || typeof value !== 'object') return false
+  const stats = value as Record<string, unknown>
+  return validCount(stats.intervalTests)
+    && validCount(stats.pointTests)
+    && validCount(stats.pointCacheHits)
+    && validCount(stats.maximumDepthReached)
+}
+
+function validCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
 function appliedMatchesCertifiedTime(

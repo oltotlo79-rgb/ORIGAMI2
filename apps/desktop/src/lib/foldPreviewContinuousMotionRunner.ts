@@ -718,6 +718,7 @@ function validBracket(value: unknown): value is readonly [number, number] {
     && validUnitTime(value[0])
     && validUnitTime(value[1])
     && value[0] <= value[1]
+    && (value[0] < value[1] || value[0] === 0)
 }
 
 function freezeBracket(

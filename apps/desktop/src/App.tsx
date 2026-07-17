@@ -274,6 +274,12 @@ function App() {
   const effectiveFixedFaceId = fixedFaceChoiceIsCurrent
     ? fixedFaceChoice.faceId
     : canonicalFixedFaceId
+  const effectiveFixedFaceIndex = effectiveFixedFaceId
+    ? fixedFaceOptions.findIndex((face) => face.id === effectiveFixedFaceId)
+    : -1
+  const effectiveFixedFaceLabel = effectiveFixedFaceIndex >= 0
+    ? `面 ${effectiveFixedFaceIndex + 1}`
+    : undefined
   const fixedFaceEnabled = fixedFaceOptions.length > 1 && !benchmarkRun
   const foldPreviewHingeIds = useMemo(() => new Set(
     foldPreviewModel?.kind === 'single_fold'
@@ -1236,7 +1242,7 @@ function App() {
                 id="fixed-face"
                 value={effectiveFixedFaceId ?? ''}
                 disabled={!fixedFaceEnabled}
-                title={effectiveFixedFaceId ?? undefined}
+                title={effectiveFixedFaceLabel}
                 onChange={(event) => {
                   if (!foldPreviewModel || !fixedFaceEnabled) return
                   setFixedFaceChoice({

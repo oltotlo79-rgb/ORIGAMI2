@@ -309,8 +309,10 @@ test('throwing and malformed job steps never reach angle application', () => {
     { ...clear(), certifiedSafeThrough: 0.9 },
     { ...blocked(0.2), unsafeBracket: [0.3, 0.2] },
     { ...blocked(0.2), unsafeBracket: [0.1, 0.3] },
+    { ...blocked(0.2), unsafeBracket: [0.2, 0.2] },
     blocked(1),
     { ...indeterminate(0.2, 'unknown'), reason: '' },
+    { ...indeterminate(0.2, 'unknown'), unresolvedBracket: [0.2, 0.2] },
     indeterminate(1, 'unknown'),
   ]
 

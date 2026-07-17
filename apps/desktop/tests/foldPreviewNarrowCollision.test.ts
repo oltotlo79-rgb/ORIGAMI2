@@ -6,7 +6,11 @@ import type {
   FoldPreviewCollisionAdjacency,
   FoldPreviewCollisionPoseFace,
 } from '../src/lib/foldPreviewCollision.ts'
-import { findFoldPreviewNarrowPhaseInteractions } from '../src/lib/foldPreviewNarrowCollision.ts'
+import {
+  MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
+  findFoldPreviewNarrowPhaseInteractions,
+  prepareFoldPreviewNarrowPhase,
+} from '../src/lib/foldPreviewNarrowCollision.ts'
 
 const square = [
   { x: 0, z: 0 },
@@ -168,6 +172,213 @@ test('face and adjacency input order do not change narrow-phase output', () => {
   )
   assert.ok(forward && reversed)
   assert.deepEqual(reversed, forward)
+})
+
+test('prepared analysis is equivalent to the one-shot compatibility API', () => {
+  const faces = [face('left'), face('right')]
+  const transforms = new Map([
+    ['left', new Matrix4()],
+    ['right', new Matrix4().makeTranslation(1, 0, 0)],
+  ])
+  const adjacencies = [{
+    edgeId: 'hinge',
+    firstFaceId: 'left',
+    secondFaceId: 'right',
+  }]
+  const prepared = prepareFoldPreviewNarrowPhase(faces, adjacencies)
+  assert.ok(prepared)
+  assert.deepEqual(
+    prepared.analyze(transforms, 0.1),
+    findFoldPreviewNarrowPhaseInteractions(
+      faces,
+      transforms,
+      0.1,
+      adjacencies,
+    ),
+  )
+})
+
+test('prepared geometry is a deep snapshot of faces and adjacencies', () => {
+  const faces = [
+    { id: 'left', polygon: square.map((point) => ({ ...point })) },
+    { id: 'right', polygon: square.map((point) => ({ ...point })) },
+  ]
+  const adjacencies = [{
+    edgeId: 'hinge',
+    firstFaceId: 'left',
+    secondFaceId: 'right',
+  }]
+  const prepared = prepareFoldPreviewNarrowPhase(faces, adjacencies)
+  assert.ok(prepared)
+  const transforms = new Map([
+    ['left', new Matrix4()],
+    ['right', new Matrix4()],
+  ])
+  const expected = prepared.analyze(transforms, 0.1)
+  assert.ok(expected)
+
+  faces[0].id = 'mutated-left'
+  faces[0].polygon[0].x = 100
+  faces[1].polygon.reverse()
+  faces.reverse()
+  adjacencies[0].edgeId = 'mutated-hinge'
+  adjacencies[0].firstFaceId = 'mutated-left'
+  adjacencies.push({
+    edgeId: 'extra',
+    firstFaceId: 'mutated-left',
+    secondFaceId: 'right',
+  })
+
+  assert.deepEqual(prepared.analyze(transforms, 0.1), expected)
+  const exposedHingeIds = expected.interactions[0]?.hingeEdgeIds as string[]
+  exposedHingeIds[0] = 'mutated-output'
+  assert.deepEqual(
+    prepared.analyze(transforms, 0.1)?.interactions[0]?.hingeEdgeIds,
+    ['hinge'],
+  )
+})
+
+test('prepared analysis recomputes the current pose and thickness on every call', () => {
+  const prepared = prepareFoldPreviewNarrowPhase(
+    [face('fixed'), face('moving')],
+    [],
+  )
+  assert.ok(prepared)
+  const movingTransform = new Matrix4()
+  const transforms = new Map([
+    ['fixed', new Matrix4()],
+    ['moving', movingTransform],
+  ])
+
+  const overlapping = prepared.analyze(transforms, 0.1)
+  assert.ok(overlapping)
+  assert.equal(overlapping.interactions[0]?.geometryClass, 'penetrating')
+
+  movingTransform.makeTranslation(3, 0, 0)
+  const separatedPose = prepared.analyze(transforms, 0.1)
+  assert.ok(separatedPose)
+  assert.equal(separatedPose.broadPhaseCandidates, 0)
+  assert.deepEqual(separatedPose.interactions, [])
+
+  movingTransform.makeTranslation(0, 0.2, 0)
+  const thinPaper = prepared.analyze(transforms, 0.1)
+  const thickPaper = prepared.analyze(transforms, 0.5)
+  assert.ok(thinPaper && thickPaper)
+  assert.equal(thinPaper.broadPhaseCandidates, 0)
+  assert.equal(
+    thickPaper.interactions[0]?.geometryClass,
+    'penetrating',
+  )
+})
+
+test('prepared analysis fails closed for missing, extra, and non-rigid poses', () => {
+  const prepared = prepareFoldPreviewNarrowPhase([face('a'), face('b')], [])
+  assert.ok(prepared)
+  assert.equal(prepared.analyze(
+    new Map([
+      ['a', new Matrix4()],
+      ['b', new Matrix4()],
+    ]),
+    Number.NaN,
+  ), null)
+  assert.equal(prepared.analyze(
+    new Map([
+      ['a', new Matrix4()],
+      ['b', new Matrix4()],
+    ]),
+    -0.1,
+  ), null)
+  assert.equal(prepared.analyze(
+    new Map([['a', new Matrix4()]]),
+    0.1,
+  ), null)
+  assert.equal(prepared.analyze(
+    new Map([
+      ['a', new Matrix4()],
+      ['b', new Matrix4()],
+      ['extra', new Matrix4()],
+    ]),
+    0.1,
+  ), null)
+  assert.equal(prepared.analyze(
+    new Map([
+      ['a', new Matrix4()],
+      ['b', new Matrix4().makeScale(1.001, 1, 1)],
+    ]),
+    0.1,
+  ), null)
+  const projective = new Matrix4()
+  projective.elements[3] = 0.01
+  assert.equal(prepared.analyze(
+    new Map([
+      ['a', new Matrix4()],
+      ['b', projective],
+    ]),
+    0.1,
+  ), null)
+})
+
+test('preparation rejects malformed static geometry and adjacency snapshots', () => {
+  assert.equal(prepareFoldPreviewNarrowPhase(
+    [face('duplicate'), face('duplicate')],
+    [],
+  ), null)
+  assert.equal(prepareFoldPreviewNarrowPhase(
+    [face('degenerate', [
+      { x: 0, z: 0 },
+      { x: 1, z: 0 },
+      { x: 2, z: 0 },
+    ])],
+    [],
+  ), null)
+  assert.equal(prepareFoldPreviewNarrowPhase(
+    [face('a'), face('b')],
+    [{
+      edgeId: 'unknown-face',
+      firstFaceId: 'a',
+      secondFaceId: 'missing',
+    }],
+  ), null)
+  assert.equal(prepareFoldPreviewNarrowPhase(
+    [face('a'), face('b')],
+    [
+      { edgeId: 'duplicate-edge', firstFaceId: 'a', secondFaceId: 'b' },
+      { edgeId: 'duplicate-edge', firstFaceId: 'b', secondFaceId: 'a' },
+    ],
+  ), null)
+  assert.equal(prepareFoldPreviewNarrowPhase(
+    [face(
+      'over-preparation-limit',
+      Array(MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES + 1)
+        .fill({ x: 0, z: 0 }),
+    )],
+    [],
+  ), null)
+})
+
+test('one-shot analysis preserves lazy zero-thickness handling', () => {
+  const degeneratePolygon = [
+    { x: 0, z: 0 },
+    { x: 1, z: 0 },
+    { x: 2, z: 0 },
+  ] as const
+  const faces = [
+    face('a', degeneratePolygon),
+    face('b', degeneratePolygon),
+  ]
+  const transforms = new Map([
+    ['a', new Matrix4()],
+    ['b', new Matrix4()],
+  ])
+  const oneShot = findFoldPreviewNarrowPhaseInteractions(
+    faces,
+    transforms,
+    0,
+    [],
+  )
+  assert.ok(oneShot)
+  assert.equal(oneShot.interactions[0]?.geometryClass, 'indeterminate')
+  assert.equal(prepareFoldPreviewNarrowPhase(faces, []), null)
 })
 
 test('partial poses, scaling, and singular face transforms fail closed', () => {

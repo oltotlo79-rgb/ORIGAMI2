@@ -1,12 +1,20 @@
 import { Vector3, type Matrix4 } from 'three'
 import {
+  MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES,
+  MAX_FOLD_PREVIEW_COLLISION_FACES,
   findFoldPreviewPoseBroadPhaseCandidates,
+  type FoldPreviewBroadPhaseResult,
   type FoldPreviewCollisionAdjacency,
   type FoldPreviewCollisionPoseFace,
 } from './foldPreviewCollision.ts'
-import { triangulateFoldPreviewPolygon } from './foldPreviewGeometry.ts'
+import {
+  triangulateFoldPreviewPolygon,
+  type FoldPreviewTriangleIndices,
+} from './foldPreviewGeometry.ts'
 
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS = 1_000_000
+/** Bounds synchronous deep-copy and triangulation during preview setup. */
+export const MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES = 100_000
 
 const SAT_MARGIN_FACTOR = 4
 const PARALLEL_AXIS_TOLERANCE = Number.EPSILON * 128
@@ -28,6 +36,25 @@ export type FoldPreviewNarrowPhaseResult = Readonly<{
   trianglePairTests: number
   satTests: number
   numericalMargin: number
+}>
+
+export type FoldPreviewNarrowPhaseAnalyzer = Readonly<{
+  analyze(
+    faceTransforms: ReadonlyMap<string, Matrix4>,
+    thickness: number,
+  ): FoldPreviewNarrowPhaseResult | null
+}>
+
+type PreparedFoldPreviewNarrowPhaseFace = Readonly<{
+  id: string
+  polygon: FoldPreviewCollisionPoseFace['polygon']
+  triangles: readonly FoldPreviewTriangleIndices[]
+}>
+
+type FoldPreviewNarrowPhaseFace = Readonly<{
+  id: string
+  polygon: FoldPreviewCollisionPoseFace['polygon']
+  triangles?: readonly FoldPreviewTriangleIndices[]
 }>
 
 type TrianglePrism = Readonly<{
@@ -59,18 +86,94 @@ export function findFoldPreviewNarrowPhaseInteractions(
   thickness: number,
   adjacencies: readonly FoldPreviewCollisionAdjacency[],
 ): FoldPreviewNarrowPhaseResult | null {
+  try {
+    const broadPhase = findFoldPreviewPoseBroadPhaseCandidates(
+      faces,
+      faceTransforms,
+      thickness,
+      adjacencies,
+    )
+    if (!broadPhase) return null
+    for (const face of faces) {
+      const transform = faceTransforms.get(face.id)
+      if (!transform || !rigidTransform(transform)) return null
+    }
+    return refineFoldPreviewNarrowPhase(
+      faces,
+      faceTransforms,
+      thickness,
+      broadPhase,
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Snapshots and triangulates pose-independent collision inputs once.
+ *
+ * The returned analyzer deliberately does not retain a pose or thickness:
+ * every synchronous call validates one exact immutable transform map, rebuilds
+ * world bounds, and reruns the broad and narrow phases.
+ */
+export function prepareFoldPreviewNarrowPhase(
+  faces: readonly FoldPreviewCollisionPoseFace[],
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+): FoldPreviewNarrowPhaseAnalyzer | null {
+  const prepared = snapshotNarrowPhaseInputs(faces, adjacencies)
+  if (!prepared) return null
+  const { preparedFaces, poseFaces, adjacencySnapshot } = prepared
+
+  return Object.freeze({
+    analyze(
+      faceTransforms: ReadonlyMap<string, Matrix4>,
+      thickness: number,
+    ): FoldPreviewNarrowPhaseResult | null {
+      try {
+        if (!Number.isFinite(thickness) || thickness < 0) return null
+        return analyzePreparedFoldPreviewNarrowPhase(
+          preparedFaces,
+          poseFaces,
+          adjacencySnapshot,
+          faceTransforms,
+          thickness,
+        )
+      } catch {
+        return null
+      }
+    },
+  })
+}
+
+function analyzePreparedFoldPreviewNarrowPhase(
+  preparedFaces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  poseFaces: readonly FoldPreviewCollisionPoseFace[],
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+): FoldPreviewNarrowPhaseResult | null {
   const broadPhase = findFoldPreviewPoseBroadPhaseCandidates(
-    faces,
+    poseFaces,
     faceTransforms,
     thickness,
     adjacencies,
   )
   if (!broadPhase) return null
-  for (const face of faces) {
-    const transform = faceTransforms.get(face.id)
-    if (!transform || !rigidTransform(transform)) return null
-  }
+  if (!validateRigidTransforms(preparedFaces, faceTransforms)) return null
+  return refineFoldPreviewNarrowPhase(
+    preparedFaces,
+    faceTransforms,
+    thickness,
+    broadPhase,
+  )
+}
 
+function refineFoldPreviewNarrowPhase(
+  faces: readonly FoldPreviewNarrowPhaseFace[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+  broadPhase: FoldPreviewBroadPhaseResult,
+): FoldPreviewNarrowPhaseResult | null {
   const facesById = new Map(faces.map((face) => [face.id, face]))
   if (facesById.size !== faces.length) return null
   const numericalMargin = broadPhase.numericalMargin * SAT_MARGIN_FACTOR
@@ -171,12 +274,104 @@ export function findFoldPreviewNarrowPhaseInteractions(
   }
 }
 
+function snapshotNarrowPhaseInputs(
+  faces: readonly FoldPreviewCollisionPoseFace[],
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+) {
+  try {
+    if (
+      !Array.isArray(faces)
+      || !Array.isArray(adjacencies)
+      || faces.length > MAX_FOLD_PREVIEW_COLLISION_FACES
+      || adjacencies.length > MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES
+    ) return null
+
+    const faceIds = new Set<string>()
+    const preparedFaces: PreparedFoldPreviewNarrowPhaseFace[] = []
+    let vertexCount = 0
+    for (const face of faces) {
+      if (
+        !face
+        || !validId(face.id)
+        || faceIds.has(face.id)
+        || !Array.isArray(face.polygon)
+        || face.polygon.length < 3
+      ) return null
+      vertexCount += face.polygon.length
+      if (
+        !Number.isSafeInteger(vertexCount)
+        || vertexCount > MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES
+      ) return null
+
+      const polygon = face.polygon.map((
+        point: FoldPreviewCollisionPoseFace['polygon'][number],
+      ) => {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
+          throw new RangeError('invalid collision polygon point')
+        }
+        return { x: point.x, z: point.z }
+      })
+      const triangles = triangulateFoldPreviewPolygon(polygon).map((triangle) =>
+        [...triangle] as FoldPreviewTriangleIndices)
+      preparedFaces.push({
+        id: face.id,
+        polygon,
+        triangles,
+      })
+      faceIds.add(face.id)
+    }
+
+    const edgeIds = new Set<string>()
+    const adjacencySnapshot: FoldPreviewCollisionAdjacency[] = []
+    for (const adjacency of adjacencies) {
+      if (
+        !adjacency
+        || !validId(adjacency.edgeId)
+        || edgeIds.has(adjacency.edgeId)
+        || !faceIds.has(adjacency.firstFaceId)
+        || !faceIds.has(adjacency.secondFaceId)
+        || adjacency.firstFaceId === adjacency.secondFaceId
+      ) return null
+      adjacencySnapshot.push({
+        edgeId: adjacency.edgeId,
+        firstFaceId: adjacency.firstFaceId,
+        secondFaceId: adjacency.secondFaceId,
+      })
+      edgeIds.add(adjacency.edgeId)
+    }
+
+    const poseFaces = preparedFaces.map((face) => ({
+      id: face.id,
+      polygon: face.polygon,
+    }))
+    return {
+      preparedFaces,
+      poseFaces,
+      adjacencySnapshot,
+    }
+  } catch {
+    return null
+  }
+}
+
+function validateRigidTransforms(
+  faces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+) {
+  if (!faceTransforms || faceTransforms.size !== faces.length) return false
+  for (const face of faces) {
+    const transform = faceTransforms.get(face.id)
+    if (!transform || !rigidTransform(transform)) return false
+  }
+  return true
+}
+
 function buildTrianglePrisms(
-  face: FoldPreviewCollisionPoseFace,
+  face: FoldPreviewNarrowPhaseFace,
   transform: Matrix4,
   thickness: number,
 ): readonly TrianglePrism[] | null {
-  const triangles = triangulateFoldPreviewPolygon(face.polygon)
+  const triangles = face.triangles ?? triangulateFoldPreviewPolygon(face.polygon)
   const halfThickness = thickness / 2
   if (!Number.isFinite(halfThickness) || halfThickness < 0) return null
   const prisms: TrianglePrism[] = []
@@ -343,4 +538,8 @@ function rigidTransform(transform: Matrix4) {
     && Math.abs(first.dot(third)) <= RIGID_TRANSFORM_TOLERANCE
     && Math.abs(second.dot(third)) <= RIGID_TRANSFORM_TOLERANCE
     && Math.abs(determinant - 1) <= RIGID_TRANSFORM_TOLERANCE
+}
+
+function validId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
 }

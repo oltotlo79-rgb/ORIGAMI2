@@ -23,7 +23,7 @@ import {
   type LatestFrameTask,
 } from '../lib/latestFrameTask'
 import type { FoldPreviewFaceModel, FoldPreviewModel } from '../lib/foldPreviewModel'
-import { findFoldPreviewNarrowPhaseInteractions } from '../lib/foldPreviewNarrowCollision'
+import { prepareFoldPreviewNarrowPhase } from '../lib/foldPreviewNarrowCollision'
 import {
   pickFoldPreviewTarget,
   type FoldPreviewPickObject,
@@ -215,6 +215,13 @@ export function FoldPreview({
           firstFaceId: hinge.leftFaceId,
           secondFaceId: hinge.rightFaceId,
         }))
+    const collisionAnalyzer = (() => {
+      try {
+        return prepareFoldPreviewNarrowPhase(model.faces, collisionAdjacencies)
+      } catch {
+        return null
+      }
+    })()
     let collisionSeverityByFace = new Map<string, FoldPreviewFaceCollisionSeverity>()
     let refreshFaceHighlights = () => undefined
 
@@ -225,11 +232,9 @@ export function FoldPreview({
       let nextSummary: CollisionSummary = { kind: 'unavailable', requestKey }
       let nextCollisionSeverityByFace = new Map<string, FoldPreviewFaceCollisionSeverity>()
       try {
-        const result = findFoldPreviewNarrowPhaseInteractions(
-          model.faces,
+        const result = collisionAnalyzer?.analyze(
           faceTransforms,
           physicalPreviewThickness,
-          collisionAdjacencies,
         )
         if (result) {
           const presentation = summarizeFoldPreviewCollision(result)

@@ -52,7 +52,6 @@ import {
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import type { FoldPreviewHingeContactConstraint } from '../lib/foldPreviewHingeCollision'
 import {
-  calculateFoldTreePoseWithAngles,
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
 import {
@@ -94,6 +93,11 @@ import {
   prepareFoldPreviewSingleFoldContinuousCollision,
   type FoldPreviewSingleFoldContinuousBlocker,
 } from '../lib/foldPreviewSingleFoldContinuousCollision'
+import {
+  applyFoldPreviewTreeScenePose,
+  createFoldPreviewTreeSceneCollisionPoseKey,
+  lockFoldPreviewTreeSceneMatrixTarget,
+} from '../lib/foldPreviewTreeScenePose'
 
 type FoldPreviewProps = {
   angle: number
@@ -702,6 +706,10 @@ export function FoldPreview({
         const group = makeFace(geometry, face)
         if (model.kind === 'fold_graph') {
           group.matrixAutoUpdate = false
+          if (
+            model.kinematics.kind === 'tree'
+            && !lockFoldPreviewTreeSceneMatrixTarget(group.matrix)
+          ) throw new Error('tree face matrix registration failed')
           faceGroups.set(face.id, group)
         }
         scene.add(group)
@@ -787,6 +795,9 @@ export function FoldPreview({
           hingeLines.set(hinge.edgeId, line)
           if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
             line.matrixAutoUpdate = false
+            if (!lockFoldPreviewTreeSceneMatrixTarget(line.matrix)) {
+              throw new Error('tree hinge matrix registration failed')
+            }
           }
           scene.add(line)
         }
@@ -825,34 +836,49 @@ export function FoldPreview({
 
         if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
           if (!treeKinematics) throw new Error('missing fold-tree anchor')
+          const faceMatrixTargets = new Map(
+            [...faceGroups].map(([faceId, group]) => [
+              faceId,
+              group.matrix,
+            ]),
+          )
+          const hingeMatrixTargets = new Map(
+            [...hingeLines].map(([edgeId, line]) => [
+              edgeId,
+              line.matrix,
+            ]),
+          )
           updatePose = (nextAngle, nextHingeAngles) => {
-            const pose = calculateFoldTreePoseWithAngles(treeKinematics, nextHingeAngles
-              ? { kind: 'per_hinge', angles: nextHingeAngles }
-              : { kind: 'uniform', angleDegrees: nextAngle })
-            if (
-              !pose
-              || pose.faceTransforms.size !== faceGroups.size
-              || pose.hingeTransforms.size !== hingeLines.size
-            ) return false
-            for (const [faceId, transform] of pose.faceTransforms) {
-              const group = faceGroups.get(faceId)
-              if (!group) return false
-              group.matrix.copy(transform)
+            const requestedAngles = nextHingeAngles
+              ? nextHingeAngles.map((hingeAngle) => ({
+                  edgeId: hingeAngle.edgeId,
+                  angleDegrees: hingeAngle.angleDegrees,
+                }))
+              : treeKinematics.joints.map((joint) => ({
+                  edgeId: joint.hinge.edgeId,
+                  angleDegrees: nextAngle,
+                }))
+            const requestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+              model,
+              treeKinematics.rootFaceId,
+              collisionThickness,
+              requestedAngles,
+            )
+            if (!requestKey) return false
+            const application = applyFoldPreviewTreeScenePose({
+              tree: treeKinematics,
+              appliedAngles: requestedAngles,
+              faceTargets: faceMatrixTargets,
+              hingeTargets: hingeMatrixTargets,
+            })
+            if (!application) return false
+            for (const group of faceGroups.values()) {
               group.matrixWorldNeedsUpdate = true
             }
-            for (const [edgeId, transform] of pose.hingeTransforms) {
-              const line = hingeLines.get(edgeId)
-              if (!line) return false
-              line.matrix.copy(transform)
+            for (const line of hingeLines.values()) {
               line.matrixWorldNeedsUpdate = true
             }
-            updateCollision(pose.faceTransforms, collisionPoseKey(
-              model,
-              resolvedFixedFaceId,
-              collisionThickness,
-              nextAngle,
-              nextHingeAngles,
-            ))
+            updateCollision(application.faceTransforms, requestKey)
             return true
           }
           if (!updatePose(angleRef.current, hingeAnglesRef.current)) {
@@ -976,13 +1002,46 @@ export function FoldPreview({
             || createdContinuousMotionRunner.getState().status === 'indeterminate'
         }
       } else {
-        let appliedPoseKey = collisionPoseKey(
-          model,
-          resolvedFixedFaceId,
-          collisionThickness,
+        const requestedPoseKey = (
+          requestedAngle: number,
+          requestedHingeAngles?: readonly FoldPreviewHingeAngle[],
+        ) => {
+          if (
+            model.kind === 'fold_graph'
+            && model.kinematics.kind === 'tree'
+            && treeKinematics
+          ) {
+            const completeAngles = requestedHingeAngles
+              ? requestedHingeAngles.map((hingeAngle) => ({
+                  edgeId: hingeAngle.edgeId,
+                  angleDegrees: hingeAngle.angleDegrees,
+                }))
+              : treeKinematics.joints.map((joint) => ({
+                  edgeId: joint.hinge.edgeId,
+                  angleDegrees: requestedAngle,
+                }))
+            return createFoldPreviewTreeSceneCollisionPoseKey(
+              model,
+              treeKinematics.rootFaceId,
+              collisionThickness,
+              completeAngles,
+            )
+          }
+          return collisionPoseKey(
+            model,
+            resolvedFixedFaceId,
+            collisionThickness,
+            requestedAngle,
+            requestedHingeAngles,
+          )
+        }
+        let appliedPoseKey = requestedPoseKey(
           initialPoseAngle,
           hingeAnglesRef.current,
         )
+        if (!appliedPoseKey) {
+          throw new Error('missing initial pose key')
+        }
         const createdPoseFrameTask = createLatestFrameTask<PendingPose>(
           {
             request: (callback) => window.requestAnimationFrame(callback),
@@ -1007,13 +1066,11 @@ export function FoldPreview({
           nextAngle: number,
           nextHingeAngles?: readonly FoldPreviewHingeAngle[],
         ) => {
-          const requestKey = collisionPoseKey(
-            model,
-            resolvedFixedFaceId,
-            collisionThickness,
+          const requestKey = requestedPoseKey(
             nextAngle,
             nextHingeAngles,
           )
+          if (!requestKey) return false
           if (requestKey === appliedPoseKey && !createdPoseFrameTask.hasPending()) return true
           return createdPoseFrameTask.schedule({
             angle: nextAngle,
@@ -2240,13 +2297,25 @@ export function FoldPreview({
   const motionBadgeClass = angleDragPresentation.state === 'idle'
     ? motionView?.badgeClass
     : 'is-running'
-  const currentCollisionRequestKey = collisionPoseKey(
-    model,
-    resolvedFixedFaceId,
-    collisionThickness,
-    displayedAngle,
-    model?.kind === 'single_fold' ? undefined : hingeAngles,
-  )
+  const currentCollisionRequestKey =
+    model?.kind === 'fold_graph'
+    && model.kinematics.kind === 'tree'
+    ? createFoldPreviewTreeSceneCollisionPoseKey(
+        model,
+        resolvedFixedFaceId ?? model.kinematics.rootFaceId,
+        collisionThickness,
+        hingeAngles ?? model.kinematics.joints.map((joint) => ({
+          edgeId: joint.hinge.edgeId,
+          angleDegrees: safeAngle,
+        })),
+      ) ?? ''
+    : collisionPoseKey(
+        model,
+        resolvedFixedFaceId,
+        collisionThickness,
+        displayedAngle,
+        model?.kind === 'single_fold' ? undefined : hingeAngles,
+      )
   const currentCollisionSummary = collisionSummary?.requestKey === currentCollisionRequestKey
     ? collisionSummary
     : null

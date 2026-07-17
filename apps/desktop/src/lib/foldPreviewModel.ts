@@ -21,6 +21,10 @@ export type FoldPreviewFaceModel = Readonly<{
 
 export type FoldPreviewHingeModel = Readonly<{
   edgeId: string
+  /** Material face on the geometric left of the canonical hinge direction. */
+  leftFaceId: string
+  /** Material face on the geometric right of the canonical hinge direction. */
+  rightFaceId: string
   start: FoldPreviewWorldVertex
   end: FoldPreviewWorldVertex
   /** Unit vector in the world XZ plane; Three.js uses `(x, 0, z)`. */
@@ -389,6 +393,8 @@ function hingeModel(
   if (!Number.isFinite(axisX) || !Number.isFinite(axisZ)) return null
   return {
     edgeId: incidence.edge,
+    leftFaceId: incidence.left,
+    rightFaceId: incidence.right,
     start,
     end,
     axis: { x: axisX, z: axisZ },

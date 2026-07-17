@@ -4,6 +4,7 @@ import test from 'node:test'
 import { Matrix4 } from 'three'
 import {
   findFoldPreviewBroadPhaseCandidates,
+  findFoldPreviewPoseBroadPhaseCandidates,
   MAX_FOLD_PREVIEW_COLLISION_FACES,
   type FoldPreviewCollisionFace,
 } from '../src/lib/foldPreviewCollision.ts'
@@ -19,7 +20,7 @@ test('separated face prisms do not become broad-phase candidates', () => {
   const result = findFoldPreviewBroadPhaseCandidates([
     face('left'),
     face('right', new Matrix4().makeTranslation(2, 0, 0)),
-  ])
+  ], [])
   assert.ok(result)
   assert.equal(result.bounds.length, 2)
   assert.deepEqual(result.candidates, [])
@@ -32,7 +33,7 @@ test('world transforms and paper thickness contribute to conservative bounds', (
   const result = findFoldPreviewBroadPhaseCandidates([
     face('fixed', new Matrix4(), 0.1),
     face('moving', rotated, 0.1),
-  ])
+  ], [])
   assert.ok(result)
   assert.equal(result.candidates.length, 1)
   assert.equal(result.candidates[0].relation, 'non_adjacent')
@@ -44,7 +45,7 @@ test('touching bounds remain candidates for the later narrow phase', () => {
   const result = findFoldPreviewBroadPhaseCandidates([
     face('first'),
     face('second', new Matrix4().makeTranslation(1, 0, 0)),
-  ])
+  ], [])
   assert.ok(result)
   assert.equal(result.candidates.length, 1)
   assert.equal(result.candidates[0].touching, true)
@@ -96,13 +97,13 @@ test('malformed faces, transforms, and adjacency fail closed', () => {
   assert.equal(findFoldPreviewBroadPhaseCandidates([
     face('duplicate'),
     face('duplicate'),
-  ]), null)
+  ], []), null)
   assert.equal(findFoldPreviewBroadPhaseCandidates([
     { ...face('bad-point'), polygon: [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 0, z: Number.NaN }] },
-  ]), null)
+  ], []), null)
   assert.equal(findFoldPreviewBroadPhaseCandidates([
     face('perspective', perspective),
-  ]), null)
+  ], []), null)
   assert.equal(findFoldPreviewBroadPhaseCandidates([
     face('a'),
     face('b'),
@@ -117,14 +118,66 @@ test('the documented 10,000-face sparse workload stays bounded and deterministic
       `face-${index.toString().padStart(5, '0')}`,
       new Matrix4().makeTranslation(index * 2, 0, 0),
     ))
-  const result = findFoldPreviewBroadPhaseCandidates(faces)
+  const result = findFoldPreviewBroadPhaseCandidates(faces, [])
   assert.ok(result)
   assert.equal(result.bounds.length, MAX_FOLD_PREVIEW_COLLISION_FACES)
   assert.deepEqual(result.candidates, [])
   assert.equal(findFoldPreviewBroadPhaseCandidates([
     ...faces,
     face('over-limit'),
-  ]), null)
+  ], []), null)
+})
+
+test('ordering uses stable code units and floating-point margin keeps near contacts', () => {
+  const nearContact = new Matrix4().makeTranslation(1 + Number.EPSILON * 16, 0, 0)
+  const result = findFoldPreviewBroadPhaseCandidates([
+    face('ä', nearContact),
+    face('z'),
+  ], [])
+  assert.ok(result)
+  assert.deepEqual(result.bounds.map(({ faceId }) => faceId), ['z', 'ä'])
+  assert.equal(result.candidates.length, 1)
+  assert.equal(result.candidates[0].touching, true)
+})
+
+test('huge translations cannot relax affine validation and dense output fails closed', () => {
+  const invalid = new Matrix4().makeTranslation(1e200, 0, 0)
+  invalid.elements[3] = 1
+  assert.equal(findFoldPreviewBroadPhaseCandidates([
+    face('invalid', invalid),
+  ], []), null)
+
+  const dense = Array.from({ length: 449 }, (_, index) => face(`dense-${index}`))
+  assert.equal(findFoldPreviewBroadPhaseCandidates(dense, []), null)
+})
+
+test('pose adapter requires an exact complete transform snapshot', () => {
+  const faces = [
+    { id: 'fixed', polygon: square },
+    { id: 'moving', polygon: square },
+  ]
+  const complete = new Map([
+    ['fixed', new Matrix4()],
+    ['moving', new Matrix4().makeTranslation(2, 0, 0)],
+  ])
+  const result = findFoldPreviewPoseBroadPhaseCandidates(faces, complete, 0.1, [])
+  assert.ok(result)
+  assert.deepEqual(result.candidates, [])
+  assert.equal(findFoldPreviewPoseBroadPhaseCandidates(
+    faces,
+    new Map([['fixed', new Matrix4()]]),
+    0.1,
+    [],
+  ), null)
+  assert.equal(findFoldPreviewPoseBroadPhaseCandidates(
+    faces,
+    new Map([
+      ['fixed', new Matrix4()],
+      ['stale', new Matrix4()],
+    ]),
+    0.1,
+    [],
+  ), null)
 })
 
 function face(

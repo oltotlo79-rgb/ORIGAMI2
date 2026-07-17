@@ -1,6 +1,8 @@
 import { Vector3, type Matrix4 } from 'three'
 
 export const MAX_FOLD_PREVIEW_COLLISION_FACES = 10_000
+export const MAX_FOLD_PREVIEW_COLLISION_VERTICES = 1_000_000
+export const MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES = 100_000
 export const MAX_FOLD_PREVIEW_BROAD_PHASE_CANDIDATES = 100_000
 
 const NUMERICAL_MARGIN_FACTOR = 64
@@ -17,6 +19,11 @@ export type FoldPreviewCollisionFace = Readonly<{
   transform: Matrix4
   /** Full paper thickness in preview world units. */
   thickness: number
+}>
+
+export type FoldPreviewCollisionPoseFace = Readonly<{
+  id: string
+  polygon: readonly FoldPreviewCollisionPoint[]
 }>
 
 export type FoldPreviewCollisionAdjacency = Readonly<{
@@ -55,6 +62,39 @@ export type FoldPreviewBroadPhaseResult = Readonly<{
 }>
 
 /**
+ * Adapts the renderer's rest-frame faces and authoritative pose map without
+ * reading mutable Three.js scene state. The transform map must match every face
+ * exactly so a stale or partial pose can never masquerade as collision-free.
+ */
+export function findFoldPreviewPoseBroadPhaseCandidates(
+  faces: readonly FoldPreviewCollisionPoseFace[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+): FoldPreviewBroadPhaseResult | null {
+  if (
+    !Array.isArray(faces)
+    || !faceTransforms
+    || faceTransforms.size !== faces.length
+    || !Number.isFinite(thickness)
+    || thickness < 0
+  ) return null
+  const collisionFaces: FoldPreviewCollisionFace[] = []
+  for (const face of faces) {
+    if (!face || !validId(face.id)) return null
+    const transform = faceTransforms.get(face.id)
+    if (!transform) return null
+    collisionFaces.push({
+      faceId: face.id,
+      polygon: face.polygon,
+      transform,
+      thickness,
+    })
+  }
+  return findFoldPreviewBroadPhaseCandidates(collisionFaces, adjacencies)
+}
+
+/**
  * Builds world-space face-prism AABBs and finds potentially contacting pairs.
  *
  * This is deliberately only a broad phase: a returned pair is not proof of a
@@ -63,17 +103,19 @@ export type FoldPreviewBroadPhaseResult = Readonly<{
  */
 export function findFoldPreviewBroadPhaseCandidates(
   faces: readonly FoldPreviewCollisionFace[],
-  adjacencies: readonly FoldPreviewCollisionAdjacency[] = [],
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
 ): FoldPreviewBroadPhaseResult | null {
   if (
     !Array.isArray(faces)
     || !Array.isArray(adjacencies)
     || faces.length > MAX_FOLD_PREVIEW_COLLISION_FACES
+    || adjacencies.length > MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES
   ) return null
 
   const bounds: FoldPreviewFaceBounds[] = []
   const faceIds = new Set<string>()
   let coordinateScale = 1
+  let vertexCount = 0
   for (const face of faces) {
     if (
       !face
@@ -84,6 +126,11 @@ export function findFoldPreviewBroadPhaseCandidates(
       || !Number.isFinite(face.thickness)
       || face.thickness < 0
       || !finiteAffineMatrix(face.transform)
+    ) return null
+    vertexCount += face.polygon.length
+    if (
+      !Number.isSafeInteger(vertexCount)
+      || vertexCount > MAX_FOLD_PREVIEW_COLLISION_VERTICES
     ) return null
     faceIds.add(face.faceId)
 
@@ -142,7 +189,7 @@ export function findFoldPreviewBroadPhaseCandidates(
   }
 
   candidates.sort(compareCandidates)
-  bounds.sort((first, second) => first.faceId.localeCompare(second.faceId))
+  bounds.sort((first, second) => compareIds(first.faceId, second.faceId))
   return { bounds, candidates, numericalMargin }
 }
 
@@ -204,7 +251,7 @@ function indexAdjacencies(
     mutableIndex.set(firstFaceId, bySecond)
   }
   for (const bySecond of mutableIndex.values()) {
-    for (const edges of bySecond.values()) edges.sort((first, second) => first.localeCompare(second))
+    for (const edges of bySecond.values()) edges.sort(compareIds)
   }
   return mutableIndex
 }
@@ -216,12 +263,10 @@ function finiteAffineMatrix(transform: Matrix4) {
     || transform.elements.length !== 16
     || !transform.elements.every(Number.isFinite)
   ) return false
-  const scale = Math.max(1, ...transform.elements.map(Math.abs))
-  const tolerance = scale * Number.EPSILON * NUMERICAL_MARGIN_FACTOR
-  return Math.abs(transform.elements[3]) <= tolerance
-    && Math.abs(transform.elements[7]) <= tolerance
-    && Math.abs(transform.elements[11]) <= tolerance
-    && Math.abs(transform.elements[15] - 1) <= tolerance
+  return transform.elements[3] === 0
+    && transform.elements[7] === 0
+    && transform.elements[11] === 0
+    && transform.elements[15] === 1
 }
 
 function separated(
@@ -246,19 +291,23 @@ function overlapLength(
 function compareSweepBounds(first: FoldPreviewFaceBounds, second: FoldPreviewFaceBounds) {
   return first.minX - second.minX
     || first.maxX - second.maxX
-    || first.faceId.localeCompare(second.faceId)
+    || compareIds(first.faceId, second.faceId)
 }
 
 function compareCandidates(
   first: FoldPreviewBroadPhaseCandidate,
   second: FoldPreviewBroadPhaseCandidate,
 ) {
-  return first.firstFaceId.localeCompare(second.firstFaceId)
-    || first.secondFaceId.localeCompare(second.secondFaceId)
+  return compareIds(first.firstFaceId, second.firstFaceId)
+    || compareIds(first.secondFaceId, second.secondFaceId)
 }
 
 function orderedPair(first: string, second: string): readonly [string, string] {
-  return first.localeCompare(second) <= 0 ? [first, second] : [second, first]
+  return compareIds(first, second) <= 0 ? [first, second] : [second, first]
+}
+
+function compareIds(first: string, second: string) {
+  return first < second ? -1 : first > second ? 1 : 0
 }
 
 function validId(value: unknown): value is string {

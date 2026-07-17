@@ -210,6 +210,23 @@ button { color: inherit; }
   line-height: 1.35;
   pointer-events: none;
 }
+.fold-preview-collision {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  z-index: 1;
+  padding: 3px 6px;
+  border: 1px solid rgb(82 97 109 / 40%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 88%);
+  color: #52616d;
+  font-size: 10px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+.fold-preview-collision.is-clear { border-color: rgb(40 114 73 / 45%); color: #287249; }
+.fold-preview-collision.has-hinge-candidates { border-color: rgb(22 113 184 / 45%); color: #165f99; }
+.fold-preview-collision.has-other-candidates { border-color: rgb(190 101 40 / 55%); background: rgb(255 247 238 / 92%); color: #9a4b1f; }
 .fold-control { display: grid; grid-template-columns: auto minmax(70px, 1fr) 78px; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
 .fold-control label { font-size: 12px; }
 .fold-angle-number { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px; font-size: 12px; font-variant-numeric: tabular-nums; }

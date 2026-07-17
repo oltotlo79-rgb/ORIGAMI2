@@ -6,6 +6,10 @@ import {
   rerootFoldPreviewTree,
   resolveSingleFoldAnchor,
 } from '../lib/foldPreviewAnchoring'
+import {
+  findFoldPreviewPoseBroadPhaseCandidates,
+  type FoldPreviewCollisionAdjacency,
+} from '../lib/foldPreviewCollision'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import {
   calculateFoldTreePoseWithAngles,
@@ -38,6 +42,16 @@ type PreviewRuntime = {
   dispose: () => void
 }
 
+type CollisionSummary =
+  | Readonly<{
+      kind: 'ready'
+      requestKey: string
+      totalCandidates: number
+      nonAdjacentCandidates: number
+      hingeAdjacentCandidates: number
+    }>
+  | Readonly<{ kind: 'unavailable'; requestKey: string }>
+
 const DEFAULT_THICKNESS_MM = 0.1
 const MIN_VISIBLE_THICKNESS = 0.025
 const MAX_VISIBLE_THICKNESS = 0.35
@@ -58,6 +72,7 @@ export function FoldPreview({
   const hostRef = useRef<HTMLDivElement>(null)
   const runtimeRef = useRef<PreviewRuntime | null>(null)
   const [renderError, setRenderError] = useState<string | null>(null)
+  const [collisionSummary, setCollisionSummary] = useState<CollisionSummary | null>(null)
   // Assignment selects the fold direction; the control supplies only its magnitude.
   const safeAngle = Number.isFinite(angle) ? THREE.MathUtils.clamp(angle, 0, 180) : 0
   const angleRef = useRef(safeAngle)
@@ -95,9 +110,11 @@ export function FoldPreview({
     const host = hostRef.current
     if (!host || !model) {
       runtimeRef.current = null
+      setCollisionSummary(null)
       return
     }
     setRenderError(null)
+    setCollisionSummary(null)
 
     const singleAnchor = model.kind === 'single_fold'
       ? resolveSingleFoldAnchor(model, resolvedFixedFaceId ?? model.fixedFace.id)
@@ -168,6 +185,47 @@ export function FoldPreview({
     let clickHandler: ((event: MouseEvent) => void) | null = null
     let runtime: PreviewRuntime | null = null
     let disposed = false
+    const collisionAdjacencies: FoldPreviewCollisionAdjacency[] = model.kind === 'planar'
+      ? []
+      : (model.kind === 'single_fold' ? [model.hinge] : model.hinges).map((hinge) => ({
+          edgeId: hinge.edgeId,
+          firstFaceId: hinge.leftFaceId,
+          secondFaceId: hinge.rightFaceId,
+        }))
+
+    const updateCollision = (
+      faceTransforms: ReadonlyMap<string, THREE.Matrix4>,
+      requestKey: string,
+    ) => {
+      let nextSummary: CollisionSummary = { kind: 'unavailable', requestKey }
+      try {
+        const result = findFoldPreviewPoseBroadPhaseCandidates(
+          model.faces,
+          faceTransforms,
+          physicalPreviewThickness,
+          collisionAdjacencies,
+        )
+        if (result) {
+          const hingeAdjacentCandidates = result.candidates.reduce(
+            (count, candidate) => count + Number(candidate.relation === 'hinge_adjacent'),
+            0,
+          )
+          nextSummary = {
+            kind: 'ready',
+            requestKey,
+            totalCandidates: result.candidates.length,
+            nonAdjacentCandidates: result.candidates.length - hingeAdjacentCandidates,
+            hingeAdjacentCandidates,
+          }
+        }
+      } catch {
+        // Broad-phase diagnostics are optional and must not invalidate a verified pose.
+      }
+      if (!disposed) {
+        setCollisionSummary((current) =>
+          collisionSummariesEqual(current, nextSummary) ? current : nextSummary)
+      }
+    }
 
     const dispose = () => {
       if (disposed) return
@@ -300,13 +358,26 @@ export function FoldPreview({
         pivot.add(makeFace(movingGeometry, singleAnchor.movingFace))
         axis = new THREE.Vector3(model.hinge.axis.x, 0, model.hinge.axis.z).normalize()
         rotationSign = singleAnchor.movingRotationSign
-        applyFoldRotation(pivot, axis, rotationSign, angleRef.current)
         scene.add(pivot)
         updatePose = (nextAngle) => {
           if (!pivot || !axis) return false
           applyFoldRotation(pivot, axis, rotationSign, nextAngle)
+          updateCollision(new Map([
+            [singleAnchor.fixedFace.id, new THREE.Matrix4()],
+            [
+              singleAnchor.movingFace.id,
+              createFoldRotationTransform(model.hinge.start, axis, rotationSign, nextAngle),
+            ],
+          ]), collisionPoseKey(
+            model,
+            resolvedFixedFaceId,
+            physicalPreviewThickness,
+            nextAngle,
+            undefined,
+          ))
           return true
         }
+        if (!updatePose(angleRef.current)) throw new Error('invalid single-fold pose')
       }
 
       const hinges = model.kind === 'single_fold'
@@ -413,12 +484,34 @@ export function FoldPreview({
               line.matrix.copy(transform)
               line.matrixWorldNeedsUpdate = true
             }
+            updateCollision(pose.faceTransforms, collisionPoseKey(
+              model,
+              resolvedFixedFaceId,
+              physicalPreviewThickness,
+              nextAngle,
+              nextHingeAngles,
+            ))
             return true
           }
           if (!updatePose(angleRef.current, hingeAnglesRef.current)) {
             throw new Error('invalid fold tree pose')
           }
         }
+      }
+      if (
+        model.kind === 'planar'
+        || (model.kind === 'fold_graph' && model.kinematics.kind === 'static_cycle')
+      ) {
+        updateCollision(
+          new Map(model.faces.map((face) => [face.id, new THREE.Matrix4()])),
+          collisionPoseKey(
+            model,
+            resolvedFixedFaceId,
+            physicalPreviewThickness,
+            angleRef.current,
+            hingeAnglesRef.current,
+          ),
+        )
       }
 
       const render = () => createdRenderer.render(scene, camera)
@@ -485,6 +578,7 @@ export function FoldPreview({
   }, [
     model,
     previewThickness,
+    physicalPreviewThickness,
     frontHex,
     frontOpacity,
     backHex,
@@ -530,21 +624,36 @@ export function FoldPreview({
     : -1
   const fixedFaceLabel = fixedFaceIndex >= 0 ? `固定面 ${fixedFaceIndex + 1}` : null
   const fixedFaceNote = fixedFaceLabel ? `・${fixedFaceLabel}` : ''
-  const previewNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
-    ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}（衝突未検証）・${thicknessNote}`
+  const currentCollisionRequestKey = collisionPoseKey(
+    model,
+    resolvedFixedFaceId,
+    physicalPreviewThickness,
+    safeAngle,
+    hingeAngles,
+  )
+  const currentCollisionSummary = collisionSummary?.requestKey === currentCollisionRequestKey
+    ? collisionSummary
+    : null
+  const collisionNote = describeCollisionSummary(currentCollisionSummary)
+  const previewPoseNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
+    ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}`
     : model?.kind === 'fold_graph'
-      ? `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階・${thicknessNote}`
+      ? `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階`
       : model?.kind === 'single_fold' && fixedFaceLabel
-        ? `${fixedFaceLabel}・${thicknessNote}`
+        ? fixedFaceLabel
         : thicknessNote
+  const previewNote = previewPoseNote === thicknessNote
+    ? `${previewPoseNote}・${collisionNote}`
+    : `${previewPoseNote}・${collisionNote}・${thicknessNote}`
+  const collisionDescription = describeCollisionSummary(currentCollisionSummary, true)
   const previewImageDescription = model?.kind === 'single_fold' && !renderError
-    ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度${fixedFaceNote}、${thicknessNote}`
+    ? `実展開図の3D折りプレビュー、折り角 ${safeAngle}度${fixedFaceNote}、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
-      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、衝突未検証、${thicknessNote}`
+      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}、${collisionDescription}、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
-        ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${thicknessNote}`
+        ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
-      ? `実展開図の平面3Dプレビュー、${thicknessNote}`
+      ? `実展開図の平面3Dプレビュー、${collisionDescription}、${thicknessNote}`
       : `3D折りプレビューは利用できません。${unavailableMessage}`
   const interactionDescription = onSelectHinge && onChooseFixedFace
     ? '。3D上のヒンジをクリックして選択し、面をクリックして固定面を変更できます'
@@ -565,11 +674,26 @@ export function FoldPreview({
       data-fixed-face={resolvedFixedFaceId ?? undefined}
       data-interactive={Boolean(onSelectHinge || onChooseFixedFace)}
       data-topology-kind={model && !renderError ? model.kind : 'unavailable'}
+      data-collision-status={collisionDataStatus(currentCollisionSummary)}
+      data-broad-phase-candidates={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.totalCandidates
+        : undefined}
+      data-non-adjacent-candidates={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.nonAdjacentCandidates
+        : undefined}
       role="img"
       aria-label={previewDescription}
     >
       {!model || renderError ? (
         <span className="fold-preview-empty">{unavailableMessage}</span>
+      ) : null}
+      {model && !renderError ? (
+        <span
+          className={`fold-preview-collision ${collisionBadgeClass(currentCollisionSummary)}`}
+          title={collisionDescription}
+        >
+          {collisionBadgeText(currentCollisionSummary)}
+        </span>
       ) : null}
       {model && !renderError ? <span className="fold-preview-note">{previewNote}</span> : null}
     </div>
@@ -586,6 +710,100 @@ function applyFoldRotation(
     axis,
     THREE.MathUtils.degToRad(angle * rotationSign),
   )
+}
+
+function createFoldRotationTransform(
+  start: Readonly<{ x: number; z: number }>,
+  axis: THREE.Vector3,
+  rotationSign: 1 | -1,
+  angle: number,
+) {
+  return new THREE.Matrix4()
+    .makeTranslation(start.x, 0, start.z)
+    .multiply(new THREE.Matrix4().makeRotationAxis(
+      axis,
+      THREE.MathUtils.degToRad(angle * rotationSign),
+    ))
+    .multiply(new THREE.Matrix4().makeTranslation(-start.x, 0, -start.z))
+}
+
+function collisionSummariesEqual(
+  first: CollisionSummary | null,
+  second: CollisionSummary,
+) {
+  if (
+    !first
+    || first.kind !== second.kind
+    || first.requestKey !== second.requestKey
+  ) return false
+  return first.kind === 'unavailable'
+    || (
+      second.kind === 'ready'
+      && first.totalCandidates === second.totalCandidates
+      && first.nonAdjacentCandidates === second.nonAdjacentCandidates
+      && first.hingeAdjacentCandidates === second.hingeAdjacentCandidates
+    )
+}
+
+function collisionPoseKey(
+  model: FoldPreviewModel | null | undefined,
+  fixedFaceId: string | null,
+  thickness: number,
+  angle: number,
+  hingeAngles: readonly FoldPreviewHingeAngle[] | undefined,
+) {
+  if (!model) return ''
+  const orderedHingeAngles = hingeAngles
+    ? hingeAngles
+      .map(({ edgeId, angleDegrees }) => [edgeId, angleDegrees] as const)
+      .sort((first, second) => compareText(first[0], second[0]))
+    : null
+  return JSON.stringify([
+    model.projectId,
+    model.revision,
+    model.kind,
+    fixedFaceId,
+    thickness,
+    angle,
+    orderedHingeAngles,
+  ])
+}
+
+function compareText(first: string, second: string) {
+  return first < second ? -1 : first > second ? 1 : 0
+}
+
+function describeCollisionSummary(summary: CollisionSummary | null, accessible = false) {
+  if (!summary) return accessible ? '衝突候補の広域判定中' : '広域判定中'
+  if (summary.kind === 'unavailable') {
+    return accessible ? '衝突候補の広域判定は利用できません' : '広域判定不能'
+  }
+  if (summary.totalCandidates === 0) {
+    return accessible
+      ? '広域衝突候補は0件、狭域衝突判定は未実装'
+      : '広域候補 0（狭域判定は未実装）'
+  }
+  return accessible
+    ? `広域衝突候補は${summary.totalCandidates}件、非隣接${summary.nonAdjacentCandidates}件、ヒンジ隣接${summary.hingeAdjacentCandidates}件。衝突確定ではありません`
+    : `広域候補 ${summary.totalCandidates}（非隣接 ${summary.nonAdjacentCandidates}・ヒンジ隣接 ${summary.hingeAdjacentCandidates}、衝突確定ではありません）`
+}
+
+function collisionDataStatus(summary: CollisionSummary | null) {
+  return !summary ? 'pending' : summary.kind
+}
+
+function collisionBadgeClass(summary: CollisionSummary | null) {
+  if (!summary || summary.kind === 'unavailable') return 'is-unavailable'
+  if (summary.totalCandidates === 0) return 'is-clear'
+  return summary.nonAdjacentCandidates > 0 ? 'has-other-candidates' : 'has-hinge-candidates'
+}
+
+function collisionBadgeText(summary: CollisionSummary | null) {
+  if (!summary) return '広域判定中'
+  if (summary.kind === 'unavailable') return '広域判定不能'
+  return summary.totalCandidates === 0
+    ? '広域候補 0'
+    : `広域候補 ${summary.totalCandidates}・非隣接 ${summary.nonAdjacentCandidates}`
 }
 
 function describeTreeAngles(

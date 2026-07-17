@@ -545,6 +545,8 @@ test('single fold becomes centered world-XZ polygons around the canonical hinge'
   ])
   assert.deepEqual(model.hinge, {
     edgeId: ids.fold,
+    leftFaceId: ids.west,
+    rightFaceId: ids.east,
     start: { vertexId: ids.b, x: 0, z: 2.2 },
     end: { vertexId: ids.e, x: 0, z: -2.2 },
     axis: { x: 0, z: -1 },

@@ -6,3 +6,4 @@ apps/desktop/src-tauri/gen/
 *.log
 __pycache__/
 *.py[cod]
+.playwright-mcp/

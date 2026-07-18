@@ -26,6 +26,7 @@
 
 ## 完了
 
+- commit `48f4de6`の[CI #213](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29643184224)でfrontend、Windows/macOS Rust、Windows NSIS bundle、macOS `.app` bundleの全jobが成功。Windows配布物では同梱Noto Sans JPとOFLのSHA-256、外向き通信を遮断した折り図生成、外部parserによるPDF・SVG ZIP監査を通し、折り図書き出しcheckpointを採用
 - 折り手順timelineから、説明・注意事項・固定3D図を載せたA4複数ページPDFとページ別SVG画像ZIPを書き出す利用者経路を追加。INS-010を部分実装へ更新し、MUST 87件の現在集計は実装済み27・部分実装31・未着手29
 - 書き出し前の形式・ページ数・警告確認、revisionに固定した一度限りの生成、進捗表示、native保存ダイアログと原子的保存、取消後の再試行を接続。初版で省略する滑らかな連続動作、折る方向の矢印、手指guide、照明・影・透明表現を明示する
 - 一枚紙展開図のPDF 1.7/DXF AC1021書き出しを既存の確認画面へ接続し、要件IO-006の列挙4形式をUIから利用可能にした。当該checkpoint時点のMUST 86件集計は実装済み26・部分実装30・未着手30
@@ -349,7 +350,7 @@
 
 ## 進行中
 
-- 折り図PDF・SVGページ画像ZIP書き出しcheckpointのGitHub Actions採用確認
+- VAL-003の時間制限つき全体平坦折り3値判定と、SIM-010へ引き渡す場所別の層順序管理
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認

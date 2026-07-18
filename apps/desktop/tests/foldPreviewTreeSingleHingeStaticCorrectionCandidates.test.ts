@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Vector3 } from 'three'
 
 import {
+  createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob,
   deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates,
   FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_VERSION,
+  FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
   isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext,
   MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
+  type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob,
+  type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep,
 } from '../src/lib/foldPreviewTreeSingleHingeStaticCorrectionCandidates.ts'
 import {
   prepareFoldPreviewTreeSingleHingeContinuousCollision,
@@ -570,6 +575,556 @@ test('throwing and revoked public inputs return null without escaping errors', (
     assert.equal(result, null)
   }
 })
+
+test('resumable jobs preserve synchronous output for tiny and large chunks', () => {
+  const fixture = correctionFixture()
+  const synchronous =
+    deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(synchronous)
+
+  for (const workBudget of [1, 2, 17, Number.MAX_SAFE_INTEGER]) {
+    const job =
+      createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+        fixture.context,
+        fixture.binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      )
+    assert.ok(job)
+    assert.deepEqual(job.workBounds, {
+      entireStepTimeBounded: false,
+      synchronousFactoryPreparation: true,
+      synchronousCandidatePosePreparation: true,
+      synchronousChildJobPreparation: true,
+      synchronousHingePolicyFinalization: true,
+      synchronousResultFinalization: true,
+      candidateSeedCount: 1,
+      maximumTrianglePairTests:
+        MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
+      plannedTrianglePairVisitUpperBound: 24,
+      maximumWitnessDerivations: 32,
+      maximumTotalWorkUnits: 56,
+    })
+    const pendingSteps:
+      FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep[] = []
+    const terminal = runStaticCorrectionJob(
+      job,
+      workBudget,
+      pendingSteps,
+    )
+    assert.equal(terminal.kind, 'complete')
+    assert.equal(
+      terminal.version,
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
+    )
+    assert.deepEqual(terminal.result, synchronous)
+    assert.notStrictEqual(terminal.result, synchronous)
+    assert.deepEqual(terminal.work, {
+      totalWorkUnits: 8,
+      trianglePairTests: 8,
+      witnessDerivations: 0,
+    })
+    assert.strictEqual(terminal.workBounds, job.workBounds)
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+        fixture.context,
+        terminal.result,
+      ),
+      true,
+    )
+    for (const pending of pendingSteps) {
+      assert.equal(pending.kind, 'pending')
+      assert.equal('result' in pending, false)
+      assert.equal('candidates' in pending, false)
+      assertDeeplyFrozen(pending)
+    }
+    assert.strictEqual(job.step(1), terminal)
+    job.cancel()
+    assert.strictEqual(job.step(2), terminal)
+    assertDeeplyFrozen(terminal)
+  }
+})
+
+test('full scan completes before narrow scan and every phase leaves a cancellation window', () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+
+  const fullPrepared = job.step(Number.MAX_SAFE_INTEGER)
+  assert.equal(fullPrepared.kind, 'pending')
+  assert.equal(fullPrepared.phase, 'full_scan')
+  assert.deepEqual(fullPrepared.work, {
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  })
+  const fullComplete = job.step(Number.MAX_SAFE_INTEGER)
+  assert.equal(fullComplete.kind, 'pending')
+  assert.equal(fullComplete.phase, 'narrow_scan_preparation')
+  assert.deepEqual(fullComplete.work, fullPrepared.work)
+  const narrowPrepared = job.step(Number.MAX_SAFE_INTEGER)
+  assert.equal(narrowPrepared.kind, 'pending')
+  assert.equal(narrowPrepared.phase, 'narrow_scan')
+  assert.deepEqual(narrowPrepared.work, fullComplete.work)
+  const terminal = job.step(Number.MAX_SAFE_INTEGER)
+  assert.equal(terminal.kind, 'complete')
+  assert.equal(terminal.result.staticValidationWork.fullScanCount, 1)
+  assert.equal(terminal.result.staticValidationWork.narrowScanCount, 1)
+})
+
+test('multiple seeds retain source order and separate every child phase', () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      0.15,
+      2,
+      30,
+    )
+  assert.ok(job)
+  assert.equal(job.workBounds.candidateSeedCount, 2)
+
+  const pending:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep[] = []
+  const terminal = runStaticCorrectionJob(
+    job,
+    Number.MAX_SAFE_INTEGER,
+    pending,
+  )
+  assert.equal(terminal.kind, 'complete')
+  assert.deepEqual(
+    pending.map((step) => step.kind === 'pending' ? step.phase : null),
+    [
+      'full_scan',
+      'narrow_scan_preparation',
+      'narrow_scan',
+      'full_scan_preparation',
+      'full_scan',
+      'narrow_scan_preparation',
+      'narrow_scan',
+    ],
+  )
+  assert.deepEqual(
+    terminal.result.candidates.map((candidate) => ({
+      rank: candidate.rank,
+      sourceSeedRank: candidate.sourceSeedRank,
+    })),
+    [
+      { rank: 1, sourceSeedRank: 1 },
+      { rank: 2, sourceSeedRank: 2 },
+    ],
+  )
+  assert.deepEqual(terminal.result.staticValidationWork, {
+    strategy: 'full_non_adjacent_then_hinge_policy_v1',
+    maximumTrianglePairVisits:
+      MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
+    plannedTrianglePairVisitUpperBound: 48,
+    actualTrianglePairVisits: 16,
+    fullScanCount: 2,
+    narrowScanCount: 2,
+  })
+  assert.deepEqual(
+    terminal.result,
+    deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
+      fixture.context,
+      fixture.binding,
+      0.15,
+      2,
+      30,
+    ),
+  )
+})
+
+test('a colliding full scan skips its narrow child and exposes no partial candidate', () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      1e-9,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+  const pending:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep[] = []
+  const terminal = runStaticCorrectionJob(job, 1, pending)
+  assert.equal(terminal.kind, 'exhausted')
+  assert.ok(pending.length > 0)
+  assert.ok(pending.every((step) =>
+    step.kind === 'pending'
+    && step.phase !== 'narrow_scan_preparation'
+    && step.phase !== 'narrow_scan'))
+  assert.equal('result' in terminal, false)
+  assert.equal('candidates' in terminal, false)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+      fixture.context,
+      terminal,
+    ),
+    false,
+  )
+  assert.strictEqual(job.step(17), terminal)
+  assertDeeplyFrozen(terminal)
+})
+
+test('cancellation is stable before and during every outer phase', () => {
+  const fixture = correctionFixture()
+  for (const advanceCount of [0, 1, 2, 3]) {
+    const job =
+      createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+        fixture.context,
+        fixture.binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      )
+    assert.ok(job)
+    for (let index = 0; index < advanceCount; index += 1) {
+      const step = job.step(Number.MAX_SAFE_INTEGER)
+      assert.equal(step.kind, 'pending')
+    }
+    job.cancel()
+    const terminal = job.step(1)
+    assert.equal(terminal.kind, 'cancelled')
+    assert.equal('result' in terminal, false)
+    assert.equal('candidates' in terminal, false)
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+        fixture.context,
+        terminal,
+      ),
+      false,
+    )
+    assert.strictEqual(job.step(17), terminal)
+    job.cancel()
+    assert.strictEqual(job.step(2), terminal)
+    assertDeeplyFrozen(terminal)
+  }
+})
+
+test('invalid budgets are zero-work stable terminals', () => {
+  const fixture = correctionFixture()
+  for (const workBudget of [
+    0,
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    const job =
+      createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+        fixture.context,
+        fixture.binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      )
+    assert.ok(job)
+    const terminal = job.step(workBudget)
+    assert.equal(terminal.kind, 'indeterminate')
+    assert.equal(terminal.reason, 'invalid_work_budget')
+    assert.deepEqual(terminal.work, {
+      totalWorkUnits: 0,
+      trianglePairTests: 0,
+      witnessDerivations: 0,
+    })
+    assert.strictEqual(job.step(1), terminal)
+    job.cancel()
+    assert.strictEqual(job.step(1), terminal)
+    assertDeeplyFrozen(terminal)
+  }
+})
+
+test('budget-validation reentry cancels before child work is charged', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalIsSafeInteger = Number.isSafeInteger
+  let nested:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep | null = null
+  let reentered = false
+  Number.isSafeInteger = function isSafeInteger(value: unknown) {
+    if (!reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalIsSafeInteger(value)
+  }
+  let outer: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Number.isSafeInteger = originalIsSafeInteger
+  }
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.deepEqual(outer.work, {
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(job.step(1), outer)
+})
+
+test('charged child reentry is included before the parent cancellation publishes', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+  assert.equal(job.step(17).kind, 'pending')
+  assert.equal(job.step(17).kind, 'pending')
+  const narrowPrepared = job.step(17)
+  assert.equal(narrowPrepared.kind, 'pending')
+  assert.equal(narrowPrepared.phase, 'narrow_scan')
+
+  const originalDot = Vector3.prototype.dot
+  let nested:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep | null = null
+  let reentered = false
+  Vector3.prototype.dot = function dot(vector: Vector3) {
+    if (!reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalDot.call(this, vector)
+  }
+  let outer: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Vector3.prototype.dot = originalDot
+  }
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.deepEqual(outer.work, {
+    totalWorkUnits: 1,
+    trianglePairTests: 1,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(job.step(1), outer)
+  assertDeeplyFrozen(outer)
+})
+
+test('child cancellation outranks a charged classifier throw', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+  assert.equal(job.step(17).kind, 'pending')
+  assert.equal(job.step(17).kind, 'pending')
+  assert.equal(job.step(17).kind, 'pending')
+
+  const originalDot = Vector3.prototype.dot
+  Vector3.prototype.dot = function dot() {
+    job.cancel()
+    throw new Error('charged child cancellation')
+  }
+  let terminal:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep
+  try {
+    terminal = job.step(1)
+  } finally {
+    Vector3.prototype.dot = originalDot
+  }
+  assert.equal(terminal.kind, 'cancelled')
+  assert.deepEqual(terminal.work, {
+    totalWorkUnits: 1,
+    trianglePairTests: 1,
+    witnessDerivations: 0,
+  })
+  assert.strictEqual(job.step(1), terminal)
+  assertDeeplyFrozen(terminal)
+})
+
+test('result finalization reentry cannot publish or authorize partial success', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+  assert.equal(job.step(Number.MAX_SAFE_INTEGER).kind, 'pending')
+  assert.equal(job.step(Number.MAX_SAFE_INTEGER).kind, 'pending')
+  assert.equal(job.step(Number.MAX_SAFE_INTEGER).kind, 'pending')
+
+  const originalFreeze = Object.freeze
+  let nested:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep | null = null
+  let unpublishedResult: unknown = null
+  let reentered = false
+  Object.freeze = ((value: object) => {
+    const record = value as Record<PropertyKey, unknown>
+    if (
+      !reentered
+      && record.kind
+        === 'statically_revalidated_single_hinge_correction_candidates'
+    ) {
+      reentered = true
+      unpublishedResult = value
+      nested = job.step(1)
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+  let outer: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep
+  try {
+    outer = job.step(Number.MAX_SAFE_INTEGER)
+  } finally {
+    Object.freeze = originalFreeze
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.equal('result' in outer, false)
+  assert.ok(unpublishedResult)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+      fixture.context,
+      unpublishedResult,
+    ),
+    false,
+  )
+  assertDeeplyFrozen(unpublishedResult)
+  assert.strictEqual(job.step(1), outer)
+})
+
+test('job and synchronous boundaries reject every non-authentic context or binding', () => {
+  const fixture = correctionFixture()
+  const otherFixture = correctionFixture()
+  let hostileContextReadCount = 0
+  const hostileContext = new Proxy(fixture.context, {
+    get() {
+      hostileContextReadCount += 1
+      throw new Error('context getter')
+    },
+  })
+  const forgedContexts = [
+    { ...fixture.context },
+    Object.create(fixture.context),
+    hostileContext,
+  ] as FoldPreviewTreeMotionContext[]
+  const forgedBindings = [
+    { ...fixture.binding },
+    Object.freeze({ ...fixture.binding }),
+    Object.create(fixture.binding),
+    otherFixture.binding,
+  ] as FoldPreviewTreeTerminalFullScanBinding[]
+
+  for (const context of forgedContexts) {
+    assert.equal(
+      createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+        context,
+        fixture.binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      ),
+      null,
+    )
+    assert.equal(
+      deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
+        context,
+        fixture.binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      ),
+      null,
+    )
+  }
+  assert.equal(hostileContextReadCount, 0)
+  for (const binding of forgedBindings) {
+    assert.equal(
+      createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+        fixture.context,
+        binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      ),
+      null,
+    )
+    assert.equal(
+      deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
+        fixture.context,
+        binding,
+        CLEARANCE,
+        MAXIMUM_TRANSLATION,
+        MAXIMUM_ANGLE_DELTA_DEGREES,
+      ),
+      null,
+    )
+  }
+})
+
+function runStaticCorrectionJob(
+  job: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob,
+  workBudget: number,
+  pendingSteps:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep[] = [],
+) {
+  for (let index = 0; index < 10_000; index += 1) {
+    const step = job.step(workBudget)
+    if (step.kind !== 'pending') return step
+    pendingSteps.push(step)
+  }
+  throw new Error('static correction candidates job did not terminate')
+}
 
 function correctionFixture({
   fixedFaceId = 'root',

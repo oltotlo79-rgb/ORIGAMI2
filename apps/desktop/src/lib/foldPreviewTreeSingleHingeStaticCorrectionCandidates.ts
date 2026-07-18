@@ -13,8 +13,15 @@ import {
   type FoldPreviewTreePose,
 } from './foldPreviewKinematics.ts'
 import {
+  FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
+  FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION,
+  MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   prepareFoldPreviewNarrowPhase,
+  type FoldPreviewFullScanNonAdjacentWitnessJob,
+  type FoldPreviewFullScanNonAdjacentWitnessJobStep,
   type FoldPreviewFullScanNonAdjacentWitnessSet,
+  type FoldPreviewNarrowPhaseAnalysisJob,
+  type FoldPreviewNarrowPhaseAnalysisJobStep,
   type FoldPreviewNarrowPhaseResult,
 } from './foldPreviewNarrowCollision.ts'
 import {
@@ -29,8 +36,9 @@ import {
 import {
   createFoldPreviewTreeSceneCollisionPoseKey,
 } from './foldPreviewTreeScenePose.ts'
-import type {
-  FoldPreviewTreeTerminalFullScanBinding,
+import {
+  isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel,
+  type FoldPreviewTreeTerminalFullScanBinding,
 } from './foldPreviewTreeSingleHingeContinuousCollision.ts'
 import {
   deriveFoldPreviewTwoBodyCorrectionCandidate,
@@ -43,8 +51,11 @@ export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES =
   MAX_FOLD_PREVIEW_SINGLE_HINGE_ROTATION_FIT_SEEDS
 export const MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS =
   1_000_000
+export const FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION =
+  'tree_single_hinge_static_correction_candidates_job_v1'
 
 const MATERIAL_POINT_EQUIVALENCE_FACTOR = 4_096
+const isSafeIntegerIntrinsic = Number.isSafeInteger
 
 type Point = Readonly<{ x: number; y: number; z: number }>
 
@@ -185,6 +196,116 @@ export type FoldPreviewTreeSingleHingeStaticCorrectionCandidates = Readonly<{
   }>
 }>
 
+export type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork =
+  Readonly<{
+    totalWorkUnits: number
+    /** Full and narrow scans share the global one-million pair-visit cap. */
+    trianglePairTests: number
+    /** Witness attempts are metered separately from pair visits. */
+    witnessDerivations: number
+  }>
+
+export type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds =
+  Readonly<{
+    /** Synchronous stages below prevent a whole-step wall-clock claim. */
+    entireStepTimeBounded: false
+    /**
+     * Authenticity checks, the two-body solve, context/partition checks,
+     * rotation fitting, analyzer construction, and triangle counting are
+     * synchronous factory work.
+     */
+    synchronousFactoryPreparation: true
+    /** Angle vectors, pose keys, and candidate poses are factory work. */
+    synchronousCandidatePosePreparation: true
+    /**
+     * Child factories synchronously snapshot transforms, run broad phase, and
+     * construct prisms in a dedicated outer preparation step.
+     */
+    synchronousChildJobPreparation: true
+    /** Child hinge-contact policy finalization remains synchronous. */
+    synchronousHingePolicyFinalization: true
+    /** Successful result construction and deep freezing are synchronous. */
+    synchronousResultFinalization: true
+    candidateSeedCount: number
+    maximumTrianglePairTests:
+      typeof MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS
+    plannedTrianglePairVisitUpperBound: number
+    maximumWitnessDerivations: number
+    maximumTotalWorkUnits: number
+  }>
+
+type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobPhase =
+  | 'full_scan_preparation'
+  | 'full_scan'
+  | 'narrow_scan_preparation'
+  | 'narrow_scan'
+
+export type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep =
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION
+      kind: 'pending'
+      phase: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobPhase
+      work: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork
+      workBounds:
+        FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION
+      kind: 'complete'
+      result: FoldPreviewTreeSingleHingeStaticCorrectionCandidates
+      work: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork
+      workBounds:
+        FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION
+      kind: 'exhausted'
+      work: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork
+      workBounds:
+        FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION
+      kind: 'indeterminate'
+      reason:
+        | 'invalid_work_budget'
+        | 'child_job_creation_error'
+        | 'child_job_error'
+        | 'malformed_child_step'
+        | 'work_accounting_error'
+        | 'result_finalization_error'
+      work: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork
+      workBounds:
+        FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION
+      kind: 'cancelled'
+      work: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork
+      workBounds:
+        FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+    }>
+
+export type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob =
+  Readonly<{
+    /**
+     * Delegates at most `workBudget` metered pair/witness units to the active
+     * child. A phase transition returns immediately, leaving a cancellation
+     * window before the next child factory or candidate starts.
+     */
+    step(
+      workBudget: number,
+    ): FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep
+    workBounds:
+      FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+    cancel(): void
+  }>
+
 const staticCorrectionCandidateContexts = new WeakMap<
   object,
   FoldPreviewTreeMotionContext
@@ -230,9 +351,9 @@ type VerifiedPartition = Readonly<{
  * retains only complete one-hinge angle vectors that are collision-free in a
  * fresh whole-scene static analysis.
  *
- * The returned candidates remain analysis-only. In particular, this function
- * does not apply a scene pose and does not certify the path from the current or
- * blocking pose to any returned candidate.
+ * This compatibility wrapper synchronously drains the resumable job. The
+ * returned candidates remain analysis-only: no scene pose is applied and no
+ * path to a returned candidate is certified.
  */
 export function deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
   context: FoldPreviewTreeMotionContext,
@@ -241,267 +362,907 @@ export function deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
   maximumTranslation: number,
   maximumAngleDeltaDegrees: number,
 ): FoldPreviewTreeSingleHingeStaticCorrectionCandidates | null {
+  const job = createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+    context,
+    binding,
+    clearance,
+    maximumTranslation,
+    maximumAngleDeltaDegrees,
+  )
+  if (!job) return null
   try {
-    if (!validPositiveAngleDelta(maximumAngleDeltaDegrees)) return null
-
-    // This is the sole read boundary for the raw terminal binding. Everything
-    // below is reconstructed from the detached, internally revalidated result.
-    const translationCandidate =
-      deriveFoldPreviewTwoBodyCorrectionCandidate(
-        binding,
-        clearance,
-        maximumTranslation,
-      )
-    if (!translationCandidate) return null
-
-    const verifiedContext = verifyContextAndPoses(
-      context,
-      translationCandidate,
-    )
-    if (!verifiedContext) return null
-    const partition = verifyPartition(
-      context,
-      translationCandidate,
-      verifiedContext.selectedJoint,
-    )
-    if (!partition) return null
-
-    const worldAxis = worldSelectedHingeAxis(
-      verifiedContext.blockingPose,
-      verifiedContext.selectedJoint,
-    )
-    if (!worldAxis) return null
-    const movingPoints = collectMovingWorldMaterialPoints(
-      context,
-      verifiedContext.blockingPose,
-      partition.movingFaceIds,
-    )
-    if (!movingPoints) return null
-
-    const fit = deriveFoldPreviewSingleHingeRotationFitSeeds({
-      axis: worldAxis,
-      childRotationSign: verifiedContext.selectedJoint.childRotationSign,
-      blockingAngleDegrees:
-        translationCandidate.sourceIdentity.selectedAngleDegrees,
-      maximumAngleDeltaDegrees,
-      translation: translationCandidate.translation,
-      movingPoints,
-    })
-    if (!fit) return null
-
-    const trianglePairUpperBound =
-      allFaceTrianglePairUpperBound(context)
-    const plannedTrianglePairVisitUpperBound =
-      trianglePairUpperBound === null
-        ? null
-        : boundedProduct(
-            trianglePairUpperBound,
-            fit.seeds.length * 2,
-          )
-    if (
-      plannedTrianglePairVisitUpperBound === null
-      || plannedTrianglePairVisitUpperBound <= 0
-      || plannedTrianglePairVisitUpperBound
-        > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS
-    ) return null
-
-    const analyzer = prepareStaticAnalyzer(context)
-    if (!analyzer) return null
-    const candidates: FoldPreviewTreeSingleHingeStaticCorrectionCandidate[] = []
-    let actualTrianglePairVisits = 0
-    let fullScanCount = 0
-    let narrowScanCount = 0
-    for (const seed of fit.seeds) {
-      const appliedAngles = replaceFoldPreviewTreeMotionSelectedAngle(
-        context,
-        seed.angleDegrees,
-      )
-      if (!appliedAngles) return null
-      const poseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
-        context.model,
-        context.fixedFaceId,
-        context.collisionThickness,
-        appliedAngles,
-      )
-      if (!poseRequestKey) return null
-      const pose = calculateFoldTreePoseWithAngles(context.tree, {
-        kind: 'per_hinge',
-        angles: appliedAngles,
-      })
-      if (!pose) return null
-
-      const fullScan = analyzer.collectFullScanNonAdjacentWitnessSet(
-        pose.faceTransforms,
-        context.collisionThickness,
-      )
-      if (!fullScan) return null
-      fullScanCount += 1
-      const afterFullScan = boundedVisitSum(
-        actualTrianglePairVisits,
-        fullScan.coverage.trianglePairTests,
-      )
-      if (afterFullScan === null) return null
-      actualTrianglePairVisits = afterFullScan
-      if (!fullNonAdjacentScanIsClear(fullScan)) continue
-      const result = analyzer.analyze(
-        pose.faceTransforms,
-        context.collisionThickness,
-      )
-      if (!result) return null
-      narrowScanCount += 1
-      const afterNarrowScan = boundedVisitSum(
-        actualTrianglePairVisits,
-        result.trianglePairTests,
-      )
-      if (afterNarrowScan === null) return null
-      actualTrianglePairVisits = afterNarrowScan
-      const staticAnalysis = staticClearAnalysis(result, fullScan)
-      if (!staticAnalysis) continue
-
-      candidates.push(deepFreeze({
-        rank: candidates.length + 1,
-        sourceSeedRank: seed.rank,
-        source: seed.source,
-        pose: {
-          poseRequestKey,
-          selectedAngleDegrees: seed.angleDegrees,
-          appliedAngles: copyAngles(appliedAngles),
-        },
-        fit: {
-          signedDeltaDegrees: seed.signedDeltaDegrees,
-          signedRotationRadians: seed.signedRotationRadians,
-          residualSquared: seed.residualSquared,
-          residualRms: seed.residualRms,
-          improvementSquared: seed.improvementSquared,
-          improvementRatio: seed.improvementRatio,
-        },
-        staticAnalysis,
-        safety: {
-          modelIdentityBound: true,
-          completeLegalAngleVectorGenerated: true,
-          legalCorrectionPoseGenerated: true,
-          collisionConstraintsRevalidated: true,
-          hingeContactPolicySatisfied: true,
-          wholeSceneStaticClear: true,
-          staticCandidateRevalidated: true,
-          continuousCandidatePathCertified: false,
-          sceneApplied: false,
-          autoApplicable: false,
-        },
-      }))
+    const maximumSteps = job.workBounds.candidateSeedCount * 4 + 2
+    for (let index = 0; index < maximumSteps; index += 1) {
+      const step = job.step(job.workBounds.maximumTotalWorkUnits)
+      if (step.kind === 'complete') return step.result
+      if (step.kind !== 'pending') return null
     }
-    if (
-      candidates.length === 0
-      || candidates.length
-        > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES
-    ) return null
+    job.cancel()
+    return null
+  } catch {
+    try {
+      job.cancel()
+    } catch {
+      // Legacy callers retain the original fail-closed null boundary.
+    }
+    return null
+  }
+}
 
-    const result = deepFreeze<
-      FoldPreviewTreeSingleHingeStaticCorrectionCandidates
-    >({
-      version:
-        FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_VERSION,
-      kind: 'statically_revalidated_single_hinge_correction_candidates',
-      sourceIdentity: {
-        projectId: translationCandidate.sourceIdentity.projectId,
-        revision: translationCandidate.sourceIdentity.revision,
-        fixedFaceId: translationCandidate.sourceIdentity.fixedFaceId,
-        selectedHingeEdgeId:
-          translationCandidate.sourceIdentity.selectedHingeEdgeId,
-        contextKey: translationCandidate.sourceIdentity.contextKey,
-        sourcePoseRequestKey: verifiedContext.sourcePoseRequestKey,
-        blockingPoseRequestKey: verifiedContext.blockingPoseRequestKey,
-        generation: translationCandidate.sourceIdentity.generation,
-        requestSequence:
-          translationCandidate.sourceIdentity.requestSequence,
-        blockingSampleTime:
-          translationCandidate.sourceIdentity.blockingSampleTime,
-        sourceSelectedAngleDegrees:
-          verifiedContext.sourceSelectedAngleDegrees,
-        blockingSelectedAngleDegrees:
-          translationCandidate.sourceIdentity.selectedAngleDegrees,
-        collisionThickness:
-          translationCandidate.sourceIdentity.collisionThickness,
-      },
-      sourcePartition: {
-        version: translationCandidate.sourcePartition.version,
-        stationaryFaceIds: [...partition.stationaryFaceIds],
-        movingFaceIds: [...partition.movingFaceIds],
-      },
-      commonTranslation: {
-        version: translationCandidate.version,
-        translation: copyPoint(translationCandidate.translation),
-        magnitude: translationCandidate.magnitude,
-        certifiedMagnitudeUpperBound:
-          translationCandidate.certifiedMagnitudeUpperBound,
-        clearance: translationCandidate.clearance,
-        maximumTranslation: translationCandidate.maximumTranslation,
-        constraintCount: translationCandidate.constraints.length,
-        solver: {
-          method: translationCandidate.solver.method,
-          seedMethod: translationCandidate.solver.seedMethod,
-          activeConstraintIndices: [
-            ...translationCandidate.solver.activeConstraintIndices,
-          ],
-          activeSetSize: translationCandidate.solver.activeSetSize,
-          evaluatedActiveSetCount:
-            translationCandidate.solver.evaluatedActiveSetCount,
-          maximumActiveSetCount:
-            translationCandidate.solver.maximumActiveSetCount,
-        },
-      },
-      rotationFit: {
-        version: fit.version,
-        method: fit.analysis.method,
-        objective: fit.analysis.objective,
-        maximumAngleDeltaDegrees: fit.maximumAngleDeltaDegrees,
-        angleDomain: {
-          minimumDegrees: fit.angleDomain.minimumDegrees,
-          maximumDegrees: fit.angleDomain.maximumDegrees,
-        },
-        worldAxis: {
-          point: copyPoint(worldAxis.point),
-          direction: copyPoint(worldAxis.direction),
-        },
-        childRotationSign:
-          verifiedContext.selectedJoint.childRotationSign,
-        movingPointCount: movingPoints.length,
-        baselineResidualSquared: fit.baselineResidualSquared,
-        baselineResidualRms: fit.baselineResidualRms,
-        evaluatedCandidateCount: fit.evaluatedCandidateCount,
-        seedCount: fit.seeds.length,
-      },
-      staticValidationWork: {
-        strategy: 'full_non_adjacent_then_hinge_policy_v1',
-        maximumTrianglePairVisits:
-          MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
-        plannedTrianglePairVisitUpperBound,
-        actualTrianglePairVisits,
-        fullScanCount,
-        narrowScanCount,
-      },
-      candidates,
-      safety: {
-        modelIdentityBound: true,
-        sourcePoseIdentityVerified: true,
-        blockingPoseIdentityVerified: true,
-        partitionRevalidated: true,
-        completeLegalAngleVectorsGenerated: true,
-        legalCorrectionPoseGenerated: true,
-        collisionConstraintsRevalidated: true,
-        hingeContactPolicySatisfied: true,
-        wholeSceneStaticClear: true,
-        staticCandidateRevalidated: true,
-        continuousCandidatePathCertified: false,
-        sceneApplied: false,
-        autoApplicable: false,
-      },
-    })
-    staticCorrectionCandidateContexts.set(result, context)
-    return result
+type PreparedStaticCorrectionSeed = Readonly<{
+  seed: FoldPreviewSingleHingeRotationFitSeed
+  appliedAngles: readonly FoldPreviewHingeAngle[]
+  poseRequestKey: string
+  pose: FoldPreviewTreePose
+}>
+
+type PreparedStaticCorrectionFactory = Readonly<{
+  context: FoldPreviewTreeMotionContext
+  translationCandidate: FoldPreviewTwoBodyCorrectionCandidate
+  verifiedContext: VerifiedContext
+  partition: VerifiedPartition
+  worldAxis: Readonly<{ point: Point; direction: Point }>
+  movingPointCount: number
+  fit: NonNullable<
+    ReturnType<typeof deriveFoldPreviewSingleHingeRotationFitSeeds>
+  >
+  analyzer: NonNullable<ReturnType<typeof prepareStaticAnalyzer>>
+  preparedSeeds: readonly PreparedStaticCorrectionSeed[]
+  plannedTrianglePairVisitUpperBound: number
+  workBounds:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds
+}>
+
+type ChildWorkSnapshot = Readonly<{
+  totalWorkUnits: number
+  trianglePairTests: number
+  witnessDerivations: number
+}>
+
+type ActiveStaticCorrectionChild =
+  | {
+      kind: 'full_scan'
+      job: FoldPreviewFullScanNonAdjacentWitnessJob
+      workBounds: FoldPreviewFullScanNonAdjacentWitnessJob['workBounds']
+      observedWork: ChildWorkSnapshot
+      inFlightBudget: number | null
+    }
+  | {
+      kind: 'narrow_scan'
+      job: FoldPreviewNarrowPhaseAnalysisJob
+      workBounds: FoldPreviewNarrowPhaseAnalysisJob['workBounds']
+      observedWork: ChildWorkSnapshot
+      inFlightBudget: number | null
+    }
+
+type AccountedStaticCorrectionChildStep =
+  | Readonly<{
+      kind: 'accepted'
+      step:
+        | FoldPreviewFullScanNonAdjacentWitnessJobStep
+        | FoldPreviewNarrowPhaseAnalysisJobStep
+    }>
+  | Readonly<{ kind: 'malformed' }>
+  | Readonly<{ kind: 'work_accounting_error' }>
+
+/**
+ * Creates a resumable full-scan-then-hinge-policy job for every fitted seed.
+ * Only complete success publishes candidates or provenance.
+ */
+export function createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+  context: FoldPreviewTreeMotionContext,
+  binding: FoldPreviewTreeTerminalFullScanBinding,
+  clearance: number,
+  maximumTranslation: number,
+  maximumAngleDeltaDegrees: number,
+): FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob | null {
+  let prepared: PreparedStaticCorrectionFactory | null
+  try {
+    if (
+      replaceFoldPreviewTreeMotionSelectedAngle(context, 0) === null
+      || !isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        context.model,
+        binding,
+      )
+    ) return null
+    prepared = prepareStaticCorrectionFactory(
+      context,
+      binding,
+      clearance,
+      maximumTranslation,
+      maximumAngleDeltaDegrees,
+    )
   } catch {
     return null
   }
+  if (!prepared) return null
+
+  const {
+    analyzer,
+    preparedSeeds,
+    workBounds,
+  } = prepared
+  const candidates: FoldPreviewTreeSingleHingeStaticCorrectionCandidate[] = []
+  let seedIndex = 0
+  let phase:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobPhase =
+      'full_scan_preparation'
+  let fullScanForSeed: Extract<
+    FoldPreviewFullScanNonAdjacentWitnessSet,
+    { kind: 'complete' }
+  > | null = null
+  let activeChild: ActiveStaticCorrectionChild | null = null
+  let trianglePairTests = 0
+  let witnessDerivations = 0
+  let fullScanCount = 0
+  let narrowScanCount = 0
+  let cancelled = false
+  let stepping = false
+  let terminal:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep | null = null
+
+  const work = ():
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWork =>
+    Object.freeze({
+      totalWorkUnits: trianglePairTests + witnessDerivations,
+      trianglePairTests,
+      witnessDerivations,
+    })
+
+  const publish = (
+    value: FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep,
+  ): FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep => {
+    if (terminal) return terminal
+    if (cancelled && value.kind !== 'cancelled') {
+      return cancelledStep()
+    }
+    const snapshot = value.kind === 'pending'
+      ? Object.freeze(value)
+      : deepFreeze(value)
+    if (terminal) return terminal
+    if (cancelled && snapshot.kind !== 'cancelled') {
+      return cancelledStep()
+    }
+    if (snapshot.kind === 'pending') return snapshot
+    terminal = snapshot
+    return terminal
+  }
+
+  const pending = () => publish({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
+    kind: 'pending',
+    phase,
+    work: work(),
+    workBounds,
+  })
+
+  const indeterminate = (
+    reason: Extract<
+      FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep,
+      { kind: 'indeterminate' }
+    >['reason'],
+  ) => publish({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
+    kind: 'indeterminate',
+    reason,
+    work: work(),
+    workBounds,
+  })
+
+  const cancelledStep = ():
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep =>
+    publish({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
+    kind: 'cancelled',
+    work: work(),
+    workBounds,
+  })
+
+  const exhausted = () => publish({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
+    kind: 'exhausted',
+    work: work(),
+    workBounds,
+  })
+
+  const cancelActiveChild = () => {
+    try {
+      activeChild?.job.cancel()
+    } catch {
+      // Parent cancellation still takes precedence at this boundary.
+    }
+  }
+
+  const accountChildStep = (
+    rawStep: unknown,
+    delegatedBudget: number,
+  ): AccountedStaticCorrectionChildStep => {
+    const child = activeChild
+    if (!child || !isRecord(rawStep)) return { kind: 'malformed' }
+    const expectedVersion = child.kind === 'full_scan'
+      ? FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION
+      : FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION
+    if (
+      rawStep.version !== expectedVersion
+      || rawStep.workBounds !== child.workBounds
+      || !isRecord(rawStep.work)
+      || (
+        rawStep.kind !== 'pending'
+        && rawStep.kind !== 'complete'
+        && rawStep.kind !== 'indeterminate'
+        && rawStep.kind !== 'cancelled'
+      )
+      || (
+        rawStep.kind === 'pending'
+        && rawStep.phase !== 'triangle_pair_scan'
+        && rawStep.phase !== 'witness_derivation'
+      )
+      || (rawStep.kind === 'complete' && !isRecord(rawStep.result))
+    ) return { kind: 'malformed' }
+    const current = snapshotChildWork(rawStep.work)
+    if (!current) return { kind: 'work_accounting_error' }
+    const previous = child.observedWork
+    const totalDelta =
+      current.totalWorkUnits - previous.totalWorkUnits
+    const pairDelta =
+      current.trianglePairTests - previous.trianglePairTests
+    const witnessDelta =
+      current.witnessDerivations - previous.witnessDerivations
+    const maximumTrianglePairTests = child.kind === 'full_scan'
+      ? child.workBounds.expectedTrianglePairCount
+      : child.workBounds.maximumTrianglePairTests
+    if (
+      totalDelta < 0
+      || pairDelta < 0
+      || witnessDelta < 0
+      || totalDelta !== pairDelta + witnessDelta
+      || totalDelta > delegatedBudget
+      || current.trianglePairTests > maximumTrianglePairTests
+      || current.witnessDerivations
+        > child.workBounds.maximumWitnessDerivations
+      || current.totalWorkUnits > child.workBounds.maximumTotalWorkUnits
+    ) return { kind: 'work_accounting_error' }
+    const nextPairTests = trianglePairTests + pairDelta
+    const nextWitnessDerivations =
+      witnessDerivations + witnessDelta
+    const nextTotal = nextPairTests + nextWitnessDerivations
+    if (
+      !isSafeIntegerIntrinsic(nextPairTests)
+      || nextPairTests < 0
+      || nextPairTests
+        > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS
+      || nextPairTests
+        > workBounds.plannedTrianglePairVisitUpperBound
+      || !isSafeIntegerIntrinsic(nextWitnessDerivations)
+      || !isSafeIntegerIntrinsic(nextTotal)
+      || nextWitnessDerivations > workBounds.maximumWitnessDerivations
+      || nextTotal > workBounds.maximumTotalWorkUnits
+    ) return { kind: 'work_accounting_error' }
+    trianglePairTests = nextPairTests
+    witnessDerivations = nextWitnessDerivations
+    child.observedWork = current
+    return {
+      kind: 'accepted',
+      step: rawStep as
+        | FoldPreviewFullScanNonAdjacentWitnessJobStep
+        | FoldPreviewNarrowPhaseAnalysisJobStep,
+    }
+  }
+
+  const observeCancelledChild = () => {
+    const child = activeChild
+    if (!child) return
+    const delegatedBudget = child.inFlightBudget ?? 0
+    try {
+      child.job.cancel()
+      const rawStep = child.job.step(1)
+      accountChildStep(rawStep, delegatedBudget)
+    } catch {
+      // Cancellation remains terminal even if observation itself fails.
+    }
+  }
+
+  const finishCancellation = () => {
+    cancelled = true
+    observeCancelledChild()
+    return cancelledStep()
+  }
+
+  const finishCandidates = () => {
+    if (candidates.length === 0) return exhausted()
+    if (
+      candidates.length
+        > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES
+    ) return indeterminate('result_finalization_error')
+    try {
+      const result = createStaticCorrectionCandidatesResult(
+        prepared,
+        candidates,
+        trianglePairTests,
+        fullScanCount,
+        narrowScanCount,
+      )
+      const published = publish({
+        version:
+          FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VERSION,
+        kind: 'complete',
+        result,
+        work: work(),
+        workBounds,
+      })
+      if (
+        published.kind === 'complete'
+        && published.result === result
+      ) {
+        staticCorrectionCandidateContexts.set(result, context)
+      }
+      return published
+    } catch {
+      return indeterminate('result_finalization_error')
+    }
+  }
+
+  const finishSeed = () => {
+    activeChild = null
+    fullScanForSeed = null
+    seedIndex += 1
+    if (seedIndex >= preparedSeeds.length) return finishCandidates()
+    phase = 'full_scan_preparation'
+    return pending()
+  }
+
+  const prepareFullScanChild = () => {
+    const seed = preparedSeeds[seedIndex]
+    if (!seed) return indeterminate('child_job_creation_error')
+    let job: FoldPreviewFullScanNonAdjacentWitnessJob | null
+    try {
+      job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+        seed.pose.faceTransforms,
+        context.collisionThickness,
+      )
+    } catch {
+      job = null
+    }
+    if (terminal) {
+      try {
+        job?.cancel()
+      } catch {
+        // The already-published terminal remains authoritative.
+      }
+      return terminal
+    }
+    if (cancelled) {
+      try {
+        job?.cancel()
+      } catch {
+        // Parent cancellation remains authoritative.
+      }
+      return finishCancellation()
+    }
+    if (!job) return indeterminate('child_job_creation_error')
+    activeChild = {
+      kind: 'full_scan',
+      job,
+      workBounds: job.workBounds,
+      observedWork: zeroChildWork(),
+      inFlightBudget: null,
+    }
+    phase = 'full_scan'
+    return pending()
+  }
+
+  const prepareNarrowScanChild = () => {
+    const seed = preparedSeeds[seedIndex]
+    if (!seed || !fullScanForSeed) {
+      return indeterminate('child_job_creation_error')
+    }
+    let job: FoldPreviewNarrowPhaseAnalysisJob | null
+    try {
+      job = analyzer.createAnalysisJob(
+        seed.pose.faceTransforms,
+        context.collisionThickness,
+      )
+    } catch {
+      job = null
+    }
+    if (terminal) {
+      try {
+        job?.cancel()
+      } catch {
+        // The already-published terminal remains authoritative.
+      }
+      return terminal
+    }
+    if (cancelled) {
+      try {
+        job?.cancel()
+      } catch {
+        // Parent cancellation remains authoritative.
+      }
+      return finishCancellation()
+    }
+    if (!job) return indeterminate('child_job_creation_error')
+    activeChild = {
+      kind: 'narrow_scan',
+      job,
+      workBounds: job.workBounds,
+      observedWork: zeroChildWork(),
+      inFlightBudget: null,
+    }
+    phase = 'narrow_scan'
+    return pending()
+  }
+
+  const advanceFullScan = (workBudget: number) => {
+    const child = activeChild
+    if (!child || child.kind !== 'full_scan') {
+      return indeterminate('child_job_error')
+    }
+    child.inFlightBudget = workBudget
+    let rawStep: unknown
+    try {
+      rawStep = child.job.step(workBudget)
+    } catch {
+      cancelActiveChild()
+      observeCancelledChild()
+      child.inFlightBudget = null
+      return cancelled
+        ? cancelledStep()
+        : indeterminate('child_job_error')
+    }
+    const accounted = accountChildStep(rawStep, workBudget)
+    child.inFlightBudget = null
+    if (terminal) return terminal
+    if (cancelled) return finishCancellation()
+    if (accounted.kind === 'malformed') {
+      return indeterminate('malformed_child_step')
+    }
+    if (accounted.kind === 'work_accounting_error') {
+      return indeterminate('work_accounting_error')
+    }
+    const step = accounted.step
+    if (step.kind === 'pending') return pending()
+    if (step.kind === 'cancelled') return finishCancellation()
+    if (step.kind === 'indeterminate') {
+      return indeterminate('child_job_error')
+    }
+    if (
+      step.version
+        !== FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION
+    ) return indeterminate('malformed_child_step')
+    fullScanCount += 1
+    activeChild = null
+    if (!fullNonAdjacentScanIsClear(step.result)) return finishSeed()
+    fullScanForSeed = step.result
+    phase = 'narrow_scan_preparation'
+    return pending()
+  }
+
+  const advanceNarrowScan = (workBudget: number) => {
+    const child = activeChild
+    const seed = preparedSeeds[seedIndex]
+    if (
+      !child
+      || child.kind !== 'narrow_scan'
+      || !seed
+      || !fullScanForSeed
+    ) return indeterminate('child_job_error')
+    child.inFlightBudget = workBudget
+    let rawStep: unknown
+    try {
+      rawStep = child.job.step(workBudget)
+    } catch {
+      cancelActiveChild()
+      observeCancelledChild()
+      child.inFlightBudget = null
+      return cancelled
+        ? cancelledStep()
+        : indeterminate('child_job_error')
+    }
+    const accounted = accountChildStep(rawStep, workBudget)
+    child.inFlightBudget = null
+    if (terminal) return terminal
+    if (cancelled) return finishCancellation()
+    if (accounted.kind === 'malformed') {
+      return indeterminate('malformed_child_step')
+    }
+    if (accounted.kind === 'work_accounting_error') {
+      return indeterminate('work_accounting_error')
+    }
+    const step = accounted.step
+    if (step.kind === 'pending') return pending()
+    if (step.kind === 'cancelled') return finishCancellation()
+    if (step.kind === 'indeterminate') {
+      return indeterminate('child_job_error')
+    }
+    if (
+      step.version !== FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION
+    ) return indeterminate('malformed_child_step')
+    narrowScanCount += 1
+    const staticAnalysis = staticClearAnalysis(
+      step.result,
+      fullScanForSeed,
+    )
+    if (staticAnalysis) {
+      candidates.push(createStaticCorrectionCandidate(
+        candidates.length + 1,
+        seed,
+        staticAnalysis,
+      ))
+    }
+    return finishSeed()
+  }
+
+  return Object.freeze({
+    workBounds,
+    step(
+      workBudget: number,
+    ): FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep {
+      if (terminal) return terminal
+      if (cancelled) return finishCancellation()
+      if (stepping) return finishCancellation()
+      stepping = true
+      try {
+        const validWorkBudget =
+          Number.isSafeInteger(workBudget) && workBudget > 0
+        if (terminal) return terminal
+        if (cancelled) return finishCancellation()
+        if (!validWorkBudget) {
+          return indeterminate('invalid_work_budget')
+        }
+        if (phase === 'full_scan_preparation') {
+          return prepareFullScanChild()
+        }
+        if (phase === 'narrow_scan_preparation') {
+          return prepareNarrowScanChild()
+        }
+        if (phase === 'full_scan') return advanceFullScan(workBudget)
+        return advanceNarrowScan(workBudget)
+      } catch {
+        if (terminal) return terminal
+        if (cancelled) return finishCancellation()
+        cancelActiveChild()
+        observeCancelledChild()
+        return indeterminate('child_job_error')
+      } finally {
+        stepping = false
+      }
+    },
+    cancel() {
+      if (terminal || cancelled) return
+      cancelled = true
+      cancelActiveChild()
+    },
+  })
+}
+
+function prepareStaticCorrectionFactory(
+  context: FoldPreviewTreeMotionContext,
+  binding: FoldPreviewTreeTerminalFullScanBinding,
+  clearance: number,
+  maximumTranslation: number,
+  maximumAngleDeltaDegrees: number,
+): PreparedStaticCorrectionFactory | null {
+  if (!validPositiveAngleDelta(maximumAngleDeltaDegrees)) return null
+
+  const translationCandidate =
+    deriveFoldPreviewTwoBodyCorrectionCandidate(
+      binding,
+      clearance,
+      maximumTranslation,
+    )
+  if (!translationCandidate) return null
+
+  const verifiedContext = verifyContextAndPoses(
+    context,
+    translationCandidate,
+  )
+  if (!verifiedContext) return null
+  const partition = verifyPartition(
+    context,
+    translationCandidate,
+    verifiedContext.selectedJoint,
+  )
+  if (!partition) return null
+
+  const worldAxis = worldSelectedHingeAxis(
+    verifiedContext.blockingPose,
+    verifiedContext.selectedJoint,
+  )
+  if (!worldAxis) return null
+  const movingPoints = collectMovingWorldMaterialPoints(
+    context,
+    verifiedContext.blockingPose,
+    partition.movingFaceIds,
+  )
+  if (!movingPoints) return null
+
+  const fit = deriveFoldPreviewSingleHingeRotationFitSeeds({
+    axis: worldAxis,
+    childRotationSign: verifiedContext.selectedJoint.childRotationSign,
+    blockingAngleDegrees:
+      translationCandidate.sourceIdentity.selectedAngleDegrees,
+    maximumAngleDeltaDegrees,
+    translation: translationCandidate.translation,
+    movingPoints,
+  })
+  if (!fit || fit.seeds.length === 0) return null
+
+  const trianglePairUpperBound =
+    allFaceTrianglePairUpperBound(context)
+  const plannedTrianglePairVisitUpperBound =
+    trianglePairUpperBound === null
+      ? null
+      : boundedProduct(
+          trianglePairUpperBound,
+          fit.seeds.length * 2,
+        )
+  if (
+    plannedTrianglePairVisitUpperBound === null
+    || plannedTrianglePairVisitUpperBound <= 0
+    || plannedTrianglePairVisitUpperBound
+      > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS
+  ) return null
+  const maximumWitnessDerivations = boundedProduct(
+    fit.seeds.length * 2,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+  )
+  if (maximumWitnessDerivations === null) return null
+  const maximumTotalWorkUnits =
+    plannedTrianglePairVisitUpperBound + maximumWitnessDerivations
+  if (!Number.isSafeInteger(maximumTotalWorkUnits)) return null
+  const workBounds:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobWorkBounds =
+    Object.freeze({
+      entireStepTimeBounded: false,
+      synchronousFactoryPreparation: true,
+      synchronousCandidatePosePreparation: true,
+      synchronousChildJobPreparation: true,
+      synchronousHingePolicyFinalization: true,
+      synchronousResultFinalization: true,
+      candidateSeedCount: fit.seeds.length,
+      maximumTrianglePairTests:
+        MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
+      plannedTrianglePairVisitUpperBound,
+      maximumWitnessDerivations,
+      maximumTotalWorkUnits,
+    })
+
+  const analyzer = prepareStaticAnalyzer(context)
+  if (!analyzer) return null
+  const preparedSeeds: PreparedStaticCorrectionSeed[] = []
+  for (const seed of fit.seeds) {
+    const appliedAngles = replaceFoldPreviewTreeMotionSelectedAngle(
+      context,
+      seed.angleDegrees,
+    )
+    if (!appliedAngles) return null
+    const poseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+      context.model,
+      context.fixedFaceId,
+      context.collisionThickness,
+      appliedAngles,
+    )
+    if (!poseRequestKey) return null
+    const pose = calculateFoldTreePoseWithAngles(context.tree, {
+      kind: 'per_hinge',
+      angles: appliedAngles,
+    })
+    if (!pose) return null
+    preparedSeeds.push(Object.freeze({
+      seed,
+      appliedAngles: Object.freeze(copyAngles(appliedAngles)),
+      poseRequestKey,
+      pose,
+    }))
+  }
+  if (preparedSeeds.length !== fit.seeds.length) return null
+  return Object.freeze({
+    context,
+    translationCandidate,
+    verifiedContext,
+    partition,
+    worldAxis,
+    movingPointCount: movingPoints.length,
+    fit,
+    analyzer,
+    preparedSeeds: Object.freeze(preparedSeeds),
+    plannedTrianglePairVisitUpperBound,
+    workBounds,
+  })
+}
+
+function createStaticCorrectionCandidate(
+  rank: number,
+  prepared: PreparedStaticCorrectionSeed,
+  staticAnalysis: FoldPreviewTreeSingleHingeStaticCorrectionAnalysis,
+) {
+  const seed = prepared.seed
+  return deepFreeze<FoldPreviewTreeSingleHingeStaticCorrectionCandidate>({
+    rank,
+    sourceSeedRank: seed.rank,
+    source: seed.source,
+    pose: {
+      poseRequestKey: prepared.poseRequestKey,
+      selectedAngleDegrees: seed.angleDegrees,
+      appliedAngles: copyAngles(prepared.appliedAngles),
+    },
+    fit: {
+      signedDeltaDegrees: seed.signedDeltaDegrees,
+      signedRotationRadians: seed.signedRotationRadians,
+      residualSquared: seed.residualSquared,
+      residualRms: seed.residualRms,
+      improvementSquared: seed.improvementSquared,
+      improvementRatio: seed.improvementRatio,
+    },
+    staticAnalysis,
+    safety: {
+      modelIdentityBound: true,
+      completeLegalAngleVectorGenerated: true,
+      legalCorrectionPoseGenerated: true,
+      collisionConstraintsRevalidated: true,
+      hingeContactPolicySatisfied: true,
+      wholeSceneStaticClear: true,
+      staticCandidateRevalidated: true,
+      continuousCandidatePathCertified: false,
+      sceneApplied: false,
+      autoApplicable: false,
+    },
+  })
+}
+
+function createStaticCorrectionCandidatesResult(
+  prepared: PreparedStaticCorrectionFactory,
+  candidates: readonly FoldPreviewTreeSingleHingeStaticCorrectionCandidate[],
+  actualTrianglePairVisits: number,
+  fullScanCount: number,
+  narrowScanCount: number,
+) {
+  const {
+    translationCandidate,
+    verifiedContext,
+    partition,
+    worldAxis,
+    movingPointCount,
+    fit,
+    plannedTrianglePairVisitUpperBound,
+  } = prepared
+  return deepFreeze<FoldPreviewTreeSingleHingeStaticCorrectionCandidates>({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_VERSION,
+    kind: 'statically_revalidated_single_hinge_correction_candidates',
+    sourceIdentity: {
+      projectId: translationCandidate.sourceIdentity.projectId,
+      revision: translationCandidate.sourceIdentity.revision,
+      fixedFaceId: translationCandidate.sourceIdentity.fixedFaceId,
+      selectedHingeEdgeId:
+        translationCandidate.sourceIdentity.selectedHingeEdgeId,
+      contextKey: translationCandidate.sourceIdentity.contextKey,
+      sourcePoseRequestKey: verifiedContext.sourcePoseRequestKey,
+      blockingPoseRequestKey: verifiedContext.blockingPoseRequestKey,
+      generation: translationCandidate.sourceIdentity.generation,
+      requestSequence:
+        translationCandidate.sourceIdentity.requestSequence,
+      blockingSampleTime:
+        translationCandidate.sourceIdentity.blockingSampleTime,
+      sourceSelectedAngleDegrees:
+        verifiedContext.sourceSelectedAngleDegrees,
+      blockingSelectedAngleDegrees:
+        translationCandidate.sourceIdentity.selectedAngleDegrees,
+      collisionThickness:
+        translationCandidate.sourceIdentity.collisionThickness,
+    },
+    sourcePartition: {
+      version: translationCandidate.sourcePartition.version,
+      stationaryFaceIds: [...partition.stationaryFaceIds],
+      movingFaceIds: [...partition.movingFaceIds],
+    },
+    commonTranslation: {
+      version: translationCandidate.version,
+      translation: copyPoint(translationCandidate.translation),
+      magnitude: translationCandidate.magnitude,
+      certifiedMagnitudeUpperBound:
+        translationCandidate.certifiedMagnitudeUpperBound,
+      clearance: translationCandidate.clearance,
+      maximumTranslation: translationCandidate.maximumTranslation,
+      constraintCount: translationCandidate.constraints.length,
+      solver: {
+        method: translationCandidate.solver.method,
+        seedMethod: translationCandidate.solver.seedMethod,
+        activeConstraintIndices: [
+          ...translationCandidate.solver.activeConstraintIndices,
+        ],
+        activeSetSize: translationCandidate.solver.activeSetSize,
+        evaluatedActiveSetCount:
+          translationCandidate.solver.evaluatedActiveSetCount,
+        maximumActiveSetCount:
+          translationCandidate.solver.maximumActiveSetCount,
+      },
+    },
+    rotationFit: {
+      version: fit.version,
+      method: fit.analysis.method,
+      objective: fit.analysis.objective,
+      maximumAngleDeltaDegrees: fit.maximumAngleDeltaDegrees,
+      angleDomain: {
+        minimumDegrees: fit.angleDomain.minimumDegrees,
+        maximumDegrees: fit.angleDomain.maximumDegrees,
+      },
+      worldAxis: {
+        point: copyPoint(worldAxis.point),
+        direction: copyPoint(worldAxis.direction),
+      },
+      childRotationSign:
+        verifiedContext.selectedJoint.childRotationSign,
+      movingPointCount,
+      baselineResidualSquared: fit.baselineResidualSquared,
+      baselineResidualRms: fit.baselineResidualRms,
+      evaluatedCandidateCount: fit.evaluatedCandidateCount,
+      seedCount: fit.seeds.length,
+    },
+    staticValidationWork: {
+      strategy: 'full_non_adjacent_then_hinge_policy_v1',
+      maximumTrianglePairVisits:
+        MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS,
+      plannedTrianglePairVisitUpperBound,
+      actualTrianglePairVisits,
+      fullScanCount,
+      narrowScanCount,
+    },
+    candidates: [...candidates],
+    safety: {
+      modelIdentityBound: true,
+      sourcePoseIdentityVerified: true,
+      blockingPoseIdentityVerified: true,
+      partitionRevalidated: true,
+      completeLegalAngleVectorsGenerated: true,
+      legalCorrectionPoseGenerated: true,
+      collisionConstraintsRevalidated: true,
+      hingeContactPolicySatisfied: true,
+      wholeSceneStaticClear: true,
+      staticCandidateRevalidated: true,
+      continuousCandidatePathCertified: false,
+      sceneApplied: false,
+      autoApplicable: false,
+    },
+  })
+}
+
+function snapshotChildWork(value: Record<PropertyKey, unknown>) {
+  const totalWorkUnits = value.totalWorkUnits
+  const trianglePairTests = value.trianglePairTests
+  const witnessDerivations = value.witnessDerivations
+  if (
+    !isSafeIntegerIntrinsic(totalWorkUnits)
+    || !isSafeIntegerIntrinsic(trianglePairTests)
+    || !isSafeIntegerIntrinsic(witnessDerivations)
+    || (totalWorkUnits as number) < 0
+    || (trianglePairTests as number) < 0
+    || (witnessDerivations as number) < 0
+    || totalWorkUnits !==
+      (trianglePairTests as number) + (witnessDerivations as number)
+  ) return null
+  return Object.freeze({
+    totalWorkUnits,
+    trianglePairTests,
+    witnessDerivations,
+  }) as ChildWorkSnapshot
+}
+
+function zeroChildWork(): ChildWorkSnapshot {
+  return Object.freeze({
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  })
+}
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function verifyContextAndPoses(
@@ -763,18 +1524,6 @@ function boundedProduct(first: number, second: number) {
   ) return null
   const result = first * second
   return Number.isSafeInteger(result) ? result : null
-}
-
-function boundedVisitSum(first: number, second: number) {
-  if (
-    !Number.isSafeInteger(first)
-    || first < 0
-    || !Number.isSafeInteger(second)
-    || second < 0
-    || second
-      > MAX_FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_TRIANGLE_PAIR_VISITS - first
-  ) return null
-  return first + second
 }
 
 function fullNonAdjacentScanIsClear(

@@ -353,11 +353,14 @@ solve(current geometry, constraints, edited targets, policy)
 
 `tree_single_hinge_static_correction_candidates_v1`は、terminal full-scanから得た二体並進候補と未検証角度seedを、同じ真正な木構造motion contextへ再結合する解析専用境界である。返却候補は指定角における全sceneの静的衝突再判定まで完了しているが、現在姿勢または危険姿勢から候補姿勢までの連続経路はまだ認定しない。
 
-- raw terminal bindingを読む境界は二体並進候補の導出時の一度だけとし、その後は切り離された候補を使う。contextのversion、project、revision、固定面、選択ヒンジ、context key、紙厚、source完全角度vectorを再確認し、sourceとblockingのpose request keyを同じmodelから再計算する。差し替え、失効getter、例外、非有限値、不一致は`null`へ退避する。
+- raw terminal bindingは、private provenanceで真正なmotion contextとそのexact modelへ発行された同一objectであることをproperty非参照で確認してから、二体並進候補の導出時に一度だけ読む。その後は切り離された候補を使う。contextのversion、project、revision、固定面、選択ヒンジ、context key、紙厚、source完全角度vectorを再確認し、sourceとblockingのpose request keyを同じmodelから再計算する。clone、別model向けbinding、差し替え、失効getter、例外、非有限値、不一致は`null`へ退避する。
 - contextから選択ヒンジの実moving subtreeとstationary complementを再導出し、保存済み`sourcePartition`と決定順を含めて一致させる。全faceを重複なく覆い、固定面・parentはstationary、childはmoving、選択ヒンジ以外のjointがpartitionを横断しないことを必須とする。
 - blocking完全角度vectorから姿勢を再構成し、parent face transformと保存されたhinge transformの一致を確認してworldヒンジ軸を得る。moving subtreeのmaterial vertexをblocking姿勢へ変換し、同一vertex IDのworld位置が数値許容差内で一致する場合だけ、共通並進に対する有限回転seedを生成する。
 - 各seedは選択ヒンジだけを置換した完全角度vectorへ戻し、新しいpose request keyと全face transformを生成する。まず全非隣接face pairのfull scanが`complete`で、未確定・接触・貫通・witnessが0、coverage全式が成立することを確認する。続いて通常のnarrow-phaseを実行し、残るinteractionがすべて共有ヒンジpairかつ`allowed_by_hinge_model`である場合だけ静的候補として保持する。
 - 候補数は有限回転fitと同じ最大6件とする。全候補についてfull scanと通常解析を合わせた保守的triangle-pair上限を開始前に算出し、累積1,000,000を超えるモデルまたは実測値はfail-closedとする。計画上限、実測visit数、各scan回数をdeep-frozen結果へ保存する。
+- `tree_single_hinge_static_correction_candidates_job_v1`は各seedを`full_scan_preparation`、`full_scan`、`narrow_scan_preparation`、`narrow_scan`へ分け、子job生成または子job終端の後は同じ公開`step`内で次段階を開始しない。full scanがclearでないseedでは通常解析を起動せず、全seedを元順位のまま完走してからだけ候補集合を公開する。途中候補はpending、cancelled、indeterminate、exhaustedのどのvariantにも含めない。
+- 親jobはfull/通常解析のtriangle-pair累計とwitness導出累計を分離し、各子jobの不変work bounds、累積値、step差分、委譲budgetを照合する。再入またはcancelが子処理中に起きた場合は、子のcancelled終端を再観測して課金済みworkを親へ集計してから同一参照のcancelled終端を公開する。結果deep-freeze中の再入でもcompleteで上書きせず、真正context provenanceはcompleteの公開成功後にだけ付与する。
+- `workBounds`は計画pair上限、witness上限、合計cursor上限に加え、`entireStepTimeBounded: false`と、二体solver・有限回転fit・全seed姿勢、子job factory、hinge policy、結果finalizationが同期であることを固定flagで明示する。従来の同期derive APIは同じjobを十分なbudgetでdrainする互換wrapperであり、結果・順位・作業集計を維持するが、描画frame全体の時間上限は主張しない。
 - 出力はmodel identity、source/blocking pose、partition、完全合法角度vector、静的全scene、共有ヒンジ規則の再検証済みである。一方、候補までの連続経路、層順、材料変形、scene反映、undo可能なproject commandは未検証なので、`continuousCandidatePathCertified`、`sceneApplied`、`autoApplicable`をすべて`false`に固定する。解析結果をmotion owner、3D表示、プロジェクトへ直接適用しない。
 
 #### 8.2.8 静的補正候補への連続経路認定

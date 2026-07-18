@@ -595,9 +595,9 @@ native file dialog
 - X/T接点と外周接点をexactな交点で分割する。許容差snap、隙間補修、共線重複の推測統合は行わない。
 - DTD/entity宣言を拒否し、raw XML、path、実ファイル名をWebViewへ渡さない。opaque stage IDと開始時project identityを再照合し、取消・失敗・stale操作では既存projectを変更しない。
 
-### 12.3 FOLD/SVG展開図書き出し
+### 12.3 FOLD/SVG/PDF/DXF展開図書き出し
 
-現在の一枚紙projectを、FOLD 1.2または静的SVG直線図として書き出す。形式別field、線種対応、情報損失、資源上限、stage、原子的保存、受入試験の正本は[展開図書き出し契約](crease-pattern-export-contract.md)とする。
+現在の一枚紙projectを、FOLD 1.2、静的SVG直線図、PDF 1.7の一枚展開図、またはDXF AC1021として書き出す。形式別field、線種対応、情報損失、資源上限、stage、原子的保存、受入試験の正本は[展開図書き出し契約](crease-pattern-export-contract.md)とする。
 
 ```text
 project instance・ID・revision・形式を固定
@@ -611,12 +611,14 @@ project instance・ID・revision・形式を固定
   → atomic replace
 ```
 
-- WebViewへraw FOLD/SVG bytes、保存path、project path、file handleを渡さず、保存commandもopaque ID、期待project ID・revision、警告確認flagだけを受け取る。
+- WebViewへraw FOLD/SVG/PDF/DXF bytes、保存path、project path、file handleを渡さず、保存commandもopaque ID、期待project ID・revision、警告確認flagだけを受け取る。
 - FOLDはmmの2D `creasePattern`として`B/M/V/F/C`を出力する。SVGは1 unitを1 mmとして、各直線へcanonicalな`data-origami-kind`を付ける。
+- PDFは`application/pdf`のPDF 1.7として、一ページのベクター展開図だけを実寸1:1・四辺10 mm余白で出力する。`PrintScaling=None`、黒一色の固定線種、pageの幅・高さを各14,400 point以下、real number tokenを64文字以下とする上限を適用し、未参照頂点は拒否する。これは折り工程や説明を載せる折り図PDFではない。
+- DXFは`image/vnd.dxf`の`AC1021`テキスト形式として、UTF-8・CRLF・mm単位と固定headerで出力する。5線種を固定した`ORIGAMI_*` layer、ACI色、line typeへ分け、辺・頂点配列順、endpointの向き、UUIDに依存しないcanonical順へ並べる。全group pairを100,000、real number valueを64文字、出力全体を16 MiBに制限する。作品名の改行その他の制御文字は拒否し、group code `999`の安全なcommentだけに決定論的に分割する。
 - 紙の見た目、ID、履歴、3D表示、camera、折り手順、線がない場合の切断許可など形式が保持しない情報を保存dialogより前に表示する。
 - 生成中の旧世代完了、旧token、別project、別instance、stale revision、未確認警告を拒否する。dialog取消では同一stageを再試行でき、成功時だけ一度消費する。
 - 書き出しは`.ori2`保存とは独立し、projectのdirty、保存先、revision、Undo/Redoを変えない。
-- PDF/DXFと折り図PDFは未実装であり、IO-006は部分実装を維持する。
+- この4形式で要件IO-006に列挙された展開図書き出しを満たす。折り工程、矢印、説明文、完成図を含む複数ページの折り図PDFは要件INS-010の別機能として扱い、この一枚展開図PDFには含めない。OBJ・STL・glTFの完成形3D出力は要件IO-007で別に扱う。
 
 ## 13. セキュリティ設計
 

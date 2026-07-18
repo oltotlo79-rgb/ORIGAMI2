@@ -53,9 +53,10 @@ import {
   validateSvgImportSettings,
   validateProject,
 } from './lib/coreClient'
-import type {
-  CreasePatternExportFormat,
-  CreasePatternExportPreview,
+import {
+  creasePatternExportFormatLabel,
+  type CreasePatternExportFormat,
+  type CreasePatternExportPreview,
 } from './lib/creaseExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
@@ -1408,7 +1409,7 @@ function App() {
       }
       setCreaseExportPreview(preview)
       setCoreStatus(
-        `${preview.format === 'fold' ? 'FOLD 1.2' : 'SVG'}書き出しの情報損失を確認してください`,
+        `${creasePatternExportFormatLabel(preview.format)}書き出しの情報損失を確認してください`,
       )
     } catch (error) {
       if (requestId !== creaseExportRequestIdRef.current) return

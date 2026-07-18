@@ -9,17 +9,21 @@ import {
   isCreasePatternExportFormat,
 } from '../src/lib/creaseExport.ts'
 
-test('export formats are a closed FOLD/SVG set with stable labels', () => {
+test('export formats are a closed FOLD/SVG/PDF/DXF set with stable labels', () => {
   assert.deepEqual(
     CREASE_PATTERN_EXPORT_FORMATS.map(({ value }) => value),
-    ['fold', 'svg'],
+    ['fold', 'svg', 'pdf', 'dxf'],
   )
   assert.equal(isCreasePatternExportFormat('fold'), true)
   assert.equal(isCreasePatternExportFormat('svg'), true)
-  assert.equal(isCreasePatternExportFormat('pdf'), false)
+  assert.equal(isCreasePatternExportFormat('pdf'), true)
+  assert.equal(isCreasePatternExportFormat('dxf'), true)
+  assert.equal(isCreasePatternExportFormat('obj'), false)
   assert.equal(isCreasePatternExportFormat({ value: 'fold' }), false)
   assert.equal(creasePatternExportFormatLabel('fold'), 'FOLD 1.2')
   assert.equal(creasePatternExportFormatLabel('svg'), 'SVG')
+  assert.equal(creasePatternExportFormatLabel('pdf'), 'PDF 1.7')
+  assert.equal(creasePatternExportFormatLabel('dxf'), 'DXF（AutoCAD 2007）')
 })
 
 test('assignment rows preserve every supported edge kind in display order', () => {

@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約31.2%（2026-07-18、暫定の重み付き概算）**
+**全体完成率: 約31.8%（2026-07-18、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 86件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows/macOS配布を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 86件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合した26.44%を基準に、単一ヒンジ補正候補の解析専用UIで0.36ポイント、端末内redacted diagnosticsの閲覧・同一内容手動保存UIで0.50ポイント、川崎・前川の局所必要条件検証UIで0.36ポイント、折り手順の作成・保存・段階再生で1.40ポイント、`.ori2`の手順格納範囲拡大で0.10ポイント、FOLD 2D展開図取込で0.70ポイント、SVG静的直線展開図の取込・線種確認・原子的適用で0.70ポイント、FOLD 1.2/SVG展開図の情報損失確認付き原子的書き出しで0.60ポイントを加えた算術結果31.16%を小数第1位へ丸めて表示している。今回の0.60ポイントは「入出力・互換性」の領域進捗を44%から56%へ更新した差分（全体比率5% × 12ポイント）である。展開図PDF/DXF、折り図PDF、FOLDの3D・複数frame対応は計上していない。入力値自体が概数なので、31.16%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合した26.44%を基準に、単一ヒンジ補正候補の解析専用UIで0.36ポイント、端末内redacted diagnosticsの閲覧・同一内容手動保存UIで0.50ポイント、川崎・前川の局所必要条件検証UIで0.36ポイント、折り手順の作成・保存・段階再生で1.40ポイント、`.ori2`の手順格納範囲拡大で0.10ポイント、FOLD 2D展開図取込で0.70ポイント、SVG静的直線展開図の取込・線種確認・原子的適用で0.70ポイント、FOLD 1.2/SVG展開図の情報損失確認付き原子的書き出しで0.60ポイント、実寸PDF 1.7/DXF AC1021展開図の同経路書き出しで0.60ポイントを加えた算術結果31.76%を小数第1位へ丸めて表示している。今回の0.60ポイントは「入出力・互換性」の領域進捗を56%から68%へ更新した差分（全体比率5% × 12ポイント）である。折り図PDF、FOLDの3D・複数frame、3D完成形出力は計上していない。入力値自体が概数なので、31.76%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,18 +19,24 @@
 | 3D折り・紙厚・衝突 | 17% | 50% | 8.50% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持を実装。閉路、切断由来、全体層順を残す |
 | 折り可能性・経路探索 | 18% | 12% | 2.16% | 1ヒンジCCD、単一ヒンジ補正候補の解析専用UI、川崎・前川の局所必要条件検証を接続。候補3Dプレビュー・明示適用、局所十分性、全体平坦折り、一般経路探索を残す |
 | 折り手順・PDF | 10% | 15% | 1.50% | 現在3D姿勢の手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生を実装。連続動作、手指guide、画像・PDFを残す |
-| 入出力・互換性 | 5% | 56% | 2.80% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2または静的SVGへ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。展開図PDF/DXF、FOLDの3D・複数frameを残す |
+| 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
 | 多言語・設定・配布・QA | 5% | 40% | 2.00% | frontend/Rustの自動回帰、Windows/macOS CI、環境・作品情報を含まないredacted diagnosticsの端末内保存・正確な内容確認・同一JSON手動保存を実装。i18n、設定、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **31.16%** | — |
+| **合計** | **100%** | — | **31.76%** | — |
 
 ## 完了
 
+- 一枚紙展開図のPDF 1.7/DXF AC1021書き出しを既存の確認画面へ接続し、要件IO-006の列挙4形式をUIから利用可能にした。MUST 86件の現在集計は実装済み26・部分実装30・未着手30
+- PDFは全描画辺boundsへ四辺10 mm余白を加えた一ページを実寸1:1で生成し、`PrintScaling=None`、14,400 pt page上限、DeviceGray黒の5線種、UTF-16BE作品名、固定5 object/xref、64文字数値上限、未参照頂点拒否、edge向き・順序非依存の決定論的bytesを保証する
+- DXFはBOMなしUTF-8・CRLFのAC1021 text-formとして、mm座標、固定header、5個の`ORIGAMI_*` layer、4個のcustom LTYPE、canonical LINE順、制御文字title拒否、scalar境界の999 comment分割、100,000 group pair・64文字数値上限、内部再parse照合を固定する
+- PDFはpypdfとMuPDFで一ページ・実寸MediaBox・Unicode title・5描画batchを読込・renderし、DXFはezdxfでAC1021・mm・5 layer・8 LINEを読込後、audit error 0・fix 0を確認した。これら外部parserは製品依存へ追加していない
+- 4形式すべてで形式/MIME/拡張子、完全なpreview allowlist、閉じたwire enum、exact-byte原子的保存、stage一度消費、project不変をnative回帰する。frontendは806件、`ori-formats`は114件、desktop nativeは126件を実行する
+- コミット`67dee80`のCI Run `29638486053`全ジョブ完走（FOLD/SVG展開図書き出し、Windows/macOS Rust、macOS `.app` bundleを含む）
 - FOLD 1.2と静的SVGの展開図書き出しをUIへ接続。現在projectのinstance・ID・revision・形式に固定したimmutable bytesをRust内の最新1世代だけへstageし、WebViewにはopaque ID、件数、サイズ、Cut有無、sanitize済み保存名候補、固定警告だけを返す
 - FOLDはmm座標と`B/M/V/F/C`、SVGは1 unit = 1 mmとcanonical `data-origami-kind`で、外周・5線種・Cutを保持する。FOLD/SVGの既存importerへ戻すround-trip、決定性、悪意あるtitleのJSON/XML escape、負のviewBox、未参照SVG頂点、非有限値、件数・byte・交差候補上限を回帰する
 - 書き出し確認画面で紙の見た目、ID・履歴、3D表示、camera、折り手順、線がない場合の切断許可を表示し、明示確認をnativeでも強制する。保存先はnative dialogだけで選び、同一directoryの一時fileへwrite・sync・同一handle再読込後に原子的置換する。取消・失敗・stale・旧tokenではprojectを変えず、dialog取消は同一stageを再試行できる
 - 書き出し画面の形式切替、警告gate、件数表示、Tab/Shift+Tabと外部focus trap、IME中Escape、busy中の閉じる遮断、保存失敗後の同一stage再試行と再生成を実DOMで確認する。frontendは現在806件を実行する
-- IO-006とIO-009を未着手から部分実装へ更新。MUST 86件の現在集計は実装済み25・部分実装31・未着手30。PDF/DXFと将来の3D exporterへの情報損失preview適用を残す
+- FOLD/SVG書き出し時点ではIO-006とIO-009を未着手から部分実装へ更新し、当時のMUST 86件集計を実装済み25・部分実装31・未着手30とした。後続のPDF/DXF実装による現在値は本節冒頭を正本とする
 - SVG 1.1/2共通の静的直線subsetをUIへ接続。`line`、`polyline`、`polygon`、非角丸`rect`、直線path、nested affine transform、presentation/inline/class style、`currentColor`を読み、全source groupの線種、外周、縮尺、Cut許可、警告を確認して新規未保存projectへ適用できる
 - SVGのDTD/entity宣言、外部resource、script、animationを実行・取得せず、曲線・text・画像等をflattenしない。16 MiB、XML depth 64、5万要素、1万source/final線、64 group/外周候補/警告、100万交差候補、5,000表示線の上限を固定し、X/T/外周接点だけをexactに分割する
 - SVG bytesはRust側の最新1世代stageだけに保持し、path・実ファイル名・raw XMLをWebViewへ渡さない。scale・全mapping・外周から最終寸法と実際のCut有無を非破壊検証し、そのopaque検証IDを全入力とproject identityへ束縛する。適用時に同一bytesを再parse・再照合し、成功時だけ原子的に置換する
@@ -341,7 +347,7 @@
 
 ## 進行中
 
-- FOLD/SVG書出しcheckpointのWindows/macOS CI確認と独立最終監査
+- PDF/DXF書出しcheckpointのWindows/macOS CI確認と独立最終監査
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -356,9 +362,8 @@
 
 ## 次の作業
 
-1. 正確な展開図PDF/DXF出力を、同じ情報損失preview・revision固定stage・native原子保存へ追加する
-2. 手順画像・折り図PDF出力を利用者経路単位で追加する
-3. MUST 86件のstatus表を各checkpointで維持する
-4. 履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
-5. OQ-002の物理的な厚さoffset・層ずれ規則とVAL-003/004の対応範囲は、要件変更を伴う部分を所有者と確定する
-6. Windowsで3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動CI検証だけを継続する
+1. 手順ごとの画像と複数ページ折り図PDFを、現在の折り手順timelineから出力する利用者経路として追加する
+2. MUST 86件のstatus表を各checkpointで維持する
+3. 履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
+4. OQ-002の物理的な厚さoffset・層ずれ規則とVAL-003/004の対応範囲は、要件変更を伴う部分を所有者と確定する
+5. Windowsで3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動CI検証だけを継続する

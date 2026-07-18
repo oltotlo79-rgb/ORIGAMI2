@@ -10,6 +10,7 @@ import {
   creasePatternExportAssignmentRows,
   creasePatternExportFormatLabel,
   formatCreasePatternExportBytes,
+  isCreasePatternExportFormat,
   type CreasePatternExportFormat,
   type CreasePatternExportPreview,
 } from '../lib/creaseExport.ts'
@@ -166,7 +167,7 @@ export function CreaseExportDialog({
               disabled={busy}
               onChange={(event) => {
                 const next = event.currentTarget.value
-                if (next === 'fold' || next === 'svg') onFormatChange(next)
+                if (isCreasePatternExportFormat(next)) onFormatChange(next)
               }}
             >
               {CREASE_PATTERN_EXPORT_FORMATS.map((option) => (
@@ -200,6 +201,10 @@ export function CreaseExportDialog({
                 <div>
                   <dt>形式</dt>
                   <dd>{creasePatternExportFormatLabel(preview.format)}</dd>
+                </div>
+                <div>
+                  <dt>出力仕様</dt>
+                  <dd>{preview.format_summary}</dd>
                 </div>
                 <div>
                   <dt>保存名候補</dt>

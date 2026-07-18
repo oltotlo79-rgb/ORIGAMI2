@@ -1,8 +1,10 @@
 //! Deterministic, bounded crease-pattern export.
 //!
-//! The exporters in this module deliberately emit only the static interchange
-//! subsets accepted by this crate's FOLD and SVG importers. They do not encode
-//! a folded pose or executable SVG content.
+//! The exporters in this module deliberately emit only static 2D interchange
+//! or print subsets. They do not encode a folded pose or executable content.
+
+mod dxf;
+mod pdf;
 
 use std::{collections::HashMap, fmt::Write as _};
 
@@ -35,6 +37,12 @@ pub enum CreasePatternExportFormat {
     /// Static SVG 1.1 using only straight line elements.
     #[serde(rename = "svg")]
     Svg,
+    /// One-page, full-scale vector PDF 1.7.
+    #[serde(rename = "pdf")]
+    Pdf17,
+    /// UTF-8 text-form AutoCAD 2007 DXF.
+    #[serde(rename = "dxf")]
+    Dxf2007Ascii,
 }
 
 impl CreasePatternExportFormat {
@@ -44,6 +52,8 @@ impl CreasePatternExportFormat {
         match self {
             Self::Fold12 => "application/json",
             Self::Svg => "image/svg+xml",
+            Self::Pdf17 => "application/pdf",
+            Self::Dxf2007Ascii => "image/vnd.dxf",
         }
     }
 
@@ -53,6 +63,8 @@ impl CreasePatternExportFormat {
         match self {
             Self::Fold12 => "fold",
             Self::Svg => "svg",
+            Self::Pdf17 => "pdf",
+            Self::Dxf2007Ascii => "dxf",
         }
     }
 }
@@ -161,6 +173,27 @@ pub enum CreasePatternExportError {
     ViewBoxNotRepresentable,
     #[error("SVG export cannot preserve unreferenced vertex {vertex_index}")]
     UnreferencedSvgVertex { vertex_index: usize },
+    #[error("PDF export cannot preserve unreferenced vertex {vertex_index}")]
+    UnreferencedPdfVertex { vertex_index: usize },
+    #[error("DXF export cannot preserve unreferenced vertex {vertex_index}")]
+    UnreferencedDxfVertex { vertex_index: usize },
+    #[error("drawing bounds cannot be represented by a finite positive range")]
+    DrawingBoundsNotRepresentable,
+    #[error("PDF page dimensions exceed the PDF 1.7 compatibility limit")]
+    PdfPageTooLarge,
+    #[error("a PDF numeric token exceeds the {maximum}-character compatibility limit")]
+    PdfNumberTooLong { maximum: usize },
+    #[error("PDF structure could not be represented within fixed resource limits")]
+    PdfStructureNotRepresentable,
+    #[error(
+        "DXF title contains unsupported control character U+{code_point:04X} at character {character_index}"
+    )]
+    InvalidDxfTitleCharacter {
+        character_index: usize,
+        code_point: u32,
+    },
+    #[error("DXF structure could not be represented within fixed resource limits")]
+    DxfStructureNotRepresentable,
     #[error("FOLD JSON serialization failed: {0}")]
     FoldSerialization(#[source] serde_json::Error),
     #[error("export is {actual} bytes; the limit is {maximum} bytes")]
@@ -203,10 +236,19 @@ pub fn export_crease_pattern_with_limits(
     }
 
     let validated = validate_export_input(crease_pattern, paper, limits)?;
-    if format == CreasePatternExportFormat::Svg {
-        for (vertex_index, referenced) in validated.referenced_vertices.iter().enumerate() {
-            if !referenced {
-                return Err(CreasePatternExportError::UnreferencedSvgVertex { vertex_index });
+    for (vertex_index, referenced) in validated.referenced_vertices.iter().enumerate() {
+        if !referenced {
+            match format {
+                CreasePatternExportFormat::Fold12 => {}
+                CreasePatternExportFormat::Svg => {
+                    return Err(CreasePatternExportError::UnreferencedSvgVertex { vertex_index });
+                }
+                CreasePatternExportFormat::Pdf17 => {
+                    return Err(CreasePatternExportError::UnreferencedPdfVertex { vertex_index });
+                }
+                CreasePatternExportFormat::Dxf2007Ascii => {
+                    return Err(CreasePatternExportError::UnreferencedDxfVertex { vertex_index });
+                }
             }
         }
     }
@@ -222,6 +264,12 @@ pub fn export_crease_pattern_with_limits(
             paper_bounds(paper, crease_pattern, &validated.vertex_indices)?,
         )
         .into_bytes(),
+        CreasePatternExportFormat::Pdf17 => {
+            pdf::serialize_pdf17(title, crease_pattern, &validated.vertex_indices)?
+        }
+        CreasePatternExportFormat::Dxf2007Ascii => {
+            dxf::serialize_dxf2007_ascii(title, crease_pattern, paper, &validated.vertex_indices)?
+        }
     };
     if bytes.len() > limits.max_output_bytes {
         return Err(CreasePatternExportError::OutputTooLarge {
@@ -764,11 +812,21 @@ mod tests {
     }
 
     #[test]
-    fn both_formats_are_byte_deterministic() {
+    fn all_formats_are_byte_deterministic_and_report_exact_metadata() {
         let (pattern, paper) = sample_pattern();
-        for format in [
-            CreasePatternExportFormat::Fold12,
-            CreasePatternExportFormat::Svg,
+        for (format, media_type, extension) in [
+            (
+                CreasePatternExportFormat::Fold12,
+                "application/json",
+                "fold",
+            ),
+            (CreasePatternExportFormat::Svg, "image/svg+xml", "svg"),
+            (CreasePatternExportFormat::Pdf17, "application/pdf", "pdf"),
+            (
+                CreasePatternExportFormat::Dxf2007Ascii,
+                "image/vnd.dxf",
+                "dxf",
+            ),
         ] {
             let first =
                 export_crease_pattern(format, "Deterministic", &pattern, &paper).expect("export");
@@ -776,6 +834,8 @@ mod tests {
                 export_crease_pattern(format, "Deterministic", &pattern, &paper).expect("export");
             assert_eq!(first.bytes, second.bytes);
             assert_eq!(first.format, format);
+            assert_eq!(first.media_type, media_type);
+            assert_eq!(first.file_extension, extension);
             assert!(first.has_cuts);
         }
     }
@@ -909,17 +969,31 @@ mod tests {
 
         limits = CreasePatternExportLimits::default();
         limits.max_title_chars = 2;
+        for format in [
+            CreasePatternExportFormat::Fold12,
+            CreasePatternExportFormat::Svg,
+            CreasePatternExportFormat::Pdf17,
+            CreasePatternExportFormat::Dxf2007Ascii,
+        ] {
+            assert!(matches!(
+                export_crease_pattern_with_limits(format, "三文字", &pattern, &paper, limits),
+                Err(CreasePatternExportError::TitleTooLong {
+                    actual: 3,
+                    maximum: 2
+                })
+            ));
+        }
+        let too_many_scalars = "🙂".repeat(MAX_CREASE_PATTERN_EXPORT_TITLE_CHARS + 1);
         assert!(matches!(
-            export_crease_pattern_with_limits(
-                CreasePatternExportFormat::Fold12,
-                "三文字",
+            export_crease_pattern(
+                CreasePatternExportFormat::Pdf17,
+                &too_many_scalars,
                 &pattern,
-                &paper,
-                limits
+                &paper
             ),
             Err(CreasePatternExportError::TitleTooLong {
-                actual: 3,
-                maximum: 2
+                actual: 513,
+                maximum: MAX_CREASE_PATTERN_EXPORT_TITLE_CHARS
             })
         ));
         assert!(matches!(
@@ -935,39 +1009,33 @@ mod tests {
             })
         ));
 
-        let full =
-            export_crease_pattern(CreasePatternExportFormat::Svg, "limited", &pattern, &paper)
-                .expect("unlimited export");
-        limits = CreasePatternExportLimits {
-            max_output_bytes: full.bytes.len() - 1,
-            ..CreasePatternExportLimits::default()
-        };
-        assert!(matches!(
-            export_crease_pattern_with_limits(
-                CreasePatternExportFormat::Svg,
-                "limited",
-                &pattern,
-                &paper,
-                limits
-            ),
-            Err(CreasePatternExportError::OutputTooLarge {
-                actual,
-                maximum
-            }) if actual == full.bytes.len() && maximum == full.bytes.len() - 1
-        ));
-        limits.max_output_bytes = full.bytes.len();
-        export_crease_pattern_with_limits(
+        for format in [
+            CreasePatternExportFormat::Fold12,
             CreasePatternExportFormat::Svg,
-            "limited",
-            &pattern,
-            &paper,
-            limits,
-        )
-        .expect("byte length equal to its limit is accepted");
+            CreasePatternExportFormat::Pdf17,
+            CreasePatternExportFormat::Dxf2007Ascii,
+        ] {
+            let full = export_crease_pattern(format, "limited", &pattern, &paper)
+                .expect("unlimited export");
+            limits = CreasePatternExportLimits {
+                max_output_bytes: full.bytes.len() - 1,
+                ..CreasePatternExportLimits::default()
+            };
+            assert!(matches!(
+                export_crease_pattern_with_limits(format, "limited", &pattern, &paper, limits),
+                Err(CreasePatternExportError::OutputTooLarge {
+                    actual,
+                    maximum
+                }) if actual == full.bytes.len() && maximum == full.bytes.len() - 1
+            ));
+            limits.max_output_bytes = full.bytes.len();
+            export_crease_pattern_with_limits(format, "limited", &pattern, &paper, limits)
+                .expect("byte length equal to its limit is accepted");
+        }
     }
 
     #[test]
-    fn rejects_excess_intersection_work_and_svg_only_information_loss() {
+    fn rejects_excess_intersection_work_and_static_format_vertex_loss() {
         let (pattern, paper) = sample_pattern();
         let positions = pattern
             .vertices
@@ -1045,6 +1113,24 @@ mod tests {
                 &paper
             ),
             Err(CreasePatternExportError::UnreferencedSvgVertex { vertex_index: 5 })
+        ));
+        assert!(matches!(
+            export_crease_pattern(
+                CreasePatternExportFormat::Pdf17,
+                "isolated PDF vertex",
+                &with_isolated_vertex,
+                &paper
+            ),
+            Err(CreasePatternExportError::UnreferencedPdfVertex { vertex_index: 5 })
+        ));
+        assert!(matches!(
+            export_crease_pattern(
+                CreasePatternExportFormat::Dxf2007Ascii,
+                "isolated DXF vertex",
+                &with_isolated_vertex,
+                &paper
+            ),
+            Err(CreasePatternExportError::UnreferencedDxfVertex { vertex_index: 5 })
         ));
     }
 

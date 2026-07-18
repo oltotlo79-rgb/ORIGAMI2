@@ -1,4 +1,4 @@
-export type CreasePatternExportFormat = 'fold' | 'svg'
+export type CreasePatternExportFormat = 'fold' | 'svg' | 'pdf' | 'dxf'
 
 export type CreasePatternExportAssignmentCounts = Readonly<{
   boundary: number
@@ -13,6 +13,7 @@ export type CreasePatternExportPreview = Readonly<{
   expected_project_id: string
   expected_revision: number
   format: CreasePatternExportFormat
+  format_summary: string
   suggested_file_name: string
   byte_count: number
   vertex_count: number
@@ -39,16 +40,35 @@ ReadonlyArray<Readonly<{ value: CreasePatternExportFormat; label: string; detail
       label: 'SVG',
       detail: '印刷・作図ソフトで扱いやすい静的な線図',
     },
+    {
+      value: 'pdf',
+      label: 'PDF 1.7',
+      detail: '実寸1:1・四辺10 mm余白の白黒ベクター印刷',
+    },
+    {
+      value: 'dxf',
+      label: 'DXF',
+      detail: 'AutoCAD 2007・mm・5意味レイヤーのCAD交換',
+    },
   ])
 
 export function isCreasePatternExportFormat(
   value: unknown,
 ): value is CreasePatternExportFormat {
-  return value === 'fold' || value === 'svg'
+  return value === 'fold' || value === 'svg' || value === 'pdf' || value === 'dxf'
 }
 
 export function creasePatternExportFormatLabel(format: CreasePatternExportFormat) {
-  return format === 'fold' ? 'FOLD 1.2' : 'SVG'
+  switch (format) {
+    case 'fold':
+      return 'FOLD 1.2'
+    case 'svg':
+      return 'SVG'
+    case 'pdf':
+      return 'PDF 1.7'
+    case 'dxf':
+      return 'DXF（AutoCAD 2007）'
+  }
 }
 
 export function creasePatternExportAssignmentRows(

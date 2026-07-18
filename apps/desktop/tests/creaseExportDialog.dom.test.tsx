@@ -7,13 +7,17 @@ import {
 } from '@testing-library/react'
 
 import { CreaseExportDialog } from '../src/components/CreaseExportDialog'
-import type { CreasePatternExportPreview } from '../src/lib/creaseExport'
+import type {
+  CreasePatternExportFormat,
+  CreasePatternExportPreview,
+} from '../src/lib/creaseExport'
 
 const PREVIEW: CreasePatternExportPreview = {
   export_id: '018f47d1-5ca0-75b1-a53a-c579f39f9661',
   expected_project_id: '018f47d1-5ca0-75b1-a53a-c579f39f9662',
   expected_revision: 12,
   format: 'fold',
+  format_summary: 'FOLD 1.2・2D creasePattern・座標単位mm',
   suggested_file_name: '鶴.fold',
   byte_count: 2_345,
   vertex_count: 8,
@@ -49,6 +53,7 @@ describe('CreaseExportDialog DOM interactions', () => {
     expect(save.disabled).toBe(true)
     expect(screen.getByText('鶴.fold')).toBeTruthy()
     expect(screen.getByText('2.3 KB')).toBeTruthy()
+    expect(screen.getByText('FOLD 1.2・2D creasePattern・座標単位mm')).toBeTruthy()
     expect(screen.getByText('1本')).toBeTruthy()
 
     fireEvent.click(screen.getByLabelText('上記の情報が出力に含まれないことを確認しました'))
@@ -69,13 +74,16 @@ describe('CreaseExportDialog DOM interactions', () => {
     expect(onSave).toHaveBeenCalledWith(true)
   })
 
-  it('changes only to a supported format and keeps native data out of the UI', () => {
+  it('changes to every supported format, rejects unknown values, and keeps native data out of the UI', () => {
     const onFormatChange = vi.fn()
     renderDialog({ onFormatChange })
 
     const format = screen.getByLabelText('出力形式')
     fireEvent.change(format, { target: { value: 'svg' } })
-    expect(onFormatChange).toHaveBeenCalledWith('svg')
+    fireEvent.change(format, { target: { value: 'pdf' } })
+    fireEvent.change(format, { target: { value: 'dxf' } })
+    fireEvent.change(format, { target: { value: 'obj' } })
+    expect(onFormatChange.mock.calls).toEqual([['svg'], ['pdf'], ['dxf']])
     expect(document.body.textContent).not.toContain('vertices_coords')
     expect(document.body.textContent).not.toContain('<svg')
   })
@@ -161,12 +169,12 @@ function renderDialog(overrides: Partial<Props> = {}) {
 }
 
 type Props = {
-  format: 'fold' | 'svg'
+  format: CreasePatternExportFormat
   preview: CreasePatternExportPreview | null
   busy: boolean
   error: string | null
   notice: string | null
-  onFormatChange: (format: 'fold' | 'svg') => void
+  onFormatChange: (format: CreasePatternExportFormat) => void
   onRetry: () => void
   onSave: (warningsAcknowledged: boolean) => void
   onCancel: () => void

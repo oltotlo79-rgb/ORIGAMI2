@@ -39,6 +39,7 @@ struct PendingCreaseExport {
     expected_project_id: ProjectId,
     expected_revision: u64,
     format: CreaseExportFormatRequest,
+    format_summary: String,
     suggested_file_name: String,
     bytes: Arc<[u8]>,
     vertex_count: usize,
@@ -53,6 +54,8 @@ struct PendingCreaseExport {
 pub(super) enum CreaseExportFormatRequest {
     Fold,
     Svg,
+    Pdf,
+    Dxf,
 }
 
 impl CreaseExportFormatRequest {
@@ -60,6 +63,8 @@ impl CreaseExportFormatRequest {
         match self {
             Self::Fold => CreasePatternExportFormat::Fold12,
             Self::Svg => CreasePatternExportFormat::Svg,
+            Self::Pdf => CreasePatternExportFormat::Pdf17,
+            Self::Dxf => CreasePatternExportFormat::Dxf2007Ascii,
         }
     }
 
@@ -67,6 +72,17 @@ impl CreaseExportFormatRequest {
         match self {
             Self::Fold => "fold",
             Self::Svg => "svg",
+            Self::Pdf => "pdf",
+            Self::Dxf => "dxf",
+        }
+    }
+
+    fn media_type(self) -> &'static str {
+        match self {
+            Self::Fold => "application/json",
+            Self::Svg => "image/svg+xml",
+            Self::Pdf => "application/pdf",
+            Self::Dxf => "image/vnd.dxf",
         }
     }
 
@@ -74,6 +90,8 @@ impl CreaseExportFormatRequest {
         match self {
             Self::Fold => "FOLD 1.2 crease pattern",
             Self::Svg => "SVG crease pattern",
+            Self::Pdf => "PDF 1.7 full-scale crease pattern",
+            Self::Dxf => "AutoCAD 2007 DXF crease pattern",
         }
     }
 
@@ -81,6 +99,17 @@ impl CreaseExportFormatRequest {
         match self {
             Self::Fold => "FOLD 1.2",
             Self::Svg => "SVG",
+            Self::Pdf => "PDF 1.7",
+            Self::Dxf => "DXF（AutoCAD 2007）",
+        }
+    }
+
+    fn format_summary(self) -> &'static str {
+        match self {
+            Self::Fold => "FOLD 1.2・2D creasePattern・座標単位mm",
+            Self::Svg => "静的直線SVG・1 SVG unit = 1 mm",
+            Self::Pdf => "実寸1:1ベクター・図面範囲＋四辺10 mm余白",
+            Self::Dxf => "AC1021 text-form・UTF-8・mm・5意味レイヤー",
         }
     }
 }
@@ -105,6 +134,7 @@ struct CreaseExportPreviewSnapshot {
     expected_project_id: ProjectId,
     expected_revision: u64,
     format: CreaseExportFormatRequest,
+    format_summary: String,
     suggested_file_name: String,
     byte_count: usize,
     vertex_count: usize,
@@ -372,6 +402,7 @@ fn build_pending_export(source: CreaseExportSource) -> Result<PendingCreaseExpor
         expected_project_id: source.expected_project_id,
         expected_revision: source.expected_revision,
         format: source.format,
+        format_summary: source.format.format_summary().to_owned(),
         suggested_file_name: suggested_export_file_name(&source.name, source.format.extension()),
         bytes: Arc::from(artifact.bytes),
         vertex_count: artifact.vertex_count,
@@ -389,6 +420,7 @@ fn validate_artifact_contract(
 ) -> Result<(), String> {
     if artifact.format != requested.exporter_format()
         || artifact.file_extension != requested.extension()
+        || artifact.media_type != requested.media_type()
     {
         return Err("生成された展開図の形式が要求と一致しません。".to_owned());
     }
@@ -436,6 +468,29 @@ fn export_warnings(
         format!("ORIGAMI2の頂点・辺ID、編集履歴、選択状態は{label}出力に含まれません。"),
         format!("現在の3D表示姿勢とカメラ状態は{label}出力に含まれません。"),
     ];
+    match format {
+        CreaseExportFormatRequest::Pdf => {
+            warnings.push(
+                "PDFは印刷用の視覚出力で、構造化された線種や座標原点を保持せず、ORIGAMI2へ再取込できません。"
+                    .to_owned(),
+            );
+            warnings.push(
+                "実寸で印刷するには、PDF viewerの印刷倍率を100%にし「用紙に合わせる」を無効にしてください。"
+                    .to_owned(),
+            );
+        }
+        CreaseExportFormatRequest::Dxf => {
+            warnings.push(
+                "折り線の意味はORIGAMI2独自のDXFレイヤー名で表し、CAD固有の標準意味ではありません。"
+                    .to_owned(),
+            );
+            warnings.push(
+                "作品名はDXFコメントに格納されますが、CADで再保存すると失われる場合があります。"
+                    .to_owned(),
+            );
+        }
+        CreaseExportFormatRequest::Fold | CreaseExportFormatRequest::Svg => {}
+    }
     if instruction_step_count > 0 {
         warnings.push(format!(
             "{instruction_step_count}件の折り手順は{label}出力に含まれません。"
@@ -455,6 +510,7 @@ fn preview_snapshot(pending: &PendingCreaseExport) -> CreaseExportPreviewSnapsho
         expected_project_id: pending.expected_project_id,
         expected_revision: pending.expected_revision,
         format: pending.format,
+        format_summary: pending.format_summary.clone(),
         suggested_file_name: pending.suggested_file_name.clone(),
         byte_count: pending.bytes.len(),
         vertex_count: pending.vertex_count,
@@ -638,6 +694,7 @@ fn commit_staged_export_file(staged: &mut StagedFile, path: &Path) -> Result<(),
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -692,11 +749,13 @@ mod tests {
     }
 
     #[test]
-    fn fold_and_svg_previews_contain_only_bounded_metadata() {
+    fn all_format_previews_contain_only_bounded_metadata() {
         let project = super::super::initial_project_state();
         for format in [
             CreaseExportFormatRequest::Fold,
             CreaseExportFormatRequest::Svg,
+            CreaseExportFormatRequest::Pdf,
+            CreaseExportFormatRequest::Dxf,
         ] {
             let pending = pending_for(&project, format);
             let preview = preview_snapshot(&pending);
@@ -706,13 +765,45 @@ mod tests {
             assert_eq!(preview.edge_count, 4);
             assert_eq!(preview.assignment_counts.boundary, 4);
             assert!(preview.byte_count > 0);
+            assert!(!preview.format_summary.is_empty());
             assert!(!preview.warnings.is_empty());
 
             let json = serde_json::to_value(CreaseExportPreviewResponse { preview }).unwrap();
+            assert_eq!(
+                json.as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from(["preview"])
+            );
             let object = json["preview"].as_object().unwrap();
-            assert!(!object.contains_key("bytes"));
-            assert!(!object.contains_key("path"));
-            assert!(!object.contains_key("content"));
+            assert_eq!(
+                object.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+                BTreeSet::from([
+                    "assignment_counts",
+                    "byte_count",
+                    "edge_count",
+                    "expected_project_id",
+                    "expected_revision",
+                    "export_id",
+                    "format",
+                    "format_summary",
+                    "has_cuts",
+                    "suggested_file_name",
+                    "vertex_count",
+                    "warnings",
+                ])
+            );
+            assert_eq!(
+                object["assignment_counts"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from(["auxiliary", "boundary", "cut", "mountain", "valley"])
+            );
         }
     }
 
@@ -869,39 +960,28 @@ mod tests {
     }
 
     #[test]
-    fn atomic_export_persists_exact_bytes_without_touching_the_project() {
+    fn atomic_export_persists_exact_bytes_for_every_format_without_touching_the_project() {
         let project = super::super::initial_project_state();
         let before = project.document();
-        let pending = pending_for(&project, CreaseExportFormatRequest::Svg);
-        let export_id = pending.export_id;
-        let expected_bytes = Arc::clone(&pending.bytes);
-        let mut slot = CreaseExportSlot {
-            active_generation_id: Some(export_id),
-            pending: Some(pending),
-            last_cancelled_id: None,
-        };
         let directory = TestDirectory::new();
-        let path = directory.path().join("sample.svg");
+        for format in [
+            CreaseExportFormatRequest::Fold,
+            CreaseExportFormatRequest::Svg,
+            CreaseExportFormatRequest::Pdf,
+            CreaseExportFormatRequest::Dxf,
+        ] {
+            let pending = pending_for(&project, format);
+            let export_id = pending.export_id;
+            let expected_bytes = Arc::clone(&pending.bytes);
+            let mut slot = CreaseExportSlot {
+                active_generation_id: Some(export_id),
+                pending: Some(pending),
+                last_cancelled_id: None,
+            };
+            let path = directory
+                .path()
+                .join(format!("sample.{}", format.extension()));
 
-        commit_pending_export_to_path(
-            &mut slot,
-            &project,
-            export_id,
-            project.project_id,
-            project.editor.revision(),
-            true,
-            &path,
-        )
-        .unwrap();
-
-        assert_eq!(fs::read(&path).unwrap(), expected_bytes.as_ref());
-        assert!(slot.pending.is_none());
-        assert_eq!(slot.active_generation_id, None);
-        assert_eq!(slot.last_cancelled_id, None);
-        assert_eq!(project.document(), before);
-        assert!(!project.is_dirty());
-
-        assert!(
             commit_pending_export_to_path(
                 &mut slot,
                 &project,
@@ -911,9 +991,29 @@ mod tests {
                 true,
                 &path,
             )
-            .is_err()
-        );
-        assert_eq!(fs::read(path).unwrap(), expected_bytes.as_ref());
+            .unwrap();
+
+            assert_eq!(fs::read(&path).unwrap(), expected_bytes.as_ref());
+            assert!(slot.pending.is_none());
+            assert_eq!(slot.active_generation_id, None);
+            assert_eq!(slot.last_cancelled_id, None);
+            assert_eq!(project.document(), before);
+            assert!(!project.is_dirty());
+
+            assert!(
+                commit_pending_export_to_path(
+                    &mut slot,
+                    &project,
+                    export_id,
+                    project.project_id,
+                    project.editor.revision(),
+                    true,
+                    &path,
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read(path).unwrap(), expected_bytes.as_ref());
+        }
     }
 
     #[test]
@@ -965,6 +1065,97 @@ mod tests {
             ensure_export_extension(PathBuf::from("sample.SVG"), CreaseExportFormatRequest::Svg),
             PathBuf::from("sample.SVG")
         );
+        assert_eq!(
+            ensure_export_extension(PathBuf::from("sample.txt"), CreaseExportFormatRequest::Pdf),
+            PathBuf::from("sample.pdf")
+        );
+        assert_eq!(
+            ensure_export_extension(PathBuf::from("sample.DXF"), CreaseExportFormatRequest::Dxf),
+            PathBuf::from("sample.DXF")
+        );
+    }
+
+    #[test]
+    fn format_contract_and_specific_warnings_cover_all_outputs() {
+        let expected = [
+            (
+                CreaseExportFormatRequest::Fold,
+                CreasePatternExportFormat::Fold12,
+                "fold",
+                "application/json",
+            ),
+            (
+                CreaseExportFormatRequest::Svg,
+                CreasePatternExportFormat::Svg,
+                "svg",
+                "image/svg+xml",
+            ),
+            (
+                CreaseExportFormatRequest::Pdf,
+                CreasePatternExportFormat::Pdf17,
+                "pdf",
+                "application/pdf",
+            ),
+            (
+                CreaseExportFormatRequest::Dxf,
+                CreasePatternExportFormat::Dxf2007Ascii,
+                "dxf",
+                "image/vnd.dxf",
+            ),
+        ];
+        for (request, exporter, extension, media_type) in expected {
+            assert_eq!(request.exporter_format(), exporter);
+            assert_eq!(request.extension(), extension);
+            assert_eq!(request.media_type(), media_type);
+            assert!(!request.filter_label().is_empty());
+            assert!(!request.format_label().is_empty());
+            assert!(!request.format_summary().is_empty());
+        }
+
+        let pdf = export_warnings(CreaseExportFormatRequest::Pdf, 0, false);
+        assert!(
+            pdf.iter()
+                .any(|warning| warning.contains("再取込できません"))
+        );
+        assert!(pdf.iter().any(|warning| warning.contains("印刷倍率を100%")));
+        let dxf = export_warnings(CreaseExportFormatRequest::Dxf, 0, false);
+        assert!(dxf.iter().any(|warning| warning.contains("DXFレイヤー名")));
+        assert!(
+            dxf.iter()
+                .any(|warning| warning.contains("再保存すると失われる"))
+        );
+    }
+
+    #[test]
+    fn format_wire_values_are_closed_and_canonical() {
+        for (format, wire) in [
+            (CreaseExportFormatRequest::Fold, "fold"),
+            (CreaseExportFormatRequest::Svg, "svg"),
+            (CreaseExportFormatRequest::Pdf, "pdf"),
+            (CreaseExportFormatRequest::Dxf, "dxf"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(format).unwrap(),
+                serde_json::json!(wire)
+            );
+            assert_eq!(
+                serde_json::from_value::<CreaseExportFormatRequest>(serde_json::json!(wire))
+                    .unwrap(),
+                format
+            );
+        }
+        for invalid in [
+            serde_json::json!(""),
+            serde_json::json!("PDF"),
+            serde_json::json!("obj"),
+            serde_json::Value::Null,
+            serde_json::json!({ "value": "pdf" }),
+        ] {
+            assert!(
+                serde_json::from_value::<CreaseExportFormatRequest>(invalid).is_err(),
+                "unknown wire value must fail closed"
+            );
+        }
     }
 
     #[test]

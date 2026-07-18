@@ -20,7 +20,7 @@
 | 折り可能性・経路探索 | 18% | 10% | 1.80% | 1ヒンジCCDと、単一ヒンジ補正候補の解析専用UIを接続。候補3Dプレビュー・明示適用、川崎・前川、平坦折り、一般経路探索は未着手 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 14% | 0.70% | 高品質な`.ori2`読込・保存は実装。SVG/FOLD/DXF/OBJ/STL/glTF/PDFは未着手 |
-| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 692件・Rust 304件とWindows/macOS CIは実装。i18n、設定、診断、更新、GitHub Releases配布を残す |
+| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 700件・Rust 304件とWindows/macOS CIは実装。i18n、設定、診断、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
 | **合計** | **100%** | — | **26.80%** | — |
 
@@ -189,6 +189,7 @@
 - 静的候補の連続経路jobを現在候補だけの遅延生成へ変更し、`candidate_preparation`と`candidate_analysis`の明示的境界、候補切替時の同一call内非開始、候補数倍の累積上限、同期処理を示すliteral flagを公開。chunk非依存、複数候補順序、phase境界取消、budget検証・課金済みchild・候補切替・pending/certificate finalization中の再入、未公開certificateへのprovenance非付与、contextから連続certificate・requestまでのprivate registry method差し替え遮断を含むfrontend 670件で回帰
 - 真正な補正解析requestだけから静的候補job、候補別連続経路job、切り離した表示DTOを順に進める複合jobと、RAF単位でそのjobを駆動するUI coordinatorを実装。全段階を完走しても候補経路が未確定なら`indeterminate`、認定可能な候補を全件否定できた場合だけ`no_candidate`とし、対応範囲外を「折り不可能」と断定しない。frontend 692件・Rust 304件で回帰
 - `test:snap`の47ファイル手動列挙をNode test runnerの引用符付きglobへ置換し、新しい`*.test.ts`をNode 24 CIとWindowsのどちらでも自動検出する境界へ変更。既存47ファイル・frontend 692件の全実行を維持
+- `FoldPreview`から背景・camera・renderer・照明・grid・紙3材質・輪郭6材質の構築、resize、冪等破棄をReact非依存scene runtimeへ分離。exact lease、原子的scene姿勢適用、OrbitControls、gesture、ヒンジ材質は元のauthority境界へ残し、grid・材質生成途中を含む自己rollback、cleanup例外継続、既存React子要素と所有外資源の非破棄を専用8件で固定。自動検出48ファイル・frontend 700件、Rust 304件で回帰
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -304,10 +305,11 @@
 - コミット`a2ac303`のCI Run `29623851234`全ジョブ完走（補正候補別連続経路の遅延生成、phase境界・累積会計・finalization再入回帰、frontend 665件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`3677d10`のCI Run `29625298125`全ジョブ完走（第三者監査の再照合、進捗是正、Undo/Redo失敗時の履歴保持、authority初期化強化、frontend 673件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`dc365ef`のCI Run `29626601401`全ジョブ完走（補正解析の複合job・UI coordinator・stale無効化・解析専用表示、frontend 692件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`da24cc3`のCI Run `29626823914`全ジョブ完走（frontend testの引用符付きglob自動検出、frontend 692件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
-- `FoldPreview`の大規模runtimeを、既存のexact lease・stale無効化・原子的scene更新を保ったまま小さな責務へ分割する作業
+- `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 作品内容やローカルパスを標準収集しないredacted diagnostics境界
 - VAL-002の川崎・前川局所判定と、対応範囲・判定不能を区別するUI
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E

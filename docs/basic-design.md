@@ -548,7 +548,7 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 - 有限性、上限、退化、作業量など幾何計算そのものの安全条件は各数値境界に残す。非同期処理のgeneration、request sequence、revision、現在scene poseのstale検査も状態整合性のため維持する。
 - private `WeakMap`/`WeakSet`によるexact-object authorityは、scene変更、motion owner、committed terminal lease、解析certificateなど「読み取り結果を副作用へ接続できる境界」に限定する。単なる内部DTOの全段へ真正性flagと構造再検証を増殖させない。
 - 既存の重複した`deepFreeze`、`isRecord`、own-data snapshot、hostile入力回帰は一括削除せず、UI接続とruntime分割時に信頼境界を確認しながら共通化・縮小する。安全停止、原子的scene commit、stale結果非公開の回帰は保持する。
-- 補正解析authority chainと解析専用UIの接続は上記の副作用境界で完結した。次は補正解析の新段階や新しい一般DTO防御を追加せず、`FoldPreview` runtime分割で入口検証と副作用authority以外の重複防御を段階的に整理し、redacted diagnosticsを独立境界として追加する。
+- 補正解析authority chainと解析専用UIの接続は上記の副作用境界で完結した。`FoldPreview` runtime分割の第一段階では、authorityを入力に持たないscene・camera・renderer・照明・grid・紙/輪郭材質の所有と破棄だけをReact非依存境界へ分離した。次は補正解析の新段階や新しい一般DTO防御を追加せず、残るcamera/入力runtimeで入口検証と副作用authority以外の重複防御を段階的に整理し、redacted diagnosticsを独立境界として追加する。
 
 ## 14. 実装フェーズ
 

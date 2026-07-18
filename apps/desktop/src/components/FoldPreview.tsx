@@ -53,6 +53,10 @@ import {
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import type { FoldPreviewHingeContactConstraint } from '../lib/foldPreviewHingeCollision'
 import {
+  createFoldPreviewSceneRuntime,
+  type FoldPreviewSceneRuntime,
+} from '../lib/foldPreviewSceneRuntime'
+import {
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
 import {
@@ -618,17 +622,7 @@ export function FoldPreview({
       return
     }
 
-    let renderer: THREE.WebGLRenderer | null = null
-    let grid: THREE.GridHelper | null = null
-    let frontMaterial: THREE.MeshStandardMaterial | null = null
-    let backMaterial: THREE.MeshStandardMaterial | null = null
-    let sideMaterial: THREE.MeshStandardMaterial | null = null
-    let edgeMaterial: THREE.LineBasicMaterial | null = null
-    let fixedFaceEdgeMaterial: THREE.LineBasicMaterial | null = null
-    let dependentFaceEdgeMaterial: THREE.LineBasicMaterial | null = null
-    let collisionContactEdgeMaterial: THREE.LineBasicMaterial | null = null
-    let collisionIndeterminateEdgeMaterial: THREE.LineBasicMaterial | null = null
-    let collisionPenetrationEdgeMaterial: THREE.LineBasicMaterial | null = null
+    let sceneRuntime: FoldPreviewSceneRuntime | null = null
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
     let observer: ResizeObserver | null = null
@@ -894,8 +888,8 @@ export function FoldPreview({
         angleDragFrameHandle = null
       }
       hasPendingAngleDragTarget = false
-      if (renderer) {
-        const canvas = renderer.domElement
+      if (sceneRuntime) {
+        const canvas = sceneRuntime.renderer.domElement
         if (pointerDownHandler) {
           attemptCleanup(() =>
             canvas.ownerDocument.removeEventListener(
@@ -942,8 +936,8 @@ export function FoldPreview({
         controls.enabled = controlsEnabledBeforeAngleDrag
       }
       controlsEnabledBeforeAngleDrag = null
-      if (renderer && cursorBeforeAngleDrag !== null) {
-        renderer.domElement.style.cursor = cursorBeforeAngleDrag
+      if (sceneRuntime && cursorBeforeAngleDrag !== null) {
+        sceneRuntime.renderer.domElement.style.cursor = cursorBeforeAngleDrag
       }
       cursorBeforeAngleDrag = null
       activeDocumentPointerIds.clear()
@@ -969,107 +963,36 @@ export function FoldPreview({
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
       for (const geometry of edgeGeometries) attemptCleanup(() => geometry.dispose())
       for (const geometry of hingeGeometries) attemptCleanup(() => geometry.dispose())
-      if (grid) {
-        attemptCleanup(() => grid?.geometry.dispose())
-        attemptCleanup(() => disposeMaterial(grid?.material ?? []))
-      }
-      attemptCleanup(() => frontMaterial?.dispose())
-      attemptCleanup(() => backMaterial?.dispose())
-      attemptCleanup(() => sideMaterial?.dispose())
-      attemptCleanup(() => edgeMaterial?.dispose())
-      attemptCleanup(() => fixedFaceEdgeMaterial?.dispose())
-      attemptCleanup(() => dependentFaceEdgeMaterial?.dispose())
-      attemptCleanup(() => collisionContactEdgeMaterial?.dispose())
-      attemptCleanup(() => collisionIndeterminateEdgeMaterial?.dispose())
-      attemptCleanup(() => collisionPenetrationEdgeMaterial?.dispose())
       attemptCleanup(() => hingeMaterial?.dispose())
       attemptCleanup(() => selectedHingeMaterial?.dispose())
-      if (renderer) {
-        attemptCleanup(() => renderer?.renderLists.dispose())
-        attemptCleanup(() => renderer?.dispose())
-        attemptCleanup(() => renderer?.domElement.remove())
-      }
+      const ownedSceneRuntime = sceneRuntime
+      sceneRuntime = null
+      attemptCleanup(() => ownedSceneRuntime?.dispose())
     }
 
     try {
-      const scene = new THREE.Scene()
-      scene.background = new THREE.Color('#eef2f5')
-      const initialSize = readRenderableSize(host)
-      const camera = new THREE.PerspectiveCamera(
-        36,
-        initialSize ? initialSize.width / initialSize.height : 1,
-        0.1,
-        100,
-      )
-      camera.position.set(5.4, 4.7, 6.4)
-      camera.lookAt(0, 0, 0)
-
-      const createdRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
-      renderer = createdRenderer
-      const devicePixelRatio = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
-        ? window.devicePixelRatio
-        : 1
-      createdRenderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-      createdRenderer.setSize(initialSize?.width ?? 1, initialSize?.height ?? 1, false)
-      createdRenderer.outputColorSpace = THREE.SRGBColorSpace
-      createdRenderer.shadowMap.enabled = true
-      createdRenderer.shadowMap.type = THREE.PCFSoftShadowMap
-      createdRenderer.domElement.setAttribute('aria-hidden', 'true')
-      host.appendChild(createdRenderer.domElement)
-
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x748090, 2.2))
-      const light = new THREE.DirectionalLight(0xffffff, 2.5)
-      light.position.set(3, 7, 4)
-      light.castShadow = true
-      scene.add(light)
-
-      const createdGrid = new THREE.GridHelper(8, 16, 0xb8c1cc, 0xd7dde4)
-      grid = createdGrid
-      createdGrid.position.y = -1.35
-      scene.add(createdGrid)
-
-      const createdFrontMaterial = createPaperMaterial({ hex: frontHex, opacity: frontOpacity })
-      frontMaterial = createdFrontMaterial
-      const createdBackMaterial = createPaperMaterial({ hex: backHex, opacity: backOpacity })
-      backMaterial = createdBackMaterial
-      const createdSideMaterial = new THREE.MeshStandardMaterial({
-        color: mixColors(frontHex, backHex),
-        roughness: 0.82,
+      const createdSceneRuntime = createFoldPreviewSceneRuntime({
+        host,
+        front: { hex: frontHex, opacity: frontOpacity },
+        back: { hex: backHex, opacity: backOpacity },
+        devicePixelRatio: window.devicePixelRatio,
       })
-      sideMaterial = createdSideMaterial
-      const materials = [createdFrontMaterial, createdBackMaterial, createdSideMaterial]
-      const createdEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x715747 })
-      edgeMaterial = createdEdgeMaterial
-      const createdFixedFaceEdgeMaterial = new THREE.LineBasicMaterial({
-        color: 0x1671b8,
-        depthTest: false,
-        depthWrite: false,
-      })
-      fixedFaceEdgeMaterial = createdFixedFaceEdgeMaterial
-      const createdDependentFaceEdgeMaterial = new THREE.LineBasicMaterial({
-        color: 0xe24a16,
-        depthTest: false,
-        depthWrite: false,
-      })
-      dependentFaceEdgeMaterial = createdDependentFaceEdgeMaterial
-      const createdCollisionContactEdgeMaterial = new THREE.LineBasicMaterial({
-        color: 0x8e44ad,
-        depthTest: false,
-        depthWrite: false,
-      })
-      collisionContactEdgeMaterial = createdCollisionContactEdgeMaterial
-      const createdCollisionIndeterminateEdgeMaterial = new THREE.LineBasicMaterial({
-        color: 0xb18412,
-        depthTest: false,
-        depthWrite: false,
-      })
-      collisionIndeterminateEdgeMaterial = createdCollisionIndeterminateEdgeMaterial
-      const createdCollisionPenetrationEdgeMaterial = new THREE.LineBasicMaterial({
-        color: 0xc62828,
-        depthTest: false,
-        depthWrite: false,
-      })
-      collisionPenetrationEdgeMaterial = createdCollisionPenetrationEdgeMaterial
+      sceneRuntime = createdSceneRuntime
+      const {
+        scene,
+        camera,
+        renderer: createdRenderer,
+        palette: {
+          paperMaterials,
+          edgeMaterial: createdEdgeMaterial,
+          fixedFaceEdgeMaterial: createdFixedFaceEdgeMaterial,
+          dependentFaceEdgeMaterial: createdDependentFaceEdgeMaterial,
+          collisionContactEdgeMaterial: createdCollisionContactEdgeMaterial,
+          collisionIndeterminateEdgeMaterial: createdCollisionIndeterminateEdgeMaterial,
+          collisionPenetrationEdgeMaterial: createdCollisionPenetrationEdgeMaterial,
+        },
+      } = createdSceneRuntime
+      const materials = [...paperMaterials]
 
       const faceEdgeLines = new Map<string, THREE.LineSegments>()
       let dependentFaceIdsForHighlight = new Set<string>()
@@ -1348,7 +1271,7 @@ export function FoldPreview({
         }
       }
 
-      const render = () => createdRenderer.render(scene, camera)
+      const render = createdSceneRuntime.render
       const createdControls = new OrbitControls(camera, createdRenderer.domElement)
       controls = createdControls
       createdControls.target.set(0, 0, 0)
@@ -3690,12 +3613,7 @@ export function FoldPreview({
       const resize = () => {
         try {
           resetFoldGestures('reset')
-          const size = readRenderableSize(host)
-          if (!size) return
-          camera.aspect = size.width / size.height
-          camera.updateProjectionMatrix()
-          createdRenderer.setSize(size.width, size.height, false)
-          render()
+          createdSceneRuntime.resizeFromHost()
         } catch {
           dispose()
           setRenderError('3D描画を安全に継続できませんでした')
@@ -4598,42 +4516,12 @@ function resolveColor(color: RgbaColor | null | undefined, fallback: number) {
   return { hex: (red << 16) | (green << 8) | blue, opacity: alpha }
 }
 
-function createPaperMaterial(color: { hex: number; opacity: number }) {
-  return new THREE.MeshStandardMaterial({
-    color: color.hex,
-    opacity: color.opacity,
-    transparent: color.opacity < 1,
-    roughness: 0.72,
-  })
-}
-
-function mixColors(first: number, second: number) {
-  const firstColor = new THREE.Color(first)
-  const secondColor = new THREE.Color(second)
-  return firstColor.lerp(secondColor, 0.5)
-}
-
 function attemptCleanup(action: () => void | undefined) {
   try {
     action()
   } catch {
     // Continue releasing the remaining independent WebGL resources.
   }
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[]) {
-  if (Array.isArray(material)) {
-    new Set(material).forEach((item) => item.dispose())
-    return
-  }
-  material.dispose()
-}
-
-function readRenderableSize(host: HTMLElement) {
-  const width = host.clientWidth
-  const height = host.clientHeight
-  if (!isPositiveFinite(width) || !isPositiveFinite(height)) return null
-  return { width, height }
 }
 
 function isPositiveFinite(value: number): value is number {

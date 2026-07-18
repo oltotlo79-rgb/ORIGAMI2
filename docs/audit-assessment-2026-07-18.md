@@ -55,5 +55,6 @@ VAL-004を「反例検出だけ」へ正式変更すること、VAL-003を特定
 - 単一ヒンジ補正候補の解析request、静的候補、候補別連続経路、切り離した表示DTOを複合jobへ接続し、RAF単位で進めるcoordinatorを`FoldPreview`へ統合した。UIは作業中、対応範囲内での候補なし、判定不能、認定済みを区別し、新request・姿勢・選択・固定面・紙厚の変更では旧結果をstaleとして無効化する。
 - 認定済み表示も解析専用であり、`sceneApplied: false`・`autoApplicable: false`を維持する。候補3Dプレビュー、明示適用、一般の複数ヒンジ・閉路・切断由来経路は未実装で、`no_candidate`を作品の折り不可能性とは表示しない。
 - terminalのstart角へ解析contextをrebaseする際、元の真正contextが持つexact model・tree・非選択角を保持するよう修正した。これにより、初回と同内容でも別model snapshotを発行してしまう2回目以降のrequestがterminal bindingのmodel provenanceを失う経路を閉じた。
+- frontend testの手動列挙を引用符付きglobへ置換し、新規`*.test.ts`をNode 24 CIとWindowsで自動検出するよう変更した。さらに`FoldPreview`のscene・camera・renderer・照明・grid・紙/輪郭材質をReact非依存runtimeへ分離し、authorityを持つmotion・gesture・原子的scene適用はコンポーネント側へ残した。
 - 折り可能性・経路探索の領域進捗を8%から10%、全体への寄与を1.44%から1.80%へ更新した。監査再照合時の26.44%へ0.36ポイントを加え、現在の追跡値は26.80%（表示26.8%）である。MUST 86件の集計は実装済み20・部分実装23・未着手43のままで、VAL-008も部分実装を維持する。
-- 現時点の自動回帰はfrontend 692件、Rust 304件である。件数は品質確認であり、それ自体を機能完成率へ加算していない。
+- 現時点の自動回帰はfrontend 700件、Rust 304件である。件数は品質確認であり、それ自体を機能完成率へ加算していない。

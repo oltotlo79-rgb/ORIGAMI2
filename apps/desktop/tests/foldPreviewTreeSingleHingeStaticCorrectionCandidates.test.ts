@@ -318,6 +318,74 @@ test('successful result provenance is bound to the exact authentic context', () 
   assert.equal(hostileContextReadCount, 0)
 })
 
+test('successful provenance ignores later WeakMap method replacement', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job =
+    createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+      fixture.context,
+      fixture.binding,
+      CLEARANCE,
+      MAXIMUM_TRANSLATION,
+      MAXIMUM_ANGLE_DELTA_DEGREES,
+    )
+  assert.ok(job)
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(job.step(Number.MAX_SAFE_INTEGER).kind, 'pending')
+  }
+
+  const originalSet = WeakMap.prototype.set
+  let dynamicSetCalled = false
+  let nested:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep | null =
+      null
+  WeakMap.prototype.set = (function replacedSet() {
+    dynamicSetCalled = true
+    nested ??= job.step(1)
+    throw new Error('replaced WeakMap.set')
+  }) as typeof WeakMap.prototype.set
+  let terminal:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep
+  try {
+    terminal = job.step(Number.MAX_SAFE_INTEGER)
+  } finally {
+    WeakMap.prototype.set = originalSet
+  }
+
+  assert.equal(dynamicSetCalled, false)
+  assert.equal(nested, null)
+  assert.equal(terminal.kind, 'complete')
+  if (terminal.kind !== 'complete') return
+
+  const originalGet = WeakMap.prototype.get
+  let dynamicGetCalled = false
+  WeakMap.prototype.get = (function replacedGet() {
+    dynamicGetCalled = true
+    throw new Error('replaced WeakMap.get')
+  }) as typeof WeakMap.prototype.get
+  try {
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+        fixture.context,
+        terminal.result,
+      ),
+      true,
+    )
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+        fixture.context,
+        { ...terminal.result },
+      ),
+      false,
+    )
+  } finally {
+    WeakMap.prototype.get = originalGet
+  }
+  assert.equal(dynamicGetCalled, false)
+  assert.strictEqual(job.step(1), terminal)
+})
+
 test('a rerooted negative rotation sign yields the matching static-clear correction', () => {
   const fixture = correctionFixture({
     fixedFaceId: 'moving',
@@ -984,7 +1052,7 @@ test('child cancellation outranks a charged classifier throw', {
   assertDeeplyFrozen(terminal)
 })
 
-test('result finalization reentry cannot publish or authorize partial success', {
+test('result finalization ignores later intrinsic replacement', {
   concurrency: false,
 }, () => {
   const fixture = correctionFixture()
@@ -1002,20 +1070,43 @@ test('result finalization reentry cannot publish or authorize partial success', 
   assert.equal(job.step(Number.MAX_SAFE_INTEGER).kind, 'pending')
 
   const originalFreeze = Object.freeze
-  let nested:
-    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJobStep | null = null
-  let unpublishedResult: unknown = null
-  let reentered = false
+  const originalAdd = WeakSet.prototype.add
+  const originalHas = WeakSet.prototype.has
+  const originalApply = Reflect.apply
+  const originalOwnKeys = Reflect.ownKeys
+  const replacementCalls = {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    freeze: 0,
+  }
+  WeakSet.prototype.add = function replacementAdd(
+    this: WeakSet<object>,
+  ) {
+    replacementCalls.add += 1
+    return this
+  } as typeof WeakSet.prototype.add
+  WeakSet.prototype.has = function replacementHas() {
+    replacementCalls.has += 1
+    return true
+  } as typeof WeakSet.prototype.has
+  Reflect.apply = (function replacementApply() {
+    replacementCalls.apply += 1
+    throw new Error('replacement Reflect.apply called')
+  }) as typeof Reflect.apply
+  Reflect.ownKeys = (function replacementOwnKeys() {
+    replacementCalls.ownKeys += 1
+    return []
+  }) as typeof Reflect.ownKeys
   Object.freeze = ((value: object) => {
     const record = value as Record<PropertyKey, unknown>
     if (
-      !reentered
-      && record.kind
+      record.kind
         === 'statically_revalidated_single_hinge_correction_candidates'
     ) {
-      reentered = true
-      unpublishedResult = value
-      nested = job.step(1)
+      replacementCalls.freeze += 1
+      return value
     }
     return originalFreeze(value)
   }) as typeof Object.freeze
@@ -1024,22 +1115,36 @@ test('result finalization reentry cannot publish or authorize partial success', 
     outer = job.step(Number.MAX_SAFE_INTEGER)
   } finally {
     Object.freeze = originalFreeze
+    Reflect.ownKeys = originalOwnKeys
+    Reflect.apply = originalApply
+    WeakSet.prototype.add = originalAdd
+    WeakSet.prototype.has = originalHas
   }
 
-  assert.equal(reentered, true)
-  assert.ok(nested)
-  assert.equal(nested.kind, 'cancelled')
-  assert.strictEqual(outer, nested)
-  assert.equal('result' in outer, false)
-  assert.ok(unpublishedResult)
+  assert.deepEqual(replacementCalls, {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    freeze: 0,
+  })
+  assert.equal(outer.kind, 'complete')
+  if (outer.kind !== 'complete') return
+  assertDeeplyFrozen(outer.result)
   assert.equal(
     isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
       fixture.context,
-      unpublishedResult,
+      outer.result,
+    ),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToContext(
+      fixture.context,
+      structuredClone(outer.result),
     ),
     false,
   )
-  assertDeeplyFrozen(unpublishedResult)
   assert.strictEqual(job.step(1), outer)
 })
 

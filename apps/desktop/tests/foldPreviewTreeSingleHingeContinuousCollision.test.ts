@@ -743,6 +743,293 @@ test('same-body full-scan witnesses retain binding but disable two-body translat
   )
 })
 
+test('terminal binding authority ignores later WeakMap method replacement', {
+  concurrency: false,
+}, () => {
+  const model = stationaryBranchCollisionModel()
+  const equivalentModel = structuredClone(model)
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const thickness = 0.02
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const job = analyzer.createJob(startAngles, 120, thickness, {
+    maxDepth: 18,
+    minTimeSpan: 2 ** -22,
+    maxIntervalTests: 10_000,
+    requestIdentity: {
+      contextKey: 'weak-map-method-replacement',
+      sourcePoseRequestKey,
+      generation: 1,
+      requestSequence: 1,
+    },
+  })
+  assert.ok(job)
+
+  const originalSet = WeakMap.prototype.set
+  const originalHas = WeakMap.prototype.has
+  const originalGet = WeakMap.prototype.get
+  const replacementCalls = {
+    set: 0,
+    has: 0,
+    get: 0,
+  }
+  WeakMap.prototype.set = function replacementSet(
+    key: object,
+    value: unknown,
+  ) {
+    replacementCalls.set += 1
+    return originalSet.call(this, key, value)
+  } as typeof WeakMap.prototype.set
+  WeakMap.prototype.has = function replacementHas(key: object) {
+    replacementCalls.has += 1
+    return originalHas.call(this, key)
+  } as typeof WeakMap.prototype.has
+  WeakMap.prototype.get = function replacementGet(key: object) {
+    replacementCalls.get += 1
+    return originalGet.call(this, key)
+  } as typeof WeakMap.prototype.get
+
+  try {
+    const result = run(job)
+    assert.equal(result.kind, 'blocked', JSON.stringify(result))
+    assert.ok(result.kind === 'blocked')
+    const binding = result.blocker?.blockingSample?.terminalFullScanBinding
+    assert.ok(binding)
+
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthentic(binding),
+      true,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        model,
+        binding,
+      ),
+      true,
+    )
+
+    const clonedBinding = structuredClone(binding)
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthentic(clonedBinding),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        model,
+        clonedBinding,
+      ),
+      false,
+    )
+    assert.equal(
+      isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
+        equivalentModel,
+        binding,
+      ),
+      false,
+    )
+    assert.deepEqual(replacementCalls, {
+      set: 0,
+      has: 0,
+      get: 0,
+    })
+  } finally {
+    WeakMap.prototype.set = originalSet
+    WeakMap.prototype.has = originalHas
+    WeakMap.prototype.get = originalGet
+  }
+})
+
+test('terminal binding freezing ignores later intrinsic replacement', {
+  concurrency: false,
+}, () => {
+  const model = stationaryBranchCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const thickness = 0.02
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    thickness,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const job = analyzer.createJob(startAngles, 120, thickness, {
+    maxDepth: 18,
+    minTimeSpan: 2 ** -22,
+    maxIntervalTests: 10_000,
+    requestIdentity: {
+      contextKey: 'intrinsic-replacement',
+      sourcePoseRequestKey,
+      generation: 1,
+      requestSequence: 1,
+    },
+  })
+  assert.ok(job)
+
+  const originalAdd = WeakSet.prototype.add
+  const originalHas = WeakSet.prototype.has
+  const originalApply = Reflect.apply
+  const originalOwnKeys = Reflect.ownKeys
+  const originalFreeze = Object.freeze
+  const replacementCalls = {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    freeze: 0,
+  }
+  let result: ReturnType<typeof run> | null = null
+  WeakSet.prototype.add = function replacementAdd(
+    this: WeakSet<object>,
+  ) {
+    replacementCalls.add += 1
+    return this
+  } as typeof WeakSet.prototype.add
+  WeakSet.prototype.has = function replacementHas() {
+    replacementCalls.has += 1
+    return true
+  } as typeof WeakSet.prototype.has
+  Reflect.apply = (function replacementApply() {
+    replacementCalls.apply += 1
+    throw new Error('replacement Reflect.apply called')
+  }) as typeof Reflect.apply
+  Reflect.ownKeys = (function replacementOwnKeys() {
+    replacementCalls.ownKeys += 1
+    return []
+  }) as typeof Reflect.ownKeys
+  Object.freeze = ((value: object) => {
+    if (
+      (value as Record<PropertyKey, unknown>).version
+        === FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION
+    ) {
+      replacementCalls.freeze += 1
+      return value
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+
+  try {
+    result = run(job)
+  } finally {
+    Object.freeze = originalFreeze
+    Reflect.ownKeys = originalOwnKeys
+    Reflect.apply = originalApply
+    WeakSet.prototype.add = originalAdd
+    WeakSet.prototype.has = originalHas
+  }
+
+  assert.deepEqual(replacementCalls, {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    freeze: 0,
+  })
+  assert.ok(result)
+  assert.equal(result.kind, 'blocked', JSON.stringify(result))
+  if (result.kind !== 'blocked') return
+  const binding = result.blocker?.blockingSample?.terminalFullScanBinding
+  assert.ok(binding)
+  assertDeeplyFrozen(binding)
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(binding),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeTerminalFullScanBindingAuthentic(
+      structuredClone(binding),
+    ),
+    false,
+  )
+})
+
+test('wrapper re-entry cancels before terminal binding publication', {
+  concurrency: false,
+}, () => {
+  const model = stationaryBranchCollisionModel()
+  const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+    model,
+    'root',
+    'selected',
+  )
+  assert.ok(analyzer)
+  const startAngles = [
+    { edgeId: 'selected', angleDegrees: 0 },
+    { edgeId: 'frozen', angleDegrees: 90 },
+  ] as const
+  const sourcePoseRequestKey = createFoldPreviewTreeSceneCollisionPoseKey(
+    model,
+    'root',
+    0.02,
+    startAngles,
+  )
+  assert.ok(sourcePoseRequestKey)
+  const job = analyzer.createJob(startAngles, 120, 0.02, {
+    maxDepth: 18,
+    minTimeSpan: 2 ** -22,
+    maxIntervalTests: 10_000,
+    requestIdentity: {
+      contextKey: 'wrapper-re-entry',
+      sourcePoseRequestKey,
+      generation: 1,
+      requestSequence: 1,
+    },
+  })
+  assert.ok(job)
+
+  const originalIsSafeInteger = Number.isSafeInteger
+  let reentryAttempted = false
+  let nestedError: unknown = null
+  Number.isSafeInteger = ((value: unknown) => {
+    if (!reentryAttempted) {
+      reentryAttempted = true
+      try {
+        job.step(1)
+      } catch (error) {
+        nestedError = error
+      }
+    }
+    return originalIsSafeInteger(value)
+  }) as typeof Number.isSafeInteger
+
+  let result: ReturnType<typeof job.step>
+  try {
+    result = job.step(1)
+  } finally {
+    Number.isSafeInteger = originalIsSafeInteger
+  }
+
+  assert.equal(reentryAttempted, true)
+  assert.match(
+    nestedError instanceof Error ? nestedError.message : '',
+    /wrapper step re-entry/,
+  )
+  assert.equal(result.kind, 'cancelled')
+  assert.strictEqual(job.step(1), result)
+})
+
 test('an unavailable terminal full scan preserves the complete v1 block', () => {
   const model = stationaryInternalWitnessOverflowModel()
   assert.equal(model.kinematics.kind, 'tree')

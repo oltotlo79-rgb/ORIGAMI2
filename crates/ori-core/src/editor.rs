@@ -1096,11 +1096,15 @@ impl EditorState {
 
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
-        let Some(entry) = self.undo_stack.pop() else {
+        let Some(entry) = self.undo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
         let result = entry.inverse.changes(&self.pattern, &self.paper);
         self.apply_inverse(&entry.inverse)?;
+        let entry = self
+            .undo_stack
+            .pop()
+            .expect("the successfully applied undo entry must still be present");
         self.redo_stack.push(entry);
         self.advance_revision();
         Ok(self.result(result))
@@ -1108,11 +1112,15 @@ impl EditorState {
 
     pub fn redo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
-        let Some(entry) = self.redo_stack.pop() else {
+        let Some(entry) = self.redo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
         let result = entry.forward.changes(&self.pattern, &self.paper);
         self.apply(&entry.forward)?;
+        let entry = self
+            .redo_stack
+            .pop()
+            .expect("the successfully applied redo entry must still be present");
         self.undo_stack.push(entry);
         self.advance_revision();
         Ok(self.result(result))
@@ -9221,5 +9229,148 @@ mod tests {
         editor.undo(1).expect("restore middle edge");
 
         assert_eq!(editor.pattern(), &original);
+    }
+
+    #[test]
+    fn failed_undo_preserves_state_and_history_for_retry() {
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let blocking_edge = EdgeId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+
+        editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("add first vertex");
+        editor
+            .execute(
+                1,
+                Command::AddVertex {
+                    id: second,
+                    position: Point2::new(1.0, 0.0),
+                },
+            )
+            .expect("add second vertex");
+        editor
+            .undo(2)
+            .expect("place second command in redo history");
+
+        editor.pattern.edges.push(Edge {
+            id: blocking_edge,
+            start: first,
+            end: first,
+            kind: EdgeKind::Auxiliary,
+        });
+        let pattern_before = editor.pattern.clone();
+        let paper_before = editor.paper.clone();
+        let revision_before = editor.revision;
+        let undo_before = format!("{:?}", editor.undo_stack);
+        let redo_before = format!("{:?}", editor.redo_stack);
+
+        let error = editor
+            .undo(revision_before)
+            .expect_err("connected edge must prevent removing the vertex");
+
+        assert_eq!(
+            error,
+            CommandError::VertexHasConnectedEdge {
+                vertex: first,
+                edge: blocking_edge,
+            }
+        );
+        assert_eq!(editor.pattern, pattern_before);
+        assert_eq!(editor.paper, paper_before);
+        assert_eq!(editor.revision, revision_before);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+        assert!(editor.can_undo());
+        assert!(editor.can_redo());
+
+        editor.pattern.edges.clear();
+        editor
+            .undo(revision_before)
+            .expect("preserved undo entry must remain retryable");
+
+        assert!(editor.pattern.vertices.is_empty());
+        assert_eq!(editor.revision, revision_before + 1);
+        assert!(!editor.can_undo());
+        assert_eq!(editor.redo_stack.len(), 2);
+    }
+
+    #[test]
+    fn failed_redo_preserves_state_and_history_for_retry() {
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let second_vertex = Vertex {
+            id: second,
+            position: Point2::new(1.0, 0.0),
+        };
+        let mut editor = EditorState::new(CreasePattern::empty());
+
+        editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("add first vertex");
+        editor
+            .execute(
+                1,
+                Command::AddVertex {
+                    id: second,
+                    position: second_vertex.position,
+                },
+            )
+            .expect("add second vertex");
+        editor
+            .undo(2)
+            .expect("place second command in redo history");
+
+        editor.pattern.vertices.push(second_vertex.clone());
+        let pattern_before = editor.pattern.clone();
+        let paper_before = editor.paper.clone();
+        let revision_before = editor.revision;
+        let undo_before = format!("{:?}", editor.undo_stack);
+        let redo_before = format!("{:?}", editor.redo_stack);
+
+        let error = editor
+            .redo(revision_before)
+            .expect_err("duplicate vertex must prevent replaying the command");
+
+        assert_eq!(error, CommandError::VertexAlreadyExists(second));
+        assert_eq!(editor.pattern, pattern_before);
+        assert_eq!(editor.paper, paper_before);
+        assert_eq!(editor.revision, revision_before);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+        assert!(editor.can_undo());
+        assert!(editor.can_redo());
+
+        editor.pattern.vertices.pop();
+        editor
+            .redo(revision_before)
+            .expect("preserved redo entry must remain retryable");
+
+        assert_eq!(
+            editor.pattern.vertices,
+            vec![
+                Vertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+                second_vertex,
+            ]
+        );
+        assert_eq!(editor.revision, revision_before + 1);
+        assert_eq!(editor.undo_stack.len(), 2);
+        assert!(!editor.can_redo());
     }
 }

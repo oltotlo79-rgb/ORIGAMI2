@@ -202,6 +202,158 @@ test('a genuine blocked terminal becomes a frozen internal analysis request', ()
   }
 })
 
+test(
+  'the private authority registry ignores later WeakMap prototype replacements',
+  { concurrency: false },
+  () => {
+    const fixture = correctionFixture()
+    const setDescriptor = Object.getOwnPropertyDescriptor(
+      WeakMap.prototype,
+      'set',
+    )
+    const hasDescriptor = Object.getOwnPropertyDescriptor(
+      WeakMap.prototype,
+      'has',
+    )
+    assert.ok(setDescriptor)
+    assert.ok(hasDescriptor)
+    let replacementSetCalls = 0
+    let replacementHasCalls = 0
+
+    try {
+      Object.defineProperty(WeakMap.prototype, 'set', {
+        ...setDescriptor,
+        value() {
+          replacementSetCalls += 1
+          throw new Error('replacement WeakMap.prototype.set called')
+        },
+      })
+      const request =
+        prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+          createInput(fixture),
+        )
+      assert.ok(request)
+      assert.equal(replacementSetCalls, 0)
+
+      Object.defineProperty(WeakMap.prototype, 'has', {
+        ...hasDescriptor,
+        value() {
+          replacementHasCalls += 1
+          throw new Error('replacement WeakMap.prototype.has called')
+        },
+      })
+      assert.equal(
+        isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(
+          request,
+        ),
+        true,
+      )
+      assert.equal(
+        isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(
+          structuredClone(request),
+        ),
+        false,
+      )
+      assert.equal(replacementHasCalls, 0)
+    } finally {
+      Object.defineProperty(WeakMap.prototype, 'set', setDescriptor)
+      Object.defineProperty(WeakMap.prototype, 'has', hasDescriptor)
+    }
+  },
+)
+
+test('request freezing ignores later intrinsic replacement', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const originalAdd = WeakSet.prototype.add
+  const originalHas = WeakSet.prototype.has
+  const originalApply = Reflect.apply
+  const originalOwnKeys = Reflect.ownKeys
+  const originalIsFrozen = Object.isFrozen
+  const originalFreeze = Object.freeze
+  const replacementCalls = {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    isFrozen: 0,
+    freeze: 0,
+  }
+  let request:
+    ReturnType<
+      typeof prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest
+    > = null
+
+  WeakSet.prototype.add = function replacementAdd(
+    this: WeakSet<object>,
+  ) {
+    replacementCalls.add += 1
+    return this
+  } as typeof WeakSet.prototype.add
+  WeakSet.prototype.has = function replacementHas() {
+    replacementCalls.has += 1
+    return true
+  } as typeof WeakSet.prototype.has
+  Reflect.apply = (function replacementApply() {
+    replacementCalls.apply += 1
+    throw new Error('replacement Reflect.apply called')
+  }) as typeof Reflect.apply
+  Reflect.ownKeys = (function replacementOwnKeys() {
+    replacementCalls.ownKeys += 1
+    return []
+  }) as typeof Reflect.ownKeys
+  Object.isFrozen = (function replacementIsFrozen() {
+    replacementCalls.isFrozen += 1
+    return true
+  }) as typeof Object.isFrozen
+  Object.freeze = ((value: object) => {
+    if (
+      (value as Record<PropertyKey, unknown>).kind
+        === 'tree_single_hinge_correction_analysis_request'
+    ) {
+      replacementCalls.freeze += 1
+      return value
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+
+  try {
+    request =
+      prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+        createInput(fixture),
+      )
+  } finally {
+    Object.freeze = originalFreeze
+    Object.isFrozen = originalIsFrozen
+    Reflect.ownKeys = originalOwnKeys
+    Reflect.apply = originalApply
+    WeakSet.prototype.add = originalAdd
+    WeakSet.prototype.has = originalHas
+  }
+
+  assert.deepEqual(replacementCalls, {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    isFrozen: 0,
+    freeze: 0,
+  })
+  assert.ok(request)
+  assertDeeplyFrozen(request)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(request),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(
+      structuredClone(request),
+    ),
+    false,
+  )
+})
+
 test('request evidence, runner scalars, times, and complete vectors are exact', () => {
   const fixture = correctionFixture()
   const time = fixture.result.blockingSampleTime
@@ -637,7 +789,15 @@ test('the internal request exposes no scene or runtime application capability', 
   )
   assert.match(
     source,
-    /if \(Object\.isFrozen\(object\) \|\| seen\.has\(object\)\) return value/u,
+    /const objectFreezeIntrinsic = Object\.freeze/u,
+  )
+  assert.match(
+    source,
+    /reflectApplyIntrinsic\(weakSetHasIntrinsic, seen, \[object\]\)/u,
+  )
+  assert.match(
+    source,
+    /return objectFreezeIntrinsic\(value\)/u,
   )
   assert.match(
     source,

@@ -25,6 +25,12 @@ export const FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_POLICY_VERSION =
   'tree_single_hinge_correction_analysis_policy_v1'
 export const FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_REQUEST_VERSION =
   'tree_single_hinge_correction_analysis_request_v1'
+const objectFreezeIntrinsic = Object.freeze
+const weakSetHasIntrinsic = WeakSet.prototype.has
+const weakSetAddIntrinsic = WeakSet.prototype.add
+const reflectApplyIntrinsic = Reflect.apply
+const reflectOwnKeysIntrinsic = Reflect.ownKeys
+const objectIsFrozenIntrinsic = Object.isFrozen
 
 const MAX_INTERVAL_TESTS = 1_000_000
 const MAX_REQUEST_KEY_LENGTH = 8 * 1_024 * 1_024
@@ -122,6 +128,10 @@ const analysisRequestAuthorities = new WeakMap<
   object,
   AnalysisRequestAuthority
 >()
+const hasAnalysisRequestAuthority =
+  analysisRequestAuthorities.has.bind(analysisRequestAuthorities)
+const setAnalysisRequestAuthority =
+  analysisRequestAuthorities.set.bind(analysisRequestAuthorities)
 
 type ExtractedTerminal = Readonly<{
   runnerState: DataRecord
@@ -306,7 +316,7 @@ export function prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
         autoApplicable: false,
       },
     }) satisfies FoldPreviewTreeSingleHingeCorrectionAnalysisRequest
-    analysisRequestAuthorities.set(result, Object.freeze({
+    setAnalysisRequestAuthority(result, objectFreezeIntrinsic({
       sourceContext,
       context,
       terminalFullScanBinding: binding,
@@ -327,7 +337,7 @@ export function isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(
   try {
     return typeof value === 'object'
       && value !== null
-      && analysisRequestAuthorities.has(value)
+      && hasAnalysisRequestAuthority(value)
   } catch {
     return false
   }
@@ -853,7 +863,7 @@ function snapshotArrayValues(
 }
 
 function isFrozenPlainRecord(value: unknown): value is DataRecord {
-  if (!isRecord(value) || !Object.isFrozen(value)) return false
+  if (!isRecord(value) || !objectIsFrozenIntrinsic(value)) return false
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
 }
@@ -927,13 +937,16 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   // Authentic contexts and terminal bindings are already deeply frozen.
   // Skipping them prevents a second traversal of their bounded large models
   // and terminal witness evidence.
-  if (Object.isFrozen(object) || seen.has(object)) return value
-  seen.add(object)
-  for (const key of Reflect.ownKeys(object)) {
+  if (
+    objectIsFrozenIntrinsic(object)
+    || reflectApplyIntrinsic(weakSetHasIntrinsic, seen, [object])
+  ) return value
+  reflectApplyIntrinsic(weakSetAddIntrinsic, seen, [object])
+  for (const key of reflectOwnKeysIntrinsic(object)) {
     deepFreeze(
       (object as Record<PropertyKey, unknown>)[key],
       seen,
     )
   }
-  return Object.freeze(value)
+  return objectFreezeIntrinsic(value)
 }

@@ -359,7 +359,7 @@ solve(current geometry, constraints, edited targets, policy)
 - 各seedは選択ヒンジだけを置換した完全角度vectorへ戻し、新しいpose request keyと全face transformを生成する。まず全非隣接face pairのfull scanが`complete`で、未確定・接触・貫通・witnessが0、coverage全式が成立することを確認する。続いて通常のnarrow-phaseを実行し、残るinteractionがすべて共有ヒンジpairかつ`allowed_by_hinge_model`である場合だけ静的候補として保持する。
 - 候補数は有限回転fitと同じ最大6件とする。全候補についてfull scanと通常解析を合わせた保守的triangle-pair上限を開始前に算出し、累積1,000,000を超えるモデルまたは実測値はfail-closedとする。計画上限、実測visit数、各scan回数をdeep-frozen結果へ保存する。
 - `tree_single_hinge_static_correction_candidates_job_v1`は各seedを`full_scan_preparation`、`full_scan`、`narrow_scan_preparation`、`narrow_scan`へ分け、子job生成または子job終端の後は同じ公開`step`内で次段階を開始しない。full scanがclearでないseedでは通常解析を起動せず、全seedを元順位のまま完走してからだけ候補集合を公開する。途中候補はpending、cancelled、indeterminate、exhaustedのどのvariantにも含めない。
-- 親jobはfull/通常解析のtriangle-pair累計とwitness導出累計を分離し、各子jobの不変work bounds、累積値、step差分、委譲budgetを照合する。再入またはcancelが子処理中に起きた場合は、子のcancelled終端を再観測して課金済みworkを親へ集計してから同一参照のcancelled終端を公開する。結果deep-freeze中の再入でもcompleteで上書きせず、真正context provenanceはcompleteの公開成功後にだけ付与する。
+- 親jobはfull/通常解析のtriangle-pair累計とwitness導出累計を分離し、各子jobの不変work bounds、累積値、step差分、委譲budgetを照合する。再入またはcancelが子処理中に起きた場合は、子のcancelled終端を再観測して課金済みworkを親へ集計してから同一参照のcancelled終端を公開する。結果deep-freeze中の再入でもcompleteで上書きせず、真正context provenanceはcompleteの公開成功後にだけ、モジュール初期化時に固定したprivate `WeakMap`操作で付与する。
 - `workBounds`は計画pair上限、witness上限、合計cursor上限に加え、`entireStepTimeBounded: false`と、二体solver・有限回転fit・全seed姿勢、子job factory、hinge policy、結果finalizationが同期であることを固定flagで明示する。従来の同期derive APIは同じjobを十分なbudgetでdrainする互換wrapperであり、結果・順位・作業集計を維持するが、描画frame全体の時間上限は主張しない。
 - 出力はmodel identity、source/blocking pose、partition、完全合法角度vector、静的全scene、共有ヒンジ規則の再検証済みである。一方、候補までの連続経路、層順、材料変形、scene反映、undo可能なproject commandは未検証なので、`continuousCandidatePathCertified`、`sceneApplied`、`autoApplicable`をすべて`false`に固定する。解析結果をmotion owner、3D表示、プロジェクトへ直接適用しない。
 
@@ -371,7 +371,7 @@ solve(current geometry, constraints, edited targets, policy)
 - source pose keyをcontextの完全角度vectorから再生成し、project、revision、固定面、選択ヒンジ、context key、紙厚を照合する。prepared continuous analyzerのstationary/moving集合を保存済みpartitionと順序込みで一致させ、各候補が選択ヒンジだけを変えた完全角度vectorであることとtarget pose keyを再確認する。
 - 最大6候補を残差順位で一件ずつ進め、現在候補のcontinuous childだけを必要時に生成する。`candidate_preparation`は専用の同期stepとしてchildを生成するだけでinterval workを進めず、続く`candidate_analysis`だけが`workBudget`を委譲する。衝突または未確定になった後も同じcall内で次候補を生成せず、明示的なphase境界を返す。最初に経路全体が`clear`となった候補で`certified`終了し、全候補が非認定なら`exhausted`とする。
 - inner jobへ旧terminal request identityを渡さず、候補探索中のblocking説明用terminal full-scanを発生させない。候補単位のinterval pair・point triangle上限を候補数倍した保守的job上限と、interval test、point test、cache hit、最大深度の集計だけを公開し、未計測の実triangle visit数を実績として主張しない。
-- 不正work budget、inner例外、結果形式または作業集計の後退は`indeterminate`、cancelと再入は現在のinner jobを停止して`cancelled`へ退避する。budget検証、課金済みchild callback、pending・terminal deep-freeze中の再入でも、観測済みworkを集計した同一のcancelled終端を優先する。certificateの真正provenanceは認定終端の公開に成功した後だけ付与する。終端後の`step`は同じ不変objectを返し、途中の認定候補を部分的な成功として公開しない。
+- 不正work budget、inner例外、結果形式または作業集計の後退は`indeterminate`、cancelと再入は現在のinner jobを停止して`cancelled`へ退避する。budget検証、課金済みchild callback、pending・terminal deep-freeze中の再入でも、観測済みworkを集計した同一のcancelled終端を優先する。certificateの真正provenanceは認定終端の公開に成功した後だけ、モジュール初期化時に固定したprivate `WeakMap`操作で付与し、実行時のprototype差し替えを登録窓へ入れない。終端後の`step`は同じ不変objectを返し、途中の認定候補を部分的な成功として公開しない。
 - `workBounds`は候補数倍したinterval・interval pair・point triangle上限に加え、factory準備、child factory、成功結果finalizationが同期処理であり、公開step全体のwall-clock上限を主張しないことをliteral flagで明示する。表示DTOにも同じflagを切り離して保持する。
 - `certified`だけがsource/target完全角度vector、両pose key、静的候補順位、連続解析statsと`continuousCandidatePathCertified: true`を持つ。これはその二姿勢間の単一線形角度経路だけの解析証明であり、現在の3D sceneがsource姿勢にあること、層順、材料変形、project適用は別境界とする。全variantで`sceneApplied: false`、`autoApplicable: false`を固定する。
 
@@ -531,6 +531,14 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 - SVG内スクリプトや外部リソースを実行・自動取得しない。
 - 診断ログは作品座標・パス・内容を標準で記録しない。
 - 更新確認はGitHubの公開情報だけを取得し、無効化可能にする。
+
+### 13.1 TypeScript内部の信頼境界
+
+- ファイル、Tauri IPC、将来のimport・pluginなど外部由来の値は入口で一度検証し、検証済みDTO以降を通常のTypeScript内部値として扱う。内部関数すべてで汎用的なhostile Proxy・getter対策を重ねることは既定方針にしない。
+- 有限性、上限、退化、作業量など幾何計算そのものの安全条件は各数値境界に残す。非同期処理のgeneration、request sequence、revision、現在scene poseのstale検査も状態整合性のため維持する。
+- private `WeakMap`/`WeakSet`によるexact-object authorityは、scene変更、motion owner、committed terminal lease、解析certificateなど「読み取り結果を副作用へ接続できる境界」に限定する。単なる内部DTOの全段へ真正性flagと構造再検証を増殖させない。
+- 既存の重複した`deepFreeze`、`isRecord`、own-data snapshot、hostile入力回帰は一括削除せず、UI接続とruntime分割時に信頼境界を確認しながら共通化・縮小する。安全停止、原子的scene commit、stale結果非公開の回帰は保持する。
+- 現在の補正解析authority chainを上記の副作用境界として完結させた後は、補正解析の新段階や新しい一般DTO防御を追加せず、まず既存結果をUIへ接続する。その後の`FoldPreview` runtime分割で、入口検証と副作用authority以外の重複防御を段階的に整理する。
 
 ## 14. 実装フェーズ
 

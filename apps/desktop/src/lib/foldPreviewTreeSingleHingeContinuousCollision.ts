@@ -64,6 +64,11 @@ export const FOLD_PREVIEW_TREE_TERMINAL_FULL_SCAN_BINDING_VERSION =
 const HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR = 8
 const MOTION_POSE_EQUIVALENCE_FACTOR = 1_024
 const MAX_BLOCKING_SAMPLE_REQUEST_KEY_LENGTH = 8 * 1_024 * 1_024
+const objectFreezeIntrinsic = Object.freeze
+const weakSetHasIntrinsic = WeakSet.prototype.has
+const weakSetAddIntrinsic = WeakSet.prototype.add
+const reflectApplyIntrinsic = Reflect.apply
+const reflectOwnKeysIntrinsic = Reflect.ownKeys
 
 export type FoldPreviewTreeSingleHingeContinuousRequestIdentity = Readonly<{
   contextKey: string
@@ -137,6 +142,18 @@ const terminalFullScanBindingSourceModels = new WeakMap<
   object,
   FoldGraphPreviewModel
 >()
+const hasTerminalFullScanBindingSourceModel =
+  terminalFullScanBindingSourceModels.has.bind(
+    terminalFullScanBindingSourceModels,
+  )
+const getTerminalFullScanBindingSourceModel =
+  terminalFullScanBindingSourceModels.get.bind(
+    terminalFullScanBindingSourceModels,
+  )
+const setTerminalFullScanBindingSourceModel =
+  terminalFullScanBindingSourceModels.set.bind(
+    terminalFullScanBindingSourceModels,
+  )
 
 /**
  * Confirms that this exact binding was issued by a completed terminal
@@ -149,7 +166,7 @@ export function isFoldPreviewTreeTerminalFullScanBindingAuthentic(
   try {
     return typeof value === 'object'
       && value !== null
-      && terminalFullScanBindingSourceModels.has(value)
+      && hasTerminalFullScanBindingSourceModel(value)
   } catch {
     return false
   }
@@ -168,7 +185,7 @@ export function isFoldPreviewTreeTerminalFullScanBindingAuthenticForModel(
       && model !== null
       && typeof value === 'object'
       && value !== null
-      && terminalFullScanBindingSourceModels.get(value) === model
+      && getTerminalFullScanBindingSourceModel(value) === model
   } catch {
     return false
   }
@@ -1076,87 +1093,115 @@ function attachBlockingSampleToJob(
     { kind: 'blocked' }
   >
   let wrappedBlocked: BlockedResult | null = null
+  let stepping = false
 
-  return Object.freeze({
+  return objectFreezeIntrinsic({
     step(workBudget: number): FoldPreviewContinuousMotionStep<
       FoldPreviewTreeSingleHingeContinuousBlocker
     > {
       if (wrappedBlocked) return wrappedBlocked
-      const step = innerJob.step(workBudget)
-      if (step.kind !== 'blocked') return step
-      if (!Object.hasOwn(step, 'blocker') || !step.blocker) {
-        const result: BlockedResult = Object.freeze({
-          kind: 'blocked',
-          certifiedSafeThrough: step.certifiedSafeThrough,
-          stopTime: step.stopTime,
-          unsafeBracket: step.unsafeBracket,
-          blockingSampleTime: step.blockingSampleTime,
-          stats: step.stats,
-        })
-        wrappedBlocked = result
-        return result
+      if (stepping) {
+        innerJob.cancel()
+        throw new Error('continuous collision wrapper step re-entry')
       }
-      const lightweight = step.blocker
-      let blockingSample: FoldPreviewTreeSingleHingeBlockingSample | null = null
+      stepping = true
       try {
-        const seed = getSeed()
-        const baseBlockingSample = seed
-          && seed.blockingSampleTime === step.blockingSampleTime
-          && sameLightweightBlocker(seed.blocker, lightweight)
-          ? buildBlockingSample(
-              seed,
-              model,
-              fixedFaceId,
-              selectedHingeEdgeId,
-              startAngles,
-              targetSelectedAngleDegrees,
-              collisionThickness,
-              requestIdentity,
-            )
-          : null
-        blockingSample = baseBlockingSample
-        if (seed && baseBlockingSample) {
-          try {
-            const evidence = collectTerminalFullScan(seed)
-            const terminalFullScanBinding =
-              buildTerminalFullScanBinding(
-                evidence,
+        const step = innerJob.step(workBudget)
+        if (step.kind !== 'blocked') return step
+        if (!Object.hasOwn(step, 'blocker') || !step.blocker) {
+          const result: BlockedResult = objectFreezeIntrinsic({
+            kind: 'blocked',
+            certifiedSafeThrough: step.certifiedSafeThrough,
+            stopTime: step.stopTime,
+            unsafeBracket: step.unsafeBracket,
+            blockingSampleTime: step.blockingSampleTime,
+            stats: step.stats,
+          })
+          if (wrappedBlocked) return wrappedBlocked
+          wrappedBlocked = result
+          return result
+        }
+        const lightweight = step.blocker
+        let blockingSample:
+          FoldPreviewTreeSingleHingeBlockingSample | null = null
+        let pendingTerminalFullScanBinding:
+          FoldPreviewTreeTerminalFullScanBinding | null = null
+        try {
+          const seed = getSeed()
+          const baseBlockingSample = seed
+            && seed.blockingSampleTime === step.blockingSampleTime
+            && sameLightweightBlocker(seed.blocker, lightweight)
+            ? buildBlockingSample(
                 seed,
-                baseBlockingSample,
                 model,
-                sourceModel,
                 fixedFaceId,
                 selectedHingeEdgeId,
-                parentFaceId,
-                childFaceId,
-                stationaryFaceIds,
-                movingFaceIds,
+                startAngles,
+                targetSelectedAngleDegrees,
+                collisionThickness,
                 requestIdentity,
               )
-            if (terminalFullScanBinding) {
-              blockingSample = deepFreeze({
-                ...baseBlockingSample,
-                terminalFullScanBinding,
-              })
+            : null
+          blockingSample = baseBlockingSample
+          if (seed && baseBlockingSample) {
+            try {
+              const evidence = collectTerminalFullScan(seed)
+              const terminalFullScanBinding =
+                buildTerminalFullScanBinding(
+                  evidence,
+                  seed,
+                  baseBlockingSample,
+                  model,
+                  fixedFaceId,
+                  selectedHingeEdgeId,
+                  parentFaceId,
+                  childFaceId,
+                  stationaryFaceIds,
+                  movingFaceIds,
+                  requestIdentity,
+                )
+              if (terminalFullScanBinding) {
+                blockingSample = deepFreeze({
+                  ...baseBlockingSample,
+                  terminalFullScanBinding,
+                })
+                pendingTerminalFullScanBinding = terminalFullScanBinding
+              }
+            } catch {
+              // Optional evidence failure must leave the v1 sample intact.
             }
-          } catch {
-            // Optional evidence failure must leave the v1 sample intact.
           }
+        } catch {
+          // Explanation failure must never weaken or replace the block itself.
         }
-      } catch {
-        // Explanation failure must never weaken or replace the block itself.
-      }
-      const blocker: FoldPreviewTreeSingleHingeContinuousBlocker =
-        Object.freeze({
-          ...lightweight,
-          blockingSample,
+        const blocker: FoldPreviewTreeSingleHingeContinuousBlocker =
+          objectFreezeIntrinsic({
+            ...lightweight,
+            blockingSample,
+          })
+        const result: BlockedResult = objectFreezeIntrinsic({
+          ...step,
+          blocker,
         })
-      const result: BlockedResult = Object.freeze({
-        ...step,
-        blocker,
-      })
-      wrappedBlocked = result
-      return result
+        if (wrappedBlocked) return wrappedBlocked
+        wrappedBlocked = result
+        const publishedTerminalFullScanBinding =
+          result.blocker?.blockingSample?.terminalFullScanBinding
+        if (
+          pendingTerminalFullScanBinding
+          && publishedTerminalFullScanBinding
+            === pendingTerminalFullScanBinding
+          && wrappedBlocked === result
+        ) {
+          setTerminalFullScanBindingSourceModel(
+            pendingTerminalFullScanBinding,
+            sourceModel,
+          )
+        }
+        return result
+      } finally {
+        stepping = false
+      }
     },
     cancel() {
       innerJob.cancel()
@@ -1254,7 +1299,6 @@ function buildTerminalFullScanBinding(
   seed: BlockingSampleSeed,
   blockingSample: FoldPreviewTreeSingleHingeBlockingSample,
   model: FoldGraphPreviewModel,
-  sourceModel: FoldGraphPreviewModel,
   fixedFaceId: string,
   selectedHingeEdgeId: string,
   parentFaceId: string,
@@ -1422,7 +1466,6 @@ function buildTerminalFullScanBinding(
       autoApplicable: false,
     },
   }) satisfies FoldPreviewTreeTerminalFullScanBinding
-  terminalFullScanBindingSourceModels.set(binding, sourceModel)
   return binding
 }
 
@@ -2186,13 +2229,13 @@ function sameHinge(
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   if (typeof value !== 'object' || value === null) return value
   const object = value as object
-  if (seen.has(object)) return value
-  seen.add(object)
-  for (const key of Reflect.ownKeys(object)) {
+  if (reflectApplyIntrinsic(weakSetHasIntrinsic, seen, [object])) return value
+  reflectApplyIntrinsic(weakSetAddIntrinsic, seen, [object])
+  for (const key of reflectOwnKeysIntrinsic(object)) {
     deepFreeze(
       (object as Record<PropertyKey, unknown>)[key],
       seen,
     )
   }
-  return Object.freeze(value)
+  return objectFreezeIntrinsic(value)
 }

@@ -71,6 +71,13 @@ type FoldPreviewTreeModelSnapshot = Omit<
 }>
 
 const preparedContexts = new WeakSet<object>()
+const addPreparedContext = preparedContexts.add.bind(preparedContexts)
+const hasPreparedContext = preparedContexts.has.bind(preparedContexts)
+const weakSetHasIntrinsic = WeakSet.prototype.has
+const weakSetAddIntrinsic = WeakSet.prototype.add
+const reflectApplyIntrinsic = Reflect.apply
+const reflectOwnKeysIntrinsic = Reflect.ownKeys
+const objectFreezeIntrinsic = Object.freeze
 
 /**
  * Snapshots the complete input for one selected-hinge tree motion.
@@ -154,7 +161,7 @@ export function prepareFoldPreviewTreeMotionContext(
       collisionThickness,
       visualThickness,
     }) as FoldPreviewTreeMotionContext
-    preparedContexts.add(context)
+    addPreparedContext(context)
     return context
   } catch {
     return null
@@ -643,7 +650,7 @@ function invalidTarget(): FoldPreviewTreeMotionTargetDifference {
 function isPreparedContext(
   value: unknown,
 ): value is FoldPreviewTreeMotionContext {
-  return isRecord(value) && preparedContexts.has(value)
+  return isRecord(value) && hasPreparedContext(value)
 }
 
 function snapshotPoint(
@@ -792,13 +799,13 @@ function compareText(first: string, second: string) {
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   if (typeof value !== 'object' || value === null) return value
   const object = value as object
-  if (seen.has(object)) return value
-  seen.add(object)
-  for (const key of Reflect.ownKeys(object)) {
+  if (reflectApplyIntrinsic(weakSetHasIntrinsic, seen, [object])) return value
+  reflectApplyIntrinsic(weakSetAddIntrinsic, seen, [object])
+  for (const key of reflectOwnKeysIntrinsic(object)) {
     deepFreeze(
       (object as Record<PropertyKey, unknown>)[key],
       seen,
     )
   }
-  return Object.freeze(value)
+  return objectFreezeIntrinsic(value)
 }

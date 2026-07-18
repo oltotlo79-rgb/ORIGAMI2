@@ -35,6 +35,11 @@ const DEFAULT_MAX_DEPTH = 24
 const MAX_INTERVAL_TESTS = 1_000_000
 const MAX_REASON_LENGTH = 512
 const isSafeIntegerIntrinsic = Number.isSafeInteger
+const objectFreezeIntrinsic = Object.freeze
+const weakSetHasIntrinsic = WeakSet.prototype.has
+const weakSetAddIntrinsic = WeakSet.prototype.add
+const reflectApplyIntrinsic = Reflect.apply
+const reflectOwnKeysIntrinsic = Reflect.ownKeys
 
 export type FoldPreviewTreeSingleHingeStaticCandidatePathOptions =
   Readonly<{
@@ -191,6 +196,14 @@ const staticCandidatePathCertificateProvenance = new WeakMap<
   object,
   CertificateProvenance
 >()
+const getStaticCandidatePathCertificateProvenance =
+  staticCandidatePathCertificateProvenance.get.bind(
+    staticCandidatePathCertificateProvenance,
+  )
+const setStaticCandidatePathCertificateProvenance =
+  staticCandidatePathCertificateProvenance.set.bind(
+    staticCandidatePathCertificateProvenance,
+  )
 
 /**
  * Confirms that this exact certificate was issued for this exact authentic
@@ -206,7 +219,7 @@ export function isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundT
       && context !== null
       && typeof value === 'object'
       && value !== null
-      && staticCandidatePathCertificateProvenance.get(value)?.context
+      && getStaticCandidatePathCertificateProvenance(value)?.context
         === context
   } catch {
     return false
@@ -646,7 +659,7 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
           },
         }) satisfies
           FoldPreviewTreeSingleHingeStaticCandidatePathCertificate
-        const provenance = Object.freeze({
+        const provenance = objectFreezeIntrinsic({
           context,
           sourcePoseRequestKey: sourceIdentity.sourcePoseRequestKey,
           targetPoseRequestKey: activeCandidate.snapshot.poseRequestKey,
@@ -664,7 +677,7 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
           published.kind === 'certified'
           && published.certificate === certificate
         ) {
-          staticCandidatePathCertificateProvenance.set(
+          setStaticCandidatePathCertificateProvenance(
             certificate,
             provenance,
           )
@@ -1401,13 +1414,13 @@ function boundedSum(first: number, second: number) {
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   if (typeof value !== 'object' || value === null) return value
   const object = value as object
-  if (seen.has(object)) return value
-  seen.add(object)
-  for (const key of Reflect.ownKeys(object)) {
+  if (reflectApplyIntrinsic(weakSetHasIntrinsic, seen, [object])) return value
+  reflectApplyIntrinsic(weakSetAddIntrinsic, seen, [object])
+  for (const key of reflectOwnKeysIntrinsic(object)) {
     deepFreeze(
       (object as Record<PropertyKey, unknown>)[key],
       seen,
     )
   }
-  return Object.freeze(value)
+  return objectFreezeIntrinsic(value)
 }

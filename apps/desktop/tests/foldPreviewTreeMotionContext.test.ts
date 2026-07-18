@@ -76,6 +76,81 @@ test('prepares a canonical deeply frozen snapshot detached from mutable inputs',
   assert.equal(context.contextKey, originalKey)
 })
 
+test('context freezing and authority ignore later intrinsic replacement', {
+  concurrency: false,
+}, () => {
+  const originalAdd = WeakSet.prototype.add
+  const originalHas = WeakSet.prototype.has
+  const originalApply = Reflect.apply
+  const originalOwnKeys = Reflect.ownKeys
+  const originalFreeze = Object.freeze
+  let replacementAddCalled = false
+  let replacementHasCalled = false
+  let replacementApplyCalled = false
+  let replacementOwnKeysCalled = false
+  let replacementFreezeCalled = false
+  let context: FoldPreviewTreeMotionContext | null = null
+
+  WeakSet.prototype.add = (function replacedAdd() {
+    replacementAddCalled = true
+    return this
+  }) as typeof WeakSet.prototype.add
+  WeakSet.prototype.has = (function replacedHas() {
+    replacementHasCalled = true
+    return true
+  }) as typeof WeakSet.prototype.has
+  Reflect.apply = (function replacedApply() {
+    replacementApplyCalled = true
+    throw new Error('replaced Reflect.apply')
+  }) as typeof Reflect.apply
+  Reflect.ownKeys = (function replacedOwnKeys() {
+    replacementOwnKeysCalled = true
+    return []
+  }) as typeof Reflect.ownKeys
+  Object.freeze = ((value: object) => {
+    if (
+      (value as Record<PropertyKey, unknown>).version
+        === FOLD_PREVIEW_TREE_MOTION_CONTEXT_VERSION
+    ) {
+      replacementFreezeCalled = true
+      return value
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+
+  try {
+    context = prepared()
+  } finally {
+    Object.freeze = originalFreeze
+    Reflect.ownKeys = originalOwnKeys
+    Reflect.apply = originalApply
+    WeakSet.prototype.add = originalAdd
+    WeakSet.prototype.has = originalHas
+  }
+
+  assert.ok(context)
+  assert.equal(replacementAddCalled, false)
+  assert.equal(replacementHasCalled, false)
+  assert.equal(replacementApplyCalled, false)
+  assert.equal(replacementOwnKeysCalled, false)
+  assert.equal(replacementFreezeCalled, false)
+  assertDeeplyFrozen(context)
+  assert.deepEqual(
+    replaceFoldPreviewTreeMotionSelectedAngle(context, 90),
+    [
+      { edgeId: 'hinge-x', angleDegrees: 35 },
+      { edgeId: 'hinge-z', angleDegrees: 90 },
+    ],
+  )
+  assert.equal(
+    replaceFoldPreviewTreeMotionSelectedAngle(
+      structuredClone(context),
+      90,
+    ),
+    null,
+  )
+})
+
 test('the opaque key ignores order and selected magnitude but binds every other identity input', () => {
   const baseline = prepared()
   assert.ok(baseline)

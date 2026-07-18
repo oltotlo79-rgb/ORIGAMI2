@@ -402,7 +402,7 @@ test('later candidates are prepared only after an explicit phase boundary', () =
   assert.equal(cancelled.aggregateStats.intervalTests, 1)
 })
 
-test('candidate rollover has no reentrant zero-stats finalization window', {
+test('candidate rollover ignores later Object.freeze replacement', {
   concurrency: false,
 }, () => {
   const fixture = correctionFixture({
@@ -429,6 +429,8 @@ test('candidate rollover has no reentrant zero-stats finalization window', {
       && record.candidate !== undefined
     ) {
       completedAttemptSeen = true
+      nested ??= job.step(1)
+      return value
     } else if (
       completedAttemptSeen
       && record.intervalTests === 0
@@ -448,7 +450,7 @@ test('candidate rollover has no reentrant zero-stats finalization window', {
     Object.freeze = originalFreeze
   }
 
-  assert.equal(completedAttemptSeen, true)
+  assert.equal(completedAttemptSeen, false)
   assert.equal(zeroStatsFinalizationCalls, 0)
   assert.equal(nested, null)
   assert.equal(boundary.kind, 'pending')
@@ -457,6 +459,7 @@ test('candidate rollover has no reentrant zero-stats finalization window', {
     assert.equal(boundary.completedAttempts.length, 1)
     assert.equal(boundary.aggregateStats.intervalTests, 1)
   }
+  assertDeeplyFrozen(boundary)
 })
 
 test('a tight interval cap exhausts the genuine candidate without partial success', () => {
@@ -659,7 +662,7 @@ test('budget-validation reentry cancels before interval work is charged', {
   assert.strictEqual(job.step(1), outer)
 })
 
-test('charged child reentry is reconciled before cancellation publishes', {
+test('child wrapper reentry cancels before interval work is charged', {
   concurrency: false,
 }, () => {
   const fixture = correctionFixture()
@@ -702,7 +705,7 @@ test('charged child reentry is reconciled before cancellation publishes', {
   assert.ok(nested)
   assert.equal(nested.kind, 'cancelled')
   assert.strictEqual(outer, nested)
-  assert.equal(outer.aggregateStats.intervalTests, 1)
+  assert.equal(outer.aggregateStats.intervalTests, 0)
   assert.strictEqual(job.step(1), outer)
   assertDeeplyFrozen(outer)
 })
@@ -750,7 +753,7 @@ test('child cancellation outranks a charged classifier throw', {
   assertDeeplyFrozen(terminal)
 })
 
-test('pending finalization reentry cannot return a stale pending snapshot', {
+test('pending finalization ignores later Object.freeze replacement', {
   concurrency: false,
 }, () => {
   const fixture = correctionFixture()
@@ -772,6 +775,7 @@ test('pending finalization reentry cannot return a stale pending snapshot', {
     ) {
       reentered = true
       nested = job.step(1)
+      return value
     }
     return originalFreeze(value)
   }) as typeof Object.freeze
@@ -782,15 +786,17 @@ test('pending finalization reentry cannot return a stale pending snapshot', {
     Object.freeze = originalFreeze
   }
 
-  assert.equal(reentered, true)
-  assert.ok(nested)
-  assert.equal(nested.kind, 'cancelled')
-  assert.strictEqual(outer, nested)
-  assert.equal(outer.aggregateStats.intervalTests, 0)
-  assert.strictEqual(job.step(1), outer)
+  assert.equal(reentered, false)
+  assert.equal(nested, null)
+  assert.equal(outer.kind, 'pending')
+  if (outer.kind === 'pending') {
+    assert.equal(outer.phase, 'candidate_analysis')
+    assert.equal(outer.aggregateStats.intervalTests, 0)
+  }
+  assertDeeplyFrozen(outer)
 })
 
-test('certificate finalization reentry publishes no certificate provenance', {
+test('certificate finalization ignores later intrinsic replacement', {
   concurrency: false,
 }, () => {
   const fixture = correctionFixture()
@@ -802,18 +808,42 @@ test('certificate finalization reentry publishes no certificate provenance', {
   assert.equal(job.step(1).kind, 'pending')
 
   const originalFreeze = Object.freeze
-  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
-  let unpublishedCertificate: unknown = null
-  let reentered = false
+  const originalAdd = WeakSet.prototype.add
+  const originalHas = WeakSet.prototype.has
+  const originalApply = Reflect.apply
+  const originalOwnKeys = Reflect.ownKeys
+  const replacementCalls = {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    freeze: 0,
+  }
+  WeakSet.prototype.add = function replacementAdd(
+    this: WeakSet<object>,
+  ) {
+    replacementCalls.add += 1
+    return this
+  } as typeof WeakSet.prototype.add
+  WeakSet.prototype.has = function replacementHas() {
+    replacementCalls.has += 1
+    return true
+  } as typeof WeakSet.prototype.has
+  Reflect.apply = (function replacementApply() {
+    replacementCalls.apply += 1
+    throw new Error('replacement Reflect.apply called')
+  }) as typeof Reflect.apply
+  Reflect.ownKeys = (function replacementOwnKeys() {
+    replacementCalls.ownKeys += 1
+    return []
+  }) as typeof Reflect.ownKeys
   Object.freeze = ((value: object) => {
     const record = value as Record<PropertyKey, unknown>
     if (
-      !reentered
-      && record.kind === 'continuously_certified_static_candidate'
+      record.kind === 'continuously_certified_static_candidate'
     ) {
-      reentered = true
-      unpublishedCertificate = value
-      nested = job.step(1)
+      replacementCalls.freeze += 1
+      return value
     }
     return originalFreeze(value)
   }) as typeof Object.freeze
@@ -822,22 +852,89 @@ test('certificate finalization reentry publishes no certificate provenance', {
     outer = job.step(Number.MAX_SAFE_INTEGER)
   } finally {
     Object.freeze = originalFreeze
+    Reflect.ownKeys = originalOwnKeys
+    Reflect.apply = originalApply
+    WeakSet.prototype.add = originalAdd
+    WeakSet.prototype.has = originalHas
   }
 
-  assert.equal(reentered, true)
-  assert.ok(nested)
-  assert.equal(nested.kind, 'cancelled')
-  assert.strictEqual(outer, nested)
-  assert.ok(unpublishedCertificate)
+  assert.deepEqual(replacementCalls, {
+    add: 0,
+    has: 0,
+    apply: 0,
+    ownKeys: 0,
+    freeze: 0,
+  })
+  assert.equal(outer.kind, 'certified')
+  if (outer.kind !== 'certified') return
+  assertDeeplyFrozen(outer.certificate)
   assert.equal(
     isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
       fixture.context,
-      unpublishedCertificate,
+      outer.certificate,
+    ),
+    true,
+  )
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+      fixture.context,
+      structuredClone(outer.certificate),
     ),
     false,
   )
-  assertDeeplyFrozen(unpublishedCertificate)
   assert.strictEqual(job.step(1), outer)
+})
+
+test('certificate provenance ignores later WeakMap method replacement', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+  )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalSet = WeakMap.prototype.set
+  let dynamicSetCalled = false
+  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
+  WeakMap.prototype.set = (function replacedSet() {
+    dynamicSetCalled = true
+    nested ??= job.step(1)
+    throw new Error('replaced WeakMap.set')
+  }) as typeof WeakMap.prototype.set
+  let terminal: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    terminal = job.step(Number.MAX_SAFE_INTEGER)
+  } finally {
+    WeakMap.prototype.set = originalSet
+  }
+
+  assert.equal(dynamicSetCalled, false)
+  assert.equal(nested, null)
+  assert.equal(terminal.kind, 'certified')
+  if (terminal.kind !== 'certified') return
+
+  const originalGet = WeakMap.prototype.get
+  let dynamicGetCalled = false
+  WeakMap.prototype.get = (function replacedGet() {
+    dynamicGetCalled = true
+    throw new Error('replaced WeakMap.get')
+  }) as typeof WeakMap.prototype.get
+  try {
+    assert.equal(
+      isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+        fixture.context,
+        terminal.certificate,
+      ),
+      true,
+    )
+  } finally {
+    WeakMap.prototype.get = originalGet
+  }
+  assert.equal(dynamicGetCalled, false)
+  assert.strictEqual(job.step(1), terminal)
 })
 
 test('certificate provenance binds only the exact clear result and context', () => {

@@ -56,6 +56,11 @@ export const FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CORRECTION_CANDIDATES_JOB_VER
 
 const MATERIAL_POINT_EQUIVALENCE_FACTOR = 4_096
 const isSafeIntegerIntrinsic = Number.isSafeInteger
+const objectFreezeIntrinsic = Object.freeze
+const weakSetHasIntrinsic = WeakSet.prototype.has
+const weakSetAddIntrinsic = WeakSet.prototype.add
+const reflectApplyIntrinsic = Reflect.apply
+const reflectOwnKeysIntrinsic = Reflect.ownKeys
 
 type Point = Readonly<{ x: number; y: number; z: number }>
 
@@ -310,6 +315,14 @@ const staticCorrectionCandidateContexts = new WeakMap<
   object,
   FoldPreviewTreeMotionContext
 >()
+const getStaticCorrectionCandidateContext =
+  staticCorrectionCandidateContexts.get.bind(
+    staticCorrectionCandidateContexts,
+  )
+const setStaticCorrectionCandidateContext =
+  staticCorrectionCandidateContexts.set.bind(
+    staticCorrectionCandidateContexts,
+  )
 
 /**
  * Confirms that an unchanged successful result came from this exact authentic
@@ -325,7 +338,7 @@ export function isFoldPreviewTreeSingleHingeStaticCorrectionCandidatesBoundToCon
       && context !== null
       && typeof value === 'object'
       && value !== null
-      && staticCorrectionCandidateContexts.get(value) === context
+      && getStaticCorrectionCandidateContext(value) === context
   } catch {
     return false
   }
@@ -698,7 +711,7 @@ export function createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
         published.kind === 'complete'
         && published.result === result
       ) {
-        staticCorrectionCandidateContexts.set(result, context)
+        setStaticCorrectionCandidateContext(result, context)
       }
       return published
     } catch {
@@ -1696,13 +1709,13 @@ function compareText(first: string, second: string) {
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   if (typeof value !== 'object' || value === null) return value
   const object = value as object
-  if (seen.has(object)) return value
-  seen.add(object)
-  for (const key of Reflect.ownKeys(object)) {
+  if (reflectApplyIntrinsic(weakSetHasIntrinsic, seen, [object])) return value
+  reflectApplyIntrinsic(weakSetAddIntrinsic, seen, [object])
+  for (const key of reflectOwnKeysIntrinsic(object)) {
     deepFreeze(
       (object as Record<PropertyKey, unknown>)[key],
       seen,
     )
   }
-  return Object.freeze(value)
+  return objectFreezeIntrinsic(value)
 }

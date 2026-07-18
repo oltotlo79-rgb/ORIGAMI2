@@ -5,7 +5,7 @@ import type {
   FoldPreviewHingeAngle,
 } from './foldPreviewKinematics.ts'
 import {
-  prepareFoldPreviewTreeMotionContext,
+  rebaseFoldPreviewTreeMotionContextSelectedAngle,
   replaceFoldPreviewTreeMotionSelectedAngle,
   type FoldPreviewTreeMotionContext,
 } from './foldPreviewTreeMotionContext.ts'
@@ -20,11 +20,26 @@ import {
   type FoldPreviewTreeSingleHingeContinuousBlocker,
   type FoldPreviewTreeTerminalFullScanBinding,
 } from './foldPreviewTreeSingleHingeContinuousCollision.ts'
+import {
+  createFoldPreviewTreeSingleHingeStaticCandidatePathJob,
+  type FoldPreviewTreeSingleHingeStaticCandidatePathJob,
+} from './foldPreviewTreeSingleHingeStaticCandidatePath.ts'
+import {
+  createFoldPreviewTreeSingleHingeStaticCandidatePathPresentation,
+  type FoldPreviewTreeSingleHingeStaticCandidatePathPresentation,
+} from './foldPreviewTreeSingleHingeStaticCandidatePathPresentation.ts'
+import {
+  createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob,
+  type FoldPreviewTreeSingleHingeStaticCorrectionCandidates,
+  type FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob,
+} from './foldPreviewTreeSingleHingeStaticCorrectionCandidates.ts'
 
 export const FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_POLICY_VERSION =
   'tree_single_hinge_correction_analysis_policy_v1'
 export const FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_REQUEST_VERSION =
   'tree_single_hinge_correction_analysis_request_v1'
+export const FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION =
+  'tree_single_hinge_correction_analysis_job_v1'
 const objectFreezeIntrinsic = Object.freeze
 const weakSetHasIntrinsic = WeakSet.prototype.has
 const weakSetAddIntrinsic = WeakSet.prototype.add
@@ -116,6 +131,73 @@ export type FoldPreviewTreeSingleHingeCorrectionAnalysisRequest =
     }>
   }>
 
+export type FoldPreviewTreeSingleHingeCorrectionAnalysisJobPhase =
+  | 'static_candidate_preparation'
+  | 'static_candidate_analysis'
+  | 'candidate_path_preparation'
+  | 'candidate_path_analysis'
+
+type FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety =
+  Readonly<{
+    analysisOnly: true
+    sceneApplied: false
+    autoApplicable: false
+  }>
+
+export type FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep =
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION
+      kind: 'pending'
+      status: 'working'
+      phase: FoldPreviewTreeSingleHingeCorrectionAnalysisJobPhase
+      safety: FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION
+      kind: 'no_candidate'
+      exhaustedPhase: 'static_candidate_analysis' | 'candidate_path_analysis'
+      safety: FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION
+      kind: 'indeterminate'
+      phase: FoldPreviewTreeSingleHingeCorrectionAnalysisJobPhase
+      reason:
+        | 'invalid_work_budget'
+        | 'static_candidate_job_creation_failed'
+        | 'static_candidate_job_failed'
+        | 'candidate_path_job_creation_failed'
+        | 'candidate_path_job_failed'
+        | 'candidate_path_exhausted_indeterminate'
+        | 'certified_presentation_failed'
+      safety: FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION
+      kind: 'certified'
+      presentation:
+        FoldPreviewTreeSingleHingeStaticCandidatePathPresentation
+      safety: FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety
+    }>
+  | Readonly<{
+      version:
+        typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION
+      kind: 'cancelled'
+      safety: FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety
+    }>
+
+export type FoldPreviewTreeSingleHingeCorrectionAnalysisJob =
+  Readonly<{
+    step(
+      workBudget: number,
+    ): FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep
+    cancel(): void
+  }>
+
 type DataRecord = Record<string, unknown>
 
 type AnalysisRequestAuthority = Readonly<{
@@ -130,8 +212,16 @@ const analysisRequestAuthorities = new WeakMap<
 >()
 const hasAnalysisRequestAuthority =
   analysisRequestAuthorities.has.bind(analysisRequestAuthorities)
+const getAnalysisRequestAuthority =
+  analysisRequestAuthorities.get.bind(analysisRequestAuthorities)
 const setAnalysisRequestAuthority =
   analysisRequestAuthorities.set.bind(analysisRequestAuthorities)
+const ANALYSIS_ONLY_JOB_SAFETY =
+  objectFreezeIntrinsic({
+    analysisOnly: true,
+    sceneApplied: false,
+    autoApplicable: false,
+  }) satisfies FoldPreviewTreeSingleHingeCorrectionAnalysisOnlySafety
 
 type ExtractedTerminal = Readonly<{
   runnerState: DataRecord
@@ -217,17 +307,15 @@ export function prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
       || binding.collisionThickness !== evidence.collisionThickness
     ) return null
 
-    const context = prepareFoldPreviewTreeMotionContext({
-      model: sourceContext.model,
-      fixedFaceId: sourceContext.fixedFaceId,
-      selectedHingeEdgeId: sourceContext.selectedHingeEdgeId,
-      appliedAngles: binding.angleVectors.start,
-      collisionThickness: sourceContext.collisionThickness,
-      visualThickness: sourceContext.visualThickness,
-    })
+    const context = rebaseFoldPreviewTreeMotionContextSelectedAngle(
+      sourceContext,
+      terminalScalars.sourceAngle,
+    )
     if (
       !context
       || context === sourceContext
+      || context.model !== sourceContext.model
+      || context.tree !== sourceContext.tree
       || context.contextKey !== sourceContext.contextKey
       || !sameCompleteAngles(
         context.appliedAngles,
@@ -341,6 +429,355 @@ export function isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(
   } catch {
     return false
   }
+}
+
+/**
+ * Runs every analysis-only phase retained behind one authentic request.
+ *
+ * The returned job exposes only progress, failure classification, or the
+ * detached certified display DTO. Its exact context, terminal binding,
+ * intermediate candidates, and path certificate remain closure-private.
+ */
+export function createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(
+  value: unknown,
+): FoldPreviewTreeSingleHingeCorrectionAnalysisJob | null {
+  if (
+    !isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic(value)
+  ) return null
+  const authority = getAnalysisRequestAuthority(value)
+  if (!authority) return null
+  const request = value
+
+  let phase: FoldPreviewTreeSingleHingeCorrectionAnalysisJobPhase =
+    'static_candidate_preparation'
+  let staticJob:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob | null = null
+  let staticCandidates:
+    FoldPreviewTreeSingleHingeStaticCorrectionCandidates | null = null
+  let pathJob:
+    FoldPreviewTreeSingleHingeStaticCandidatePathJob | null = null
+  let cancelled = false
+  let stepping = false
+  let staticPreparationAnnounced = false
+  let terminal:
+    FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep | null = null
+
+  const pending = ():
+    FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep =>
+    objectFreezeIntrinsic({
+      version:
+        FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+      kind: 'pending',
+      status: 'working',
+      phase,
+      safety: ANALYSIS_ONLY_JOB_SAFETY,
+    })
+
+  const finish = (
+    step: FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep,
+  ): FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep => {
+    if (terminal) return terminal
+    terminal = objectFreezeIntrinsic(step)
+    staticJob = null
+    staticCandidates = null
+    pathJob = null
+    return terminal
+  }
+
+  const cancelChildren = () => {
+    try {
+      staticJob?.cancel()
+    } catch {
+      // The composite cancellation remains terminal.
+    }
+    try {
+      pathJob?.cancel()
+    } catch {
+      // The composite cancellation remains terminal.
+    }
+  }
+
+  const cancelledStep = ():
+    FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep => {
+    if (terminal) return terminal
+    cancelled = true
+    cancelChildren()
+    return finish({
+      version:
+        FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+      kind: 'cancelled',
+      safety: ANALYSIS_ONLY_JOB_SAFETY,
+    })
+  }
+
+  const indeterminate = (
+    failedPhase: FoldPreviewTreeSingleHingeCorrectionAnalysisJobPhase,
+    reason: Extract<
+      FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep,
+      { kind: 'indeterminate' }
+    >['reason'],
+  ): FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep => {
+    cancelChildren()
+    return finish({
+      version:
+        FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+      kind: 'indeterminate',
+      phase: failedPhase,
+      reason,
+      safety: ANALYSIS_ONLY_JOB_SAFETY,
+    })
+  }
+
+  const noCandidate = (
+    exhaustedPhase:
+      | 'static_candidate_analysis'
+      | 'candidate_path_analysis',
+  ): FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep =>
+    finish({
+      version:
+        FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+      kind: 'no_candidate',
+      exhaustedPhase,
+      safety: ANALYSIS_ONLY_JOB_SAFETY,
+    })
+
+  const prepareStaticJob = () => {
+    let created:
+      FoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob | null
+    try {
+      created =
+        createFoldPreviewTreeSingleHingeStaticCorrectionCandidatesJob(
+          authority.context,
+          authority.terminalFullScanBinding,
+          request.policy.clearance,
+          request.policy.maximumTranslation,
+          request.policy.maximumAngleDeltaDegrees,
+        )
+    } catch {
+      created = null
+    }
+    if (terminal) {
+      try {
+        created?.cancel()
+      } catch {
+        // The already-published composite terminal remains authoritative.
+      }
+      return terminal
+    }
+    if (cancelled) {
+      try {
+        created?.cancel()
+      } catch {
+        // The composite cancellation remains authoritative.
+      }
+      return cancelledStep()
+    }
+    if (!created) {
+      return indeterminate(
+        'static_candidate_preparation',
+        'static_candidate_job_creation_failed',
+      )
+    }
+    staticJob = created
+    phase = 'static_candidate_analysis'
+    return pending()
+  }
+
+  const advanceStaticJob = (workBudget: number) => {
+    const child = staticJob
+    if (!child) {
+      return indeterminate(
+        'static_candidate_analysis',
+        'static_candidate_job_failed',
+      )
+    }
+    let childStep
+    try {
+      childStep = child.step(workBudget)
+    } catch {
+      return indeterminate(
+        'static_candidate_analysis',
+        'static_candidate_job_failed',
+      )
+    }
+    if (terminal) return terminal
+    if (cancelled) return cancelledStep()
+    if (childStep.kind === 'pending') return pending()
+    if (childStep.kind === 'exhausted') {
+      return noCandidate('static_candidate_analysis')
+    }
+    if (childStep.kind === 'indeterminate') {
+      return indeterminate(
+        'static_candidate_analysis',
+        'static_candidate_job_failed',
+      )
+    }
+    if (childStep.kind === 'cancelled') return cancelledStep()
+    staticCandidates = childStep.result
+    staticJob = null
+    phase = 'candidate_path_preparation'
+    return pending()
+  }
+
+  const preparePathJob = () => {
+    const candidates = staticCandidates
+    if (!candidates) {
+      return indeterminate(
+        'candidate_path_preparation',
+        'candidate_path_job_creation_failed',
+      )
+    }
+    let created: FoldPreviewTreeSingleHingeStaticCandidatePathJob | null
+    try {
+      created = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+        authority.context,
+        candidates,
+        request.policy.path,
+      )
+    } catch {
+      created = null
+    }
+    if (terminal) {
+      try {
+        created?.cancel()
+      } catch {
+        // The already-published composite terminal remains authoritative.
+      }
+      return terminal
+    }
+    if (cancelled) {
+      try {
+        created?.cancel()
+      } catch {
+        // The composite cancellation remains authoritative.
+      }
+      return cancelledStep()
+    }
+    if (!created) {
+      return indeterminate(
+        'candidate_path_preparation',
+        'candidate_path_job_creation_failed',
+      )
+    }
+    pathJob = created
+    staticCandidates = null
+    phase = 'candidate_path_analysis'
+    return pending()
+  }
+
+  const advancePathJob = (workBudget: number) => {
+    const child = pathJob
+    if (!child) {
+      return indeterminate(
+        'candidate_path_analysis',
+        'candidate_path_job_failed',
+      )
+    }
+    let childStep
+    try {
+      childStep = child.step(workBudget)
+    } catch {
+      return indeterminate(
+        'candidate_path_analysis',
+        'candidate_path_job_failed',
+      )
+    }
+    if (terminal) return terminal
+    if (cancelled) return cancelledStep()
+    if (childStep.kind === 'pending') return pending()
+    if (childStep.kind === 'exhausted') {
+      if (childStep.attempts.some(
+        (attempt) => attempt.kind === 'indeterminate',
+      )) {
+        return indeterminate(
+          'candidate_path_analysis',
+          'candidate_path_exhausted_indeterminate',
+        )
+      }
+      return noCandidate('candidate_path_analysis')
+    }
+    if (childStep.kind === 'indeterminate') {
+      return indeterminate(
+        'candidate_path_analysis',
+        'candidate_path_job_failed',
+      )
+    }
+    if (childStep.kind === 'cancelled') return cancelledStep()
+
+    let presentation:
+      FoldPreviewTreeSingleHingeStaticCandidatePathPresentation | null
+    try {
+      presentation =
+        createFoldPreviewTreeSingleHingeStaticCandidatePathPresentation(
+          authority.context,
+          childStep.certificate,
+        )
+    } catch {
+      presentation = null
+    }
+    if (!presentation) {
+      return indeterminate(
+        'candidate_path_analysis',
+        'certified_presentation_failed',
+      )
+    }
+    return finish({
+      version:
+        FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+      kind: 'certified',
+      presentation,
+      safety: ANALYSIS_ONLY_JOB_SAFETY,
+    })
+  }
+
+  return objectFreezeIntrinsic({
+    step(
+      workBudget: number,
+    ): FoldPreviewTreeSingleHingeCorrectionAnalysisJobStep {
+      if (terminal) return terminal
+      if (cancelled) return cancelledStep()
+      if (stepping) return cancelledStep()
+      stepping = true
+      try {
+        const validWorkBudget =
+          Number.isSafeInteger(workBudget) && workBudget > 0
+        if (terminal) return terminal
+        if (cancelled) return cancelledStep()
+        if (!validWorkBudget) {
+          return indeterminate(phase, 'invalid_work_budget')
+        }
+        if (phase === 'static_candidate_preparation') {
+          if (!staticPreparationAnnounced) {
+            staticPreparationAnnounced = true
+            return pending()
+          }
+          return prepareStaticJob()
+        }
+        if (phase === 'static_candidate_analysis') {
+          return advanceStaticJob(workBudget)
+        }
+        if (phase === 'candidate_path_preparation') {
+          return preparePathJob()
+        }
+        return advancePathJob(workBudget)
+      } catch {
+        return indeterminate(
+          phase,
+          phase === 'static_candidate_preparation'
+          || phase === 'static_candidate_analysis'
+            ? 'static_candidate_job_failed'
+            : 'candidate_path_job_failed',
+        )
+      } finally {
+        stepping = false
+      }
+    },
+    cancel() {
+      if (terminal || cancelled) return
+      cancelled = true
+      cancelChildren()
+    },
+  })
 }
 
 function extractTerminal(value: unknown): ExtractedTerminal | null {

@@ -205,6 +205,49 @@ export function replaceFoldPreviewTreeMotionSelectedAngle(
 }
 
 /**
+ * Issues a fresh authentic context at one selected-hinge angle while retaining
+ * the exact prepared model identity of the source context.
+ *
+ * This is narrower than preparing from a raw model again: terminal evidence
+ * provenance is bound to the source context's exact model snapshot, while the
+ * selected angle may have advanced since that context was first prepared.
+ */
+export function rebaseFoldPreviewTreeMotionContextSelectedAngle(
+  context: FoldPreviewTreeMotionContext,
+  selectedAngleDegrees: number,
+): FoldPreviewTreeMotionContext | null {
+  try {
+    const appliedAngles = replaceFoldPreviewTreeMotionSelectedAngle(
+      context,
+      selectedAngleDegrees,
+    )
+    if (!appliedAngles) return null
+    const selected = appliedAngles.find(
+      (angle) => angle.edgeId === context.selectedHingeEdgeId,
+    )?.angleDegrees
+    if (!validAngle(selected)) return null
+
+    const rebased = objectFreezeIntrinsic({
+      version: FOLD_PREVIEW_TREE_MOTION_CONTEXT_VERSION,
+      contextKey: context.contextKey,
+      model: context.model,
+      tree: context.tree,
+      fixedFaceId: context.fixedFaceId,
+      selectedHingeEdgeId: context.selectedHingeEdgeId,
+      selectedAngleDegrees: selected,
+      appliedAngles,
+      nonSelectedAngles: context.nonSelectedAngles,
+      collisionThickness: context.collisionThickness,
+      visualThickness: context.visualThickness,
+    }) as FoldPreviewTreeMotionContext
+    addPreparedContext(rebased)
+    return rebased
+  } catch {
+    return null
+  }
+}
+
+/**
  * Classifies an arbitrary complete target vector against the applied snapshot.
  *
  * A one-hinge runner may accept only `same` or `selected_only`. A valid change

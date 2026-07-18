@@ -260,7 +260,8 @@ button { color: inherit; }
   pointer-events: none;
 }
 .fold-preview-collision,
-.fold-preview-motion {
+.fold-preview-motion,
+.fold-preview-correction {
   min-width: 0;
   overflow: hidden;
   padding: 3px 6px;
@@ -342,6 +343,12 @@ button { color: inherit; }
 .fold-preview-motion.is-blocked { border-color: rgb(179 65 65 / 62%); background: rgb(255 239 239 / 94%); color: #9f3030; font-weight: 650; }
 .fold-preview-motion.is-indeterminate { border-color: rgb(163 124 28 / 55%); background: rgb(255 250 224 / 94%); color: #76580d; }
 .fold-preview-motion.is-unavailable { border-color: rgb(82 97 109 / 40%); color: #52616d; }
+.fold-preview-correction.is-idle,
+.fold-preview-correction.is-stale,
+.fold-preview-correction.is-no-candidate { border-color: rgb(82 97 109 / 40%); color: #52616d; }
+.fold-preview-correction.is-working { border-color: rgb(22 113 184 / 45%); color: #165f99; }
+.fold-preview-correction.is-indeterminate { border-color: rgb(163 124 28 / 55%); background: rgb(255 250 224 / 94%); color: #76580d; }
+.fold-preview-correction.is-certified { border-color: rgb(26 116 130 / 52%); background: rgb(239 250 251 / 94%); color: #1d6672; font-weight: 650; }
 @container (max-width: 360px) {
   .fold-preview-status-stack {
     top: 47px;

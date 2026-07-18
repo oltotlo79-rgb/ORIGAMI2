@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約26.4%（2026-07-18、暫定の重み付き概算）**
+**全体完成率: 約26.8%（2026-07-18、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 86件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows/macOS配布を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 86件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合し、UI未接続分を除いた算術結果26.44%を小数第1位へ丸めて表示している。入力値自体が概数なので、26.44%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合した26.44%を基準に、監査後に利用者へ接続した単一ヒンジ補正候補の解析専用UIを加えた算術結果26.80%を小数第1位へ丸めて表示している。入力値自体が概数なので、26.80%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -17,16 +17,18 @@
 | 2D展開図エディター | 15% | 50% | 7.50% | 基本編集と9種スナップは実装。面編集、数式作図、レイヤー、対称編集を残す |
 | 数式・幾何制約 | 9% | 0% | 0.00% | EDT-004/005/008/009の数式入力、式保持、11種制約、矛盾特定は未着手。3D衝突用の数値計算はこの領域へ計上しない |
 | 3D折り・紙厚・衝突 | 17% | 50% | 8.50% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持を実装。閉路、切断由来、全体層順を残す |
-| 折り可能性・経路探索 | 18% | 8% | 1.44% | 1ヒンジCCDと補正解析基盤は実装したが補正UIは未接続。川崎・前川、平坦折り、一般経路探索は未着手 |
+| 折り可能性・経路探索 | 18% | 10% | 1.80% | 1ヒンジCCDと、単一ヒンジ補正候補の解析専用UIを接続。候補3Dプレビュー・明示適用、川崎・前川、平坦折り、一般経路探索は未着手 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 14% | 0.70% | 高品質な`.ori2`読込・保存は実装。SVG/FOLD/DXF/OBJ/STL/glTF/PDFは未着手 |
-| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 673件とWindows/macOS CIは実装。i18n、設定、診断、更新、GitHub Releases配布を残す |
+| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 692件・Rust 304件とWindows/macOS CIは実装。i18n、設定、診断、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **26.44%** | — |
+| **合計** | **100%** | — | **26.80%** | — |
 
 ## 完了
 
 - 第三者監査を現在コードへ再照合し、UI未接続基盤・研究実装・QA件数を利用者向け機能完成率へ直接加算しない方式へ是正。数式・幾何制約をUI基準の0%へ補正した暫定概算26.44%へ更新し、採用・条件付き採用・不採用の根拠を`docs/audit-assessment-2026-07-18.md`へ記録
+- 監査後、単一ヒンジ補正候補の静的解析と候補別連続経路解析を4段階の増分jobへ統合し、1 RAFにつき1 stepで進めるgeneration付きcoordinatorを`FoldPreview`へ接続。作業中・対応範囲内での候補なし・判定不能・認定済みを分け、request・姿勢・選択・固定面・紙厚の変更では旧結果をstaleとして先に無効化
+- 補正解析UIへ渡すのは切り離した表示DTOだけとし、exact terminal lease、motion context、binding、完全角度vector、適用tokenをReact stateへ流出させない。認定結果も解析専用で、`sceneApplied: false`・`autoApplicable: false`を維持し、候補3Dプレビューやscene・設計dataへの適用は行わない
 - MUST 86件をUI利用基準で実装済み20・部分実装23・未着手43へ再集計し、根拠と不足を`docs/requirements-status.md`へ固定
 - 補正解析authority 5系統のregistry・deep freezeをmodule初期化時のintrinsicへ固定し、後差替えによる可変な真正token生成を遮断。terminal full-scan bindingは包含するcanonical blocked terminalの公開確定後にだけ認証し、再入時は未公開bindingを認証せず取消
 - Undo/Redoは履歴entryの適用成功後だけstack間を移動し、失敗時のpattern・paper・revision・両履歴と同revision再試行可能性を保持
@@ -165,7 +167,7 @@
 - request付きterminal blockの同一危険角でfull-scanを一度だけ再構成し、project・revision・request、開始/目標/危険角vector、危険姿勢key、固定/可動partition、v1 primary witnessへ結合する独立versionのnullable binding
 - requestなし、10万pairのterminal上限超過、v2 unavailable、pose・blocker不一致ではfull-scanまたはbindingだけを省略し、v1 block・停止時刻・bracket・statsを不変に維持。same-body witnessは説明に保持しつつ二体並進solver適格性をfalseに固定
 - 完全構築・deep freeze済みのterminal bindingだけを元model exact参照とともにprivate `WeakMap` provenanceへ登録し、exact発行object・modelの組だけをproperty非参照で受理。clone、spread、prototype wrapper、同値別model、hostile・revoked Proxy、primitive、非binding terminal要素を真正入力から除外
-- exact terminal binding、blocked runner state、request evidenceを一度だけsnapshotして照合し、terminalのstart完全角度vectorからfresh motion contextを再生成する内部補正解析request。exact context・bindingはmodule-private authorityへ隔離し、公開tokenをdetached scalar/policyだけに限定。固定長をindex読取前に検証し、current lease・scene姿勢・適用権限を未結合に固定。frontend 628件と独立再監査C0/H0/M0で確認
+- exact terminal binding、blocked runner state、request evidenceを一度だけsnapshotして照合し、terminalのstart完全角度vectorへ選択角だけをrebaseする内部補正解析request。元の真正contextが持つexact model・tree・非選択角を保持し、2回目以降のrequestでもterminal model provenanceを失わない。exact context・bindingはmodule-private authorityへ隔離し、公開tokenをdetached scalar/policyだけに限定。固定長をindex読取前に検証し、current lease・scene姿勢・適用権限を未結合に固定
 - terminal bindingのstart/sample pose key、全coverage式・class件数、partition、support・position generators・局所hintを再検証し、全witnessがcross-partitionの場合だけmoving subtreeの共通並進候補を導出
 - 最大16制約のactive setを1〜3本、最大696組まで決定順に列挙し、KKT最小ノルムseedから認定用外向き候補を生成。必要量は上向き、各内積は下向きに囲い、射影下限がclearanceを厳密に超え、L1移動量上限が指定上限内の場合だけ返す
 - 候補は非隣接pairの線形制約だけを満たす解析結果としてdeep freezeし、合法角度生成、全scene静的再判定、連続経路認定、全体constraint、共有ヒンジ、材料変形を未検証の`autoApplicable: false`に固定
@@ -185,6 +187,7 @@
 - 通常/full-scan両jobでbudget検証前から再入を遮断し、validation・SAT・hinge policy・witness中のcancel、再入、例外、cancel後throwを会計済み同一terminalへ固定。通常resultを切り離してdeep freezeし、同期factory・hinge policy・result finalizationがframe時間上限外であることをliteral flagsへ明示。frontend 646件、乱択one-shot差分250件、独立再監査2系統C0/H0/M0で確認
 - 最大6件の静的補正seedをfull scan準備・走査、通常narrow準備・走査へ分割し、段階境界ごとに取消可能な`tree_single_hinge_static_correction_candidates_job_v1`へ統合。pairとwitnessの累積会計、multi-seed順序、full衝突時のnormal skip、chunk非依存、真正context/model/binding、budget検証・課金済みchild・result freeze中の再入を20件の専用回帰で確認し、成功公開後だけprovenanceを付与
 - 静的候補の連続経路jobを現在候補だけの遅延生成へ変更し、`candidate_preparation`と`candidate_analysis`の明示的境界、候補切替時の同一call内非開始、候補数倍の累積上限、同期処理を示すliteral flagを公開。chunk非依存、複数候補順序、phase境界取消、budget検証・課金済みchild・候補切替・pending/certificate finalization中の再入、未公開certificateへのprovenance非付与、contextから連続certificate・requestまでのprivate registry method差し替え遮断を含むfrontend 670件で回帰
+- 真正な補正解析requestだけから静的候補job、候補別連続経路job、切り離した表示DTOを順に進める複合jobと、RAF単位でそのjobを駆動するUI coordinatorを実装。全段階を完走しても候補経路が未確定なら`indeterminate`、認定可能な候補を全件否定できた場合だけ`no_candidate`とし、対応範囲外を「折り不可能」と断定しない。frontend 692件・Rust 304件で回帰
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -298,10 +301,13 @@
 - コミット`22cb094`のCI Run `29619286102`全ジョブ完走（通常narrowのpair/witness増分job、早期停止・上限境界・cancel・再入・例外・同期互換回帰、frontend 646件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`013ba08`のCI Run `29623221663`全ジョブ完走（静的補正候補の段階別増分job、multi-seed・累積会計・cancel・再入・例外回帰、frontend 657件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`a2ac303`のCI Run `29623851234`全ジョブ完走（補正候補別連続経路の遅延生成、phase境界・累積会計・finalization再入回帰、frontend 665件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`3677d10`のCI Run `29625298125`全ジョブ完走（第三者監査の再照合、進捗是正、Undo/Redo失敗時の履歴保持、authority初期化強化、frontend 673件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
-- static候補jobと候補別連続経路jobをstale contextで取消しながら実行し、読み取り専用表示DTOをcommitted terminal lease内だけで提示するcoordinator
+- `FoldPreview`の大規模runtimeを、既存のexact lease・stale無効化・原子的scene更新を保ったまま小さな責務へ分割する作業
+- 作品内容やローカルパスを標準収集しないredacted diagnostics境界と、frontend testの自動検出
+- VAL-002の川崎・前川局所判定と、対応範囲・判定不能を区別するUI
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
 - Windows配布候補で1万辺の転送・初描画・30-frame FPSを採取し、基準PCと正式な合格値を決める作業
@@ -314,9 +320,9 @@
 
 ## 次の作業
 
-1. 補正解析requestをcommitted terminal lease coordinatorへ接続して、stale・作業中・候補なし・認定済み表示を明示する
-2. MUST 86件のstatus表を各checkpointで維持し、VAL-002の川崎・前川局所判定を実装する
-3. `FoldPreview` runtime分割、redacted diagnostics、frontend test自動検出を小さなcheckpointへ分けて進める
+1. `FoldPreview` runtime分割、redacted diagnostics、frontend test自動検出を小さなcheckpointへ分けて進める
+2. VAL-002の川崎・前川局所判定を実装し、対応範囲内の成立・不成立・判定不能をUIへ示す
+3. MUST 86件のstatus表を各checkpointで維持する
 4. 折り手順、SVG/FOLD/PDF、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
 5. OQ-002の物理的な厚さoffset・層ずれ規則とVAL-003/004の対応範囲は、要件変更を伴う部分を所有者と確定する
 6. Windowsで3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動CI検証だけを継続する

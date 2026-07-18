@@ -389,10 +389,20 @@ solve(current geometry, constraints, edited targets, policy)
 
 `tree_single_hinge_correction_analysis_request_v1`は、blocked runner終端から補正解析coordinatorへ渡す内部専用requestである。raw bindingを最初にexact-object真正性guardへ通し、runner状態、危険時刻、start・target・sample完全角度vector、project/revision、固定面、選択ヒンジ、context key、source/blocking pose key、generation/request sequence、紙厚、二体並進適格性を一致確認する。
 
-- 元のmotion contextの`appliedAngles`や現在sceneの安全停止角を解析開始姿勢に流用しない。terminal bindingの`angleVectors.start`から新しい真正motion contextを作り直し、source pose keyとcontext keyを再計算する。したがって解析requestは元terminal identityを検証済みでも、現在scene開始姿勢との一致を主張しない。
+- 元のmotion contextの`appliedAngles`や現在sceneの安全停止角を解析開始姿勢に流用しない。terminal bindingの`angleVectors.start`から選択角だけをrebaseした新しい真正motion context shellを発行し、source pose keyを再計算して元のexact context keyを保持・再照合する。元contextのexact model・tree・非選択角は保持するため、2回目以降のrequestでもterminal bindingに結合されたmodel provenanceを失わない。解析requestは元terminal identityを検証済みでも、現在scene開始姿勢との一致を主張しない。
 - clearance、最大並進量、最大角度差、連続経路の深度・interval・時間幅・triangle作業上限をversion付きpolicyとしてown data fieldから一度だけsnapshotし、後続変更から切り離す。untrustedなrunner/evidence/policy/角度配列はgetterを使わず各fieldを一度だけ読み、固定長のbracketと完全角度vectorは期待長を照合してからindexを読む。clone、wrapper、stale値、異常長配列、hostile・revoked Proxyは`null`へ退避する。
-- bindingのprivate provenanceに結合された元modelとsource contextのmodelがexact参照で一致する場合だけ受理する。正規UIはmotion contextを先に準備し、その`context.model`からcontinuous analyzerを準備する。同じcontext key・project・revision・角度を持つ別発行contextでも、model参照が異なれば補正権限を継承しない。
+- bindingのprivate provenanceに結合された元modelとrebase前後のcontextが保持するmodelがexact参照で一致する場合だけ受理する。正規UIはmotion contextを先に準備し、その`context.model`からcontinuous analyzerを準備する。同じcontext key・project・revision・角度を持つ別発行contextでも、model参照が異なれば補正権限を継承しない。
 - 返却値のown propertyはdetached scalar summary、policy、安全flagだけとし、fresh contextとexact terminal bindingはmodule-private `WeakMap` authorityに保持する。返却tokenのcloneまたはserialize結果は真正性とauthorityを回復できず、React state、保存data、表示DTOへexact context・bindingを流出させない。`activeRequestLeaseBound: false`、`startScenePoseMatched: false`、`sceneApplied: false`、`autoApplicable: false`を固定する。
+
+#### 8.2.11 補正解析job・UI coordinator
+
+`tree_single_hinge_correction_analysis_job_v1`は真正な補正解析requestのprivate authorityだけを受け取り、静的候補準備、静的候補解析、候補経路準備、候補経路解析の4段階を順に進める解析専用jobである。UI coordinatorはこのjobを`requestAnimationFrame`ごとに1 work unitだけ進め、Reactへは切り離した状態と表示DTOだけを公開する。
+
+- coordinatorは開始時に`working`を同期公開し、job factoryと各`step(1)`をRAFへ遅延する。generationと予約frameを照合し、同期callback、取消中の再入、旧世代の遅延callback、dispose後の完了を公開しない。
+- exact leaseはterminal runtime、motion owner、真正context、表示中の安全停止pose keyと完全角度vector、project/revision、固定面、選択ヒンジ、紙厚、request sequenceを非公開で保持する。job生成、step、終端変換、publishの前後で同じleaseを再検証し、新しい角度要求、直接角度変更、model/revision・固定面・選択ヒンジ・紙厚・表示姿勢の変更、disposeでは旧結果を`stale`へ無効化してjobを取消す。
+- UI状態は`idle`、`working`、`stale`、`no_candidate`、`indeterminate`、`certified`を区別する。`no_candidate`は指定したclearance、最大並進量、最大角度差、作業上限と候補生成方式の範囲内で認定候補がなかったことだけを表し、作品が折り不可能であることを意味しない。経路解析に未確定な試行が残る場合は`no_candidate`へ縮約せず`indeterminate`とする。
+- `certified`でも示せるのは同じsource完全角度vectorから候補までの選択1ヒンジ線形経路を、現在の静的・連続解析が認定したことだけである。現在sceneとの一致、層順、材料変形、複数ヒンジ同時運動、閉路、切断由来の一般経路は対象外とする。
+- 全状態で解析専用を維持し、認定表示DTOも`analysisOnly: true`、`sceneApplied: false`、`autoApplicable: false`を固定する。候補の3Dプレビュー、sceneまたは設計dataへの自動適用、明示適用commandはこの境界に実装しない。
 
 ### 8.3 衝突前停止
 
@@ -538,7 +548,7 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 - 有限性、上限、退化、作業量など幾何計算そのものの安全条件は各数値境界に残す。非同期処理のgeneration、request sequence、revision、現在scene poseのstale検査も状態整合性のため維持する。
 - private `WeakMap`/`WeakSet`によるexact-object authorityは、scene変更、motion owner、committed terminal lease、解析certificateなど「読み取り結果を副作用へ接続できる境界」に限定する。単なる内部DTOの全段へ真正性flagと構造再検証を増殖させない。
 - 既存の重複した`deepFreeze`、`isRecord`、own-data snapshot、hostile入力回帰は一括削除せず、UI接続とruntime分割時に信頼境界を確認しながら共通化・縮小する。安全停止、原子的scene commit、stale結果非公開の回帰は保持する。
-- 現在の補正解析authority chainを上記の副作用境界として完結させた後は、補正解析の新段階や新しい一般DTO防御を追加せず、まず既存結果をUIへ接続する。その後の`FoldPreview` runtime分割で、入口検証と副作用authority以外の重複防御を段階的に整理する。
+- 補正解析authority chainと解析専用UIの接続は上記の副作用境界で完結した。次は補正解析の新段階や新しい一般DTO防御を追加せず、`FoldPreview` runtime分割で入口検証と副作用authority以外の重複防御を段階的に整理し、redacted diagnosticsを独立境界として追加する。
 
 ## 14. 実装フェーズ
 

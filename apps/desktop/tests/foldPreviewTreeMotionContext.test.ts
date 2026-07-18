@@ -16,6 +16,7 @@ import {
   FOLD_PREVIEW_TREE_MOTION_CONTEXT_VERSION,
   MAX_FOLD_PREVIEW_TREE_MOTION_CONTEXT_ID_LENGTH,
   prepareFoldPreviewTreeMotionContext,
+  rebaseFoldPreviewTreeMotionContextSelectedAngle,
   replaceFoldPreviewTreeMotionSelectedAngle,
   type FoldPreviewTreeMotionContext,
   type FoldPreviewTreeMotionContextInput,
@@ -229,6 +230,93 @@ test('replaces exactly the selected angle in a complete canonical vector', () =>
   assert.equal(
     replaceFoldPreviewTreeMotionSelectedAngle(
       { ...context },
+      90,
+    ),
+    null,
+  )
+})
+
+test('rebasing issues a fresh authentic context with the exact prepared model', () => {
+  const context = prepared()
+  assert.ok(context)
+
+  const rebased = rebaseFoldPreviewTreeMotionContextSelectedAngle(
+    context,
+    123,
+  )
+  assert.ok(rebased)
+  assert.notStrictEqual(rebased, context)
+  assert.strictEqual(rebased.model, context.model)
+  assert.strictEqual(rebased.tree, context.tree)
+  assert.strictEqual(
+    rebased.nonSelectedAngles,
+    context.nonSelectedAngles,
+  )
+  assert.equal(rebased.contextKey, context.contextKey)
+  assert.equal(rebased.selectedAngleDegrees, 123)
+  assert.deepEqual(rebased.appliedAngles, [
+    { edgeId: 'hinge-x', angleDegrees: 35 },
+    { edgeId: 'hinge-z', angleDegrees: 123 },
+  ])
+  assert.notStrictEqual(rebased.appliedAngles, context.appliedAngles)
+  assert.deepEqual(
+    replaceFoldPreviewTreeMotionSelectedAngle(rebased, 90),
+    [
+      { edgeId: 'hinge-x', angleDegrees: 35 },
+      { edgeId: 'hinge-z', angleDegrees: 90 },
+    ],
+  )
+  assert.equal(context.selectedAngleDegrees, 55)
+  assert.equal(context.appliedAngles[1]?.angleDegrees, 55)
+  assertDeeplyFrozen(rebased)
+
+  const sameAngle = rebaseFoldPreviewTreeMotionContextSelectedAngle(
+    context,
+    context.selectedAngleDegrees,
+  )
+  assert.ok(sameAngle)
+  assert.notStrictEqual(sameAngle, context)
+  assert.strictEqual(sameAngle.model, context.model)
+  assert.strictEqual(sameAngle.tree, context.tree)
+  assert.strictEqual(
+    sameAngle.nonSelectedAngles,
+    context.nonSelectedAngles,
+  )
+  assert.deepEqual(sameAngle.appliedAngles, context.appliedAngles)
+  assert.notStrictEqual(sameAngle.appliedAngles, context.appliedAngles)
+  assertDeeplyFrozen(sameAngle)
+
+  for (const invalid of [
+    structuredClone(context),
+    { ...context },
+    null,
+    undefined,
+  ]) {
+    assert.equal(
+      rebaseFoldPreviewTreeMotionContextSelectedAngle(
+        invalid as FoldPreviewTreeMotionContext,
+        90,
+      ),
+      null,
+    )
+  }
+  for (const invalidAngle of [
+    -1,
+    181,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ]) {
+    assert.equal(
+      rebaseFoldPreviewTreeMotionContextSelectedAngle(
+        context,
+        invalidAngle,
+      ),
+      null,
+    )
+  }
+  assert.equal(
+    rebaseFoldPreviewTreeMotionContextSelectedAngle(
+      throwingProxy<FoldPreviewTreeMotionContext>(),
       90,
     ),
     null,

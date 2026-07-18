@@ -9,10 +9,13 @@ import type {
   FoldPreviewContinuousMotionRunnerState,
 } from '../src/lib/foldPreviewContinuousMotionRunner.ts'
 import {
+  createFoldPreviewTreeSingleHingeCorrectionAnalysisJob,
+  FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
   FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_POLICY_VERSION,
   FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_REQUEST_VERSION,
   isFoldPreviewTreeSingleHingeCorrectionAnalysisRequestAuthentic,
   prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest,
+  type FoldPreviewTreeSingleHingeCorrectionAnalysisJob,
   type FoldPreviewTreeSingleHingeCorrectionAnalysisPolicy,
   type FoldPreviewTreeSingleHingeCorrectionAnalysisRequestEvidence,
   type FoldPreviewTreeSingleHingeCorrectionAnalysisRequestInput,
@@ -202,6 +205,236 @@ test('a genuine blocked terminal becomes a frozen internal analysis request', ()
   }
 })
 
+test('the authentic request runs through a detached certified presentation', () => {
+  const fixture = correctionFixture()
+  const request =
+    prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+      createInput(fixture),
+    )
+  assert.ok(request)
+  const job =
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+  assert.ok(job)
+  assert.deepEqual(Reflect.ownKeys(job), ['step', 'cancel'])
+  assert.equal(Object.isFrozen(job), true)
+
+  const { phases, terminal } = runCorrectionAnalysis(job)
+  const phaseTransitions = phases.filter(
+    (phase, index) => index === 0 || phase !== phases[index - 1],
+  )
+  assert.deepEqual(phaseTransitions, [
+    'static_candidate_preparation',
+    'static_candidate_analysis',
+    'candidate_path_preparation',
+    'candidate_path_analysis',
+  ])
+  assert.equal(terminal.kind, 'certified')
+  if (terminal.kind !== 'certified') return
+  assert.equal(
+    terminal.version,
+    FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+  )
+  assert.equal(
+    terminal.presentation.kind,
+    'certified_static_candidate_path_presentation',
+  )
+  assert.equal(terminal.presentation.candidate.rank, 1)
+  assert.equal(
+    terminal.presentation.identity.projectId,
+    fixture.sourceContext.model.projectId,
+  )
+  assert.equal(
+    terminal.presentation.identity.revision,
+    fixture.sourceContext.model.revision,
+  )
+  assert.equal(
+    terminal.presentation.identity.selectedHingeEdgeId,
+    fixture.sourceContext.selectedHingeEdgeId,
+  )
+  assert.match(terminal.presentation.badgeText, /補正候補1/u)
+  assert.deepEqual(terminal.safety, {
+    analysisOnly: true,
+    sceneApplied: false,
+    autoApplicable: false,
+  })
+  assert.equal(terminal.presentation.safety.runtimeRequestBound, false)
+  assert.equal(terminal.presentation.safety.activeRequestLeaseBound, false)
+  assert.equal(terminal.presentation.safety.startScenePoseMatched, false)
+  assert.equal(terminal.presentation.safety.sceneApplied, false)
+  assert.equal(terminal.presentation.safety.autoApplicable, false)
+  assertDeeplyFrozen(terminal)
+
+  const serialized = JSON.stringify(terminal)
+  for (const forbidden of [
+    'terminalFullScanBinding',
+    'certificate',
+    'contextKey',
+    'sourcePoseRequestKey',
+    'targetPoseRequestKey',
+    'blockingPoseRequestKey',
+    'sourceAngles',
+    'targetAngles',
+    'appliedAngles',
+    'sceneCommand',
+    'applicationToken',
+  ]) {
+    assert.doesNotMatch(serialized, new RegExp(forbidden, 'u'))
+  }
+  assert.strictEqual(job.step(1), terminal)
+  job.cancel()
+  assert.strictEqual(job.step(1), terminal)
+
+  assert.equal(
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(
+      structuredClone(request),
+    ),
+    null,
+  )
+  assert.equal(
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob({
+      ...request,
+    }),
+    null,
+  )
+})
+
+test('path exhaustion with an indeterminate attempt stays indeterminate', () => {
+  const fixture = correctionFixture()
+  const request =
+    prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+      createInput(fixture, Object.freeze({
+        ...POLICY,
+        path: Object.freeze({
+          ...POLICY.path,
+          maxIntervalTests: 1,
+        }),
+      })),
+    )
+  assert.ok(request)
+  const job =
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+  assert.ok(job)
+
+  const { terminal } = runCorrectionAnalysis(job)
+  assert.deepEqual(terminal, {
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+    kind: 'indeterminate',
+    phase: 'candidate_path_analysis',
+    reason: 'candidate_path_exhausted_indeterminate',
+    safety: {
+      analysisOnly: true,
+      sceneApplied: false,
+      autoApplicable: false,
+    },
+  })
+  assertDeeplyFrozen(terminal)
+  assert.strictEqual(job.step(1), terminal)
+})
+
+test('genuine static candidate exhaustion becomes no_candidate', () => {
+  const fixture = correctionFixture()
+  const request =
+    prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+      createInput(fixture, Object.freeze({
+        ...POLICY,
+        clearance: 1e-9,
+      })),
+    )
+  assert.ok(request)
+  const job =
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+  assert.ok(job)
+
+  const { terminal } = runCorrectionAnalysis(job)
+  assert.deepEqual(terminal, {
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+    kind: 'no_candidate',
+    exhaustedPhase: 'static_candidate_analysis',
+    safety: {
+      analysisOnly: true,
+      sceneApplied: false,
+      autoApplicable: false,
+    },
+  })
+  assertDeeplyFrozen(terminal)
+  assert.strictEqual(job.step(1), terminal)
+})
+
+test('invalid work budgets remain indeterminate', () => {
+  const fixture = correctionFixture()
+  const request =
+    prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+      createInput(fixture),
+    )
+  assert.ok(request)
+  const failed =
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+  assert.ok(failed)
+  const indeterminate = failed.step(0)
+  assert.deepEqual(indeterminate, {
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_JOB_VERSION,
+    kind: 'indeterminate',
+    phase: 'static_candidate_preparation',
+    reason: 'invalid_work_budget',
+    safety: {
+      analysisOnly: true,
+      sceneApplied: false,
+      autoApplicable: false,
+    },
+  })
+  assert.notEqual(indeterminate.kind, 'no_candidate')
+  assert.strictEqual(failed.step(1), indeterminate)
+})
+
+test('cancellation and reentrant stepping publish one stable terminal', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const request =
+    prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest(
+      createInput(fixture),
+    )
+  assert.ok(request)
+
+  const cancelled =
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+  assert.ok(cancelled)
+  assert.equal(cancelled.step(1).kind, 'pending')
+  cancelled.cancel()
+  cancelled.cancel()
+  const cancelledTerminal = cancelled.step(1)
+  assert.equal(cancelledTerminal.kind, 'cancelled')
+  assertDeeplyFrozen(cancelledTerminal)
+  assert.strictEqual(cancelled.step(1), cancelledTerminal)
+
+  const reentered =
+    createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+  assert.ok(reentered)
+  const originalIsSafeInteger = Number.isSafeInteger
+  let nested:
+    ReturnType<FoldPreviewTreeSingleHingeCorrectionAnalysisJob['step']>
+    | null = null
+  Number.isSafeInteger = ((value: unknown) => {
+    nested ??= reentered.step(1)
+    return originalIsSafeInteger(value)
+  }) as typeof Number.isSafeInteger
+  let outer:
+    ReturnType<FoldPreviewTreeSingleHingeCorrectionAnalysisJob['step']>
+  try {
+    outer = reentered.step(1)
+  } finally {
+    Number.isSafeInteger = originalIsSafeInteger
+  }
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.strictEqual(reentered.step(1), nested)
+  assertDeeplyFrozen(nested)
+})
+
 test(
   'the private authority registry ignores later WeakMap prototype replacements',
   { concurrency: false },
@@ -215,10 +448,16 @@ test(
       WeakMap.prototype,
       'has',
     )
+    const getDescriptor = Object.getOwnPropertyDescriptor(
+      WeakMap.prototype,
+      'get',
+    )
     assert.ok(setDescriptor)
     assert.ok(hasDescriptor)
+    assert.ok(getDescriptor)
     let replacementSetCalls = 0
     let replacementHasCalls = 0
+    let replacementGetCalls = 0
 
     try {
       Object.defineProperty(WeakMap.prototype, 'set', {
@@ -255,9 +494,23 @@ test(
         false,
       )
       assert.equal(replacementHasCalls, 0)
+
+      Object.defineProperty(WeakMap.prototype, 'get', {
+        ...getDescriptor,
+        value() {
+          replacementGetCalls += 1
+          throw new Error('replacement WeakMap.prototype.get called')
+        },
+      })
+      const job =
+        createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+      assert.ok(job)
+      assert.equal(job.step(1).kind, 'pending')
+      assert.equal(replacementGetCalls, 0)
     } finally {
       Object.defineProperty(WeakMap.prototype, 'set', setDescriptor)
       Object.defineProperty(WeakMap.prototype, 'has', hasDescriptor)
+      Object.defineProperty(WeakMap.prototype, 'get', getDescriptor)
     }
   },
 )
@@ -908,12 +1161,13 @@ function correctionFixture(): Fixture {
 
 function createInput(
   fixture: Fixture,
+  policy: FoldPreviewTreeSingleHingeCorrectionAnalysisPolicy = POLICY,
 ): FoldPreviewTreeSingleHingeCorrectionAnalysisRequestInput {
   return {
     sourceContext: fixture.sourceContext,
     runnerState: fixture.runnerState,
     evidence: fixture.evidence,
-    policy: POLICY,
+    policy,
   }
 }
 
@@ -986,6 +1240,30 @@ function run(
     if (result.kind !== 'pending') return result
   }
   throw new Error('tree single-hinge continuous job did not terminate')
+}
+
+function runCorrectionAnalysis(
+  job: FoldPreviewTreeSingleHingeCorrectionAnalysisJob,
+) {
+  const phases: string[] = []
+  for (let index = 0; index < 100; index += 1) {
+    const step = job.step(1_000_000)
+    if (step.kind !== 'pending') {
+      return {
+        phases,
+        terminal: step,
+      }
+    }
+    phases.push(step.phase)
+    assert.equal(step.status, 'working')
+    assert.deepEqual(step.safety, {
+      analysisOnly: true,
+      sceneApplied: false,
+      autoApplicable: false,
+    })
+    assertDeeplyFrozen(step)
+  }
+  throw new Error('correction analysis job did not terminate')
 }
 
 function selectedAngle(

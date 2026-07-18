@@ -130,6 +130,18 @@ import {
   type FoldPreviewTreeSingleHingeContinuousAnalyzer,
   type FoldPreviewTreeSingleHingeContinuousBlocker,
 } from '../lib/foldPreviewTreeSingleHingeContinuousCollision'
+import {
+  FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_POLICY_VERSION,
+  createFoldPreviewTreeSingleHingeCorrectionAnalysisJob,
+  prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest,
+  type FoldPreviewTreeSingleHingeCorrectionAnalysisPolicy,
+} from '../lib/foldPreviewTreeSingleHingeCorrectionAnalysisRequest'
+import {
+  FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_COORDINATOR_VERSION,
+  createFoldPreviewTreeSingleHingeCorrectionAnalysisCoordinator,
+  type FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinator,
+  type FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
+} from '../lib/foldPreviewTreeSingleHingeCorrectionAnalysisCoordinator'
 
 type FoldPreviewProps = {
   angle: number
@@ -228,6 +240,13 @@ type TreeMotionBinding = {
   disposed: boolean
 }
 
+type CorrectionAnalysisView = Readonly<{
+  badgeText: string
+  badgeClass: string
+  accessibleText: string
+  liveText: string
+}>
+
 type AngleDragPresentation = Readonly<{
   state: 'idle' | 'armed' | 'dragging'
   mapping: typeof FOLD_PREVIEW_ANGLE_DRAG_MAPPING
@@ -247,6 +266,16 @@ const MIN_VISIBLE_THICKNESS = 0.025
 const MAX_VISIBLE_THICKNESS = 0.35
 const MIN_ANGLE_DRAG_HINGE_LENGTH_CSS = 12
 const MAX_ANGLE_DRAG_HINGE_DISTANCE_CSS = 12
+const CORRECTION_ANALYSIS_CLEARANCE_MM = 0.02
+const CORRECTION_ANALYSIS_MAXIMUM_TRANSLATION_MM = 2
+const CORRECTION_ANALYSIS_MAXIMUM_ANGLE_DELTA_DEGREES = 30
+
+const INITIAL_CORRECTION_ANALYSIS_STATE = Object.freeze({
+  version:
+    FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_COORDINATOR_VERSION,
+  generation: 0,
+  status: 'idle',
+}) satisfies FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState
 
 const INITIAL_ANGLE_DRAG_PRESENTATION: AngleDragPresentation = Object.freeze({
   state: 'idle',
@@ -259,6 +288,136 @@ const INITIAL_ANGLE_DRAG_PRESENTATION: AngleDragPresentation = Object.freeze({
   sequence: 0,
   cameraControlsEnabled: true,
 })
+
+function createCorrectionAnalysisPolicy(
+  model: FoldPreviewModel,
+  collisionThickness: number,
+): FoldPreviewTreeSingleHingeCorrectionAnalysisPolicy | null {
+  // Provisional v1 analysis-only policy. These bounds do not authorize scene
+  // application and remain expressed in the model's normalized world units.
+  const worldUnitsPerMillimetre = model.worldUnitsPerMillimetre
+  const clearance = Math.max(
+    CORRECTION_ANALYSIS_CLEARANCE_MM * worldUnitsPerMillimetre,
+    collisionThickness * 0.25,
+  )
+  const maximumTranslation = Math.max(
+    CORRECTION_ANALYSIS_MAXIMUM_TRANSLATION_MM
+      * worldUnitsPerMillimetre,
+    clearance * 4,
+  )
+  if (
+    !Number.isFinite(clearance)
+    || clearance <= 0
+    || !Number.isFinite(maximumTranslation)
+    || maximumTranslation < clearance
+  ) return null
+  return Object.freeze({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_POLICY_VERSION,
+    clearance,
+    maximumTranslation,
+    maximumAngleDeltaDegrees:
+      CORRECTION_ANALYSIS_MAXIMUM_ANGLE_DELTA_DEGREES,
+    path: Object.freeze({
+      maxDepth: 18,
+      maxIntervalTests: 10_000,
+      minTimeSpan: 2 ** -22,
+      maxIntervalPairVisits: 1_000_000,
+      maxPointTriangleTests: 1_000_000,
+    }),
+  })
+}
+
+function describeCorrectionAnalysis(
+  state: FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
+): CorrectionAnalysisView {
+  switch (state.status) {
+    case 'idle':
+      return {
+        badgeText: '待機',
+        badgeClass: 'is-idle',
+        accessibleText:
+          '補正解析は待機中です。衝突で停止し、完全な解析根拠を得た場合だけ候補を調べます。',
+        liveText: '',
+      }
+    case 'working': {
+      const phaseText = correctionAnalysisPhaseText(state.phase)
+      return {
+        badgeText: `作業中・${phaseText}`,
+        badgeClass: 'is-working',
+        accessibleText:
+          `補正解析は作業中です。${phaseText}。解析結果は3D表示や設計データへ自動適用されません。`,
+        liveText:
+          '補正候補の解析を開始しました。結果は3D表示や設計データへ自動適用されません。',
+      }
+    }
+    case 'stale':
+      return {
+        badgeText: '古い結果を破棄済み',
+        badgeClass: 'is-stale',
+        accessibleText:
+          '姿勢または設計条件が変わったため、以前の補正解析を破棄しました。',
+        liveText:
+          '姿勢または設計条件が変わったため、以前の補正解析を破棄しました。',
+      }
+    case 'no_candidate':
+      return {
+        badgeText: '対応範囲内で候補なし',
+        badgeClass: 'is-no-candidate',
+        accessibleText:
+          '現在の単一ヒンジ補正解析の対応範囲内では、認定できる候補が見つかりませんでした。折り不可能であることを意味しません。',
+        liveText:
+          '現在の補正解析の対応範囲内では候補が見つかりませんでした。折り不可能であることを意味しません。',
+      }
+    case 'indeterminate':
+      return {
+        badgeText: '判定不能（安全側停止）',
+        badgeClass: 'is-indeterminate',
+        accessibleText:
+          '補正解析は安全に判定を完了できなかったため停止しました。候補なしや折り不可能とは区別されます。',
+        liveText:
+          '補正解析は判定不能として安全側に停止しました。候補なしや折り不可能とは区別されます。',
+      }
+    case 'certified':
+      return {
+        badgeText: state.presentation.badgeText,
+        badgeClass: 'is-certified',
+        accessibleText: state.presentation.accessibleText,
+        liveText: state.presentation.accessibleText,
+      }
+  }
+}
+
+function correctionAnalysisPhaseText(
+  phase: Extract<
+    FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
+    { status: 'working' }
+  >['phase'],
+) {
+  switch (phase) {
+    case 'preparing':
+      return '準備中'
+    case 'static_candidate_preparation':
+      return '静的候補の準備中'
+    case 'static_candidate_analysis':
+      return '静的候補を確認中'
+    case 'candidate_path_preparation':
+      return '経路確認の準備中'
+    case 'candidate_path_analysis':
+      return '連続経路を確認中'
+  }
+}
+
+function staleCorrectionAnalysisState(
+  state: FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
+): FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState {
+  return Object.freeze({
+    version:
+      FOLD_PREVIEW_TREE_SINGLE_HINGE_CORRECTION_ANALYSIS_COORDINATOR_VERSION,
+    generation: state.generation,
+    status: 'stale',
+  })
+}
 
 export function FoldPreview({
   angle,
@@ -285,6 +444,10 @@ export function FoldPreview({
     useState<TreeContextualMotionState | null>(null)
   const [renderedTreePoseSnapshot, setRenderedTreePoseSnapshot] =
     useState<RenderedTreePoseSnapshot | null>(null)
+  const [correctionAnalysisState, setCorrectionAnalysisState] =
+    useState<FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState>(
+      INITIAL_CORRECTION_ANALYSIS_STATE,
+    )
   const [angleDragPresentation, setAngleDragPresentation] = useState(
     INITIAL_ANGLE_DRAG_PRESENTATION,
   )
@@ -391,12 +554,14 @@ export function FoldPreview({
       setCollisionSummary(null)
       setTreeMotionSnapshot(null)
       setRenderedTreePoseSnapshot(null)
+      setCorrectionAnalysisState(INITIAL_CORRECTION_ANALYSIS_STATE)
       return
     }
     setRenderError(null)
     setCollisionSummary(null)
     setTreeMotionSnapshot(null)
     setRenderedTreePoseSnapshot(null)
+    setCorrectionAnalysisState(INITIAL_CORRECTION_ANALYSIS_STATE)
 
     const singleAnchor = model.kind === 'single_fold'
       ? resolveSingleFoldAnchor(model, resolvedFixedFaceId ?? model.fixedFace.id)
@@ -522,6 +687,30 @@ export function FoldPreview({
     let cursorBeforeAngleDrag: string | null = null
     const activeDocumentPointerIds = new Set<number>()
     let disposed = false
+    let acceptCorrectionAnalysisState = true
+    let correctionAnalysisCoordinator:
+      FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinator | null = null
+    const createdCorrectionAnalysisCoordinator =
+      createFoldPreviewTreeSingleHingeCorrectionAnalysisCoordinator<number>({
+        schedule: (callback) => window.requestAnimationFrame(callback),
+        cancel: (handle) => window.cancelAnimationFrame(handle),
+        onState: (state) => {
+          if (
+            disposed
+            || !acceptCorrectionAnalysisState
+            || correctionAnalysisCoordinator === null
+          ) return
+          setCorrectionAnalysisState(state)
+        },
+      })
+    correctionAnalysisCoordinator = createdCorrectionAnalysisCoordinator
+    const invalidateCorrectionAnalysis = () => {
+      const coordinator = correctionAnalysisCoordinator
+      if (!coordinator) return
+      const status = coordinator.getState().status
+      if (status === 'idle' || status === 'stale') return
+      coordinator.invalidate()
+    }
     const hinges = model.kind === 'single_fold'
       ? [model.hinge]
       : model.kind === 'fold_graph'
@@ -629,6 +818,7 @@ export function FoldPreview({
     }
 
     const disposeCurrentTreeMotionBinding = () => {
+      invalidateCorrectionAnalysis()
       const binding = treeMotionBinding
       if (!binding) return
       const runner = binding.runner
@@ -664,6 +854,7 @@ export function FoldPreview({
 
     const dispose = () => {
       if (disposed) return
+      invalidateCorrectionAnalysis()
       if (treeMotionOwnerState) {
         const ownerPlan = transitionFoldPreviewTreeMotionOwner(
           treeMotionOwnerState,
@@ -680,6 +871,9 @@ export function FoldPreview({
       // work alive. This preserves stale-before-dispose ordering independently
       // of the pure owner command boundary.
       disposeCurrentTreeMotionBinding()
+      acceptCorrectionAnalysisState = false
+      correctionAnalysisCoordinator?.dispose()
+      correctionAnalysisCoordinator = null
       disposed = true
       angleDragState = reduceFoldPreviewAngleDrag(angleDragState, {
         kind: 'reset',
@@ -1356,6 +1550,108 @@ export function FoldPreview({
             )
             && binding.externalRequestKey === renderedTreePoseKey
         }
+        const startTreeCorrectionAnalysis = (
+          binding: TreeMotionBinding,
+          runnerState: FoldPreviewContinuousMotionRunnerState<
+            FoldPreviewTreeSingleHingeContinuousBlocker
+          >,
+          evidenceContext: FoldPreviewTreeBlockingSampleDetailContext,
+        ) => {
+          const coordinator = correctionAnalysisCoordinator
+          const terminalRuntimeState = binding.runtimeState
+          const terminalOwnerState = treeMotionOwnerState
+          const terminalContext = binding.context
+          const terminalRenderedPoseKey = renderedTreePoseKey
+          const terminalExternalRequestKey = binding.externalRequestKey
+          const terminalRenderedAngles = renderedTreeAngles
+            ? Object.freeze(renderedTreeAngles.map((hingeAngle) =>
+                Object.freeze({
+                  edgeId: hingeAngle.edgeId,
+                  angleDegrees: hingeAngle.angleDegrees,
+                })))
+            : null
+          if (
+            !coordinator
+            || runnerState.status !== 'blocked'
+            || !terminalOwnerState
+            || terminalRenderedPoseKey === null
+            || !terminalRenderedAngles
+          ) return
+          const policy = createCorrectionAnalysisPolicy(
+            model,
+            terminalContext.collisionThickness,
+          )
+          const validateTerminalLease = () => {
+            if (
+              disposed
+              || correctionAnalysisCoordinator !== coordinator
+              || treeMotionBinding !== binding
+              || binding.disposed
+              || binding.context !== terminalContext
+              || latestModelRef.current !== model
+              || binding.context.fixedFaceId !== treeKinematics.rootFaceId
+              || binding.context.selectedHingeEdgeId
+                !== evidenceContext.selectedHingeEdgeId
+              || binding.context.contextKey !== evidenceContext.contextKey
+              || binding.context.collisionThickness
+                !== evidenceContext.collisionThickness
+              || binding.runtimeState !== terminalRuntimeState
+              || treeMotionOwnerState !== terminalOwnerState
+              || binding.externalRequestKey !== terminalExternalRequestKey
+              || renderedTreePoseKey !== terminalRenderedPoseKey
+              || renderedTreeAngles === null
+              || selectedTreeHingeId
+                !== binding.context.selectedHingeEdgeId
+              || terminalRuntimeState.generation
+                !== evidenceContext.generation
+              || terminalRuntimeState.activeRequestSequence !== null
+              || terminalRuntimeState.activeRunnerToken !== null
+              || terminalRuntimeState.activeTargetSelectedAngleDegrees !== null
+              || terminalRuntimeState.pendingApplicationToken !== null
+              || terminalRuntimeState.committedRequestSequence
+                !== evidenceContext.requestSequence
+              || terminalRuntimeState.disposed
+              || terminalOwnerState.owner !== 'runner'
+              || terminalOwnerState.generation !== evidenceContext.generation
+              || terminalOwnerState.runnerContextKey
+                !== evidenceContext.contextKey
+              || terminalOwnerState.runnerHingeEdgeId
+                !== evidenceContext.selectedHingeEdgeId
+              || terminalOwnerState.activeRequestSequence !== null
+              || terminalOwnerState.activeRequestToken !== null
+              || terminalOwnerState.activeTargetSelectedAngleDegrees !== null
+              || terminalOwnerState.committedRequestSequence
+                !== evidenceContext.requestSequence
+              || binding.runnerToken !== null
+              || !treeAnglesEqual(
+                terminalRenderedAngles,
+                renderedTreeAngles,
+              )
+              || !treeAnglesEqual(
+                terminalRuntimeState.appliedAngles,
+                renderedTreeAngles,
+              )
+              || !treeBindingPoseIsCurrent(binding)
+            ) return false
+            return true
+          }
+          coordinator.start(Object.freeze({
+            createJob: () => {
+              if (!validateTerminalLease() || !policy) return null
+              const request =
+                prepareFoldPreviewTreeSingleHingeCorrectionAnalysisRequest({
+                  sourceContext: terminalContext,
+                  runnerState,
+                  evidence: evidenceContext,
+                  policy,
+                })
+              return request
+                ? createFoldPreviewTreeSingleHingeCorrectionAnalysisJob(request)
+                : null
+            },
+            validateTerminalLease,
+          }))
+        }
         const failTreeMotion = (
           binding: TreeMotionBinding,
           wasCurrent = false,
@@ -1630,6 +1926,13 @@ export function FoldPreview({
             failTreeMotion(binding, true)
             return
           }
+          if (runnerState.status === 'blocked' && evidenceContext) {
+            startTreeCorrectionAnalysis(
+              binding,
+              runnerState,
+              evidenceContext,
+            )
+          }
           if (
             runnerState.status !== 'running'
             && binding.activeEvidenceContext === activeEvidenceContext
@@ -1671,6 +1974,7 @@ export function FoldPreview({
               targetSelectedAngleDegrees,
             },
           )
+          if (runtimePlan) invalidateCorrectionAnalysis()
           const accepted = runtimePlan
             ? executeTreeRuntimePlan(binding, runtimePlan)
             : false
@@ -1918,6 +2222,9 @@ export function FoldPreview({
 
         const updateTreeSelectionVisual = updateSelection
         updateSelection = (nextSelectedHingeId) => {
+          if (selectedTreeHingeId !== nextSelectedHingeId) {
+            invalidateCorrectionAnalysis()
+          }
           selectedTreeHingeId = nextSelectedHingeId
           updateTreeSelectionVisual(nextSelectedHingeId)
           const latestRequest = latestRequestedTreePoseRef.current
@@ -1965,6 +2272,7 @@ export function FoldPreview({
             key: requestedPose.requestKey,
           })
           if (!ownerPlan?.accepted) return false
+          invalidateCorrectionAnalysis()
           treeMotionOwnerState = ownerPlan.state
           if (
             ownerPlan.commands.length !== 3
@@ -3539,6 +3847,26 @@ export function FoldPreview({
       : null
   const contextualTreeMotionState =
     contextualTreeMotionSnapshot?.state ?? null
+  const treeCorrectionAnalysisAvailable =
+    model?.kind === 'fold_graph'
+    && model.kinematics.kind === 'tree'
+    && treeCommitAvailable
+  const correctionAnalysisContextIsCurrent =
+    contextualTreeMotionSnapshot?.state.status === 'blocked'
+    && contextualTreeMotionSnapshot.evidenceContext !== null
+  const currentCorrectionAnalysisState =
+    correctionAnalysisState.status === 'idle'
+    || correctionAnalysisState.status === 'stale'
+    || correctionAnalysisContextIsCurrent
+      ? correctionAnalysisState
+      : staleCorrectionAnalysisState(correctionAnalysisState)
+  const correctionAnalysisView = describeCorrectionAnalysis(
+    currentCorrectionAnalysisState,
+  )
+  const certifiedCorrectionPresentation =
+    currentCorrectionAnalysisState.status === 'certified'
+      ? currentCorrectionAnalysisState.presentation
+      : null
   const renderedSelectedTreeAngles =
     model?.kind === 'fold_graph'
     && model.kinematics.kind === 'tree'
@@ -3701,10 +4029,13 @@ export function FoldPreview({
     true,
     collisionPathDisclosure,
   )
+  const correctionAnalysisDescription = treeCorrectionAnalysisAvailable
+    ? `。${correctionAnalysisView.accessibleText}`
+    : ''
   const previewImageDescription = model?.kind === 'single_fold' && !renderError
     ? `実展開図の3D折りプレビュー、表示角 ${displayedAngle}度、指定角 ${safeAngle}度${angleDragTarget === null ? '' : `、${angleDragActionLabel}中の未確認目標角 ${angleDragTarget}度。この目標角はポインターを離して経路検証が完了するまで3Dへ適用しません`}${fixedFaceNote}、${motionView?.accessibleText ?? ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
-      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}${motionView ? `、${motionView.accessibleText}` : ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}、${collisionDescription}、${thicknessNote}`
+      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}${motionView ? `、${motionView.accessibleText}` : ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}${correctionAnalysisDescription}、${collisionDescription}、${thicknessNote}`
       : model?.kind === 'fold_graph' && !renderError
         ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${collisionDescription}、${thicknessNote}`
     : model?.kind === 'planar' && !renderError
@@ -3779,10 +4110,7 @@ export function FoldPreview({
     && currentKeyboardSelectionAnnouncement.sequence % 2 === 1
       ? currentKeyboardSelectionAnnouncement.text
       : ''
-  const treePhysicalGrabAvailable =
-    model?.kind === 'fold_graph'
-    && model.kinematics.kind === 'tree'
-    && treeCommitAvailable
+  const treePhysicalGrabAvailable = treeCorrectionAnalysisAvailable
   const motionPresentationAvailable =
     model?.kind === 'single_fold' || treePhysicalGrabAvailable
 
@@ -3848,6 +4176,69 @@ export function FoldPreview({
       }
       data-motion-local-hint-auto-applicable={
         motionDetail?.blockingEvidence?.safety.autoApplicable
+      }
+      data-correction-status={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? currentCorrectionAnalysisState.status
+          : undefined
+      }
+      data-correction-phase={
+        treeCorrectionAnalysisAvailable
+        && previewAvailable
+        && currentCorrectionAnalysisState.status === 'working'
+          ? currentCorrectionAnalysisState.phase
+          : undefined
+      }
+      data-correction-candidate-rank={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? certifiedCorrectionPresentation?.candidate.rank
+          : undefined
+      }
+      data-correction-source-angle={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? certifiedCorrectionPresentation?.angles.sourceDegrees
+          : undefined
+      }
+      data-correction-target-angle={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? certifiedCorrectionPresentation?.angles.targetDegrees
+          : undefined
+      }
+      data-correction-analysis-only={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? true
+          : undefined
+      }
+      data-correction-scene-applied={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? false
+          : undefined
+      }
+      data-correction-auto-applicable={
+        treeCorrectionAnalysisAvailable && previewAvailable
+          ? false
+          : undefined
+      }
+      data-correction-runtime-request-bound={
+        treeCorrectionAnalysisAvailable
+        && previewAvailable
+        && certifiedCorrectionPresentation
+          ? false
+          : undefined
+      }
+      data-correction-active-request-lease-bound={
+        treeCorrectionAnalysisAvailable
+        && previewAvailable
+        && certifiedCorrectionPresentation
+          ? false
+          : undefined
+      }
+      data-correction-start-scene-pose-matched={
+        treeCorrectionAnalysisAvailable
+        && previewAvailable
+        && certifiedCorrectionPresentation
+          ? false
+          : undefined
       }
       data-angle-mode={hingeAngles ? 'per-hinge' : 'uniform'}
       data-angle-drag-mapping={
@@ -3964,6 +4355,14 @@ export function FoldPreview({
                 移動経路｜{motionBadgeText}
               </span>
             ) : null}
+            {treeCorrectionAnalysisAvailable ? (
+              <span
+                className={`fold-preview-correction ${correctionAnalysisView.badgeClass}`}
+                title={correctionAnalysisView.accessibleText}
+              >
+                補正解析｜{correctionAnalysisView.badgeText}
+              </span>
+            ) : null}
           </div>
         ) : null}
         {previewAvailable && motionDetail ? (
@@ -3992,6 +4391,11 @@ export function FoldPreview({
       {previewAvailable && motionView ? (
         <span className="visually-hidden" aria-live="polite" aria-atomic="true">
           {motionView.terminalAnnouncement ?? ''}
+        </span>
+      ) : null}
+      {previewAvailable && treeCorrectionAnalysisAvailable ? (
+        <span className="visually-hidden" aria-live="polite" aria-atomic="true">
+          {correctionAnalysisView.liveText}
         </span>
       ) : null}
       {previewAvailable ? (

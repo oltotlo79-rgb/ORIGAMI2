@@ -34,6 +34,7 @@ const DEFAULT_MAX_INTERVAL_TESTS = 2_048
 const DEFAULT_MAX_DEPTH = 24
 const MAX_INTERVAL_TESTS = 1_000_000
 const MAX_REASON_LENGTH = 512
+const isSafeIntegerIntrinsic = Number.isSafeInteger
 
 export type FoldPreviewTreeSingleHingeStaticCandidatePathOptions =
   Readonly<{
@@ -75,6 +76,20 @@ type SourceIdentity = Readonly<{
 
 export type FoldPreviewTreeSingleHingeStaticCandidatePathWorkBounds =
   Readonly<{
+    /** Synchronous stages below prevent a whole-step wall-clock claim. */
+    entireStepTimeBounded: false
+    /**
+     * Context, source identity, partition, candidate, and analyzer validation
+     * are synchronous factory work.
+     */
+    synchronousFactoryPreparation: true
+    /**
+     * The active continuous-collision child factory runs synchronously in a
+     * dedicated outer preparation step.
+     */
+    synchronousChildJobPreparation: true
+    /** Successful certificate construction and deep freezing are synchronous. */
+    synchronousResultFinalization: true
     candidateCount: number
     maximumCumulativeIntervalTests: number
     maximumCumulativeIntervalPairVisits: number
@@ -198,11 +213,17 @@ export function isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundT
   }
 }
 
+export type FoldPreviewTreeSingleHingeStaticCandidatePathPhase =
+  | 'candidate_preparation'
+  | 'candidate_analysis'
+
 export type FoldPreviewTreeSingleHingeStaticCandidatePathStep =
   | Readonly<{
       version:
         typeof FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION
       kind: 'pending'
+      /** The operation that the next successful `step` call will perform. */
+      phase: FoldPreviewTreeSingleHingeStaticCandidatePathPhase
       sourceIdentity: SourceIdentity
       completedAttempts:
         readonly FoldPreviewTreeSingleHingeStaticCandidatePathAttempt[]
@@ -259,7 +280,13 @@ export type FoldPreviewTreeSingleHingeStaticCandidatePathStep =
 
 export type FoldPreviewTreeSingleHingeStaticCandidatePathJob =
   Readonly<{
+    /**
+     * Delegates at most `workBudget` interval tests to the active child.
+     * Candidate preparation is a separate synchronous step and may therefore
+     * return pending with zero newly metered interval work.
+     */
     step(workBudget: number): FoldPreviewTreeSingleHingeStaticCandidatePathStep
+    workBounds: FoldPreviewTreeSingleHingeStaticCandidatePathWorkBounds
     cancel(): void
   }>
 
@@ -277,10 +304,24 @@ type ResolvedOptions = Readonly<{
   maxPointTriangleTests: number
 }>
 
+type ActiveCandidateJob = {
+  job: FoldPreviewContinuousMotionJob<
+    FoldPreviewTreeSingleHingeContinuousBlocker
+  >
+  inFlightBudget: number | null
+}
+
 const UNCERTIFIED_SAFETY: UncertifiedSafety = Object.freeze({
   continuousCandidatePathCertified: false,
   sceneApplied: false,
   autoApplicable: false,
+})
+
+const ZERO_STATS: FoldPreviewContinuousMotionStats = Object.freeze({
+  intervalTests: 0,
+  pointTests: 0,
+  pointCacheHits: 0,
+  maximumDepthReached: 0,
 })
 
 /**
@@ -356,27 +397,13 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
     )
     if (!workBounds) return null
 
-    const innerJobs: FoldPreviewContinuousMotionJob<
-      FoldPreviewTreeSingleHingeContinuousBlocker
-    >[] = []
-    for (const candidate of preparedCandidates) {
-      const innerJob = analyzer.createJob(
-        sourceAngles,
-        candidate.snapshot.selectedAngleDegrees,
-        context.collisionThickness,
-        resolvedOptions.inner,
-      )
-      if (!innerJob) {
-        for (const existing of innerJobs) existing.cancel()
-        return null
-      }
-      innerJobs.push(innerJob)
-    }
-
     const sourceAngleSnapshot = copyAngles(sourceAngles)
     const attempts:
       FoldPreviewTreeSingleHingeStaticCandidatePathAttempt[] = []
     let activeIndex = 0
+    let phase: FoldPreviewTreeSingleHingeStaticCandidatePathPhase =
+      'candidate_preparation'
+    let activeJob: ActiveCandidateJob | null = null
     let activeStats = zeroStats()
     let activeCertifiedSafeThrough = 0
     let cancelled = false
@@ -384,20 +411,94 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
     let terminal: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null =
       null
 
-    const cancelAll = () => {
-      for (const innerJob of innerJobs) {
-        try {
-          innerJob.cancel()
-        } catch {
-          // Cancellation remains best effort inside this analysis boundary.
-        }
+    const cancelActiveJob = () => {
+      try {
+        activeJob?.job.cancel()
+      } catch {
+        // Parent cancellation remains authoritative at this boundary.
       }
     }
     const finish = (
       value: FoldPreviewTreeSingleHingeStaticCandidatePathStep,
     ) => {
-      terminal = deepFreeze(value)
+      if (terminal) return terminal
+      const snapshot = deepFreeze(value)
+      if (terminal) return terminal
+      if (cancelled && snapshot.kind !== 'cancelled') {
+        return finish({
+          version:
+            FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
+          kind: 'cancelled',
+          sourceIdentity,
+          completedAttempts: [...attempts],
+          aggregateStats: aggregateStats(attempts, activeStats),
+          workBounds,
+          safety: UNCERTIFIED_SAFETY,
+        })
+      }
+      terminal = snapshot
       return terminal
+    }
+    const accountInnerStep = (
+      rawStep: unknown,
+      delegatedBudget: number,
+    ):
+      | Readonly<{
+          kind: 'accepted'
+          step: NonNullable<ReturnType<typeof snapshotInnerStep>>
+        }>
+      | Readonly<{ kind: 'malformed' }>
+      | Readonly<{ kind: 'work_accounting_error' }> => {
+      const step = snapshotInnerStep(rawStep)
+      if (!step) return { kind: 'malformed' }
+      const intervalDelta =
+        step.stats.intervalTests - activeStats.intervalTests
+      if (
+        !statsMonotonic(activeStats, step.stats)
+        || step.certifiedSafeThrough < activeCertifiedSafeThrough
+        || !isSafeIntegerIntrinsic(intervalDelta)
+        || intervalDelta < 0
+        || intervalDelta > delegatedBudget
+        || !statsWithinChildBounds(step.stats, resolvedOptions)
+      ) return { kind: 'work_accounting_error' }
+      const nextAggregate = aggregateStats(attempts, step.stats)
+      if (
+        nextAggregate.intervalTests
+          > workBounds.maximumCumulativeIntervalTests
+      ) return { kind: 'work_accounting_error' }
+      activeStats = step.stats
+      activeCertifiedSafeThrough = step.certifiedSafeThrough
+      return { kind: 'accepted', step }
+    }
+    const observeCancelledActiveJob = () => {
+      const child = activeJob
+      if (!child) return
+      const delegatedBudget = child.inFlightBudget ?? 0
+      try {
+        child.job.cancel()
+      } catch {
+        // Cancellation remains authoritative even if the child is hostile.
+      }
+      try {
+        accountInnerStep(child.job.step(1), delegatedBudget)
+      } catch {
+        // A throwing child cannot overturn parent cancellation.
+      }
+    }
+    const terminalCancelled = () => {
+      cancelled = true
+      cancelActiveJob()
+      observeCancelledActiveJob()
+      return finish({
+        version:
+          FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
+        kind: 'cancelled',
+        sourceIdentity,
+        completedAttempts: [...attempts],
+        aggregateStats: aggregateStats(attempts, activeStats),
+        workBounds,
+        safety: UNCERTIFIED_SAFETY,
+      })
     }
     const terminalFailure = (
       reason: Extract<
@@ -405,7 +506,10 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
         { kind: 'indeterminate' }
       >['reason'],
     ) => {
-      cancelAll()
+      cancelActiveJob()
+      observeCancelledActiveJob()
+      if (terminal) return terminal
+      if (cancelled) return terminalCancelled()
       return finish({
         version:
           FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
@@ -418,27 +522,20 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
         safety: UNCERTIFIED_SAFETY,
       })
     }
-    const terminalCancelled = () => finish({
-      version:
-        FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
-      kind: 'cancelled',
-      sourceIdentity,
-      completedAttempts: [...attempts],
-      aggregateStats: aggregateStats(attempts, activeStats),
-      workBounds,
-      safety: UNCERTIFIED_SAFETY,
-    })
     const pending = (
       certifiedSafeThrough: number,
     ): FoldPreviewTreeSingleHingeStaticCandidatePathStep => {
+      if (terminal) return terminal
+      if (cancelled) return terminalCancelled()
       const activeCandidate = preparedCandidates[activeIndex]
       if (!activeCandidate) {
         return terminalFailure('malformed_candidate_step')
       }
-      return deepFreeze({
+      const snapshot = deepFreeze({
         version:
           FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
         kind: 'pending',
+        phase,
         sourceIdentity,
         completedAttempts: [...attempts],
         activeCandidate: activeCandidate.snapshot,
@@ -446,134 +543,198 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
         aggregateStats: aggregateStats(attempts, activeStats),
         workBounds,
         safety: UNCERTIFIED_SAFETY,
-      })
+      } satisfies Extract<
+        FoldPreviewTreeSingleHingeStaticCandidatePathStep,
+        { kind: 'pending' }
+      >)
+      if (terminal) return terminal
+      return cancelled ? terminalCancelled() : snapshot
+    }
+    const prepareActiveJob = () => {
+      const activeCandidate = preparedCandidates[activeIndex]
+      if (!activeCandidate) {
+        return terminalFailure('malformed_candidate_step')
+      }
+      let innerJob: FoldPreviewContinuousMotionJob<
+        FoldPreviewTreeSingleHingeContinuousBlocker
+      > | null
+      try {
+        innerJob = analyzer.createJob(
+          sourceAngles,
+          activeCandidate.snapshot.selectedAngleDegrees,
+          context.collisionThickness,
+          resolvedOptions.inner,
+        )
+      } catch {
+        innerJob = null
+      }
+      if (terminal) {
+        try {
+          innerJob?.cancel()
+        } catch {
+          // The already-published terminal remains authoritative.
+        }
+        return terminal
+      }
+      if (cancelled) {
+        try {
+          innerJob?.cancel()
+        } catch {
+          // Parent cancellation remains authoritative.
+        }
+        return terminalCancelled()
+      }
+      if (!innerJob) return terminalFailure('candidate_job_error')
+      activeJob = {
+        job: innerJob,
+        inFlightBudget: null,
+      }
+      phase = 'candidate_analysis'
+      return pending(0)
+    }
+    const finalizeCertificate = (
+      activeCandidate: PreparedCandidate,
+      step: Extract<
+        NonNullable<ReturnType<typeof snapshotInnerStep>>,
+        { kind: 'clear' }
+      >,
+    ) => {
+      try {
+        const aggregate = aggregateStats(attempts, step.stats)
+        const certificate = deepFreeze({
+          version:
+            FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
+          kind: 'continuously_certified_static_candidate',
+          sourceIdentity,
+          selectedCandidate: activeCandidate.snapshot,
+          path: {
+            interpolation: 'selected_hinge_linear_angle_v1',
+            sourceSelectedAngleDegrees:
+              sourceIdentity.sourceSelectedAngleDegrees,
+            targetSelectedAngleDegrees:
+              activeCandidate.snapshot.selectedAngleDegrees,
+            sourceAngles: copyAngles(sourceAngleSnapshot),
+            targetAngles: copyAngles(
+              activeCandidate.snapshot.appliedAngles,
+            ),
+            sourcePoseRequestKey: sourceIdentity.sourcePoseRequestKey,
+            targetPoseRequestKey: activeCandidate.snapshot.poseRequestKey,
+            certifiedSafeThrough: 1,
+            stopTime: 1,
+            stats: step.stats,
+          },
+          staticAnalysis: copyStaticAnalysis(activeCandidate.staticAnalysis),
+          precedingAttempts: [...attempts],
+          aggregateStats: aggregate,
+          workBounds,
+          safety: {
+            modelIdentityBound: true,
+            sourcePoseIdentityVerified: true,
+            candidatePoseIdentityVerified: true,
+            partitionRevalidated: true,
+            completeLegalAngleVectorGenerated: true,
+            legalCorrectionPoseGenerated: true,
+            collisionConstraintsRevalidated: true,
+            hingeContactPolicySatisfied: true,
+            wholeSceneStaticClear: true,
+            staticCandidateRevalidated: true,
+            continuousCandidatePathCertified: true,
+            runtimeRequestBound: false,
+            startScenePoseMatched: false,
+            sceneApplied: false,
+            autoApplicable: false,
+          },
+        }) satisfies
+          FoldPreviewTreeSingleHingeStaticCandidatePathCertificate
+        const provenance = Object.freeze({
+          context,
+          sourcePoseRequestKey: sourceIdentity.sourcePoseRequestKey,
+          targetPoseRequestKey: activeCandidate.snapshot.poseRequestKey,
+          sourceAngles: copyAngles(sourceAngleSnapshot),
+          targetAngles: copyAngles(activeCandidate.snapshot.appliedAngles),
+          candidateRank: activeCandidate.snapshot.rank,
+        })
+        const published = finish({
+          version:
+            FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
+          kind: 'certified',
+          certificate,
+        })
+        if (
+          published.kind === 'certified'
+          && published.certificate === certificate
+        ) {
+          staticCandidatePathCertificateProvenance.set(
+            certificate,
+            provenance,
+          )
+        }
+        return published
+      } catch {
+        if (terminal) return terminal
+        if (cancelled) return terminalCancelled()
+        return terminalFailure('candidate_job_error')
+      }
     }
 
     return Object.freeze({
+      workBounds,
       step(
         workBudget: number,
       ): FoldPreviewTreeSingleHingeStaticCandidatePathStep {
         if (terminal) return terminal
         if (cancelled) return terminalCancelled()
-        if (stepping) {
-          cancelled = true
-          cancelAll()
-          return terminalCancelled()
-        }
-        if (!Number.isSafeInteger(workBudget) || workBudget <= 0) {
-          return terminalFailure('invalid_work_budget')
-        }
-        const activeCandidate = preparedCandidates[activeIndex]
-        const innerJob = innerJobs[activeIndex]
-        if (!activeCandidate || !innerJob) {
-          return terminalFailure('malformed_candidate_step')
-        }
-
+        if (stepping) return terminalCancelled()
         stepping = true
         try {
-          let rawStep: unknown
-          try {
-            rawStep = innerJob.step(workBudget)
-          } catch {
-            return terminalFailure('candidate_job_error')
-          }
+          const validWorkBudget =
+            Number.isSafeInteger(workBudget) && workBudget > 0
           if (terminal) return terminal
           if (cancelled) return terminalCancelled()
-          const step = snapshotInnerStep(rawStep)
-          if (!step) return terminalFailure('malformed_candidate_step')
-          if (
-            !statsMonotonic(activeStats, step.stats)
-            || step.certifiedSafeThrough < activeCertifiedSafeThrough
-            || step.stats.intervalTests - activeStats.intervalTests
-              > workBudget
-            || step.stats.intervalTests > resolvedOptions.maxIntervalTests
-            || step.stats.maximumDepthReached > resolvedOptions.maxDepth
-          ) {
+          if (!validWorkBudget) {
+            return terminalFailure('invalid_work_budget')
+          }
+          if (phase === 'candidate_preparation') {
+            return prepareActiveJob()
+          }
+          const activeCandidate = preparedCandidates[activeIndex]
+          const child = activeJob
+          if (!activeCandidate || !child) {
+            return terminalFailure('malformed_candidate_step')
+          }
+          child.inFlightBudget = workBudget
+          let rawStep: unknown
+          try {
+            rawStep = child.job.step(workBudget)
+          } catch {
+            cancelActiveJob()
+            observeCancelledActiveJob()
+            child.inFlightBudget = null
+            if (terminal) return terminal
+            return cancelled
+              ? terminalCancelled()
+              : terminalFailure('candidate_job_error')
+          }
+          const accounted = accountInnerStep(rawStep, workBudget)
+          child.inFlightBudget = null
+          if (terminal) return terminal
+          if (cancelled) return terminalCancelled()
+          if (accounted.kind === 'malformed') {
+            return terminalFailure('malformed_candidate_step')
+          }
+          if (accounted.kind === 'work_accounting_error') {
             return terminalFailure('work_accounting_error')
           }
-          activeStats = step.stats
-          activeCertifiedSafeThrough = step.certifiedSafeThrough
+          const step = accounted.step
 
           if (step.kind === 'pending') {
             return pending(step.certifiedSafeThrough)
           }
           if (step.kind === 'clear') {
-            const aggregate = aggregateStats(attempts, step.stats)
-            const certificate = deepFreeze({
-              version:
-                FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
-              kind: 'continuously_certified_static_candidate',
-              sourceIdentity,
-              selectedCandidate: activeCandidate.snapshot,
-              path: {
-                interpolation: 'selected_hinge_linear_angle_v1',
-                sourceSelectedAngleDegrees:
-                  sourceIdentity.sourceSelectedAngleDegrees,
-                targetSelectedAngleDegrees:
-                  activeCandidate.snapshot.selectedAngleDegrees,
-                sourceAngles: copyAngles(sourceAngleSnapshot),
-                targetAngles: copyAngles(
-                  activeCandidate.snapshot.appliedAngles,
-                ),
-                sourcePoseRequestKey:
-                  sourceIdentity.sourcePoseRequestKey,
-                targetPoseRequestKey:
-                  activeCandidate.snapshot.poseRequestKey,
-                certifiedSafeThrough: 1,
-                stopTime: 1,
-                stats: step.stats,
-              },
-              staticAnalysis: copyStaticAnalysis(
-                activeCandidate.staticAnalysis,
-              ),
-              precedingAttempts: [...attempts],
-              aggregateStats: aggregate,
-              workBounds,
-              safety: {
-                modelIdentityBound: true,
-                sourcePoseIdentityVerified: true,
-                candidatePoseIdentityVerified: true,
-                partitionRevalidated: true,
-                completeLegalAngleVectorGenerated: true,
-                legalCorrectionPoseGenerated: true,
-                collisionConstraintsRevalidated: true,
-                hingeContactPolicySatisfied: true,
-                wholeSceneStaticClear: true,
-                staticCandidateRevalidated: true,
-                continuousCandidatePathCertified: true,
-                runtimeRequestBound: false,
-                startScenePoseMatched: false,
-                sceneApplied: false,
-                autoApplicable: false,
-              },
-            }) satisfies
-              FoldPreviewTreeSingleHingeStaticCandidatePathCertificate
-            staticCandidatePathCertificateProvenance.set(
-              certificate,
-              Object.freeze({
-                context,
-                sourcePoseRequestKey:
-                  sourceIdentity.sourcePoseRequestKey,
-                targetPoseRequestKey:
-                  activeCandidate.snapshot.poseRequestKey,
-                sourceAngles: copyAngles(sourceAngleSnapshot),
-                targetAngles: copyAngles(
-                  activeCandidate.snapshot.appliedAngles,
-                ),
-                candidateRank: activeCandidate.snapshot.rank,
-              }),
-            )
-            cancelRemaining(innerJobs, activeIndex + 1)
-            return finish({
-              version:
-                FOLD_PREVIEW_TREE_SINGLE_HINGE_STATIC_CANDIDATE_PATH_VERSION,
-              kind: 'certified',
-              certificate,
-            })
+            activeJob = null
+            return finalizeCertificate(activeCandidate, step)
           }
           if (step.kind === 'cancelled') {
-            cancelled = true
-            cancelAll()
             return terminalCancelled()
           }
           const attempt = step.kind === 'blocked'
@@ -582,8 +743,11 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
           if (!attempt) {
             return terminalFailure('malformed_candidate_step')
           }
+          if (terminal) return terminal
+          if (cancelled) return terminalCancelled()
           attempts.push(attempt)
           activeIndex += 1
+          activeJob = null
           activeStats = zeroStats()
           activeCertifiedSafeThrough = 0
           if (activeIndex >= preparedCandidates.length) {
@@ -598,7 +762,12 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
               safety: UNCERTIFIED_SAFETY,
             })
           }
+          phase = 'candidate_preparation'
           return pending(0)
+        } catch {
+          if (terminal) return terminal
+          if (cancelled) return terminalCancelled()
+          return terminalFailure('candidate_job_error')
         } finally {
           stepping = false
         }
@@ -606,7 +775,7 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
       cancel() {
         if (terminal || cancelled) return
         cancelled = true
-        cancelAll()
+        cancelActiveJob()
       },
     })
   } catch {
@@ -844,6 +1013,10 @@ function createWorkBounds(
     || maximumCumulativePointTriangleTests === null
   ) return null
   return Object.freeze({
+    entireStepTimeBounded: false,
+    synchronousFactoryPreparation: true,
+    synchronousChildJobPreparation: true,
+    synchronousResultFinalization: true,
     candidateCount,
     maximumCumulativeIntervalTests,
     maximumCumulativeIntervalPairVisits,
@@ -1107,13 +1280,19 @@ function statsMonotonic(
     && next.maximumDepthReached >= previous.maximumDepthReached
 }
 
+function statsWithinChildBounds(
+  stats: FoldPreviewContinuousMotionStats,
+  options: ResolvedOptions,
+) {
+  const maximumPointEvents = options.maxIntervalTests + 2
+  return stats.intervalTests <= options.maxIntervalTests
+    && stats.pointTests <= maximumPointEvents
+    && stats.pointCacheHits <= maximumPointEvents
+    && stats.maximumDepthReached <= options.maxDepth
+}
+
 function zeroStats(): FoldPreviewContinuousMotionStats {
-  return Object.freeze({
-    intervalTests: 0,
-    pointTests: 0,
-    pointCacheHits: 0,
-    maximumDepthReached: 0,
-  })
+  return ZERO_STATS
 }
 
 function copyStaticAnalysis(
@@ -1194,7 +1373,7 @@ function validText(value: unknown): value is string {
 }
 
 function validCount(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0
+  return isSafeIntegerIntrinsic(value) && (value as number) >= 0
 }
 
 function boundedProduct(first: number, second: number) {
@@ -1210,26 +1389,13 @@ function boundedProduct(first: number, second: number) {
 }
 
 function boundedSum(first: number, second: number) {
-  return Number.isSafeInteger(first)
+  return isSafeIntegerIntrinsic(first)
     && first >= 0
-    && Number.isSafeInteger(second)
+    && isSafeIntegerIntrinsic(second)
     && second >= 0
     && second <= Number.MAX_SAFE_INTEGER - first
     ? first + second
     : Number.MAX_SAFE_INTEGER
-}
-
-function cancelRemaining(
-  jobs: readonly Readonly<{ cancel(): void }>[],
-  startIndex: number,
-) {
-  for (let index = startIndex; index < jobs.length; index += 1) {
-    try {
-      jobs[index]?.cancel()
-    } catch {
-      // A certified earlier candidate remains authoritative.
-    }
-  }
 }
 
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {

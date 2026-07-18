@@ -54,6 +54,10 @@ export type FoldPreviewTreeSingleHingeStaticCandidatePathPresentation =
       fullScanSatSeparatedPairCount: number
     }>
     workBounds: Readonly<{
+      entireStepTimeBounded: false
+      synchronousFactoryPreparation: true
+      synchronousChildJobPreparation: true
+      synchronousResultFinalization: true
       candidateCount: number
       maximumCumulativeIntervalTests: number
       maximumCumulativeIntervalPairVisits: number
@@ -156,6 +160,10 @@ export function createFoldPreviewTreeSingleHingeStaticCandidatePathPresentation(
           value.staticAnalysis.fullScanSatSeparatedPairCount,
       },
       workBounds: {
+        entireStepTimeBounded: false,
+        synchronousFactoryPreparation: true,
+        synchronousChildJobPreparation: true,
+        synchronousResultFinalization: true,
         candidateCount: value.workBounds.candidateCount,
         maximumCumulativeIntervalTests:
           value.workBounds.maximumCumulativeIntervalTests,
@@ -276,7 +284,11 @@ function validWorkBounds(
   certificate: FoldPreviewTreeSingleHingeStaticCandidatePathCertificate,
 ) {
   const bounds = certificate.workBounds
-  return validPositiveInteger(bounds.candidateCount)
+  return bounds.entireStepTimeBounded === false
+    && bounds.synchronousFactoryPreparation === true
+    && bounds.synchronousChildJobPreparation === true
+    && bounds.synchronousResultFinalization === true
+    && validPositiveInteger(bounds.candidateCount)
     && validPositiveInteger(bounds.maximumCumulativeIntervalTests)
     && validPositiveInteger(bounds.maximumCumulativeIntervalPairVisits)
     && validPositiveInteger(bounds.maximumCumulativePointTriangleTests)

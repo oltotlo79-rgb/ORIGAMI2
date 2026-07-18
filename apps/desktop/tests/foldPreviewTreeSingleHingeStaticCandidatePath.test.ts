@@ -7,6 +7,7 @@ import {
   isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext,
   type FoldPreviewTreeSingleHingeStaticCandidatePathJob,
   type FoldPreviewTreeSingleHingeStaticCandidatePathOptions,
+  type FoldPreviewTreeSingleHingeStaticCandidatePathStep,
 } from '../src/lib/foldPreviewTreeSingleHingeStaticCandidatePath.ts'
 import {
   deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates,
@@ -140,6 +141,10 @@ test('the source vector reaches the ordinary static candidate with bound identit
   assert.deepEqual(certificate.precedingAttempts, [])
   assert.deepEqual(certificate.aggregateStats, certificate.path.stats)
   assert.deepEqual(certificate.workBounds, {
+    entireStepTimeBounded: false,
+    synchronousFactoryPreparation: true,
+    synchronousChildJobPreparation: true,
+    synchronousResultFinalization: true,
     candidateCount: 1,
     maximumCumulativeIntervalTests: 2_048,
     maximumCumulativeIntervalPairVisits: 1_000_000,
@@ -274,14 +279,23 @@ test('step one is incremental and a terminal result retains one reference', () =
   const first = job.step(1)
   assert.equal(first.kind, 'pending')
   if (first.kind === 'pending') {
+    assert.equal(first.phase, 'candidate_analysis')
     assert.equal(first.activeCandidate.rank, 1)
     assert.equal(first.certifiedSafeThrough, 0)
-    assert.equal(first.aggregateStats.intervalTests, 1)
+    assert.equal(first.aggregateStats.intervalTests, 0)
     assert.equal(first.workBounds.candidateCount, 1)
+    assert.strictEqual(first.workBounds, job.workBounds)
     assert.deepEqual(first.completedAttempts, [])
   }
 
-  let terminal = first
+  const second = job.step(1)
+  assert.equal(second.kind, 'pending')
+  if (second.kind === 'pending') {
+    assert.equal(second.phase, 'candidate_analysis')
+    assert.equal(second.aggregateStats.intervalTests, 1)
+  }
+
+  let terminal = second
   for (let index = 0; index < 100 && terminal.kind === 'pending'; index += 1) {
     terminal = job.step(1)
   }
@@ -289,6 +303,160 @@ test('step one is incremental and a terminal result retains one reference', () =
   assert.strictEqual(job.step(1), terminal)
   assert.doesNotThrow(() => job.cancel())
   assert.strictEqual(job.step(32), terminal)
+})
+
+test('chunk sizes preserve the same certified path and aggregate work', () => {
+  const fixture = correctionFixture()
+  const expectedJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+    )
+  assert.ok(expectedJob)
+  const expected = runPath(expectedJob, Number.MAX_SAFE_INTEGER)
+  assert.equal(expected.kind, 'certified')
+
+  for (const workBudget of [1, 2, 17, Number.MAX_SAFE_INTEGER]) {
+    const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+    )
+    assert.ok(job)
+    const terminal = runPath(job, workBudget)
+    assert.deepEqual(terminal, expected)
+    assert.strictEqual(job.step(1), terminal)
+  }
+})
+
+test('later candidates are prepared only after an explicit phase boundary', () => {
+  const fixture = correctionFixture({
+    correctionClearance: 0.15,
+    maximumTranslation: 2,
+  })
+  assert.equal(fixture.staticCandidates.candidates.length, 2)
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+    { maxIntervalTests: 1 },
+  )
+  assert.ok(job)
+  assert.equal(job.workBounds.candidateCount, 2)
+
+  const firstPrepared = job.step(1)
+  assert.equal(firstPrepared.kind, 'pending')
+  assert.equal(firstPrepared.phase, 'candidate_analysis')
+  assert.equal(firstPrepared.activeCandidate.rank, 1)
+  assert.equal(firstPrepared.aggregateStats.intervalTests, 0)
+
+  const firstProgress = job.step(1)
+  assert.equal(firstProgress.kind, 'pending')
+  assert.equal(firstProgress.phase, 'candidate_analysis')
+  assert.equal(firstProgress.activeCandidate.rank, 1)
+  assert.equal(firstProgress.aggregateStats.intervalTests, 1)
+
+  const secondBoundary = job.step(1)
+  assert.equal(secondBoundary.kind, 'pending')
+  assert.equal(secondBoundary.phase, 'candidate_preparation')
+  assert.equal(secondBoundary.activeCandidate.rank, 2)
+  assert.equal(secondBoundary.completedAttempts.length, 1)
+  assert.equal(secondBoundary.aggregateStats.intervalTests, 1)
+
+  const secondPrepared = job.step(1)
+  assert.equal(secondPrepared.kind, 'pending')
+  assert.equal(secondPrepared.phase, 'candidate_analysis')
+  assert.equal(secondPrepared.activeCandidate.rank, 2)
+  assert.equal(secondPrepared.aggregateStats.intervalTests, 1)
+
+  const secondProgress = job.step(1)
+  assert.equal(secondProgress.kind, 'pending')
+  assert.equal(secondProgress.phase, 'candidate_analysis')
+  assert.equal(secondProgress.activeCandidate.rank, 2)
+  assert.equal(secondProgress.aggregateStats.intervalTests, 2)
+
+  const exhausted = job.step(1)
+  assert.equal(exhausted.kind, 'exhausted')
+  assert.equal(exhausted.attempts.length, 2)
+  assert.deepEqual(
+    exhausted.attempts.map((attempt) => attempt.candidate.rank),
+    [1, 2],
+  )
+  assert.equal(exhausted.aggregateStats.intervalTests, 2)
+  assert.strictEqual(job.step(17), exhausted)
+
+  const cancelledJob =
+    createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+      fixture.context,
+      fixture.staticCandidates,
+      { maxIntervalTests: 1 },
+    )
+  assert.ok(cancelledJob)
+  assert.equal(cancelledJob.step(1).kind, 'pending')
+  assert.equal(cancelledJob.step(1).kind, 'pending')
+  const boundary = cancelledJob.step(1)
+  assert.equal(boundary.kind, 'pending')
+  assert.equal(boundary.phase, 'candidate_preparation')
+  cancelledJob.cancel()
+  const cancelled = cancelledJob.step(1)
+  assert.equal(cancelled.kind, 'cancelled')
+  assert.equal(cancelled.completedAttempts.length, 1)
+  assert.equal(cancelled.aggregateStats.intervalTests, 1)
+})
+
+test('candidate rollover has no reentrant zero-stats finalization window', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture({
+    correctionClearance: 0.15,
+    maximumTranslation: 2,
+  })
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+    { maxIntervalTests: 1 },
+  )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalFreeze = Object.freeze
+  let completedAttemptSeen = false
+  let zeroStatsFinalizationCalls = 0
+  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
+  Object.freeze = ((value: object) => {
+    const record = value as Record<PropertyKey, unknown>
+    if (
+      record.kind === 'indeterminate'
+      && record.candidate !== undefined
+    ) {
+      completedAttemptSeen = true
+    } else if (
+      completedAttemptSeen
+      && record.intervalTests === 0
+      && record.pointTests === 0
+      && record.pointCacheHits === 0
+      && record.maximumDepthReached === 0
+    ) {
+      zeroStatsFinalizationCalls += 1
+      nested ??= job.step(1)
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+  let boundary: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    boundary = job.step(1)
+  } finally {
+    Object.freeze = originalFreeze
+  }
+
+  assert.equal(completedAttemptSeen, true)
+  assert.equal(zeroStatsFinalizationCalls, 0)
+  assert.equal(nested, null)
+  assert.equal(boundary.kind, 'pending')
+  if (boundary.kind === 'pending') {
+    assert.equal(boundary.phase, 'candidate_preparation')
+    assert.equal(boundary.completedAttempts.length, 1)
+    assert.equal(boundary.aggregateStats.intervalTests, 1)
+  }
 })
 
 test('a tight interval cap exhausts the genuine candidate without partial success', () => {
@@ -409,6 +577,7 @@ test('cancellation and invalid work budgets become permanent fail-closed termina
   )
   assert.ok(cancelledJob)
   assert.equal(cancelledJob.step(1).kind, 'pending')
+  assert.equal(cancelledJob.step(1).kind, 'pending')
   cancelledJob.cancel()
   const cancelled = cancelledJob.step(1)
   assert.equal(cancelled.kind, 'cancelled')
@@ -452,6 +621,223 @@ test('cancellation and invalid work budgets become permanent fail-closed termina
     }
     assert.strictEqual(job.step(1), result)
   }
+})
+
+test('budget-validation reentry cancels before interval work is charged', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+  )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalIsSafeInteger = Number.isSafeInteger
+  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
+  let reentered = false
+  Number.isSafeInteger = function isSafeInteger(value: unknown) {
+    if (!reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalIsSafeInteger(value)
+  }
+  let outer: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Number.isSafeInteger = originalIsSafeInteger
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.equal(outer.aggregateStats.intervalTests, 0)
+  assert.strictEqual(job.step(1), outer)
+})
+
+test('charged child reentry is reconciled before cancellation publishes', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+  )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalFreeze = Object.freeze
+  const originalHypot = Math.hypot
+  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
+  let initialPointWasSafe = false
+  let reentered = false
+  Object.freeze = ((value: object) => {
+    if (
+      (value as Record<PropertyKey, unknown>).kind === 'safe'
+    ) {
+      initialPointWasSafe = true
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+  Math.hypot = (...values: number[]) => {
+    if (initialPointWasSafe && !reentered) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalHypot(...values)
+  }
+  let outer: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Math.hypot = originalHypot
+    Object.freeze = originalFreeze
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.equal(outer.aggregateStats.intervalTests, 1)
+  assert.strictEqual(job.step(1), outer)
+  assertDeeplyFrozen(outer)
+})
+
+test('child cancellation outranks a charged classifier throw', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+  )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalFreeze = Object.freeze
+  const originalHypot = Math.hypot
+  let initialPointWasSafe = false
+  Object.freeze = ((value: object) => {
+    if (
+      (value as Record<PropertyKey, unknown>).kind === 'safe'
+    ) {
+      initialPointWasSafe = true
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+  Math.hypot = (...values: number[]) => {
+    if (initialPointWasSafe) {
+      job.cancel()
+      throw new Error('charged path cancellation')
+    }
+    return originalHypot(...values)
+  }
+  let terminal: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    terminal = job.step(1)
+  } finally {
+    Math.hypot = originalHypot
+    Object.freeze = originalFreeze
+  }
+
+  assert.equal(terminal.kind, 'cancelled')
+  assert.equal(terminal.aggregateStats.intervalTests, 1)
+  assert.strictEqual(job.step(1), terminal)
+  assertDeeplyFrozen(terminal)
+})
+
+test('pending finalization reentry cannot return a stale pending snapshot', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+  )
+  assert.ok(job)
+
+  const originalFreeze = Object.freeze
+  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
+  let reentered = false
+  Object.freeze = ((value: object) => {
+    const record = value as Record<PropertyKey, unknown>
+    if (
+      !reentered
+      && record.kind === 'pending'
+      && record.phase === 'candidate_analysis'
+    ) {
+      reentered = true
+      nested = job.step(1)
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+  let outer: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    outer = job.step(1)
+  } finally {
+    Object.freeze = originalFreeze
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.equal(outer.aggregateStats.intervalTests, 0)
+  assert.strictEqual(job.step(1), outer)
+})
+
+test('certificate finalization reentry publishes no certificate provenance', {
+  concurrency: false,
+}, () => {
+  const fixture = correctionFixture()
+  const job = createFoldPreviewTreeSingleHingeStaticCandidatePathJob(
+    fixture.context,
+    fixture.staticCandidates,
+  )
+  assert.ok(job)
+  assert.equal(job.step(1).kind, 'pending')
+
+  const originalFreeze = Object.freeze
+  let nested: FoldPreviewTreeSingleHingeStaticCandidatePathStep | null = null
+  let unpublishedCertificate: unknown = null
+  let reentered = false
+  Object.freeze = ((value: object) => {
+    const record = value as Record<PropertyKey, unknown>
+    if (
+      !reentered
+      && record.kind === 'continuously_certified_static_candidate'
+    ) {
+      reentered = true
+      unpublishedCertificate = value
+      nested = job.step(1)
+    }
+    return originalFreeze(value)
+  }) as typeof Object.freeze
+  let outer: FoldPreviewTreeSingleHingeStaticCandidatePathStep
+  try {
+    outer = job.step(Number.MAX_SAFE_INTEGER)
+  } finally {
+    Object.freeze = originalFreeze
+  }
+
+  assert.equal(reentered, true)
+  assert.ok(nested)
+  assert.equal(nested.kind, 'cancelled')
+  assert.strictEqual(outer, nested)
+  assert.ok(unpublishedCertificate)
+  assert.equal(
+    isFoldPreviewTreeSingleHingeStaticCandidatePathCertificateBoundToContext(
+      fixture.context,
+      unpublishedCertificate,
+    ),
+    false,
+  )
+  assertDeeplyFrozen(unpublishedCertificate)
+  assert.strictEqual(job.step(1), outer)
 })
 
 test('certificate provenance binds only the exact clear result and context', () => {
@@ -672,6 +1058,9 @@ type FixtureOptions = Readonly<{
   startSelectedAngleDegrees?: number
   frozenAngleDegrees?: number
   blockingTargetAngleDegrees?: number
+  correctionClearance?: number
+  maximumTranslation?: number
+  maximumAngleDeltaDegrees?: number
 }>
 
 function correctionFixture(options: FixtureOptions = {}) {
@@ -716,9 +1105,10 @@ function correctionFixture(options: FixtureOptions = {}) {
     deriveFoldPreviewTreeSingleHingeStaticCorrectionCandidates(
       context,
       binding,
-      CLEARANCE,
-      MAXIMUM_TRANSLATION,
-      MAXIMUM_ANGLE_DELTA_DEGREES,
+      options.correctionClearance ?? CLEARANCE,
+      options.maximumTranslation ?? MAXIMUM_TRANSLATION,
+      options.maximumAngleDeltaDegrees
+        ?? MAXIMUM_ANGLE_DELTA_DEGREES,
     )
   assert.ok(staticCandidates)
   return {

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { RgbaColor } from '../lib/coreClient'
+import { reportUnexpected } from '../lib/diagnostics'
 import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
@@ -617,6 +618,7 @@ export function FoldPreview({
         }
       }
     } catch {
+      reportUnexpected('fold_preview.geometry')
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
       setRenderError('3D面を安全に三角形化できませんでした')
       return
@@ -1292,6 +1294,7 @@ export function FoldPreview({
         try {
           render()
         } catch {
+          reportUnexpected('fold_preview.render')
           dispose()
           setRenderError('3Dカメラ操作を安全に継続できませんでした')
         }
@@ -1687,6 +1690,7 @@ export function FoldPreview({
                   command.appliedAngles,
                 )
             } catch {
+              reportUnexpected('fold_preview.pose_application')
               applied = false
             }
             const completed = completeTreePoseApplication(
@@ -1707,6 +1711,7 @@ export function FoldPreview({
               render()
               return true
             } catch {
+              reportUnexpected('fold_preview.render')
               if (!disposed) {
                 dispose()
                 setRenderError(
@@ -3593,6 +3598,7 @@ export function FoldPreview({
           )) return
           event.preventDefault()
         } catch {
+          reportUnexpected('fold_preview.camera')
           dispose()
           setRenderError('3Dカメラ操作を安全に継続できませんでした')
         }
@@ -3615,6 +3621,7 @@ export function FoldPreview({
           resetFoldGestures('reset')
           createdSceneRuntime.resizeFromHost()
         } catch {
+          reportUnexpected('fold_preview.resize')
           dispose()
           setRenderError('3D描画を安全に継続できませんでした')
         }
@@ -3625,6 +3632,7 @@ export function FoldPreview({
       observer?.observe(host)
       render()
     } catch {
+      reportUnexpected('fold_preview.scene_initialization')
       dispose()
       setRenderError('このPCで3D描画を開始できませんでした')
       return
@@ -3652,6 +3660,7 @@ export function FoldPreview({
         throw new Error('fold pose frame could not be scheduled')
       }
     } catch {
+      reportUnexpected('fold_preview.pose_schedule')
       runtime.dispose()
       setRenderError('3D描画を安全に継続できませんでした')
     }
@@ -3676,6 +3685,7 @@ export function FoldPreview({
       runtime.updateSelection(selectedHingeId ?? null)
       runtime.render()
     } catch {
+      reportUnexpected('fold_preview.selection_render')
       runtime.dispose()
       setRenderError('3D選択表示を安全に継続できませんでした')
     }
@@ -3688,6 +3698,7 @@ export function FoldPreview({
       runtime.cancelAngleDrag()
       runtime.resetView()
     } catch {
+      reportUnexpected('fold_preview.camera')
       runtime.dispose()
       setRenderError('3Dカメラ操作を安全に継続できませんでした')
     }

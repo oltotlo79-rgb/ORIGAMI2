@@ -56,5 +56,7 @@ VAL-004を「反例検出だけ」へ正式変更すること、VAL-003を特定
 - 認定済み表示も解析専用であり、`sceneApplied: false`・`autoApplicable: false`を維持する。候補3Dプレビュー、明示適用、一般の複数ヒンジ・閉路・切断由来経路は未実装で、`no_candidate`を作品の折り不可能性とは表示しない。
 - terminalのstart角へ解析contextをrebaseする際、元の真正contextが持つexact model・tree・非選択角を保持するよう修正した。これにより、初回と同内容でも別model snapshotを発行してしまう2回目以降のrequestがterminal bindingのmodel provenanceを失う経路を閉じた。
 - frontend testの手動列挙を引用符付きglobへ置換し、新規`*.test.ts`をNode 24 CIとWindowsで自動検出するよう変更した。さらに`FoldPreview`のscene・camera・renderer・照明・grid・紙/輪郭材質をReact非依存runtimeへ分離し、authorityを持つmotion・gesture・原子的scene適用はコンポーネント側へ残した。
+- 監査の「空catchを全件`reportUnexpected(scope, error)`へ置換」は条件付き採用とした。catch件数は抽出方法と対象commitで変わり、現行の多くはキャンセル、stale、入力拒否、作業上限、判定不能、best-effort cleanupを明示的に処理している。これらを一括記録すると診断飽和と性能低下を招き、raw errorを受け取るAPIはパスや作品内容を混入させ得るためである。
+- 代わりに`reportUnexpected(scope)`だけを持つ純粋なメモリ内境界を追加した。固定15 scope、65件飽和、6段階bucket、固定順・8 KiB以下のsnapshotに限定し、生の例外、任意context、作品情報、パス、ID、座標、時刻、環境情報、通信・保存機能を持たせていない。利用者影響のあるApp/FoldPreview上位境界とpayloadを無視するglobal handlerだけへ接続し、入力/編集拒否、権限不足、破損ファイル等の想定内失敗は数えない。専用10件で許可外scope、hostile object、秘密値非混入、接続scopeを固定した。
 - 折り可能性・経路探索の領域進捗を8%から10%、全体への寄与を1.44%から1.80%へ更新した。監査再照合時の26.44%へ0.36ポイントを加え、現在の追跡値は26.80%（表示26.8%）である。MUST 86件の集計は実装済み20・部分実装23・未着手43のままで、VAL-008も部分実装を維持する。
-- 現時点の自動回帰はfrontend 700件、Rust 304件である。件数は品質確認であり、それ自体を機能完成率へ加算していない。
+- 現時点の自動回帰はfrontend 710件、Rust 304件である。件数と内部診断基盤は品質確認であり、それ自体を機能完成率へ加算していない。OPS-004〜006と全体完成率26.80%は変更しない。

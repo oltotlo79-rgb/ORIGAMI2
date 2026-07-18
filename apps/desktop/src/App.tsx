@@ -57,6 +57,7 @@ import {
   measureBenchmarkPayloadBytes,
   prepareBenchmarkRenderData,
 } from './lib/renderBenchmark'
+import { reportUnexpected } from './lib/diagnostics'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -387,7 +388,10 @@ function App() {
         applySnapshot(snapshot)
         setCoreStatus(`Rustコア revision ${snapshot.revision}`)
       })
-      .catch((error: unknown) => setCoreStatus(`コアエラー: ${String(error)}`))
+      .catch((error: unknown) => {
+        reportUnexpected('app.project_snapshot')
+        setCoreStatus(`コアエラー: ${String(error)}`)
+      })
   }, [applySnapshot])
 
   useEffect(() => {
@@ -425,6 +429,7 @@ function App() {
           || current.project_id !== expectedProjectId
           || current.revision !== expectedRevision
         ) return
+        reportUnexpected('app.topology_analysis')
         setTopologyResponse(null)
         setTopologyStatus(`3D解析エラー: ${String(error)}`)
       })
@@ -466,7 +471,10 @@ function App() {
       if (disposed) stopListening()
       else unlisten = stopListening
     }).catch((error: unknown) => {
-      if (!disposed) setCoreStatus(`終了確認の初期化エラー: ${String(error)}`)
+      if (!disposed) {
+        reportUnexpected('app.close_guard')
+        setCoreStatus(`終了確認の初期化エラー: ${String(error)}`)
+      }
     })
 
     return () => {
@@ -839,6 +847,7 @@ function App() {
         ? `revision ${result.revision}: 幾何検証に合格`
         : `revision ${result.revision}: ${result.issues.length}件の問題`)
     } catch (error) {
+      reportUnexpected('app.validation')
       setCoreStatus(`検証エラー: ${String(error)}`)
     } finally {
       coreOperationRef.current = false
@@ -1007,6 +1016,7 @@ function App() {
         + `生成+転送 ${responseMs.toFixed(1)}ms · Canvas計測中…`,
       )
     } catch (error) {
+      reportUnexpected('app.benchmark')
       setBenchmarkStatus(`ベンチマーク失敗: ${String(error)}`)
     } finally {
       setBenchmarkLoading(false)

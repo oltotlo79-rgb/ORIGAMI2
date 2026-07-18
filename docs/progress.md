@@ -20,7 +20,7 @@
 | 折り可能性・経路探索 | 18% | 10% | 1.80% | 1ヒンジCCDと、単一ヒンジ補正候補の解析専用UIを接続。候補3Dプレビュー・明示適用、川崎・前川、平坦折り、一般経路探索は未着手 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 14% | 0.70% | 高品質な`.ori2`読込・保存は実装。SVG/FOLD/DXF/OBJ/STL/glTF/PDFは未着手 |
-| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 700件・Rust 304件とWindows/macOS CIは実装。i18n、設定、診断、更新、GitHub Releases配布を残す |
+| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 710件・Rust 304件とWindows/macOS CI、メモリ内redacted diagnostics基盤は実装。i18n、設定、診断の永続化・閲覧、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
 | **合計** | **100%** | — | **26.80%** | — |
 
@@ -190,6 +190,7 @@
 - 真正な補正解析requestだけから静的候補job、候補別連続経路job、切り離した表示DTOを順に進める複合jobと、RAF単位でそのjobを駆動するUI coordinatorを実装。全段階を完走しても候補経路が未確定なら`indeterminate`、認定可能な候補を全件否定できた場合だけ`no_candidate`とし、対応範囲外を「折り不可能」と断定しない。frontend 692件・Rust 304件で回帰
 - `test:snap`の47ファイル手動列挙をNode test runnerの引用符付きglobへ置換し、新しい`*.test.ts`をNode 24 CIとWindowsのどちらでも自動検出する境界へ変更。既存47ファイル・frontend 692件の全実行を維持
 - `FoldPreview`から背景・camera・renderer・照明・grid・紙3材質・輪郭6材質の構築、resize、冪等破棄をReact非依存scene runtimeへ分離。exact lease、原子的scene姿勢適用、OrbitControls、gesture、ヒンジ材質は元のauthority境界へ残し、grid・材質生成途中を含む自己rollback、cleanup例外継続、既存React子要素と所有外資源の非破棄を専用8件で固定。自動検出48ファイル・frontend 700件、Rust 304件で回帰
+- 監査の「全catchを一括置換」は採用せず、キャンセル・stale・入力/編集拒否・ファイル権限/破損・判定不能・best-effort cleanupを除外して、グローバル例外、起動snapshot・topology・終了guard・検証・benchmark、3D初期化・姿勢適用・描画・姿勢予約・選択・camera・resizeの上位境界だけを計測。`reportUnexpected(scope)`は固定15コード以外を拒否し、生の例外・メッセージ・作品名・パス・ID・座標を引数として受け取らない。件数は65で飽和する6区分、固定順、8 KiB以下のメモリ内snapshotに限定し、通信・永続化・時刻・環境情報を持たない。専用10件を加え、自動検出50ファイル・frontend 710件、Rust 304件で回帰
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -310,7 +311,7 @@
 ## 進行中
 
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
-- 作品内容やローカルパスを標準収集しないredacted diagnostics境界
+- redacted diagnosticsの固定DTOをRust側でも再検証し、アプリ専用領域だけへ保存する端末内永続化と、利用者が正確な内容を確認して手動共有するUI
 - VAL-002の川崎・前川局所判定と、対応範囲・判定不能を区別するUI
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -324,7 +325,7 @@
 
 ## 次の作業
 
-1. `FoldPreview` runtime分割とredacted diagnosticsを小さなcheckpointへ分けて進める
+1. redacted diagnosticsのRust側端末内保存を追加し、その後に閲覧・手動コピー/保存UIを接続する
 2. VAL-002の川崎・前川局所判定を実装し、対応範囲内の成立・不成立・判定不能をUIへ示す
 3. MUST 86件のstatus表を各checkpointで維持する
 4. 折り手順、SVG/FOLD/PDF、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める

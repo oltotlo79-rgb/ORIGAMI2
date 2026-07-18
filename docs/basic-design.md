@@ -550,6 +550,14 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 - 既存の重複した`deepFreeze`、`isRecord`、own-data snapshot、hostile入力回帰は一括削除せず、UI接続とruntime分割時に信頼境界を確認しながら共通化・縮小する。安全停止、原子的scene commit、stale結果非公開の回帰は保持する。
 - 補正解析authority chainと解析専用UIの接続は上記の副作用境界で完結した。`FoldPreview` runtime分割の第一段階では、authorityを入力に持たないscene・camera・renderer・照明・grid・紙/輪郭材質の所有と破棄だけをReact非依存境界へ分離した。次は補正解析の新段階や新しい一般DTO防御を追加せず、残るcamera/入力runtimeで入口検証と副作用authority以外の重複防御を段階的に整理し、redacted diagnosticsを独立境界として追加する。
 
+### 13.2 Redacted diagnostics境界
+
+- frontendの診断生成APIは`reportUnexpected(scope)`だけとし、raw error、message、stack、cause、任意contextを受け取らない。scopeは固定allowlistをTypeScript型と実行時検査の両方で制限する。
+- 初期実装は15 scopeの件数だけをメモリ内で集計する。各件数は65で飽和し、外部へ公開するのは`0`、`1`、`2_4`、`5_16`、`17_64`、`65_plus`の粗い区分だけとする。snapshotは固定順・8 KiB以下で、作品名、座標、寸法、entity ID、revision、ファイル名・パス、時刻、OS/GPU等の環境文字列を含めない。
+- 計測対象は、利用者向け安全停止へ移るグローバル例外と上位の起動・解析・3D runtime境界に限定する。キャンセル、stale結果の破棄、入力/編集拒否、ファイル権限・破損、作業上限、`indeterminate`、独立資源のbest-effort cleanupを予期しない障害として一括記録しない。
+- 初期実装は通信、console、Web Storage、Tauri呼出し、ファイル保存を行わない。OPS-004〜006は、Rust側の一致するenumと固定DTO再検証、アプリ専用の固定保存先と容量上限、内容確認UI、利用者の明示操作による手動共有が接続されるまで未達とする。
+- 将来の永続化commandは任意パス、作品snapshot、任意文字列を受け取らず、プロジェクトI/Oと別の状態・固定ファイルを使用する。GitHub Issues、telemetry、クラッシュ報告への自動送信は行わず、画面に表示した正確な内容だけを利用者がコピーまたは保存できるようにする。
+
 ## 14. 実装フェーズ
 
 外部配布は全MUST要件完成後とするが、内部確認可能な垂直スライスを以下の順で作る。

@@ -124,41 +124,43 @@ test('a pose with no non-adjacent SAT scan never claims complete coverage', () =
 })
 
 test('penetration samples outrank earlier touching pairs at the global cap', () => {
-  const touchingPolygon = convexIntegerPolygon()
+  const contacts = contactPairBatch(
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+    'contact',
+  )
   const faces = [
-    face('a', touchingPolygon),
-    face('b', touchingPolygon),
-    face('c'),
-    face('d'),
+    ...contacts.faces,
+    face('penetration-a'),
+    face('penetration-b'),
   ]
-  const transforms = new Map([
-    ['a', new Matrix4()],
-    ['b', new Matrix4().makeTranslation(0, 0.2, 0)],
-    ['c', new Matrix4().makeTranslation(100, 0, 0)],
-    ['d', new Matrix4().makeTranslation(100, 0, 0)],
-  ])
+  const transforms = new Map(contacts.transforms)
+  transforms.set(
+    'penetration-a',
+    new Matrix4().makeTranslation(1_000, 0, 0),
+  )
+  transforms.set(
+    'penetration-b',
+    new Matrix4().makeTranslation(1_000, 0, 0),
+  )
   const result = analyze(faces, transforms)
   const permuted = analyze(
-    [faces[3], faces[1], faces[0], faces[2]],
-    new Map([
-      ['d', transforms.get('d')!.clone()],
-      ['c', transforms.get('c')!.clone()],
-      ['b', transforms.get('b')!.clone()],
-      ['a', transforms.get('a')!.clone()],
-    ]),
+    [...faces].reverse(),
+    new Map([...transforms].reverse().map(([id, transform]) =>
+      [id, transform.clone()])),
   )
 
   assert.ok(result && permuted)
+  assert.equal(
+    result.interactions.filter((interaction) =>
+      interaction.geometryClass === 'touching').length,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
+  )
   assert.deepEqual(
-    result.interactions.map((interaction) => [
-      interaction.firstFaceId,
-      interaction.secondFaceId,
-      interaction.geometryClass,
-    ]),
-    [
-      ['a', 'b', 'touching'],
-      ['c', 'd', 'penetrating'],
-    ],
+    result.interactions.find((interaction) =>
+      interaction.geometryClass === 'penetrating'),
+    result.interactions.find((interaction) =>
+      interaction.firstFaceId === 'penetration-a'
+      && interaction.secondFaceId === 'penetration-b'),
   )
   assert.equal(
     result.witnessSamples.length,
@@ -170,7 +172,7 @@ test('penetration samples outrank earlier touching pairs at the global cap', () 
       result.witnessSamples[0].secondFaceId,
       result.witnessSamples[0].geometryClass,
     ],
-    ['c', 'd', 'penetrating'],
+    ['penetration-a', 'penetration-b', 'penetrating'],
   )
   assert.ok(
     result.witnessSamples.slice(1).every(
@@ -224,28 +226,32 @@ test('an indeterminate authoritative pair is never eligible for a witness', () =
 })
 
 test('touching samples use a separate fixed cap without truncating SAT scans', () => {
-  const polygon = convexIntegerPolygon()
-  const faces = [face('a', polygon), face('b', polygon)]
-  const transforms = new Map([
-    ['a', new Matrix4()],
-    ['b', new Matrix4().makeTranslation(0, 0.2, 0)],
-  ])
-  const first = analyze(faces, transforms)
+  const contacts = contactPairBatch(
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES + 1,
+    'touching-cap',
+  )
+  const first = analyze(contacts.faces, contacts.transforms)
   const permuted = analyze(
-    [faces[1], faces[0]],
-    new Map([
-      ['b', transforms.get('b')!.clone()],
-      ['a', transforms.get('a')!.clone()],
-    ]),
+    [...contacts.faces].reverse(),
+    new Map([...contacts.transforms].reverse().map(([id, transform]) =>
+      [id, transform.clone()])),
   )
 
   assert.ok(first && permuted)
-  assert.equal(first.interactions[0]?.geometryClass, 'touching')
+  assert.equal(
+    first.interactions.length,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES + 1,
+  )
+  assert.ok(first.interactions.every((interaction) =>
+    interaction.geometryClass === 'touching'))
   assert.equal(
     first.witnessCoverage.attemptedPairCount,
     MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   )
-  assert.ok(first.witnessCoverage.eligiblePairCount > 16)
+  assert.equal(
+    first.witnessCoverage.eligiblePairCount,
+    MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES + 1,
+  )
   assert.equal(
     first.witnessCoverage.eligiblePairCount,
     first.witnessCoverage.attemptedPairCount
@@ -297,15 +303,25 @@ function face(
   return { id, polygon }
 }
 
-function convexIntegerPolygon(): FoldPreviewCollisionPoseFace['polygon'] {
-  return Object.freeze([
-    ...Array.from({ length: 19 }, (_, index) => {
-      const x = index - 9
-      return Object.freeze({ x, z: x * x })
-    }),
-    Object.freeze({ x: 9, z: 100 }),
-    Object.freeze({ x: -9, z: 100 }),
-  ])
+function contactPairBatch(count: number, prefix: string) {
+  const faces: FoldPreviewCollisionPoseFace[] = []
+  const transforms = new Map<string, Matrix4>()
+  for (let index = 0; index < count; index += 1) {
+    const suffix = index.toString().padStart(2, '0')
+    const firstId = `${prefix}-${suffix}-a`
+    const secondId = `${prefix}-${suffix}-b`
+    const translationX = index * 10
+    faces.push(face(firstId), face(secondId))
+    transforms.set(
+      firstId,
+      new Matrix4().makeTranslation(translationX, 0, 0),
+    )
+    transforms.set(
+      secondId,
+      new Matrix4().makeTranslation(translationX, 0.2, 0),
+    )
+  }
+  return { faces, transforms }
 }
 
 function assertDeeplyFrozen(value: unknown): void {

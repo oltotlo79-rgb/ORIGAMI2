@@ -97,6 +97,108 @@ export function provesFoldPreviewBinary64TransversalTriangleIntersection(
   }
 }
 
+/**
+ * Proves that two ideal triangles intersect only at one designated vertex.
+ *
+ * Coordinates are first snapshotted and canonicalized as exact binary64
+ * dyadics. The designated vertices must then be exactly equal. Both triangles
+ * must be non-degenerate with non-parallel planes. Each closed triangle-plane
+ * section is projected onto their exact plane-intersection line. The proof
+ * succeeds only when the two exact section intervals intersect at one
+ * singleton equal to the designated shared vertex projection. Same-strict-side
+ * triangles are included as the special case of singleton sections.
+ *
+ * Returning false means only "not proved". In particular, callers must not
+ * interpret it as proof of penetration or separation.
+ */
+export function provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+  first: readonly FoldPreviewBinary64Point[],
+  second: readonly FoldPreviewBinary64Point[],
+  firstSharedIndex: number,
+  secondSharedIndex: number,
+): boolean {
+  try {
+    if (
+      !isTriangleIndex(firstSharedIndex)
+      || !isTriangleIndex(secondSharedIndex)
+    ) return false
+    const firstTriangle = exactTriangle(first)
+    const secondTriangle = exactTriangle(second)
+    if (!firstTriangle || !secondTriangle) return false
+
+    const firstShared = firstTriangle[firstSharedIndex]
+    const secondShared = secondTriangle[secondSharedIndex]
+    if (!firstShared || !secondShared || !exactVectorsEqual(
+      firstShared,
+      secondShared,
+    )) return false
+
+    const firstNormal = cross(
+      subtract(firstTriangle[1], firstTriangle[0]),
+      subtract(firstTriangle[2], firstTriangle[0]),
+    )
+    const secondNormal = cross(
+      subtract(secondTriangle[1], secondTriangle[0]),
+      subtract(secondTriangle[2], secondTriangle[0]),
+    )
+    if (isZeroVector(firstNormal) || isZeroVector(secondNormal)) return false
+    const lineDirection = cross(firstNormal, secondNormal)
+    if (isZeroVector(lineDirection)) return false
+
+    const firstDistances = firstTriangle.map((point) =>
+      dot(secondNormal, subtract(point, secondTriangle[0])))
+    const secondDistances = secondTriangle.map((point) =>
+      dot(firstNormal, subtract(point, firstTriangle[0])))
+    if (
+      sign(firstDistances[firstSharedIndex]) !== 0
+      || sign(secondDistances[secondSharedIndex]) !== 0
+    ) return false
+    const firstSection = closedTrianglePlaneSection(
+      firstTriangle,
+      firstDistances,
+      lineDirection,
+    )
+    const secondSection = closedTrianglePlaneSection(
+      secondTriangle,
+      secondDistances,
+      lineDirection,
+    )
+    if (!firstSection || !secondSection) return false
+
+    const overlapMinimum = compareFractions(
+      firstSection.minimum,
+      secondSection.minimum,
+    ) >= 0
+      ? firstSection.minimum
+      : secondSection.minimum
+    const overlapMaximum = compareFractions(
+      firstSection.maximum,
+      secondSection.maximum,
+    ) <= 0
+      ? firstSection.maximum
+      : secondSection.maximum
+    if (compareFractions(overlapMinimum, overlapMaximum) !== 0) return false
+
+    const firstSharedProjection = unitFraction(dot(
+      firstShared,
+      lineDirection,
+    ))
+    const secondSharedProjection = unitFraction(dot(
+      secondShared,
+      lineDirection,
+    ))
+    return compareFractions(
+      firstSharedProjection,
+      secondSharedProjection,
+    ) === 0 && compareFractions(
+      overlapMinimum,
+      firstSharedProjection,
+    ) === 0
+  } catch {
+    return false
+  }
+}
+
 function exactTriangle(
   value: readonly FoldPreviewBinary64Point[],
 ): readonly ExactVector[] | null {
@@ -120,6 +222,67 @@ function exactTriangle(
     result.push({ x, y, z })
   }
   return result
+}
+
+function isTriangleIndex(value: number): value is 0 | 1 | 2 {
+  return Number.isInteger(value) && value >= 0 && value < 3
+}
+
+function exactVectorsEqual(first: ExactVector, second: ExactVector) {
+  return isZeroVector(subtract(first, second))
+}
+
+function closedTrianglePlaneSection(
+  triangle: readonly ExactVector[],
+  distances: readonly Dyadic[],
+  lineDirection: ExactVector,
+): ExactInterval | null {
+  if (triangle.length !== 3 || distances.length !== 3) return null
+  const signs = distances.map(sign)
+  if (signs.every((value) => value === 0)) return null
+
+  const intersections: ExactFraction[] = []
+  for (let index = 0; index < 3; index += 1) {
+    if (signs[index] !== 0) continue
+    pushDistinctFraction(
+      intersections,
+      unitFraction(dot(triangle[index], lineDirection)),
+    )
+  }
+  for (let index = 0; index < 3; index += 1) {
+    const next = (index + 1) % 3
+    if (
+      signs[index] === 0
+      || signs[next] === 0
+      || signs[index] === signs[next]
+    ) continue
+    const projected = projectedPlaneIntersection(
+      triangle[index],
+      triangle[next],
+      distances[index],
+      distances[next],
+      lineDirection,
+    )
+    if (!projected) return null
+    pushDistinctFraction(intersections, projected)
+  }
+  if (intersections.length === 1) {
+    return {
+      minimum: intersections[0],
+      maximum: intersections[0],
+    }
+  }
+  if (intersections.length !== 2) return null
+  return compareFractions(intersections[0], intersections[1]) <= 0
+    ? { minimum: intersections[0], maximum: intersections[1] }
+    : { minimum: intersections[1], maximum: intersections[0] }
+}
+
+function unitFraction(numerator: Dyadic): ExactFraction {
+  return {
+    numerator,
+    denominator: dyadic(1n, 0),
+  }
 }
 
 function exactBinary64(value: number): Dyadic | null {

@@ -14,6 +14,7 @@ import {
 } from '../src/lib/foldPreviewKinematics.ts'
 import {
   findFoldPreviewNarrowPhaseInteractions,
+  isFoldPreviewExclusiveAllowedSharedVertexContact,
   prepareFoldPreviewNarrowPhase,
 } from '../src/lib/foldPreviewNarrowCollision.ts'
 import {
@@ -270,6 +271,359 @@ const reportedMidpointMountainTree: FoldPreviewTreeKinematics = {
   ],
 }
 
+const cornerApex = {
+  vertexId: 'corner-apex',
+  x: 400,
+  z: 400,
+} as const
+const cornerLeftHingeEnd = {
+  vertexId: 'corner-left-hinge-end',
+  x: 300,
+  z: 0,
+} as const
+const cornerRightHingeEnd = {
+  vertexId: 'corner-right-hinge-end',
+  x: 0,
+  z: 300,
+} as const
+const reportedCornerMountainValleyFaces:
+readonly FoldPreviewCollisionPoseFace[] = [
+  {
+    id: 'corner-left',
+    polygon: [
+      cornerApex,
+      { vertexId: 'corner-bottom-right', x: 400, z: 0 },
+      cornerLeftHingeEnd,
+    ],
+  },
+  {
+    id: 'corner-middle',
+    polygon: [
+      cornerApex,
+      cornerLeftHingeEnd,
+      { vertexId: 'corner-bottom-left', x: 0, z: 0 },
+      cornerRightHingeEnd,
+    ],
+  },
+  {
+    id: 'corner-right',
+    polygon: [
+      cornerApex,
+      cornerRightHingeEnd,
+      { vertexId: 'corner-top-left', x: 0, z: 400 },
+    ],
+  },
+]
+const reportedCornerMountainValleyAdjacencies:
+readonly FoldPreviewCollisionAdjacency[] = [
+  {
+    edgeId: 'corner-left-hinge',
+    firstFaceId: 'corner-left',
+    secondFaceId: 'corner-middle',
+  },
+  {
+    edgeId: 'corner-right-hinge',
+    firstFaceId: 'corner-middle',
+    secondFaceId: 'corner-right',
+  },
+]
+const reportedCornerMountainValleyConstraints:
+readonly FoldPreviewHingeContactConstraint[] = [
+  {
+    edgeId: 'corner-left-hinge',
+    leftFaceId: 'corner-left',
+    rightFaceId: 'corner-middle',
+    start: cornerApex,
+    end: cornerLeftHingeEnd,
+    thicknessRule: 'centered_mid_surface_v1',
+  },
+  {
+    edgeId: 'corner-right-hinge',
+    leftFaceId: 'corner-middle',
+    rightFaceId: 'corner-right',
+    start: cornerApex,
+    end: cornerRightHingeEnd,
+    thicknessRule: 'centered_mid_surface_v1',
+  },
+]
+const cornerLeftAxisLength = Math.hypot(
+  cornerLeftHingeEnd.x - cornerApex.x,
+  cornerLeftHingeEnd.z - cornerApex.z,
+)
+const cornerRightAxisLength = Math.hypot(
+  cornerRightHingeEnd.x - cornerApex.x,
+  cornerRightHingeEnd.z - cornerApex.z,
+)
+const reportedCornerMountainValleyTree: FoldPreviewTreeKinematics = {
+  kind: 'tree',
+  rootFaceId: 'corner-middle',
+  joints: [
+    {
+      parentFaceId: 'corner-middle',
+      childFaceId: 'corner-left',
+      childRotationSign: -1,
+      hinge: {
+        edgeId: 'corner-left-hinge',
+        leftFaceId: 'corner-left',
+        rightFaceId: 'corner-middle',
+        start: cornerApex,
+        end: cornerLeftHingeEnd,
+        axis: {
+          x: (cornerLeftHingeEnd.x - cornerApex.x) / cornerLeftAxisLength,
+          z: (cornerLeftHingeEnd.z - cornerApex.z) / cornerLeftAxisLength,
+        },
+        assignment: 'mountain',
+        rotationSign: 1,
+      },
+    },
+    {
+      parentFaceId: 'corner-middle',
+      childFaceId: 'corner-right',
+      childRotationSign: -1,
+      hinge: {
+        edgeId: 'corner-right-hinge',
+        leftFaceId: 'corner-middle',
+        rightFaceId: 'corner-right',
+        start: cornerApex,
+        end: cornerRightHingeEnd,
+        axis: {
+          x: (cornerRightHingeEnd.x - cornerApex.x) / cornerRightAxisLength,
+          z: (cornerRightHingeEnd.z - cornerApex.z) / cornerRightAxisLength,
+        },
+        assignment: 'valley',
+        rotationSign: -1,
+      },
+    },
+  ],
+}
+
+test('reported corner mountain-valley V keeps shared-apex contact out of penetration', () => {
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    reportedCornerMountainValleyFaces,
+    reportedCornerMountainValleyAdjacencies,
+    reportedCornerMountainValleyConstraints,
+  )
+  assert.ok(analyzer)
+  const anglePairs = [
+    { left: 10, right: 0 },
+    { left: 0, right: 10 },
+    { left: 45, right: 45 },
+    { left: 91, right: 91 },
+    { left: 135, right: 135 },
+  ] as const
+  const classifications: string[] = []
+
+  for (const thickness of [0, 0.1, 1]) {
+    for (const angles of anglePairs) {
+      const pose = calculateFoldTreePoseWithAngles(
+        reportedCornerMountainValleyTree,
+        {
+          kind: 'per_hinge',
+          angles: [
+            {
+              edgeId: 'corner-left-hinge',
+              angleDegrees: angles.left,
+            },
+            {
+              edgeId: 'corner-right-hinge',
+              angleDegrees: angles.right,
+            },
+          ],
+        },
+      )
+      assert.ok(pose)
+      const result = analyzer.analyze(pose.faceTransforms, thickness)
+      assert.ok(result)
+      const outerFaces = result.interactions.find((interaction) =>
+        interaction.firstFaceId === 'corner-left'
+        && interaction.secondFaceId === 'corner-right')
+      assert.ok(
+        outerFaces,
+        `missing corner outer pair for ${thickness}:${angles.left}:${angles.right}`,
+      )
+      assert.equal(outerFaces.topologyContact?.exclusive, true)
+      assert.equal(
+        outerFaces.topologyContact?.decision,
+        'allowed_shared_vertex_contact',
+      )
+      assert.deepEqual(
+        outerFaces.topologyContact?.sharedVertexIds,
+        ['corner-apex'],
+      )
+      const presentation = summarizeFoldPreviewCollision(result)
+      classifications.push(
+        `${thickness}:${angles.left}:${angles.right}`
+        + `=${outerFaces.geometryClass}`
+        + `:${presentation.nonAdjacentPenetrations}`,
+      )
+    }
+  }
+  assert.deepEqual(classifications, [
+    '0:10:0=touching:0',
+    '0:0:10=touching:0',
+    '0:45:45=touching:0',
+    '0:91:91=touching:0',
+    '0:135:135=touching:0',
+    '0.1:10:0=touching:0',
+    '0.1:0:10=touching:0',
+    '0.1:45:45=touching:0',
+    '0.1:91:91=touching:0',
+    '0.1:135:135=touching:0',
+    '1:10:0=touching:0',
+    '1:0:10=touching:0',
+    '1:45:45=touching:0',
+    '1:91:91=touching:0',
+    '1:135:135=touching:0',
+  ])
+
+  const ninetyOneDegreePose = calculateFoldTreePoseWithAngles(
+    reportedCornerMountainValleyTree,
+    {
+      kind: 'per_hinge',
+      angles: [
+        { edgeId: 'corner-left-hinge', angleDegrees: 91 },
+        { edgeId: 'corner-right-hinge', angleDegrees: 91 },
+      ],
+    },
+  )
+  assert.ok(ninetyOneDegreePose)
+  const synchronous = analyzer.analyze(ninetyOneDegreePose.faceTransforms, 1)
+  assert.ok(synchronous)
+  const analysisJob = analyzer.createAnalysisJob(
+    ninetyOneDegreePose.faceTransforms,
+    1,
+  )
+  assert.ok(analysisJob)
+  let analysisStep = analysisJob.step(1)
+  for (
+    let index = 0;
+    analysisStep.kind === 'pending' && index < 128;
+    index += 1
+  ) analysisStep = analysisJob.step(1)
+  assert.equal(analysisStep.kind, 'complete')
+  if (analysisStep.kind !== 'complete') {
+    assert.fail('corner V analysis job did not complete')
+  }
+  assert.deepEqual(analysisStep.result, synchronous)
+
+  const fullScan = analyzer.collectFullScanNonAdjacentWitnessSet(
+    ninetyOneDegreePose.faceTransforms,
+    1,
+  )
+  assert.ok(fullScan)
+  assert.equal(fullScan.coverage.penetratingPairCount, 0)
+  assert.equal(fullScan.coverage.touchingPairCount, 0)
+  assert.equal(fullScan.coverage.allowedSharedVertexPairCount, 1)
+  assert.equal(fullScan.coverage.indeterminatePairCount, 0)
+  assert.equal(fullScan.coverage.eligiblePairCount, 0)
+  assert.deepEqual(fullScan.witnessSamples, [])
+})
+
+test('shared-vertex allowance validation fails closed for partial or forged summaries', () => {
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    reportedCornerMountainValleyFaces,
+    reportedCornerMountainValleyAdjacencies,
+    reportedCornerMountainValleyConstraints,
+  )
+  assert.ok(analyzer)
+  const pose = calculateFoldTreePoseWithAngles(
+    reportedCornerMountainValleyTree,
+    {
+      kind: 'per_hinge',
+      angles: [
+        { edgeId: 'corner-left-hinge', angleDegrees: 91 },
+        { edgeId: 'corner-right-hinge', angleDegrees: 91 },
+      ],
+    },
+  )
+  assert.ok(pose)
+  const result = analyzer.analyze(pose.faceTransforms, 1)
+  assert.ok(result)
+  const interaction = result.interactions.find((candidate) =>
+    candidate.firstFaceId === 'corner-left'
+    && candidate.secondFaceId === 'corner-right')
+  assert.ok(interaction?.topologyContact)
+  assert.equal(
+    isFoldPreviewExclusiveAllowedSharedVertexContact(interaction),
+    true,
+  )
+  const topologyContact = interaction.topologyContact
+  const invalid = [
+    {
+      ...interaction,
+      topologyContact: {
+        ...topologyContact,
+        sharedVertexIds: [...topologyContact.sharedVertexIds],
+      },
+    },
+    {
+      ...interaction,
+      relation: 'hinge_adjacent' as const,
+    },
+    {
+      ...interaction,
+      geometryClass: 'penetrating' as const,
+    },
+    {
+      ...interaction,
+      topologyContact: { ...topologyContact, exclusive: false },
+    },
+    {
+      ...interaction,
+      topologyContact: {
+        ...topologyContact,
+        sharedVertexIds: ['corner-apex', 'corner-apex'],
+      },
+    },
+    {
+      ...interaction,
+      topologyContact: {
+        ...topologyContact,
+        omittedSharedVertexIdCount: -1,
+      },
+    },
+    {
+      ...interaction,
+      topologyContact: {
+        ...topologyContact,
+        rawPenetratingPairCount:
+          topologyContact.rawPenetratingPairCount + 1,
+      },
+    },
+  ]
+  for (const candidate of invalid) {
+    assert.equal(
+      isFoldPreviewExclusiveAllowedSharedVertexContact(candidate),
+      false,
+    )
+  }
+  const hostileInteraction = new Proxy(interaction, {
+    get(target, property, receiver) {
+      if (property === 'topologyContact') throw new Error('hostile summary')
+      return Reflect.get(target, property, receiver)
+    },
+  })
+  assert.equal(
+    isFoldPreviewExclusiveAllowedSharedVertexContact(hostileInteraction),
+    false,
+  )
+  const hostileTopologyContact = new Proxy(topologyContact, {
+    get(target, property, receiver) {
+      if (property === 'featureContactPairCount') {
+        throw new Error('hostile count')
+      }
+      return Reflect.get(target, property, receiver)
+    },
+  })
+  assert.equal(
+    isFoldPreviewExclusiveAllowedSharedVertexContact({
+      ...interaction,
+      topologyContact: hostileTopologyContact,
+    }),
+    false,
+  )
+})
+
 test('reported A: a zero-thickness 10 degree V fold keeps non-adjacent shared-vertex contact out of penetration', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     reportedVFoldFaces,
@@ -352,19 +706,31 @@ test('reported midpoint mountain-mountain V has an explicit 3 by 3 diagnostic sn
       )
       assert.equal(
         outerFaces.geometryClass,
-        thickness === 0 && degrees === 90 ? 'touching' : 'penetrating',
+        degrees === 90 ? 'indeterminate' : 'penetrating',
         `${thickness} mm at ${degrees} degrees`,
       )
       const presentation = summarizeFoldPreviewCollision(result)
-      assert.equal(presentation.indeterminateInteractions, 0)
+      assert.equal(
+        presentation.indeterminateInteractions,
+        degrees === 90 ? 1 : 0,
+      )
       assert.equal(
         presentation.nonAdjacentPenetrations,
-        thickness === 0 && degrees === 90 ? 0 : 1,
+        degrees === 90 ? 0 : 1,
       )
       assert.equal(
         presentation.nonAdjacentContacts,
-        thickness === 0 && degrees === 90 ? 1 : 0,
+        0,
       )
+      assert.equal(
+        presentation.nonAdjacentAllowedSharedVertexContacts,
+        0,
+      )
+      assert.equal(
+        outerFaces.topologyContact?.exclusive ?? false,
+        false,
+      )
+      assert.equal(outerFaces.topologyContact, undefined)
     }
   }
 })
@@ -484,11 +850,18 @@ test('reported A/B remain correct through the UI summary on a non-origin 400 mm 
 
   const reportedA = analyze(10, 0)
   assert.equal(reportedA.presentation.nonAdjacentPenetrations, 0)
-  assert.equal(reportedA.presentation.nonAdjacentContacts, 1)
+  assert.equal(reportedA.presentation.nonAdjacentContacts, 0)
+  assert.equal(
+    reportedA.presentation.nonAdjacentAllowedSharedVertexContacts,
+    1,
+  )
   assert.equal(reportedA.presentation.hingeModelAllowedContacts, 2)
   assert.equal(reportedA.presentation.indeterminateInteractions, 0)
-  assert.equal(collisionDataStatus(reportedA.summary), 'contact')
-  assert.equal(collisionBadgeClass(reportedA.summary), 'has-contact')
+  assert.equal(collisionDataStatus(reportedA.summary), 'topology-model')
+  assert.equal(
+    collisionBadgeClass(reportedA.summary),
+    'has-topology-allowance',
+  )
 
   const reportedB = analyze(180, 180)
   assert.equal(reportedB.presentation.nonAdjacentPenetrations, 1)
@@ -505,20 +878,20 @@ test('the faithful 400 mm V-fold outer pair has an explicit same-angle 3 by 4 ta
   assert.ok(analyzer)
   const expected = new Map<string, Readonly<{
     geometryClass: 'touching' | 'penetrating' | 'indeterminate'
-    status: 'contact' | 'penetrating' | 'hinge-unresolved'
+    status: 'topology-model' | 'penetrating' | 'hinge-unresolved'
     indeterminateInteractions: number
   }>>([
-    ['0:10', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['0:90', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['0:179', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
+    ['0:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0:90', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0:179', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['0:180', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
-    ['0.1:10', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['0.1:90', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['0.1:179', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
+    ['0.1:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0.1:90', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0.1:179', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['0.1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 3 }],
-    ['3:10', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['3:90', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['3:179', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
+    ['3:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['3:90', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['3:179', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['3:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 3 }],
   ])
 
@@ -560,6 +933,10 @@ test('the faithful 400 mm V-fold outer pair has an explicit same-angle 3 by 4 ta
         presentation.indeterminateInteractions,
         wanted.indeterminateInteractions,
       )
+      assert.equal(
+        presentation.nonAdjacentAllowedSharedVertexContacts,
+        degrees < 180 ? 1 : 0,
+      )
       assert.equal(collisionDataStatus({
         kind: 'ready',
         requestKey: `${thickness}:${degrees}`,
@@ -578,20 +955,20 @@ test('the faithful 400 mm V-fold outer pair has a left-only 3 by 4 table', () =>
   assert.ok(analyzer)
   const expected = new Map<string, Readonly<{
     geometryClass: 'touching' | 'penetrating' | 'indeterminate'
-    status: 'contact' | 'penetrating' | 'indeterminate' | 'hinge-unresolved'
+    status: 'topology-model' | 'indeterminate' | 'hinge-unresolved'
     indeterminateInteractions: number
   }>>([
-    ['0:10', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['0:90', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
-    ['0:179', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
+    ['0:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['0:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['0:180', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
-    ['0.1:10', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
-    ['0.1:90', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
-    ['0.1:179', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
+    ['0.1:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0.1:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['0.1:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['0.1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
-    ['3:10', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
-    ['3:90', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
-    ['3:179', { geometryClass: 'penetrating', status: 'penetrating', indeterminateInteractions: 0 }],
+    ['3:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['3:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['3:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['3:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
   ])
   for (const thickness of [0, 0.1, 3]) {
@@ -627,6 +1004,10 @@ test('the faithful 400 mm V-fold outer pair has a left-only 3 by 4 table', () =>
       assert.equal(
         presentation.indeterminateInteractions,
         wanted.indeterminateInteractions,
+      )
+      assert.equal(
+        presentation.nonAdjacentAllowedSharedVertexContacts,
+        leftDegrees < 90 ? 1 : 0,
       )
       assert.equal(collisionDataStatus({
         kind: 'ready',
@@ -778,9 +1159,9 @@ test('zero-thickness sync, resumable, and witness accounting agree without requi
   assert.deepEqual(oneShotResult, preparedResult)
   assert.deepEqual(preparedResult.witnessCoverage, {
     scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',
-    eligiblePairCount: 1,
-    attemptedPairCount: 1,
-    unavailablePairCount: 1,
+    eligiblePairCount: 0,
+    attemptedPairCount: 0,
+    unavailablePairCount: 0,
     omittedByLimitCount: 0,
     authoritativePairScanComplete: true,
   })
@@ -796,9 +1177,9 @@ test('zero-thickness sync, resumable, and witness accounting agree without requi
   if (step.kind !== 'complete') assert.fail('zero-thickness job did not complete')
   assert.deepEqual(step.result, preparedResult)
   assert.deepEqual(step.work, {
-    totalWorkUnits: 4,
+    totalWorkUnits: 3,
     trianglePairTests: 3,
-    witnessDerivations: 1,
+    witnessDerivations: 0,
   })
 })
 
@@ -831,6 +1212,14 @@ test('shared topology is evidence for a contact feature, never a blanket collisi
     overlapResult?.interactions[0]?.geometryClass,
     'penetrating',
   )
+  const thickOverlapResult = overlapping.analyze(new Map([
+    ['overlap-a', new Matrix4()],
+    ['overlap-b', new Matrix4()],
+  ]), 1)
+  assert.equal(
+    thickOverlapResult?.interactions[0]?.geometryClass,
+    'penetrating',
+  )
 
   const edgeStart = { vertexId: 'edge-start', x: 1, z: 0 } as const
   const edgeEnd = { vertexId: 'edge-end', x: 1, z: 1 } as const
@@ -860,6 +1249,70 @@ test('shared topology is evidence for a contact feature, never a blanket collisi
     ['edge-right', new Matrix4()],
   ]), 0)
   assert.equal(edgeResult?.interactions[0]?.geometryClass, 'touching')
+})
+
+test('a shared vertex never exempts a transversal crossing outside that vertex', () => {
+  const shared = { vertexId: 'crossing-shared', x: 0, z: 0 } as const
+  const faces: readonly FoldPreviewCollisionPoseFace[] = [
+    {
+      id: 'crossing-a',
+      polygon: [
+        shared,
+        { vertexId: 'crossing-a-low', x: 2, z: -1 },
+        { vertexId: 'crossing-a-high', x: 2, z: 1 },
+      ],
+    },
+    {
+      id: 'crossing-b',
+      polygon: [
+        shared,
+        { vertexId: 'crossing-b-low', x: 2, z: -1 },
+        { vertexId: 'crossing-b-high', x: 0, z: 1 },
+      ],
+    },
+  ]
+  const exactQuarterTurn = makeFoldPreviewCanonicalAxisRotation(
+    new Vector3(1, 0, 0),
+    Math.PI / 2,
+  )
+  assert.ok(exactQuarterTurn)
+  for (const orderedFaces of [faces, [...faces].reverse()]) {
+    const analyzer = prepareFoldPreviewNarrowPhase(orderedFaces, [])
+    assert.ok(analyzer)
+    for (const thickness of [0, 0.1, 1]) {
+      const result = analyzer.analyze(new Map([
+        ['crossing-a', new Matrix4()],
+        ['crossing-b', exactQuarterTurn],
+      ]), thickness)
+      assert.ok(result)
+      assert.equal(
+        result.interactions[0]?.geometryClass,
+        'penetrating',
+        `${orderedFaces[0]?.id}:${thickness}`,
+      )
+    }
+  }
+})
+
+test('a repeated topology ID with different rest coordinates is rejected', () => {
+  assert.equal(prepareFoldPreviewNarrowPhase([
+    {
+      id: 'mismatched-topology-a',
+      polygon: [
+        { vertexId: 'mismatched-shared', x: 0, z: 0 },
+        { x: 1, z: 0 },
+        { x: 0, z: 1 },
+      ],
+    },
+    {
+      id: 'mismatched-topology-b',
+      polygon: [
+        { vertexId: 'mismatched-shared', x: 1, z: 0 },
+        { x: 2, z: 0 },
+        { x: 1, z: 1 },
+      ],
+    },
+  ], []), null)
 })
 
 test('coplanar positive-area overlap no larger than the margin stays indeterminate', () => {

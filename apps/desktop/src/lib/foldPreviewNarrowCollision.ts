@@ -27,22 +27,38 @@ import {
 } from './foldPreviewNarrowCollisionWitness.ts'
 import {
   provesFoldPreviewBinary64TransversalTriangleIntersection,
+  provesFoldPreviewBinary64SharedVertexOnlyIntersection,
 } from './foldPreviewExactTriangleIntersection.ts'
+import {
+  classifyFoldPreviewTopologyContact,
+  FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+} from './foldPreviewTopologyContactPolicy.ts'
 
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS = 1_000_000
 /**
- * Maximum BigInt binary64 transversal-intersection proofs per immutable pose
- * analysis. Proof requests beyond this cap fail closed as indeterminate.
+ * Maximum BigInt binary64 intersection-certificate requests per immutable pose
+ * analysis. The public work-field name remains versioned for compatibility;
+ * transversal and shared-feature-only certificates share this one cap.
  */
 export const MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS = 256
 /** Bounds synchronous deep-copy and triangulation during preview setup. */
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES = 100_000
 /** Bounds explanatory derivation work independently of collision classification. */
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES = 16
+export const MAX_FOLD_PREVIEW_TOPOLOGY_CONTACT_VERTEX_IDS = 16
 
 const SAT_MARGIN_FACTOR = 4
+const PAIR_WORLD_ROUNDING_MARGIN_FACTOR = 32
+const PAIR_WORLD_CONTACT_ZERO_ULP_FACTOR = 2
 const PARALLEL_AXIS_TOLERANCE = Number.EPSILON * 128
 const RIGID_TRANSFORM_TOLERANCE = 1e-10
+/**
+ * A shared-vertex singleton is suppressible only while the two material
+ * mid-surface orientations are affirmatively co-oriented.  This is a
+ * dimensionless proof threshold, not an angular or thickness allowance.
+ */
+const SHARED_VERTEX_COORIENTED_NORMAL_DOT_TOLERANCE =
+  RIGID_TRANSFORM_TOLERANCE
 const MAX_FOLD_PREVIEW_FULL_SCAN_JOB_WORK_UNITS =
   MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
   + MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
@@ -54,7 +70,7 @@ export type FoldPreviewExactTransversalProofWork = Readonly<{
   algorithm: 'binary64_transversal_triangle_intersection_v1'
   maximumAttempts:
     typeof MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
-  /** Proof helpers actually entered; this never exceeds maximumAttempts. */
+  /** Exact certificate requests entered; this never exceeds maximumAttempts. */
   attempted: number
   /** Requests left unproved after the cap; every such pair is indeterminate. */
   skippedByLimit: number
@@ -80,8 +96,119 @@ export type FoldPreviewNarrowPhaseInteraction = Readonly<{
   relation: 'hinge_adjacent' | 'non_adjacent'
   hingeEdgeIds: readonly string[]
   geometryClass: 'touching' | 'penetrating' | 'indeterminate'
+  topologyContact?: FoldPreviewTopologyContactSummary
   hingeDecision?: FoldPreviewHingeContactDecision
 }>
+
+export type FoldPreviewTopologyContactSummary = Readonly<{
+  policyVersion: typeof FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+  decision: 'allowed_shared_vertex_contact'
+  /** True only when every non-separated triangle pair in this face pair is allowed. */
+  exclusive: boolean
+  sharedVertexIds: readonly string[]
+  omittedSharedVertexIdCount: number
+  featureContactPairCount: number
+  thicknessOverlapPairCount: number
+  rawTouchingPairCount: number
+  rawPenetratingPairCount: number
+  rawIndeterminatePairCount: number
+}>
+
+const trustedAllowedSharedVertexInteractions = new WeakSet<object>()
+const trustedSharedVertexGeometryCertificates = new WeakSet<object>()
+const trustedSharedVertexGeometryProvenance =
+  new WeakMap<object, FoldPreviewSharedVertexGeometryProvenance>()
+const trustedSharedVertexRuntimeEvidence = new WeakSet<object>()
+const trustedSharedVertexRuntimeProvenance =
+  new WeakMap<object, FoldPreviewSharedVertexRuntimeProvenance>()
+const trustedHingeRuntimeEvidence = new WeakSet<object>()
+const trustedHingeRuntimeProvenance =
+  new WeakMap<object, FoldPreviewHingeRuntimeProvenance>()
+const weakSetHasIntrinsic = WeakSet.prototype.has
+const weakSetAddIntrinsic = WeakSet.prototype.add
+const weakMapGetIntrinsic = WeakMap.prototype.get
+const weakMapSetIntrinsic = WeakMap.prototype.set
+const reflectApplyIntrinsic = Reflect.apply
+
+/**
+ * Validates the public diagnostic before any caller suppresses a collision
+ * stop. Only an exact interaction snapshot issued by this analyzer can carry
+ * the allowance; clones, malformed values, and partial summaries fail closed.
+ */
+export function isFoldPreviewExclusiveAllowedSharedVertexContact(
+  interaction: FoldPreviewNarrowPhaseInteraction,
+) {
+  try {
+    if (
+      typeof interaction !== 'object'
+      || interaction === null
+      || !reflectApplyIntrinsic(
+        weakSetHasIntrinsic,
+        trustedAllowedSharedVertexInteractions,
+        [interaction],
+      )
+    ) return false
+    return validateExclusiveAllowedSharedVertexContact(interaction)
+  } catch {
+    return false
+  }
+}
+
+function validateExclusiveAllowedSharedVertexContact(
+  interaction: FoldPreviewNarrowPhaseInteraction,
+) {
+  const relation = interaction.relation
+  const geometryClass = interaction.geometryClass
+  const value = interaction.topologyContact
+  if (
+    relation !== 'non_adjacent'
+    || geometryClass !== 'touching'
+    || !value
+    || value.policyVersion
+      !== FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+    || value.decision !== 'allowed_shared_vertex_contact'
+    || value.exclusive !== true
+  ) return false
+  const sharedVertexIds = value.sharedVertexIds
+  if (!Array.isArray(sharedVertexIds)) return false
+  const sharedVertexIdCount = sharedVertexIds.length
+  if (
+    !Number.isSafeInteger(sharedVertexIdCount)
+    || sharedVertexIdCount === 0
+    || sharedVertexIdCount
+      > MAX_FOLD_PREVIEW_TOPOLOGY_CONTACT_VERTEX_IDS
+  ) return false
+  const seenIds = new Set<string>()
+  for (let index = 0; index < sharedVertexIdCount; index += 1) {
+    const id = sharedVertexIds[index]
+    if (!validId(id) || seenIds.has(id)) return false
+    seenIds.add(id)
+  }
+  const omittedSharedVertexIdCount = value.omittedSharedVertexIdCount
+  const featureContactPairCount = value.featureContactPairCount
+  const thicknessOverlapPairCount = value.thicknessOverlapPairCount
+  const rawTouchingPairCount = value.rawTouchingPairCount
+  const rawPenetratingPairCount = value.rawPenetratingPairCount
+  const rawIndeterminatePairCount = value.rawIndeterminatePairCount
+  const counts = [
+    omittedSharedVertexIdCount,
+    featureContactPairCount,
+    thicknessOverlapPairCount,
+    rawTouchingPairCount,
+    rawPenetratingPairCount,
+    rawIndeterminatePairCount,
+  ]
+  if (counts.some((count) => !Number.isSafeInteger(count) || count < 0)) {
+    return false
+  }
+  const pairCount = featureContactPairCount + thicknessOverlapPairCount
+  return Number.isSafeInteger(pairCount)
+    && pairCount > 0
+    && rawTouchingPairCount
+      + rawPenetratingPairCount
+      + rawIndeterminatePairCount
+      === pairCount
+}
 
 export type FoldPreviewNarrowPhaseWitnessSample = Readonly<{
   firstFaceId: string
@@ -126,6 +253,8 @@ export type FoldPreviewFullScanNonAdjacentWitnessCoverage<
   /** Triangle pairs submitted to the authoritative prism SAT classifier. */
   satTests: number
   satSeparatedPairCount: number
+  /** Topology-certified shared-vertex pairs excluded from collision witnesses. */
+  allowedSharedVertexPairCount: number
   touchingPairCount: number
   penetratingPairCount: number
   indeterminatePairCount: number
@@ -422,8 +551,17 @@ type FoldPreviewNarrowPhaseFace = Readonly<{
   triangles?: readonly FoldPreviewTriangleIndices[]
 }>
 
+type FoldPreviewTopologyPoseMismatch = Readonly<{
+  firstFaceId: string
+  secondFaceId: string
+  relation: 'hinge_adjacent' | 'non_adjacent'
+  hingeEdgeIds: readonly string[]
+}>
+
 type TrianglePrism = Readonly<{
   triangleIndex: number
+  /** Authoritative transformed material mid-surface used for topology proofs. */
+  midSurfaceVertices: readonly Vector3[]
   vertices: readonly Vector3[]
   topologyVertices: readonly Readonly<{
     vertexId: string | null
@@ -445,6 +583,88 @@ type TrianglePrism = Readonly<{
 }>
 
 type PrismIntersection = 'separated' | 'touching' | 'penetrating' | 'indeterminate'
+
+type FoldPreviewAllowedSharedVertexPair = Readonly<{
+  policyVersion: typeof FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+  topology: 'shared_vertex'
+  evidence: 'shared_feature_contact' | 'shared_feature_thickness_overlap'
+  decision: 'allowed_shared_vertex_contact'
+  sharedVertexId: string
+}>
+
+/**
+ * Private proof capability issued only at the exact-geometry call site.
+ * The public string policy table cannot construct or forge this identity.
+ */
+type FoldPreviewCertifiedSharedVertexGeometry = Readonly<{
+  policyVersion: typeof FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+  topology: 'shared_vertex'
+  proof:
+    'binary64_shared_vertex_only_with_cooriented_material_normals_v1'
+  sharedVertexId: string
+}>
+
+type FoldPreviewSharedVertexGeometryProvenance = Readonly<{
+  first: TrianglePrism
+  second: TrianglePrism
+  thicknessClass: 0 | 1
+}>
+
+type FoldPreviewCertifiedSharedVertexRuntimeEvidence = Readonly<{
+  policyVersion: typeof FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+  topology: 'shared_vertex'
+  evidence: 'shared_feature_contact' | 'shared_feature_thickness_overlap'
+  proof: 'certified_shared_vertex_runtime_evidence_v1'
+  sharedVertexId: string
+}>
+
+type FoldPreviewSharedVertexRuntimeProvenance = Readonly<{
+  geometryCertificate: FoldPreviewCertifiedSharedVertexGeometry
+  first: TrianglePrism
+  second: TrianglePrism
+  thicknessClass: 0 | 1
+  rawGeometryClass: PrismIntersection
+}>
+
+type FoldPreviewAllowedHingeDecision = Extract<
+  FoldPreviewHingeContactDecision,
+  { kind: 'allowed_by_hinge_model' }
+>
+
+type FoldPreviewCertifiedHingeRuntimeEvidence = Readonly<{
+  policyVersion: typeof FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+  topology: 'shared_hinge_edge'
+  evidence:
+    | 'shared_feature_contact'
+    | 'shared_feature_thickness_overlap'
+    | 'shared_feature_flat_stack'
+  proof: 'centered_hinge_model_runtime_evidence_v1'
+  hingeEdgeId: string
+  geometry: FoldPreviewAllowedHingeDecision['geometry']
+}>
+
+type FoldPreviewHingeRuntimeProvenance = Readonly<{
+  hingeDecision: FoldPreviewAllowedHingeDecision
+  hingeEdgeIds: readonly string[]
+  inputGeometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass']
+}>
+
+type PrismIntersectionClassification = Readonly<{
+  /** Effective class consumed by collision-stop and presentation layers. */
+  geometryClass: PrismIntersection
+  /** Unmodified surface/SAT result retained for diagnostics and audit. */
+  rawGeometryClass: PrismIntersection
+  topologyContact?: FoldPreviewAllowedSharedVertexPair
+}>
+
+type MutableFoldPreviewTopologyContactSummary = {
+  sharedVertexIds: Set<string>
+  featureContactPairCount: number
+  thicknessOverlapPairCount: number
+  rawTouchingPairCount: number
+  rawPenetratingPairCount: number
+  rawIndeterminatePairCount: number
+}
 
 type FoldPreviewExactTransversalProofBudget = {
   attempted: number
@@ -491,10 +711,69 @@ type FullScanNonAdjacentWitnessCounts = Readonly<{
   aabbRejectedPairCount: number
   satTests: number
   satSeparatedPairCount: number
+  allowedSharedVertexPairCount: number
   touchingPairCount: number
   penetratingPairCount: number
   indeterminatePairCount: number
 }>
+
+function createMutableTopologyContactSummary():
+  MutableFoldPreviewTopologyContactSummary {
+  return {
+    sharedVertexIds: new Set(),
+    featureContactPairCount: 0,
+    thicknessOverlapPairCount: 0,
+    rawTouchingPairCount: 0,
+    rawPenetratingPairCount: 0,
+    rawIndeterminatePairCount: 0,
+  }
+}
+
+function recordAllowedSharedVertexPair(
+  summary: MutableFoldPreviewTopologyContactSummary,
+  pair: FoldPreviewAllowedSharedVertexPair,
+  rawGeometryClass: PrismIntersection,
+) {
+  summary.sharedVertexIds.add(pair.sharedVertexId)
+  if (pair.evidence === 'shared_feature_contact') {
+    summary.featureContactPairCount += 1
+  } else {
+    summary.thicknessOverlapPairCount += 1
+  }
+  if (rawGeometryClass === 'touching') summary.rawTouchingPairCount += 1
+  else if (rawGeometryClass === 'penetrating') {
+    summary.rawPenetratingPairCount += 1
+  } else if (rawGeometryClass === 'indeterminate') {
+    summary.rawIndeterminatePairCount += 1
+  }
+}
+
+function snapshotTopologyContactSummary(
+  value: MutableFoldPreviewTopologyContactSummary,
+  exclusive: boolean,
+): FoldPreviewTopologyContactSummary | undefined {
+  const pairCount = value.featureContactPairCount
+    + value.thicknessOverlapPairCount
+  if (pairCount === 0) return undefined
+  const allIds = [...value.sharedVertexIds]
+  return Object.freeze({
+    policyVersion: FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+    decision: 'allowed_shared_vertex_contact',
+    exclusive,
+    sharedVertexIds: Object.freeze(
+      allIds.slice(0, MAX_FOLD_PREVIEW_TOPOLOGY_CONTACT_VERTEX_IDS),
+    ),
+    omittedSharedVertexIdCount: Math.max(
+      0,
+      allIds.length - MAX_FOLD_PREVIEW_TOPOLOGY_CONTACT_VERTEX_IDS,
+    ),
+    featureContactPairCount: value.featureContactPairCount,
+    thicknessOverlapPairCount: value.thicknessOverlapPairCount,
+    rawTouchingPairCount: value.rawTouchingPairCount,
+    rawPenetratingPairCount: value.rawPenetratingPairCount,
+    rawIndeterminatePairCount: value.rawIndeterminatePairCount,
+  })
+}
 
 function createFoldPreviewExactTransversalProofBudget():
   FoldPreviewExactTransversalProofBudget {
@@ -546,14 +825,163 @@ function validFoldPreviewExactTransversalProofWork(
 function exactProofLimitHingeDecision(
   hingeEdgeIds: readonly string[],
 ): FoldPreviewHingeContactDecision {
+  return indeterminateHingeDecision(hingeEdgeIds, 'numerical_geometry')
+}
+
+function indeterminateHingeDecision(
+  hingeEdgeIds: readonly string[],
+  reason: Extract<
+    FoldPreviewHingeContactDecision,
+    { kind: 'indeterminate' }
+  >['reason'],
+): FoldPreviewHingeContactDecision {
   return Object.freeze({
     kind: 'indeterminate',
     hingeEdgeIds: Object.freeze([...hingeEdgeIds]),
-    // The exact-work snapshot carries the dedicated limit diagnosis. Reuse
-    // the existing closed hinge reason so every current continuous-motion
-    // consumer keeps treating this as a blocking numerical uncertainty.
-    reason: 'numerical_geometry',
+    reason,
   })
+}
+
+/**
+ * The hinge model remains the geometric authority.  This gate only verifies
+ * that its analyzer-issued result occupies a realizable shared-hinge policy
+ * cell before face aggregation is allowed to publish that exception.
+ */
+function applyCertifiedHingeTopologyDecision(
+  inputGeometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass'],
+  hingeDecision: FoldPreviewHingeContactDecision,
+  hingeEdgeIds: readonly string[],
+): Readonly<{
+  geometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass']
+  hingeDecision: FoldPreviewHingeContactDecision
+}> {
+  if (hingeDecision.kind !== 'allowed_by_hinge_model') {
+    return { geometryClass: inputGeometryClass, hingeDecision }
+  }
+  const runtimeEvidence = issueHingeRuntimeEvidence(
+    hingeDecision,
+    hingeEdgeIds,
+    inputGeometryClass,
+  )
+  if (
+    !runtimeEvidence
+    || !dispatchHingeRuntimeEvidence(
+      runtimeEvidence,
+      hingeDecision,
+      hingeEdgeIds,
+      inputGeometryClass,
+    )
+  ) {
+    return {
+      geometryClass: 'indeterminate',
+      hingeDecision: exactProofLimitHingeDecision(hingeEdgeIds),
+    }
+  }
+  return {
+    geometryClass: hingeDecision.geometry === 'boundary_contact'
+      ? 'touching'
+      : 'penetrating',
+    hingeDecision,
+  }
+}
+
+function issueHingeRuntimeEvidence(
+  hingeDecision: FoldPreviewAllowedHingeDecision,
+  hingeEdgeIds: readonly string[],
+  inputGeometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass'],
+): FoldPreviewCertifiedHingeRuntimeEvidence | null {
+  try {
+    if (
+      !Array.isArray(hingeEdgeIds)
+      || hingeEdgeIds.length !== 1
+      || hingeEdgeIds[0] !== hingeDecision.hingeEdgeId
+      || !validId(hingeDecision.hingeEdgeId)
+      || hingeDecision.thicknessRule !== 'centered_mid_surface_v1'
+    ) return null
+    const evidence = hingeTopologyEvidence(hingeDecision.geometry)
+    if (!evidence) return null
+    const runtimeEvidence = Object.freeze({
+      policyVersion: FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+      topology: 'shared_hinge_edge' as const,
+      evidence,
+      proof: 'centered_hinge_model_runtime_evidence_v1' as const,
+      hingeEdgeId: hingeDecision.hingeEdgeId,
+      geometry: hingeDecision.geometry,
+    })
+    const provenance = Object.freeze({
+      hingeDecision,
+      hingeEdgeIds,
+      inputGeometryClass,
+    })
+    reflectApplyIntrinsic(
+      weakSetAddIntrinsic,
+      trustedHingeRuntimeEvidence,
+      [runtimeEvidence],
+    )
+    reflectApplyIntrinsic(
+      weakMapSetIntrinsic,
+      trustedHingeRuntimeProvenance,
+      [runtimeEvidence, provenance],
+    )
+    return runtimeEvidence
+  } catch {
+    return null
+  }
+}
+
+function dispatchHingeRuntimeEvidence(
+  value: FoldPreviewCertifiedHingeRuntimeEvidence,
+  hingeDecision: FoldPreviewAllowedHingeDecision,
+  hingeEdgeIds: readonly string[],
+  inputGeometryClass: FoldPreviewNarrowPhaseInteraction['geometryClass'],
+) {
+  try {
+    if (
+      typeof value !== 'object'
+      || value === null
+      || !reflectApplyIntrinsic(
+        weakSetHasIntrinsic,
+        trustedHingeRuntimeEvidence,
+        [value],
+      )
+    ) return false
+    const provenance = reflectApplyIntrinsic(
+      weakMapGetIntrinsic,
+      trustedHingeRuntimeProvenance,
+      [value],
+    ) as FoldPreviewHingeRuntimeProvenance | undefined
+    if (
+      value.policyVersion
+        !== FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+      || value.topology !== 'shared_hinge_edge'
+      || value.proof !== 'centered_hinge_model_runtime_evidence_v1'
+      || !validId(value.hingeEdgeId)
+      || value.hingeEdgeId !== hingeDecision.hingeEdgeId
+      || value.geometry !== hingeDecision.geometry
+      || value.evidence !== hingeTopologyEvidence(value.geometry)
+      || !Object.isFrozen(value)
+      || provenance?.hingeDecision !== hingeDecision
+      || provenance.hingeEdgeIds !== hingeEdgeIds
+      || provenance.inputGeometryClass !== inputGeometryClass
+    ) return false
+    return classifyFoldPreviewTopologyContact(
+      value.topology,
+      value.evidence,
+    ) === 'requires_hinge_model'
+  } catch {
+    return false
+  }
+}
+
+function hingeTopologyEvidence(
+  geometry: FoldPreviewAllowedHingeDecision['geometry'],
+): FoldPreviewCertifiedHingeRuntimeEvidence['evidence'] | null {
+  if (geometry === 'boundary_contact') return 'shared_feature_contact'
+  if (geometry === 'corridor_overlap') {
+    return 'shared_feature_thickness_overlap'
+  }
+  if (geometry === 'flat_surface_stack') return 'shared_feature_flat_stack'
+  return null
 }
 
 /**
@@ -582,6 +1010,20 @@ export function findFoldPreviewNarrowPhaseInteractions(
       adjacencies,
     )
     if (!broadPhase) return null
+    const topologyPoseMismatches = findTopologyPoseMismatches(
+      faces,
+      transformSnapshot,
+      thickness,
+      adjacencies,
+      broadPhase,
+    )
+    if (!topologyPoseMismatches) return null
+    if (topologyPoseMismatches.length > 0) {
+      return topologyPoseMismatchResult(
+        broadPhase,
+        topologyPoseMismatches,
+      )
+    }
     return refineFoldPreviewNarrowPhase(
       faces,
       transformSnapshot,
@@ -732,6 +1174,20 @@ function createPreparedFoldPreviewNarrowPhaseAnalysisJob(
     adjacencies,
   )
   if (!broadPhase) return null
+  const topologyPoseMismatches = findTopologyPoseMismatches(
+    preparedFaces,
+    transformSnapshot,
+    thickness,
+    adjacencies,
+    broadPhase,
+  )
+  if (!topologyPoseMismatches) return null
+  if (topologyPoseMismatches.length > 0) {
+    return createTopologyPoseMismatchAnalysisJob(
+      broadPhase,
+      topologyPoseMismatches,
+    )
+  }
   return createFoldPreviewNarrowPhaseAnalysisJob(
     preparedFaces,
     transformSnapshot,
@@ -781,12 +1237,334 @@ function createPreparedFullScanNonAdjacentWitnessSetJob(
     adjacencies,
   )
   if (!broadPhase) return null
+  const topologyPoseMismatches = findTopologyPoseMismatches(
+    preparedFaces,
+    transformSnapshot,
+    thickness,
+    adjacencies,
+    broadPhase,
+  )
+  if (!topologyPoseMismatches || topologyPoseMismatches.length > 0) {
+    return null
+  }
   return createFullScanNonAdjacentWitnessSetJob(
     preparedFaces,
     transformSnapshot,
     thickness,
     broadPhase,
   )
+}
+
+/**
+ * Validates topology identity independently of broad-phase overlap. A
+ * disconnected current copy of one topology vertex is an invalid pose, not
+ * affirmative separation evidence. Every declared hinge must also reach the
+ * broad phase, even if its faces omit or corrupt their shared vertex IDs,
+ * because otherwise the finite-axis hinge validator cannot run.
+ */
+function findTopologyPoseMismatches(
+  faces: readonly FoldPreviewNarrowPhaseFace[],
+  faceTransforms: ReadonlyMap<string, Matrix4>,
+  thickness: number,
+  adjacencies: readonly FoldPreviewCollisionAdjacency[],
+  broadPhase: FoldPreviewBroadPhaseResult,
+): readonly FoldPreviewTopologyPoseMismatch[] | null {
+  try {
+    if (
+      !Number.isFinite(thickness)
+      || thickness < 0
+      || !Array.isArray(faces)
+      || !Array.isArray(adjacencies)
+    ) return null
+    const adjacencyByPair = new Map<string, {
+      firstFaceId: string
+      secondFaceId: string
+      edgeIds: string[]
+    }>()
+    for (const adjacency of adjacencies) {
+      const key = facePairKey(
+        adjacency.firstFaceId,
+        adjacency.secondFaceId,
+      )
+      const [firstFaceId, secondFaceId] =
+        adjacency.firstFaceId < adjacency.secondFaceId
+          ? [adjacency.firstFaceId, adjacency.secondFaceId]
+          : [adjacency.secondFaceId, adjacency.firstFaceId]
+      const group = adjacencyByPair.get(key) ?? {
+        firstFaceId,
+        secondFaceId,
+        edgeIds: [] as string[],
+      }
+      group.edgeIds.push(adjacency.edgeId)
+      group.edgeIds.sort()
+      adjacencyByPair.set(key, group)
+    }
+    const broadPhasePairs = new Set(broadPhase.candidates.map((candidate) =>
+      facePairKey(candidate.firstFaceId, candidate.secondFaceId)))
+
+    type Occurrence = Readonly<{
+      faceId: string
+      world: Vector3
+      localScale: number
+    }>
+    const restByVertexId = new Map<string, Readonly<{
+      x: number
+      z: number
+    }>>()
+    const occurrences = new Map<string, Occurrence[]>()
+    let occurrenceCount = 0
+    for (const face of faces) {
+      const transform = faceTransforms.get(face.id)
+      if (!transform || !Array.isArray(face.polygon)) return null
+      let minimumX = Number.POSITIVE_INFINITY
+      let maximumX = Number.NEGATIVE_INFINITY
+      let minimumZ = Number.POSITIVE_INFINITY
+      let maximumZ = Number.NEGATIVE_INFINITY
+      for (const point of face.polygon) {
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) {
+          return null
+        }
+        minimumX = Math.min(minimumX, point.x)
+        maximumX = Math.max(maximumX, point.x)
+        minimumZ = Math.min(minimumZ, point.z)
+        maximumZ = Math.max(maximumZ, point.z)
+      }
+      const localScale = Math.max(
+        1,
+        thickness,
+        maximumX - minimumX,
+        maximumZ - minimumZ,
+      )
+      if (!Number.isFinite(localScale)) return null
+      const seenOnFace = new Set<string>()
+      for (const point of face.polygon) {
+        const vertexId = point.vertexId
+        if (vertexId === undefined || seenOnFace.has(vertexId)) continue
+        if (!validId(vertexId)) return null
+        seenOnFace.add(vertexId)
+        const knownRest = restByVertexId.get(vertexId)
+        if (
+          knownRest
+          && (knownRest.x !== point.x || knownRest.z !== point.z)
+        ) return null
+        if (!knownRest) {
+          restByVertexId.set(vertexId, { x: point.x, z: point.z })
+        }
+        const world = transformedPoint(point.x, 0, point.z, transform)
+        if (!world) return null
+        const group = occurrences.get(vertexId) ?? []
+        group.push({ faceId: face.id, world, localScale })
+        occurrences.set(vertexId, group)
+        occurrenceCount += 1
+        if (
+          !Number.isSafeInteger(occurrenceCount)
+          || occurrenceCount
+            > MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES
+        ) return null
+      }
+    }
+
+    const mismatches = new Map<string, FoldPreviewTopologyPoseMismatch>()
+    for (const [key, adjacency] of adjacencyByPair) {
+      if (broadPhasePairs.has(key)) continue
+      mismatches.set(key, {
+        firstFaceId: adjacency.firstFaceId,
+        secondFaceId: adjacency.secondFaceId,
+        relation: 'hinge_adjacent',
+        hingeEdgeIds: Object.freeze([...adjacency.edgeIds]),
+      })
+      if (
+        mismatches.size > MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES
+      ) return null
+    }
+    let comparisonCount = 0
+    for (const group of occurrences.values()) {
+      for (let firstIndex = 0; firstIndex < group.length; firstIndex += 1) {
+        const first = group[firstIndex]
+        for (
+          let secondIndex = firstIndex + 1;
+          secondIndex < group.length;
+          secondIndex += 1
+        ) {
+          const second = group[secondIndex]
+          if (first.faceId === second.faceId) continue
+          const key = facePairKey(first.faceId, second.faceId)
+          comparisonCount += 1
+          if (
+            comparisonCount > MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+          ) return null
+          const localMargin = calculateFoldPreviewNarrowPhaseNumericalMargin(
+            Math.max(first.localScale, second.localScale),
+          )
+          const distance = first.world.distanceTo(second.world)
+          if (
+            localMargin === null
+            || !Number.isFinite(distance)
+          ) return null
+          if (
+            distance <= localMargin
+            && broadPhasePairs.has(key)
+          ) continue
+          if (mismatches.has(key)) continue
+          const [firstFaceId, secondFaceId] =
+            first.faceId < second.faceId
+              ? [first.faceId, second.faceId]
+              : [second.faceId, first.faceId]
+          const hingeEdgeIds = adjacencyByPair.get(key)?.edgeIds ?? []
+          mismatches.set(key, {
+            firstFaceId,
+            secondFaceId,
+            relation: hingeEdgeIds.length > 0
+              ? 'hinge_adjacent'
+              : 'non_adjacent',
+            hingeEdgeIds: Object.freeze([...hingeEdgeIds]),
+          })
+          if (
+            mismatches.size > MAX_FOLD_PREVIEW_COLLISION_ADJACENCIES
+          ) return null
+        }
+      }
+    }
+    return Object.freeze([...mismatches.values()].sort((first, second) =>
+      first.firstFaceId < second.firstFaceId
+        ? -1
+        : first.firstFaceId > second.firstFaceId
+          ? 1
+          : first.secondFaceId < second.secondFaceId
+            ? -1
+            : first.secondFaceId > second.secondFaceId
+              ? 1
+              : 0))
+  } catch {
+    return null
+  }
+}
+
+function facePairKey(firstFaceId: string, secondFaceId: string) {
+  return JSON.stringify(firstFaceId < secondFaceId
+    ? [firstFaceId, secondFaceId]
+    : [secondFaceId, firstFaceId])
+}
+
+function topologyPoseMismatchResult(
+  broadPhase: FoldPreviewBroadPhaseResult,
+  mismatches: readonly FoldPreviewTopologyPoseMismatch[],
+): FoldPreviewNarrowPhaseResult | null {
+  const numericalMargin = broadPhase.numericalMargin * SAT_MARGIN_FACTOR
+  if (!Number.isFinite(numericalMargin) || mismatches.length === 0) return null
+  const broadPhaseHingeAdjacentCandidates = broadPhase.candidates.reduce(
+    (count, candidate) =>
+      count + Number(candidate.relation === 'hinge_adjacent'),
+    0,
+  )
+  const exactTransversalProofWork =
+    snapshotFoldPreviewExactTransversalProofWork(
+      createFoldPreviewExactTransversalProofBudget(),
+    )
+  return freezeNarrowPhaseResultSnapshot({
+    broadPhaseCandidates: broadPhase.candidates.length,
+    broadPhaseNonAdjacentCandidates:
+      broadPhase.candidates.length - broadPhaseHingeAdjacentCandidates,
+    broadPhaseHingeAdjacentCandidates,
+    interactions: mismatches.map((mismatch) =>
+      mismatch.relation === 'hinge_adjacent'
+        ? {
+            firstFaceId: mismatch.firstFaceId,
+            secondFaceId: mismatch.secondFaceId,
+            relation: mismatch.relation,
+            hingeEdgeIds: mismatch.hingeEdgeIds,
+            geometryClass: 'indeterminate' as const,
+            hingeDecision: indeterminateHingeDecision(
+              mismatch.hingeEdgeIds,
+              'pose_mismatch',
+            ),
+          }
+        : {
+            firstFaceId: mismatch.firstFaceId,
+            secondFaceId: mismatch.secondFaceId,
+            relation: mismatch.relation,
+            hingeEdgeIds: mismatch.hingeEdgeIds,
+            geometryClass: 'indeterminate' as const,
+          }),
+    trianglePairTests: 0,
+    satTests: 0,
+    numericalMargin,
+    exactTransversalProofWork,
+    witnessSamples: Object.freeze([]),
+    witnessCoverage: freezeWitnessCoverage({
+      eligiblePairCount: 0,
+      attemptedPairCount: 0,
+      unavailablePairCount: 0,
+      omittedByLimitCount: 0,
+      authoritativePairScanComplete: false,
+    }),
+  })
+}
+
+function createTopologyPoseMismatchAnalysisJob(
+  broadPhase: FoldPreviewBroadPhaseResult,
+  mismatches: readonly FoldPreviewTopologyPoseMismatch[],
+): FoldPreviewNarrowPhaseAnalysisJob | null {
+  const result = topologyPoseMismatchResult(broadPhase, mismatches)
+  if (!result) return null
+  const work = Object.freeze({
+    totalWorkUnits: 0,
+    trianglePairTests: 0,
+    witnessDerivations: 0,
+  })
+  const workBounds = Object.freeze({
+    entireStepTimeBounded: false as const,
+    synchronousFactoryPreparation: true as const,
+    synchronousHingePolicyFinalization: true as const,
+    synchronousResultFinalization: true as const,
+    potentialTrianglePairCount: 0,
+    maximumTrianglePairTests: 0,
+    maximumWitnessDerivations: 0,
+    maximumTotalWorkUnits: 0,
+  })
+  const exactTransversalProofWork = result.exactTransversalProofWork
+  let cancelled = false
+  let terminal: FoldPreviewNarrowPhaseAnalysisJobStep | null = null
+  const publish = (step: FoldPreviewNarrowPhaseAnalysisJobStep) => {
+    terminal ??= Object.freeze(step)
+    return terminal
+  }
+  return Object.freeze({
+    workBounds,
+    step(workBudget: number): FoldPreviewNarrowPhaseAnalysisJobStep {
+      if (terminal) return terminal
+      if (cancelled) {
+        return publish({
+          version: FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION,
+          kind: 'cancelled',
+          work,
+          workBounds,
+          exactTransversalProofWork,
+        })
+      }
+      if (!Number.isSafeInteger(workBudget) || workBudget <= 0) {
+        return publish({
+          version: FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION,
+          kind: 'indeterminate',
+          reason: 'invalid_work_budget',
+          work,
+          workBounds,
+          exactTransversalProofWork,
+        })
+      }
+      return publish({
+        version: FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION,
+        kind: 'complete',
+        result,
+        work,
+        workBounds,
+        exactTransversalProofWork,
+      })
+    },
+    cancel() {
+      if (!terminal) cancelled = true
+    },
+  })
 }
 
 function refineFoldPreviewNarrowPhase(
@@ -847,6 +1625,8 @@ function refineFoldPreviewNarrowPhase(
       let penetratingWitnessPairCount = 0
       let candidateTrianglePairTests = 0
       let candidateExactProofSkippedByLimit = false
+      let candidateHasNonAllowedInteraction = false
+      const topologyContacts = createMutableTopologyContactSummary()
       pairSearch:
       for (const first of firstPrisms) {
         for (const second of secondPrisms) {
@@ -871,9 +1651,22 @@ function refineFoldPreviewNarrowPhase(
               > skippedBefore
           ) candidateExactProofSkippedByLimit = true
           if (!intersection) return null
-          if (intersection === 'separated') continue
+          const intersectionClass = intersection.geometryClass
+          if (intersectionClass === 'separated') continue
+          if (intersection.topologyContact) {
+            recordAllowedSharedVertexPair(
+              topologyContacts,
+              intersection.topologyContact,
+              intersection.rawGeometryClass,
+            )
+          } else {
+            candidateHasNonAllowedInteraction = true
+          }
           if (candidate.relation === 'non_adjacent') {
-            if (intersection === 'touching') {
+            if (
+              intersectionClass === 'touching'
+              && !intersection.topologyContact
+            ) {
               touchingWitnessPairCount += 1
               if (
                 touchingWitnessSeeds.length
@@ -881,7 +1674,7 @@ function refineFoldPreviewNarrowPhase(
               ) {
                 touchingWitnessSeeds.push(Object.freeze({ first, second }))
               }
-            } else if (intersection === 'penetrating') {
+            } else if (intersectionClass === 'penetrating') {
               penetratingWitnessPairCount += 1
               if (
                 penetratingWitnessSeeds.length
@@ -892,15 +1685,16 @@ function refineFoldPreviewNarrowPhase(
             }
           }
           if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
+            if (intersection.rawGeometryClass === 'separated') return null
             hingePairs.push({
               firstTriangleIndex: first.triangleIndex,
               secondTriangleIndex: second.triangleIndex,
               firstVertices: first.vertices,
               secondVertices: second.vertices,
-              geometryClass: intersection,
+              geometryClass: intersection.rawGeometryClass,
             })
           }
-          if (intersection === 'penetrating') {
+          if (intersectionClass === 'penetrating') {
             geometryClass = 'penetrating'
             if (!hingeContactPolicy || candidate.relation !== 'hinge_adjacent') {
               break pairSearch
@@ -908,12 +1702,12 @@ function refineFoldPreviewNarrowPhase(
             continue
           }
           if (
-            intersection === 'indeterminate'
+            intersectionClass === 'indeterminate'
             && geometryClass !== 'penetrating'
             && geometryClass !== 'indeterminate'
           ) {
             geometryClass = 'indeterminate'
-          } else if (intersection === 'touching' && !geometryClass) {
+          } else if (intersectionClass === 'touching' && !geometryClass) {
             geometryClass = 'touching'
           }
         }
@@ -957,6 +1751,11 @@ function refineFoldPreviewNarrowPhase(
           }
         }
       }
+      if (candidate.relation === 'hinge_adjacent' && !geometryClass) {
+        // A declared shared hinge with no intersecting triangle pair is a
+        // topology/evidence contradiction, not affirmative separation.
+        geometryClass = 'indeterminate'
+      }
       if (geometryClass) {
         let interaction: FoldPreviewNarrowPhaseInteraction = {
           firstFaceId: candidate.firstFaceId,
@@ -965,27 +1764,46 @@ function refineFoldPreviewNarrowPhase(
           hingeEdgeIds: candidate.hingeEdgeIds,
           geometryClass,
         }
-        if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
-          const hingeDecision = candidateExactProofSkippedByLimit
-            ? exactProofLimitHingeDecision(candidate.hingeEdgeIds)
-            : hingeContactPolicy.classify({
-                firstFaceId: candidate.firstFaceId,
-                secondFaceId: candidate.secondFaceId,
-                hingeEdgeIds: candidate.hingeEdgeIds,
-                faceTransforms,
-                thickness,
-                numericalMargin,
-                testedTrianglePairs: candidateTrianglePairTests,
-                pairs: hingePairs,
-              })
-          interaction = {
-            ...interaction,
-            geometryClass: hingeDecision.kind === 'allowed_by_hinge_model'
-              ? hingeDecision.geometry === 'boundary_contact'
-                ? 'touching'
-                : 'penetrating'
-              : interaction.geometryClass,
-            hingeDecision,
+        const topologyContact = snapshotTopologyContactSummary(
+          topologyContacts,
+          !candidateHasNonAllowedInteraction,
+        )
+        if (topologyContact) {
+          interaction = { ...interaction, topologyContact }
+        }
+        if (candidate.relation === 'hinge_adjacent') {
+          if (!hingeContactPolicy) {
+            interaction = {
+              ...interaction,
+              geometryClass: 'indeterminate',
+              hingeDecision: indeterminateHingeDecision(
+                candidate.hingeEdgeIds,
+                'missing_constraint',
+              ),
+            }
+          } else {
+            const hingeDecision = candidateExactProofSkippedByLimit
+              ? exactProofLimitHingeDecision(candidate.hingeEdgeIds)
+              : hingeContactPolicy.classify({
+                  firstFaceId: candidate.firstFaceId,
+                  secondFaceId: candidate.secondFaceId,
+                  hingeEdgeIds: candidate.hingeEdgeIds,
+                  faceTransforms,
+                  thickness,
+                  numericalMargin,
+                  testedTrianglePairs: candidateTrianglePairTests,
+                  pairs: hingePairs,
+                })
+            const certifiedHinge = applyCertifiedHingeTopologyDecision(
+              interaction.geometryClass,
+              hingeDecision,
+              candidate.hingeEdgeIds,
+            )
+            interaction = {
+              ...interaction,
+              geometryClass: certifiedHinge.geometryClass,
+              hingeDecision: certifiedHinge.hingeDecision,
+            }
           }
         }
         interactions.push(interaction)
@@ -1173,6 +1991,8 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
   let touchingWitnessPairCount = 0
   let penetratingWitnessPairCount = 0
   let candidateExactProofSkippedByLimit = false
+  let candidateHasNonAllowedInteraction = false
+  let topologyContacts = createMutableTopologyContactSummary()
 
   let selectedSeeds: readonly EligibleWitnessPairSeed[] = []
   let witnessIndex = 0
@@ -1281,6 +2101,8 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
     touchingWitnessPairCount = 0
     penetratingWitnessPairCount = 0
     candidateExactProofSkippedByLimit = false
+    candidateHasNonAllowedInteraction = false
+    topologyContacts = createMutableTopologyContactSummary()
   }
 
   const enterWitnessDerivationPhase = () => {
@@ -1349,6 +2171,14 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       }
     }
 
+    if (
+      candidate.relation === 'hinge_adjacent'
+      && !candidateGeometryClass
+    ) {
+      // See the synchronous path: shared-hinge separation is contradictory
+      // until the finite hinge model proves the declared topology.
+      candidateGeometryClass = 'indeterminate'
+    }
     if (candidateGeometryClass) {
       let interaction: FoldPreviewNarrowPhaseInteraction = {
         firstFaceId: candidate.firstFaceId,
@@ -1357,29 +2187,46 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
         hingeEdgeIds: candidate.hingeEdgeIds,
         geometryClass: candidateGeometryClass,
       }
-      if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
-        const hingeDecision = candidateExactProofSkippedByLimit
-          ? exactProofLimitHingeDecision(candidate.hingeEdgeIds)
-          : hingeContactPolicy.classify({
-              firstFaceId: candidate.firstFaceId,
-              secondFaceId: candidate.secondFaceId,
-              hingeEdgeIds: candidate.hingeEdgeIds,
-              faceTransforms,
-              thickness,
-              numericalMargin,
-              testedTrianglePairs: candidateTrianglePairTests,
-              pairs: hingePairs,
-            })
-        if (terminal) return terminal
-        if (cancelled) return cancelledStep()
-        interaction = {
-          ...interaction,
-          geometryClass: hingeDecision.kind === 'allowed_by_hinge_model'
-            ? hingeDecision.geometry === 'boundary_contact'
-              ? 'touching'
-              : 'penetrating'
-            : interaction.geometryClass,
-          hingeDecision,
+      const topologyContact = snapshotTopologyContactSummary(
+        topologyContacts,
+        !candidateHasNonAllowedInteraction,
+      )
+      if (topologyContact) interaction = { ...interaction, topologyContact }
+      if (candidate.relation === 'hinge_adjacent') {
+        if (!hingeContactPolicy) {
+          interaction = {
+            ...interaction,
+            geometryClass: 'indeterminate',
+            hingeDecision: indeterminateHingeDecision(
+              candidate.hingeEdgeIds,
+              'missing_constraint',
+            ),
+          }
+        } else {
+          const hingeDecision = candidateExactProofSkippedByLimit
+            ? exactProofLimitHingeDecision(candidate.hingeEdgeIds)
+            : hingeContactPolicy.classify({
+                firstFaceId: candidate.firstFaceId,
+                secondFaceId: candidate.secondFaceId,
+                hingeEdgeIds: candidate.hingeEdgeIds,
+                faceTransforms,
+                thickness,
+                numericalMargin,
+                testedTrianglePairs: candidateTrianglePairTests,
+                pairs: hingePairs,
+              })
+          if (terminal) return terminal
+          if (cancelled) return cancelledStep()
+          const certifiedHinge = applyCertifiedHingeTopologyDecision(
+            interaction.geometryClass,
+            hingeDecision,
+            candidate.hingeEdgeIds,
+          )
+          interaction = {
+            ...interaction,
+            geometryClass: certifiedHinge.geometryClass,
+            hingeDecision: certifiedHinge.hingeDecision,
+          }
         }
       }
       interactions.push(interaction)
@@ -1438,9 +2285,22 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       if (terminal) return terminal
       if (cancelled) return cancelledStep()
       if (!intersection) return indeterminateStep('scan_error')
-      if (intersection !== 'separated') {
+      const intersectionClass = intersection.geometryClass
+      if (intersectionClass !== 'separated') {
+        if (intersection.topologyContact) {
+          recordAllowedSharedVertexPair(
+            topologyContacts,
+            intersection.topologyContact,
+            intersection.rawGeometryClass,
+          )
+        } else {
+          candidateHasNonAllowedInteraction = true
+        }
         if (candidate.relation === 'non_adjacent') {
-          if (intersection === 'touching') {
+          if (
+            intersectionClass === 'touching'
+            && !intersection.topologyContact
+          ) {
             touchingWitnessPairCount += 1
             if (
               touchingWitnessSeeds.length
@@ -1448,7 +2308,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
             ) {
               touchingWitnessSeeds.push(Object.freeze({ first, second }))
             }
-          } else if (intersection === 'penetrating') {
+          } else if (intersectionClass === 'penetrating') {
             penetratingWitnessPairCount += 1
             if (
               penetratingWitnessSeeds.length
@@ -1462,26 +2322,29 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
           candidate.relation === 'hinge_adjacent'
           && hingeContactPolicy
         ) {
+          if (intersection.rawGeometryClass === 'separated') {
+            return indeterminateStep('scan_error')
+          }
           hingePairs.push({
             firstTriangleIndex: first.triangleIndex,
             secondTriangleIndex: second.triangleIndex,
             firstVertices: first.vertices,
             secondVertices: second.vertices,
-            geometryClass: intersection,
+            geometryClass: intersection.rawGeometryClass,
           })
         }
-        if (intersection === 'penetrating') {
+        if (intersectionClass === 'penetrating') {
           candidateGeometryClass = 'penetrating'
           stopCandidateEarly =
             !hingeContactPolicy || candidate.relation !== 'hinge_adjacent'
         } else if (
-          intersection === 'indeterminate'
+          intersectionClass === 'indeterminate'
           && candidateGeometryClass !== 'penetrating'
           && candidateGeometryClass !== 'indeterminate'
         ) {
           candidateGeometryClass = 'indeterminate'
         } else if (
-          intersection === 'touching'
+          intersectionClass === 'touching'
           && !candidateGeometryClass
         ) {
           candidateGeometryClass = 'touching'
@@ -1851,6 +2714,7 @@ function createFullScanNonAdjacentWitnessSetJob(
   let aabbRejectedPairCount = 0
   let satTests = 0
   let satSeparatedPairCount = 0
+  let allowedSharedVertexPairCount = 0
   let touchingPairCount = 0
   let penetratingPairCount = 0
   let indeterminatePairCount = 0
@@ -1925,6 +2789,7 @@ function createFullScanNonAdjacentWitnessSetJob(
         aabbRejectedPairCount,
         satTests,
         satSeparatedPairCount,
+        allowedSharedVertexPairCount,
         touchingPairCount,
         penetratingPairCount,
         indeterminatePairCount,
@@ -2006,12 +2871,15 @@ function createFullScanNonAdjacentWitnessSetJob(
       if (terminal) return terminal
       if (cancelled) return cancelledStep()
       if (!intersection) return indeterminateStep('scan_error')
-      if (intersection === 'separated') {
+      const intersectionClass = intersection.geometryClass
+      if (intersectionClass === 'separated') {
         satSeparatedPairCount += 1
-      } else if (intersection === 'indeterminate') {
+      } else if (intersection.topologyContact) {
+        allowedSharedVertexPairCount += 1
+      } else if (intersectionClass === 'indeterminate') {
         indeterminatePairCount += 1
       } else {
-        if (intersection === 'penetrating') {
+        if (intersectionClass === 'penetrating') {
           penetratingPairCount += 1
         } else {
           touchingPairCount += 1
@@ -2023,7 +2891,7 @@ function createFullScanNonAdjacentWitnessSetJob(
           eligibleSeeds.push(Object.freeze({
             firstFaceId: candidate.firstFaceId,
             secondFaceId: candidate.secondFaceId,
-            geometryClass: intersection,
+            geometryClass: intersectionClass,
             first,
             second,
           }))
@@ -2386,6 +3254,10 @@ function snapshotNarrowPhaseInputs(
     ) return null
 
     const faceIds = new Set<string>()
+    const topologyVertexPositions = new Map<string, Readonly<{
+      x: number
+      z: number
+    }>>()
     const preparedFaces: PreparedFoldPreviewNarrowPhaseFace[] = []
     let vertexCount = 0
     for (const face of faces) {
@@ -2412,6 +3284,18 @@ function snapshotNarrowPhaseInputs(
           || (point.vertexId !== undefined && !validId(point.vertexId))
         ) {
           throw new RangeError('invalid collision polygon point')
+        }
+        if (point.vertexId !== undefined) {
+          const known = topologyVertexPositions.get(point.vertexId)
+          if (known && (known.x !== point.x || known.z !== point.z)) {
+            throw new RangeError('topology vertex position mismatch')
+          }
+          if (!known) {
+            topologyVertexPositions.set(point.vertexId, {
+              x: point.x,
+              z: point.z,
+            })
+          }
         }
         return point.vertexId === undefined
           ? { x: point.x, z: point.z }
@@ -2516,6 +3400,12 @@ function buildTrianglePrisms(
   const prisms: TrianglePrism[] = []
   for (let triangleIndex = 0; triangleIndex < triangles.length; triangleIndex += 1) {
     const triangle = triangles[triangleIndex]
+    const midSurface = triangle.map((index) => transformedPoint(
+      face.polygon[index].x,
+      0,
+      face.polygon[index].z,
+      transform,
+    ))
     const top = triangle.map((index) => transformedPoint(
       face.polygon[index].x,
       halfThickness,
@@ -2528,29 +3418,47 @@ function buildTrianglePrisms(
       face.polygon[index].z,
       transform,
     ))
-    if ([...top, ...bottom].some((point) => !point)) return null
-    const vertices = [...top, ...bottom] as Vector3[]
-    const firstEdge = vertices[1].clone().sub(vertices[0])
-    const secondEdge = vertices[2].clone().sub(vertices[1])
-    const thirdEdge = vertices[0].clone().sub(vertices[2])
-    const baseNormal = normalized(firstEdge.clone().cross(
-      vertices[2].clone().sub(vertices[0]),
-    ))
+    if ([...midSurface, ...top, ...bottom].some((point) => !point)) return null
+    const midSurfaceVertices = midSurface as Vector3[]
+    const topVertices = top as Vector3[]
+    const bottomVertices = bottom as Vector3[]
+    const vertices = [...topVertices, ...bottomVertices]
+    const canonicalPositions = canonicalTriangleVertexPositions(
+      face,
+      triangle,
+    )
+    if (!canonicalPositions) return null
+    const canonicalPoints = canonicalPositions.map((position) =>
+      face.polygon[triangle[position]])
+    if (canonicalPoints.some((point) => !point)) return null
+    const firstEdge = transformedRestEdgeDirection(
+      canonicalPoints[0],
+      canonicalPoints[1],
+      transform,
+    )
+    const secondEdge = transformedRestEdgeDirection(
+      canonicalPoints[1],
+      canonicalPoints[2],
+      transform,
+    )
+    const thirdEdge = transformedRestEdgeDirection(
+      canonicalPoints[2],
+      canonicalPoints[0],
+      transform,
+    )
+    const baseNormal = transformedLocalYAxis(transform)
+    if (!firstEdge || !secondEdge || !thirdEdge) return null
     if (!baseNormal) return null
-    const extrusion = vertices[3].clone().sub(vertices[0])
-    const extrusionDirection = normalized(extrusion)
-    if (thickness > 0 && !extrusionDirection) return null
-
-    const baseEdges = [firstEdge, secondEdge, thirdEdge]
-      .map(normalized)
-    if (baseEdges.some((edge) => !edge)) return null
-    const edgeDirections = baseEdges as Vector3[]
+    const extrusionDirection = thickness > 0
+      ? baseNormal.clone().multiplyScalar(-1)
+      : null
+    const edgeDirections = [firstEdge, secondEdge, thirdEdge]
     if (extrusionDirection) edgeDirections.push(extrusionDirection)
 
     const faceAxes = [baseNormal]
     for (const edge of edgeDirections.slice(0, 3)) {
       const sideAxis = normalized(thickness > 0
-        ? edge.clone().cross(extrusion)
+        ? edge.clone().cross(extrusionDirection as Vector3)
         : edge.clone().cross(baseNormal))
       if (!sideAxis) return null
       faceAxes.push(sideAxis)
@@ -2559,6 +3467,7 @@ function buildTrianglePrisms(
     if (!bounds) return null
     prisms.push({
       triangleIndex,
+      midSurfaceVertices,
       vertices,
       topologyVertices: triangle.map((index) => ({
         vertexId: face.polygon[index].vertexId ?? null,
@@ -2575,32 +3484,130 @@ function buildTrianglePrisms(
   return prisms.length === triangles.length && prisms.length > 0 ? prisms : null
 }
 
+/**
+ * Produces one geometry-derived triangle order for SAT axis construction.
+ *
+ * Polygon start position and winding are serialization choices, not geometry.
+ * Computing nearly parallel cross axes from those arbitrary orders can make
+ * one permutation round to an exact redundant axis while another rounds to a
+ * subnormal non-zero axis. The material and diagnostic vertex snapshots stay
+ * in their authoritative input order; only the mathematically unordered SAT
+ * axis set uses this canonical order.
+ */
+function canonicalTriangleVertexPositions(
+  face: FoldPreviewNarrowPhaseFace,
+  triangle: FoldPreviewTriangleIndices,
+): readonly [number, number, number] | null {
+  const positions = [0, 1, 2] as [number, number, number]
+  for (const position of positions) {
+    const vertexIndex = triangle[position]
+    if (!Number.isSafeInteger(vertexIndex) || !face.polygon[vertexIndex]) {
+      return null
+    }
+  }
+  positions.sort((firstPosition, secondPosition) => {
+    const first = face.polygon[triangle[firstPosition]]
+    const second = face.polygon[triangle[secondPosition]]
+    if (!first || !second) return firstPosition - secondPosition
+    if (first.x !== second.x) return first.x < second.x ? -1 : 1
+    if (first.z !== second.z) return first.z < second.z ? -1 : 1
+    const firstId = first.vertexId ?? ''
+    const secondId = second.vertexId ?? ''
+    if (firstId !== secondId) return firstId < secondId ? -1 : 1
+    return firstPosition - secondPosition
+  })
+  return positions
+}
+
+function transformedRestEdgeDirection(
+  first: FoldPreviewNarrowPhaseFace['polygon'][number],
+  second: FoldPreviewNarrowPhaseFace['polygon'][number],
+  transform: Matrix4,
+) {
+  if (!first || !second) return null
+  const x = second.x - first.x
+  const z = second.z - first.z
+  const elements = transform.elements
+  if (
+    !Number.isFinite(x)
+    || !Number.isFinite(z)
+    || !Array.isArray(elements)
+    || elements.length !== 16
+  ) return null
+  // Apply only the already validated rigid transform's linear component.
+  // Re-subtracting two translated world points would reintroduce cancellation.
+  return normalized(new Vector3(
+    elements[0] * x + elements[8] * z,
+    elements[1] * x + elements[9] * z,
+    elements[2] * x + elements[10] * z,
+  ))
+}
+
+function transformedLocalYAxis(transform: Matrix4) {
+  const elements = transform.elements
+  if (!Array.isArray(elements) || elements.length !== 16) return null
+  return normalized(new Vector3(
+    elements[4],
+    elements[5],
+    elements[6],
+  ))
+}
+
 function classifyTrianglePrisms(
   first: TrianglePrism,
   second: TrianglePrism,
   margin: number,
   exactTransversalProofBudget: FoldPreviewExactTransversalProofBudget,
-): PrismIntersection | null {
+): PrismIntersectionClassification | null {
+  const projectionFrame = prismPairProjectionFrame(first, second, margin)
+  if (!projectionFrame) return null
+  const topologyMargin = projectionFrame.topologyMargin
+  const sharedVertexSurface = classifySharedVertexMidSurfaceContact(
+    first,
+    second,
+    topologyMargin,
+    exactTransversalProofBudget,
+  )
+  const sharedVertexExactAttempted = sharedVertexSurface !== null
+  if (sharedVertexSurface?.kind === 'transversal') {
+    return prismIntersectionClassification('penetrating')
+  }
+
   if (first.zeroThickness || second.zeroThickness) {
     const surfaceIntersection = first.zeroThickness && second.zeroThickness
       ? classifyZeroThicknessTriangles(first, second, margin)
-      : 'indeterminate'
+      : zeroThicknessIntersection('indeterminate')
+    if (!surfaceIntersection) return null
     // A tolerance-based contact/unknown cannot overrule a strict intersection
     // proof over the exact stored coordinates.
     if (
-      surfaceIntersection === 'touching'
-      || surfaceIntersection === 'indeterminate'
+      surfaceIntersection.geometryClass === 'touching'
+      || surfaceIntersection.geometryClass === 'indeterminate'
     ) {
-      const exactDecision = attemptTransversalTriangleIntersectionProof(
-        first,
-        second,
-        exactTransversalProofBudget,
-      )
-      if (exactDecision === 'proved') return 'penetrating'
-      if (exactDecision === 'budget_exhausted') return 'indeterminate'
+      if (!sharedVertexExactAttempted) {
+        const exactDecision = attemptTransversalTriangleIntersectionProof(
+          first,
+          second,
+          topologyMargin,
+          exactTransversalProofBudget,
+        )
+        if (exactDecision === 'proved') {
+          return prismIntersectionClassification('penetrating')
+        }
+        if (exactDecision === 'budget_exhausted') {
+          return prismIntersectionClassification('indeterminate')
+        }
+      }
     }
-    return surfaceIntersection
+    return combineSharedVertexTopologyDecision(
+      surfaceIntersection.geometryClass,
+      0,
+      sharedVertexSurface,
+      first,
+      second,
+    )
   }
+
   const axes = [...first.faceAxes, ...second.faceAxes]
   let uncertainAxis = false
   for (const firstEdge of first.edgeDirections) {
@@ -2618,63 +3625,642 @@ function classifyTrianglePrisms(
   }
   if (axes.length === 0) return null
 
-  let boundaryContact = false
+  let exactBoundaryContact = false
+  let subMarginUncertainty = false
   for (const axis of axes) {
-    const firstProjection = projectVertices(first.vertices, axis)
-    const secondProjection = projectVertices(second.vertices, axis)
+    const firstProjection = projectVertices(
+      first.vertices,
+      axis,
+      projectionFrame.origin,
+    )
+    const secondProjection = projectVertices(
+      second.vertices,
+      axis,
+      projectionFrame.origin,
+    )
     if (!firstProjection || !secondProjection) return null
     const gap = Math.max(
       secondProjection.min - firstProjection.max,
       firstProjection.min - secondProjection.max,
     )
-    if (gap > margin) return 'separated'
+    if (gap > projectionFrame.margin) {
+      return prismIntersectionClassification('separated')
+    }
     const overlap = Math.min(firstProjection.max, secondProjection.max)
       - Math.max(firstProjection.min, secondProjection.min)
     if (!Number.isFinite(gap) || !Number.isFinite(overlap)) return null
-    if (overlap <= margin) boundaryContact = true
+    if (overlap < 0) subMarginUncertainty = true
+    else if (overlap === 0) {
+      // Once absolute-world binary64 rounding dominates the pair's local
+      // error scale, a stored zero may be a collapsed positive gap or overlap.
+      // It is no longer affirmative evidence of true boundary contact.
+      if (
+        projectionAxisWorldRoundingMargin(
+          projectionFrame.worldCoordinateScale,
+          axis,
+        ) > projectionFrame.localMargin
+      ) {
+        subMarginUncertainty = true
+      } else {
+        exactBoundaryContact = true
+      }
+    } else if (overlap <= projectionFrame.margin) {
+      subMarginUncertainty = true
+    }
   }
   if (uncertainAxis) {
-    const exactDecision = attemptTransversalTriangleIntersectionProof(
+    const rawGeometryClass = sharedVertexExactAttempted
+      ? 'indeterminate'
+      : attemptTransversalTriangleIntersectionProof(
+          first,
+          second,
+          topologyMargin,
+          exactTransversalProofBudget,
+        ) === 'proved'
+        ? 'penetrating'
+        : 'indeterminate'
+    return combineSharedVertexTopologyDecision(
+      rawGeometryClass,
+      1,
+      sharedVertexSurface,
       first,
       second,
-      exactTransversalProofBudget,
     )
-    return exactDecision === 'proved' ? 'penetrating' : 'indeterminate'
   }
-  // A positive but sub-margin slab overlap may look like SAT boundary contact.
-  // Crossing central surfaces prove positive-volume overlap for every positive
-  // representable thickness, without widening the SAT margin.
-  if (boundaryContact) {
-    const exactDecision = attemptTransversalTriangleIntersectionProof(
+  // Exact zero is contact. A signed non-zero gap or overlap inside the error
+  // band is unresolved, never contact. Crossing central surfaces can still
+  // prove positive volume without widening that band.
+  if (exactBoundaryContact || subMarginUncertainty) {
+    if (!sharedVertexExactAttempted) {
+      const exactDecision = attemptTransversalTriangleIntersectionProof(
+        first,
+        second,
+        topologyMargin,
+        exactTransversalProofBudget,
+      )
+      if (exactDecision === 'proved') {
+        return prismIntersectionClassification('penetrating')
+      }
+      if (exactDecision === 'budget_exhausted') {
+        return prismIntersectionClassification('indeterminate')
+      }
+    }
+  }
+  return combineSharedVertexTopologyDecision(
+    subMarginUncertainty
+      ? 'indeterminate'
+      : exactBoundaryContact
+        ? 'touching'
+        : 'penetrating',
+    1,
+    sharedVertexSurface,
+    first,
+    second,
+  )
+}
+
+function prismIntersectionClassification(
+  geometryClass: PrismIntersection,
+  topologyContact?: FoldPreviewAllowedSharedVertexPair,
+  rawGeometryClass = geometryClass,
+): PrismIntersectionClassification {
+  return topologyContact
+    ? { geometryClass, rawGeometryClass, topologyContact }
+    : { geometryClass, rawGeometryClass }
+}
+
+type SharedVertexMidSurfaceEvidence =
+  | Readonly<{
+      kind: 'certified_shared_vertex_only'
+      certificate: FoldPreviewCertifiedSharedVertexGeometry
+    }>
+  | Readonly<{ kind: 'transversal'; sharedVertexId: string }>
+  | Readonly<{ kind: 'not_proved'; sharedVertexId: string }>
+  | Readonly<{ kind: 'indeterminate'; sharedVertexId: string }>
+
+function combineSharedVertexTopologyDecision(
+  rawGeometryClass: PrismIntersection,
+  thicknessClass: 0 | 1,
+  evidence: SharedVertexMidSurfaceEvidence | null,
+  first: TrianglePrism,
+  second: TrianglePrism,
+): PrismIntersectionClassification {
+  if (!evidence || evidence.kind === 'not_proved') {
+    return prismIntersectionClassification(rawGeometryClass)
+  }
+  if (evidence.kind === 'transversal') {
+    return prismIntersectionClassification('penetrating')
+  }
+  if (evidence.kind === 'indeterminate') {
+    return prismIntersectionClassification(
+      'indeterminate',
+      undefined,
+      rawGeometryClass,
+    )
+  }
+  return dispatchCertifiedSharedVertexTopologyContact(
+    evidence.certificate,
+    rawGeometryClass,
+    thicknessClass,
+    first,
+    second,
+  )
+}
+
+/**
+ * Converts an analyzer-issued geometry proof into one policy decision.
+ * A copied object, a pure string-table result, or a contradictory separated
+ * SAT result cannot authorize a collision exemption.
+ */
+function dispatchCertifiedSharedVertexTopologyContact(
+  certificate: FoldPreviewCertifiedSharedVertexGeometry,
+  rawGeometryClass: PrismIntersection,
+  thicknessClass: 0 | 1,
+  first: TrianglePrism,
+  second: TrianglePrism,
+): PrismIntersectionClassification {
+  // An exact shared point and a separating axis cannot both describe the same
+  // canonical triangle pair. Preserve the contradiction as blocking evidence.
+  if (
+    rawGeometryClass === 'separated'
+    || (rawGeometryClass === 'indeterminate' && thicknessClass === 0)
+  ) {
+    return prismIntersectionClassification(
+      'indeterminate',
+      undefined,
+      rawGeometryClass,
+    )
+  }
+
+  const runtimeEvidence = issueSharedVertexRuntimeEvidence(
+    certificate,
+    first,
+    second,
+    thicknessClass,
+    rawGeometryClass,
+  )
+  if (!runtimeEvidence) {
+    return prismIntersectionClassification(
+      'indeterminate',
+      undefined,
+      rawGeometryClass,
+    )
+  }
+  return dispatchSharedVertexRuntimeEvidence(
+    runtimeEvidence,
+    first,
+    second,
+    thicknessClass,
+    rawGeometryClass,
+  )
+}
+
+function dispatchSharedVertexRuntimeEvidence(
+  runtimeEvidence: FoldPreviewCertifiedSharedVertexRuntimeEvidence,
+  first: TrianglePrism,
+  second: TrianglePrism,
+  thicknessClass: 0 | 1,
+  rawGeometryClass: PrismIntersection,
+): PrismIntersectionClassification {
+  if (
+    !isTrustedSharedVertexRuntimeEvidence(
+      runtimeEvidence,
       first,
       second,
-      exactTransversalProofBudget,
+      thicknessClass,
+      rawGeometryClass,
     )
-    if (exactDecision === 'proved') return 'penetrating'
-    if (exactDecision === 'budget_exhausted') return 'indeterminate'
+  ) {
+    return prismIntersectionClassification(
+      'indeterminate',
+      undefined,
+      rawGeometryClass,
+    )
   }
-  return boundaryContact ? 'touching' : 'penetrating'
+  const decision = classifyFoldPreviewTopologyContact(
+    runtimeEvidence.topology,
+    runtimeEvidence.evidence,
+  )
+  if (decision !== 'allowed_shared_vertex_contact') {
+    return prismIntersectionClassification(
+      'indeterminate',
+      undefined,
+      rawGeometryClass,
+    )
+  }
+  return prismIntersectionClassification(
+    'touching',
+    {
+      policyVersion: FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+      topology: runtimeEvidence.topology,
+      evidence: runtimeEvidence.evidence,
+      decision,
+      sharedVertexId: runtimeEvidence.sharedVertexId,
+    },
+    rawGeometryClass,
+  )
+}
+
+function isTrustedSharedVertexGeometryCertificate(
+  value: FoldPreviewCertifiedSharedVertexGeometry,
+  first: TrianglePrism,
+  second: TrianglePrism,
+  thicknessClass: 0 | 1,
+) {
+  try {
+    if (
+      typeof value !== 'object'
+      || value === null
+      || !reflectApplyIntrinsic(
+        weakSetHasIntrinsic,
+        trustedSharedVertexGeometryCertificates,
+        [value],
+      )
+    ) return false
+    const provenance = reflectApplyIntrinsic(
+      weakMapGetIntrinsic,
+      trustedSharedVertexGeometryProvenance,
+      [value],
+    ) as FoldPreviewSharedVertexGeometryProvenance | undefined
+    return value.policyVersion
+        === FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+      && value.topology === 'shared_vertex'
+      && value.proof
+        === 'binary64_shared_vertex_only_with_cooriented_material_normals_v1'
+      && validId(value.sharedVertexId)
+      && Object.isFrozen(value)
+      && provenance?.first === first
+      && provenance.second === second
+      && provenance.thicknessClass === thicknessClass
+  } catch {
+    return false
+  }
+}
+
+function issueSharedVertexRuntimeEvidence(
+  geometryCertificate: FoldPreviewCertifiedSharedVertexGeometry,
+  first: TrianglePrism,
+  second: TrianglePrism,
+  thicknessClass: 0 | 1,
+  rawGeometryClass: PrismIntersection,
+): FoldPreviewCertifiedSharedVertexRuntimeEvidence | null {
+  try {
+    if (
+      !isTrustedSharedVertexGeometryCertificate(
+        geometryCertificate,
+        first,
+        second,
+        thicknessClass,
+      )
+    ) return null
+    const topologyEvidence = thicknessClass === 1
+        && (
+          rawGeometryClass === 'penetrating'
+          || rawGeometryClass === 'indeterminate'
+        )
+      ? 'shared_feature_thickness_overlap'
+      : 'shared_feature_contact'
+    const runtimeEvidence = Object.freeze({
+      policyVersion: FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+      topology: 'shared_vertex' as const,
+      evidence: topologyEvidence,
+      proof: 'certified_shared_vertex_runtime_evidence_v1' as const,
+      sharedVertexId: geometryCertificate.sharedVertexId,
+    })
+    const provenance = Object.freeze({
+      geometryCertificate,
+      first,
+      second,
+      thicknessClass,
+      rawGeometryClass,
+    })
+    reflectApplyIntrinsic(
+      weakSetAddIntrinsic,
+      trustedSharedVertexRuntimeEvidence,
+      [runtimeEvidence],
+    )
+    reflectApplyIntrinsic(
+      weakMapSetIntrinsic,
+      trustedSharedVertexRuntimeProvenance,
+      [runtimeEvidence, provenance],
+    )
+    return runtimeEvidence
+  } catch {
+    return null
+  }
+}
+
+function isTrustedSharedVertexRuntimeEvidence(
+  value: FoldPreviewCertifiedSharedVertexRuntimeEvidence,
+  first: TrianglePrism,
+  second: TrianglePrism,
+  thicknessClass: 0 | 1,
+  rawGeometryClass: PrismIntersection,
+) {
+  try {
+    if (
+      typeof value !== 'object'
+      || value === null
+      || !reflectApplyIntrinsic(
+        weakSetHasIntrinsic,
+        trustedSharedVertexRuntimeEvidence,
+        [value],
+      )
+    ) return false
+    const provenance = reflectApplyIntrinsic(
+      weakMapGetIntrinsic,
+      trustedSharedVertexRuntimeProvenance,
+      [value],
+    ) as FoldPreviewSharedVertexRuntimeProvenance | undefined
+    return value.policyVersion
+        === FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION
+      && value.topology === 'shared_vertex'
+      && (
+        value.evidence === 'shared_feature_contact'
+        || value.evidence === 'shared_feature_thickness_overlap'
+      )
+      && value.proof === 'certified_shared_vertex_runtime_evidence_v1'
+      && validId(value.sharedVertexId)
+      && Object.isFrozen(value)
+      && provenance?.first === first
+      && provenance.second === second
+      && provenance.thicknessClass === thicknessClass
+      && provenance.rawGeometryClass === rawGeometryClass
+      && provenance.geometryCertificate.sharedVertexId
+        === value.sharedVertexId
+      && isTrustedSharedVertexGeometryCertificate(
+        provenance.geometryCertificate,
+        first,
+        second,
+        thicknessClass,
+      )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Called only after the exact binary64 singleton proof has succeeded.  The
+ * material normals are derived from each rigid transform's local +Y axis, so
+ * this proof is invariant to triangle serialization order and world position.
+ */
+function issueSharedVertexGeometryCertificate(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  sharedVertexId: string,
+): FoldPreviewCertifiedSharedVertexGeometry | null {
+  try {
+    const firstNormal = first.faceAxes[0]
+    const secondNormal = second.faceAxes[0]
+    if (
+      !firstNormal
+      || !secondNormal
+      || !validId(sharedVertexId)
+      || !finiteVectors([firstNormal, secondNormal])
+      || first.zeroThickness !== second.zeroThickness
+    ) return null
+    const materialNormalDot = firstNormal.dot(secondNormal)
+    if (
+      !Number.isFinite(materialNormalDot)
+      || materialNormalDot
+        <= SHARED_VERTEX_COORIENTED_NORMAL_DOT_TOLERANCE
+    ) return null
+    const certificate = Object.freeze({
+      policyVersion: FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+      topology: 'shared_vertex' as const,
+      proof: (
+        'binary64_shared_vertex_only_with_cooriented_material_normals_v1'
+      ) as const,
+      sharedVertexId,
+    })
+    reflectApplyIntrinsic(
+      weakSetAddIntrinsic,
+      trustedSharedVertexGeometryCertificates,
+      [certificate],
+    )
+    reflectApplyIntrinsic(
+      weakMapSetIntrinsic,
+      trustedSharedVertexGeometryProvenance,
+      [
+        certificate,
+        Object.freeze({
+          first,
+          second,
+          thicknessClass: first.zeroThickness ? 0 as const : 1 as const,
+        }),
+      ],
+    )
+    return certificate
+  } catch {
+    return null
+  }
 }
 
 function attemptTransversalTriangleIntersectionProof(
   first: TrianglePrism,
   second: TrianglePrism,
+  margin: number,
   budget: FoldPreviewExactTransversalProofBudget,
 ): FoldPreviewExactTransversalProofDecision {
+  if (!reserveExactIntersectionCertificateAttempt(budget)) {
+    return 'budget_exhausted'
+  }
+  const triangles = topologyCanonicalMidSurfaceTriangles(
+    first,
+    second,
+    margin,
+  )
+  if (!triangles) return 'not_proved'
+  return provesFoldPreviewBinary64TransversalTriangleIntersection(
+    triangles.first,
+    triangles.second,
+  )
+    ? 'proved'
+    : 'not_proved'
+}
+
+function reserveExactIntersectionCertificateAttempt(
+  budget: FoldPreviewExactTransversalProofBudget,
+) {
   if (
     budget.attempted
     >= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
   ) {
     budget.skippedByLimit += 1
-    return 'budget_exhausted'
+    return false
   }
   budget.attempted += 1
-  return provesFoldPreviewBinary64TransversalTriangleIntersection(
-    first.vertices.slice(0, 3),
-    second.vertices.slice(0, 3),
+  return true
+}
+
+type MatchingTopologyVertex = Readonly<{
+  vertexId: string
+  firstIndex: number
+  secondIndex: number
+}>
+
+/**
+ * Finds topology vertices that are genuinely identical in the immutable
+ * crease-pattern snapshot. A matching ID with different rest coordinates is
+ * malformed input, not evidence for contact.
+ */
+function matchingTopologyVertices(
+  first: TrianglePrism,
+  second: TrianglePrism,
+): readonly MatchingTopologyVertex[] | null {
+  if (
+    first.topologyVertices.length !== 3
+    || second.topologyVertices.length !== 3
+  ) return null
+  const matches: MatchingTopologyVertex[] = []
+  const matchedIds = new Set<string>()
+  for (
+    let firstIndex = 0;
+    firstIndex < first.topologyVertices.length;
+    firstIndex += 1
+  ) {
+    const firstTopology = first.topologyVertices[firstIndex]
+    if (!firstTopology || firstTopology.vertexId === null) continue
+    for (
+      let secondIndex = 0;
+      secondIndex < second.topologyVertices.length;
+      secondIndex += 1
+    ) {
+      const secondTopology = second.topologyVertices[secondIndex]
+      if (
+        !secondTopology
+        || secondTopology.vertexId !== firstTopology.vertexId
+      ) continue
+      if (
+        secondTopology.x !== firstTopology.x
+        || secondTopology.z !== firstTopology.z
+        || matchedIds.has(firstTopology.vertexId)
+      ) return null
+      matchedIds.add(firstTopology.vertexId)
+      matches.push({
+        vertexId: firstTopology.vertexId,
+        firstIndex,
+        secondIndex,
+      })
+    }
+  }
+  return matches
+}
+
+/**
+ * Returns central-surface triangles with matching topology vertices represented
+ * by one identical stored point when their independently transformed values
+ * differ only inside the certified numerical margin.
+ *
+ * The representative is selected from the two existing binary64 points in a
+ * symmetric lexical order. No averaged coordinate is invented, and a shared ID
+ * farther apart than the margin is deliberately left unsnapped.
+ */
+function topologyCanonicalMidSurfaceTriangles(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  margin: number,
+): Readonly<{
+  first: readonly Vector3[]
+  second: readonly Vector3[]
+}> | null {
+  if (
+    !Number.isFinite(margin)
+    || margin < 0
+    || first.midSurfaceVertices.length !== 3
+    || second.midSurfaceVertices.length !== 3
+    || !finiteVectors([
+      ...first.midSurfaceVertices,
+      ...second.midSurfaceVertices,
+    ])
+  ) return null
+  const matches = matchingTopologyVertices(first, second)
+  if (!matches) return null
+  const firstVertices = first.midSurfaceVertices.map((point) => point.clone())
+  const secondVertices = second.midSurfaceVertices.map((point) => point.clone())
+  for (const match of matches) {
+    const firstPoint = firstVertices[match.firstIndex]
+    const secondPoint = secondVertices[match.secondIndex]
+    if (!firstPoint || !secondPoint) return null
+    const distance = firstPoint.distanceTo(secondPoint)
+    if (!Number.isFinite(distance)) return null
+    if (distance > margin) continue
+    const canonical = lexicographicallyEarlierPoint(firstPoint, secondPoint)
+      .clone()
+    firstVertices[match.firstIndex] = canonical.clone()
+    secondVertices[match.secondIndex] = canonical
+  }
+  return { first: firstVertices, second: secondVertices }
+}
+
+function lexicographicallyEarlierPoint(first: Vector3, second: Vector3) {
+  if (first.x !== second.x) return first.x < second.x ? first : second
+  if (first.y !== second.y) return first.y < second.y ? first : second
+  if (first.z !== second.z) return first.z < second.z ? first : second
+  return first
+}
+
+/**
+ * Grants the centered-thickness shared-vertex allowance only after exact
+ * binary64 arithmetic positively proves that the complete central-surface
+ * intersection is the one matching topology vertex. A false proof result is
+ * unresolved and falls through to the ordinary SAT/crossing classifier.
+ */
+function classifySharedVertexMidSurfaceContact(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  margin: number,
+  budget: FoldPreviewExactTransversalProofBudget,
+): SharedVertexMidSurfaceEvidence | null {
+  const matches = matchingTopologyVertices(first, second)
+  if (!matches || matches.length !== 1) return null
+  const match = matches[0]
+  const firstPoint = first.midSurfaceVertices[match.firstIndex]
+  const secondPoint = second.midSurfaceVertices[match.secondIndex]
+  if (!firstPoint || !secondPoint) return null
+  const sharedPointDistance = firstPoint.distanceTo(secondPoint)
+  if (!Number.isFinite(sharedPointDistance)) {
+    return { kind: 'indeterminate', sharedVertexId: match.vertexId }
+  }
+  if (sharedPointDistance > margin) {
+    return { kind: 'indeterminate', sharedVertexId: match.vertexId }
+  }
+
+  const canonical = topologyCanonicalMidSurfaceTriangles(
+    first,
+    second,
+    margin,
   )
-    ? 'proved'
-    : 'not_proved'
+  if (!canonical) {
+    return { kind: 'indeterminate', sharedVertexId: match.vertexId }
+  }
+  if (!reserveExactIntersectionCertificateAttempt(budget)) {
+    return { kind: 'indeterminate', sharedVertexId: match.vertexId }
+  }
+  if (
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      canonical.first,
+      canonical.second,
+      match.firstIndex,
+      match.secondIndex,
+    )
+  ) {
+    const certificate = issueSharedVertexGeometryCertificate(
+      first,
+      second,
+      match.vertexId,
+    )
+    return certificate
+      ? { kind: 'certified_shared_vertex_only', certificate }
+      : { kind: 'indeterminate', sharedVertexId: match.vertexId }
+  }
+  if (
+    provesFoldPreviewBinary64TransversalTriangleIntersection(
+      canonical.first,
+      canonical.second,
+    )
+  ) return { kind: 'transversal', sharedVertexId: match.vertexId }
+  return { kind: 'not_proved', sharedVertexId: match.vertexId }
 }
 
 type TrianglePlaneSection = Readonly<{
@@ -2684,6 +4270,20 @@ type TrianglePlaneSection = Readonly<{
   hasSubMarginPlaneDistance: boolean
   mergedNumericallyDistinctPoint: boolean
 }>
+
+type ZeroThicknessTriangleIntersection = Readonly<{
+  geometryClass: PrismIntersection
+  sharedTopologyContact: 'vertex' | 'edge' | null
+}>
+
+function zeroThicknessIntersection(
+  geometryClass: PrismIntersection,
+  sharedTopologyContact: ZeroThicknessTriangleIntersection[
+    'sharedTopologyContact'
+  ] = null,
+): ZeroThicknessTriangleIntersection {
+  return { geometryClass, sharedTopologyContact }
+}
 
 type ProjectionRange = Readonly<{
   min: number
@@ -2703,9 +4303,9 @@ function classifyZeroThicknessTriangles(
   first: TrianglePrism,
   second: TrianglePrism,
   margin: number,
-): PrismIntersection | null {
-  const firstVertices = first.vertices.slice(0, 3)
-  const secondVertices = second.vertices.slice(0, 3)
+): ZeroThicknessTriangleIntersection | null {
+  const firstVertices = first.midSurfaceVertices.slice(0, 3)
+  const secondVertices = second.midSurfaceVertices.slice(0, 3)
   const firstNormal = first.faceAxes[0]?.clone()
   const secondNormal = second.faceAxes[0]?.clone()
   if (
@@ -2724,15 +4324,30 @@ function classifyZeroThicknessTriangles(
     minimumTriangleEdgeLength(firstVertices),
     minimumTriangleEdgeLength(secondVertices),
   )
+  const minimumConditionRatio = Math.min(
+    triangleConditionRatio(firstVertices),
+    triangleConditionRatio(secondVertices),
+  )
   if (
     !Number.isFinite(firstNormalLength)
     || !Number.isFinite(secondNormalLength)
     || !Number.isFinite(minimumEdgeLength)
+    || !Number.isFinite(minimumConditionRatio)
     || firstNormalLength === 0
     || secondNormalLength === 0
     || minimumEdgeLength === 0
+    || minimumConditionRatio <= 0
   ) return null
-  if (margin * 16 >= minimumEdgeLength) return 'indeterminate'
+  const surfaceMargin = margin / Math.max(
+    minimumConditionRatio,
+    Number.EPSILON,
+  )
+  if (!Number.isFinite(surfaceMargin)) {
+    return zeroThicknessIntersection('indeterminate')
+  }
+  if (surfaceMargin * 16 >= minimumEdgeLength) {
+    return zeroThicknessIntersection('indeterminate')
+  }
   firstNormal.multiplyScalar(1 / firstNormalLength)
   secondNormal.multiplyScalar(1 / secondNormalLength)
 
@@ -2748,9 +4363,9 @@ function classifyZeroThicknessTriangles(
   )
   if (!firstDistances || !secondDistances) return null
   if (
-    strictlyOnOneSide(firstDistances, margin)
-    || strictlyOnOneSide(secondDistances, margin)
-  ) return 'separated'
+    strictlyOnOneSide(firstDistances, surfaceMargin)
+    || strictlyOnOneSide(secondDistances, surfaceMargin)
+  ) return zeroThicknessIntersection('separated')
 
   const intersectionDirection = firstNormal.clone().cross(secondNormal)
   const directionLength = intersectionDirection.length()
@@ -2761,18 +4376,26 @@ function classifyZeroThicknessTriangles(
       ...secondDistances.map(Math.abs),
     )
     if (!Number.isFinite(maximumPlaneDistance)) return null
-    if (maximumPlaneDistance > margin) return 'separated'
-    if (maximumPlaneDistance > 0) return 'indeterminate'
+    // Near-parallel binary64 normals can manufacture a one-sided distance
+    // even when the exact stored triangles cross. Keep this unresolved so the
+    // exact transversal certificate runs before any separated verdict.
+    if (maximumPlaneDistance > surfaceMargin) {
+      return zeroThicknessIntersection('indeterminate')
+    }
+    if (maximumPlaneDistance > 0) {
+      return zeroThicknessIntersection('indeterminate')
+    }
     const exactlyParallel = intersectionDirection.x === 0
       && intersectionDirection.y === 0
       && intersectionDirection.z === 0
-    if (!exactlyParallel) return 'indeterminate'
-    return classifyCoplanarTriangleOverlap(
+    if (!exactlyParallel) return zeroThicknessIntersection('indeterminate')
+    const coplanar = classifyCoplanarTriangleOverlap(
       firstVertices,
       secondVertices,
       firstNormal,
-      margin,
+      surfaceMargin,
     )
+    return coplanar ? zeroThicknessIntersection(coplanar) : null
   }
   intersectionDirection.multiplyScalar(1 / directionLength)
 
@@ -2780,13 +4403,13 @@ function classifyZeroThicknessTriangles(
     firstVertices,
     firstDistances,
     intersectionDirection,
-    margin,
+    surfaceMargin,
   )
   const secondSection = trianglePlaneSection(
     secondVertices,
     secondDistances,
     intersectionDirection,
-    margin,
+    surfaceMargin,
   )
   if (!firstSection || !secondSection) return null
   if (firstSection.points.length === 0 || secondSection.points.length === 0) {
@@ -2794,8 +4417,8 @@ function classifyZeroThicknessTriangles(
       || secondSection.hasSubMarginPlaneDistance
       || firstSection.mergedNumericallyDistinctPoint
       || secondSection.mergedNumericallyDistinctPoint
-      ? 'indeterminate'
-      : 'separated'
+      ? zeroThicknessIntersection('indeterminate')
+      : zeroThicknessIntersection('separated')
   }
   const firstRange = projectPointRange(
     firstSection.points,
@@ -2813,7 +4436,7 @@ function classifyZeroThicknessTriangles(
     firstRange.min - secondRange.max,
   )
   if (!Number.isFinite(gap)) return null
-  if (gap > margin) return 'separated'
+  if (gap > surfaceMargin) return zeroThicknessIntersection('separated')
   const overlap = Math.min(firstRange.max, secondRange.max)
     - Math.max(firstRange.min, secondRange.min)
   const overlapMinimum = Math.max(firstRange.min, secondRange.min)
@@ -2826,10 +4449,8 @@ function classifyZeroThicknessTriangles(
     firstSection.hasSubMarginPlaneDistance
     || secondSection.hasSubMarginPlaneDistance
   if (overlap === 0) {
-    if (mergedNumericallyDistinctPoint) return 'indeterminate'
-    if (!hasSubMarginPlaneDistance) return 'touching'
     const contactCoordinate = Math.max(firstRange.min, secondRange.min)
-    return sharedTopologyPointProvesContact(
+    const sharedTopologyPoint = sharedTopologyPointProvesContact(
       first,
       second,
       firstDistances,
@@ -2839,12 +4460,26 @@ function classifyZeroThicknessTriangles(
       contactCoordinate,
       margin,
     )
+    const sharedVertexOnly =
+      sharedTopologyPoint
       && !firstSection.crossesInteriorByRawSigns
       && !secondSection.crossesInteriorByRawSigns
-      ? 'touching'
-      : 'indeterminate'
+    if (mergedNumericallyDistinctPoint) {
+      return zeroThicknessIntersection('indeterminate')
+    }
+    if (!hasSubMarginPlaneDistance) {
+      return zeroThicknessIntersection(
+        'touching',
+        sharedVertexOnly ? 'vertex' : null,
+      )
+    }
+    return sharedVertexOnly
+      ? zeroThicknessIntersection('touching', 'vertex')
+      : zeroThicknessIntersection('indeterminate')
   }
-  if (overlap <= margin) return 'indeterminate'
+  if (overlap <= surfaceMargin) {
+    return zeroThicknessIntersection('indeterminate')
+  }
   if (
     !mergedNumericallyDistinctPoint
     && hasSubMarginPlaneDistance
@@ -2861,13 +4496,13 @@ function classifyZeroThicknessTriangles(
       overlapMaximum,
       margin,
     )
-  ) return 'touching'
+  ) return zeroThicknessIntersection('touching', 'edge')
   if (mergedNumericallyDistinctPoint || hasSubMarginPlaneDistance) {
-    return 'indeterminate'
+    return zeroThicknessIntersection('indeterminate')
   }
   return firstSection.crossesInterior && secondSection.crossesInterior
-    ? 'penetrating'
-    : 'touching'
+    ? zeroThicknessIntersection('penetrating')
+    : zeroThicknessIntersection('touching')
 }
 
 function classifyCoplanarTriangleOverlap(
@@ -3015,7 +4650,7 @@ function sharedTopologyPointProvesContact(
     firstIndex += 1
   ) {
     const firstTopology = first.topologyVertices[firstIndex]
-    const firstWorld = first.vertices[firstIndex]
+    const firstWorld = first.midSurfaceVertices[firstIndex]
     if (
       !firstTopology
       || !firstWorld
@@ -3029,7 +4664,7 @@ function sharedTopologyPointProvesContact(
       secondIndex += 1
     ) {
       const secondTopology = second.topologyVertices[secondIndex]
-      const secondWorld = second.vertices[secondIndex]
+      const secondWorld = second.midSurfaceVertices[secondIndex]
       if (
         !secondTopology
         || !secondWorld
@@ -3075,7 +4710,7 @@ function sharedTopologySegmentProvesContact(
     firstIndex += 1
   ) {
     const firstTopology = first.topologyVertices[firstIndex]
-    const firstWorld = first.vertices[firstIndex]
+    const firstWorld = first.midSurfaceVertices[firstIndex]
     if (
       !firstTopology
       || !firstWorld
@@ -3089,7 +4724,7 @@ function sharedTopologySegmentProvesContact(
       secondIndex += 1
     ) {
       const secondTopology = second.topologyVertices[secondIndex]
-      const secondWorld = second.vertices[secondIndex]
+      const secondWorld = second.midSurfaceVertices[secondIndex]
       if (
         !secondTopology
         || !secondWorld
@@ -3225,6 +4860,26 @@ function minimumTriangleEdgeLength(vertices: readonly Vector3[]) {
   )
 }
 
+function triangleConditionRatio(vertices: readonly Vector3[]) {
+  if (vertices.length !== 3) return Number.NaN
+  const firstEdge = vertices[1].clone().sub(vertices[0])
+  const secondEdge = vertices[2].clone().sub(vertices[0])
+  const maximumEdgeLength = Math.max(
+    firstEdge.length(),
+    secondEdge.length(),
+    vertices[2].distanceTo(vertices[1]),
+  )
+  const doubledArea = firstEdge.cross(secondEdge).length()
+  const squaredMaximumEdgeLength = maximumEdgeLength * maximumEdgeLength
+  if (
+    !Number.isFinite(doubledArea)
+    || !Number.isFinite(squaredMaximumEdgeLength)
+    || doubledArea <= 0
+    || squaredMaximumEdgeLength <= 0
+  ) return Number.NaN
+  return doubledArea / squaredMaximumEdgeLength
+}
+
 function boundsForVertices(vertices: readonly Vector3[]) {
   const bounds = {
     minX: Number.POSITIVE_INFINITY,
@@ -3258,11 +4913,103 @@ function boundsOverlap(
     && first.minZ - second.maxZ <= margin
 }
 
-function projectVertices(vertices: readonly Vector3[], axis: Vector3) {
+function prismPairProjectionFrame(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  authoritativeMargin: number,
+): Readonly<{
+  origin: Vector3
+  margin: number
+  topologyMargin: number
+  localMargin: number
+  worldCoordinateScale: Vector3
+}> | null {
+  if (!Number.isFinite(authoritativeMargin) || authoritativeMargin < 0) {
+    return null
+  }
+  const vertices = [...first.vertices, ...second.vertices]
+  if (vertices.length === 0 || !finiteVectors(vertices)) return null
+  let origin = vertices[0]
+  let worldScale = 1
+  const worldCoordinateScale = new Vector3(1, 1, 1)
+  for (const vertex of vertices) {
+    origin = lexicographicallyEarlierPoint(origin, vertex)
+    worldCoordinateScale.set(
+      Math.max(worldCoordinateScale.x, Math.abs(vertex.x)),
+      Math.max(worldCoordinateScale.y, Math.abs(vertex.y)),
+      Math.max(worldCoordinateScale.z, Math.abs(vertex.z)),
+    )
+    worldScale = Math.max(
+      worldScale,
+      Math.abs(vertex.x),
+      Math.abs(vertex.y),
+      Math.abs(vertex.z),
+    )
+  }
+  let localScale = 1
+  for (const vertex of vertices) {
+    localScale = Math.max(
+      localScale,
+      Math.abs(vertex.x - origin.x),
+      Math.abs(vertex.y - origin.y),
+      Math.abs(vertex.z - origin.z),
+    )
+  }
+  const localMargin =
+    calculateFoldPreviewNarrowPhaseNumericalMargin(localScale)
+  const storedWorldRoundingMargin = worldScale
+    * Number.EPSILON
+    * PAIR_WORLD_ROUNDING_MARGIN_FACTOR
+  if (
+    localMargin === null
+    || !Number.isFinite(storedWorldRoundingMargin)
+  ) return null
+  const pairMargin = Math.min(
+    authoritativeMargin,
+    Math.max(localMargin, storedWorldRoundingMargin),
+  )
+  // SAT must cover the rounding already stored in large world coordinates.
+  // Topology certification is stricter: a non-zero current shared-feature
+  // mismatch cannot be excused by absolute translation alone because this
+  // generic pose boundary cannot distinguish kinematic round-off from a
+  // physically disconnected input.
+  const topologyMargin = Math.min(authoritativeMargin, localMargin)
+  return Number.isFinite(pairMargin) && Number.isFinite(topologyMargin)
+    ? {
+        origin,
+        margin: pairMargin,
+        topologyMargin,
+        localMargin,
+        worldCoordinateScale,
+      }
+    : null
+}
+
+function projectionAxisWorldRoundingMargin(
+  worldCoordinateScale: Vector3,
+  axis: Vector3,
+) {
+  const margin = Number.EPSILON
+    * PAIR_WORLD_CONTACT_ZERO_ULP_FACTOR
+    * (
+      Math.abs(axis.x) * worldCoordinateScale.x
+      + Math.abs(axis.y) * worldCoordinateScale.y
+      + Math.abs(axis.z) * worldCoordinateScale.z
+    )
+  return Number.isFinite(margin) ? margin : Number.POSITIVE_INFINITY
+}
+
+function projectVertices(
+  vertices: readonly Vector3[],
+  axis: Vector3,
+  origin: Vector3,
+) {
   let min = Number.POSITIVE_INFINITY
   let max = Number.NEGATIVE_INFINITY
+  const originProjection = origin.dot(axis)
+  if (!Number.isFinite(originProjection)) return null
   for (const vertex of vertices) {
-    const projection = vertex.dot(axis)
+    const projection = vertex.dot(axis) - originProjection
     if (!Number.isFinite(projection)) return null
     min = Math.min(min, projection)
     max = Math.max(max, projection)
@@ -3362,13 +5109,46 @@ function freezeNarrowPhaseResultSnapshot(
       hingeEdgeIds: Object.freeze([...interaction.hingeEdgeIds]),
       geometryClass: interaction.geometryClass,
     }
-    return Object.freeze(interaction.hingeDecision
+    const withTopologyContact = interaction.topologyContact
       ? {
           ...base,
+          topologyContact: Object.freeze({
+            policyVersion: interaction.topologyContact.policyVersion,
+            decision: interaction.topologyContact.decision,
+            exclusive: interaction.topologyContact.exclusive,
+            sharedVertexIds: Object.freeze([
+              ...interaction.topologyContact.sharedVertexIds,
+            ]),
+            omittedSharedVertexIdCount:
+              interaction.topologyContact.omittedSharedVertexIdCount,
+            featureContactPairCount:
+              interaction.topologyContact.featureContactPairCount,
+            thicknessOverlapPairCount:
+              interaction.topologyContact.thicknessOverlapPairCount,
+            rawTouchingPairCount:
+              interaction.topologyContact.rawTouchingPairCount,
+            rawPenetratingPairCount:
+              interaction.topologyContact.rawPenetratingPairCount,
+            rawIndeterminatePairCount:
+              interaction.topologyContact.rawIndeterminatePairCount,
+          }),
+        }
+      : base
+    const snapshot = Object.freeze(interaction.hingeDecision
+      ? {
+          ...withTopologyContact,
           hingeDecision:
             freezeHingeContactDecisionSnapshot(interaction.hingeDecision),
         }
-      : base)
+      : withTopologyContact)
+    if (interaction.topologyContact) {
+      reflectApplyIntrinsic(
+        weakSetAddIntrinsic,
+        trustedAllowedSharedVertexInteractions,
+        [snapshot],
+      )
+    }
+    return snapshot
   }))
   const witnessSamples = Object.freeze(value.witnessSamples.map((sample) =>
     Object.freeze({
@@ -3429,6 +5209,7 @@ function freezeFullScanNonAdjacentWitnessCoverage(
     value.aabbRejectedPairCount,
     value.satTests,
     value.satSeparatedPairCount,
+    value.allowedSharedVertexPairCount,
     value.touchingPairCount,
     value.penetratingPairCount,
     value.indeterminatePairCount,
@@ -3453,6 +5234,7 @@ function freezeFullScanNonAdjacentWitnessCoverage(
     || value.trianglePairTests
       !== value.aabbRejectedPairCount + value.satTests
     || value.satTests !== value.satSeparatedPairCount
+      + value.allowedSharedVertexPairCount
       + value.touchingPairCount
       + value.penetratingPairCount
       + value.indeterminatePairCount

@@ -1,7 +1,8 @@
-import type {
-  FoldPreviewNarrowPhaseInteraction,
-  FoldPreviewNarrowPhaseResult,
-} from './foldPreviewNarrowCollision'
+import {
+  isFoldPreviewExclusiveAllowedSharedVertexContact,
+  type FoldPreviewNarrowPhaseInteraction,
+  type FoldPreviewNarrowPhaseResult,
+} from './foldPreviewNarrowCollision.ts'
 
 export type FoldPreviewFaceCollisionSeverity = 'contact' | 'indeterminate' | 'penetrating'
 
@@ -21,6 +22,7 @@ export type FoldPreviewCollisionPresentation = Readonly<{
   narrowInteractions: number
   nonAdjacentPenetrations: number
   nonAdjacentContacts: number
+  nonAdjacentAllowedSharedVertexContacts: number
   hingeInteractions: number
   hingeModelAllowedContacts: number
   hingeModelCorridorOverlaps: number
@@ -49,6 +51,7 @@ export function summarizeFoldPreviewCollision(
 ): FoldPreviewCollisionPresentation {
   let nonAdjacentPenetrations = 0
   let nonAdjacentContacts = 0
+  let nonAdjacentAllowedSharedVertexContacts = 0
   let hingeInteractions = 0
   let hingeModelAllowedContacts = 0
   let hingeModelCorridorOverlaps = 0
@@ -62,6 +65,11 @@ export function summarizeFoldPreviewCollision(
 
   for (const interaction of result.interactions) {
     const hingeKind = classifyHingePresentation(interaction)
+    const allowedSharedVertexContact =
+      isFoldPreviewExclusiveAllowedSharedVertexContact(interaction)
+    if (allowedSharedVertexContact) {
+      nonAdjacentAllowedSharedVertexContacts += 1
+    }
     if (interaction.relation === 'hinge_adjacent') {
       hingeInteractions += 1
       if (hingeKind === 'allowed_contact') hingeModelAllowedContacts += 1
@@ -88,6 +96,7 @@ export function summarizeFoldPreviewCollision(
     if (
       interaction.relation === 'non_adjacent'
       && interaction.geometryClass === 'touching'
+      && !allowedSharedVertexContact
     ) nonAdjacentContacts += 1
 
     const severity = faceSeverity(interaction, hingeKind)
@@ -103,6 +112,7 @@ export function summarizeFoldPreviewCollision(
     narrowInteractions: result.interactions.length,
     nonAdjacentPenetrations,
     nonAdjacentContacts,
+    nonAdjacentAllowedSharedVertexContacts,
     hingeInteractions,
     hingeModelAllowedContacts,
     hingeModelCorridorOverlaps,
@@ -157,6 +167,7 @@ function faceSeverity(
   interaction: FoldPreviewNarrowPhaseInteraction,
   hingeKind: HingePresentationKind,
 ) {
+  if (isFoldPreviewExclusiveAllowedSharedVertexContact(interaction)) return null
   if (interaction.relation === 'hinge_adjacent') {
     if (hingeKind === 'outside_penetration') return 'penetrating'
     if (hingeKind === 'outside_contact') return 'contact'

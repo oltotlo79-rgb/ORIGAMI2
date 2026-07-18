@@ -948,6 +948,7 @@ function bindingFor(
         aabbRejectedPairCount: 0,
         satTests: count,
         satSeparatedPairCount: 0,
+        allowedSharedVertexPairCount: 0,
         touchingPairCount,
         penetratingPairCount,
         indeterminatePairCount: 0,

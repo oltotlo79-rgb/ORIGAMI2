@@ -76,6 +76,25 @@ describe('FoldPreviewCollisionBadge', () => {
     expect(badge.getAttribute('title')).toContain('判定保留2件')
     expect(badge.getAttribute('title')).toContain('安全確認が必要')
   })
+
+  it('shows an exact shared-vertex allowance without presenting penetration', () => {
+    render(
+      <FoldPreviewCollisionBadge
+        summary={ready({
+          nonAdjacentAllowedSharedVertexContacts: 1,
+        })}
+        description="共有頂点のみと証明した許容接触1件"
+      />,
+    )
+
+    const badge = screen.getByText(
+      '表示姿勢｜共有頂点の許容接触 1・貫通 0',
+    )
+    expect(badge.classList.contains('has-topology-allowance')).toBe(true)
+    expect(badge.getAttribute('data-collision-status')).toBe('topology-model')
+    expect(badge.getAttribute('data-collision-risk')).toBe('informational')
+    expect(badge.getAttribute('title')).toContain('共有頂点のみと証明')
+  })
 })
 
 function ready(overrides: Partial<ReadySummary> = {}): ReadySummary {
@@ -88,6 +107,7 @@ function ready(overrides: Partial<ReadySummary> = {}): ReadySummary {
     narrowInteractions: 1,
     nonAdjacentPenetrations: 0,
     nonAdjacentContacts: 0,
+    nonAdjacentAllowedSharedVertexContacts: 0,
     hingeInteractions: 0,
     hingeModelAllowedContacts: 0,
     hingeModelCorridorOverlaps: 0,

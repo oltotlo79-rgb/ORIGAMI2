@@ -109,6 +109,7 @@ test('no broad-phase candidate returns an empty complete full scan', () => {
     aabbRejectedPairCount: 0,
     satTests: 0,
     satSeparatedPairCount: 0,
+    allowedSharedVertexPairCount: 0,
     touchingPairCount: 0,
     penetratingPairCount: 0,
     indeterminatePairCount: 0,
@@ -198,7 +199,10 @@ test('more than sixteen eligible pairs withholds every partial witness', () => {
   )
   assert.ok(result)
   assert.equal(result.kind, 'unavailable')
-  assert.deepEqual(result.reasons, ['witness_limit_exceeded'])
+  assert.deepEqual(result.reasons, [
+    'indeterminate_pair',
+    'witness_limit_exceeded',
+  ])
   assert.deepEqual(result.witnessSamples, [])
   assert.ok(
     result.coverage.eligiblePairCount
@@ -1076,6 +1080,7 @@ function assertCoverageEquations(
   assert.equal(
     coverage.satTests,
     coverage.satSeparatedPairCount
+      + coverage.allowedSharedVertexPairCount
       + coverage.touchingPairCount
       + coverage.penetratingPairCount
       + coverage.indeterminatePairCount,

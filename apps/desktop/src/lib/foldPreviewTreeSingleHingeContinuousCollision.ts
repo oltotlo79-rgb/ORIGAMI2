@@ -44,6 +44,7 @@ import {
   MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   calculateFoldPreviewNarrowPhaseNumericalMargin,
+  isFoldPreviewExclusiveAllowedSharedVertexContact,
   prepareFoldPreviewNarrowPhase,
   type FoldPreviewFullScanNonAdjacentWitnessSet,
   type FoldPreviewNarrowPhaseInteraction,
@@ -689,6 +690,9 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
                 : 'hinge_decision_unavailable'
               continue
             }
+            if (
+              isFoldPreviewExclusiveAllowedSharedVertexContact(interaction)
+            ) continue
             if (interaction.geometryClass === 'indeterminate') {
               unknownReason ??= 'non_adjacent_geometry_indeterminate'
             } else {
@@ -738,7 +742,6 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
               endAngle,
               thickness,
               hingeLength,
-              numericalMargin,
             )) {
               return { kind: 'unresolved' }
             }
@@ -1932,7 +1935,6 @@ function intervalExceedsFiniteHingeRadius(
   endAngleDegrees: number,
   thickness: number,
   hingeLength: number,
-  numericalMargin: number,
 ) {
   if (thickness === 0) return false
   const maximumAngleDegrees = Math.max(
@@ -1946,7 +1948,9 @@ function intervalExceedsFiniteHingeRadius(
     thickness,
     cosineHalfAngle,
   )
-  return radius === null || radius > hingeLength + numericalMargin
+  // Match the point policy's physical finite-segment cap. Absolute world
+  // coordinates may widen diagnostic margins, but never the legal radius.
+  return radius === null || radius > hingeLength
 }
 
 function validUnitTime(value: unknown): value is number {

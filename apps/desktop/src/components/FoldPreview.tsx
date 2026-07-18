@@ -804,6 +804,8 @@ export function FoldPreview({
             narrowInteractions: presentation.narrowInteractions,
             nonAdjacentPenetrations: presentation.nonAdjacentPenetrations,
             nonAdjacentContacts: presentation.nonAdjacentContacts,
+            nonAdjacentAllowedSharedVertexContacts:
+              presentation.nonAdjacentAllowedSharedVertexContacts,
             hingeInteractions: presentation.hingeInteractions,
             hingeModelAllowedContacts: presentation.hingeModelAllowedContacts,
             hingeModelCorridorOverlaps: presentation.hingeModelCorridorOverlaps,
@@ -4271,6 +4273,11 @@ export function FoldPreview({
       data-non-adjacent-contacts={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.nonAdjacentContacts
         : undefined}
+      data-non-adjacent-allowed-shared-vertex-contacts={
+        currentCollisionSummary?.kind === 'ready'
+          ? currentCollisionSummary.nonAdjacentAllowedSharedVertexContacts
+          : undefined
+      }
       data-hinge-interactions={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.hingeInteractions
         : undefined}

@@ -214,6 +214,45 @@ test('zero thickness distinguishes shared-edge contact and a flat surface stack'
   })
 })
 
+test('an exact anti-parallel pose still requires positive-area overlap evidence', () => {
+  const policy = prepareFoldPreviewHingeContactPolicy(
+    faces,
+    adjacency,
+    [constraint],
+  )
+  assert.ok(policy)
+  const pose = foldedPose(180)
+  const leftTransform = pose.get('left')
+  const rightTransform = pose.get('right')
+  assert.ok(leftTransform && rightTransform)
+  const common = {
+    firstFaceId: 'left',
+    secondFaceId: 'right',
+    hingeEdgeIds: ['hinge'],
+    faceTransforms: pose,
+    thickness: 0,
+    numericalMargin: Number.EPSILON * 256,
+    testedTrianglePairs: 1,
+  } as const
+
+  for (const geometryClass of ['touching', 'indeterminate'] as const) {
+    assert.deepEqual(policy.classify({
+      ...common,
+      pairs: [{
+        firstTriangleIndex: 0,
+        secondTriangleIndex: 0,
+        firstVertices: prismFor(faces[0], 0, leftTransform, 0),
+        secondVertices: prismFor(faces[1], 0, rightTransform, 0),
+        geometryClass,
+      }],
+    }), {
+      kind: 'indeterminate',
+      hingeEdgeIds: ['hinge'],
+      reason: 'numerical_geometry',
+    })
+  }
+})
+
 test('forged prism witnesses cannot obtain a hinge-model decision', () => {
   const policy = prepareFoldPreviewHingeContactPolicy(
     faces,

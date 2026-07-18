@@ -26,6 +26,8 @@
 
 ## 完了
 
+- `topology_contact_policy_v1`として共有関係4種×交差証拠10種の40セルを固定し、共有頂点だけのexact証明、共有ヒンジの有限corridor、正体積・共面正面積・横断交差、判定保留を認証済みruntime evidenceへ結合した。角起点山谷V字、辺中点山山V字、候補外の共有頂点・共有ヒンジ、共有ID欠損adjacency、候補内離間、ヒンジ制約欠落、厚さ0/0.1/1/3 mm、角度・面順・巨大平行移動を同期・分割・one-shot・full scanで回帰し、判定保留は貫通と同じ赤系blocking表示にした。frontend Node 1,012件、DOM 39件、本番build、lint、ブラウザMCP再読込とconsole error 0を確認した。内部品質の確定であり、折り重ねの利用者経路は増えていないため完成率には加算しない
+- 紙厚入力は新規作成時の既定値を0.10 mmとし、専用の上下ボタンと上下矢印キーで現在値から正確に0.01 mmずつ増減する。0.075 mmのような細かい直接入力を0.01 mm格子へ丸めず、空欄・非有限値・負数を保存しない。Node、DOM、本番build、lintとブラウザMCPで入力欄、増減ボタン、accessible name、console error 0を確認した
 - Claudeコードレビューの構造提案へ段階対応し、Tauri `lib.rs`から`.ori2`読込・検証・同一directory staging・原子的publishを`project_persistence`へ分離した。Windowsの相対pathを含むdesktop native 194件で、拡張子補正、既存先拒否、原子的置換、失敗時清掃、project state更新条件を維持した
 - `FoldPreview`からkeyboard選択・camera操作のcoordinatorを分離し、scene generation、re-entry、dispose、hostile accessor、callback例外を境界ごとに失効させる専用22件を追加した。frontend Node 912件、DOM 35件、本番build、lintを通過し、次のSIM-010 UIを巨大effectへ直接追加しない責務境界を作った
 - SIM-010の最初の内部基盤として`face_lineage_v1`を追加した。source/target topologyの再構築、凸sourceへのtarget全頂点の厳密包含、binary64由来のsource別面積保存、project/revision/fingerprint/material registry、決定順、資源上限を証明し、core 130件とcompile-fail doctestで固定した。これは一本の直線差分、層順authority、山谷割当て、衝突経路、timeline、原子的commitをまだ保証しないため、SIM-010の利用者経路と完成率には計上していない
@@ -369,7 +371,7 @@
 ## 進行中
 
 - VAL-003の確定実装に対する全回帰、Windows/macOS CI、文書間整合の最終確認。専用の層順3D viewerはこのcheckpointの対象外
-- VAL-003が保持する場所別層順序を正本に、SIM-010の原子的な折り重ねcommand、face lineage、展開図への層別山谷線追加、timeline 1 step記録へ着手する準備
+- 完成した衝突分類を前提に、VAL-003のcurrent layer-order slotをcloneではなく同一slot identityへ結合したSIM-010用capabilityとして捕捉・再認証し、canonical overlap cellと単調revision/generationの契約を固定する作業。current applied poseのnative authorityと原子的commandを完成するまで折り重ねUIへ着手しない
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -384,8 +386,10 @@
 
 ## 次の作業
 
-1. SIM-010の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を実装する
-2. `ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する
-3. MUST 87件のstatus表を各checkpointで維持する
-4. 履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
-5. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する
+1. 衝突分類checkpointを日本語コミットでpushし、Windows/macOS CIとbundle生成を確認する
+2. immutable geometryからcanonical convex arrangement atomを再構築し、人工分割・欠落・結合・重複を拒否する層cell契約を固定する
+3. VAL-003のcurrent layer-order slotを同一slot identity、project、revision、fingerprint、proof/layer modelへ結合したcapabilityとして捕捉・commit直前再認証できるようにする
+4. revisionとauthority generationをUndo/Redoでも単調増加させ、current applied poseを衝突証明と層順序へ結合したnative authorityにする
+5. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
+6. MUST 87件のstatus表を各checkpointで維持し、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
+7. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する

@@ -140,6 +140,52 @@ button { color: inherit; }
   color: var(--text);
 }
 .number-with-unit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+.paper-thickness-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  min-width: 0;
+}
+.paper-thickness-input input {
+  appearance: textfield;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.paper-thickness-input input::-webkit-inner-spin-button,
+.paper-thickness-input input::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+.paper-thickness-step-buttons {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  min-height: 0;
+  margin-left: -1px;
+}
+.paper-thickness-step-buttons button {
+  min-width: 20px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--border-dark);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 7px;
+  line-height: 1;
+  cursor: pointer;
+}
+.paper-thickness-step-buttons button:first-child {
+  border-radius: 0 5px 0 0;
+}
+.paper-thickness-step-buttons button:last-child {
+  margin-top: -1px;
+  border-radius: 0 0 5px 0;
+}
+.paper-thickness-step-buttons button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.paper-thickness-step-buttons button:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
 .color-field input { width: 100%; min-height: 36px; padding: 3px; }
 .dialog-check { display: flex; align-items: center; gap: 8px; margin-top: 13px; font-size: 12px; }
 .dialog-note, .dialog-error { margin: 0; font-size: 12px; line-height: 1.55; }
@@ -716,7 +762,8 @@ button { color: inherit; }
   pointer-events: none;
 }
 .fold-preview-collision.is-clear { border-color: rgb(40 114 73 / 45%); color: #287249; }
-.fold-preview-collision.has-hinge-candidates { border-color: rgb(22 113 184 / 45%); color: #165f99; }
+.fold-preview-collision.has-hinge-candidates,
+.fold-preview-collision.has-topology-allowance { border-color: rgb(22 113 184 / 45%); color: #165f99; }
 .fold-preview-collision.has-contact { border-color: rgb(190 101 40 / 55%); background: rgb(255 247 238 / 92%); color: #9a4b1f; }
 .fold-preview-collision.has-indeterminate,
 .fold-preview-collision.has-penetrations { border-color: rgb(179 65 65 / 72%); background: rgb(255 239 239 / 96%); color: #9f3030; font-weight: 700; box-shadow: 0 0 0 1px rgb(179 65 65 / 16%); }

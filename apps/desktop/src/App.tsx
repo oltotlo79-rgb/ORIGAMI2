@@ -86,6 +86,8 @@ import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
 import type { InstructionStepPresentation } from './lib/instructionTimeline'
+import { formatPaperThicknessInput } from './lib/paperThicknessInput'
+import { PaperThicknessInput } from './components/PaperThicknessInput'
 import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
@@ -1158,7 +1160,8 @@ function App() {
     const name = String(form.get('name') ?? '').trim()
     const widthMm = Number(form.get('width_mm'))
     const heightMm = Number(form.get('height_mm'))
-    const thicknessMm = Number(form.get('thickness_mm'))
+    const thicknessInput = String(form.get('thickness_mm') ?? '').trim()
+    const thicknessMm = Number(thicknessInput)
     const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
     const backColor = parseHexColor(String(form.get('back_color') ?? ''))
 
@@ -1178,7 +1181,7 @@ function App() {
       setNewProjectError('高さには0より大きい有限の数値を入力してください。')
       return
     }
-    if (!Number.isFinite(thicknessMm) || thicknessMm < 0) {
+    if (!thicknessInput || !Number.isFinite(thicknessMm) || thicknessMm < 0) {
       setNewProjectError('紙厚には0以上の有限の数値を入力してください。')
       return
     }
@@ -2646,20 +2649,17 @@ function App() {
               onSubmit={submitPaperProperties}
               noValidate
             >
-              <label className="field">
-                <span>厚さ</span>
-                <input
-                  name="thickness_mm"
-                  type="number"
-                  min="0"
-                  step="any"
-                  defaultValue={nativeSnapshot?.paper.thickness_mm ?? ''}
-                  required
+              <div className="field">
+                <label htmlFor="paper-thickness-mm">厚さ</label>
+                <PaperThicknessInput
+                  id="paper-thickness-mm"
+                  initialValue={formatPaperThicknessInput(
+                    nativeSnapshot?.paper.thickness_mm,
+                  )}
                   disabled={coreBusy || !nativeSnapshot}
-                  aria-label="紙厚"
                 />
                 <span>mm</span>
-              </label>
+              </div>
               <div className="paper-color-fields">
                 <label className="paper-color-field">
                   <span>表色</span>
@@ -2922,7 +2922,7 @@ function App() {
                 ×
               </button>
             </header>
-            <form onSubmit={submitNewProject}>
+            <form onSubmit={submitNewProject} noValidate>
               <label className="dialog-field dialog-field-wide">
                 <span>作品名</span>
                 <input
@@ -2974,21 +2974,17 @@ function App() {
               <fieldset>
                 <legend>材料設定</legend>
                 <div className="dialog-grid three-columns">
-                  <label className="dialog-field">
-                    <span>紙厚</span>
+                  <div className="dialog-field">
+                    <label htmlFor="new-project-paper-thickness-mm">紙厚</label>
                     <span className="number-with-unit">
-                      <input
-                        name="thickness_mm"
-                        type="number"
-                        defaultValue="0.10"
-                        min="0"
-                        step="any"
-                        required
+                      <PaperThicknessInput
+                        id="new-project-paper-thickness-mm"
+                        initialValue="0.10"
                         disabled={coreBusy}
                       />
                       mm
                     </span>
-                  </label>
+                  </div>
                   <label className="dialog-field color-field">
                     <span>表色</span>
                     <input

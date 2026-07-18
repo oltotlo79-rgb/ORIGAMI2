@@ -45,6 +45,42 @@ test('allowed hinge-model interactions remain informational instead of collision
   assert.equal(collisionBadgeText(boundaryOnly), 'ヒンジ境界接触 1・他衝突 0')
 })
 
+test('exact shared-vertex-only contacts have a distinct informational state', () => {
+  const allowed = ready({
+    totalCandidates: 1,
+    nonAdjacentCandidates: 1,
+    narrowInteractions: 1,
+    nonAdjacentAllowedSharedVertexContacts: 1,
+  })
+
+  assert.equal(collisionDataStatus(allowed), 'topology-model')
+  assert.equal(collisionBadgeClass(allowed), 'has-topology-allowance')
+  assert.equal(collisionBadgeText(allowed), '共有頂点の許容接触 1・貫通 0')
+  assert.match(
+    describeCollisionSummary(allowed),
+    /共有頂点モデル許容 1・ヒンジモデル許容 0/u,
+  )
+  assert.match(
+    describeCollisionSummary(allowed, true),
+    /共有頂点のみと証明した許容接触1件/u,
+  )
+
+  const withUnresolvedHinge = {
+    ...allowed,
+    hingeInteractions: 1,
+    hingeUnresolvedInteractions: 1,
+  }
+  assert.equal(collisionDataStatus(withUnresolvedHinge), 'hinge-unresolved')
+  assert.equal(
+    collisionBadgeClass(withUnresolvedHinge),
+    'has-hinge-candidates',
+  )
+  assert.equal(
+    collisionBadgeText(withUnresolvedHinge),
+    'ヒンジ未解決 1・貫通 0',
+  )
+})
+
 test('flat stacks and unmodeled layer offsets have dedicated user-facing labels', () => {
   const flatStack = ready({
     totalCandidates: 1,
@@ -82,6 +118,7 @@ test('flat stacks and unmodeled layer offsets have dedicated user-facing labels'
   const layerOffsetWithContact = {
     ...layerOffset,
     nonAdjacentContacts: 1,
+    nonAdjacentAllowedSharedVertexContacts: 0,
     indeterminateInteractions: 2,
   }
   assert.equal(
@@ -123,6 +160,7 @@ test('penetration outranks indeterminate, which outranks contact', () => {
   const contact = ready({
     totalCandidates: 1,
     nonAdjacentContacts: 1,
+    nonAdjacentAllowedSharedVertexContacts: 0,
     narrowInteractions: 1,
   })
   const indeterminate = {
@@ -154,12 +192,13 @@ test('penetration outranks indeterminate, which outranks contact', () => {
   )
 })
 
-test('summary equality observes every hinge-policy presentation field', () => {
+test('summary equality observes every topology and hinge-policy presentation field', () => {
   const baseline = ready()
   assert.equal(collisionSummariesEqual(baseline, { ...baseline }), true)
   assert.equal(collisionSummariesEqual(null, baseline), false)
 
   const fields = [
+    'nonAdjacentAllowedSharedVertexContacts',
     'hingeModelAllowedContacts',
     'hingeModelCorridorOverlaps',
     'hingeModelFlatSurfaceStacks',
@@ -237,6 +276,7 @@ test('pending, unavailable, clear, and detailed descriptions retain safety wordi
     narrowInteractions: 5,
     nonAdjacentPenetrations: 1,
     nonAdjacentContacts: 1,
+    nonAdjacentAllowedSharedVertexContacts: 0,
     hingeInteractions: 4,
     hingeModelAllowedContacts: 1,
     hingeModelCorridorOverlaps: 1,
@@ -270,6 +310,7 @@ function ready(overrides: Partial<ReadyCollisionSummary> = {}): ReadyCollisionSu
     narrowInteractions: 0,
     nonAdjacentPenetrations: 0,
     nonAdjacentContacts: 0,
+    nonAdjacentAllowedSharedVertexContacts: 0,
     hingeInteractions: 0,
     hingeModelAllowedContacts: 0,
     hingeModelCorridorOverlaps: 0,

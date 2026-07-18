@@ -163,6 +163,8 @@ test('presentation counts preserve broad and narrow categories independently', (
     narrowInteractions: presentation.narrowInteractions,
     nonAdjacentPenetrations: presentation.nonAdjacentPenetrations,
     nonAdjacentContacts: presentation.nonAdjacentContacts,
+    nonAdjacentAllowedSharedVertexContacts:
+      presentation.nonAdjacentAllowedSharedVertexContacts,
     hingeInteractions: presentation.hingeInteractions,
     hingeModelAllowedContacts: presentation.hingeModelAllowedContacts,
     hingeModelCorridorOverlaps: presentation.hingeModelCorridorOverlaps,
@@ -179,6 +181,7 @@ test('presentation counts preserve broad and narrow categories independently', (
     narrowInteractions: 3,
     nonAdjacentPenetrations: 1,
     nonAdjacentContacts: 1,
+    nonAdjacentAllowedSharedVertexContacts: 0,
     hingeInteractions: 1,
     hingeModelAllowedContacts: 0,
     hingeModelCorridorOverlaps: 0,

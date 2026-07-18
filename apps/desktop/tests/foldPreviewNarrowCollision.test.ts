@@ -92,7 +92,7 @@ test('crossing folded sheets produce a non-adjacent penetration', () => {
   assert.equal(result.interactions[0].geometryClass, 'penetrating')
 })
 
-test('shared hinges stay tagged for the later origami contact policy', () => {
+test('shared hinges without a contact policy fail closed', () => {
   const adjacency: FoldPreviewCollisionAdjacency[] = [{
     edgeId: 'hinge',
     firstFaceId: 'left',
@@ -113,7 +113,12 @@ test('shared hinges stay tagged for the later origami contact policy', () => {
     secondFaceId: 'right',
     relation: 'hinge_adjacent',
     hingeEdgeIds: ['hinge'],
-    geometryClass: 'touching',
+    geometryClass: 'indeterminate',
+    hingeDecision: {
+      kind: 'indeterminate',
+      hingeEdgeIds: ['hinge'],
+      reason: 'missing_constraint',
+    },
   }])
 
   const unresolvedOverlap = analyze(
@@ -124,7 +129,12 @@ test('shared hinges stay tagged for the later origami contact policy', () => {
   )
   assert.ok(unresolvedOverlap)
   assert.equal(unresolvedOverlap.interactions[0]?.relation, 'hinge_adjacent')
-  assert.equal(unresolvedOverlap.interactions[0]?.geometryClass, 'penetrating')
+  assert.equal(unresolvedOverlap.interactions[0]?.geometryClass, 'indeterminate')
+  assert.deepEqual(unresolvedOverlap.interactions[0]?.hingeDecision, {
+    kind: 'indeterminate',
+    hingeEdgeIds: ['hinge'],
+    reason: 'missing_constraint',
+  })
 })
 
 test('zero-thickness coplanar area overlap is an explicit penetration', () => {
@@ -641,6 +651,55 @@ test('exact fallback budget is shared across candidates and closes limit plus on
       synchronous.exactTransversalProofWork,
     )
   }
+})
+
+test('shared-vertex proof exhaustion cannot promote thickness overlap to penetration', () => {
+  const fixture = sharedVertexExactBudgetFixture(
+    MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS + 1,
+  )
+  const analyzer = prepareFoldPreviewNarrowPhase(fixture.faces, [])
+  const reversed = prepareFoldPreviewNarrowPhase(
+    [...fixture.faces].reverse(),
+    [],
+  )
+  assert.ok(analyzer && reversed)
+
+  const result = analyzer.analyze(fixture.transforms, 1)
+  const reversedResult = reversed.analyze(fixture.transforms, 1)
+  assert.ok(result && reversedResult)
+  assert.deepEqual(reversedResult, result)
+  assert.deepEqual(result.exactTransversalProofWork, {
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    skippedByLimit: 1,
+  })
+  assert.equal(result.interactions.length, 257)
+  assert.equal(
+    result.interactions.slice(0, 256).every((interaction) =>
+      interaction.geometryClass === 'touching'
+      && interaction.topologyContact?.exclusive === true
+      && interaction.topologyContact.decision
+        === 'allowed_shared_vertex_contact'),
+    true,
+  )
+  const exhausted = result.interactions.at(-1)
+  assert.equal(exhausted?.firstFaceId, 'budget-0256-a')
+  assert.equal(exhausted?.secondFaceId, 'budget-0256-b')
+  assert.equal(exhausted?.geometryClass, 'indeterminate')
+  assert.equal(exhausted?.topologyContact, undefined)
+
+  const presentation = summarizeFoldPreviewCollision(result)
+  assert.equal(presentation.nonAdjacentAllowedSharedVertexContacts, 256)
+  assert.equal(presentation.nonAdjacentPenetrations, 0)
+  assert.equal(presentation.indeterminateInteractions, 1)
+
+  const job = analyzer.createAnalysisJob(fixture.transforms, 1)
+  assert.ok(job)
+  const terminal = drainAnalysisJob(job, 17)
+  assert.equal(terminal.kind, 'complete')
+  assert.deepEqual(terminal.result, result)
 })
 
 test('exact fallback accounting resets per analysis and cancellation cannot revive or leak it', () => {
@@ -1401,6 +1460,47 @@ function exactFallbackFixture(
       'zz-definitive-second',
       new Matrix4().makeTranslation(offset, 0, 0),
     )
+  }
+  return { faces, transforms }
+}
+
+function sharedVertexExactBudgetFixture(pairCount: number) {
+  const faces: FoldPreviewCollisionPoseFace[] = []
+  const transforms = new Map<string, Matrix4>()
+  for (let index = 0; index < pairCount; index += 1) {
+    const x = index * 10
+    const prefix = `budget-${String(index).padStart(4, '0')}`
+    const shared = {
+      vertexId: `${prefix}-shared`,
+      x,
+      z: 0,
+    } as const
+    faces.push(
+      {
+        id: `${prefix}-a`,
+        polygon: [
+          shared,
+          { vertexId: `${prefix}-a-low`, x: x - 2, z: -1 },
+          { vertexId: `${prefix}-a-high`, x: x - 2, z: 1 },
+        ],
+      },
+      {
+        id: `${prefix}-b`,
+        polygon: [
+          shared,
+          { vertexId: `${prefix}-b-low`, x: x + 2, z: -1 },
+          { vertexId: `${prefix}-b-high`, x: x + 2, z: 1 },
+        ],
+      },
+    )
+    transforms.set(
+      `${prefix}-a`,
+      new Matrix4()
+        .makeTranslation(x, 0, 0)
+        .multiply(new Matrix4().makeRotationZ(Math.PI / 4))
+        .multiply(new Matrix4().makeTranslation(-x, 0, 0)),
+    )
+    transforms.set(`${prefix}-b`, new Matrix4())
   }
   return { faces, transforms }
 }

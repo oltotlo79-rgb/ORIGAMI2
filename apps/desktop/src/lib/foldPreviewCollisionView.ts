@@ -11,6 +11,7 @@ export type CollisionSummary =
       narrowInteractions: number
       nonAdjacentPenetrations: number
       nonAdjacentContacts: number
+      nonAdjacentAllowedSharedVertexContacts: number
       hingeInteractions: number
       hingeModelAllowedContacts: number
       hingeModelCorridorOverlaps: number
@@ -43,6 +44,8 @@ export function collisionSummariesEqual(
       && first.narrowInteractions === second.narrowInteractions
       && first.nonAdjacentPenetrations === second.nonAdjacentPenetrations
       && first.nonAdjacentContacts === second.nonAdjacentContacts
+      && first.nonAdjacentAllowedSharedVertexContacts
+        === second.nonAdjacentAllowedSharedVertexContacts
       && first.hingeInteractions === second.hingeInteractions
       && first.hingeModelAllowedContacts === second.hingeModelAllowedContacts
       && first.hingeModelCorridorOverlaps === second.hingeModelCorridorOverlaps
@@ -104,12 +107,13 @@ export function describeCollisionSummary(
   const hingeModelCount = summary.hingeModelAllowedContacts
     + summary.hingeModelCorridorOverlaps
     + summary.hingeModelFlatSurfaceStacks
+  const topologyModelCount = summary.nonAdjacentAllowedSharedVertexContacts
   const limitation = pathDisclosure === 'separately_reported'
     ? 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖と層ずれは未検証です。単一ヒンジの連続経路判定は別に表示しています'
     : 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖、層ずれ、連続運動中の衝突は未検証です'
   return accessible
-    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、交差の可能性・判定保留${summary.indeterminateInteractions}件。判定保留は安全確認が必要です。${limitation}`
-    : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・交差の可能性・判定保留 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
+    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有頂点のみと証明した許容接触${topologyModelCount}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、交差の可能性・判定保留${summary.indeterminateInteractions}件。判定保留は安全確認が必要です。${limitation}`
+    : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・共有頂点モデル許容 ${topologyModelCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・交差の可能性・判定保留 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
 }
 
 export function collisionDataStatus(summary: CollisionSummary | null) {
@@ -122,6 +126,9 @@ export function collisionDataStatus(summary: CollisionSummary | null) {
   if (summary.indeterminateInteractions > 0) return 'indeterminate'
   if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'contact'
   if (summary.hingeUnresolvedInteractions > 0) return 'hinge-unresolved'
+  if (summary.nonAdjacentAllowedSharedVertexContacts > 0) {
+    return 'topology-model'
+  }
   if (
     summary.hingeModelAllowedContacts
       + summary.hingeModelCorridorOverlaps
@@ -141,9 +148,14 @@ export function collisionBadgeClass(summary: CollisionSummary | null) {
   if (summary.hingeLayerOffsetUnmodeled > 0) return 'has-indeterminate'
   if (summary.indeterminateInteractions > 0) return 'has-indeterminate'
   if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'has-contact'
+  if (summary.hingeUnresolvedInteractions > 0) {
+    return 'has-hinge-candidates'
+  }
+  if (summary.nonAdjacentAllowedSharedVertexContacts > 0) {
+    return 'has-topology-allowance'
+  }
   if (
-    summary.hingeUnresolvedInteractions > 0
-    || summary.hingeModelAllowedContacts
+    summary.hingeModelAllowedContacts
       + summary.hingeModelCorridorOverlaps
       + summary.hingeModelFlatSurfaceStacks
       > 0
@@ -174,6 +186,9 @@ export function collisionBadgeText(summary: CollisionSummary | null) {
   }
   if (summary.hingeUnresolvedInteractions > 0) {
     return `ヒンジ未解決 ${summary.hingeUnresolvedInteractions}・貫通 0`
+  }
+  if (summary.nonAdjacentAllowedSharedVertexContacts > 0) {
+    return `共有頂点の許容接触 ${summary.nonAdjacentAllowedSharedVertexContacts}・貫通 0`
   }
   if (summary.hingeModelFlatSurfaceStacks > 0) {
     return `厚さ0の許容平坦積層 ${summary.hingeModelFlatSurfaceStacks}・通常貫通 0`

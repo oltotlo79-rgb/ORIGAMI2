@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  provesFoldPreviewBinary64SharedVertexOnlyIntersection,
   provesFoldPreviewBinary64TransversalTriangleIntersection,
   type FoldPreviewBinary64Point,
 } from '../src/lib/foldPreviewExactTriangleIntersection.ts'
@@ -213,6 +214,199 @@ test('coordinate getters are snapshotted once and hostile access fails closed', 
   )
 })
 
+test('shared-vertex-only proof recognizes an exact isolated shared point', () => {
+  const first = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 1, z: 0 },
+    { x: -1, y: 1, z: 0 },
+  ]
+  const second = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 0, z: 1 },
+    { x: -1, y: 0, z: 1 },
+  ]
+
+  assert.equal(
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      first,
+      second,
+      0,
+      0,
+    ),
+    true,
+  )
+  assert.equal(
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      second,
+      first,
+      0,
+      0,
+    ),
+    true,
+  )
+})
+
+test('shared-vertex-only proof accepts exact straddling sections meeting at one endpoint', () => {
+  const epsilon = 2 ** -45
+  const first = [
+    { x: 0, y: 0, z: 0 },
+    { x: 2, y: -epsilon, z: 0 },
+    { x: 2, y: epsilon, z: 0 },
+  ]
+  const second = [
+    { x: 0, y: 0, z: 0 },
+    { x: -2, y: 0, z: -epsilon },
+    { x: -2, y: 0, z: epsilon },
+  ]
+
+  assert.equal(
+    provesFoldPreviewBinary64TransversalTriangleIntersection(first, second),
+    false,
+    'the exact sections [0, 2] and [-2, 0] have no positive overlap',
+  )
+  assert.equal(
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      first,
+      second,
+      0,
+      0,
+    ),
+    true,
+  )
+})
+
+test('shared-vertex-only proof refuses a real transversal beyond the shared point', () => {
+  const first = [
+    { x: 0, y: 0, z: 0 },
+    { x: 2, y: -1, z: 0 },
+    { x: 2, y: 1, z: 0 },
+  ]
+  const second = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 0, z: -1 },
+    { x: 1, y: 0, z: 1 },
+  ]
+
+  assert.equal(
+    provesFoldPreviewBinary64TransversalTriangleIntersection(first, second),
+    true,
+    'fixture must contain a positive-length transversal intersection',
+  )
+  assert.equal(
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      first,
+      second,
+      0,
+      0,
+    ),
+    false,
+  )
+})
+
+test('shared-vertex-only proof requires exact designated shared coordinates', () => {
+  const first = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 1, z: 0 },
+    { x: -1, y: 1, z: 0 },
+  ]
+  const mismatched = [
+    { x: Number.MIN_VALUE, y: 0, z: 0 },
+    { x: 1, y: 0, z: 1 },
+    { x: -1, y: 0, z: 1 },
+  ]
+
+  assert.equal(
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      first,
+      mismatched,
+      0,
+      0,
+    ),
+    false,
+  )
+  assert.equal(
+    provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+      first,
+      mismatched,
+      3,
+      0,
+    ),
+    false,
+    'out-of-range indices fail closed',
+  )
+})
+
+test('shared-vertex-only proof refuses shared edges, coplanar, and degenerate triangles', () => {
+  const first = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 1, z: 0 },
+    { x: -1, y: 1, z: 0 },
+  ]
+  const sharedEdge = [
+    first[0],
+    first[1],
+    { x: 0, y: 0, z: 1 },
+  ]
+  const coplanar = [
+    { x: 0, y: 0, z: 0 },
+    { x: 2, y: -1, z: 0 },
+    { x: -2, y: -1, z: 0 },
+  ]
+  const degenerate = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 0, z: 1 },
+    { x: 2, y: 0, z: 2 },
+  ]
+
+  for (const second of [sharedEdge, coplanar, degenerate]) {
+    assert.equal(
+      provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+        first,
+        second,
+        0,
+        0,
+      ),
+      false,
+    )
+  }
+})
+
+test('shared-vertex-only proof is permutation and triangle-exchange symmetric', () => {
+  const first = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 1, z: 0 },
+    { x: -1, y: 1, z: 0 },
+  ]
+  const second = [
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 0, z: 1 },
+    { x: -1, y: 0, z: 1 },
+  ]
+
+  for (const firstPermutation of indexedTrianglePermutations(first, 0)) {
+    for (const secondPermutation of indexedTrianglePermutations(second, 0)) {
+      assert.equal(
+        provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+          firstPermutation.triangle,
+          secondPermutation.triangle,
+          firstPermutation.sharedIndex,
+          secondPermutation.sharedIndex,
+        ),
+        true,
+      )
+      assert.equal(
+        provesFoldPreviewBinary64SharedVertexOnlyIntersection(
+          secondPermutation.triangle,
+          firstPermutation.triangle,
+          secondPermutation.sharedIndex,
+          firstPermutation.sharedIndex,
+        ),
+        true,
+      )
+    }
+  }
+})
+
 function trianglePermutations(
   triangle: readonly FoldPreviewBinary64Point[],
 ) {
@@ -224,4 +418,22 @@ function trianglePermutations(
     [triangle[2], triangle[1], triangle[0]],
     [triangle[1], triangle[0], triangle[2]],
   ] as const
+}
+
+function indexedTrianglePermutations(
+  triangle: readonly FoldPreviewBinary64Point[],
+  sharedIndex: number,
+) {
+  const permutations = [
+    [0, 1, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [0, 2, 1],
+    [2, 1, 0],
+    [1, 0, 2],
+  ] as const
+  return permutations.map((order) => ({
+    triangle: order.map((index) => triangle[index]),
+    sharedIndex: order.indexOf(sharedIndex as 0 | 1 | 2),
+  }))
 }

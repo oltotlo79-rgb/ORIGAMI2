@@ -185,6 +185,8 @@ type ProjectionRange = Readonly<{ min: number; max: number }>
 type CorridorPlacement = 'inside' | 'outside' | 'boundary'
 
 const RIGID_TRANSFORM_TOLERANCE = 1e-10
+const HINGE_LOCAL_NUMERICAL_MARGIN_FACTOR = 256
+const HINGE_WORLD_ROUNDING_MARGIN_FACTOR = 32
 
 function snapshotPolicyFaces(
   faces: readonly FoldPreviewHingePolicyFace[],
@@ -550,12 +552,12 @@ function classifyHingeContact(
         continue
       }
       if (frameResult.frame.flatFold) {
-        // The verified opposing material half-planes coincide on the same
-        // side of the shared edge at an exact 180-degree fold.  Every
-        // in-range interaction is therefore part of the intended
-        // zero-thickness layer stack, including a triangle pair whose
-        // coplanar boundary is numerically marginal.
-        hasPenetration = true
+        // Exact opposite normals establish the 180-degree pose, but they do
+        // not by themselves prove positive-area material overlap. Preserve
+        // boundary/unknown pairs and require at least one authoritative
+        // coplanar-area penetration before publishing a flat surface stack.
+        if (pair.geometryClass === 'penetrating') hasPenetration = true
+        else hasContact = true
         continue
       }
       if (pair.geometryClass === 'indeterminate') {
@@ -598,6 +600,9 @@ function classifyHingeContact(
       kind: 'outside_hinge_contact',
       hingeEdgeId: constraint.edgeId,
     }
+  }
+  if (frameResult.frame.flatFold && !hasPenetration) {
+    return indeterminate(hingeEdgeIds, 'numerical_geometry')
   }
   if (!hasPenetration && !hasContact) {
     return indeterminate(hingeEdgeIds, 'numerical_geometry')
@@ -646,20 +651,37 @@ function createHingeFrame(
   if (!leftStart || !rightStart || !leftEnd || !rightEnd) {
     return { kind: 'error', reason: 'numerical_geometry' }
   }
+  const hingeMargins = hingeFrameNumericalMargin(
+    [leftStart, rightStart, leftEnd, rightEnd],
+    margin,
+    Math.max(
+      1,
+      thickness,
+      Math.hypot(
+        constraint.end.x - constraint.start.x,
+        constraint.end.z - constraint.start.z,
+      ),
+    ),
+  )
+  if (hingeMargins === null) {
+    return { kind: 'error', reason: 'numerical_geometry' }
+  }
+  const hingeMargin = hingeMargins.numericalMargin
+  const hingeTopologyMargin = hingeMargins.topologyMargin
   const startError = leftStart.distanceTo(rightStart)
   const endError = leftEnd.distanceTo(rightEnd)
   if (
     !Number.isFinite(startError)
     || !Number.isFinite(endError)
-    || startError > margin
-    || endError > margin
+    || startError > hingeTopologyMargin
+    || endError > hingeTopologyMargin
   ) return { kind: 'error', reason: 'pose_mismatch' }
 
   const start = leftStart.clone().add(rightStart).multiplyScalar(0.5)
   const end = leftEnd.clone().add(rightEnd).multiplyScalar(0.5)
   const axis = end.clone().sub(start)
   const length = axis.length()
-  if (!Number.isFinite(length) || length <= margin) {
+  if (!Number.isFinite(length) || length <= hingeMargin) {
     return { kind: 'error', reason: 'numerical_geometry' }
   }
   axis.multiplyScalar(1 / length)
@@ -703,12 +725,14 @@ function createHingeFrame(
     return { kind: 'error', reason: 'numerical_geometry' }
   }
   const poseError = Math.max(startError, endError)
-  const outerMargin = margin + poseError
+  const outerMargin = hingeMargin + poseError
   const exactlyParallel = normalCross.x === 0
     && normalCross.y === 0
     && normalCross.z === 0
-  const flatFold = cosineHalfAngle <= Math.sqrt(Number.EPSILON)
-  if (flatFold && thickness > 0) {
+  const numericalFlatFoldSingularity =
+    cosineHalfAngle <= Math.sqrt(Number.EPSILON)
+  const exactFlatFold = exactlyParallel && normalDot === -1
+  if (numericalFlatFoldSingularity && thickness > 0) {
     return { kind: 'error', reason: 'layer_offset_unmodeled' }
   }
   if (thickness === 0) {
@@ -723,11 +747,11 @@ function createHingeFrame(
         innerRadius: 0,
         outerRadius: outerMargin,
         outerMargin,
-        flat: !flatFold
+        flat: !exactFlatFold
           && exactlyParallel
           && 1 - normalDot <= RIGID_TRANSFORM_TOLERANCE
-          && poseError <= margin,
-        flatFold,
+          && poseError <= hingeTopologyMargin,
+        flatFold: exactFlatFold,
         zeroThickness: true,
       },
     }
@@ -736,7 +760,10 @@ function createHingeFrame(
     thickness,
     cosineHalfAngle,
   )
-  if (radius === null || radius > length + outerMargin) {
+  // The finite hinge segment is a physical cap, not a tolerance band. A
+  // radius even strictly above L is unresolved; an absolute-world margin
+  // must never turn it into an allowed corridor after a common translation.
+  if (radius === null || radius > length) {
     return { kind: 'error', reason: 'layer_offset_unmodeled' }
   }
   // A dot-product tolerance alone creates a finite "flat" angle band even
@@ -745,7 +772,7 @@ function createHingeFrame(
   // are not lost by squaring them in Vector3.length().
   const flat = exactlyParallel
     && 1 - normalDot <= RIGID_TRANSFORM_TOLERANCE
-    && poseError <= margin
+    && poseError <= hingeTopologyMargin
   const innerRadius = flat ? radius : radius - outerMargin
   const outerRadius = radius + outerMargin
   if (
@@ -770,6 +797,63 @@ function createHingeFrame(
       zeroThickness: false,
     },
   }
+}
+
+function hingeFrameNumericalMargin(
+  points: readonly Vector3[],
+  authoritativeMargin: number,
+  localScaleFloor: number,
+): Readonly<{
+  numericalMargin: number
+  topologyMargin: number
+}> | null {
+  if (
+    points.length === 0
+    || !points.every(finiteVector)
+    || !Number.isFinite(authoritativeMargin)
+    || authoritativeMargin < 0
+    || !Number.isFinite(localScaleFloor)
+    || localScaleFloor <= 0
+  ) return null
+  const origin = points[0]
+  let localScale = localScaleFloor
+  let worldScale = 1
+  for (const point of points) {
+    localScale = Math.max(
+      localScale,
+      Math.abs(point.x - origin.x),
+      Math.abs(point.y - origin.y),
+      Math.abs(point.z - origin.z),
+    )
+    worldScale = Math.max(
+      worldScale,
+      Math.abs(point.x),
+      Math.abs(point.y),
+      Math.abs(point.z),
+    )
+  }
+  const localMargin = localScale
+    * Number.EPSILON
+    * HINGE_LOCAL_NUMERICAL_MARGIN_FACTOR
+  const storedWorldRoundingMargin = worldScale
+    * Number.EPSILON
+    * HINGE_WORLD_ROUNDING_MARGIN_FACTOR
+  if (
+    !Number.isFinite(localMargin)
+    || !Number.isFinite(storedWorldRoundingMargin)
+  ) return null
+  const numericalMargin = Math.min(
+    authoritativeMargin,
+    Math.max(localMargin, storedWorldRoundingMargin),
+  )
+  // Absolute-world ULP coverage remains necessary for corridor projections,
+  // but cannot certify that two current hinge endpoints are the same point.
+  // A non-zero topology mismatch is accepted only inside the local feature
+  // error bound; otherwise the generic transform input fails closed.
+  const topologyMargin = Math.min(authoritativeMargin, localMargin)
+  return Number.isFinite(numericalMargin) && Number.isFinite(topologyMargin)
+    ? { numericalMargin, topologyMargin }
+    : null
 }
 
 function classifyFiniteHingePlacement(

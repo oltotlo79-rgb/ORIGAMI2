@@ -157,7 +157,7 @@ canonical `FaceKey`が最小の面をreference faceとし、元の2D座標をそ
 
 正の面積で重なる面対だけに層順変数を作る。点または線だけの接触は面対変数を作らないが、折れ線同士および折れ線と面内部の交差制約を作る際には保持する。
 
-折り畳み後の全face boundary segmentをexactに平面分割し、同じ面集合が覆う最大連結領域をoverlap cellとする。
+折り畳み後の全face boundaryが属するcanonical supporting lineをexactに平面分割し、正面積かつstrict convexなarrangement atomをoverlap cellとする。同じcovering face集合を持つ隣接atomでも、その境界にcanonical supporting lineが存在する場合は別cellのままとする。複数atomを論理上一領域として扱う必要がある場合は、cell自体を結合せずcanonical cell key集合を持つ上位regionを別に作る。
 
 ```text
 OverlapCell
@@ -172,6 +172,8 @@ OverlapCell
 - 面内部にある代表点をexactに構成し、covering集合を再検証する
 - 同一面が一つのcellへ二重登録される、cell境界が自己交差する、coverageが一致しない場合はfail closed
 - cell全体を構成できるまでは層順候補を公開しない
+
+現在のcertificate再検証はstrict convex、face全面積・face pair面積coverage、cell間の正面積非交差を検証するが、immutable geometryからcanonical atom集合を再構築して完全一致させる段階を残している。このため人工的な追加分割を受理し得る現行cell keyをSIM-010のmutation authorityとして使用してはならない。SIM-010接続前に、再構築したatom集合とのcell key、boundary、coverageの完全一致を必須にし、人工分割、欠落、結合、重複を拒否する。
 
 ## 8. facewise制約
 

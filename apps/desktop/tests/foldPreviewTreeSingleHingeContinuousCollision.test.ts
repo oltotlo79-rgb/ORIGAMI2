@@ -1573,6 +1573,55 @@ test('the selected hinge stops before finite support needs layer offset', () => 
   assert.equal(result.reason, 'hinge_layer_offset_unmodeled')
 })
 
+test('tree finite hinge support remains blocking after a common large model translation', () => {
+  for (const offsetX of [0, 3e12]) {
+    const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
+      treeModel(offsetX),
+      'root',
+      'hinge-z',
+    )
+    assert.ok(analyzer)
+    const startAngles = [
+      { edgeId: 'hinge-z', angleDegrees: 179 },
+      { edgeId: 'hinge-x', angleDegrees: 35 },
+    ] as const
+
+    const point = analyzer.createJob(startAngles, 179, THICKNESS)
+    assert.ok(point)
+    const pointResult = run(point)
+    assert.equal(pointResult.kind, 'indeterminate', `${offsetX}: point`)
+    assert.ok(pointResult.kind === 'indeterminate')
+    assert.ok(
+      pointResult.reason === 'hinge_layer_offset_unmodeled'
+        || pointResult.reason === 'hinge_corridor_boundary'
+        || pointResult.reason === 'hinge_pose_mismatch',
+      `${offsetX}: point: ${pointResult.reason}`,
+    )
+
+    const path = analyzer.createJob([
+      { edgeId: 'hinge-z', angleDegrees: 0 },
+      { edgeId: 'hinge-x', angleDegrees: 35 },
+    ], 179, THICKNESS, {
+      maxDepth: 12,
+      maxIntervalTests: 10_000,
+      minTimeSpan: 2 ** -24,
+    })
+    assert.ok(path)
+    const pathResult = run(path)
+    assert.equal(pathResult.kind, 'indeterminate', `${offsetX}: path`)
+    assert.ok(pathResult.kind === 'indeterminate')
+    assert.ok(pathResult.certifiedSafeThrough >= 0)
+    assert.ok(pathResult.certifiedSafeThrough < 1)
+    assert.ok(
+      pathResult.reason === 'hinge_layer_offset_unmodeled'
+        || pathResult.reason === 'hinge_interval_numerical_margin'
+        || pathResult.reason === 'hinge_corridor_boundary'
+        || pathResult.reason === 'hinge_pose_mismatch',
+      `${offsetX}: path: ${pathResult.reason}`,
+    )
+  }
+})
+
 test('an exact 180-degree start pose allows no reverse escape', () => {
   const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
     treeModel(),
@@ -2063,17 +2112,17 @@ function singleLengthReadArray<T>(values: readonly T[]): Readonly<{
   return { values: guardedValues, lengthReads: () => lengthReads }
 }
 
-function treeModel(): FoldGraphPreviewModel {
-  const zStart = { vertexId: 'z-start', x: 0, z: -1 }
-  const zEnd = { vertexId: 'z-end', x: 0, z: 1 }
-  const xStart = { vertexId: 'x-start', x: 2, z: 1 }
-  const xEnd = { vertexId: 'x-end', x: 2, z: -1 }
+function treeModel(offsetX = 0): FoldGraphPreviewModel {
+  const zStart = { vertexId: 'z-start', x: offsetX, z: -1 }
+  const zEnd = { vertexId: 'z-end', x: offsetX, z: 1 }
+  const xStart = { vertexId: 'x-start', x: offsetX + 2, z: 1 }
+  const xEnd = { vertexId: 'x-end', x: offsetX + 2, z: -1 }
   const root: FoldPreviewFaceModel = {
     id: 'root',
     polygon: [
       zStart,
-      { vertexId: 'root-bottom', x: -1, z: -1 },
-      { vertexId: 'root-top', x: -1, z: 1 },
+      { vertexId: 'root-bottom', x: offsetX - 1, z: -1 },
+      { vertexId: 'root-top', x: offsetX - 1, z: 1 },
       zEnd,
     ],
   }
@@ -2091,8 +2140,8 @@ function treeModel(): FoldGraphPreviewModel {
     polygon: [
       xEnd,
       xStart,
-      { vertexId: 'leaf-top', x: 3, z: 1 },
-      { vertexId: 'leaf-bottom', x: 3, z: -1 },
+      { vertexId: 'leaf-top', x: offsetX + 3, z: 1 },
+      { vertexId: 'leaf-bottom', x: offsetX + 3, z: -1 },
     ],
   }
   const hingeZ: FoldPreviewHingeModel = {
@@ -2120,8 +2169,13 @@ function treeModel(): FoldGraphPreviewModel {
     projectId: 'project',
     revision: 1,
     worldUnitsPerMillimetre: 1,
-    paperCenter: { x: 1, y: 0 },
-    worldBounds: { minX: -1, minZ: -1, maxX: 3, maxZ: 1 },
+    paperCenter: { x: offsetX + 1, y: 0 },
+    worldBounds: {
+      minX: offsetX - 1,
+      minZ: -1,
+      maxX: offsetX + 3,
+      maxZ: 1,
+    },
     faces: [root, middle, leaf],
     hinges: [hingeZ, hingeX],
     kinematics: {

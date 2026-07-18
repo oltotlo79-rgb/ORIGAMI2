@@ -107,6 +107,45 @@ test('finite hinge support stops before layer offset would be required', () => {
   assert.equal(result.reason, 'hinge_layer_offset_unmodeled')
 })
 
+test('finite hinge support remains blocking after a common large model translation', () => {
+  for (const offsetX of [0, 3e12]) {
+    const analyzer = prepareFoldPreviewSingleFoldContinuousCollision(
+      rectangleModel(offsetX),
+      'left',
+    )
+    assert.ok(analyzer)
+
+    const point = analyzer.createJob(175, 175, 0.1)
+    assert.ok(point)
+    const pointResult = run(point)
+    assert.equal(pointResult.kind, 'indeterminate', `${offsetX}: point`)
+    assert.ok(pointResult.kind === 'indeterminate')
+    assert.ok(
+      pointResult.reason === 'hinge_layer_offset_unmodeled'
+        || pointResult.reason === 'hinge_pose_mismatch',
+      `${offsetX}: point`,
+    )
+
+    const path = analyzer.createJob(0, 175, 0.1, {
+      maxDepth: 12,
+      minTimeSpan: 2 ** -24,
+      maxIntervalTests: 10_000,
+    })
+    assert.ok(path)
+    const pathResult = run(path)
+    assert.equal(pathResult.kind, 'indeterminate', `${offsetX}: path`)
+    assert.ok(pathResult.kind === 'indeterminate')
+    assert.ok(pathResult.certifiedSafeThrough >= 0)
+    assert.ok(pathResult.certifiedSafeThrough < 1)
+    assert.ok(
+      pathResult.reason === 'hinge_layer_offset_unmodeled'
+        || pathResult.reason === 'hinge_interval_numerical_margin'
+        || pathResult.reason === 'hinge_pose_mismatch',
+      `${offsetX}: path: ${pathResult.reason}`,
+    )
+  }
+})
+
 test('an analytic interval cannot overrule an indeterminate target policy', () => {
   const analyzer = prepareFoldPreviewSingleFoldContinuousCollision(
     rectangleModel(),
@@ -244,15 +283,15 @@ function run(
   throw new Error('single-fold continuous job did not terminate')
 }
 
-function rectangleModel(): SingleFoldPreviewModel {
-  const start = { vertexId: 'start', x: 0, z: 0 }
-  const end = { vertexId: 'end', x: 0, z: 1 }
+function rectangleModel(offsetX = 0): SingleFoldPreviewModel {
+  const start = { vertexId: 'start', x: offsetX, z: 0 }
+  const end = { vertexId: 'end', x: offsetX, z: 1 }
   const left: FoldPreviewFaceModel = {
     id: 'left',
     polygon: [
       start,
-      { vertexId: 'left-bottom', x: -1, z: 0 },
-      { vertexId: 'left-top', x: -1, z: 1 },
+      { vertexId: 'left-bottom', x: offsetX - 1, z: 0 },
+      { vertexId: 'left-top', x: offsetX - 1, z: 1 },
       end,
     ],
   }
@@ -260,8 +299,8 @@ function rectangleModel(): SingleFoldPreviewModel {
     id: 'right',
     polygon: [
       end,
-      { vertexId: 'right-top', x: 1, z: 1 },
-      { vertexId: 'right-bottom', x: 1, z: 0 },
+      { vertexId: 'right-top', x: offsetX + 1, z: 1 },
+      { vertexId: 'right-bottom', x: offsetX + 1, z: 0 },
       start,
     ],
   }
@@ -270,8 +309,13 @@ function rectangleModel(): SingleFoldPreviewModel {
     projectId: 'project',
     revision: 1,
     worldUnitsPerMillimetre: 1,
-    paperCenter: { x: 0, y: 0 },
-    worldBounds: { minX: -1, minZ: 0, maxX: 1, maxZ: 1 },
+    paperCenter: { x: offsetX, y: 0 },
+    worldBounds: {
+      minX: offsetX - 1,
+      minZ: 0,
+      maxX: offsetX + 1,
+      maxZ: 1,
+    },
     faces: [left, right],
     fixedFace: left,
     movingFace: right,

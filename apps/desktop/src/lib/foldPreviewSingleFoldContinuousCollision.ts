@@ -23,6 +23,7 @@ import type {
 } from './foldPreviewModel.ts'
 import {
   calculateFoldPreviewNarrowPhaseNumericalMargin,
+  isFoldPreviewExclusiveAllowedSharedVertexContact,
   prepareFoldPreviewNarrowPhase,
 } from './foldPreviewNarrowCollision.ts'
 import { calculateSingleFoldPose } from './foldPreviewSingleFoldKinematics.ts'
@@ -247,6 +248,9 @@ export function prepareFoldPreviewSingleFoldContinuousCollision(
                 : 'hinge_decision_unavailable'
               continue
             }
+            if (
+              isFoldPreviewExclusiveAllowedSharedVertexContact(interaction)
+            ) continue
             if (interaction.geometryClass === 'indeterminate') {
               unknownReason ??= 'non_adjacent_geometry_indeterminate'
             } else {
@@ -277,7 +281,6 @@ export function prepareFoldPreviewSingleFoldContinuousCollision(
               endAngle,
               thickness,
               hingeLength,
-              numericalMargin,
             )) {
               return { kind: 'unresolved' }
             }
@@ -445,7 +448,6 @@ function intervalExceedsFiniteHingeRadius(
   endAngleDegrees: number,
   thickness: number,
   hingeLength: number,
-  numericalMargin: number,
 ) {
   if (thickness === 0) return false
   const maximumAngleDegrees = Math.max(
@@ -459,7 +461,9 @@ function intervalExceedsFiniteHingeRadius(
     thickness,
     cosineHalfAngle,
   )
-  return radius === null || radius > hingeLength + numericalMargin
+  // Keep the analytic finite-segment cap independent of the absolute world
+  // origin. The point policy uses the same closed R <= L condition.
+  return radius === null || radius > hingeLength
 }
 
 function continuousCoordinateScaleUpperBound(

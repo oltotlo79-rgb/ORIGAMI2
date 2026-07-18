@@ -9,6 +9,7 @@ import {
 } from './components/CreaseCanvas'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldPreview } from './components/FoldPreview'
+import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import {
   addEdge,
   addVertex,
@@ -41,6 +42,8 @@ import {
 } from './lib/coreClient'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
+import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
+import type { InstructionStepPresentation } from './lib/instructionTimeline'
 import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
@@ -114,6 +117,9 @@ function App() {
     projectId: null,
     faceId: null,
   })
+  const [appliedFoldPose, setAppliedFoldPose] =
+    useState<FoldPreviewAppliedPoseSnapshot | null>(null)
+  const [manualPoseChangeSequence, setManualPoseChangeSequence] = useState(0)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
@@ -358,10 +364,79 @@ function App() {
       angleDegrees: overrides?.get(joint.hinge.edgeId) ?? foldAngle,
     }))
   }, [foldAngle, foldAngleOverrides, foldPreviewModel])
+  const foldPreviewPoseModelKey = foldPreviewModel
+    ? [
+        foldPreviewModel.projectId,
+        foldPreviewModel.revision,
+        foldPreviewModel.kind,
+        foldPreviewModel.kind === 'fold_graph'
+          ? foldPreviewModel.kinematics.kind
+          : '',
+      ].join(':')
+    : null
+
+  const applyInstructionStepPose = useCallback((
+    step: InstructionStepPresentation,
+  ) => {
+    const current = latestSnapshotRef.current
+    const preview = foldPreviewModel
+    if (
+      !current
+      || !preview
+      || step.stale
+      || preview.projectId !== current.project_id
+      || preview.revision !== current.revision
+      || step.pose.source_model_fingerprint !== current.fold_model_fingerprint
+    ) return false
+
+    if (preview.kind === 'planar') {
+      if (step.pose.fixed_face !== null || step.pose.hinge_angles.length !== 0) {
+        return false
+      }
+      setFixedFaceChoice({ projectId: preview.projectId, faceId: null })
+      setFoldAngleOverrides({ projectId: preview.projectId, values: new Map() })
+      return true
+    }
+
+    const fixedFace = step.pose.fixed_face
+    if (!fixedFace || !preview.faces.some(({ id }) => id === fixedFace)) return false
+    const expectedHingeIds = preview.kind === 'single_fold'
+      ? [preview.hinge.edgeId]
+      : preview.kinematics.kind === 'tree'
+        ? preview.kinematics.joints.map(({ hinge }) => hinge.edgeId)
+        : []
+    if (
+      expectedHingeIds.length === 0
+      || step.pose.hinge_angles.length !== expectedHingeIds.length
+    ) return false
+    const angles = new Map(
+      step.pose.hinge_angles.map(({ edge, angle_degrees }) => [edge, angle_degrees]),
+    )
+    if (
+      angles.size !== expectedHingeIds.length
+      || expectedHingeIds.some((edgeId) => !angles.has(edgeId))
+    ) return false
+
+    setFixedFaceChoice({ projectId: preview.projectId, faceId: fixedFace })
+    if (preview.kind === 'single_fold') {
+      const angleDegrees = angles.get(preview.hinge.edgeId)
+      if (angleDegrees === undefined) return false
+      setFoldAngle(angleDegrees)
+      setFoldAngleOverrides({ projectId: preview.projectId, values: new Map() })
+      return true
+    }
+    if (preview.kinematics.kind !== 'tree') return false
+    setFoldAngleOverrides({
+      projectId: preview.projectId,
+      values: angles,
+    })
+    return true
+  }, [foldPreviewModel])
 
   const updateUniformFoldAngle = (value: number) => {
     const nextAngle = normalizeFoldAngle(value)
     if (nextAngle === null) return
+    setManualPoseChangeSequence((sequence) => sequence + 1)
     setFoldAngle(nextAngle)
     setFoldAngleOverrides({
       projectId: foldPreviewModel?.projectId ?? null,
@@ -377,6 +452,7 @@ function App() {
       || foldPreviewModel.kinematics.kind !== 'tree'
       || !foldPreviewModel.kinematics.joints.some((joint) => joint.hinge.edgeId === edgeId)
     ) return
+    setManualPoseChangeSequence((sequence) => sequence + 1)
     const projectId = foldPreviewModel.projectId
     const activeEdgeIds = new Set(
       foldPreviewModel.kinematics.joints.map((joint) => joint.hinge.edgeId),
@@ -1293,6 +1369,7 @@ function App() {
                       !foldPreviewModel
                       || !fixedFaceOptions.some((face) => face.id === faceId)
                     ) return
+                    setManualPoseChangeSequence((sequence) => sequence + 1)
                     setFixedFaceChoice({
                       projectId: foldPreviewModel.projectId,
                       faceId,
@@ -1310,6 +1387,7 @@ function App() {
                   ? updateHingeFoldAngle
                   : undefined
               }
+              onAppliedPoseChange={setAppliedFoldPose}
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
@@ -1325,6 +1403,7 @@ function App() {
                 title={effectiveFixedFaceLabel}
                 onChange={(event) => {
                   if (!foldPreviewModel || !fixedFaceEnabled) return
+                  setManualPoseChangeSequence((sequence) => sequence + 1)
                   setFixedFaceChoice({
                     projectId: foldPreviewModel.projectId,
                     faceId: event.currentTarget.value,
@@ -2004,19 +2083,18 @@ function App() {
         </aside>
       </section>
 
-      <section className="timeline panel" inert={modalOpen}>
-        <div className="timeline-controls">
-          <button type="button" aria-label="先頭へ">|◀</button>
-          <button type="button" aria-label="再生">▶</button>
-          <strong>折り手順</strong>
-          <span>00:02.4 / 00:08.0</span>
-        </div>
-        <div className="timeline-track">
-          <span className="step selected">1　中央を山折り</span>
-          <span className="step">2　対角線を谷折り</span>
-          <span className="step add">＋ 手順を追加</span>
-        </div>
-      </section>
+      <InstructionTimelinePanel
+        snapshot={nativeSnapshot}
+        appliedPose={appliedFoldPose}
+        poseModelKey={foldPreviewPoseModelKey}
+        manualPoseChangeSequence={manualPoseChangeSequence}
+        coreBusy={coreBusy}
+        benchmarkActive={benchmarkLoading || Boolean(benchmarkRun)}
+        fileOperationActive={fileOperation !== null}
+        inert={modalOpen}
+        runNativeEdit={runNativeEdit}
+        applyStepPose={applyInstructionStepPose}
+      />
 
       {newProjectOpen && (
         <div className="dialog-backdrop">

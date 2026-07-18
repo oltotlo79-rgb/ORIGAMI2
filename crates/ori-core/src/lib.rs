@@ -1,6 +1,7 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
 mod editor;
+mod fold_model_fingerprint;
 mod sheet;
 mod topology;
 mod validation;
@@ -9,6 +10,7 @@ pub use editor::{
     Command, CommandError, CommandResult, EditorState, IntersectionEdgeTarget,
     JunctionVertexIntent, Revision,
 };
+pub use fold_model_fingerprint::fold_model_fingerprint_v1;
 pub use ori_geometry::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
     SegmentIntersection, ValidationIssue, validate_paper,

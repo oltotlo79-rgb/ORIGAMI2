@@ -2,14 +2,18 @@
 
 mod ori2;
 
-use ori_domain::{CreasePattern, Paper, ProjectId};
+use ori_domain::{
+    CreasePattern, InstructionTimeline, InstructionTimelineValidationError, Paper, ProjectId,
+    validate_instruction_timeline,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use ori2::{
-    CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER, ORI2_MANIFEST_PATH,
-    ORI2_PROJECT_PATH, Ori2Limits, Ori2Manifest, Ori2ProjectEntry, read_project_ori2,
-    read_project_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
+    CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER,
+    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2Limits,
+    Ori2Manifest, Ori2ProjectEntry, read_project_ori2, read_project_ori2_with_limits,
+    write_project_ori2, write_project_ori2_with_limits,
 };
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
@@ -22,6 +26,8 @@ pub struct ProjectDocument {
     #[serde(default)]
     pub paper: Paper,
     pub crease_pattern: CreasePattern,
+    #[serde(default)]
+    pub instruction_timeline: InstructionTimeline,
 }
 
 impl ProjectDocument {
@@ -33,6 +39,7 @@ impl ProjectDocument {
             name: name.into(),
             paper: Paper::default(),
             crease_pattern,
+            instruction_timeline: InstructionTimeline::default(),
         }
     }
 }
@@ -93,6 +100,8 @@ pub enum FormatError {
     UnsupportedContainerVersion { found: u32, latest: u32 },
     #[error(".ori2 requires unsupported features: {features:?}")]
     UnsupportedRequiredFeatures { features: Vec<String> },
+    #[error(".ori2 project content requires manifest feature {feature:?}")]
+    MissingRequiredFeature { feature: &'static str },
     #[error(".ori2 manifest references an invalid project path: {found:?}")]
     InvalidManifestProjectPath { found: String },
     #[error(
@@ -105,9 +114,12 @@ pub enum FormatError {
         ".ori2 manifest declares project format version {manifest}, but project.json declares {project}"
     )]
     ManifestProjectVersionMismatch { manifest: u32, project: u32 },
+    #[error("folding instruction timeline is invalid: {0}")]
+    InvalidInstructionTimeline(#[from] InstructionTimelineValidationError),
 }
 
 pub fn write_project_json(document: &ProjectDocument) -> Result<Vec<u8>, FormatError> {
+    validate_instruction_timeline(&document.instruction_timeline)?;
     Ok(serde_json::to_vec_pretty(document)?)
 }
 
@@ -119,13 +131,16 @@ pub fn read_project_json(bytes: &[u8]) -> Result<ProjectDocument, FormatError> {
             latest: CURRENT_FORMAT_VERSION,
         });
     }
+    validate_instruction_timeline(&document.instruction_timeline)?;
     Ok(document)
 }
 
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        AssetId, Edge, EdgeId, EdgeKind, PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
+        AssetId, Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
+        InstructionPoseModel, InstructionStep, InstructionStepId, PaperAppearance, Point2,
+        RgbaColor, Vertex, VertexId,
     };
 
     use super::*;
@@ -164,10 +179,42 @@ mod tests {
         assert_eq!(restored, original);
     }
 
+    fn add_sample_instruction(document: &mut ProjectDocument) {
+        let edge = document.crease_pattern.edges[0].id;
+        document.instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "半分に折る".to_owned(),
+            description: "辺を正確に重ねます。".to_owned(),
+            caution: "強く折りすぎないでください。".to_owned(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: "0123456789abcdef".repeat(4),
+                fixed_face: Some(FaceId::new()),
+                hinge_angles: vec![InstructionHingeAngle {
+                    edge,
+                    angle_degrees: 180.0,
+                }],
+            },
+        });
+    }
+
+    #[test]
+    fn json_round_trip_preserves_instruction_timeline() {
+        let mut original = sample_document();
+        add_sample_instruction(&mut original);
+
+        let bytes = write_project_json(&original).expect("write instructions");
+        let restored = read_project_json(&bytes).expect("read instructions");
+
+        assert_eq!(restored.instruction_timeline, original.instruction_timeline);
+    }
+
     #[test]
     fn new_project_uses_default_paper() {
         let document = ProjectDocument::new("Blank", CreasePattern::empty());
         assert_eq!(document.paper, Paper::default());
+        assert!(document.instruction_timeline.steps.is_empty());
     }
 
     #[test]
@@ -182,6 +229,46 @@ mod tests {
 
         let restored = read_project_json(&bytes).expect("read legacy project");
         assert_eq!(restored.paper, Paper::default());
+    }
+
+    #[test]
+    fn legacy_json_without_instruction_timeline_uses_empty_default() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize project value");
+        value
+            .as_object_mut()
+            .expect("project is a JSON object")
+            .remove("instruction_timeline");
+        let bytes = serde_json::to_vec(&value).expect("serialize legacy project");
+
+        let restored = read_project_json(&bytes).expect("read legacy project");
+        assert!(restored.instruction_timeline.steps.is_empty());
+    }
+
+    #[test]
+    fn json_reader_and_writer_reject_invalid_instruction_timeline() {
+        let mut document = sample_document();
+        add_sample_instruction(&mut document);
+        document.instruction_timeline.steps[0].title.clear();
+
+        let write_error =
+            write_project_json(&document).expect_err("writer must reject invalid timeline");
+        assert!(matches!(
+            write_error,
+            FormatError::InvalidInstructionTimeline(
+                InstructionTimelineValidationError::EmptyTitle { step_index: 0 }
+            )
+        ));
+
+        let bytes = serde_json::to_vec(&document).expect("serialize invalid document directly");
+        let read_error =
+            read_project_json(&bytes).expect_err("reader must reject invalid timeline");
+        assert!(matches!(
+            read_error,
+            FormatError::InvalidInstructionTimeline(
+                InstructionTimelineValidationError::EmptyTitle { step_index: 0 }
+            )
+        ));
     }
 
     #[test]

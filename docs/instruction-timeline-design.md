@@ -1,0 +1,150 @@
+# 折り手順タイムライン初期設計
+
+## 目的
+
+最初の実用範囲は、3Dプレビューへ実際に適用された姿勢を手動の折り手順として登録し、説明を編集し、`.ori2`へ保存し、同じプロジェクトで段階再生することである。
+
+要求角度と衝突判定後の表示角度が異なる場合があるため、手順へ記録する正本はスライダーの要求値ではない。`FoldPreview`が描画へ適用できた姿勢を、Three.jsやmotion runnerへの参照を含まない読み取り専用DTOとして通知し、その値だけを登録候補にする。
+
+## 初期範囲
+
+- 平面姿勢、単一ヒンジ姿勢、木構造の複数ヒンジ姿勢を手動登録する
+- 一つの手順へ、現在の全ヒンジ角度と固定面を保存する
+- タイトル、説明、注意事項、表示時間を編集する
+- 手順を並べ替え、削除し、現在の3D姿勢で更新する
+- 通常編集と同じrevision、Undo、Redo、dirty判定を使用する
+- `.ori2`へ保存し、旧`.ori2`を空タイムラインとして読み込む
+- 保存した完全姿勢を順番に適用する段階再生を行う
+
+初期範囲の再生は、複数ヒンジを滑らかな一つの運動として補間するものではない。各手順の完全姿勢を離散的に適用する。手順間の連続経路が衝突しないことや、実物として折れることは保証しない。
+
+## 永続モデル
+
+```text
+InstructionTimeline
+└─ steps: InstructionStep[]
+   ├─ id: InstructionStepId
+   ├─ title
+   ├─ description
+   ├─ caution
+   ├─ duration_ms
+   └─ pose: InstructionPose
+      ├─ model: absolute_hinge_angles_v1
+      ├─ source_model_fingerprint
+      ├─ fixed_face: FaceId | null
+      └─ hinge_angles: InstructionHingeAngle[]
+         ├─ edge: EdgeId
+         └─ angle_degrees
+```
+
+各poseは前手順との差分ではなく完全角度ベクトルである。順序に依存する上書き列を保存しないため、各手順を単独で検証・編集・再生できる。
+
+平面姿勢は`fixed_face = null`かつ空の角度ベクトルとする。折られた姿勢は現在モデルに存在する固定面と、現在の全ヒンジを一度ずつ含む角度ベクトルを必要とする。角度ベクトルは`EdgeId`のRFC UUID byte順で正規化する。
+
+## 折りモデル指紋
+
+手順が現在の展開図用かをrevision番号で判断しない。手順編集だけでもrevisionは進み、ファイル読込後はrevisionが0へ戻るためである。
+
+`fold_model_fingerprint_v1`は次を正規化したSHA-256小文字16進64桁である。
+
+- ID順の頂点IDと座標のbinary64 bit列
+- ID順の辺ID、無向端点、線種
+- 循環開始位置と反転を正規化した紙境界
+- 切断可否
+- 紙厚のbinary64 bit列
+
+作品名、表裏色、テクスチャ、project ID、revision、折り手順自体は含めない。保存順や無向辺の向きだけを変えても同じ指紋となり、座標、線種、境界、切断可否、紙厚が変われば異なる指紋となる。
+
+手順の`source_model_fingerprint`と現在値が異なる場合、その手順を「古い展開図用」とする。古い手順は説明編集、移動、削除を許可するが再生しない。「現在の姿勢で更新」により、角度、固定面、指紋を現在値へ置換できる。展開図をUndoして元の内容へ戻し指紋が一致すれば、手順は再び現在用となる。
+
+## 信頼境界
+
+### 3Dプレビュー
+
+`FoldPreview`は次だけを通知する。
+
+- project IDとrevision
+- 固定面ID
+- 実際に描画された全ヒンジ角度
+- `stable`、`running`、`blocked`、`indeterminate`の観測状態
+
+scene、mesh、runner token、衝突解析authority、request keyは通知しない。`running`姿勢は登録候補にしない。`blocked`または`indeterminate`の表示姿勢を登録する場合も、経路安全認定済みとは扱わない。
+
+### TypeScript
+
+IPC snapshotは固定field、上限、ID、指紋、文字、時間、角度、重複、正規順をfail-closedで検証する。現在のproject、revision、fold modelと一致しない実姿勢通知は保持しない。
+
+### Rustデスクトップ
+
+フロントエンドは`source_model_fingerprint`を指定できない。追加と姿勢更新ではRustが次を実行する。
+
+1. project IDとrevisionを照合する
+2. 同じrevisionのpaperとcrease patternを捕捉する
+3. project lock外でtopologyを解析する
+4. 再ロック後にproject、revision、捕捉内容を再照合する
+5. 平面または接続された木構造であることを確認する
+6. 固定面と現在の全ヒンジが完全一致することを確認する
+7. Rust側で現在の指紋を付与する
+8. `EditorState`の一コマンドとして登録する
+
+解析中にプロジェクトが変わった場合は登録しない。循環hinge、欠落・余分・重複hinge、不明な固定面、非有限角度、範囲外角度は拒否する。
+
+`.ori2`読込時は、現在の指紋を持つ手順だけを現在topologyへ再照合する。異なる指紋を持つ過去手順はstaleな編集可能記録として保持する。
+
+## 履歴と保存
+
+次の操作を`EditorState`の通常履歴へ統合する。
+
+- `AddInstructionStep`
+- `UpdateInstructionStepMetadata`
+- `ReplaceInstructionStepPose`
+- `RemoveInstructionStep`
+- `MoveInstructionStep`
+
+候補タイムライン全体を検証してから一括置換し、失敗時はpattern、paper、timeline、revision、Undo/Redoを変えない。手順編集もdirty判定へ含め、保存内容までUndoした場合はdirtyを解除する。
+
+履歴entryはタイムライン全体を保持せず、追加ID、変更前metadata、変更前pose、削除stepと元index、移動前indexだけを保存する。候補全体の検証は適用時とUndo時のどちらでも維持する。Editor全体のUndo/Redoは最新128件を固定安全上限とし、利用者が件数または容量を設定する機能は別途実装する。
+
+`ProjectDocument`のformat versionは1を維持し、`instruction_timeline`をdefault付きfieldとして追加する。旧v1は空タイムラインとして読める。
+
+非空タイムラインを持つ`.ori2`はmanifestへ`instruction_timeline_v1`を必須機能として記録する。新アプリはこの既知機能を受理し、旧アプリは未対応機能としてファイルを拒否するため、手順を認識せず再保存して失うことを防げる。未知の必須機能は引き続き拒否する。
+
+## 段階再生
+
+再生状態は次の順で遷移する。
+
+```text
+idle
+→ applying
+→ 3D実適用姿勢の一致確認
+→ holding
+→ applying(next)
+→ complete
+```
+
+project、revision、fold model、手動3D姿勢、性能テスト、ファイル操作、画面表示状態が変わった場合、または姿勢適用が失敗した場合は停止する。再生自体はプロジェクトを編集せず、Undo/Redoやdirtyへ影響しない。
+
+## 上限
+
+| 対象 | 上限 |
+|---|---:|
+| 手順数 | 512 |
+| 一手順のヒンジ数 | 10,000 |
+| タイムライン全体の角度record数 | 100,000 |
+| タイトル | 120文字 |
+| 説明 | 4,000文字 |
+| 注意事項 | 2,000文字 |
+| 表示時間 | 100～600,000 ms |
+| 角度 | 0～180度の有限値 |
+
+タイトルは空と制御文字を許可しない。説明と注意事項は改行とtab以外の制御文字を許可しない。
+
+## 未実装
+
+- 複数ヒンジ間の滑らかな連続経路と、その衝突安全認定
+- 手、指、把持位置、押さえ位置、持ち替え
+- カメラ位置、矢印、注目箇所
+- 3D操作の自動記録、手順の自動分割・結合
+- 名前付き複合折り技法と技法ファイル共有
+- 手順画像、PDF、動画の出力
+- 編集履歴そのものの`.ori2`永続化

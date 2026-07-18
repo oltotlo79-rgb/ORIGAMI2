@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use ori_domain::{
-    CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, RgbaColor, Vertex, VertexId,
+    CreasePattern, Edge, EdgeId, EdgeKind, InstructionPose, InstructionStep, InstructionStepId,
+    InstructionTimeline, InstructionTimelineValidationError, Paper, Point2, RgbaColor, Vertex,
+    VertexId, validate_instruction_timeline,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -103,6 +105,27 @@ pub enum Command {
     RemoveBoundaryVertex {
         vertex: VertexId,
     },
+    AddInstructionStep {
+        step: InstructionStep,
+    },
+    UpdateInstructionStepMetadata {
+        step_id: InstructionStepId,
+        title: String,
+        description: String,
+        caution: String,
+        duration_ms: u32,
+    },
+    ReplaceInstructionStepPose {
+        step_id: InstructionStepId,
+        pose: InstructionPose,
+    },
+    RemoveInstructionStep {
+        step_id: InstructionStepId,
+    },
+    MoveInstructionStep {
+        step_id: InstructionStepId,
+        target_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +134,7 @@ pub struct CommandResult {
     pub changed_vertices: Vec<VertexId>,
     pub changed_edges: Vec<EdgeId>,
     pub settings_changed: bool,
+    pub instructions_changed: bool,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -338,12 +362,36 @@ pub enum CommandError {
     IntersectionClusterNeedsSplit,
     #[error("edge {edge:?} also passes through the intersection cluster but was omitted")]
     IncompleteIntersectionCluster { edge: EdgeId },
+    #[error("instruction step {0:?} already exists")]
+    InstructionStepAlreadyExists(InstructionStepId),
+    #[error("instruction step {0:?} was not found")]
+    InstructionStepNotFound(InstructionStepId),
+    #[error("instruction step target index {target_index} is out of bounds for {step_count} steps")]
+    InstructionStepTargetIndexOutOfBounds {
+        target_index: usize,
+        step_count: usize,
+    },
+    #[error("invalid instruction timeline: {0}")]
+    InstructionTimelineInvalid(#[from] InstructionTimelineValidationError),
 }
 
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     forward: Command,
     inverse: Inverse,
+}
+
+const MAX_EDITOR_HISTORY_ENTRIES: usize = 128;
+
+fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry) {
+    let discard_count = stack
+        .len()
+        .saturating_add(1)
+        .saturating_sub(MAX_EDITOR_HISTORY_ENTRIES);
+    if discard_count > 0 {
+        stack.drain(..discard_count);
+    }
+    stack.push(entry);
 }
 
 #[derive(Debug, Clone)]
@@ -417,6 +465,28 @@ enum Inverse {
         removed_edge: Edge,
         previous_vertex: VertexId,
         next_vertex: VertexId,
+    },
+    RemoveAddedInstructionStep {
+        step_id: InstructionStepId,
+    },
+    RestoreInstructionStepMetadata {
+        step_id: InstructionStepId,
+        title: String,
+        description: String,
+        caution: String,
+        duration_ms: u32,
+    },
+    RestoreInstructionStepPose {
+        step_id: InstructionStepId,
+        pose: InstructionPose,
+    },
+    RestoreRemovedInstructionStep {
+        index: usize,
+        step: InstructionStep,
+    },
+    RestoreInstructionStepOrder {
+        step_id: InstructionStepId,
+        previous_index: usize,
     },
 }
 
@@ -956,6 +1026,7 @@ fn intersection_cluster_changes(
         vertices,
         edges,
         settings: false,
+        instructions: false,
     }
 }
 
@@ -1020,6 +1091,7 @@ fn apply_boundary_vertex_removal(
 pub struct EditorState {
     pattern: CreasePattern,
     paper: Paper,
+    instruction_timeline: InstructionTimeline,
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
@@ -1038,9 +1110,24 @@ impl EditorState {
     /// editing operation.
     #[must_use]
     pub const fn with_paper(pattern: CreasePattern, paper: Paper) -> Self {
+        Self::with_document_parts(pattern, paper, InstructionTimeline { steps: Vec::new() })
+    }
+
+    /// Restores all persisted, user-editable document parts.
+    ///
+    /// The restored state starts at revision zero with empty undo and redo
+    /// histories. Validation remains an explicit admission step so callers can
+    /// inspect or repair documents created by an older version.
+    #[must_use]
+    pub const fn with_document_parts(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+    ) -> Self {
         Self {
             pattern,
             paper,
+            instruction_timeline,
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -1060,6 +1147,18 @@ impl EditorState {
     #[must_use]
     pub const fn paper(&self) -> &Paper {
         &self.paper
+    }
+
+    #[must_use]
+    pub const fn instruction_timeline(&self) -> &InstructionTimeline {
+        &self.instruction_timeline
+    }
+
+    /// Returns the identity of the current fold geometry, independent from
+    /// project metadata, history, and the instruction timeline itself.
+    #[must_use]
+    pub fn fold_model_fingerprint_v1(&self) -> String {
+        crate::fold_model_fingerprint::fold_model_fingerprint_v1(&self.pattern, &self.paper)
     }
 
     #[must_use]
@@ -1085,10 +1184,13 @@ impl EditorState {
         self.ensure_revision(expected_revision)?;
         let result = command.changes(&self.pattern, &self.paper);
         let inverse = self.apply(&command)?;
-        self.undo_stack.push(HistoryEntry {
-            forward: command,
-            inverse,
-        });
+        push_bounded_history(
+            &mut self.undo_stack,
+            HistoryEntry {
+                forward: command,
+                inverse,
+            },
+        );
         self.redo_stack.clear();
         self.advance_revision();
         Ok(self.result(result))
@@ -1105,7 +1207,7 @@ impl EditorState {
             .undo_stack
             .pop()
             .expect("the successfully applied undo entry must still be present");
-        self.redo_stack.push(entry);
+        push_bounded_history(&mut self.redo_stack, entry);
         self.advance_revision();
         Ok(self.result(result))
     }
@@ -1121,7 +1223,7 @@ impl EditorState {
             .redo_stack
             .pop()
             .expect("the successfully applied redo entry must still be present");
-        self.undo_stack.push(entry);
+        push_bounded_history(&mut self.undo_stack, entry);
         self.advance_revision();
         Ok(self.result(result))
     }
@@ -1274,7 +1376,107 @@ impl EditorState {
                 fraction,
             } => self.split_boundary_edge(edge, new_vertex, new_edge, fraction),
             Command::RemoveBoundaryVertex { vertex } => self.remove_boundary_vertex(vertex),
+            Command::AddInstructionStep { ref step } => {
+                if self
+                    .instruction_timeline
+                    .steps
+                    .iter()
+                    .any(|candidate| candidate.id == step.id)
+                {
+                    return Err(CommandError::InstructionStepAlreadyExists(step.id));
+                }
+                let mut candidate = self.instruction_timeline.clone();
+                candidate.steps.push(step.clone());
+                self.commit_instruction_timeline(candidate)?;
+                Ok(Inverse::RemoveAddedInstructionStep { step_id: step.id })
+            }
+            Command::UpdateInstructionStepMetadata {
+                step_id,
+                ref title,
+                ref description,
+                ref caution,
+                duration_ms,
+            } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let step = candidate
+                    .steps
+                    .iter_mut()
+                    .find(|step| step.id == step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(step_id))?;
+                let inverse = Inverse::RestoreInstructionStepMetadata {
+                    step_id,
+                    title: step.title.clone(),
+                    description: step.description.clone(),
+                    caution: step.caution.clone(),
+                    duration_ms: step.duration_ms,
+                };
+                step.title.clone_from(title);
+                step.description.clone_from(description);
+                step.caution.clone_from(caution);
+                step.duration_ms = duration_ms;
+                self.commit_instruction_timeline(candidate)?;
+                Ok(inverse)
+            }
+            Command::ReplaceInstructionStepPose { step_id, ref pose } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let step = candidate
+                    .steps
+                    .iter_mut()
+                    .find(|step| step.id == step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(step_id))?;
+                let inverse = Inverse::RestoreInstructionStepPose {
+                    step_id,
+                    pose: step.pose.clone(),
+                };
+                step.pose.clone_from(pose);
+                self.commit_instruction_timeline(candidate)?;
+                Ok(inverse)
+            }
+            Command::RemoveInstructionStep { step_id } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let index = candidate
+                    .steps
+                    .iter()
+                    .position(|step| step.id == step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(step_id))?;
+                let step = candidate.steps.remove(index);
+                self.commit_instruction_timeline(candidate)?;
+                Ok(Inverse::RestoreRemovedInstructionStep { index, step })
+            }
+            Command::MoveInstructionStep {
+                step_id,
+                target_index,
+            } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let index = candidate
+                    .steps
+                    .iter()
+                    .position(|step| step.id == step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(step_id))?;
+                if target_index >= candidate.steps.len() {
+                    return Err(CommandError::InstructionStepTargetIndexOutOfBounds {
+                        target_index,
+                        step_count: candidate.steps.len(),
+                    });
+                }
+                let step = candidate.steps.remove(index);
+                candidate.steps.insert(target_index, step);
+                self.commit_instruction_timeline(candidate)?;
+                Ok(Inverse::RestoreInstructionStepOrder {
+                    step_id,
+                    previous_index: index,
+                })
+            }
         }
+    }
+
+    fn commit_instruction_timeline(
+        &mut self,
+        candidate: InstructionTimeline,
+    ) -> Result<(), CommandError> {
+        validate_instruction_timeline(&candidate)?;
+        self.instruction_timeline = candidate;
+        Ok(())
     }
 
     fn remove_boundary_vertex(&mut self, vertex_id: VertexId) -> Result<Inverse, CommandError> {
@@ -2676,6 +2878,83 @@ impl EditorState {
                     .boundary_vertices
                     .insert(*boundary_index, vertex.id);
             }
+            Inverse::RemoveAddedInstructionStep { step_id } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let index = candidate
+                    .steps
+                    .iter()
+                    .position(|step| step.id == *step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(*step_id))?;
+                candidate.steps.remove(index);
+                self.commit_instruction_timeline(candidate)?;
+            }
+            Inverse::RestoreInstructionStepMetadata {
+                step_id,
+                title,
+                description,
+                caution,
+                duration_ms,
+            } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let step = candidate
+                    .steps
+                    .iter_mut()
+                    .find(|step| step.id == *step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(*step_id))?;
+                step.title.clone_from(title);
+                step.description.clone_from(description);
+                step.caution.clone_from(caution);
+                step.duration_ms = *duration_ms;
+                self.commit_instruction_timeline(candidate)?;
+            }
+            Inverse::RestoreInstructionStepPose { step_id, pose } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let step = candidate
+                    .steps
+                    .iter_mut()
+                    .find(|step| step.id == *step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(*step_id))?;
+                step.pose.clone_from(pose);
+                self.commit_instruction_timeline(candidate)?;
+            }
+            Inverse::RestoreRemovedInstructionStep { index, step } => {
+                let mut candidate = self.instruction_timeline.clone();
+                if candidate
+                    .steps
+                    .iter()
+                    .any(|candidate| candidate.id == step.id)
+                {
+                    return Err(CommandError::InstructionStepAlreadyExists(step.id));
+                }
+                if *index > candidate.steps.len() {
+                    return Err(CommandError::InstructionStepTargetIndexOutOfBounds {
+                        target_index: *index,
+                        step_count: candidate.steps.len().saturating_add(1),
+                    });
+                }
+                candidate.steps.insert(*index, step.clone());
+                self.commit_instruction_timeline(candidate)?;
+            }
+            Inverse::RestoreInstructionStepOrder {
+                step_id,
+                previous_index,
+            } => {
+                let mut candidate = self.instruction_timeline.clone();
+                let current_index = candidate
+                    .steps
+                    .iter()
+                    .position(|step| step.id == *step_id)
+                    .ok_or(CommandError::InstructionStepNotFound(*step_id))?;
+                if *previous_index >= candidate.steps.len() {
+                    return Err(CommandError::InstructionStepTargetIndexOutOfBounds {
+                        target_index: *previous_index,
+                        step_count: candidate.steps.len(),
+                    });
+                }
+                let step = candidate.steps.remove(current_index);
+                candidate.steps.insert(*previous_index, step);
+                self.commit_instruction_timeline(candidate)?;
+            }
         }
         Ok(())
     }
@@ -2712,6 +2991,7 @@ impl EditorState {
             changed_vertices: changes.vertices,
             changed_edges: changes.edges,
             settings_changed: changes.settings,
+            instructions_changed: changes.instructions,
         }
     }
 }
@@ -2721,6 +3001,7 @@ struct Changes {
     vertices: Vec<VertexId>,
     edges: Vec<EdgeId>,
     settings: bool,
+    instructions: bool,
 }
 
 impl Command {
@@ -2732,26 +3013,31 @@ impl Command {
                 vertices: vec![id],
                 edges: Vec::new(),
                 settings: false,
+                instructions: false,
             },
             Self::AddEdge { id, start, end, .. } => Changes {
                 vertices: vec![start, end],
                 edges: vec![id],
                 settings: false,
+                instructions: false,
             },
             Self::RemoveEdge { id } => Changes {
                 vertices: Vec::new(),
                 edges: vec![id],
                 settings: false,
+                instructions: false,
             },
             Self::SetCuttingAllowed { .. } | Self::UpdatePaperProperties { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
+                instructions: false,
             },
             Self::ResizeRectangularPaper { .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: Vec::new(),
                 settings: false,
+                instructions: false,
             },
             Self::SplitEdge {
                 edge,
@@ -2770,6 +3056,7 @@ impl Command {
                     vertices,
                     edges: vec![edge, new_edge],
                     settings: false,
+                    instructions: false,
                 }
             }
             Self::ConnectEdgeIntersection {
@@ -2807,6 +3094,7 @@ impl Command {
                     vertices,
                     edges,
                     settings: false,
+                    instructions: false,
                 }
             }
             Self::ConnectTJunction {
@@ -2842,6 +3130,7 @@ impl Command {
                         .into_iter()
                         .flatten()
                         .any(|(_, edge)| edge.kind == EdgeKind::Boundary),
+                    instructions: false,
                 }
             }
             Self::ConnectIntersectionCluster {
@@ -2865,6 +3154,7 @@ impl Command {
                     vertices,
                     edges: vec![edge, new_edge],
                     settings: true,
+                    instructions: false,
                 }
             }
             Self::RemoveBoundaryVertex { vertex } => {
@@ -2898,8 +3188,19 @@ impl Command {
                     vertices,
                     edges,
                     settings: true,
+                    instructions: false,
                 }
             }
+            Self::AddInstructionStep { .. }
+            | Self::UpdateInstructionStepMetadata { .. }
+            | Self::ReplaceInstructionStepPose { .. }
+            | Self::RemoveInstructionStep { .. }
+            | Self::MoveInstructionStep { .. } => Changes {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                settings: false,
+                instructions: true,
+            },
         }
     }
 }
@@ -2912,21 +3213,25 @@ impl Inverse {
                 vertices: vec![vertex.id],
                 edges: Vec::new(),
                 settings: false,
+                instructions: false,
             },
             Self::RestoreEdge { edge, .. } => Changes {
                 vertices: vec![edge.start, edge.end],
                 edges: vec![edge.id],
                 settings: false,
+                instructions: false,
             },
             Self::RestorePaperProperties { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
+                instructions: false,
             },
             Self::RestoreVertexPositions { vertices } => Changes {
                 vertices: vertices.iter().map(|(id, _)| *id).collect(),
                 edges: Vec::new(),
                 settings: false,
+                instructions: false,
             },
             Self::RestoreBoundarySplit {
                 original_edge,
@@ -2937,6 +3242,7 @@ impl Inverse {
                 vertices: vec![new_vertex.id, original_edge.start, original_edge.end],
                 edges: vec![original_edge.id, new_edge.id],
                 settings: true,
+                instructions: false,
             },
             Self::RestoreEdgeSplit {
                 original_edge,
@@ -2947,6 +3253,7 @@ impl Inverse {
                 vertices: vec![new_vertex.id, original_edge.start, original_edge.end],
                 edges: vec![original_edge.id, new_edge.id],
                 settings: false,
+                instructions: false,
             },
             Self::RestoreEdgeIntersection {
                 original_edges,
@@ -2968,6 +3275,7 @@ impl Inverse {
                     vertices,
                     edges,
                     settings: false,
+                    instructions: false,
                 }
             }
             Self::RestoreTJunction {
@@ -2979,6 +3287,7 @@ impl Inverse {
                 vertices: changed_vertices.to_vec(),
                 edges: changed_edges.to_vec(),
                 settings: boundary_vertices.is_some(),
+                instructions: false,
             },
             Self::RestoreIntersectionCluster {
                 original_boundary_vertices,
@@ -2989,6 +3298,7 @@ impl Inverse {
                 vertices: changed_vertices.clone(),
                 edges: changed_edges.clone(),
                 settings: original_boundary_vertices.is_some(),
+                instructions: false,
             },
             Self::RestoreBoundaryVertexRemoval {
                 vertex,
@@ -3001,6 +3311,17 @@ impl Inverse {
                 vertices: vec![vertex.id, *previous_vertex, *next_vertex],
                 edges: vec![kept_edge.id, removed_edge.id],
                 settings: true,
+                instructions: false,
+            },
+            Self::RemoveAddedInstructionStep { .. }
+            | Self::RestoreInstructionStepMetadata { .. }
+            | Self::RestoreInstructionStepPose { .. }
+            | Self::RestoreRemovedInstructionStep { .. }
+            | Self::RestoreInstructionStepOrder { .. } => Changes {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                settings: false,
+                instructions: true,
             },
         }
     }
@@ -9372,5 +9693,726 @@ mod tests {
         assert_eq!(editor.revision, revision_before + 1);
         assert_eq!(editor.undo_stack.len(), 2);
         assert!(!editor.can_redo());
+    }
+
+    fn instruction_step(
+        id: InstructionStepId,
+        title: &str,
+        source_model_fingerprint: String,
+    ) -> InstructionStep {
+        use ori_domain::InstructionPoseModel;
+
+        InstructionStep {
+            id,
+            title: title.to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint,
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn persisted_instruction_timeline_restores_without_creating_history() {
+        let pattern = CreasePattern::empty();
+        let paper = Paper::default();
+        let fingerprint =
+            crate::fold_model_fingerprint::fold_model_fingerprint_v1(&pattern, &paper);
+        let timeline = InstructionTimeline {
+            steps: vec![instruction_step(
+                InstructionStepId::new(),
+                "最初の手順",
+                fingerprint,
+            )],
+        };
+
+        let editor =
+            EditorState::with_document_parts(pattern.clone(), paper.clone(), timeline.clone());
+
+        assert_eq!(editor.pattern(), &pattern);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.instruction_timeline(), &timeline);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+        assert!(
+            EditorState::with_paper(pattern, paper)
+                .instruction_timeline()
+                .steps
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn instruction_commands_share_revision_undo_redo_and_change_reporting() {
+        use ori_domain::{InstructionHingeAngle, InstructionPoseModel};
+
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let first_id = InstructionStepId::new();
+        let second_id = InstructionStepId::new();
+        let first = instruction_step(first_id, "手順 1", fingerprint.clone());
+        let second = instruction_step(second_id, "手順 2", fingerprint.clone());
+
+        let add = editor
+            .execute(
+                0,
+                Command::AddInstructionStep {
+                    step: first.clone(),
+                },
+            )
+            .expect("add first instruction");
+        assert_eq!(add.revision, 1);
+        assert!(add.instructions_changed);
+        assert!(add.changed_vertices.is_empty());
+        assert!(add.changed_edges.is_empty());
+        assert!(!add.settings_changed);
+
+        editor
+            .execute(
+                1,
+                Command::AddInstructionStep {
+                    step: second.clone(),
+                },
+            )
+            .expect("add second instruction");
+        editor
+            .execute(
+                2,
+                Command::UpdateInstructionStepMetadata {
+                    step_id: first_id,
+                    title: "谷折りする".to_owned(),
+                    description: "中央まで折る".to_owned(),
+                    caution: "強く押さえない".to_owned(),
+                    duration_ms: 2_000,
+                },
+            )
+            .expect("update metadata");
+        assert_eq!(editor.instruction_timeline().steps[0].title, "谷折りする");
+
+        let replacement_pose = InstructionPose {
+            model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+            source_model_fingerprint: "1".repeat(64),
+            fixed_face: None,
+            hinge_angles: vec![InstructionHingeAngle {
+                edge: EdgeId::new(),
+                angle_degrees: 45.0,
+            }],
+        };
+        editor
+            .execute(
+                3,
+                Command::ReplaceInstructionStepPose {
+                    step_id: first_id,
+                    pose: replacement_pose.clone(),
+                },
+            )
+            .expect("replace pose");
+        assert_eq!(
+            editor.instruction_timeline().steps[0].pose,
+            replacement_pose
+        );
+
+        editor
+            .execute(
+                4,
+                Command::MoveInstructionStep {
+                    step_id: first_id,
+                    target_index: 1,
+                },
+            )
+            .expect("move first instruction");
+        assert_eq!(editor.instruction_timeline().steps[1].id, first_id);
+
+        editor
+            .execute(5, Command::RemoveInstructionStep { step_id: second_id })
+            .expect("remove second instruction");
+        assert_eq!(
+            editor
+                .instruction_timeline()
+                .steps
+                .iter()
+                .map(|step| step.id)
+                .collect::<Vec<_>>(),
+            vec![first_id]
+        );
+
+        let undo = editor.undo(6).expect("undo removal");
+        assert!(undo.instructions_changed);
+        assert_eq!(
+            editor
+                .instruction_timeline()
+                .steps
+                .iter()
+                .map(|step| step.id)
+                .collect::<Vec<_>>(),
+            vec![second_id, first_id]
+        );
+        let redo = editor.redo(7).expect("redo removal");
+        assert!(redo.instructions_changed);
+        assert_eq!(
+            editor
+                .instruction_timeline()
+                .steps
+                .iter()
+                .map(|step| step.id)
+                .collect::<Vec<_>>(),
+            vec![first_id]
+        );
+    }
+
+    #[test]
+    fn each_instruction_command_has_an_exact_inverse() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let first_id = InstructionStepId::new();
+        let second_id = InstructionStepId::new();
+        let initial = InstructionTimeline {
+            steps: vec![
+                instruction_step(first_id, "手順 1", fingerprint.clone()),
+                instruction_step(second_id, "手順 2", fingerprint),
+            ],
+        };
+        editor.instruction_timeline = initial.clone();
+        let commands = [
+            Command::UpdateInstructionStepMetadata {
+                step_id: first_id,
+                title: "変更".to_owned(),
+                description: "説明".to_owned(),
+                caution: "注意".to_owned(),
+                duration_ms: 3_000,
+            },
+            Command::ReplaceInstructionStepPose {
+                step_id: first_id,
+                pose: editor.instruction_timeline.steps[1].pose.clone(),
+            },
+            Command::MoveInstructionStep {
+                step_id: first_id,
+                target_index: 1,
+            },
+            Command::RemoveInstructionStep { step_id: first_id },
+            Command::AddInstructionStep {
+                step: instruction_step(
+                    InstructionStepId::new(),
+                    "追加",
+                    editor.fold_model_fingerprint_v1(),
+                ),
+            },
+        ];
+
+        for command in commands {
+            let before = editor.instruction_timeline.clone();
+            let revision = editor.revision();
+            editor
+                .execute(revision, command)
+                .expect("execute instruction command");
+            editor.undo(revision + 1).expect("undo instruction command");
+            assert_eq!(editor.instruction_timeline, before);
+        }
+    }
+
+    #[test]
+    fn failed_instruction_validation_is_atomic_and_preserves_redo() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let valid = instruction_step(
+            InstructionStepId::new(),
+            "有効",
+            editor.fold_model_fingerprint_v1(),
+        );
+        editor
+            .execute(
+                0,
+                Command::AddInstructionStep {
+                    step: valid.clone(),
+                },
+            )
+            .expect("add valid instruction");
+        editor.undo(1).expect("prepare redo history");
+
+        let timeline_before = editor.instruction_timeline.clone();
+        let pattern_before = editor.pattern.clone();
+        let paper_before = editor.paper.clone();
+        let revision_before = editor.revision;
+        let undo_before = format!("{:?}", editor.undo_stack);
+        let redo_before = format!("{:?}", editor.redo_stack);
+        let invalid = instruction_step(
+            InstructionStepId::new(),
+            "",
+            editor.fold_model_fingerprint_v1(),
+        );
+
+        assert!(matches!(
+            editor.execute(2, Command::AddInstructionStep { step: invalid }),
+            Err(CommandError::InstructionTimelineInvalid(_))
+        ));
+        assert_eq!(editor.instruction_timeline, timeline_before);
+        assert_eq!(editor.pattern, pattern_before);
+        assert_eq!(editor.paper, paper_before);
+        assert_eq!(editor.revision, revision_before);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+
+        editor.redo(2).expect("preserved redo remains usable");
+        assert_eq!(editor.instruction_timeline.steps, vec![valid]);
+    }
+
+    #[test]
+    fn instruction_reference_errors_and_move_bounds_are_atomic() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let step_id = InstructionStepId::new();
+        let missing_id = InstructionStepId::new();
+        let step = instruction_step(step_id, "手順", editor.fold_model_fingerprint_v1());
+        editor
+            .execute(0, Command::AddInstructionStep { step: step.clone() })
+            .expect("add instruction");
+        let before = editor.instruction_timeline.clone();
+
+        let errors = [
+            editor.execute(1, Command::AddInstructionStep { step }),
+            editor.execute(
+                1,
+                Command::UpdateInstructionStepMetadata {
+                    step_id: missing_id,
+                    title: "なし".to_owned(),
+                    description: String::new(),
+                    caution: String::new(),
+                    duration_ms: 1_500,
+                },
+            ),
+            editor.execute(
+                1,
+                Command::ReplaceInstructionStepPose {
+                    step_id: missing_id,
+                    pose: before.steps[0].pose.clone(),
+                },
+            ),
+            editor.execute(
+                1,
+                Command::RemoveInstructionStep {
+                    step_id: missing_id,
+                },
+            ),
+            editor.execute(
+                1,
+                Command::MoveInstructionStep {
+                    step_id,
+                    target_index: 1,
+                },
+            ),
+        ];
+
+        assert_eq!(
+            errors[0],
+            Err(CommandError::InstructionStepAlreadyExists(step_id))
+        );
+        for error in &errors[1..4] {
+            assert_eq!(
+                *error,
+                Err(CommandError::InstructionStepNotFound(missing_id))
+            );
+        }
+        assert_eq!(
+            errors[4],
+            Err(CommandError::InstructionStepTargetIndexOutOfBounds {
+                target_index: 1,
+                step_count: 1,
+            })
+        );
+        assert_eq!(editor.instruction_timeline, before);
+        assert_eq!(editor.revision(), 1);
+        assert!(editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn metadata_and_pose_replacement_validate_the_whole_candidate_timeline() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let step_id = InstructionStepId::new();
+        let step = instruction_step(step_id, "手順", editor.fold_model_fingerprint_v1());
+        editor
+            .execute(0, Command::AddInstructionStep { step })
+            .expect("add instruction");
+        let before = editor.instruction_timeline.clone();
+        let undo_before = format!("{:?}", editor.undo_stack);
+
+        assert!(matches!(
+            editor.execute(
+                1,
+                Command::UpdateInstructionStepMetadata {
+                    step_id,
+                    title: String::new(),
+                    description: String::new(),
+                    caution: String::new(),
+                    duration_ms: 1_500,
+                },
+            ),
+            Err(CommandError::InstructionTimelineInvalid(_))
+        ));
+        let mut invalid_pose = before.steps[0].pose.clone();
+        invalid_pose.source_model_fingerprint = "A".repeat(64);
+        assert!(matches!(
+            editor.execute(
+                1,
+                Command::ReplaceInstructionStepPose {
+                    step_id,
+                    pose: invalid_pose,
+                },
+            ),
+            Err(CommandError::InstructionTimelineInvalid(_))
+        ));
+
+        assert_eq!(editor.instruction_timeline, before);
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn a_new_instruction_edit_clears_redo_history() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let first = instruction_step(InstructionStepId::new(), "手順 1", fingerprint.clone());
+        let second = instruction_step(InstructionStepId::new(), "手順 2", fingerprint);
+
+        editor
+            .execute(0, Command::AddInstructionStep { step: first })
+            .expect("add first instruction");
+        editor.undo(1).expect("prepare redo");
+        assert!(editor.can_redo());
+        editor
+            .execute(
+                2,
+                Command::AddInstructionStep {
+                    step: second.clone(),
+                },
+            )
+            .expect("branch with second instruction");
+
+        assert!(!editor.can_redo());
+        assert_eq!(editor.instruction_timeline.steps, vec![second]);
+    }
+
+    #[test]
+    fn editing_instructions_does_not_change_the_fold_model_fingerprint() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let step_id = InstructionStepId::new();
+        let step = instruction_step(step_id, "手順", fingerprint.clone());
+
+        editor
+            .execute(0, Command::AddInstructionStep { step })
+            .expect("add instruction");
+        assert_eq!(editor.fold_model_fingerprint_v1(), fingerprint);
+        editor
+            .execute(
+                1,
+                Command::UpdateInstructionStepMetadata {
+                    step_id,
+                    title: "更新".to_owned(),
+                    description: "説明".to_owned(),
+                    caution: String::new(),
+                    duration_ms: 2_000,
+                },
+            )
+            .expect("update instruction");
+        assert_eq!(editor.fold_model_fingerprint_v1(), fingerprint);
+    }
+
+    #[test]
+    fn geometry_undo_restores_the_previous_fold_model_fingerprint() {
+        let vertex_id = VertexId::new();
+        let pattern = CreasePattern {
+            vertices: vec![Vertex {
+                id: vertex_id,
+                position: Point2::new(1.0, 2.0),
+            }],
+            edges: Vec::new(),
+        };
+        let mut editor = EditorState::new(pattern);
+        let original = editor.fold_model_fingerprint_v1();
+
+        editor
+            .execute(
+                0,
+                Command::MoveVertex {
+                    id: vertex_id,
+                    position: Point2::new(3.0, 4.0),
+                },
+            )
+            .expect("move vertex");
+        let moved = editor.fold_model_fingerprint_v1();
+        assert_ne!(moved, original);
+
+        editor.undo(1).expect("undo vertex move");
+        assert_eq!(editor.fold_model_fingerprint_v1(), original);
+        editor.redo(2).expect("redo vertex move");
+        assert_eq!(editor.fold_model_fingerprint_v1(), moved);
+    }
+
+    #[test]
+    fn failed_instruction_redo_preserves_state_and_history_for_retry() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let step = instruction_step(
+            InstructionStepId::new(),
+            "手順",
+            editor.fold_model_fingerprint_v1(),
+        );
+        editor
+            .execute(0, Command::AddInstructionStep { step: step.clone() })
+            .expect("add instruction");
+        editor.undo(1).expect("place instruction in redo history");
+
+        editor.instruction_timeline.steps.push(step.clone());
+        let timeline_before = editor.instruction_timeline.clone();
+        let revision_before = editor.revision;
+        let undo_before = format!("{:?}", editor.undo_stack);
+        let redo_before = format!("{:?}", editor.redo_stack);
+
+        assert_eq!(
+            editor.redo(revision_before),
+            Err(CommandError::InstructionStepAlreadyExists(step.id))
+        );
+        assert_eq!(editor.instruction_timeline, timeline_before);
+        assert_eq!(editor.revision, revision_before);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+
+        editor.instruction_timeline.steps.clear();
+        editor
+            .redo(revision_before)
+            .expect("preserved instruction redo remains retryable");
+        assert_eq!(editor.instruction_timeline.steps, vec![step]);
+    }
+
+    #[test]
+    fn instruction_history_inverses_retain_only_the_changed_delta() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let first_id = InstructionStepId::new();
+        let second_id = InstructionStepId::new();
+        editor.instruction_timeline = InstructionTimeline {
+            steps: vec![
+                instruction_step(first_id, "手順 1", fingerprint.clone()),
+                instruction_step(second_id, "手順 2", fingerprint.clone()),
+            ],
+        };
+
+        let added = instruction_step(InstructionStepId::new(), "手順 3", fingerprint);
+        editor
+            .execute(
+                0,
+                Command::AddInstructionStep {
+                    step: added.clone(),
+                },
+            )
+            .expect("add instruction");
+        assert!(matches!(
+            editor.undo_stack.last().map(|entry| &entry.inverse),
+            Some(Inverse::RemoveAddedInstructionStep { step_id }) if *step_id == added.id
+        ));
+
+        editor
+            .execute(
+                1,
+                Command::UpdateInstructionStepMetadata {
+                    step_id: first_id,
+                    title: "更新".to_owned(),
+                    description: "説明".to_owned(),
+                    caution: "注意".to_owned(),
+                    duration_ms: 2_000,
+                },
+            )
+            .expect("update instruction metadata");
+        assert!(matches!(
+            editor.undo_stack.last().map(|entry| &entry.inverse),
+            Some(Inverse::RestoreInstructionStepMetadata {
+                step_id,
+                title,
+                description,
+                caution,
+                duration_ms,
+            }) if *step_id == first_id
+                && title == "手順 1"
+                && description.is_empty()
+                && caution.is_empty()
+                && *duration_ms == 1_500
+        ));
+
+        let replacement_pose = editor.instruction_timeline.steps[1].pose.clone();
+        editor
+            .execute(
+                2,
+                Command::ReplaceInstructionStepPose {
+                    step_id: first_id,
+                    pose: replacement_pose,
+                },
+            )
+            .expect("replace instruction pose");
+        assert!(matches!(
+            editor.undo_stack.last().map(|entry| &entry.inverse),
+            Some(Inverse::RestoreInstructionStepPose { step_id, .. })
+                if *step_id == first_id
+        ));
+
+        editor
+            .execute(3, Command::RemoveInstructionStep { step_id: second_id })
+            .expect("remove instruction");
+        assert!(matches!(
+            editor.undo_stack.last().map(|entry| &entry.inverse),
+            Some(Inverse::RestoreRemovedInstructionStep { index: 1, step })
+                if step.id == second_id
+        ));
+
+        editor
+            .execute(
+                4,
+                Command::MoveInstructionStep {
+                    step_id: added.id,
+                    target_index: 0,
+                },
+            )
+            .expect("move instruction");
+        assert!(matches!(
+            editor.undo_stack.last().map(|entry| &entry.inverse),
+            Some(Inverse::RestoreInstructionStepOrder {
+                step_id,
+                previous_index: 1,
+            }) if *step_id == added.id
+        ));
+    }
+
+    #[test]
+    fn maximum_timeline_metadata_history_retains_no_hinge_vectors() {
+        use ori_domain::{
+            FaceId, InstructionHingeAngle, InstructionPoseModel, MAX_INSTRUCTION_HINGE_RECORDS,
+            MAX_INSTRUCTION_HINGES_PER_STEP,
+        };
+
+        let mut hinge_angles = (0..MAX_INSTRUCTION_HINGES_PER_STEP)
+            .map(|index| InstructionHingeAngle {
+                edge: EdgeId::new(),
+                angle_degrees: (index % 181) as f64,
+            })
+            .collect::<Vec<_>>();
+        hinge_angles.sort_by_key(|hinge| hinge.edge.canonical_bytes());
+        let mut steps = Vec::new();
+        let mut remaining = MAX_INSTRUCTION_HINGE_RECORDS;
+        while remaining > 0 {
+            let count = remaining.min(MAX_INSTRUCTION_HINGES_PER_STEP);
+            steps.push(InstructionStep {
+                id: InstructionStepId::new(),
+                title: format!("手順 {}", steps.len() + 1),
+                description: String::new(),
+                caution: String::new(),
+                duration_ms: 1_500,
+                pose: InstructionPose {
+                    model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                    source_model_fingerprint: "0".repeat(64),
+                    fixed_face: Some(FaceId::new()),
+                    hinge_angles: hinge_angles[..count].to_vec(),
+                },
+            });
+            remaining -= count;
+        }
+        let timeline = InstructionTimeline { steps };
+        validate_instruction_timeline(&timeline).expect("maximum timeline must be valid");
+        assert_eq!(
+            timeline
+                .steps
+                .iter()
+                .map(|step| step.pose.hinge_angles.len())
+                .sum::<usize>(),
+            MAX_INSTRUCTION_HINGE_RECORDS
+        );
+        let step_id = timeline.steps[0].id;
+        let mut editor =
+            EditorState::with_document_parts(CreasePattern::empty(), Paper::default(), timeline);
+
+        for update in 0..MAX_EDITOR_HISTORY_ENTRIES + 16 {
+            editor
+                .execute(
+                    editor.revision(),
+                    Command::UpdateInstructionStepMetadata {
+                        step_id,
+                        title: format!("更新 {update}"),
+                        description: String::new(),
+                        caution: String::new(),
+                        duration_ms: 1_500,
+                    },
+                )
+                .expect("update metadata on maximum timeline");
+        }
+
+        assert_eq!(editor.undo_stack.len(), MAX_EDITOR_HISTORY_ENTRIES);
+        assert!(editor.undo_stack.iter().all(|entry| {
+            matches!(
+                (&entry.forward, &entry.inverse),
+                (
+                    Command::UpdateInstructionStepMetadata { .. },
+                    Inverse::RestoreInstructionStepMetadata { .. },
+                )
+            )
+        }));
+        assert!(
+            !format!("{:?}", editor.undo_stack).contains("hinge_angles"),
+            "metadata history must not retain any complete step pose or timeline"
+        );
+    }
+
+    #[test]
+    fn editor_history_discards_the_oldest_entry_after_the_fixed_limit() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let command_count = MAX_EDITOR_HISTORY_ENTRIES + 17;
+        let mut vertex_ids = Vec::with_capacity(command_count);
+        for index in 0..command_count {
+            let id = VertexId::new();
+            vertex_ids.push(id);
+            editor
+                .execute(
+                    editor.revision(),
+                    Command::AddVertex {
+                        id,
+                        position: Point2::new(index as f64, 0.0),
+                    },
+                )
+                .expect("add history fixture vertex");
+        }
+
+        assert_eq!(editor.undo_stack.len(), MAX_EDITOR_HISTORY_ENTRIES);
+        assert!(matches!(
+            &editor.undo_stack[0].forward,
+            Command::AddVertex { id, .. } if *id == vertex_ids[17]
+        ));
+
+        for _ in 0..MAX_EDITOR_HISTORY_ENTRIES {
+            editor
+                .undo(editor.revision())
+                .expect("undo retained history entry");
+        }
+        assert!(!editor.can_undo());
+        assert_eq!(editor.redo_stack.len(), MAX_EDITOR_HISTORY_ENTRIES);
+        assert_eq!(
+            editor
+                .pattern
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>(),
+            vertex_ids[..17]
+        );
+
+        for _ in 0..MAX_EDITOR_HISTORY_ENTRIES {
+            editor
+                .redo(editor.revision())
+                .expect("redo retained history entry");
+        }
+        assert_eq!(editor.undo_stack.len(), MAX_EDITOR_HISTORY_ENTRIES);
+        assert!(!editor.can_redo());
+        assert_eq!(editor.pattern.vertices.len(), command_count);
     }
 }

@@ -1,6 +1,7 @@
 mod diagnostics;
 
 use std::{
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -16,12 +17,16 @@ use diagnostics::{
     save_diagnostics_share_preview,
 };
 use ori_core::{
-    BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
-    LocalFlatFoldabilityReport, PaperValidationIssue, TopologyAnalysisInput, TopologyIssue,
-    TopologySnapshot, ValidationIssue, analyze_local_flat_foldability, create_rectangular_sheet,
-    validate_paper,
+    BoundaryEdgeRef, Command, EditorState, EditorTopology, IntersectionEdgeTarget,
+    JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue, TopologyAnalysisInput,
+    TopologyIssue, TopologySnapshot, ValidationIssue, analyze_local_flat_foldability,
+    create_rectangular_sheet, validate_paper,
 };
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, RgbaColor, VertexId};
+use ori_domain::{
+    CreasePattern, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
+    InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
+    MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId, RgbaColor, VertexId,
+};
 use ori_formats::{
     CURRENT_FORMAT_VERSION, Ori2Limits, ProjectDocument, read_project_ori2_with_limits,
     write_project_ori2,
@@ -68,6 +73,12 @@ struct ExitGuard {
 }
 
 struct ProjectState {
+    /// Non-persisted identity for this particular open/new project instance.
+    ///
+    /// A persisted project ID can legitimately reappear after reopening the
+    /// same file. Delayed mutating work must therefore bind to this identity
+    /// as well as the document ID and revision.
+    instance_id: ProjectId,
     project_id: ProjectId,
     name: String,
     current_path: Option<PathBuf>,
@@ -85,6 +96,7 @@ impl ProjectState {
     fn new_with_paper(pattern: CreasePattern, paper: Paper) -> Self {
         let editor = EditorState::with_paper(pattern, paper);
         let mut project = Self {
+            instance_id: ProjectId::new(),
             project_id: ProjectId::new(),
             name: UNTITLED_PROJECT_NAME.to_owned(),
             current_path: None,
@@ -102,6 +114,7 @@ impl ProjectState {
     fn new_unsaved(name: String, pattern: CreasePattern, paper: Paper) -> Self {
         let editor = EditorState::with_paper(pattern, paper);
         Self {
+            instance_id: ProjectId::new(),
             project_id: ProjectId::new(),
             name,
             current_path: None,
@@ -113,8 +126,13 @@ impl ProjectState {
 
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
         let saved_document = document.clone();
-        let editor = EditorState::with_paper(document.crease_pattern, document.paper);
+        let editor = EditorState::with_document_parts(
+            document.crease_pattern,
+            document.paper,
+            document.instruction_timeline,
+        );
         Self {
+            instance_id: ProjectId::new(),
             project_id: document.project_id,
             name: document.name,
             current_path: Some(current_path),
@@ -131,6 +149,7 @@ impl ProjectState {
             name: self.name.clone(),
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
+            instruction_timeline: self.editor.instruction_timeline().clone(),
         }
     }
 
@@ -143,6 +162,7 @@ impl ProjectState {
             || saved.name != self.name
             || saved.paper != *self.editor.paper()
             || saved.crease_pattern != *self.editor.pattern()
+            || saved.instruction_timeline != *self.editor.instruction_timeline()
     }
 }
 
@@ -186,6 +206,8 @@ struct ProjectSnapshot {
     is_dirty: bool,
     paper: Paper,
     crease_pattern: CreasePattern,
+    instruction_timeline: InstructionTimeline,
+    fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
     cutting_allowed: bool,
@@ -425,9 +447,10 @@ async fn open_project(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ProjectFileResponse, String> {
-    let (expected_project_id, expected_revision, initial_directory) = {
+    let (expected_instance_id, expected_project_id, expected_revision, initial_directory) = {
         let project = lock_project(&state)?;
         (
+            project.instance_id,
             project.project_id,
             project.editor.revision(),
             project
@@ -457,7 +480,13 @@ async fn open_project(
     let loaded = load_project_file(path)?;
 
     let mut project = lock_project(&state)?;
-    apply_loaded_project_file(&mut project, expected_project_id, expected_revision, loaded)
+    apply_loaded_project_file(
+        &mut project,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        loaded,
+    )
 }
 
 #[tauri::command]
@@ -606,6 +635,136 @@ fn redo(
         .redo(expected_revision)
         .map_err(|error| error.to_string())?;
     Ok(snapshot(&project))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn add_instruction_step(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    title: String,
+    description: String,
+    caution: String,
+    duration_ms: u32,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<InstructionHingeAngle>,
+) -> Result<ProjectSnapshot, String> {
+    let analyzed = analyze_instruction_pose(
+        &state,
+        expected_project_id,
+        expected_revision,
+        fixed_face,
+        hinge_angles,
+    )
+    .await?;
+    let mut project = lock_project(&state)?;
+    let pose = finish_instruction_pose(&project, expected_project_id, expected_revision, analyzed)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::AddInstructionStep {
+            step: InstructionStep {
+                id: InstructionStepId::new(),
+                title,
+                description,
+                caution,
+                duration_ms,
+                pose,
+            },
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn update_instruction_step_metadata(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    step_id: InstructionStepId,
+    title: String,
+    description: String,
+    caution: String,
+    duration_ms: u32,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateInstructionStepMetadata {
+            step_id,
+            title,
+            description,
+            caution,
+            duration_ms,
+        },
+    )
+}
+
+#[tauri::command]
+async fn replace_instruction_step_pose(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    step_id: InstructionStepId,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<InstructionHingeAngle>,
+) -> Result<ProjectSnapshot, String> {
+    let analyzed = analyze_instruction_pose(
+        &state,
+        expected_project_id,
+        expected_revision,
+        fixed_face,
+        hinge_angles,
+    )
+    .await?;
+    let mut project = lock_project(&state)?;
+    let pose = finish_instruction_pose(&project, expected_project_id, expected_revision, analyzed)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::ReplaceInstructionStepPose { step_id, pose },
+    )
+}
+
+#[tauri::command]
+fn remove_instruction_step(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    step_id: InstructionStepId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::RemoveInstructionStep { step_id },
+    )
+}
+
+#[tauri::command]
+fn move_instruction_step(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    step_id: InstructionStepId,
+    target_index: usize,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::MoveInstructionStep {
+            step_id,
+            target_index,
+        },
+    )
 }
 
 #[tauri::command]
@@ -1021,9 +1180,13 @@ fn ensure_project_identity(
 
 fn ensure_expected_project(
     project: &ProjectState,
+    expected_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<(), String> {
+    if project.instance_id != expected_instance_id {
+        return Err("the open project instance changed while the file dialog was open".to_owned());
+    }
     ensure_project_identity(project, expected_project_id)?;
     if project.editor.revision() == expected_revision {
         Ok(())
@@ -1045,6 +1208,268 @@ fn capture_topology_input(
         ));
     }
     Ok(project.editor.topology_analysis_input(project.project_id))
+}
+
+struct AnalyzedInstructionPose {
+    project_instance_id: ProjectId,
+    input: TopologyAnalysisInput,
+    topology: EditorTopology,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<InstructionHingeAngle>,
+}
+
+async fn analyze_instruction_pose(
+    state: &AppState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<InstructionHingeAngle>,
+) -> Result<AnalyzedInstructionPose, String> {
+    if hinge_angles.len() > MAX_INSTRUCTION_HINGES_PER_STEP {
+        return Err(format!(
+            "an instruction step may contain at most {MAX_INSTRUCTION_HINGES_PER_STEP} hinges"
+        ));
+    }
+    validate_instruction_hinge_angle_values(&hinge_angles)?;
+    let (project_instance_id, input) = {
+        let project = lock_project(state)?;
+        (
+            project.instance_id,
+            capture_topology_input(&project, expected_project_id, expected_revision)?,
+        )
+    };
+    let (input, topology) = tauri::async_runtime::spawn_blocking(move || {
+        let topology = input.analyze();
+        (input, topology)
+    })
+    .await
+    .map_err(|error| format!("instruction topology analysis task failed: {error}"))?;
+
+    Ok(AnalyzedInstructionPose {
+        project_instance_id,
+        input,
+        topology,
+        fixed_face,
+        hinge_angles,
+    })
+}
+
+fn finish_instruction_pose(
+    project: &ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    analyzed: AnalyzedInstructionPose,
+) -> Result<InstructionPose, String> {
+    ensure_project_identity(project, expected_project_id)?;
+    if project.instance_id != analyzed.project_instance_id {
+        return Err(
+            "the open project instance changed while the instruction pose was being analyzed"
+                .to_owned(),
+        );
+    }
+    if project.editor.revision() != expected_revision {
+        return Err(format!(
+            "expected revision {expected_revision}, but the current revision is {}",
+            project.editor.revision()
+        ));
+    }
+    if !analyzed
+        .input
+        .is_current_for(project.project_id, &project.editor)
+    {
+        return Err("the project changed while the instruction pose was being analyzed".to_owned());
+    }
+    if analyzed.topology.revision() != analyzed.input.revision() {
+        return Err("instruction topology returned an unexpected revision".to_owned());
+    }
+    let topology = analyzed
+        .topology
+        .simulation_snapshot()
+        .ok_or_else(|| "the current crease pattern cannot produce a foldable pose".to_owned())?;
+
+    let topology = prepare_instruction_topology(topology)?;
+    instruction_pose_from_context(
+        &topology,
+        project.editor.fold_model_fingerprint_v1(),
+        analyzed.fixed_face,
+        analyzed.hinge_angles,
+    )
+}
+
+struct InstructionTopologyContext {
+    face_ids: HashSet<FaceId>,
+    expected_edges: Vec<EdgeId>,
+    planar: bool,
+}
+
+fn prepare_instruction_topology(
+    topology: &TopologySnapshot,
+) -> Result<InstructionTopologyContext, String> {
+    if topology.faces.is_empty() {
+        return Err("an instruction pose requires at least one material face".to_owned());
+    }
+    if topology.hinge_adjacency.len() > MAX_INSTRUCTION_HINGES_PER_STEP {
+        return Err(format!(
+            "an instruction fold model may contain at most {MAX_INSTRUCTION_HINGES_PER_STEP} hinges"
+        ));
+    }
+
+    let face_ids = topology
+        .faces
+        .iter()
+        .map(|face| face.id)
+        .collect::<HashSet<_>>();
+    if face_ids.len() != topology.faces.len() {
+        return Err("the fold model contains a duplicate material face".to_owned());
+    }
+
+    let planar = topology.hinge_adjacency.is_empty();
+    if planar {
+        if topology.faces.len() != 1 {
+            return Err(
+                "a hinge-free instruction pose must contain exactly one material face".to_owned(),
+            );
+        }
+    } else {
+        if topology.hinge_adjacency.len() + 1 != topology.faces.len() {
+            return Err("instruction poses currently require a tree-shaped fold graph".to_owned());
+        }
+        let mut adjacency = face_ids
+            .iter()
+            .copied()
+            .map(|face| (face, Vec::new()))
+            .collect::<HashMap<_, _>>();
+        for hinge in &topology.hinge_adjacency {
+            if hinge.first == hinge.second
+                || !face_ids.contains(&hinge.first)
+                || !face_ids.contains(&hinge.second)
+            {
+                return Err("the fold model contains an invalid hinge face reference".to_owned());
+            }
+            adjacency
+                .get_mut(&hinge.first)
+                .expect("validated first hinge face must exist")
+                .push(hinge.second);
+            adjacency
+                .get_mut(&hinge.second)
+                .expect("validated second hinge face must exist")
+                .push(hinge.first);
+        }
+
+        let mut reached = HashSet::with_capacity(topology.faces.len());
+        let mut pending = vec![topology.faces[0].id];
+        while let Some(face) = pending.pop() {
+            if !reached.insert(face) {
+                continue;
+            }
+            pending.extend(
+                adjacency
+                    .get(&face)
+                    .expect("validated material face must have an adjacency entry")
+                    .iter()
+                    .copied(),
+            );
+        }
+        if reached != face_ids {
+            return Err("instruction poses currently require a connected fold graph".to_owned());
+        }
+    }
+
+    let mut expected_edges = topology
+        .hinge_adjacency
+        .iter()
+        .map(|hinge| hinge.edge)
+        .collect::<Vec<_>>();
+    expected_edges.sort_by_key(EdgeId::canonical_bytes);
+    if expected_edges.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("the fold model contains a duplicate hinge edge".to_owned());
+    }
+
+    Ok(InstructionTopologyContext {
+        face_ids,
+        expected_edges,
+        planar,
+    })
+}
+
+#[cfg(test)]
+fn instruction_pose_from_topology(
+    topology: &TopologySnapshot,
+    source_model_fingerprint: String,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<InstructionHingeAngle>,
+) -> Result<InstructionPose, String> {
+    let topology = prepare_instruction_topology(topology)?;
+    instruction_pose_from_context(
+        &topology,
+        source_model_fingerprint,
+        fixed_face,
+        hinge_angles,
+    )
+}
+
+fn instruction_pose_from_context(
+    topology: &InstructionTopologyContext,
+    source_model_fingerprint: String,
+    fixed_face: Option<FaceId>,
+    mut hinge_angles: Vec<InstructionHingeAngle>,
+) -> Result<InstructionPose, String> {
+    if hinge_angles.len() > MAX_INSTRUCTION_HINGES_PER_STEP {
+        return Err(format!(
+            "an instruction step may contain at most {MAX_INSTRUCTION_HINGES_PER_STEP} hinges"
+        ));
+    }
+    validate_instruction_hinge_angle_values(&hinge_angles)?;
+    if topology.planar {
+        if fixed_face.is_some() {
+            return Err("a planar instruction pose must not specify a fixed face".to_owned());
+        }
+        if !hinge_angles.is_empty() {
+            return Err("a planar instruction pose must not contain hinge angles".to_owned());
+        }
+    } else {
+        let fixed_face = fixed_face
+            .ok_or_else(|| "a folded instruction pose requires a fixed face".to_owned())?;
+        if !topology.face_ids.contains(&fixed_face) {
+            return Err("the fixed face does not exist in the current fold model".to_owned());
+        }
+    }
+
+    hinge_angles.sort_by_key(|hinge| hinge.edge.canonical_bytes());
+    if hinge_angles.len() != topology.expected_edges.len()
+        || hinge_angles
+            .iter()
+            .zip(&topology.expected_edges)
+            .any(|(angle, expected)| angle.edge != *expected)
+    {
+        return Err(
+            "the instruction pose must contain every current hinge exactly once".to_owned(),
+        );
+    }
+    Ok(InstructionPose {
+        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+        source_model_fingerprint,
+        fixed_face,
+        hinge_angles,
+    })
+}
+
+fn validate_instruction_hinge_angle_values(
+    hinge_angles: &[InstructionHingeAngle],
+) -> Result<(), String> {
+    if hinge_angles
+        .iter()
+        .any(|hinge| !hinge.angle_degrees.is_finite())
+    {
+        return Err("instruction hinge angles must be finite".to_owned());
+    }
+    if hinge_angles
+        .iter()
+        .any(|hinge| !(0.0..=180.0).contains(&hinge.angle_degrees))
+    {
+        return Err("instruction hinge angles must be between 0 and 180 degrees".to_owned());
+    }
+    Ok(())
 }
 
 fn finish_topology_response(
@@ -1090,6 +1515,8 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         is_dirty: project.is_dirty(),
         paper: project.editor.paper().clone(),
         crease_pattern: project.editor.pattern().clone(),
+        instruction_timeline: project.editor.instruction_timeline().clone(),
+        fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
         cutting_allowed: project.editor.cutting_allowed(),
@@ -1108,9 +1535,16 @@ fn save_project_with_dialog(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<ProjectFileResponse, String> {
-    let (expected_project_id, expected_revision, initial_directory, suggested_name) = {
+    let (
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        initial_directory,
+        suggested_name,
+    ) = {
         let project = lock_project(state)?;
         (
+            project.instance_id,
             project.project_id,
             project.editor.revision(),
             project
@@ -1140,16 +1574,28 @@ fn save_project_with_dialog(
         .into_path()
         .map_err(|error| format!("the selected location is not a local file: {error}"))?;
     let mut project = lock_project(state)?;
-    save_project_as_selected_path(&mut project, expected_project_id, expected_revision, path)
+    save_project_as_selected_path(
+        &mut project,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        path,
+    )
 }
 
 fn save_project_as_selected_path(
     project: &mut ProjectState,
+    expected_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     selected_path: PathBuf,
 ) -> Result<ProjectFileResponse, String> {
-    ensure_expected_project(project, expected_project_id, expected_revision)?;
+    ensure_expected_project(
+        project,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
     save_project_to_path(project, ensure_ori2_extension(selected_path))
 }
 
@@ -1175,11 +1621,17 @@ fn load_project_file(path: PathBuf) -> Result<LoadedProjectFile, String> {
 
 fn apply_loaded_project_file(
     project: &mut ProjectState,
+    expected_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     loaded: LoadedProjectFile,
 ) -> Result<ProjectFileResponse, String> {
-    ensure_expected_project(project, expected_project_id, expected_revision)?;
+    ensure_expected_project(
+        project,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
     *project = ProjectState::from_document(loaded.document, loaded.path);
     Ok(ProjectFileResponse {
         canceled: false,
@@ -1219,8 +1671,56 @@ fn load_document_from_path(path: &Path) -> Result<ProjectDocument, String> {
         ));
     }
 
-    read_project_ori2_with_limits(&bytes, limits)
-        .map_err(|error| format!("failed to validate {}: {error}", path.display()))
+    let document = read_project_ori2_with_limits(&bytes, limits)
+        .map_err(|error| format!("failed to validate {}: {error}", path.display()))?;
+    validate_document_instruction_poses(&document).map_err(|error| {
+        format!(
+            "failed to validate folding instructions in {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(document)
+}
+
+fn validate_document_instruction_poses(document: &ProjectDocument) -> Result<(), String> {
+    if document.instruction_timeline.steps.is_empty() {
+        return Ok(());
+    }
+    let editor = EditorState::with_paper(document.crease_pattern.clone(), document.paper.clone());
+    let current_fingerprint = editor.fold_model_fingerprint_v1();
+    if !document
+        .instruction_timeline
+        .steps
+        .iter()
+        .any(|step| step.pose.source_model_fingerprint == current_fingerprint)
+    {
+        // Poses authored for an older crease pattern remain intentionally
+        // loadable as stale, editable records. Playback keeps them disabled
+        // until the user captures a new pose against the current model.
+        return Ok(());
+    }
+
+    let topology = editor
+        .topology_analysis_input(document.project_id)
+        .analyze();
+    let snapshot = topology.simulation_snapshot().ok_or_else(|| {
+        "a current instruction pose refers to a crease pattern that is not simulation-ready"
+            .to_owned()
+    })?;
+    let topology = prepare_instruction_topology(snapshot)?;
+    for (index, step) in document.instruction_timeline.steps.iter().enumerate() {
+        if step.pose.source_model_fingerprint != current_fingerprint {
+            continue;
+        }
+        instruction_pose_from_context(
+            &topology,
+            current_fingerprint.clone(),
+            step.pose.fixed_face,
+            step.pose.hinge_angles.clone(),
+        )
+        .map_err(|error| format!("instruction step {} is invalid: {error}", index + 1))?;
+    }
+    Ok(())
 }
 
 fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), String> {
@@ -1228,6 +1728,8 @@ fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), Strin
         return Err(format!("{} is not a file path", path.display()));
     }
 
+    validate_document_instruction_poses(document)
+        .map_err(|error| format!("failed to validate folding instructions before save: {error}"))?;
     let bytes = write_project_ori2(document)
         .map_err(|error| format!("failed to create .ori2 data: {error}"))?;
     persist_document_atomically(path, document, &bytes)
@@ -1883,6 +2385,11 @@ pub fn run() {
             remove_edge,
             undo,
             redo,
+            add_instruction_step,
+            update_instruction_step_metadata,
+            replace_instruction_step_pose,
+            remove_instruction_step,
+            move_instruction_step,
             set_cutting_allowed,
             update_paper_properties,
             resize_rectangular_paper,
@@ -2131,6 +2638,7 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     struct ProjectStateSignature {
+        instance_id: ProjectId,
         project_id: ProjectId,
         document: ProjectDocument,
         current_path: Option<PathBuf>,
@@ -2144,6 +2652,7 @@ mod tests {
 
     fn project_state_signature(project: &ProjectState) -> ProjectStateSignature {
         ProjectStateSignature {
+            instance_id: project.instance_id,
             project_id: project.project_id,
             document: project.document(),
             current_path: project.current_path.clone(),
@@ -2213,6 +2722,337 @@ mod tests {
         assert_eq!(snapshot.hinge_adjacency.len(), 1);
         assert_eq!(snapshot.hinge_adjacency[0].edge, fold);
         assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn instruction_pose_accepts_planar_and_complete_tree_models() {
+        let project = initial_project_state();
+        let input = capture_topology_input(&project, project.project_id, 0)
+            .expect("capture planar instruction model");
+        let topology = input.analyze();
+        let planar = instruction_pose_from_topology(
+            topology
+                .simulation_snapshot()
+                .expect("planar topology must be simulation-ready"),
+            "0".repeat(64),
+            None,
+            Vec::new(),
+        )
+        .expect("accept planar instruction pose");
+        assert_eq!(planar.fixed_face, None);
+        assert!(planar.hinge_angles.is_empty());
+
+        let mut folded = initial_project_state();
+        let fold = EdgeId::new();
+        let boundary = folded.editor.paper().boundary_vertices.clone();
+        let project_id = folded.project_id;
+        execute_command(
+            &mut folded,
+            project_id,
+            0,
+            Command::AddEdge {
+                id: fold,
+                start: boundary[0],
+                end: boundary[2],
+                kind: EdgeKind::Mountain,
+            },
+        )
+        .expect("add one instruction hinge");
+        let input = capture_topology_input(&folded, project_id, 1).expect("capture fold model");
+        let topology = input.analyze();
+        let snapshot = topology
+            .simulation_snapshot()
+            .expect("one-fold topology must be simulation-ready");
+        let fixed_face = snapshot.faces[0].id;
+        let pose = instruction_pose_from_topology(
+            snapshot,
+            folded.editor.fold_model_fingerprint_v1(),
+            Some(fixed_face),
+            vec![InstructionHingeAngle {
+                edge: fold,
+                angle_degrees: 37.5,
+            }],
+        )
+        .expect("accept complete one-fold instruction pose");
+
+        assert_eq!(pose.fixed_face, Some(fixed_face));
+        assert_eq!(pose.hinge_angles.len(), 1);
+        assert_eq!(pose.hinge_angles[0].edge, fold);
+        assert_eq!(pose.hinge_angles[0].angle_degrees, 37.5);
+        assert_eq!(
+            pose.source_model_fingerprint,
+            folded.editor.fold_model_fingerprint_v1()
+        );
+    }
+
+    #[test]
+    fn instruction_pose_rejects_wrong_faces_incomplete_hinges_and_bad_angles() {
+        let mut project = initial_project_state();
+        let fold = EdgeId::new();
+        let boundary = project.editor.paper().boundary_vertices.clone();
+        let project_id = project.project_id;
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddEdge {
+                id: fold,
+                start: boundary[0],
+                end: boundary[2],
+                kind: EdgeKind::Valley,
+            },
+        )
+        .expect("add one instruction hinge");
+        let input = capture_topology_input(&project, project_id, 1).expect("capture fold model");
+        let topology = input.analyze();
+        let snapshot = topology
+            .simulation_snapshot()
+            .expect("one-fold topology must be simulation-ready");
+        let fingerprint = project.editor.fold_model_fingerprint_v1();
+
+        assert_eq!(
+            instruction_pose_from_topology(
+                snapshot,
+                fingerprint.clone(),
+                None,
+                vec![InstructionHingeAngle {
+                    edge: fold,
+                    angle_degrees: 45.0,
+                }],
+            )
+            .expect_err("a folded pose needs a fixed face"),
+            "a folded instruction pose requires a fixed face"
+        );
+        assert_eq!(
+            instruction_pose_from_topology(
+                snapshot,
+                fingerprint.clone(),
+                Some(FaceId::new()),
+                vec![InstructionHingeAngle {
+                    edge: fold,
+                    angle_degrees: 45.0,
+                }],
+            )
+            .expect_err("the fixed face must be current"),
+            "the fixed face does not exist in the current fold model"
+        );
+        assert_eq!(
+            instruction_pose_from_topology(
+                snapshot,
+                fingerprint.clone(),
+                Some(snapshot.faces[0].id),
+                Vec::new(),
+            )
+            .expect_err("every hinge is required"),
+            "the instruction pose must contain every current hinge exactly once"
+        );
+        assert_eq!(
+            instruction_pose_from_topology(
+                snapshot,
+                fingerprint,
+                Some(snapshot.faces[0].id),
+                vec![InstructionHingeAngle {
+                    edge: fold,
+                    angle_degrees: f64::NAN,
+                }],
+            )
+            .expect_err("non-finite angles are rejected"),
+            "instruction hinge angles must be finite"
+        );
+    }
+
+    #[test]
+    fn instruction_pose_rejects_fold_graph_cycles() {
+        let (project, _) = four_ray_square_project_state(
+            [1, 3, 5, 7],
+            [
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+            ],
+        );
+        let input = capture_topology_input(&project, project.project_id, 0)
+            .expect("capture cyclic fold model");
+        let topology = input.analyze();
+        let snapshot = topology
+            .simulation_snapshot()
+            .expect("the topology layer admits the cyclic model");
+        let hinge_angles = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| InstructionHingeAngle {
+                edge: hinge.edge,
+                angle_degrees: 0.0,
+            })
+            .collect();
+
+        assert_eq!(
+            instruction_pose_from_topology(
+                snapshot,
+                project.editor.fold_model_fingerprint_v1(),
+                Some(snapshot.faces[0].id),
+                hinge_angles,
+            )
+            .expect_err("the first instruction player supports trees only"),
+            "instruction poses currently require a tree-shaped fold graph"
+        );
+    }
+
+    #[test]
+    fn instruction_step_updates_snapshot_document_dirty_state_and_history() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let fingerprint = project.editor.fold_model_fingerprint_v1();
+        let step_id = InstructionStepId::new();
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddInstructionStep {
+                step: InstructionStep {
+                    id: step_id,
+                    title: "折る前".to_owned(),
+                    description: "平らな開始姿勢".to_owned(),
+                    caution: String::new(),
+                    duration_ms: 1_500,
+                    pose: InstructionPose {
+                        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                        source_model_fingerprint: fingerprint.clone(),
+                        fixed_face: None,
+                        hinge_angles: Vec::new(),
+                    },
+                },
+            },
+        )
+        .expect("add planar instruction step");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert_eq!(response.fold_model_fingerprint, fingerprint);
+        assert_eq!(response.instruction_timeline.steps.len(), 1);
+        assert_eq!(response.instruction_timeline.steps[0].id, step_id);
+        assert_eq!(
+            project.document().instruction_timeline,
+            response.instruction_timeline
+        );
+
+        let bytes = write_project_ori2(&project.document()).expect("persist instruction timeline");
+        let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default())
+            .expect("restore instruction timeline");
+        assert_eq!(
+            restored.instruction_timeline,
+            project.document().instruction_timeline
+        );
+
+        project.editor.undo(1).expect("undo instruction addition");
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        assert!(!project.is_dirty());
+        project.editor.redo(2).expect("redo instruction addition");
+        assert_eq!(project.editor.instruction_timeline().steps[0].id, step_id);
+        assert!(project.is_dirty());
+    }
+
+    #[test]
+    fn loaded_current_instruction_poses_are_semantically_checked_but_stale_ones_survive() {
+        let project = initial_project_state();
+        let mut document = project.document();
+        let current_fingerprint = project.editor.fold_model_fingerprint_v1();
+        let invalid_current_step = InstructionStep {
+            id: InstructionStepId::new(),
+            title: "不正な現在姿勢".to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: 1_000,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: current_fingerprint,
+                fixed_face: Some(FaceId::new()),
+                hinge_angles: Vec::new(),
+            },
+        };
+        document
+            .instruction_timeline
+            .steps
+            .push(invalid_current_step.clone());
+
+        assert_eq!(
+            validate_document_instruction_poses(&document)
+                .expect_err("current malformed pose must fail semantic loading"),
+            "instruction step 1 is invalid: a planar instruction pose must not specify a fixed face"
+        );
+
+        document.instruction_timeline.steps[0]
+            .pose
+            .source_model_fingerprint = "f".repeat(64);
+        validate_document_instruction_poses(&document)
+            .expect("an old-model pose remains loadable as an editable stale step");
+    }
+
+    #[test]
+    fn delayed_instruction_pose_cannot_land_after_reopening_the_same_document() {
+        let project = initial_project_state();
+        let project_id = project.project_id;
+        let input =
+            capture_topology_input(&project, project_id, 0).expect("capture instruction topology");
+        let topology = input.analyze();
+        let analyzed = AnalyzedInstructionPose {
+            project_instance_id: project.instance_id,
+            input,
+            topology,
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        };
+
+        let reopened =
+            ProjectState::from_document(project.document(), PathBuf::from("same-project.ori2"));
+        assert_eq!(reopened.project_id, project_id);
+        assert_eq!(reopened.editor.revision(), 0);
+        assert_eq!(reopened.editor.pattern(), project.editor.pattern());
+        assert_eq!(reopened.editor.paper(), project.editor.paper());
+        assert_ne!(reopened.instance_id, project.instance_id);
+
+        assert_eq!(
+            finish_instruction_pose(&reopened, project_id, 0, analyzed)
+                .expect_err("an old open-instance analysis must not mutate the reopened project"),
+            "the open project instance changed while the instruction pose was being analyzed"
+        );
+    }
+
+    #[test]
+    fn semantic_instruction_failure_cannot_overwrite_an_existing_save() {
+        let project = initial_project_state();
+        let mut document = project.document();
+        document.instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "不正な現在姿勢".to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: 1_000,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+                fixed_face: Some(FaceId::new()),
+                hinge_angles: Vec::new(),
+            },
+        });
+        let directory = TestDirectory::new();
+        let path = directory.join("existing.ori2");
+        let original = b"existing project bytes";
+        fs::write(&path, original).expect("create existing target");
+
+        let error = persist_document(&path, &document)
+            .expect_err("semantic validation must run before staging a save");
+
+        assert!(error.starts_with("failed to validate folding instructions before save:"));
+        assert_eq!(fs::read(&path).expect("read preserved target"), original);
+        assert_eq!(
+            fs::read_dir(&directory.path)
+                .expect("inspect save directory")
+                .count(),
+            1,
+            "semantic rejection must not leave a staged file"
+        );
     }
 
     #[test]
@@ -4592,6 +5432,7 @@ mod tests {
         let selected_path = directory.join("折り紙設計.backup");
         let expected_path = directory.join("折り紙設計.ori2");
         let mut project = unsaved_project_with_redo_history("First project");
+        let expected_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let document = project.document();
@@ -4600,6 +5441,7 @@ mod tests {
 
         let response = save_project_as_selected_path(
             &mut project,
+            expected_instance_id,
             expected_project_id,
             expected_revision,
             selected_path,
@@ -4706,12 +5548,18 @@ mod tests {
         persist_document(&path, &document).expect("write open fixture");
 
         let mut project = unsaved_project_with_redo_history("Replaced project");
+        let expected_instance_id = project.instance_id;
         let replaced_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let loaded = load_project_file(path.clone()).expect("load native project");
-        let response =
-            apply_loaded_project_file(&mut project, replaced_project_id, expected_revision, loaded)
-                .expect("apply validated native project");
+        let response = apply_loaded_project_file(
+            &mut project,
+            expected_instance_id,
+            replaced_project_id,
+            expected_revision,
+            loaded,
+        )
+        .expect("apply validated native project");
 
         assert!(!response.canceled);
         assert_ne!(project.project_id, replaced_project_id);
@@ -4744,6 +5592,7 @@ mod tests {
         persist_document(&path, &file_document("Stale open", 17.0))
             .expect("write stale-open fixture");
         let mut project = unsaved_project_with_redo_history("Active project");
+        let expected_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let stale_revision = project.editor.revision();
         let loaded = load_project_file(path).expect("prepare native open");
@@ -4759,12 +5608,70 @@ mod tests {
         .expect("edit while the file dialog is open");
         let before_apply = project_state_signature(&project);
 
-        let error =
-            apply_loaded_project_file(&mut project, expected_project_id, stale_revision, loaded)
-                .expect_err("stale open must not replace the active project");
+        let error = apply_loaded_project_file(
+            &mut project,
+            expected_instance_id,
+            expected_project_id,
+            stale_revision,
+            loaded,
+        )
+        .expect_err("stale open must not replace the active project");
 
         assert_eq!(error, "the project changed while the file dialog was open");
         assert_eq!(project_state_signature(&project), before_apply);
+    }
+
+    #[test]
+    fn native_file_dialog_results_cannot_land_after_reopening_the_same_document() {
+        let directory = TestDirectory::new();
+        let current_path = directory.join("same-document.ori2");
+        let opened_path = directory.join("other-document.ori2");
+        let selected_path = directory.join("must-not-save.ori2");
+        let document = file_document("Same document", 21.0);
+        persist_document(&current_path, &document).expect("write same-document fixture");
+        persist_document(&opened_path, &file_document("Other document", 34.0))
+            .expect("write other-document fixture");
+
+        let mut project = ProjectState::from_document(document.clone(), current_path.clone());
+        let stale_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let loaded = load_project_file(opened_path).expect("load delayed open result");
+
+        project = ProjectState::from_document(document, current_path);
+        assert_eq!(project.project_id, expected_project_id);
+        assert_eq!(project.editor.revision(), expected_revision);
+        assert_ne!(project.instance_id, stale_instance_id);
+        let before = project_state_signature(&project);
+
+        let open_error = apply_loaded_project_file(
+            &mut project,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            loaded,
+        )
+        .expect_err("a delayed open must not replace a reopened project instance");
+        assert_eq!(
+            open_error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&project), before);
+
+        let save_error = save_project_as_selected_path(
+            &mut project,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            selected_path.clone(),
+        )
+        .expect_err("a delayed save must not target a reopened project instance");
+        assert_eq!(
+            save_error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&project), before);
+        assert!(!selected_path.exists());
     }
 
     #[test]
@@ -4775,12 +5682,14 @@ mod tests {
         let sentinel = occupied_path.join("keep.txt");
         fs::write(&sentinel, b"keep this directory").expect("write save-failure sentinel");
         let mut project = unsaved_project_with_redo_history("Failed save");
+        let expected_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let before = project_state_signature(&project);
 
         let error = save_project_as_selected_path(
             &mut project,
+            expected_instance_id,
             expected_project_id,
             expected_revision,
             occupied_path.clone(),
@@ -4800,6 +5709,7 @@ mod tests {
         let selected_path = directory.join("stale-save");
         let normalized_path = directory.join("stale-save.ori2");
         let mut project = unsaved_project_with_redo_history("Stale save");
+        let expected_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let stale_revision = project.editor.revision();
         execute_command(
@@ -4816,6 +5726,7 @@ mod tests {
 
         let error = save_project_as_selected_path(
             &mut project,
+            expected_instance_id,
             expected_project_id,
             stale_revision,
             selected_path,

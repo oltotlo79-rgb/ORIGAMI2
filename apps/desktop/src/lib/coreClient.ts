@@ -48,6 +48,33 @@ export type ProjectSnapshot = {
   can_undo: boolean
   can_redo: boolean
   cutting_allowed: boolean
+  instruction_timeline: InstructionTimeline
+  fold_model_fingerprint: string
+}
+
+export type InstructionHingeAngle = {
+  edge: string
+  angle_degrees: number
+}
+
+export type InstructionPose = {
+  model: 'absolute_hinge_angles_v1'
+  source_model_fingerprint: string
+  fixed_face: string | null
+  hinge_angles: readonly InstructionHingeAngle[]
+}
+
+export type InstructionStep = {
+  id: string
+  title: string
+  description: string
+  caution: string
+  duration_ms: number
+  pose: InstructionPose
+}
+
+export type InstructionTimeline = {
+  steps: readonly InstructionStep[]
 }
 
 export type NewProjectSettings = {
@@ -320,6 +347,90 @@ export function saveProject() {
 
 export function saveProjectAs() {
   return invoke<ProjectFileResponse>('save_project_as')
+}
+
+export function addInstructionStep(
+  expectedProjectId: string,
+  expectedRevision: number,
+  title: string,
+  description: string,
+  caution: string,
+  durationMs: number,
+  fixedFace: string | null,
+  hingeAngles: readonly InstructionHingeAngle[],
+) {
+  return invoke<ProjectSnapshot>('add_instruction_step', {
+    expectedProjectId,
+    expectedRevision,
+    title,
+    description,
+    caution,
+    durationMs,
+    fixedFace,
+    hingeAngles,
+  })
+}
+
+export function updateInstructionStepMetadata(
+  expectedProjectId: string,
+  expectedRevision: number,
+  stepId: string,
+  title: string,
+  description: string,
+  caution: string,
+  durationMs: number,
+) {
+  return invoke<ProjectSnapshot>('update_instruction_step_metadata', {
+    expectedProjectId,
+    expectedRevision,
+    stepId,
+    title,
+    description,
+    caution,
+    durationMs,
+  })
+}
+
+export function replaceInstructionStepPose(
+  expectedProjectId: string,
+  expectedRevision: number,
+  stepId: string,
+  fixedFace: string | null,
+  hingeAngles: readonly InstructionHingeAngle[],
+) {
+  return invoke<ProjectSnapshot>('replace_instruction_step_pose', {
+    expectedProjectId,
+    expectedRevision,
+    stepId,
+    fixedFace,
+    hingeAngles,
+  })
+}
+
+export function removeInstructionStep(
+  expectedProjectId: string,
+  expectedRevision: number,
+  stepId: string,
+) {
+  return invoke<ProjectSnapshot>('remove_instruction_step', {
+    expectedProjectId,
+    expectedRevision,
+    stepId,
+  })
+}
+
+export function moveInstructionStep(
+  expectedProjectId: string,
+  expectedRevision: number,
+  stepId: string,
+  targetIndex: number,
+) {
+  return invoke<ProjectSnapshot>('move_instruction_step', {
+    expectedProjectId,
+    expectedRevision,
+    stepId,
+    targetIndex,
+  })
 }
 
 export function newProject(

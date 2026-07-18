@@ -1,3 +1,5 @@
+use std::{collections::HashSet, error::Error, fmt};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -36,6 +38,7 @@ entity_id!(VertexId);
 entity_id!(EdgeId);
 entity_id!(FaceId);
 entity_id!(AssetId);
+entity_id!(InstructionStepId);
 
 impl FaceId {
     /// Derives a stable face ID from a project namespace and canonical name.
@@ -173,6 +176,428 @@ impl CreasePattern {
     }
 }
 
+pub const MAX_INSTRUCTION_STEPS: usize = 512;
+pub const MAX_INSTRUCTION_HINGES_PER_STEP: usize = 10_000;
+pub const MAX_INSTRUCTION_HINGE_RECORDS: usize = 100_000;
+pub const MAX_INSTRUCTION_TITLE_CHARS: usize = 120;
+pub const MAX_INSTRUCTION_DESCRIPTION_CHARS: usize = 4_000;
+pub const MAX_INSTRUCTION_CAUTION_CHARS: usize = 2_000;
+pub const MIN_INSTRUCTION_DURATION_MS: u32 = 100;
+pub const MAX_INSTRUCTION_DURATION_MS: u32 = 600_000;
+pub const MIN_INSTRUCTION_ANGLE_DEGREES: f64 = 0.0;
+pub const MAX_INSTRUCTION_ANGLE_DEGREES: f64 = 180.0;
+pub const FOLD_MODEL_FINGERPRINT_HEX_LENGTH: usize = 64;
+
+/// An ordered collection of authored folding-instruction poses.
+///
+/// Each pose stores a complete hinge vector rather than a delta from the
+/// previous step. This makes individual steps deterministic and independently
+/// editable.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstructionTimeline {
+    pub steps: Vec<InstructionStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstructionStep {
+    pub id: InstructionStepId,
+    pub title: String,
+    pub description: String,
+    pub caution: String,
+    pub duration_ms: u32,
+    pub pose: InstructionPose,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstructionPose {
+    pub model: InstructionPoseModel,
+    pub source_model_fingerprint: String,
+    /// The face held fixed while applying the pose.
+    ///
+    /// Planar poses do not need a fixed face, so the field is optional.
+    pub fixed_face: Option<FaceId>,
+    /// Complete hinge angles, strictly ordered by the edge ID's canonical RFC
+    /// bytes. Callers must canonicalize before validation or persistence.
+    pub hinge_angles: Vec<InstructionHingeAngle>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionPoseModel {
+    AbsoluteHingeAnglesV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InstructionHingeAngle {
+    pub edge: EdgeId,
+    pub angle_degrees: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InstructionTimelineValidationError {
+    TooManySteps {
+        actual: usize,
+        maximum: usize,
+    },
+    TooManyHingeRecords {
+        actual: usize,
+        maximum: usize,
+    },
+    DuplicateStepId {
+        step_index: usize,
+        id: InstructionStepId,
+    },
+    EmptyTitle {
+        step_index: usize,
+    },
+    TitleTooLong {
+        step_index: usize,
+        actual: usize,
+        maximum: usize,
+    },
+    TitleContainsControlCharacter {
+        step_index: usize,
+    },
+    DescriptionTooLong {
+        step_index: usize,
+        actual: usize,
+        maximum: usize,
+    },
+    DescriptionContainsUnsupportedControlCharacter {
+        step_index: usize,
+    },
+    CautionTooLong {
+        step_index: usize,
+        actual: usize,
+        maximum: usize,
+    },
+    CautionContainsUnsupportedControlCharacter {
+        step_index: usize,
+    },
+    DurationOutOfRange {
+        step_index: usize,
+        actual: u32,
+        minimum: u32,
+        maximum: u32,
+    },
+    InvalidSourceModelFingerprint {
+        step_index: usize,
+    },
+    TooManyHingesInStep {
+        step_index: usize,
+        actual: usize,
+        maximum: usize,
+    },
+    DuplicateHingeEdge {
+        step_index: usize,
+        edge: EdgeId,
+    },
+    HingeAnglesNotCanonical {
+        step_index: usize,
+        previous_edge: EdgeId,
+        edge: EdgeId,
+    },
+    NonFiniteHingeAngle {
+        step_index: usize,
+        hinge_index: usize,
+    },
+    HingeAngleOutOfRange {
+        step_index: usize,
+        hinge_index: usize,
+        actual: f64,
+        minimum: f64,
+        maximum: f64,
+    },
+}
+
+impl fmt::Display for InstructionTimelineValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManySteps { actual, maximum } => write!(
+                formatter,
+                "instruction timeline has {actual} steps; the limit is {maximum}"
+            ),
+            Self::TooManyHingeRecords { actual, maximum } => write!(
+                formatter,
+                "instruction timeline has {actual} hinge records; the limit is {maximum}"
+            ),
+            Self::DuplicateStepId { step_index, id } => write!(
+                formatter,
+                "instruction step {step_index} duplicates step ID {id:?}"
+            ),
+            Self::EmptyTitle { step_index } => {
+                write!(
+                    formatter,
+                    "instruction step {step_index} has an empty title"
+                )
+            }
+            Self::TitleTooLong {
+                step_index,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} title has {actual} characters; the limit is {maximum}"
+            ),
+            Self::TitleContainsControlCharacter { step_index } => write!(
+                formatter,
+                "instruction step {step_index} title contains a control character"
+            ),
+            Self::DescriptionTooLong {
+                step_index,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} description has {actual} characters; the limit is {maximum}"
+            ),
+            Self::DescriptionContainsUnsupportedControlCharacter { step_index } => write!(
+                formatter,
+                "instruction step {step_index} description contains an unsupported control character"
+            ),
+            Self::CautionTooLong {
+                step_index,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} caution has {actual} characters; the limit is {maximum}"
+            ),
+            Self::CautionContainsUnsupportedControlCharacter { step_index } => write!(
+                formatter,
+                "instruction step {step_index} caution contains an unsupported control character"
+            ),
+            Self::DurationOutOfRange {
+                step_index,
+                actual,
+                minimum,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} duration is {actual} ms; expected {minimum}..={maximum}"
+            ),
+            Self::InvalidSourceModelFingerprint { step_index } => write!(
+                formatter,
+                "instruction step {step_index} has an invalid source-model fingerprint"
+            ),
+            Self::TooManyHingesInStep {
+                step_index,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} has {actual} hinges; the limit is {maximum}"
+            ),
+            Self::DuplicateHingeEdge { step_index, edge } => write!(
+                formatter,
+                "instruction step {step_index} contains duplicate hinge edge {edge:?}"
+            ),
+            Self::HingeAnglesNotCanonical {
+                step_index,
+                previous_edge,
+                edge,
+            } => write!(
+                formatter,
+                "instruction step {step_index} hinge edges are not in canonical order: {previous_edge:?} before {edge:?}"
+            ),
+            Self::NonFiniteHingeAngle {
+                step_index,
+                hinge_index,
+            } => write!(
+                formatter,
+                "instruction step {step_index} hinge {hinge_index} has a non-finite angle"
+            ),
+            Self::HingeAngleOutOfRange {
+                step_index,
+                hinge_index,
+                actual,
+                minimum,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} hinge {hinge_index} angle is {actual}; expected {minimum}..={maximum}"
+            ),
+        }
+    }
+}
+
+impl Error for InstructionTimelineValidationError {}
+
+/// Validates resource bounds and model-independent timeline invariants.
+///
+/// Topology-dependent checks such as whether a face exists, whether every
+/// foldable edge is present, and whether the fold model supports the pose are
+/// intentionally left to the application/core layer.
+pub fn validate_instruction_timeline(
+    timeline: &InstructionTimeline,
+) -> Result<(), InstructionTimelineValidationError> {
+    if timeline.steps.len() > MAX_INSTRUCTION_STEPS {
+        return Err(InstructionTimelineValidationError::TooManySteps {
+            actual: timeline.steps.len(),
+            maximum: MAX_INSTRUCTION_STEPS,
+        });
+    }
+
+    let total_hinge_records = timeline.steps.iter().fold(0_usize, |total, step| {
+        total.saturating_add(step.pose.hinge_angles.len())
+    });
+    if total_hinge_records > MAX_INSTRUCTION_HINGE_RECORDS {
+        return Err(InstructionTimelineValidationError::TooManyHingeRecords {
+            actual: total_hinge_records,
+            maximum: MAX_INSTRUCTION_HINGE_RECORDS,
+        });
+    }
+
+    let mut step_ids = HashSet::with_capacity(timeline.steps.len());
+    for (step_index, step) in timeline.steps.iter().enumerate() {
+        if !step_ids.insert(step.id) {
+            return Err(InstructionTimelineValidationError::DuplicateStepId {
+                step_index,
+                id: step.id,
+            });
+        }
+        validate_instruction_step(step, step_index)?;
+    }
+
+    Ok(())
+}
+
+fn validate_instruction_step(
+    step: &InstructionStep,
+    step_index: usize,
+) -> Result<(), InstructionTimelineValidationError> {
+    if step.title.trim().is_empty() {
+        return Err(InstructionTimelineValidationError::EmptyTitle { step_index });
+    }
+    validate_text(
+        &step.title,
+        MAX_INSTRUCTION_TITLE_CHARS,
+        false,
+        || InstructionTimelineValidationError::TitleTooLong {
+            step_index,
+            actual: step.title.chars().count(),
+            maximum: MAX_INSTRUCTION_TITLE_CHARS,
+        },
+        || InstructionTimelineValidationError::TitleContainsControlCharacter { step_index },
+    )?;
+    validate_text(
+        &step.description,
+        MAX_INSTRUCTION_DESCRIPTION_CHARS,
+        true,
+        || InstructionTimelineValidationError::DescriptionTooLong {
+            step_index,
+            actual: step.description.chars().count(),
+            maximum: MAX_INSTRUCTION_DESCRIPTION_CHARS,
+        },
+        || InstructionTimelineValidationError::DescriptionContainsUnsupportedControlCharacter {
+            step_index,
+        },
+    )?;
+    validate_text(
+        &step.caution,
+        MAX_INSTRUCTION_CAUTION_CHARS,
+        true,
+        || InstructionTimelineValidationError::CautionTooLong {
+            step_index,
+            actual: step.caution.chars().count(),
+            maximum: MAX_INSTRUCTION_CAUTION_CHARS,
+        },
+        || InstructionTimelineValidationError::CautionContainsUnsupportedControlCharacter {
+            step_index,
+        },
+    )?;
+
+    if !(MIN_INSTRUCTION_DURATION_MS..=MAX_INSTRUCTION_DURATION_MS).contains(&step.duration_ms) {
+        return Err(InstructionTimelineValidationError::DurationOutOfRange {
+            step_index,
+            actual: step.duration_ms,
+            minimum: MIN_INSTRUCTION_DURATION_MS,
+            maximum: MAX_INSTRUCTION_DURATION_MS,
+        });
+    }
+
+    if !is_lowercase_sha256_hex(&step.pose.source_model_fingerprint) {
+        return Err(
+            InstructionTimelineValidationError::InvalidSourceModelFingerprint { step_index },
+        );
+    }
+
+    if step.pose.hinge_angles.len() > MAX_INSTRUCTION_HINGES_PER_STEP {
+        return Err(InstructionTimelineValidationError::TooManyHingesInStep {
+            step_index,
+            actual: step.pose.hinge_angles.len(),
+            maximum: MAX_INSTRUCTION_HINGES_PER_STEP,
+        });
+    }
+
+    let mut edge_ids = HashSet::with_capacity(step.pose.hinge_angles.len());
+    for (hinge_index, hinge) in step.pose.hinge_angles.iter().enumerate() {
+        if !edge_ids.insert(hinge.edge) {
+            return Err(InstructionTimelineValidationError::DuplicateHingeEdge {
+                step_index,
+                edge: hinge.edge,
+            });
+        }
+        if !hinge.angle_degrees.is_finite() {
+            return Err(InstructionTimelineValidationError::NonFiniteHingeAngle {
+                step_index,
+                hinge_index,
+            });
+        }
+        if !(MIN_INSTRUCTION_ANGLE_DEGREES..=MAX_INSTRUCTION_ANGLE_DEGREES)
+            .contains(&hinge.angle_degrees)
+        {
+            return Err(InstructionTimelineValidationError::HingeAngleOutOfRange {
+                step_index,
+                hinge_index,
+                actual: hinge.angle_degrees,
+                minimum: MIN_INSTRUCTION_ANGLE_DEGREES,
+                maximum: MAX_INSTRUCTION_ANGLE_DEGREES,
+            });
+        }
+    }
+
+    for pair in step.pose.hinge_angles.windows(2) {
+        if pair[0].edge.canonical_bytes() >= pair[1].edge.canonical_bytes() {
+            return Err(
+                InstructionTimelineValidationError::HingeAnglesNotCanonical {
+                    step_index,
+                    previous_edge: pair[0].edge,
+                    edge: pair[1].edge,
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_text(
+    text: &str,
+    maximum_chars: usize,
+    allow_multiline_controls: bool,
+    too_long: impl FnOnce() -> InstructionTimelineValidationError,
+    invalid_control: impl FnOnce() -> InstructionTimelineValidationError,
+) -> Result<(), InstructionTimelineValidationError> {
+    if text.chars().count() > maximum_chars {
+        return Err(too_long());
+    }
+    if text.chars().any(|character| {
+        character.is_control() && !(allow_multiline_controls && matches!(character, '\n' | '\t'))
+    }) {
+        return Err(invalid_control());
+    }
+    Ok(())
+}
+
+fn is_lowercase_sha256_hex(value: &str) -> bool {
+    value.len() == FOLD_MODEL_FINGERPRINT_HEX_LENGTH
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +626,8 @@ mod tests {
         let edge: EdgeId = serde_json::from_str(JSON_ID).expect("deserialize edge ID");
         let face: FaceId = serde_json::from_str(JSON_ID).expect("deserialize face ID");
         let asset: AssetId = serde_json::from_str(JSON_ID).expect("deserialize asset ID");
+        let instruction_step: InstructionStepId =
+            serde_json::from_str(JSON_ID).expect("deserialize instruction step ID");
 
         for bytes in [
             project.canonical_bytes(),
@@ -208,6 +635,7 @@ mod tests {
             edge.canonical_bytes(),
             face.canonical_bytes(),
             asset.canonical_bytes(),
+            instruction_step.canonical_bytes(),
         ] {
             assert_eq!(bytes, EXPECTED);
         }
@@ -258,6 +686,321 @@ mod tests {
 
         assert_eq!(restored, face);
         assert_eq!(restored.canonical_bytes(), face.canonical_bytes());
+    }
+
+    fn valid_instruction_step() -> InstructionStep {
+        let mut hinge_angles = vec![
+            InstructionHingeAngle {
+                edge: EdgeId::new(),
+                angle_degrees: 45.0,
+            },
+            InstructionHingeAngle {
+                edge: EdgeId::new(),
+                angle_degrees: 90.0,
+            },
+        ];
+        hinge_angles.sort_by_key(|hinge| hinge.edge.canonical_bytes());
+        InstructionStep {
+            id: InstructionStepId::new(),
+            title: "手順 1".to_owned(),
+            description: "谷折りします。\n折り線を合わせます。".to_owned(),
+            caution: "ずれに注意\tしてください。".to_owned(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: "0123456789abcdef".repeat(4),
+                fixed_face: Some(FaceId::new()),
+                hinge_angles,
+            },
+        }
+    }
+
+    #[test]
+    fn instruction_timeline_survives_json_round_trip() {
+        let timeline = InstructionTimeline {
+            steps: vec![valid_instruction_step()],
+        };
+
+        validate_instruction_timeline(&timeline).expect("valid timeline");
+        let json = serde_json::to_string(&timeline).expect("serialize timeline");
+        assert!(json.contains(r#""model":"absolute_hinge_angles_v1""#));
+        let restored: InstructionTimeline =
+            serde_json::from_str(&json).expect("deserialize timeline");
+
+        assert_eq!(restored, timeline);
+        validate_instruction_timeline(&restored).expect("restored timeline");
+    }
+
+    #[test]
+    fn instruction_timeline_defaults_to_empty() {
+        let timeline: InstructionTimeline =
+            serde_json::from_str("{}").expect("deserialize default timeline");
+        assert!(timeline.steps.is_empty());
+        validate_instruction_timeline(&timeline).expect("empty timeline is valid");
+    }
+
+    #[test]
+    fn instruction_text_limits_count_unicode_characters_and_allow_only_documented_controls() {
+        let mut step = valid_instruction_step();
+        step.title = "折".repeat(MAX_INSTRUCTION_TITLE_CHARS);
+        step.description = "\n\t".to_owned();
+        step.caution = "\n\t".to_owned();
+        validate_instruction_timeline(&InstructionTimeline {
+            steps: vec![step.clone()],
+        })
+        .expect("limits and supported multiline controls are valid");
+
+        step.title = "有効".to_owned();
+        step.description = "説".repeat(MAX_INSTRUCTION_DESCRIPTION_CHARS);
+        step.caution = "注".repeat(MAX_INSTRUCTION_CAUTION_CHARS);
+        validate_instruction_timeline(&InstructionTimeline {
+            steps: vec![step.clone()],
+        })
+        .expect("description and caution character limits are inclusive");
+
+        step.description.push('明');
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone()]
+            }),
+            Err(InstructionTimelineValidationError::DescriptionTooLong { .. })
+        ));
+
+        step.description.clear();
+        step.caution.push('意');
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone()]
+            }),
+            Err(InstructionTimelineValidationError::CautionTooLong { .. })
+        ));
+
+        step.description = "\n\t".to_owned();
+        step.caution = "\n\t".to_owned();
+        step.title = "折".repeat(MAX_INSTRUCTION_TITLE_CHARS);
+        step.title.push('る');
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone()]
+            }),
+            Err(InstructionTimelineValidationError::TitleTooLong { .. })
+        ));
+
+        step.title = "制御\u{0007}文字".to_owned();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone()]
+            }),
+            Err(InstructionTimelineValidationError::TitleContainsControlCharacter { .. })
+        ));
+
+        step.title = "有効".to_owned();
+        step.description = "制御\r文字".to_owned();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone()]
+            }),
+            Err(
+                InstructionTimelineValidationError::DescriptionContainsUnsupportedControlCharacter {
+                    ..
+                }
+            )
+        ));
+
+        step.description.clear();
+        step.caution = "制御\u{007f}文字".to_owned();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline { steps: vec![step] }),
+            Err(
+                InstructionTimelineValidationError::CautionContainsUnsupportedControlCharacter { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn instruction_timeline_rejects_duplicate_ids_empty_title_and_duration_bounds() {
+        let step = valid_instruction_step();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone(), step.clone()]
+            }),
+            Err(InstructionTimelineValidationError::DuplicateStepId { step_index: 1, .. })
+        ));
+
+        let mut invalid = step.clone();
+        invalid.title.clear();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid]
+            }),
+            Err(InstructionTimelineValidationError::EmptyTitle { .. })
+        ));
+
+        let mut invalid = step.clone();
+        invalid.title = " \t\n".to_owned();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid]
+            }),
+            Err(InstructionTimelineValidationError::EmptyTitle { .. })
+        ));
+
+        for invalid_duration in [
+            MIN_INSTRUCTION_DURATION_MS - 1,
+            MAX_INSTRUCTION_DURATION_MS + 1,
+        ] {
+            let mut invalid = step.clone();
+            invalid.duration_ms = invalid_duration;
+            assert!(matches!(
+                validate_instruction_timeline(&InstructionTimeline {
+                    steps: vec![invalid]
+                }),
+                Err(InstructionTimelineValidationError::DurationOutOfRange { .. })
+            ));
+        }
+
+        let mut minimum = step.clone();
+        minimum.duration_ms = MIN_INSTRUCTION_DURATION_MS;
+        let mut maximum = step;
+        maximum.id = InstructionStepId::new();
+        maximum.duration_ms = MAX_INSTRUCTION_DURATION_MS;
+        validate_instruction_timeline(&InstructionTimeline {
+            steps: vec![minimum, maximum],
+        })
+        .expect("inclusive duration bounds");
+    }
+
+    #[test]
+    fn instruction_timeline_rejects_invalid_fingerprint_and_hinge_angles() {
+        let mut invalid = valid_instruction_step();
+        invalid.pose.source_model_fingerprint = "A".repeat(FOLD_MODEL_FINGERPRINT_HEX_LENGTH);
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid]
+            }),
+            Err(InstructionTimelineValidationError::InvalidSourceModelFingerprint { .. })
+        ));
+
+        let mut invalid = valid_instruction_step();
+        invalid.pose.hinge_angles[0].angle_degrees = f64::NAN;
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid]
+            }),
+            Err(InstructionTimelineValidationError::NonFiniteHingeAngle { .. })
+        ));
+
+        for invalid_angle in [
+            MIN_INSTRUCTION_ANGLE_DEGREES - 0.1,
+            MAX_INSTRUCTION_ANGLE_DEGREES + 0.1,
+        ] {
+            let mut invalid = valid_instruction_step();
+            invalid.pose.hinge_angles[0].angle_degrees = invalid_angle;
+            assert!(matches!(
+                validate_instruction_timeline(&InstructionTimeline {
+                    steps: vec![invalid]
+                }),
+                Err(InstructionTimelineValidationError::HingeAngleOutOfRange { .. })
+            ));
+        }
+
+        let mut bounds = valid_instruction_step();
+        bounds.pose.hinge_angles[0].angle_degrees = MIN_INSTRUCTION_ANGLE_DEGREES;
+        bounds.pose.hinge_angles[1].angle_degrees = MAX_INSTRUCTION_ANGLE_DEGREES;
+        validate_instruction_timeline(&InstructionTimeline {
+            steps: vec![bounds],
+        })
+        .expect("inclusive angle bounds");
+    }
+
+    #[test]
+    fn instruction_timeline_rejects_duplicate_and_noncanonical_hinge_edges() {
+        let mut duplicate = valid_instruction_step();
+        duplicate.pose.hinge_angles[1].edge = duplicate.pose.hinge_angles[0].edge;
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![duplicate]
+            }),
+            Err(InstructionTimelineValidationError::DuplicateHingeEdge { .. })
+        ));
+
+        let mut noncanonical = valid_instruction_step();
+        noncanonical.pose.hinge_angles.reverse();
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![noncanonical]
+            }),
+            Err(InstructionTimelineValidationError::HingeAnglesNotCanonical { .. })
+        ));
+    }
+
+    #[test]
+    fn instruction_timeline_enforces_step_and_per_step_hinge_limits() {
+        let step = valid_instruction_step();
+        let maximum_steps = (0..MAX_INSTRUCTION_STEPS)
+            .map(|_| valid_instruction_step())
+            .collect::<Vec<_>>();
+        validate_instruction_timeline(&InstructionTimeline {
+            steps: maximum_steps,
+        })
+        .expect("step limit is inclusive");
+
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![step.clone(); MAX_INSTRUCTION_STEPS + 1]
+            }),
+            Err(InstructionTimelineValidationError::TooManySteps { .. })
+        ));
+
+        let mut hinges = (0..=MAX_INSTRUCTION_HINGES_PER_STEP)
+            .map(|_| InstructionHingeAngle {
+                edge: EdgeId::new(),
+                angle_degrees: 0.0,
+            })
+            .collect::<Vec<_>>();
+        hinges.sort_by_key(|hinge| hinge.edge.canonical_bytes());
+        let mut invalid = step;
+        invalid.pose.hinge_angles = hinges;
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid]
+            }),
+            Err(InstructionTimelineValidationError::TooManyHingesInStep { .. })
+        ));
+    }
+
+    #[test]
+    fn instruction_timeline_enforces_total_hinge_record_limit() {
+        let mut hinges = (0..MAX_INSTRUCTION_HINGES_PER_STEP)
+            .map(|_| InstructionHingeAngle {
+                edge: EdgeId::new(),
+                angle_degrees: 0.0,
+            })
+            .collect::<Vec<_>>();
+        hinges.sort_by_key(|hinge| hinge.edge.canonical_bytes());
+
+        let mut steps = (0..(MAX_INSTRUCTION_HINGE_RECORDS / MAX_INSTRUCTION_HINGES_PER_STEP))
+            .map(|_| {
+                let mut step = valid_instruction_step();
+                step.pose.hinge_angles.clone_from(&hinges);
+                step
+            })
+            .collect::<Vec<_>>();
+        validate_instruction_timeline(&InstructionTimeline {
+            steps: steps.clone(),
+        })
+        .expect("exact total hinge limit is valid");
+
+        let mut final_step = valid_instruction_step();
+        final_step.pose.hinge_angles.truncate(1);
+        steps.push(final_step);
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline { steps }),
+            Err(InstructionTimelineValidationError::TooManyHingeRecords {
+                actual,
+                maximum: MAX_INSTRUCTION_HINGE_RECORDS
+            }) if actual == MAX_INSTRUCTION_HINGE_RECORDS + 1
+        ));
     }
 
     #[test]

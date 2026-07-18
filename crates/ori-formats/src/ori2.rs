@@ -15,6 +15,7 @@ pub const ORI2_CONTAINER_IDENTIFIER: &str = "ORIGAMI2";
 pub const CURRENT_ORI2_CONTAINER_VERSION: u32 = 1;
 pub const ORI2_MANIFEST_PATH: &str = "manifest.json";
 pub const ORI2_PROJECT_PATH: &str = "project.json";
+pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 
 const REQUIRED_ENTRY_COUNT: usize = 2;
 const END_OF_CENTRAL_DIRECTORY_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
@@ -68,11 +69,15 @@ pub struct Ori2ProjectEntry {
 }
 
 impl Ori2Manifest {
-    fn new(project_bytes: &[u8], project_format_version: u32) -> Self {
+    fn new(
+        project_bytes: &[u8],
+        project_format_version: u32,
+        required_features: Vec<String>,
+    ) -> Self {
         Self {
             container: ORI2_CONTAINER_IDENTIFIER.to_owned(),
             container_version: CURRENT_ORI2_CONTAINER_VERSION,
-            required_features: Vec::new(),
+            required_features,
             project: Ori2ProjectEntry {
                 path: ORI2_PROJECT_PATH.to_owned(),
                 format_version: project_format_version,
@@ -111,7 +116,12 @@ pub fn write_project_ori2_with_limits(
         limits.max_project_size,
     )?;
 
-    let manifest = Ori2Manifest::new(&project_bytes, document.format_version);
+    let required_features = if document.instruction_timeline.steps.is_empty() {
+        Vec::new()
+    } else {
+        vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()]
+    };
+    let manifest = Ori2Manifest::new(&project_bytes, document.format_version, required_features);
     let manifest_bytes =
         serde_json::to_vec_pretty(&manifest).map_err(FormatError::InvalidManifestJson)?;
     ensure_entry_size(ORI2_MANIFEST_PATH, manifest_bytes.len() as u64, limits)?;
@@ -221,6 +231,16 @@ pub fn read_project_ori2_with_limits(
         return Err(FormatError::ManifestProjectVersionMismatch {
             manifest: manifest.project.format_version,
             project: project.format_version,
+        });
+    }
+    if !project.instruction_timeline.steps.is_empty()
+        && !manifest
+            .required_features
+            .iter()
+            .any(|feature| feature == ORI2_FEATURE_INSTRUCTION_TIMELINE_V1)
+    {
+        return Err(FormatError::MissingRequiredFeature {
+            feature: ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
         });
     }
     Ok(project)
@@ -379,9 +399,15 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
             latest: CURRENT_ORI2_CONTAINER_VERSION,
         });
     }
-    if !manifest.required_features.is_empty() {
+    let unsupported_features = manifest
+        .required_features
+        .iter()
+        .filter(|feature| feature.as_str() != ORI2_FEATURE_INSTRUCTION_TIMELINE_V1)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported_features.is_empty() {
         return Err(FormatError::UnsupportedRequiredFeatures {
-            features: manifest.required_features.clone(),
+            features: unsupported_features,
         });
     }
     if manifest.project.path != ORI2_PROJECT_PATH {
@@ -493,8 +519,9 @@ fn is_sha256_hex(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        AssetId, CreasePattern, Edge, EdgeId, EdgeKind, Paper, PaperAppearance, Point2, RgbaColor,
-        Vertex, VertexId,
+        AssetId, CreasePattern, Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle,
+        InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId, Paper,
+        PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
     };
 
     use super::*;
@@ -536,11 +563,48 @@ mod tests {
     }
 
     fn manifest_for(project_bytes: &[u8]) -> Vec<u8> {
+        manifest_for_features(project_bytes, Vec::new())
+    }
+
+    fn manifest_for_features(project_bytes: &[u8], required_features: Vec<String>) -> Vec<u8> {
         serde_json::to_vec(&Ori2Manifest::new(
             project_bytes,
             crate::CURRENT_FORMAT_VERSION,
+            required_features,
         ))
         .expect("serialize manifest")
+    }
+
+    fn add_sample_instruction(document: &mut ProjectDocument) {
+        let edge = document.crease_pattern.edges[0].id;
+        document.instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "半分に折る".to_owned(),
+            description: "辺を正確に重ねます。".to_owned(),
+            caution: String::new(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: "0123456789abcdef".repeat(4),
+                fixed_face: Some(FaceId::new()),
+                hinge_angles: vec![InstructionHingeAngle {
+                    edge,
+                    angle_degrees: 180.0,
+                }],
+            },
+        });
+    }
+
+    fn manifest_from_archive(bytes: &[u8]) -> Ori2Manifest {
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("open generated ZIP");
+        let mut entry = archive
+            .by_name(ORI2_MANIFEST_PATH)
+            .expect("generated manifest");
+        let mut manifest_bytes = Vec::new();
+        entry
+            .read_to_end(&mut manifest_bytes)
+            .expect("read generated manifest");
+        serde_json::from_slice(&manifest_bytes).expect("parse generated manifest")
     }
 
     fn replace_zip_entry_name(bytes: &mut [u8], old: &[u8], new: &[u8]) -> usize {
@@ -574,6 +638,130 @@ mod tests {
         assert_eq!(archive.len(), REQUIRED_ENTRY_COUNT);
         assert!(archive.by_name(ORI2_MANIFEST_PATH).is_ok());
         assert!(archive.by_name(ORI2_PROJECT_PATH).is_ok());
+    }
+
+    #[test]
+    fn ori2_round_trip_preserves_instructions_and_declares_required_feature() {
+        let mut original = sample_document();
+        add_sample_instruction(&mut original);
+
+        let bytes = write_project_ori2(&original).expect("write instructions");
+        let manifest = manifest_from_archive(&bytes);
+        assert_eq!(
+            manifest.required_features,
+            vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()]
+        );
+
+        let restored = read_project_ori2(&bytes).expect("read instructions");
+        assert_eq!(restored.instruction_timeline, original.instruction_timeline);
+    }
+
+    #[test]
+    fn ori2_without_instructions_does_not_require_timeline_feature() {
+        let bytes = write_project_ori2(&sample_document()).expect("write project");
+        let manifest = manifest_from_archive(&bytes);
+        assert!(manifest.required_features.is_empty());
+    }
+
+    #[test]
+    fn reads_legacy_ori2_without_instruction_timeline_field() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize document");
+        value
+            .as_object_mut()
+            .expect("project object")
+            .remove("instruction_timeline");
+        let project = serde_json::to_vec(&value).expect("serialize legacy project");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let restored = read_project_ori2(&bytes).expect("read legacy .ori2");
+        assert!(restored.instruction_timeline.steps.is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_required_feature_but_accepts_known_timeline_feature() {
+        let project = write_project_json(&sample_document()).expect("project JSON");
+        let known_manifest = manifest_for_features(
+            &project,
+            vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()],
+        );
+        let known_bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &known_manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        read_project_ori2(&known_bytes).expect("known required feature");
+
+        let unknown_manifest = manifest_for_features(
+            &project,
+            vec![
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
+                "future_fold_solver_v9".to_owned(),
+            ],
+        );
+        let unknown_bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &unknown_manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        let error =
+            read_project_ori2(&unknown_bytes).expect_err("unknown required feature must fail");
+        assert!(matches!(
+            error,
+            FormatError::UnsupportedRequiredFeatures { features }
+                if features == vec!["future_fold_solver_v9".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn rejects_instruction_content_without_required_manifest_feature() {
+        let mut document = sample_document();
+        add_sample_instruction(&mut document);
+        let project = write_project_json(&document).expect("project JSON");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let error =
+            read_project_ori2(&bytes).expect_err("timeline feature declaration is required");
+        assert!(matches!(
+            error,
+            FormatError::MissingRequiredFeature {
+                feature: ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_instruction_timeline_inside_ori2() {
+        let mut document = sample_document();
+        add_sample_instruction(&mut document);
+        document.instruction_timeline.steps[0].duration_ms = 0;
+        let project =
+            serde_json::to_vec(&document).expect("serialize invalid project directly for test");
+        let manifest = manifest_for_features(
+            &project,
+            vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()],
+        );
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let error = read_project_ori2(&bytes).expect_err("invalid timeline must fail");
+        assert!(matches!(
+            error,
+            FormatError::InvalidInstructionTimeline(
+                ori_domain::InstructionTimelineValidationError::DurationOutOfRange {
+                    step_index: 0,
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]
@@ -729,7 +917,7 @@ mod tests {
     #[test]
     fn rejects_project_whose_checksum_does_not_match_manifest() {
         let project = write_project_json(&sample_document()).expect("project JSON");
-        let mut manifest = Ori2Manifest::new(&project, crate::CURRENT_FORMAT_VERSION);
+        let mut manifest = Ori2Manifest::new(&project, crate::CURRENT_FORMAT_VERSION, Vec::new());
         manifest.project.sha256 = "0".repeat(64);
         let manifest = serde_json::to_vec(&manifest).expect("manifest JSON");
         let bytes = raw_zip(&[
@@ -744,7 +932,7 @@ mod tests {
     #[test]
     fn rejects_project_whose_size_does_not_match_manifest() {
         let project = write_project_json(&sample_document()).expect("project JSON");
-        let mut manifest = Ori2Manifest::new(&project, crate::CURRENT_FORMAT_VERSION);
+        let mut manifest = Ori2Manifest::new(&project, crate::CURRENT_FORMAT_VERSION, Vec::new());
         manifest.project.uncompressed_size += 1;
         let manifest = serde_json::to_vec(&manifest).expect("manifest JSON");
         let bytes = raw_zip(&[
@@ -770,7 +958,7 @@ mod tests {
     #[test]
     fn rejects_manifest_project_path_traversal() {
         let project = write_project_json(&sample_document()).expect("project JSON");
-        let mut manifest = Ori2Manifest::new(&project, crate::CURRENT_FORMAT_VERSION);
+        let mut manifest = Ori2Manifest::new(&project, crate::CURRENT_FORMAT_VERSION, Vec::new());
         manifest.project.path = "../project.json".to_owned();
         let manifest = serde_json::to_vec(&manifest).expect("manifest JSON");
         let bytes = raw_zip(&[

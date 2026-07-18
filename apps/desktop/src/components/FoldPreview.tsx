@@ -44,6 +44,11 @@ import {
   type FoldPreviewContinuousMotionRunnerState,
 } from '../lib/foldPreviewContinuousMotionRunner'
 import {
+  createFoldPreviewAppliedPoseSnapshot,
+  type FoldPreviewAppliedPoseSnapshot,
+  type FoldPreviewAppliedPoseState,
+} from '../lib/foldPreviewAppliedPose'
+import {
   describeFoldPreviewContinuousMotionDetail,
   type FoldPreviewMotionFaceLabel,
   type FoldPreviewTreeBlockingSampleDetailContext,
@@ -157,6 +162,7 @@ type FoldPreviewProps = {
   onChooseFixedFace?: (faceId: string) => void
   onRequestFoldAngle?: (angleDegrees: number) => void
   onCommitHingeFoldAngle?: (edgeId: string, angleDegrees: number) => void
+  onAppliedPoseChange?: (pose: FoldPreviewAppliedPoseSnapshot | null) => void
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -293,6 +299,15 @@ const INITIAL_ANGLE_DRAG_PRESENTATION: AngleDragPresentation = Object.freeze({
   sequence: 0,
   cameraControlsEnabled: true,
 })
+
+function appliedPoseState(
+  status: FoldPreviewContinuousMotionRunnerState<unknown>['status'] | undefined,
+): FoldPreviewAppliedPoseState {
+  if (status === 'running') return 'running'
+  if (status === 'blocked') return 'blocked'
+  if (status === 'indeterminate' || status === 'disposed') return 'indeterminate'
+  return 'stable'
+}
 
 function createCorrectionAnalysisPolicy(
   model: FoldPreviewModel,
@@ -433,6 +448,7 @@ export function FoldPreview({
   onChooseFixedFace,
   onRequestFoldAngle,
   onCommitHingeFoldAngle,
+  onAppliedPoseChange,
   model,
   statusMessage,
   frontColor,
@@ -479,6 +495,8 @@ export function FoldPreview({
   onRequestFoldAngleRef.current = onRequestFoldAngle
   const onCommitHingeFoldAngleRef = useRef(onCommitHingeFoldAngle)
   onCommitHingeFoldAngleRef.current = onCommitHingeFoldAngle
+  const onAppliedPoseChangeRef = useRef(onAppliedPoseChange)
+  onAppliedPoseChangeRef.current = onAppliedPoseChange
   const treeCommitAvailable = Boolean(onCommitHingeFoldAngle)
   const resolvedFixedFaceId = fixedFaceId
     ?? (model?.kind === 'single_fold'
@@ -3839,6 +3857,70 @@ export function FoldPreview({
       && model.kinematics.kind === 'tree'
       ? contextualTreeMotionState
       : null
+  useEffect(() => {
+    const publish = (snapshot: FoldPreviewAppliedPoseSnapshot | null) => {
+      try {
+        onAppliedPoseChangeRef.current?.(snapshot)
+      } catch {
+        // Applied-pose reporting is observational and must never affect the
+        // renderer or its collision-authorized motion.
+      }
+    }
+    if (!model || renderError) {
+      publish(null)
+      return
+    }
+    if (model.kind === 'planar') {
+      publish(createFoldPreviewAppliedPoseSnapshot({
+        projectId: model.projectId,
+        revision: model.revision,
+        fixedFaceId: null,
+        hingeAngles: [],
+        state: 'stable',
+      }))
+      return () => publish(null)
+    }
+    if (model.kind === 'single_fold') {
+      if (!contextualMotionState || !resolvedFixedFaceId) {
+        publish(null)
+        return
+      }
+      publish(createFoldPreviewAppliedPoseSnapshot({
+        projectId: model.projectId,
+        revision: model.revision,
+        fixedFaceId: resolvedFixedFaceId,
+        hingeAngles: [{
+          edgeId: model.hinge.edgeId,
+          angleDegrees: contextualMotionState.applied,
+        }],
+        state: appliedPoseState(contextualMotionState.status),
+      }))
+      return () => publish(null)
+    }
+    if (
+      model.kinematics.kind !== 'tree'
+      || !renderedTreePose
+      || !resolvedFixedFaceId
+    ) {
+      publish(null)
+      return
+    }
+    publish(createFoldPreviewAppliedPoseSnapshot({
+      projectId: model.projectId,
+      revision: model.revision,
+      fixedFaceId: resolvedFixedFaceId,
+      hingeAngles: renderedTreePose.appliedAngles,
+      state: appliedPoseState(contextualTreeMotionState?.status),
+    }))
+    return () => publish(null)
+  }, [
+    contextualMotionState,
+    contextualTreeMotionState,
+    model,
+    renderError,
+    renderedTreePose,
+    resolvedFixedFaceId,
+  ])
   const motionFaceLabels: readonly FoldPreviewMotionFaceLabel[] =
     model?.kind === 'single_fold'
     || (

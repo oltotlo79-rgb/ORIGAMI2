@@ -152,7 +152,7 @@ fn persist_document_atomically(
 }
 
 #[cfg(not(target_os = "windows"))]
-fn publish_unix_staged_file(
+pub(super) fn publish_unix_staged_file(
     staged: &mut StagedFile,
     destination: &Path,
     existing_destination_policy: ExistingDestinationPolicy,

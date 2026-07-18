@@ -68,7 +68,8 @@ button { color: inherit; }
 .new-project-dialog,
 .diagnostics-dialog,
 .fold-import-dialog,
-.svg-import-dialog {
+.svg-import-dialog,
+.crease-export-dialog {
   width: min(620px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
@@ -80,10 +81,12 @@ button { color: inherit; }
 .diagnostics-dialog { width: min(760px, calc(100vw - 48px)); }
 .fold-import-dialog,
 .svg-import-dialog { width: min(900px, calc(100vw - 48px)); }
+.crease-export-dialog { width: min(760px, calc(100vw - 48px)); }
 .new-project-dialog > header,
 .diagnostics-dialog > header,
 .fold-import-dialog > header,
-.svg-import-dialog > header {
+.svg-import-dialog > header,
+.crease-export-dialog > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -94,7 +97,8 @@ button { color: inherit; }
 .new-project-dialog h2,
 .diagnostics-dialog h2,
 .fold-import-dialog h2,
-.svg-import-dialog h2 { margin: 3px 0 0; font-size: 21px; }
+.svg-import-dialog h2,
+.crease-export-dialog h2 { margin: 3px 0 0; font-size: 21px; }
 .dialog-eyebrow {
   color: var(--accent);
   font-size: 11px;
@@ -144,7 +148,8 @@ button { color: inherit; }
 .new-project-dialog footer,
 .diagnostics-dialog footer,
 .fold-import-dialog > footer,
-.svg-import-dialog > footer {
+.svg-import-dialog > footer,
+.crease-export-dialog > footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -153,7 +158,8 @@ button { color: inherit; }
 .new-project-dialog footer button,
 .diagnostics-dialog footer button,
 .fold-import-dialog > footer button,
-.svg-import-dialog > footer button {
+.svg-import-dialog > footer button,
+.crease-export-dialog > footer button {
   min-width: 94px;
   padding: 7px 13px;
   border: 1px solid var(--border);
@@ -163,7 +169,8 @@ button { color: inherit; }
 .new-project-dialog footer .primary,
 .diagnostics-dialog footer .primary,
 .fold-import-dialog > footer .primary,
-.svg-import-dialog > footer .primary { border-color: var(--accent); background: var(--accent); color: white; }
+.svg-import-dialog > footer .primary,
+.crease-export-dialog > footer .primary { border-color: var(--accent); background: var(--accent); color: white; }
 .new-project-dialog button:disabled,
 .new-project-dialog input:disabled,
 .diagnostics-dialog button:disabled,
@@ -172,7 +179,10 @@ button { color: inherit; }
 .fold-import-dialog select:disabled,
 .svg-import-dialog button:disabled,
 .svg-import-dialog input:disabled,
-.svg-import-dialog select:disabled { opacity: .5; cursor: not-allowed; }
+.svg-import-dialog select:disabled,
+.crease-export-dialog button:disabled,
+.crease-export-dialog input:disabled,
+.crease-export-dialog select:disabled { opacity: .5; cursor: not-allowed; }
 .diagnostics-dialog-body {
   display: grid;
   gap: 14px;
@@ -208,6 +218,117 @@ button { color: inherit; }
 .fold-import-dialog > footer,
 .svg-import-dialog > footer {
   padding: 0 22px 22px;
+}
+.crease-export-dialog-body {
+  display: grid;
+  gap: 16px;
+  padding: 18px 22px;
+  overflow: auto;
+}
+.crease-export-dialog > footer { padding: 0 22px 22px; }
+.crease-export-format {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.crease-export-format select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border-dark);
+  border-radius: 5px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.crease-export-loading,
+.crease-export-notice {
+  min-height: 19px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.crease-export-error { display: grid; justify-items: start; gap: 8px; }
+.crease-export-error button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-strong);
+}
+.crease-export-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--border);
+}
+.crease-export-metadata > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+}
+.crease-export-metadata dt { color: var(--muted); font-size: 11px; }
+.crease-export-metadata dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.crease-export-assignments,
+.crease-export-warnings {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.crease-export-assignments h3,
+.crease-export-warnings h3 { margin: 0; font-size: 13px; }
+.crease-export-assignments ul {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.crease-export-assignments li {
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+}
+.crease-export-assignments strong { color: var(--text); font-size: 12px; }
+.crease-export-warnings {
+  border-color: #d7bd70;
+  background: #fff9e8;
+}
+.crease-export-warnings > ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #765f20;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.crease-export-warnings > p { margin: 0; color: var(--muted); font-size: 12px; }
+.crease-export-warnings > label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #695319;
+  font-size: 12px;
+  line-height: 1.45;
 }
 .fold-import-overview,
 .svg-import-overview {
@@ -1034,14 +1155,17 @@ button { color: inherit; }
   .dialog-backdrop { padding: 12px; }
   .diagnostics-dialog,
   .fold-import-dialog,
-  .svg-import-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+  .svg-import-dialog,
+  .crease-export-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
   .diagnostics-dialog footer { flex-wrap: wrap; }
   .diagnostics-json { min-height: 220px; }
   .fold-import-overview,
   .svg-import-overview,
   .fold-import-fields,
   .svg-import-fields,
-  .fold-import-mapping-list { grid-template-columns: minmax(0, 1fr); }
+  .fold-import-mapping-list,
+  .crease-export-metadata { grid-template-columns: minmax(0, 1fr); }
+  .crease-export-assignments ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .svg-import-mapping-list > label { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -1059,7 +1183,8 @@ button { color: inherit; }
   .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }
   .dialog-error { background: #4a2929; color: #f1b7b7; }
   .svg-import-cut-confirmation { background: #3f3024; color: #f2cfad; }
-  .fold-import-warnings, .svg-import-warnings { background: #3d351f; color: #f2d98d; }
+  .fold-import-warnings, .svg-import-warnings, .crease-export-warnings { background: #3d351f; color: #f2d98d; }
   .fold-import-warnings ul, .svg-import-warnings ul { color: #f2d98d; }
+  .crease-export-warnings > ul, .crease-export-warnings > label { color: #f2d98d; }
   .crease-canvas { filter: brightness(.82); }
 }

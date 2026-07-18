@@ -76,11 +76,11 @@
 
 ## 8. 未対応
 
-- SVG取込
 - child frame、複数frame、frame継承
 - 3D `foldedForm`と非ゼロZ座標
 - 穴、複数境界、複数枚の紙
 - FOLD内の面、折り角度、層順、frame metadataの永続化
-- FOLD書出し
 
 SVG取込も[SVG取込契約](svg-import-contract.md)に基づく利用者経路へ接続したため、FOLDとSVGの対応subsetを合わせて要件IO-004を「実装済み」とする。FOLDの複数frame、3D `foldedForm`、穴・複数紙は引き続き本契約の対象外である。
+
+FOLD 1.2の2D展開図書き出しは[展開図書き出し契約](crease-pattern-export-contract.md)で別に定める。書き出したFOLDを本契約のimporterへ戻す場合、座標、外周、5線種、作品名は保持するが、ORIGAMI2 UUIDは再生成され、推奨metadataは非永続情報として警告される。

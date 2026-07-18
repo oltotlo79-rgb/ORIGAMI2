@@ -7,6 +7,7 @@ import {
   type PaperBounds,
   type PaperPolygonPoint,
 } from './components/CreaseCanvas'
+import { CreaseExportDialog } from './components/CreaseExportDialog'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
@@ -18,6 +19,7 @@ import {
   analyzeProjectTopology,
   applyFoldImport,
   applySvgImport,
+  cancelCreasePatternExport,
   cancelFoldImport,
   cancelSvgImport,
   connectEdgeIntersection,
@@ -29,6 +31,7 @@ import {
   moveVertex,
   newProject,
   openProject,
+  previewCreasePatternExport,
   previewFoldImport,
   previewSvgImport,
   redo,
@@ -38,6 +41,7 @@ import {
   resizeRectangularPaper,
   saveProject,
   saveProjectAs,
+  saveCreasePatternExport,
   splitBoundaryEdge,
   splitEdge,
   undo,
@@ -49,6 +53,10 @@ import {
   validateSvgImportSettings,
   validateProject,
 } from './lib/coreClient'
+import type {
+  CreasePatternExportFormat,
+  CreasePatternExportPreview,
+} from './lib/creaseExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
   SvgImportPreview,
@@ -152,7 +160,7 @@ function App() {
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
   const [fileOperation, setFileOperation] = useState<
-    'open' | 'save' | 'save_as' | 'fold_import' | 'svg_import' | null
+    'open' | 'save' | 'save_as' | 'fold_import' | 'svg_import' | 'crease_export' | null
   >(null)
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -164,6 +172,13 @@ function App() {
   const [svgImportError, setSvgImportError] = useState<string | null>(null)
   const [svgImportValidation, setSvgImportValidation] =
     useState<SvgImportSettingsValidation | null>(null)
+  const [creaseExportOpen, setCreaseExportOpen] = useState(false)
+  const [creaseExportFormat, setCreaseExportFormat] =
+    useState<CreasePatternExportFormat>('fold')
+  const [creaseExportPreview, setCreaseExportPreview] =
+    useState<CreasePatternExportPreview | null>(null)
+  const [creaseExportError, setCreaseExportError] = useState<string | null>(null)
+  const [creaseExportNotice, setCreaseExportNotice] = useState<string | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -183,10 +198,13 @@ function App() {
   const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
+  const creaseExportButtonRef = useRef<HTMLButtonElement>(null)
+  const creaseExportRequestIdRef = useRef(0)
   const modalOpen = newProjectOpen
     || diagnosticsDialogOpen
     || foldImportPreview !== null
     || svgImportPreview !== null
+    || creaseExportOpen
   const closeDiagnosticsDialog = useCallback(() => {
     setDiagnosticsDialogOpen(false)
     requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
@@ -1353,6 +1371,152 @@ function App() {
     }
   }
 
+  async function prepareCreaseExport(format: CreasePatternExportFormat) {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+
+    const requestId = ++creaseExportRequestIdRef.current
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('crease_export')
+    setCreaseExportPreview(null)
+    setCreaseExportError(null)
+    setCreaseExportNotice(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const response = await previewCreasePatternExport(
+        current.project_id,
+        current.revision,
+        format,
+      )
+      if (requestId !== creaseExportRequestIdRef.current) {
+        await cancelCreasePatternExport(response.preview.export_id).catch(() => undefined)
+        return
+      }
+      const latest = latestSnapshotRef.current
+      const preview = response.preview
+      if (
+        !latest
+        || preview.format !== format
+        || preview.expected_project_id !== current.project_id
+        || preview.expected_revision !== current.revision
+        || latest.project_id !== current.project_id
+        || latest.revision !== current.revision
+      ) {
+        await cancelCreasePatternExport(preview.export_id).catch(() => undefined)
+        throw new Error('編集中のプロジェクトと一致しない書き出しプレビューを拒否しました')
+      }
+      setCreaseExportPreview(preview)
+      setCoreStatus(
+        `${preview.format === 'fold' ? 'FOLD 1.2' : 'SVG'}書き出しの情報損失を確認してください`,
+      )
+    } catch (error) {
+      if (requestId !== creaseExportRequestIdRef.current) return
+      const message = String(error)
+      setCreaseExportError(`書き出しデータを準備できませんでした: ${message}`)
+      setCoreStatus(`展開図書き出しエラー: ${message}`)
+    } finally {
+      if (requestId === creaseExportRequestIdRef.current) {
+        setFileOperation(null)
+        coreOperationRef.current = false
+        setCoreBusy(false)
+      }
+    }
+  }
+
+  function beginCreaseExport() {
+    if (!latestSnapshotRef.current || coreOperationRef.current) return
+    setCreaseExportOpen(true)
+    setCreaseExportFormat('fold')
+    setCreaseExportPreview(null)
+    setCreaseExportError(null)
+    setCreaseExportNotice(null)
+    void prepareCreaseExport('fold')
+  }
+
+  function changeCreaseExportFormat(format: CreasePatternExportFormat) {
+    if (format === creaseExportFormat || coreOperationRef.current) return
+    setCreaseExportFormat(format)
+    void prepareCreaseExport(format)
+  }
+
+  async function closeCreaseExportDialog() {
+    if (coreOperationRef.current) return
+    const preview = creaseExportPreview
+    creaseExportRequestIdRef.current += 1
+    if (!preview) {
+      setCreaseExportOpen(false)
+      setCreaseExportError(null)
+      setCreaseExportNotice(null)
+      requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
+      return
+    }
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    try {
+      await cancelCreasePatternExport(preview.export_id)
+      setCreaseExportOpen(false)
+      setCreaseExportPreview(null)
+      setCreaseExportError(null)
+      setCreaseExportNotice(null)
+      setCoreStatus('展開図書き出しをキャンセルしました')
+      requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
+    } catch (error) {
+      const message = String(error)
+      setCreaseExportError(`取消を完了できませんでした: ${message}`)
+      setCoreStatus(`展開図書き出しの後始末エラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function saveCurrentCreaseExport(warningsAcknowledged: boolean) {
+    const current = latestSnapshotRef.current
+    const preview = creaseExportPreview
+    if (!current || !preview || coreOperationRef.current) return
+    if (
+      current.project_id !== preview.expected_project_id
+      || current.revision !== preview.expected_revision
+    ) {
+      setCreaseExportError('編集内容が変わったため、書き出しデータを作り直してください。')
+      return
+    }
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('crease_export')
+    setCreaseExportError(null)
+    setCreaseExportNotice(null)
+    try {
+      const response = await saveCreasePatternExport(
+        preview.export_id,
+        current.project_id,
+        current.revision,
+        warningsAcknowledged,
+      )
+      if (response.canceled) {
+        setCreaseExportNotice('保存先の選択をキャンセルしました。確認画面から再試行できます。')
+        setCoreStatus('展開図の保存先選択をキャンセルしました')
+        return
+      }
+      setCreaseExportOpen(false)
+      setCreaseExportPreview(null)
+      setCreaseExportNotice(null)
+      setCoreStatus(`${preview.suggested_file_name}を書き出しました`)
+      requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
+    } catch (error) {
+      const message = String(error)
+      setCreaseExportError(`書き出せませんでした: ${message}`)
+      setCoreStatus(`展開図書き出しエラー: ${message}`)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function toggleBenchmark() {
     if (benchmarkRun) {
       setBenchmarkRun(null)
@@ -1494,6 +1658,15 @@ function App() {
             aria-haspopup="dialog"
           >
             {fileOperation === 'svg_import' ? '解析中…' : 'SVG取込'}
+          </button>
+          <button
+            ref={creaseExportButtonRef}
+            type="button"
+            disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
+            onClick={beginCreaseExport}
+            aria-haspopup="dialog"
+          >
+            {fileOperation === 'crease_export' ? '生成中…' : '書出し'}
           </button>
           <button
             type="button"
@@ -2527,6 +2700,22 @@ function App() {
           onValidate={(settings) => void validateSvgImportDraft(settings)}
           onCancel={() => void closeSvgImportDialog()}
           onImport={(settings) => void confirmSvgImport(settings)}
+        />
+      )}
+
+      {creaseExportOpen && (
+        <CreaseExportDialog
+          format={creaseExportFormat}
+          preview={creaseExportPreview}
+          busy={coreBusy}
+          error={creaseExportError}
+          notice={creaseExportNotice}
+          onFormatChange={changeCreaseExportFormat}
+          onRetry={() => void prepareCreaseExport(creaseExportFormat)}
+          onSave={(warningsAcknowledged) => {
+            void saveCurrentCreaseExport(warningsAcknowledged)
+          }}
+          onCancel={() => void closeCreaseExportDialog()}
         />
       )}
 

@@ -1,5 +1,6 @@
 //! Versioned persistence and interchange adapters.
 
+mod crease_pattern_export;
 mod fold;
 mod ori2;
 mod svg;
@@ -11,6 +12,14 @@ use ori_domain::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use crease_pattern_export::{
+    CreasePatternExportArtifact, CreasePatternExportEndpoint, CreasePatternExportError,
+    CreasePatternExportFormat, CreasePatternExportLimits,
+    MAX_CREASE_PATTERN_EXPORT_BOUNDARY_VERTICES, MAX_CREASE_PATTERN_EXPORT_BYTES,
+    MAX_CREASE_PATTERN_EXPORT_EDGES, MAX_CREASE_PATTERN_EXPORT_INTERSECTION_CANDIDATES,
+    MAX_CREASE_PATTERN_EXPORT_TITLE_CHARS, MAX_CREASE_PATTERN_EXPORT_VERTICES,
+    export_crease_pattern, export_crease_pattern_with_limits,
+};
 pub use fold::{
     FoldAssignmentCounts, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionError,
     FoldConversionOptions, FoldCreasePatternConversion, FoldEdgeAssignment, FoldFrameUnit,

@@ -10,6 +10,11 @@ import type {
   SvgImportSettingsDraft,
   SvgImportSettingsValidation,
 } from './svgImport.ts'
+import type {
+  CreasePatternExportFormat,
+  CreasePatternExportPreview,
+  CreasePatternExportSaveResponse,
+} from './creaseExport.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -118,6 +123,10 @@ export type FoldImportPreviewResponse = {
 export type SvgImportPreviewResponse = {
   canceled: boolean
   preview: SvgImportPreview | null
+}
+
+export type CreasePatternExportPreviewResponse = {
+  preview: CreasePatternExportPreview
 }
 
 export type EdgeIntersectionResponse = {
@@ -368,6 +377,36 @@ export function saveProject() {
 
 export function saveProjectAs() {
   return invoke<ProjectFileResponse>('save_project_as')
+}
+
+export function previewCreasePatternExport(
+  expectedProjectId: string,
+  expectedRevision: number,
+  format: CreasePatternExportFormat,
+) {
+  return invoke<CreasePatternExportPreviewResponse>('preview_crease_pattern_export', {
+    expectedProjectId,
+    expectedRevision,
+    format,
+  })
+}
+
+export function saveCreasePatternExport(
+  exportId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+  warningsAcknowledged: boolean,
+) {
+  return invoke<CreasePatternExportSaveResponse>('save_crease_pattern_export', {
+    exportId,
+    expectedProjectId,
+    expectedRevision,
+    warningsAcknowledged,
+  })
+}
+
+export function cancelCreasePatternExport(exportId: string) {
+  return invoke<void>('cancel_crease_pattern_export', { exportId })
 }
 
 export function previewFoldImport() {

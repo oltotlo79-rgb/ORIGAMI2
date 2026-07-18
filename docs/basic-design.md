@@ -595,6 +595,29 @@ native file dialog
 - X/T接点と外周接点をexactな交点で分割する。許容差snap、隙間補修、共線重複の推測統合は行わない。
 - DTD/entity宣言を拒否し、raw XML、path、実ファイル名をWebViewへ渡さない。opaque stage IDと開始時project identityを再照合し、取消・失敗・stale操作では既存projectを変更しない。
 
+### 12.3 FOLD/SVG展開図書き出し
+
+現在の一枚紙projectを、FOLD 1.2または静的SVG直線図として書き出す。形式別field、線種対応、情報損失、資源上限、stage、原子的保存、受入試験の正本は[展開図書き出し契約](crease-pattern-export-contract.md)とする。
+
+```text
+project instance・ID・revision・形式を固定
+  → bounded validation / deterministic serialization
+  → native memoryへ最新1世代だけstage
+  → opaque ID・件数・サイズ・警告をpreview
+  → 利用者が情報損失を明示確認
+  → native保存dialog
+  → identity/revision/tokenを再照合
+  → 同一directoryの一時fileへwrite・sync・同一handle再読込
+  → atomic replace
+```
+
+- WebViewへraw FOLD/SVG bytes、保存path、project path、file handleを渡さず、保存commandもopaque ID、期待project ID・revision、警告確認flagだけを受け取る。
+- FOLDはmmの2D `creasePattern`として`B/M/V/F/C`を出力する。SVGは1 unitを1 mmとして、各直線へcanonicalな`data-origami-kind`を付ける。
+- 紙の見た目、ID、履歴、3D表示、camera、折り手順、線がない場合の切断許可など形式が保持しない情報を保存dialogより前に表示する。
+- 生成中の旧世代完了、旧token、別project、別instance、stale revision、未確認警告を拒否する。dialog取消では同一stageを再試行でき、成功時だけ一度消費する。
+- 書き出しは`.ori2`保存とは独立し、projectのdirty、保存先、revision、Undo/Redoを変えない。
+- PDF/DXFと折り図PDFは未実装であり、IO-006は部分実装を維持する。
+
 ## 13. セキュリティ設計
 
 - Tauri capabilityをファイル選択、設定、更新確認等へ限定する。

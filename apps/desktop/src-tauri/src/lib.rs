@@ -1,3 +1,4 @@
+mod crease_export;
 mod diagnostics;
 
 use std::{
@@ -12,6 +13,10 @@ use std::{
     },
 };
 
+use crease_export::{
+    CreaseExportState, cancel_crease_pattern_export, preview_crease_pattern_export,
+    save_crease_pattern_export,
+};
 use diagnostics::{
     DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
     save_diagnostics_share_preview,
@@ -4246,6 +4251,7 @@ pub fn run() {
         .manage(AppState(Mutex::new(initial_project_state())))
         .manage(FoldImportState::default())
         .manage(SvgImportState::default())
+        .manage(CreaseExportState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
@@ -4256,6 +4262,9 @@ pub fn run() {
             open_project,
             save_project,
             save_project_as,
+            preview_crease_pattern_export,
+            save_crease_pattern_export,
+            cancel_crease_pattern_export,
             preview_fold_import,
             apply_fold_import,
             cancel_fold_import,

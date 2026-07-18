@@ -237,6 +237,8 @@ FOLD取込と同じ状態契約を用いる。
 - 穴、複数外周、複数枚の紙
 - 許容誤差付き端点merge、自動gap修復
 - SVG layer、style、ID、任意metadataのproject永続化
-- SVG書出しとSVGへのlossless round-trip
+- SVG由来のlayer、style、ID、任意metadataを保持するlossless round-trip
 
 本契約の対応subset外は、推測変換せず警告または拒否する。将来subsetを拡張する場合は、許可list、情報損失、資源上限、受入試験を同時に更新する。
+
+ORIGAMI2の現在展開図を静的SVGとして書き出す範囲は[展開図書き出し契約](crease-pattern-export-contract.md)で定める。`data-origami-kind`、座標、外周、Cutを再取込できるが、ORIGAMI2 UUIDや元SVGのstyle metadataをlosslessに戻すものではない。

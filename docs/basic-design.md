@@ -262,6 +262,8 @@ solve(current geometry, constraints, edited targets, policy)
 
 SIM-010はVAL-003の平坦折り判定が管理する層順序を正本とし、その管理機能が完成した後に実装する。現在の3D姿勢に対して一直線の折り線を指定し、その線をまたぐ重なり層を一括して動かす。成功した1操作は、同一command transaction内で次を確定する。
 
+面系譜、層別山谷割当て、衝突停止、層順再証明、過去step移行、Undo/Redoを含む詳細なauthorityと失敗時不変条件は[折り重ね操作の原子的トランザクション設計](stacked-fold-design.md)を正本とする。
+
 - 対象となった層、固定側、移動側および操作前後の完全姿勢
 - 元の紙へ逆写像した層ごとの直線折り線と山谷割当て
 - 展開図のrevision更新

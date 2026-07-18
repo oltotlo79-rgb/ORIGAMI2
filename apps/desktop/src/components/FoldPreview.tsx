@@ -18,9 +18,7 @@ import {
   type FoldPreviewAngleDragState,
 } from '../lib/foldPreviewAngleDrag'
 import {
-  applyFoldPreviewCameraCommand,
   createFoldPreviewSelectionGesture,
-  resolveFoldPreviewCameraCommand,
 } from '../lib/foldPreviewCameraInteraction'
 import {
   type FoldPreviewCollisionAdjacency,
@@ -68,8 +66,9 @@ import {
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
 import {
-  resolveFoldPreviewKeyboardSelection,
-} from '../lib/foldPreviewKeyboardSelection'
+  createFoldPreviewKeyboardCoordinator,
+  type FoldPreviewKeyboardCoordinator,
+} from '../lib/foldPreviewKeyboardCoordinator'
 import {
   createLatestFrameTask,
   type LatestFrameTask,
@@ -657,6 +656,7 @@ export function FoldPreview({
     let lostPointerCaptureHandler: ((event: PointerEvent) => void) | null = null
     let windowBlurHandler: (() => void) | null = null
     let keyDownHandler: ((event: KeyboardEvent) => void) | null = null
+    let keyboardCoordinator: FoldPreviewKeyboardCoordinator | null = null
     let runtime: PreviewRuntime | null = null
     let poseFrameTask: LatestFrameTask<PendingPose> | null = null
     let treeDirectPoseFrameTask:
@@ -874,6 +874,8 @@ export function FoldPreview({
 
     const dispose = () => {
       if (disposed) return
+      keyboardCoordinator?.dispose()
+      keyboardCoordinator = null
       invalidateCorrectionAnalysis()
       if (treeMotionOwnerState) {
         const ownerPlan = transitionFoldPreviewTreeMotionOwner(
@@ -3549,86 +3551,37 @@ export function FoldPreview({
       canvas.addEventListener('lostpointercapture', lostPointerCaptureHandler)
       window.addEventListener('blur', windowBlurHandler)
 
-      keyDownHandler = (event) => {
-        if (event.target !== host) return
-        if (
-          !isCleanAngleDragState(angleDragState)
-          || !isCleanPhysicalGrabState(physicalGrabState)
-        ) {
-          resetFoldGestures('reset')
-          event.preventDefault()
-          return
-        }
-        if (latestModelRef.current !== model) return
-        const selectHingeCallback = onSelectHingeRef.current
-        const chooseFixedFaceCallback = onChooseFixedFaceRef.current
-        const selectionResult = resolveFoldPreviewKeyboardSelection({
-          event,
-          hingeIds: keyboardHingeIds,
-          faceIds: keyboardFaceIds,
-          selectedHingeId: selectedHingeIdRef.current,
-          fixedFaceId: resolvedFixedFaceIdRef.current,
-          hasSelectHingeCallback: Boolean(selectHingeCallback),
-          hasChooseFixedFaceCallback: Boolean(chooseFixedFaceCallback),
-        })
-        if (selectionResult.handled) {
-          let announcement: string | null = null
-          try {
-            const selectionCommand = selectionResult.command
-            if (selectionCommand.kind === 'select_hinge') {
-              const index = keyboardHingeIds.indexOf(
-                selectionCommand.edgeId,
-              )
-              if (!selectHingeCallback || index < 0) return
-              selectHingeCallback(selectionCommand.edgeId)
-              announcement =
-                `ヒンジ ${index + 1}/${keyboardHingeIds.length} を選択しました`
-            } else if (selectionCommand.kind === 'choose_fixed_face') {
-              const index = keyboardFaceIds.indexOf(
-                selectionCommand.faceId,
-              )
-              if (!chooseFixedFaceCallback || index < 0) return
-              chooseFixedFaceCallback(selectionCommand.faceId)
-              announcement =
-                `面 ${index + 1}/${keyboardFaceIds.length} を固定面に設定しました`
-            } else {
-              if (!selectHingeCallback) return
-              selectHingeCallback(null)
-              announcement = 'ヒンジ選択を解除しました'
-            }
-          } catch {
-            return
-          }
-          const announcementText = announcement
-          if (
-            announcementText
-            && !disposed
-            && latestModelRef.current === model
-          ) {
-            setKeyboardSelectionAnnouncement((current) => ({
-              model,
-              sequence: (current?.sequence ?? 0) + 1,
-              text: announcementText,
-            }))
-          }
-          event.preventDefault()
-          return
-        }
-        const command = resolveFoldPreviewCameraCommand(event)
-        if (!command) return
-        try {
-          if (!applyFoldPreviewCameraCommand(
-            createdControls,
-            command,
-            canvas.clientHeight,
-          )) return
-          event.preventDefault()
-        } catch {
+      const createdKeyboardCoordinator = createFoldPreviewKeyboardCoordinator({
+        host,
+        hingeIds: keyboardHingeIds,
+        faceIds: keyboardFaceIds,
+        foldGesturesAreClean: () =>
+          isCleanAngleDragState(angleDragState)
+          && isCleanPhysicalGrabState(physicalGrabState),
+        resetFoldGestures: () => resetFoldGestures('reset'),
+        contextIsCurrent: () => latestModelRef.current === model,
+        canAnnounce: () => !disposed && latestModelRef.current === model,
+        getSelectedHingeId: () => selectedHingeIdRef.current,
+        getFixedFaceId: () => resolvedFixedFaceIdRef.current,
+        getSelectHingeCallback: () => onSelectHingeRef.current,
+        getChooseFixedFaceCallback: () => onChooseFixedFaceRef.current,
+        announce: (text) => {
+          setKeyboardSelectionAnnouncement((current) => ({
+            model,
+            sequence: (current?.sequence ?? 0) + 1,
+            text,
+          }))
+        },
+        cameraControls: createdControls,
+        getViewportHeight: () => canvas.clientHeight,
+        onCameraFailure: () => {
           reportUnexpected('fold_preview.camera')
           dispose()
           setRenderError('3Dカメラ操作を安全に継続できませんでした')
-        }
-      }
+        },
+      })
+      keyboardCoordinator = createdKeyboardCoordinator
+      keyDownHandler = (event) => createdKeyboardCoordinator.handleKeyDown(event)
       host.addEventListener('keydown', keyDownHandler)
       runtime = {
         schedulePose,

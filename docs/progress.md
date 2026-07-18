@@ -26,6 +26,11 @@
 
 ## 完了
 
+- Claudeコードレビューの構造提案へ段階対応し、Tauri `lib.rs`から`.ori2`読込・検証・同一directory staging・原子的publishを`project_persistence`へ分離した。Windowsの相対pathを含むdesktop native 194件で、拡張子補正、既存先拒否、原子的置換、失敗時清掃、project state更新条件を維持した
+- `FoldPreview`からkeyboard選択・camera操作のcoordinatorを分離し、scene generation、re-entry、dispose、hostile accessor、callback例外を境界ごとに失効させる専用22件を追加した。frontend Node 912件、DOM 35件、本番build、lintを通過し、次のSIM-010 UIを巨大effectへ直接追加しない責務境界を作った
+- SIM-010の最初の内部基盤として`face_lineage_v1`を追加した。source/target topologyの再構築、凸sourceへのtarget全頂点の厳密包含、binary64由来のsource別面積保存、project/revision/fingerprint/material registry、決定順、資源上限を証明し、core 130件とcompile-fail doctestで固定した。これは一本の直線差分、層順authority、山谷割当て、衝突経路、timeline、原子的commitをまだ保証しないため、SIM-010の利用者経路と完成率には計上していない
+- SIM-010を、現在のnative layer-order slot認証、3D直線の逆写像、層別山谷線、face lineage、連続衝突停止、target層順再証明、全timeline移行、pattern・姿勢・層順・timelineの一括commitまで成功して初めて一操作とする[原子的トランザクション設計](stacked-fold-design.md)へ固定した
+- コミット`89ef51b`の[CI #216](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29653109030)でfrontend、Windows/macOS Rust、Windows NSIS bundle、macOS `.app` bundleの全5 jobが8分33秒で成功し、検証済みWindows installer artifactを生成した
 - 利用者報告の共有頂点A、180度重なりB、辺中点からの山山V字を実寸400 mm fixtureで再現し、厚さ`0 / 0.1 / 3 mm`と角度表を固定した。保存binary64座標のBigInt厳密横断証明で、退化三角柱・近平行SATから判定保留へ退避していた実在交差を貫通へ確定し、点・共有辺だけの接触は貫通へ昇格しない
 - BigInt厳密横断証明は不変姿勢の1解析につき最大256回へ制限し、one-shot、同期drain、増分job、full scanの全経路でcandidate・stepをまたぐ同一budgetを共有する。超過pairはヒンジ許容へ落とさず「交差の可能性・判定保留」としてblocking表示し、attempt・省略数をdeep-frozen snapshotへ記録する
 - 全体平坦折りsolverを128 MiBの決定論的な論理証明storage budgetへ統合し、`TupleConstraint`本体と内側buffer、固定代入、返却assignment、Union-Findと連続bufferによる連結成分、domain、明示stack、rollback trail、元問題と検証再生成問題の同時保持を会計した。対象確保はchecked算術と`try_reserve`の前に上限判定し、再確保時の旧・新buffer peak、1 byte不足、overflow、deadline・cancel優先を回帰する。この値をallocator metadataやBigInt objectを含む実heap/RSSのhard上限とは呼ばず、構造件数・bit長・演算回数の別上限と組み合わせる

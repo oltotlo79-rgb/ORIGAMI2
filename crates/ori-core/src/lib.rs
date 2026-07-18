@@ -3,6 +3,7 @@ use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId
 mod editor;
 mod fold_model_fingerprint;
 mod sheet;
+mod stacked_fold;
 mod topology;
 mod validation;
 
@@ -50,6 +51,13 @@ pub use ori_topology::{
     analyze_local_flat_foldability_with_checkpoint,
 };
 pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
+pub use stacked_fold::{
+    DEFAULT_MAX_FACE_LINEAGE_BOUNDARY_HALF_EDGES, DEFAULT_MAX_FACE_LINEAGE_EXACT_CONTAINMENT_TESTS,
+    DEFAULT_MAX_FACE_LINEAGE_FACE_PAIRS, DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES,
+    DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES, FaceLineageError, FaceLineageInput, FaceLineageLimits,
+    FaceLineageRecord, FaceLineageResource, FaceLineageTopology, FaceLineageV1,
+    prepare_face_lineage_v1,
+};
 pub use topology::{EditorTopology, TopologyAnalysisInput};
 pub use validation::EditorValidation;
 

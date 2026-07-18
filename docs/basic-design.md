@@ -583,6 +583,7 @@ thumbnails/
 ```
 
 - `manifest.json`に形式バージョン、必要機能、ファイルハッシュを持たせる。
+- container v1のwriterはentry順を`manifest.json`、`project.json`に固定し、Deflate level 6、DOS timestamp `1980-01-01 00:00:00`で書く。同一`ProjectDocument`の反復保存と、読込後に変更せず再保存した結果はbyte-for-byteで一致する。頂点・辺・手順等の`Vec`順はprojectの順序付きデータとして保持し、別の保存順を同一視するcanonical化は行わない。
 - 保存は同一ディレクトリの一時ファイルへ書き、検証後に置換する。
 - 展開フォルダー形式は同一スキーマを使用する。
 - 未知フィールドは可能な限り保持し、破壊的な旧版保存を警告する。

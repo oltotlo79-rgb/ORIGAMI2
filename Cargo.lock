@@ -3471,6 +3471,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18dfaaeddcb932337b5e7866ee7d0ce9b76d2fd092997146f187ec09b4558a50"
 dependencies = [
  "deranged",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde_core",
@@ -4738,6 +4739,7 @@ dependencies = [
  "flate2",
  "indexmap 2.14.0",
  "memchr",
+ "time",
  "typed-path",
 ]
 

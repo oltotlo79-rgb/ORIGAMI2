@@ -18,3 +18,8 @@ svgtypes = { version = "=0.16.1", default-features = false, features = ["std"] }
 thiserror.workspace = true
 ttf-parser = "0.25.1"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+# Exercise the feature-unified code path where `FileOptions::default()` uses
+# the current clock, so the `.ori2` determinism test detects an implicit timestamp.
+zip = { version = "8.6", default-features = false, features = ["time"] }

@@ -7,7 +7,7 @@ use std::io::{Cursor, Read, Write};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
+use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{FormatError, ProjectDocument, read_project_json, write_project_json};
 
@@ -18,6 +18,7 @@ pub const ORI2_PROJECT_PATH: &str = "project.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 
 const REQUIRED_ENTRY_COUNT: usize = 2;
+const ORI2_DEFLATE_LEVEL: i64 = 6;
 const END_OF_CENTRAL_DIRECTORY_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 const END_OF_CENTRAL_DIRECTORY_SIZE: usize = 22;
 const MAX_ZIP_COMMENT_SIZE: usize = u16::MAX as usize;
@@ -140,8 +141,10 @@ pub fn write_project_ori2_with_limits(
 
     let cursor = Cursor::new(Vec::new());
     let mut archive = ZipWriter::new(cursor);
-    let options = SimpleFileOptions::default()
+    let options = SimpleFileOptions::DEFAULT
         .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(ORI2_DEFLATE_LEVEL))
+        .last_modified_time(DateTime::DEFAULT)
         .unix_permissions(0o644);
 
     archive.start_file(ORI2_MANIFEST_PATH, options)?;
@@ -518,13 +521,12 @@ fn is_sha256_hex(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use ori_domain::{
         AssetId, CreasePattern, Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle,
         InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId, Paper,
         PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
     };
-
-    use super::*;
 
     fn sample_document() -> ProjectDocument {
         let start = VertexId::new();
@@ -638,6 +640,60 @@ mod tests {
         assert_eq!(archive.len(), REQUIRED_ENTRY_COUNT);
         assert!(archive.by_name(ORI2_MANIFEST_PATH).is_ok());
         assert!(archive.by_name(ORI2_PROJECT_PATH).is_ok());
+    }
+
+    #[test]
+    fn writer_is_byte_deterministic_and_fixes_zip_metadata() {
+        assert_eq!(
+            ORI2_DEFLATE_LEVEL, 6,
+            "container v1 fixes the compression level"
+        );
+        let mut original = sample_document();
+        add_sample_instruction(&mut original);
+
+        let first = write_project_ori2(&original).expect("first .ori2 write");
+        for attempt in 2..=3 {
+            let actual = write_project_ori2(&original).expect("repeated .ori2 write");
+            assert_eq!(
+                actual, first,
+                "write attempt {attempt} must produce identical archive bytes"
+            );
+        }
+
+        let restored = read_project_ori2(&first).expect("read deterministic .ori2");
+        let rewritten = write_project_ori2(&restored).expect("rewrite restored .ori2");
+        assert_eq!(
+            rewritten, first,
+            "read then write must preserve the canonical archive bytes"
+        );
+
+        let mut archive = ZipArchive::new(Cursor::new(&first)).expect("open generated ZIP");
+        let metadata = (0..archive.len())
+            .map(|index| {
+                let entry = archive.by_index(index).expect("generated entry");
+                (
+                    entry.name().to_owned(),
+                    entry.compression(),
+                    entry.last_modified(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            metadata,
+            [
+                (
+                    ORI2_MANIFEST_PATH.to_owned(),
+                    CompressionMethod::Deflated,
+                    Some(DateTime::DEFAULT),
+                ),
+                (
+                    ORI2_PROJECT_PATH.to_owned(),
+                    CompressionMethod::Deflated,
+                    Some(DateTime::DEFAULT),
+                ),
+            ],
+            "entry order, compression, and DOS timestamp are part of the .ori2 byte contract"
+        );
     }
 
     #[test]

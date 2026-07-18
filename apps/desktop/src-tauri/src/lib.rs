@@ -11,7 +11,10 @@ use std::{
     },
 };
 
-use diagnostics::{DiagnosticsState, record_unexpected_diagnostic};
+use diagnostics::{
+    DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
+    save_diagnostics_share_preview,
+};
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
     PaperValidationIssue, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
@@ -1884,7 +1887,9 @@ pub fn run() {
             connect_t_junction,
             split_boundary_edge,
             remove_boundary_vertex,
-            record_unexpected_diagnostic
+            record_unexpected_diagnostic,
+            prepare_diagnostics_share_preview,
+            save_diagnostics_share_preview
         ])
         .build(tauri::generate_context!())
         .expect("failed to build ORIGAMI2 desktop application");

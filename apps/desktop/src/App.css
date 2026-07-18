@@ -65,7 +65,8 @@ button { color: inherit; }
   background: rgb(20 29 36 / .56);
   backdrop-filter: blur(2px);
 }
-.new-project-dialog {
+.new-project-dialog,
+.diagnostics-dialog {
   width: min(620px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
@@ -74,7 +75,9 @@ button { color: inherit; }
   background: var(--panel-strong);
   box-shadow: 0 18px 54px rgb(15 25 34 / .3);
 }
-.new-project-dialog > header {
+.diagnostics-dialog { width: min(760px, calc(100vw - 48px)); }
+.new-project-dialog > header,
+.diagnostics-dialog > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -82,7 +85,8 @@ button { color: inherit; }
   padding: 20px 22px 14px;
   border-bottom: 1px solid var(--border);
 }
-.new-project-dialog h2 { margin: 3px 0 0; font-size: 21px; }
+.new-project-dialog h2,
+.diagnostics-dialog h2 { margin: 3px 0 0; font-size: 21px; }
 .dialog-eyebrow {
   color: var(--accent);
   font-size: 11px;
@@ -129,16 +133,51 @@ button { color: inherit; }
 .dialog-note, .dialog-error { margin: 0; font-size: 12px; line-height: 1.55; }
 .dialog-note { color: var(--muted); }
 .dialog-error { padding: 8px 10px; border-radius: 5px; background: #f9e2e2; color: #913535; }
-.new-project-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
-.new-project-dialog footer button {
+.new-project-dialog footer,
+.diagnostics-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+.new-project-dialog footer button,
+.diagnostics-dialog footer button {
   min-width: 94px;
   padding: 7px 13px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--panel-strong);
 }
-.new-project-dialog footer .primary { border-color: var(--accent); background: var(--accent); color: white; }
-.new-project-dialog button:disabled, .new-project-dialog input:disabled { opacity: .5; cursor: not-allowed; }
+.new-project-dialog footer .primary,
+.diagnostics-dialog footer .primary { border-color: var(--accent); background: var(--accent); color: white; }
+.new-project-dialog button:disabled,
+.new-project-dialog input:disabled,
+.diagnostics-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.diagnostics-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 22px 22px;
+  overflow: auto;
+}
+.diagnostics-disclosure { display: grid; gap: 5px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.diagnostics-disclosure p, .diagnostics-loading, .diagnostics-notice { margin: 0; }
+.diagnostics-json-label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.diagnostics-json {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 300px;
+  max-height: 50vh;
+  resize: vertical;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border-dark);
+  border-radius: 5px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  tab-size: 2;
+}
+.diagnostics-notice { min-height: 19px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 
 .workspace {
   min-height: 0;
@@ -477,9 +516,16 @@ button { color: inherit; }
 .step.add { border-style: dashed; color: var(--muted); }
 .statusbar { display: flex; align-items: center; gap: 22px; padding: 0 10px; border-top: 1px solid var(--border-dark); background: #f5f7f8; font-size: 11px; color: var(--muted); }
 .status-spacer { flex: 1; }
-.benchmark-button { border: 1px solid var(--border); background: transparent; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
-.benchmark-button:disabled { opacity: .5; cursor: wait; }
+.benchmark-button, .diagnostics-button { border: 1px solid var(--border); background: transparent; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
+.benchmark-button:disabled, .diagnostics-button:disabled { opacity: .5; cursor: wait; }
 .benchmark-status { min-width: 0; max-width: min(58vw, 760px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 800px) {
+  .dialog-backdrop { padding: 12px; }
+  .diagnostics-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+  .diagnostics-dialog footer { flex-wrap: wrap; }
+  .diagnostics-json { min-height: 220px; }
+}
 
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1b2228; --panel: #252d34; --panel-strong: #2b343c; --border: #3c4852; --border-dark: #4d5963; --text: #e7edf1; --muted: #a0adb7; --accent-soft: #173f4c; }

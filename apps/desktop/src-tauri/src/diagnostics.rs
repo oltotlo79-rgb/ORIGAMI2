@@ -11,6 +11,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::DialogExt;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -27,6 +28,7 @@ const DIAGNOSTICS_SCHEMA: &str = "origami2.redacted-diagnostics.v1";
 const MAX_DIAGNOSTICS_BYTES: usize = 8 * 1024;
 const MAX_COUNT: u8 = 65;
 const GENERIC_DIAGNOSTICS_ERROR: &str = "diagnostics unavailable";
+const DIAGNOSTICS_SHARE_FILE_NAME: &str = "ORIGAMI2-diagnostics.json";
 const STAGED_FILE_PREFIX: &str = ".redacted-diagnostics-v1-";
 const STAGED_FILE_SUFFIX: &str = ".tmp";
 const MAX_STALE_STAGE_SCAN_ENTRIES: usize = 512;
@@ -202,10 +204,38 @@ impl StoredDiagnostics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DiagnosticsError;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct DiagnosticsSharePreviewResponse {
+    preview_generation: u32,
+    json: String,
+    byte_length: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct DiagnosticsShareSaveResponse {
+    preview_generation: u32,
+    byte_length: u32,
+    canceled: bool,
+}
+
+#[derive(Clone)]
+struct CachedDiagnosticsSharePreview {
+    preview_generation: u32,
+    bytes: Arc<[u8]>,
+}
+
+#[derive(Default)]
+struct DiagnosticsSharePreviewCache {
+    last_generation: u32,
+    current: Option<CachedDiagnosticsSharePreview>,
+}
+
 pub(crate) struct DiagnosticsState {
     store: Mutex<DiagnosticsStore>,
     native_deliveries: [AtomicU8; DiagnosticScope::ALL.len()],
     persistence_gate: Arc<tauri::async_runtime::Mutex<()>>,
+    share_preview_cache: Mutex<DiagnosticsSharePreviewCache>,
+    share_save_gate: Arc<tauri::async_runtime::Mutex<()>>,
 }
 
 struct DiagnosticsStore {
@@ -240,6 +270,8 @@ impl DiagnosticsState {
             }),
             native_deliveries: std::array::from_fn(|_| AtomicU8::new(0)),
             persistence_gate: Arc::new(tauri::async_runtime::Mutex::new(())),
+            share_preview_cache: Mutex::new(DiagnosticsSharePreviewCache::default()),
+            share_save_gate: Arc::new(tauri::async_runtime::Mutex::new(())),
         }
     }
 
@@ -256,6 +288,49 @@ impl DiagnosticsState {
             .lock()
             .map_err(|_| DiagnosticsError)?
             .record(scope)
+    }
+
+    fn prepare_share_preview(&self) -> Result<DiagnosticsSharePreviewResponse, DiagnosticsError> {
+        let counts = self.store.lock().map_err(|_| DiagnosticsError)?.counts;
+        let bytes = serialize_canonical_diagnostics(&StoredDiagnostics::from_counts(&counts))?;
+        let byte_length = u32::try_from(bytes.len()).map_err(|_| DiagnosticsError)?;
+        let json = String::from_utf8(bytes.clone()).map_err(|_| DiagnosticsError)?;
+
+        let mut cache = self
+            .share_preview_cache
+            .lock()
+            .map_err(|_| DiagnosticsError)?;
+        let preview_generation = cache
+            .last_generation
+            .checked_add(1)
+            .ok_or(DiagnosticsError)?;
+        cache.last_generation = preview_generation;
+        cache.current = Some(CachedDiagnosticsSharePreview {
+            preview_generation,
+            bytes: Arc::from(bytes),
+        });
+
+        Ok(DiagnosticsSharePreviewResponse {
+            preview_generation,
+            json,
+            byte_length,
+        })
+    }
+
+    fn cached_share_preview(
+        &self,
+        preview_generation: u32,
+    ) -> Result<CachedDiagnosticsSharePreview, DiagnosticsError> {
+        let cache = self
+            .share_preview_cache
+            .lock()
+            .map_err(|_| DiagnosticsError)?;
+        let cached = cache.current.as_ref().ok_or(DiagnosticsError)?;
+        if cached.preview_generation != preview_generation {
+            return Err(DiagnosticsError);
+        }
+        validate_canonical_diagnostics(&cached.bytes)?;
+        Ok(cached.clone())
     }
 }
 
@@ -319,6 +394,115 @@ pub(crate) async fn record_unexpected_diagnostic(
     .map_err(|_| GENERIC_DIAGNOSTICS_ERROR)
 }
 
+#[tauri::command]
+pub(crate) async fn prepare_diagnostics_share_preview(
+    app_handle: AppHandle,
+) -> Result<DiagnosticsSharePreviewResponse, &'static str> {
+    let blocking_app_handle = app_handle.clone();
+    let persistence_gate = app_handle
+        .state::<DiagnosticsState>()
+        .persistence_gate
+        .clone();
+    let persistence_guard = persistence_gate.lock_owned().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _persistence_guard = persistence_guard;
+        blocking_app_handle
+            .state::<DiagnosticsState>()
+            .prepare_share_preview()
+    })
+    .await
+    .map_err(|_| GENERIC_DIAGNOSTICS_ERROR)?
+    .map_err(|_| GENERIC_DIAGNOSTICS_ERROR)
+}
+
+#[tauri::command]
+pub(crate) async fn save_diagnostics_share_preview(
+    preview_generation: u32,
+    app_handle: AppHandle,
+) -> Result<DiagnosticsShareSaveResponse, &'static str> {
+    save_diagnostics_share_preview_inner(preview_generation, app_handle)
+        .await
+        .map_err(|_| GENERIC_DIAGNOSTICS_ERROR)
+}
+
+async fn save_diagnostics_share_preview_inner(
+    preview_generation: u32,
+    app_handle: AppHandle,
+) -> Result<DiagnosticsShareSaveResponse, DiagnosticsError> {
+    let share_save_gate = app_handle
+        .state::<DiagnosticsState>()
+        .share_save_gate
+        .clone();
+    let share_save_guard = share_save_gate.lock_owned().await;
+    let cached = app_handle
+        .state::<DiagnosticsState>()
+        .cached_share_preview(preview_generation)?;
+
+    let Some(destination) = choose_diagnostics_share_destination(&app_handle).await? else {
+        return complete_diagnostics_share_save(cached, None, |_, _| Err(DiagnosticsError));
+    };
+
+    let persistence_gate = app_handle
+        .state::<DiagnosticsState>()
+        .persistence_gate
+        .clone();
+    let persistence_guard = persistence_gate.lock_owned().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _share_save_guard = share_save_guard;
+        let _persistence_guard = persistence_guard;
+        complete_diagnostics_share_save(cached, Some(destination), persist_canonical_diagnostics)
+    })
+    .await
+    .map_err(|_| DiagnosticsError)?
+}
+
+async fn choose_diagnostics_share_destination(
+    app_handle: &AppHandle,
+) -> Result<Option<PathBuf>, DiagnosticsError> {
+    let (sender, mut receiver) =
+        tauri::async_runtime::channel::<Result<Option<PathBuf>, DiagnosticsError>>(1);
+    let mut dialog = app_handle
+        .dialog()
+        .file()
+        .set_title("Save ORIGAMI2 diagnostics")
+        .set_file_name(DIAGNOSTICS_SHARE_FILE_NAME)
+        .add_filter("JSON", &["json"]);
+    if let Some(window) = app_handle.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |selected| {
+        let selected = selected
+            .map(|path| path.simplified().into_path().map_err(|_| DiagnosticsError))
+            .transpose();
+        let _ = sender.try_send(selected);
+    });
+    receiver.recv().await.ok_or(DiagnosticsError)?
+}
+
+fn complete_diagnostics_share_save<F>(
+    cached: CachedDiagnosticsSharePreview,
+    destination: Option<PathBuf>,
+    persist: F,
+) -> Result<DiagnosticsShareSaveResponse, DiagnosticsError>
+where
+    F: FnOnce(&Path, &[u8]) -> Result<(), DiagnosticsError>,
+{
+    validate_canonical_diagnostics(&cached.bytes)?;
+    let byte_length = u32::try_from(cached.bytes.len()).map_err(|_| DiagnosticsError)?;
+    let canceled = match destination {
+        Some(destination) => {
+            persist(&destination, &cached.bytes)?;
+            false
+        }
+        None => true,
+    };
+    Ok(DiagnosticsShareSaveResponse {
+        preview_generation: cached.preview_generation,
+        byte_length,
+        canceled,
+    })
+}
+
 fn load_counts(destination: &Path) -> Result<[u8; DiagnosticScope::ALL.len()], DiagnosticsError> {
     let file = File::open(destination).map_err(|_| DiagnosticsError)?;
     let mut bytes = Vec::with_capacity(MAX_DIAGNOSTICS_BYTES.min(1024));
@@ -336,16 +520,38 @@ fn persist_snapshot(
     destination: &Path,
     snapshot: &StoredDiagnostics,
 ) -> Result<(), DiagnosticsError> {
+    let bytes = serialize_canonical_diagnostics(snapshot)?;
+    persist_canonical_diagnostics(destination, &bytes)
+}
+
+fn serialize_canonical_diagnostics(
+    snapshot: &StoredDiagnostics,
+) -> Result<Vec<u8>, DiagnosticsError> {
     let bytes = serde_json::to_vec(snapshot).map_err(|_| DiagnosticsError)?;
+    validate_canonical_diagnostics(&bytes)?;
+    Ok(bytes)
+}
+
+fn validate_canonical_diagnostics(bytes: &[u8]) -> Result<(), DiagnosticsError> {
     if bytes.len() > MAX_DIAGNOSTICS_BYTES {
         return Err(DiagnosticsError);
     }
+    let stored: StoredDiagnostics = serde_json::from_slice(bytes).map_err(|_| DiagnosticsError)?;
+    stored.validated_counts()?;
+    if serde_json::to_vec(&stored).map_err(|_| DiagnosticsError)? != bytes {
+        return Err(DiagnosticsError);
+    }
+    Ok(())
+}
+
+fn persist_canonical_diagnostics(destination: &Path, bytes: &[u8]) -> Result<(), DiagnosticsError> {
+    validate_canonical_diagnostics(bytes)?;
     let parent = destination.parent().ok_or(DiagnosticsError)?;
     fs::create_dir_all(parent).map_err(|_| DiagnosticsError)?;
     let mut staged = StagedDiagnosticsFile::create(parent, destination)?;
     staged
         .file_mut()
-        .write_all(&bytes)
+        .write_all(bytes)
         .map_err(|_| DiagnosticsError)?;
     staged.file_mut().sync_all().map_err(|_| DiagnosticsError)?;
     staged
@@ -491,6 +697,7 @@ impl Drop for StagedDiagnosticsFile {
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::Cell,
         panic::{AssertUnwindSafe, catch_unwind},
         sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     };
@@ -657,6 +864,168 @@ mod tests {
                 .load(Ordering::Relaxed),
             0
         );
+    }
+
+    #[test]
+    fn share_preview_caches_exact_bytes_across_later_diagnostics() {
+        let directory = TestDirectory::new();
+        let destination = directory.path.join(DIAGNOSTICS_FILE_NAME);
+        let export = directory.path.join(DIAGNOSTICS_SHARE_FILE_NAME);
+        let state = test_state(destination);
+        state.record(DiagnosticScope::AppProjectSnapshot).unwrap();
+
+        let preview = state.prepare_share_preview().unwrap();
+        assert_eq!(preview.preview_generation, 1);
+        assert_eq!(
+            usize::try_from(preview.byte_length).unwrap(),
+            preview.json.len()
+        );
+        assert_eq!(
+            serde_json::to_value(&preview).unwrap(),
+            serde_json::json!({
+                "preview_generation": preview.preview_generation,
+                "json": preview.json,
+                "byte_length": preview.byte_length,
+            })
+        );
+        let cached = state
+            .cached_share_preview(preview.preview_generation)
+            .unwrap();
+        assert_eq!(cached.bytes.as_ref(), preview.json.as_bytes());
+
+        state.record(DiagnosticScope::FoldPreviewRender).unwrap();
+        let after_record = state
+            .cached_share_preview(preview.preview_generation)
+            .unwrap();
+        assert_eq!(after_record.bytes.as_ref(), preview.json.as_bytes());
+        let saved = complete_diagnostics_share_save(
+            after_record,
+            Some(export.clone()),
+            persist_canonical_diagnostics,
+        )
+        .unwrap();
+        assert_eq!(
+            saved,
+            DiagnosticsShareSaveResponse {
+                preview_generation: preview.preview_generation,
+                byte_length: preview.byte_length,
+                canceled: false,
+            }
+        );
+        assert_eq!(fs::read(export).unwrap(), preview.json.as_bytes());
+
+        let next = state.prepare_share_preview().unwrap();
+        assert_eq!(next.preview_generation, 2);
+        assert_ne!(next.json, preview.json);
+        assert!(
+            state
+                .cached_share_preview(preview.preview_generation)
+                .is_err()
+        );
+        assert!(state.cached_share_preview(next.preview_generation).is_ok());
+    }
+
+    #[test]
+    fn share_save_cancel_skips_writes_and_returns_only_fixed_metadata() {
+        let directory = TestDirectory::new();
+        let state = test_state(directory.path.join(DIAGNOSTICS_FILE_NAME));
+        let preview = state.prepare_share_preview().unwrap();
+        let cached = state
+            .cached_share_preview(preview.preview_generation)
+            .unwrap();
+        let writer_called = Cell::new(false);
+
+        let response = complete_diagnostics_share_save(cached, None, |_, _| {
+            writer_called.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(!writer_called.get());
+        assert_eq!(
+            response,
+            DiagnosticsShareSaveResponse {
+                preview_generation: preview.preview_generation,
+                byte_length: preview.byte_length,
+                canceled: true,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({
+                "preview_generation": preview.preview_generation,
+                "byte_length": preview.byte_length,
+                "canceled": true,
+            })
+        );
+        assert!(
+            state
+                .cached_share_preview(preview.preview_generation)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn share_preview_rejects_unknown_exhausted_and_oversized_cache_state() {
+        let directory = TestDirectory::new();
+        let state = test_state(directory.path.join(DIAGNOSTICS_FILE_NAME));
+        let first = state.prepare_share_preview().unwrap();
+        assert!(state.cached_share_preview(0).is_err());
+        assert!(
+            state
+                .cached_share_preview(first.preview_generation + 1)
+                .is_err()
+        );
+        let noncanonical = format!(" {}", first.json);
+        assert!(validate_canonical_diagnostics(noncanonical.as_bytes()).is_err());
+
+        {
+            let mut cache = state.share_preview_cache.lock().unwrap();
+            cache.last_generation = u32::MAX;
+        }
+        assert_eq!(state.prepare_share_preview(), Err(DiagnosticsError));
+        assert!(state.cached_share_preview(first.preview_generation).is_ok());
+
+        {
+            let mut cache = state.share_preview_cache.lock().unwrap();
+            cache.current.as_mut().unwrap().bytes =
+                Arc::from(vec![b'x'; MAX_DIAGNOSTICS_BYTES + 1]);
+        }
+        assert!(
+            state
+                .cached_share_preview(first.preview_generation)
+                .is_err()
+        );
+        assert_eq!(GENERIC_DIAGNOSTICS_ERROR, "diagnostics unavailable");
+    }
+
+    #[test]
+    fn failed_share_write_preserves_the_cached_preview_and_exposes_no_path() {
+        let directory = TestDirectory::new();
+        let destination = directory.path.join(DIAGNOSTICS_FILE_NAME);
+        let failed_destination = directory.path.join("selected-private-path");
+        fs::create_dir(&failed_destination).unwrap();
+        let state = test_state(destination);
+        let preview = state.prepare_share_preview().unwrap();
+        let cached = state
+            .cached_share_preview(preview.preview_generation)
+            .unwrap();
+
+        assert_eq!(
+            complete_diagnostics_share_save(
+                cached,
+                Some(failed_destination.clone()),
+                persist_canonical_diagnostics,
+            ),
+            Err(DiagnosticsError)
+        );
+        assert!(failed_destination.is_dir());
+        assert!(
+            state
+                .cached_share_preview(preview.preview_generation)
+                .is_ok()
+        );
+        assert!(!GENERIC_DIAGNOSTICS_ERROR.contains("selected-private-path"));
     }
 
     #[test]
@@ -928,6 +1297,20 @@ mod tests {
         assert_eq!(
             state.record(DiagnosticScope::AppUnhandledRejection),
             Err(DiagnosticsError)
+        );
+        assert_eq!(state.prepare_share_preview(), Err(DiagnosticsError));
+
+        let cache_state = test_state(directory.path.join("cache-poison.json"));
+        let preview = cache_state.prepare_share_preview().unwrap();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = cache_state.share_preview_cache.lock().unwrap();
+            panic!("poison diagnostics share cache");
+        }));
+        assert_eq!(cache_state.prepare_share_preview(), Err(DiagnosticsError));
+        assert!(
+            cache_state
+                .cached_share_preview(preview.preview_generation)
+                .is_err()
         );
         assert_eq!(GENERIC_DIAGNOSTICS_ERROR, "diagnostics unavailable");
     }

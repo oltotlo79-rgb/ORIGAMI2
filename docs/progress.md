@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約26.8%（2026-07-18、暫定の重み付き概算）**
+**全体完成率: 約27.3%（2026-07-18、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 86件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows/macOS配布を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 86件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合した26.44%を基準に、監査後に利用者へ接続した単一ヒンジ補正候補の解析専用UIを加えた算術結果26.80%を小数第1位へ丸めて表示している。入力値自体が概数なので、26.80%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合した26.44%を基準に、単一ヒンジ補正候補の解析専用UIで0.36ポイント、端末内redacted diagnosticsの閲覧・同一内容手動保存UIで0.50ポイントを加えた算術結果27.30%を小数第1位へ丸めて表示している。入力値自体が概数なので、27.30%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -20,16 +20,16 @@
 | 折り可能性・経路探索 | 18% | 10% | 1.80% | 1ヒンジCCDと、単一ヒンジ補正候補の解析専用UIを接続。候補3Dプレビュー・明示適用、川崎・前川、平坦折り、一般経路探索は未着手 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 14% | 0.70% | 高品質な`.ori2`読込・保存は実装。SVG/FOLD/DXF/OBJ/STL/glTF/PDFは未着手 |
-| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 720件・Windows Rust 317件とWindows/macOS CI、環境情報を含まないredacted diagnosticsのメモリ内集計・端末内保存基盤は実装。i18n、設定、診断の閲覧・手動共有、更新、GitHub Releases配布を残す |
+| 多言語・設定・配布・QA | 5% | 40% | 2.00% | frontend 732件・Windows Rust 321件、Windows/macOS CI、環境・作品情報を含まないredacted diagnosticsの端末内保存・正確な内容確認・同一JSON手動保存を実装。i18n、設定、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **26.80%** | — |
+| **合計** | **100%** | — | **27.30%** | — |
 
 ## 完了
 
 - 第三者監査を現在コードへ再照合し、UI未接続基盤・研究実装・QA件数を利用者向け機能完成率へ直接加算しない方式へ是正。数式・幾何制約をUI基準の0%へ補正した暫定概算26.44%へ更新し、採用・条件付き採用・不採用の根拠を`docs/audit-assessment-2026-07-18.md`へ記録
 - 監査後、単一ヒンジ補正候補の静的解析と候補別連続経路解析を4段階の増分jobへ統合し、1 RAFにつき1 stepで進めるgeneration付きcoordinatorを`FoldPreview`へ接続。作業中・対応範囲内での候補なし・判定不能・認定済みを分け、request・姿勢・選択・固定面・紙厚の変更では旧結果をstaleとして先に無効化
 - 補正解析UIへ渡すのは切り離した表示DTOだけとし、exact terminal lease、motion context、binding、完全角度vector、適用tokenをReact stateへ流出させない。認定結果も解析専用で、`sceneApplied: false`・`autoApplicable: false`を維持し、候補3Dプレビューやscene・設計dataへの適用は行わない
-- MUST 86件をUI利用基準で実装済み20・部分実装23・未着手43へ再集計し、根拠と不足を`docs/requirements-status.md`へ固定
+- MUST 86件をUI利用基準で実装済み23・部分実装23・未着手40へ更新し、根拠と不足を`docs/requirements-status.md`へ固定
 - 補正解析authority 5系統のregistry・deep freezeをmodule初期化時のintrinsicへ固定し、後差替えによる可変な真正token生成を遮断。terminal full-scan bindingは包含するcanonical blocked terminalの公開確定後にだけ認証し、再入時は未公開bindingを認証せず取消
 - Undo/Redoは履歴entryの適用成功後だけstack間を移動し、失敗時のpattern・paper・revision・両履歴と同revision再試行可能性を保持
 - 73項目の要求確認
@@ -192,6 +192,7 @@
 - `FoldPreview`から背景・camera・renderer・照明・grid・紙3材質・輪郭6材質の構築、resize、冪等破棄をReact非依存scene runtimeへ分離。exact lease、原子的scene姿勢適用、OrbitControls、gesture、ヒンジ材質は元のauthority境界へ残し、grid・材質生成途中を含む自己rollback、cleanup例外継続、既存React子要素と所有外資源の非破棄を専用8件で固定。自動検出48ファイル・frontend 700件、Rust 304件で回帰
 - 監査の「全catchを一括置換」は採用せず、キャンセル・stale・入力/編集拒否・ファイル権限/破損・判定不能・best-effort cleanupを除外して、グローバル例外、起動snapshot・topology・終了guard・検証・benchmark、3D初期化・姿勢適用・描画・姿勢予約・選択・camera・resizeの上位境界だけを計測。`reportUnexpected(scope)`は固定15コード以外を拒否し、生の例外・メッセージ・作品名・パス・ID・座標を引数として受け取らない。件数は65で飽和する6区分、固定順、8 KiB以下のメモリ内snapshotに限定し、通信・永続化・時刻・環境情報を持たない。専用10件を加え、自動検出50ファイル・frontend 710件、Rust 304件で回帰
 - frontendの上位診断境界をTauri環境だけで動くscope-only runtimeへ接続し、Rust側でも同じ15 scope・同じ`{schema, unexpected}` v1 DTOを再検証する端末内保存を追加。アプリ専用log領域の固定ファイルだけを使い、環境情報・作品情報・時刻を保存しない。8 KiB上限、bucket遷移時だけの原子的置換、Unix user-only mode、古い一時ファイルの有界清掃、破損入力のfail-closed復旧、永続化失敗後のsession circuit、非同期gateとblocking poolによる単一I/O worker、scope別65回のfrontend/native二重上限を固定した。frontend 720件・Windows Rust 317件で回帰
+- Tauri版のstatusbarから診断ダイアログを開き、固定schema・固定順・8 KiB以下のcanonical JSONを共有前に読取専用表示する利用者経路を接続。nativeで生成した最新1世代のexact bytesだけをcacheし、frontendからは世代番号だけを渡してnative保存ダイアログの選択先へ原子的に保存する。表示と保存の同一性、旧世代・改変・path付き応答の拒否、cancel時無書込み、固定error、stale無効化、focus trap・復帰、背景`inert`、狭幅表示を固定し、通信・自動送信・自動clipboard・任意path IPCを持たない。frontend 732件・Windows Rust 321件（診断17件を含む）、format・clippyで回帰。Windows Application Controlが遮断したのはtestを持たないdesktop binary targetの起動だけで、実test失敗は0件
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -310,14 +311,15 @@
 - コミット`da24cc3`のCI Run `29626823914`全ジョブ完走（frontend testの引用符付きglob自動検出、frontend 692件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`72ab520`のCI Run `29627636649`全ジョブ完走（`FoldPreview` scene runtime分離、frontend 700件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`905a2fd`のCI Run `29628436035`全ジョブ完走（privacy-safeなメモリ内redacted diagnostics境界、frontend 710件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`cef548e`のCI Run `29629616898`全ジョブ完走（redacted diagnosticsの端末内原子的保存、frontend 720件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
-- 端末内へ保存したredacted diagnosticsの正確なJSONを利用者が確認し、同一内容を明示操作で保存・手動共有できるUI
 - VAL-002の川崎・前川局所判定と、対応範囲・判定不能を区別するUI
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
+- Windows実機で診断ダイアログの読取専用JSON、保存・キャンセル、保存中の重複操作防止、Escape・Tab循環・focus復帰、表示bytesとの一致を確認するネイティブE2E
 - Windows配布候補で1万辺の転送・初描画・30-frame FPSを採取し、基準PCと正式な合格値を決める作業
 - macOSはCI上のRust・frontend・`.app`生成検証を維持する。実機Macを必要とする操作・ダイアログ・Dock/Cmd+Q・性能E2Eは、利用可能な検証機がないため現在の作業範囲から除外する
 
@@ -328,9 +330,8 @@
 
 ## 次の作業
 
-1. redacted diagnosticsの閲覧・内容選択・同一JSON手動保存UIを接続し、自動送信なしの利用者経路を完成する
-2. VAL-002の川崎・前川局所判定を実装し、対応範囲内の成立・不成立・判定不能をUIへ示す
-3. MUST 86件のstatus表を各checkpointで維持する
-4. 折り手順、SVG/FOLD/PDF、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
-5. OQ-002の物理的な厚さoffset・層ずれ規則とVAL-003/004の対応範囲は、要件変更を伴う部分を所有者と確定する
-6. Windowsで3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動CI検証だけを継続する
+1. VAL-002の川崎・前川局所判定を実装し、対応範囲内の成立・不成立・判定不能をUIへ示す
+2. MUST 86件のstatus表を各checkpointで維持する
+3. 折り手順、SVG/FOLD/PDF、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
+4. OQ-002の物理的な厚さoffset・層ずれ規則とVAL-003/004の対応範囲は、要件変更を伴う部分を所有者と確定する
+5. Windowsで3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動CI検証だけを継続する

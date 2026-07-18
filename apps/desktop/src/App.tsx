@@ -7,6 +7,7 @@ import {
   type PaperBounds,
   type PaperPolygonPoint,
 } from './components/CreaseCanvas'
+import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldPreview } from './components/FoldPreview'
 import {
   addEdge,
@@ -58,6 +59,7 @@ import {
   prepareBenchmarkRenderData,
 } from './lib/renderBenchmark'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
+import { isDiagnosticsShareAvailable } from './lib/diagnosticsShare'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -125,6 +127,7 @@ function App() {
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectError, setNewProjectError] = useState<string | null>(null)
+  const [diagnosticsDialogOpen, setDiagnosticsDialogOpen] = useState(false)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -141,6 +144,12 @@ function App() {
   const angleInputRef = useRef<HTMLInputElement>(null)
   const benchmarkRequestIdRef = useRef(0)
   const topologyRequestIdRef = useRef(0)
+  const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
+  const modalOpen = newProjectOpen || diagnosticsDialogOpen
+  const closeDiagnosticsDialog = useCallback(() => {
+    setDiagnosticsDialogOpen(false)
+    requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
+  }, [])
   const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
     topologyRequestIdRef.current += 1
     latestSnapshotRef.current = snapshot
@@ -689,7 +698,7 @@ function App() {
         setNewProjectError(null)
         return
       }
-      if (newProjectOpen) return
+      if (modalOpen) return
       if (isEditingText(event.target)) return
 
       const key = event.key.toLowerCase()
@@ -725,7 +734,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyboardShortcut)
     return () => window.removeEventListener('keydown', handleKeyboardShortcut)
-  }, [coreBusy, deleteSelection, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
+  }, [coreBusy, deleteSelection, modalOpen, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
     if (
@@ -1042,7 +1051,7 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="titlebar" inert={newProjectOpen}>
+      <header className="titlebar" inert={modalOpen}>
         <div className="brand-mark" aria-hidden="true">◇</div>
         <strong>ORIGAMI2</strong>
         <span
@@ -1124,7 +1133,7 @@ function App() {
         </nav>
       </header>
 
-      <section className="workspace" inert={newProjectOpen}>
+      <section className="workspace" inert={modalOpen}>
         <aside className="tool-rail" aria-label="作図ツール">
           {[
             ['select', '↖', '選択'],
@@ -1787,7 +1796,7 @@ function App() {
         </aside>
       </section>
 
-      <section className="timeline panel" inert={newProjectOpen}>
+      <section className="timeline panel" inert={modalOpen}>
         <div className="timeline-controls">
           <button type="button" aria-label="先頭へ">|◀</button>
           <button type="button" aria-label="再生">▶</button>
@@ -1943,11 +1952,27 @@ function App() {
         </div>
       )}
 
-      <footer className="statusbar" inert={newProjectOpen}>
+      <DiagnosticsDialog
+        open={diagnosticsDialogOpen}
+        onClose={closeDiagnosticsDialog}
+      />
+
+      <footer className="statusbar" inert={modalOpen}>
         <span>ツール: {benchmarkRun ? '性能テスト選択' : toolLabel(activeTool)}</span>
         <span>{coreStatus}</span>
         <span>スナップ: {snapStatusLabel}</span>
         <span className="status-spacer" />
+        {isDiagnosticsShareAvailable() && (
+          <button
+            ref={diagnosticsButtonRef}
+            type="button"
+            className="diagnostics-button"
+            aria-haspopup="dialog"
+            onClick={() => setDiagnosticsDialogOpen(true)}
+          >
+            診断情報
+          </button>
+        )}
         <button
           type="button"
           className="benchmark-button"

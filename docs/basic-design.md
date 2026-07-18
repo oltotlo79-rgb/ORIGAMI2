@@ -559,7 +559,10 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 - Rustはfrontendと完全に同じ`origami2.redacted-diagnostics.v1`の`{schema, unexpected}`だけをstrict enum・unknown field拒否・固定15件・固定順で再検証し、Tauriのアプリ専用log領域にある`redacted-diagnostics-v1.json`だけへ保存する。別形状を同じschema名で扱わず、アプリ版やOS等のnative metadataも加えない。
 - 保存は8 KiBを上限にbucketが変わる時だけ行う。同じdirectoryのcreate-new一時ファイルへ書込み、同期、同一handle再読込、bytes一致確認後に原子的置換し、POSIXでは親directoryも同期する。Unix系の新規file modeは`0600`を上限とし、既存owner modeがより厳しい場合はそれを保持する。24時間を超えた診断用一時ファイルだけを起動時に最大512件走査・32件削除し、通常ファイル以外と無関係な名前には触れない。
 - 読込時は8 KiB超過、JSON破損、unknown/欠落field、scope順序・重複・件数不一致を空の内部状態へfail closedし、元ファイルは次の正当な記録まで変更しない。永続化に一度失敗したsessionは以後のdisk I/Oを停止する。commandは真のasync functionで非同期gateを取得してから明示的にblocking poolへ移し、blocking jobを常時1本に制限する。WebViewのasync worker上ではmutex待ちや`sync_all`を実行しない。
-- 現段階でも通信、console、Web Storage、自動送信は行わない。OPS-004〜006は利用者が保存内容を確認できるUIと、確認した正確なbytesだけを明示操作で保存する経路が接続されるまで、UI利用基準では未達とする。GitHub Issues、telemetry、クラッシュ報告への自動送信は今後も行わない。
+- 共有用previewはnative側で永続化gate内の集計snapshotからcanonical JSONを一度だけ生成し、単調増加する`preview_generation`、UTF-8 byte長、JSON文字列を返す。nativeは最新1世代の正確なbytesをprivate cacheへ保持し、frontendはschema、固定field、15 scopeの順序、bucket、byte長、8 KiB上限、canonical再serialize一致をIPC入口で検証する。
+- 保存commandがfrontendから受け取るのは検証済み`preview_generation`だけとする。nativeはcache済みの同一bytesだけを、native保存ダイアログで利用者が選んだ場所へ原子的に保存する。保存先path、file handle、JSON本文、raw errorをWebViewとのIPCへ渡さず、旧世代、改変preview、byte長不一致、dialog失敗、I/O失敗を固定errorへ退避する。キャンセルは書込みを行わず、世代・byte長・キャンセル済みの固定metadataだけを返す。
+- Tauri版だけに診断ダイアログを表示し、背景を`inert`にしたmodal内で、保存対象そのものを読取専用textareaへ表示する。利用者は内容を全選択するか、nativeダイアログからJSONファイルとして保存できる。保存中は閉じる操作と重複保存を止め、Escape、focus trap、開始focus、呼出元へのfocus復帰、stale request無効化、狭幅overflowを明示的に処理する。
+- 通信、console、Web Storage、自動送信、自動clipboard操作は行わない。表示JSONと保存bytesは同一世代の同一内容であり、利用者自身が内容を確認してGitHub Issuesへ手動添付する。GitHub Issues、telemetry、クラッシュ報告への自動送信は今後も行わない。
 
 ## 14. 実装フェーズ
 

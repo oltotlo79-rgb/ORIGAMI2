@@ -188,6 +188,7 @@
 - 最大6件の静的補正seedをfull scan準備・走査、通常narrow準備・走査へ分割し、段階境界ごとに取消可能な`tree_single_hinge_static_correction_candidates_job_v1`へ統合。pairとwitnessの累積会計、multi-seed順序、full衝突時のnormal skip、chunk非依存、真正context/model/binding、budget検証・課金済みchild・result freeze中の再入を20件の専用回帰で確認し、成功公開後だけprovenanceを付与
 - 静的候補の連続経路jobを現在候補だけの遅延生成へ変更し、`candidate_preparation`と`candidate_analysis`の明示的境界、候補切替時の同一call内非開始、候補数倍の累積上限、同期処理を示すliteral flagを公開。chunk非依存、複数候補順序、phase境界取消、budget検証・課金済みchild・候補切替・pending/certificate finalization中の再入、未公開certificateへのprovenance非付与、contextから連続certificate・requestまでのprivate registry method差し替え遮断を含むfrontend 670件で回帰
 - 真正な補正解析requestだけから静的候補job、候補別連続経路job、切り離した表示DTOを順に進める複合jobと、RAF単位でそのjobを駆動するUI coordinatorを実装。全段階を完走しても候補経路が未確定なら`indeterminate`、認定可能な候補を全件否定できた場合だけ`no_candidate`とし、対応範囲外を「折り不可能」と断定しない。frontend 692件・Rust 304件で回帰
+- `test:snap`の47ファイル手動列挙をNode test runnerの引用符付きglobへ置換し、新しい`*.test.ts`をNode 24 CIとWindowsのどちらでも自動検出する境界へ変更。既存47ファイル・frontend 692件の全実行を維持
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -302,11 +303,12 @@
 - コミット`013ba08`のCI Run `29623221663`全ジョブ完走（静的補正候補の段階別増分job、multi-seed・累積会計・cancel・再入・例外回帰、frontend 657件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`a2ac303`のCI Run `29623851234`全ジョブ完走（補正候補別連続経路の遅延生成、phase境界・累積会計・finalization再入回帰、frontend 665件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`3677d10`のCI Run `29625298125`全ジョブ完走（第三者監査の再照合、進捗是正、Undo/Redo失敗時の履歴保持、authority初期化強化、frontend 673件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`dc365ef`のCI Run `29626601401`全ジョブ完走（補正解析の複合job・UI coordinator・stale無効化・解析専用表示、frontend 692件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
 - `FoldPreview`の大規模runtimeを、既存のexact lease・stale無効化・原子的scene更新を保ったまま小さな責務へ分割する作業
-- 作品内容やローカルパスを標準収集しないredacted diagnostics境界と、frontend testの自動検出
+- 作品内容やローカルパスを標準収集しないredacted diagnostics境界
 - VAL-002の川崎・前川局所判定と、対応範囲・判定不能を区別するUI
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -320,7 +322,7 @@
 
 ## 次の作業
 
-1. `FoldPreview` runtime分割、redacted diagnostics、frontend test自動検出を小さなcheckpointへ分けて進める
+1. `FoldPreview` runtime分割とredacted diagnosticsを小さなcheckpointへ分けて進める
 2. VAL-002の川崎・前川局所判定を実装し、対応範囲内の成立・不成立・判定不能をUIへ示す
 3. MUST 86件のstatus表を各checkpointで維持する
 4. 折り手順、SVG/FOLD/PDF、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める

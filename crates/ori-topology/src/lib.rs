@@ -23,11 +23,18 @@ mod admission;
 #[allow(dead_code)]
 mod dcel;
 mod fold_graph;
+mod local_flat_foldability;
 mod single_fold;
 
 use admission::PaperGraphAdmissionError;
 use fold_graph::{FoldGraphError, extract_fold_graph_snapshot};
 use single_fold::{SingleFoldError, extract_single_fold_faces};
+
+pub use local_flat_foldability::{
+    LocalFlatFoldabilityModel, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
+    LocalFoldabilityConditionStatus, LocalFoldabilityReason, LocalVertexFoldability,
+    LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, analyze_local_flat_foldability,
+};
 
 /// Immutable input used to derive a topology snapshot.
 #[derive(Debug, Clone, Copy)]

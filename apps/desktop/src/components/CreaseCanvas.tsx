@@ -65,6 +65,8 @@ export type CreaseCanvasRenderMetrics = Readonly<{
   totalDurationMs: number
 }>
 
+export type ValidationVertexHighlight = 'violated' | 'indeterminate'
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
@@ -79,6 +81,8 @@ type Props = {
   snapSettings?: SnapSettings
   parallelReference?: ParallelSnapReference | null
   angleConfig?: AngleSnapConfig
+  validationVertexHighlights?: ReadonlyMap<string, ValidationVertexHighlight>
+  ariaDescribedBy?: string
   onSelectLine: (id: string | null) => void
   onPlaceVertex?: (placement: VertexPlacement) => void
   onPlacementBlocked?: (
@@ -154,6 +158,8 @@ const LINE_HIT_RADIUS_PX = 7
 const DESIRED_GRID_INTERVALS = 20
 const MAX_GRID_LINES_PER_AXIS = 100
 const RENDER_METRICS_SAMPLE_FRAME_COUNT = 30
+const EMPTY_VALIDATION_VERTEX_HIGHLIGHTS: ReadonlyMap<string, ValidationVertexHighlight> =
+  new Map()
 
 const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   vertex: '頂点',
@@ -197,6 +203,8 @@ export function CreaseCanvas({
   snapSettings = DEFAULT_SNAP_SETTINGS,
   parallelReference = null,
   angleConfig,
+  validationVertexHighlights = EMPTY_VALIDATION_VERTEX_HIGHLIGHTS,
+  ariaDescribedBy,
   onSelectLine,
   onPlaceVertex,
   onPlacementBlocked,
@@ -434,6 +442,18 @@ export function CreaseCanvas({
         mappedVertices.push({ id: vertex.id, ...point })
       }
 
+      drawValidationVertexHaloBatch(
+        context,
+        mappedVertices,
+        validationVertexHighlights,
+        'indeterminate',
+      )
+      drawValidationVertexHaloBatch(
+        context,
+        mappedVertices,
+        validationVertexHighlights,
+        'violated',
+      )
       drawVertexHaloBatch(
         context,
         mappedVertices,
@@ -565,6 +585,7 @@ export function CreaseCanvas({
     snapGuide,
     tool,
     useLegacyRectangularPaper,
+    validationVertexHighlights,
     vertices,
     visibleGrid,
   ])
@@ -935,6 +956,7 @@ export function CreaseCanvas({
       ref={canvasRef}
       className={`crease-canvas tool-${tool}${dragPreview ? ' is-dragging' : ''}${disabled ? ' is-disabled' : ''}`}
       aria-label="展開図編集キャンバス"
+      aria-describedby={ariaDescribedBy}
       aria-disabled={disabled}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
@@ -1386,6 +1408,29 @@ function drawVertexHaloBatch(
     ? 'rgba(229, 155, 53, 0.28)'
     : 'rgba(23, 107, 135, 0.2)'
   context.fill()
+}
+
+function drawValidationVertexHaloBatch(
+  context: CanvasRenderingContext2D,
+  vertices: readonly Vertex[],
+  highlights: ReadonlyMap<string, ValidationVertexHighlight>,
+  severity: ValidationVertexHighlight,
+) {
+  context.beginPath()
+  let pathCount = 0
+  for (const vertex of vertices) {
+    if (highlights.get(vertex.id) !== severity) continue
+    traceCircle(context, vertex.x, vertex.y, severity === 'violated' ? 13 : 12)
+    pathCount += 1
+  }
+  if (pathCount === 0) return
+
+  context.save()
+  context.strokeStyle = severity === 'violated' ? '#b4232f' : '#9a6700'
+  context.lineWidth = 3
+  context.setLineDash(severity === 'violated' ? [] : [4, 3])
+  context.stroke()
+  context.restore()
 }
 
 function traceCircle(

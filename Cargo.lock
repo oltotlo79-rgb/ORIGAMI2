@@ -2080,6 +2080,7 @@ dependencies = [
 name = "ori-topology"
 version = "0.1.0"
 dependencies = [
+ "num-bigint",
  "ori-domain",
  "ori-geometry",
  "serde",

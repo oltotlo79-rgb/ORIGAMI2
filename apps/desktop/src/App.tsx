@@ -58,6 +58,12 @@ import {
   measureBenchmarkPayloadBytes,
   prepareBenchmarkRenderData,
 } from './lib/renderBenchmark'
+import {
+  createLocalFlatFoldabilityPresentation,
+  localFlatFoldabilityConditionLabel,
+  localFlatFoldabilityReasonLabel,
+  type LocalFlatFoldabilityPresentation,
+} from './lib/localFlatFoldabilityPresentation'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
 import { isDiagnosticsShareAvailable } from './lib/diagnosticsShare'
 import './App.css'
@@ -154,6 +160,7 @@ function App() {
     topologyRequestIdRef.current += 1
     latestSnapshotRef.current = snapshot
     setNativeSnapshot(snapshot)
+    setValidation(null)
     setTopologyResponse(null)
     setTopologyStatus('面・ヒンジ解析待ち')
   }, [])
@@ -230,6 +237,28 @@ function App() {
     ),
     [nativeSnapshot, selectedVertexId],
   )
+  const localFlatFoldabilityPresentation = useMemo(() => {
+    if (
+      !validation
+      || !nativeSnapshot
+      || validation.project_id !== nativeSnapshot.project_id
+      || validation.revision !== nativeSnapshot.revision
+    ) return null
+    return createLocalFlatFoldabilityPresentation(
+      validation.local_flat_foldability,
+      nativeSnapshot.crease_pattern.vertices.map((vertex) => vertex.id),
+    )
+  }, [nativeSnapshot, validation])
+  const selectedLocalFlatFoldability = selectedVertexId
+    ? localFlatFoldabilityPresentation?.verticesById.get(selectedVertexId)
+    : undefined
+  const canvasLocalFlatFoldabilityHighlights = !benchmarkRun
+    && localFlatFoldabilityPresentation?.kind === 'ready'
+    ? localFlatFoldabilityPresentation.highlights
+    : undefined
+  const localFlatFoldabilitySummaryId = localFlatFoldabilityPresentation && !benchmarkRun
+    ? 'local-flat-foldability-summary'
+    : undefined
   const firstBenchmarkVertexById = useMemo(() => {
     const index = new Map<string, { id: string; x: number; y: number }>()
     for (const vertex of benchmarkRun?.vertices ?? []) {
@@ -841,22 +870,40 @@ function App() {
     if (!current || coreOperationRef.current) return
     coreOperationRef.current = true
     setCoreBusy(true)
+    setValidation(null)
+    setCoreStatus(`revision ${current.revision}: 検証中…`)
     setCancelInteractionToken((token) => token + 1)
     try {
       const result = await validateProject()
+      const latest = latestSnapshotRef.current
       if (
-        result.project_id !== current.project_id ||
-        result.revision !== current.revision
+        !latest
+        || result.project_id !== current.project_id
+        || result.revision !== current.revision
+        || result.project_id !== latest.project_id
+        || result.revision !== latest.revision
       ) {
         setCoreStatus('検証中に内容が変更されたため、再度検証してください')
         return
       }
+      const localPresentation = createLocalFlatFoldabilityPresentation(
+        result.local_flat_foldability,
+        latest.crease_pattern.vertices.map((vertex) => vertex.id),
+      )
       setValidation(result)
-      setCoreStatus(result.is_valid
-        ? `revision ${result.revision}: 幾何検証に合格`
-        : `revision ${result.revision}: ${result.issues.length}件の問題`)
+      if (localPresentation.kind === 'invalid') {
+        reportValidationUnexpected()
+      }
+      const geometryStatus = result.is_valid
+        ? '幾何検証に合格'
+        : `幾何問題${result.issues.length}件`
+      setCoreStatus(
+        `revision ${result.revision}: ${geometryStatus}・`
+        + localFlatFoldabilityCoreStatus(localPresentation),
+      )
     } catch (error) {
-      reportUnexpected('app.validation')
+      reportValidationUnexpected()
+      setValidation(null)
       setCoreStatus(`検証エラー: ${String(error)}`)
     } finally {
       coreOperationRef.current = false
@@ -1125,7 +1172,7 @@ function App() {
           <button
             type="button"
             className="primary"
-            disabled={coreBusy || !nativeSnapshot}
+            disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
             onClick={() => void runValidation()}
           >
             検証
@@ -1186,6 +1233,8 @@ function App() {
               snapSettings={snapSettings}
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
+              validationVertexHighlights={canvasLocalFlatFoldabilityHighlights}
+              ariaDescribedBy={localFlatFoldabilitySummaryId}
               cancelInteractionToken={cancelInteractionToken}
               disabled={coreBusy || benchmarkLoading}
               renderMetricsRequestId={benchmarkRun?.requestId ?? null}
@@ -1552,6 +1601,165 @@ function App() {
                   </ul>
                 </>
               )}
+            </section>
+          )}
+          {localFlatFoldabilityPresentation && !benchmarkRun && (
+            <section
+              className={`local-flat-foldability-report is-${
+                localFlatFoldabilityPresentation.kind === 'ready'
+                  ? localFlatFoldabilityPresentation.reportStatus
+                  : localFlatFoldabilityPresentation.kind
+              }`}
+            >
+              <h2>局所平坦折り条件</h2>
+              <p
+                id="local-flat-foldability-summary"
+                className="local-flat-foldability-summary"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {localFlatFoldabilityPresentation.summaryText}
+              </p>
+              {localFlatFoldabilityPresentation.maxExactFoldDegree !== null && (
+                <p className="local-flat-foldability-coverage">
+                  対応範囲: 紙内部の単一頂点・ゼロ厚モデル、
+                  折り線次数{localFlatFoldabilityPresentation.maxExactFoldDegree}以下
+                </p>
+              )}
+              {localFlatFoldabilityPresentation.kind === 'ready' && (
+                <>
+                  <ul
+                    className="local-flat-foldability-counts"
+                    aria-label="局所平坦折り条件の頂点別件数"
+                  >
+                    {([
+                      ['satisfied', '成立', localFlatFoldabilityPresentation.counts.satisfied],
+                      ['violated', '不成立', localFlatFoldabilityPresentation.counts.violated],
+                      [
+                        'not-applicable',
+                        '対象外',
+                        localFlatFoldabilityPresentation.counts.notApplicable,
+                      ],
+                      [
+                        'indeterminate',
+                        '判定不能',
+                        localFlatFoldabilityPresentation.counts.indeterminate,
+                      ],
+                    ] as const).map(([kind, label, count]) => (
+                      <li key={kind} className={`is-${kind}`}>
+                        <span>{label}</span>
+                        <strong>{count.toLocaleString()}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                  {selectedLocalFlatFoldability && (
+                    <div className="selected-local-flat-foldability">
+                      <h3>選択頂点の局所条件</h3>
+                      <dl>
+                        <div>
+                          <dt>総合</dt>
+                          <dd>
+                            {localFlatFoldabilityConditionLabel(
+                              selectedLocalFlatFoldability.verdict,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>川崎条件</dt>
+                          <dd>
+                            {localFlatFoldabilityConditionLabel(
+                              selectedLocalFlatFoldability.kawasaki,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>前川条件</dt>
+                          <dd>
+                            {localFlatFoldabilityConditionLabel(
+                              selectedLocalFlatFoldability.maekawa,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>折り線次数</dt>
+                          <dd>{selectedLocalFlatFoldability.foldDegree}</dd>
+                        </div>
+                        <div>
+                          <dt>山折り / 谷折り</dt>
+                          <dd>
+                            {selectedLocalFlatFoldability.mountainCount}
+                            {' / '}
+                            {selectedLocalFlatFoldability.valleyCount}
+                          </dd>
+                        </div>
+                      </dl>
+                      {selectedLocalFlatFoldability.reason && (
+                        <p className="local-flat-foldability-reason">
+                          {localFlatFoldabilityReasonLabel(
+                            selectedLocalFlatFoldability.reason,
+                            localFlatFoldabilityPresentation.maxExactFoldDegree,
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {localFlatFoldabilityPresentation.visibleItems.length > 0 && (
+                    <>
+                      <h3>確認が必要な頂点</h3>
+                      <ul className="local-flat-foldability-items">
+                        {localFlatFoldabilityPresentation.visibleItems.map((item) => {
+                          const verdictLabel = localFlatFoldabilityConditionLabel(item.verdict)
+                          const reasonLabel = localFlatFoldabilityReasonLabel(
+                            item.reason,
+                            localFlatFoldabilityPresentation.maxExactFoldDegree,
+                          )
+                          return (
+                            <li key={item.vertexId}>
+                              <button
+                                type="button"
+                                aria-pressed={selectedVertexId === item.vertexId}
+                                aria-label={
+                                  `頂点${item.ordinal}、局所必要条件${verdictLabel}。`
+                                  + `川崎条件${localFlatFoldabilityConditionLabel(item.kawasaki)}、`
+                                  + `前川条件${localFlatFoldabilityConditionLabel(item.maekawa)}。`
+                                  + reasonLabel
+                                }
+                                onClick={() => {
+                                  setSelectedVertexId(item.vertexId)
+                                  setSelectedLineId(null)
+                                }}
+                              >
+                                <span className={`local-verdict is-${item.verdict}`}>
+                                  {verdictLabel}
+                                </span>
+                                <span>頂点 {item.ordinal}</span>
+                                <span className="local-flat-foldability-item-detail">
+                                  {reasonLabel || (
+                                    `川崎 ${localFlatFoldabilityConditionLabel(item.kawasaki)}・`
+                                    + `前川 ${localFlatFoldabilityConditionLabel(item.maekawa)}`
+                                  )}
+                                </span>
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                      {localFlatFoldabilityPresentation.hiddenItemCount > 0 && (
+                        <p className="muted">
+                          ほか
+                          {localFlatFoldabilityPresentation.hiddenItemCount.toLocaleString()}
+                          頂点。頂点を選択すると個別結果を確認できます。
+                        </p>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+              <p className="local-flat-foldability-disclaimer">
+                成立はこのモデルで確認した局所必要条件だけを表します。
+                展開図全体が平坦に折り畳めることや、実際の折り経路は保証しません。
+              </p>
             </section>
           )}
           <section>
@@ -2046,6 +2254,25 @@ function validationIssueLabel(code: string) {
     zero_area_boundary: '紙の輪郭の面積が0です',
     boundary_area_calculation_failed: '紙の輪郭の面積計算に失敗しました',
   }[code] ?? code
+}
+
+function localFlatFoldabilityCoreStatus(
+  presentation: LocalFlatFoldabilityPresentation,
+) {
+  if (presentation.kind === 'invalid') return '局所判定結果を確認不能'
+  if (presentation.kind === 'blocked') return '局所判定を前段の幾何問題で遮断'
+  if (presentation.reportStatus === 'necessary_conditions_satisfied') {
+    return `局所必要条件が${presentation.counts.satisfied}頂点で成立`
+  }
+  if (presentation.reportStatus === 'not_applicable') return '局所判定の対象頂点なし'
+  if (presentation.reportStatus === 'violated') {
+    return `局所必要条件に不成立${presentation.counts.violated}頂点`
+  }
+  return `局所判定不能${presentation.counts.indeterminate}頂点`
+}
+
+function reportValidationUnexpected() {
+  reportUnexpected('app.validation')
 }
 
 function resolvePaperBounds(snapshot: ProjectSnapshot | null): PaperBounds | undefined {

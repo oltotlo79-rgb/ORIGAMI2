@@ -472,6 +472,19 @@ Schema
 
 全体判定と経路探索は、アルゴリズムが完全性を保証できる対象クラスを結果に含める。対象外入力に対して、時間をかけた近似探索の失敗を「不可能」と断定しない。要件上の厳密判定を満たせる対象範囲はPoC後に確定し、要件定義書へ反映する。
 
+### 9.4 局所平坦折り必要条件
+
+初期モデルは`interior_single_vertex_zero_thickness_v1`とし、紙内部で近傍が一枚の材料diskとなる頂点に川崎条件と前川条件を適用する。MountainとValleyだけをfold rayとして数え、Auxiliaryは未割当折り線へ流用しない。紙境界、Boundary接続、Cut接続、折り線なしは理由付き`not_applicable`とし、参加graphのID、紙、切断policy、交差、包含、rotationを確定できない場合はreport全体を`blocked`とする。
+
+- 川崎条件は保存済みbinary64座標を共通`2^-1074`単位の整数へ正確に変換してからray差分を作る。反時計回りrayの偶数番積`A`と奇数番積`B`をbalanced complex productで計算し、`A * conjugate(B)`の虚部がexact zeroかつ実部が負の場合だけ成立とする。角度・epsilon比較は使用しない
+- 前川条件はMountain数`M`、Valley数`V`に対して`|M-V|=2`を整数で判定する
+- 川崎条件の厳密計算上限は一頂点256折り線とする。超過時は`fold_degree_limit`による`indeterminate`とするが、前川条件の違反を認定できる場合は`violated`を優先する
+- reportはproject内の全頂点をcanonical `VertexId`順で返す。頂点と条件の優先順位は`violated > indeterminate > satisfied > not_applicable`、reportは`blocked / not_applicable / necessary_conditions_satisfied / violated / indeterminate`を区別する
+- 既存の幾何検証`is_valid/issues`へ局所条件違反を混ぜず、同じproject/revision応答の独立fieldとして返す。編集、検証失敗、benchmark表示では旧結果を消去または非表示にする
+- UIは不成立・判定不能頂点を色だけでなく実線・破線でも区別し、一覧から頂点選択できるようにする。成立は今回の局所必要条件だけを意味し、指定山谷の局所十分性、全体平坦折り、層順、厚さ、折り経路を保証しない
+
+厳密数値手順、DTO、上限、表示契約の詳細は`docs/local-flat-foldability-design.md`を正本とする。
+
 ## 10. UI設計
 
 ### 10.1 ワークスペース

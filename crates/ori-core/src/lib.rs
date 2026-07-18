@@ -14,7 +14,10 @@ pub use ori_geometry::{
     SegmentIntersection, ValidationIssue, validate_paper,
 };
 pub use ori_topology::{
-    FaceExtractionReport, TopologyIssue, TopologyIssueKind, TopologyIssueSeverity, TopologySnapshot,
+    FaceExtractionReport, LocalFlatFoldabilityModel, LocalFlatFoldabilityReport,
+    LocalFlatFoldabilityReportStatus, LocalFoldabilityConditionStatus, LocalFoldabilityReason,
+    LocalVertexFoldability, LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, TopologyIssue,
+    TopologyIssueKind, TopologyIssueSeverity, TopologySnapshot, analyze_local_flat_foldability,
 };
 pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
 pub use topology::{EditorTopology, TopologyAnalysisInput};

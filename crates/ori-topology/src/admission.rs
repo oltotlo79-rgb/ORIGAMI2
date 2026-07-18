@@ -14,7 +14,9 @@ use ori_geometry::{
     validate_paper,
 };
 
-use crate::dcel::{DcelBuildError, PaperWalkSet, build_paper_walks_unchecked};
+use crate::dcel::{
+    DcelBuildError, DcelEmbedding, PaperWalkSet, build_embedding, build_paper_walks_unchecked,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaperGraphAdmissionError {
@@ -59,6 +61,23 @@ pub(crate) fn build_admitted_paper_walks(
     let admitted = admit_contained_graph(validated)?;
     build_paper_walks_unchecked(admitted.pattern, admitted.paper)
         .map_err(PaperGraphAdmissionError::Dcel)
+}
+
+/// Validates and embeds the material-participating graph without requiring
+/// complete face walks.
+///
+/// Local foldability must be able to diagnose dangling and non-separating
+/// creases instead of rejecting them merely because they do not yet bound
+/// faces. This entry point therefore shares the strict identity, paper,
+/// participant-intersection, cut-policy, and containment admission used by
+/// face extraction, but deliberately stops after the exact rotation system.
+pub(crate) fn build_admitted_embedding(
+    paper: &Paper,
+    pattern: &CreasePattern,
+) -> Result<DcelEmbedding, PaperGraphAdmissionError> {
+    let validated = validate_for_containment(paper, pattern)?;
+    let admitted = admit_contained_graph(validated)?;
+    build_embedding(admitted.pattern).map_err(PaperGraphAdmissionError::Dcel)
 }
 
 fn validate_for_containment<'a>(

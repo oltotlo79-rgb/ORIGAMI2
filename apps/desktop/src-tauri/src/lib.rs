@@ -17,8 +17,9 @@ use diagnostics::{
 };
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
-    PaperValidationIssue, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
-    create_rectangular_sheet, validate_paper,
+    LocalFlatFoldabilityReport, PaperValidationIssue, TopologyAnalysisInput, TopologyIssue,
+    TopologySnapshot, ValidationIssue, analyze_local_flat_foldability, create_rectangular_sheet,
+    validate_paper,
 };
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, ProjectId, RgbaColor, VertexId};
 use ori_formats::{
@@ -237,6 +238,7 @@ struct ValidationSnapshot {
     revision: u64,
     is_valid: bool,
     issues: Vec<ValidationIssueSnapshot>,
+    local_flat_foldability: LocalFlatFoldabilityReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -1541,6 +1543,8 @@ fn suggested_file_name(project_name: &str) -> String {
 fn validation_snapshot(project: &ProjectState) -> ValidationSnapshot {
     let crease_validation = project.editor.validation();
     let paper_validation = validate_paper(project.editor.paper(), project.editor.pattern());
+    let local_flat_foldability =
+        analyze_local_flat_foldability(project.editor.paper(), project.editor.pattern());
     let mut issues =
         Vec::with_capacity(crease_validation.issues().len() + paper_validation.issues.len());
     issues.extend(
@@ -1560,6 +1564,7 @@ fn validation_snapshot(project: &ProjectState) -> ValidationSnapshot {
         revision: crease_validation.revision(),
         is_valid: issues.is_empty(),
         issues,
+        local_flat_foldability,
     }
 }
 
@@ -1953,6 +1958,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
         sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
         time::{SystemTime, UNIX_EPOCH},
@@ -2061,6 +2067,66 @@ mod tests {
             ..Paper::default()
         };
         ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper)
+    }
+
+    fn four_ray_square_project_state(
+        fold_endpoint_indices: [usize; 4],
+        assignments: [EdgeKind; 4],
+    ) -> (ProjectState, VertexId) {
+        let boundary_positions = [
+            Point2::new(0.0, 0.0),
+            Point2::new(10.0, 0.0),
+            Point2::new(20.0, 0.0),
+            Point2::new(20.0, 10.0),
+            Point2::new(20.0, 20.0),
+            Point2::new(10.0, 20.0),
+            Point2::new(0.0, 20.0),
+            Point2::new(0.0, 10.0),
+        ];
+        let mut vertices = boundary_positions
+            .into_iter()
+            .map(|position| Vertex {
+                id: VertexId::new(),
+                position,
+            })
+            .collect::<Vec<_>>();
+        let center = Vertex {
+            id: VertexId::new(),
+            position: Point2::new(10.0, 10.0),
+        };
+        let center_id = center.id;
+        vertices.push(center);
+
+        let mut edges = (0..boundary_positions.len())
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % boundary_positions.len()].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend(
+            fold_endpoint_indices
+                .into_iter()
+                .zip(assignments)
+                .map(|(endpoint, kind)| Edge {
+                    id: EdgeId::new(),
+                    start: center_id,
+                    end: vertices[endpoint].id,
+                    kind,
+                }),
+        );
+        let paper = Paper {
+            boundary_vertices: vertices[..boundary_positions.len()]
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect(),
+            ..Paper::default()
+        };
+        (
+            ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper),
+            center_id,
+        )
     }
 
     #[derive(Debug, PartialEq)]
@@ -4164,6 +4230,205 @@ mod tests {
 
         assert!(response.is_valid);
         assert!(response.issues.is_empty());
+    }
+
+    #[test]
+    fn initial_sheet_reports_boundary_vertices_as_locally_not_applicable() {
+        let project = initial_project_state();
+
+        let response = validation_snapshot(&project);
+        let encoded = serde_json::to_value(&response).expect("serialize validation snapshot");
+        let local = &encoded["local_flat_foldability"];
+
+        assert_eq!(local["model"], "interior_single_vertex_zero_thickness_v1");
+        assert_eq!(local["status"], "not_applicable");
+        assert_eq!(local["total_vertices"], 4);
+        assert_eq!(local["applicable_vertices"], 0);
+        assert_eq!(local["not_applicable_vertices"], 4);
+        for vertex in local["vertices"].as_array().expect("vertex reports") {
+            assert_eq!(vertex["verdict"], "not_applicable");
+            assert_eq!(vertex["reason"], "paper_boundary");
+            assert_eq!(vertex["kawasaki"], "not_applicable");
+            assert_eq!(vertex["maekawa"], "not_applicable");
+        }
+    }
+
+    #[test]
+    fn cardinal_mmmv_vertex_reports_both_local_conditions_satisfied() {
+        let (project, center) = four_ray_square_project_state(
+            [3, 5, 7, 1],
+            [
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+            ],
+        );
+
+        let response = validation_snapshot(&project);
+        let encoded = serde_json::to_value(&response).expect("serialize validation snapshot");
+        let center = serde_json::to_value(center).expect("serialize center vertex ID");
+        let local = encoded["local_flat_foldability"]
+            .as_object()
+            .expect("local report object");
+        let center_report = local["vertices"]
+            .as_array()
+            .expect("vertex reports")
+            .iter()
+            .find(|report| report["vertex"] == center)
+            .expect("center report");
+
+        assert_eq!(local["status"], "necessary_conditions_satisfied");
+        assert_eq!(local["applicable_vertices"], 1);
+        assert_eq!(local["satisfied_vertices"], 1);
+        assert_eq!(center_report["fold_degree"], 4);
+        assert_eq!(center_report["mountain_count"], 3);
+        assert_eq!(center_report["valley_count"], 1);
+        assert_eq!(center_report["verdict"], "satisfied");
+        assert_eq!(center_report["reason"], serde_json::Value::Null);
+        assert_eq!(center_report["kawasaki"], "satisfied");
+        assert_eq!(center_report["maekawa"], "satisfied");
+    }
+
+    #[test]
+    fn local_report_keeps_kawasaki_and_maekawa_violations_independent() {
+        let (kawasaki_project, kawasaki_center) = four_ray_square_project_state(
+            [3, 5, 7, 0],
+            [
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+            ],
+        );
+        let (maekawa_project, maekawa_center) = four_ray_square_project_state(
+            [3, 5, 7, 1],
+            [
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+                EdgeKind::Valley,
+            ],
+        );
+
+        let kawasaki = validation_snapshot(&kawasaki_project);
+        let kawasaki_json =
+            serde_json::to_value(&kawasaki).expect("serialize Kawasaki counterexample");
+        let kawasaki_center =
+            serde_json::to_value(kawasaki_center).expect("serialize Kawasaki center vertex ID");
+        let kawasaki_center_report = kawasaki_json["local_flat_foldability"]["vertices"]
+            .as_array()
+            .expect("Kawasaki vertex reports")
+            .iter()
+            .find(|report| report["vertex"] == kawasaki_center)
+            .expect("Kawasaki center report");
+        assert_eq!(kawasaki_center_report["kawasaki"], "violated");
+        assert_eq!(kawasaki_center_report["maekawa"], "satisfied");
+        assert_eq!(kawasaki_center_report["verdict"], "violated");
+
+        let maekawa = validation_snapshot(&maekawa_project);
+        let maekawa_json =
+            serde_json::to_value(&maekawa).expect("serialize Maekawa counterexample");
+        let maekawa_center =
+            serde_json::to_value(maekawa_center).expect("serialize Maekawa center vertex ID");
+        let maekawa_center_report = maekawa_json["local_flat_foldability"]["vertices"]
+            .as_array()
+            .expect("Maekawa vertex reports")
+            .iter()
+            .find(|report| report["vertex"] == maekawa_center)
+            .expect("Maekawa center report");
+        assert_eq!(maekawa_center_report["kawasaki"], "satisfied");
+        assert_eq!(maekawa_center_report["maekawa"], "violated");
+        assert_eq!(maekawa_center_report["verdict"], "violated");
+    }
+
+    #[test]
+    fn local_flat_foldability_json_contract_is_exact_and_does_not_change_geometry_validity() {
+        let (project, center) = four_ray_square_project_state(
+            [3, 5, 7, 1],
+            [
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+                EdgeKind::Valley,
+            ],
+        );
+
+        let response = validation_snapshot(&project);
+        assert!(response.is_valid);
+        assert!(response.issues.is_empty());
+        let encoded = serde_json::to_value(&response).expect("serialize validation snapshot");
+        let center = serde_json::to_value(center).expect("serialize center vertex ID");
+        let root_keys = encoded
+            .as_object()
+            .expect("validation object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let local = encoded["local_flat_foldability"]
+            .as_object()
+            .expect("local report object");
+        let local_keys = local.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        let center_report = local["vertices"]
+            .as_array()
+            .expect("vertex reports")
+            .iter()
+            .find(|report| report["vertex"] == center)
+            .expect("center report")
+            .as_object()
+            .expect("center report object");
+        let center_keys = center_report
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            root_keys,
+            [
+                "project_id",
+                "revision",
+                "is_valid",
+                "issues",
+                "local_flat_foldability"
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            local_keys,
+            [
+                "model",
+                "max_exact_fold_degree",
+                "status",
+                "total_vertices",
+                "applicable_vertices",
+                "satisfied_vertices",
+                "violated_vertices",
+                "not_applicable_vertices",
+                "indeterminate_vertices",
+                "vertices",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            center_keys,
+            [
+                "vertex",
+                "fold_degree",
+                "mountain_count",
+                "valley_count",
+                "verdict",
+                "reason",
+                "kawasaki",
+                "maekawa",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(local["status"], "violated");
+        assert_eq!(center_report["kawasaki"], "satisfied");
+        assert_eq!(center_report["maekawa"], "violated");
     }
 
     #[test]

@@ -82,6 +82,48 @@ export type IntersectionClusterTarget = Readonly<{
   relation: 'interior' | 'endpoint'
 }>
 
+export type LocalFlatFoldabilityCondition =
+  | 'satisfied'
+  | 'violated'
+  | 'not_applicable'
+  | 'indeterminate'
+
+export type LocalFlatFoldabilityReason =
+  | 'paper_boundary'
+  | 'cut_incident'
+  | 'fold_degree_limit'
+  | 'no_incident_fold_edges'
+  | null
+
+export type LocalFlatFoldabilityVertexSnapshot = {
+  vertex: string
+  fold_degree: number
+  mountain_count: number
+  valley_count: number
+  verdict: LocalFlatFoldabilityCondition
+  reason: LocalFlatFoldabilityReason
+  kawasaki: LocalFlatFoldabilityCondition
+  maekawa: LocalFlatFoldabilityCondition
+}
+
+export type LocalFlatFoldabilityReport = {
+  model: 'interior_single_vertex_zero_thickness_v1'
+  max_exact_fold_degree: number
+  status:
+    | 'blocked'
+    | 'not_applicable'
+    | 'necessary_conditions_satisfied'
+    | 'violated'
+    | 'indeterminate'
+  total_vertices: number
+  applicable_vertices: number
+  satisfied_vertices: number
+  violated_vertices: number
+  not_applicable_vertices: number
+  indeterminate_vertices: number
+  vertices: LocalFlatFoldabilityVertexSnapshot[]
+}
+
 export type ValidationSnapshot = {
   project_id: string
   revision: number
@@ -91,6 +133,7 @@ export type ValidationSnapshot = {
     vertices: string[]
     edges: string[]
   }>
+  local_flat_foldability: LocalFlatFoldabilityReport
 }
 
 export type FoldAssignment = 'mountain' | 'valley'

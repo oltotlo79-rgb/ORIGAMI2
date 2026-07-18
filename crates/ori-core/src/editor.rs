@@ -13,6 +13,9 @@ use thiserror::Error;
 
 pub type Revision = u64;
 
+/// Largest revision that can round-trip exactly through a JavaScript number.
+pub const MAX_REVISION: Revision = (1_u64 << 53) - 1;
+
 /// Chooses whether a cluster creates its common vertex or reuses one already
 /// stored in the crease pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +147,8 @@ pub enum CommandError {
         expected: Revision,
         actual: Revision,
     },
+    #[error("revision {revision} cannot advance beyond the maximum supported revision")]
+    RevisionExhausted { revision: Revision },
     #[error("vertex {0:?} already exists")]
     VertexAlreadyExists(VertexId),
     #[error("vertex {0:?} was not found")]
@@ -1182,6 +1187,7 @@ impl EditorState {
         command: Command,
     ) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
+        let next_revision = self.next_revision()?;
         let result = command.changes(&self.pattern, &self.paper);
         let inverse = self.apply(&command)?;
         push_bounded_history(
@@ -1192,12 +1198,13 @@ impl EditorState {
             },
         );
         self.redo_stack.clear();
-        self.advance_revision();
+        self.revision = next_revision;
         Ok(self.result(result))
     }
 
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
+        let next_revision = self.next_revision()?;
         let Some(entry) = self.undo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
@@ -1208,12 +1215,13 @@ impl EditorState {
             .pop()
             .expect("the successfully applied undo entry must still be present");
         push_bounded_history(&mut self.redo_stack, entry);
-        self.advance_revision();
+        self.revision = next_revision;
         Ok(self.result(result))
     }
 
     pub fn redo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
+        let next_revision = self.next_revision()?;
         let Some(entry) = self.redo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
@@ -1224,7 +1232,7 @@ impl EditorState {
             .pop()
             .expect("the successfully applied redo entry must still be present");
         push_bounded_history(&mut self.undo_stack, entry);
-        self.advance_revision();
+        self.revision = next_revision;
         Ok(self.result(result))
     }
 
@@ -2981,8 +2989,14 @@ impl EditorState {
         }
     }
 
-    fn advance_revision(&mut self) {
-        self.revision = self.revision.saturating_add(1);
+    const fn next_revision(&self) -> Result<Revision, CommandError> {
+        if self.revision >= MAX_REVISION {
+            Err(CommandError::RevisionExhausted {
+                revision: self.revision,
+            })
+        } else {
+            Ok(self.revision + 1)
+        }
     }
 
     fn result(&self, changes: Changes) -> CommandResult {
@@ -3330,6 +3344,27 @@ impl Inverse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, PartialEq)]
+    struct EditorStateSnapshot {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        revision: Revision,
+        undo_stack: String,
+        redo_stack: String,
+    }
+
+    fn editor_state_snapshot(editor: &EditorState) -> EditorStateSnapshot {
+        EditorStateSnapshot {
+            pattern: editor.pattern.clone(),
+            paper: editor.paper.clone(),
+            instruction_timeline: editor.instruction_timeline.clone(),
+            revision: editor.revision,
+            undo_stack: format!("{:?}", editor.undo_stack),
+            redo_stack: format!("{:?}", editor.redo_stack),
+        }
+    }
 
     fn rectangular_editor() -> (EditorState, CreasePattern, Paper) {
         let bottom_left = VertexId::new();
@@ -4204,6 +4239,204 @@ mod tests {
             }
         );
         assert!(editor.pattern().vertices.is_empty());
+    }
+
+    #[test]
+    fn revision_exhaustion_rejects_execute_without_mutating_document_or_history() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor.revision = MAX_REVISION;
+        let before = editor_state_snapshot(&editor);
+
+        let result = editor.execute(
+            MAX_REVISION,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(1.0, 2.0),
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+    }
+
+    #[test]
+    fn revision_exhaustion_rejects_undo_without_mutating_document_or_history() {
+        let vertex = VertexId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(1.0, 2.0),
+                },
+            )
+            .expect("prepare undo history");
+        editor.revision = MAX_REVISION;
+        let before = editor_state_snapshot(&editor);
+
+        let result = editor.undo(MAX_REVISION);
+
+        assert_eq!(
+            result,
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+        assert_eq!(editor.pattern.vertices[0].id, vertex);
+    }
+
+    #[test]
+    fn revision_exhaustion_rejects_redo_without_mutating_document_or_history() {
+        let vertex = VertexId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(1.0, 2.0),
+                },
+            )
+            .expect("prepare undo history");
+        editor.undo(1).expect("prepare redo history");
+        editor.revision = MAX_REVISION;
+        let before = editor_state_snapshot(&editor);
+
+        let result = editor.redo(MAX_REVISION);
+
+        assert_eq!(
+            result,
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+        assert!(editor.pattern.vertices.is_empty());
+    }
+
+    #[test]
+    fn revision_exhaustion_rejects_empty_undo_and_redo() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor.revision = MAX_REVISION;
+        let before = editor_state_snapshot(&editor);
+
+        assert_eq!(
+            editor.undo(MAX_REVISION),
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+        assert_eq!(
+            editor.redo(MAX_REVISION),
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+    }
+
+    #[test]
+    fn revision_can_advance_to_the_last_json_safe_integer_exactly_once() {
+        assert_eq!(MAX_REVISION, 9_007_199_254_740_991);
+        let first_vertex = VertexId::new();
+        let second_vertex = VertexId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor.revision = MAX_REVISION - 1;
+
+        let result = editor
+            .execute(
+                MAX_REVISION - 1,
+                Command::AddVertex {
+                    id: first_vertex,
+                    position: Point2::new(1.0, 2.0),
+                },
+            )
+            .expect("the final safe revision must remain usable");
+
+        assert_eq!(result.revision, MAX_REVISION);
+        let before_rejection = editor_state_snapshot(&editor);
+        assert_eq!(
+            editor.execute(
+                MAX_REVISION,
+                Command::AddVertex {
+                    id: second_vertex,
+                    position: Point2::new(3.0, 4.0),
+                },
+            ),
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before_rejection);
+        assert_eq!(editor.pattern.vertices[0].id, first_vertex);
+    }
+
+    #[test]
+    fn revision_advances_monotonically_across_execute_undo_and_redo() {
+        let vertex = VertexId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+
+        let add = editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(1.0, 2.0),
+                },
+            )
+            .expect("add vertex");
+        let move_vertex = editor
+            .execute(
+                add.revision,
+                Command::MoveVertex {
+                    id: vertex,
+                    position: Point2::new(3.0, 4.0),
+                },
+            )
+            .expect("move vertex");
+        let undo = editor.undo(move_vertex.revision).expect("undo move");
+        let redo = editor.redo(undo.revision).expect("redo move");
+
+        assert_eq!(
+            [
+                add.revision,
+                move_vertex.revision,
+                undo.revision,
+                redo.revision
+            ],
+            [1, 2, 3, 4]
+        );
+        assert_eq!(editor.revision(), 4);
+    }
+
+    #[test]
+    fn stale_revision_takes_precedence_over_revision_exhaustion() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor.revision = MAX_REVISION;
+        let before = editor_state_snapshot(&editor);
+
+        assert_eq!(
+            editor.execute(
+                MAX_REVISION - 1,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(1.0, 2.0),
+                },
+            ),
+            Err(CommandError::RevisionConflict {
+                expected: MAX_REVISION - 1,
+                actual: MAX_REVISION
+            })
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
     }
 
     #[test]

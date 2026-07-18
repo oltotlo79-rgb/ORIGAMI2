@@ -9,7 +9,7 @@ mod validation;
 
 pub use editor::{
     Command, CommandError, CommandResult, EditorState, IntersectionEdgeTarget,
-    JunctionVertexIntent, Revision,
+    JunctionVertexIntent, MAX_REVISION, Revision,
 };
 pub use fold_model_fingerprint::fold_model_fingerprint_v1;
 pub use ori_foldability::{

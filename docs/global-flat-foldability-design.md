@@ -173,7 +173,7 @@ OverlapCell
 - 同一面が一つのcellへ二重登録される、cell境界が自己交差する、coverageが一致しない場合はfail closed
 - cell全体を構成できるまでは層順候補を公開しない
 
-現在のcertificate再検証はstrict convex、face全面積・face pair面積coverage、cell間の正面積非交差を検証するが、immutable geometryからcanonical atom集合を再構築して完全一致させる段階を残している。このため人工的な追加分割を受理し得る現行cell keyをSIM-010のmutation authorityとして使用してはならない。SIM-010接続前に、再構築したatom集合とのcell key、boundary、coverageの完全一致を必須にし、人工分割、欠落、結合、重複を拒否する。
+certificate再検証はimmutable geometryから全canonical supporting-line arrangement atom集合をexactに再構築し、提出されたcell集合と`cell_key`、`exact_boundary`、`covering_faces`が完全一致することを要求する。cellの保存順は証拠に含めないが、人工分割、canonical supporting lineをまたぐ結合、欠落、重複は`certificate_reverification_failed`として拒否する。strict convex、face全面積・face pair面積coverage、cell間の正面積非交差の従来検証も併用する。このcanonical cell照合は完成したが、同一slot capability、current applied poseとのnative結合、原子的commandが完成するまでは、cell単独をSIM-010のmutation authorityとして使用しない。
 
 ## 8. facewise制約
 
@@ -266,11 +266,19 @@ global orderが一意に構成できるため`Some`となる。
 
 certificate再検証では、生成済みconstraint/cellをそのまま信用しない。immutable
 geometryから全unordered face pairと全face tripleをexactに再交差し、全hinge×face、
-全hinge×hinge、Mountain/Valley固定を別経路で検査する。cellはstrict convex、
-coverage、key、一意性、相互の正面積非交差を再確認し、各overlap pairについて
-covering cellのexact面積総和がface intersectionのexact面積と一致することを要求する。
+全hinge×hinge、Mountain/Valley固定を別経路で検査する。cellについては全canonical
+supporting-line arrangement atom集合を再構築し、保存順と独立に`cell_key`、
+`exact_boundary`、`covering_faces`の完全一致を確認する。さらにstrict convex、
+coverage、一意性、相互の正面積非交差を再確認し、各overlap pairについてcovering
+cellのexact面積総和がface intersectionのexact面積と一致することを要求する。
+再構築中は提出済みarrangementを保持したまま検証用arrangementを作るため、両方の
+live exact storageと検証用順序bufferを同じ論理証明storage budgetへ同時計上する。
+資源上限、deadlineまたはcancelに到達した場合は一時storageだけを解放し、候補証明を
+公開しない。
 
-nativeのcurrent layer-order slotはproject instance、project ID、revision、topology input、fold model fingerprint、proof/layer modelへ結合する。編集またはproject置換後は利用時のbinding照合で無効として返さず、通常の新規判定開始、判定job置換、判定`unknown/impossible`、cancel、errorではslotを明示的に消去する。source件数preflightで即時終了する未登録例外は既存slotへ触れない。stale snapshotを3D表示またはSIM-010へ渡さない。
+nativeのcurrent layer-order slotはproject instance、project ID、revision、topology input、fold model fingerprint、proof/layer model、snapshot provenance、material registry、checked単調generationへ結合する。snapshot cloneではなく、同一slotとcertificateの`Arc` identityを封印した非Serialize・非Cloneのprivate capabilityだけを捕捉し、deep clone、同内容再解析ABA、編集後Undo、project reopen、別slot、世代差を拒否する。観測用の借用再検証はmutation authorityにしない。mutation境界では`AppState`からlayer slotの固定lock順で両lockを保持したまま再認証済みclosureを実行し、cancelまたは再解析が再認証とcommitの間へ入るTOCTOUを許さない。
+
+編集またはproject置換後は利用時のbinding照合で無効として返さず、通常の新規判定開始、判定job置換、判定`unknown/impossible`、cancel、errorではslotを明示的に消去する。完了済みcertificateに対する明示cancelもslotを失効させる。source件数preflightで即時終了する未登録例外は既存slotへ触れない。stale snapshotを3D表示またはSIM-010へ渡さない。
 
 ## 11. 時間・資源上限
 
@@ -428,7 +436,7 @@ SIM-010を実装する前に、層順序に加えて次を用意する。
 - vertex/edge保存順、無向辺方向、紙境界cycle開始・反転によらず同じversion 1 SHA-256 fingerprintを返し、折りモデルの全対象field変更でfingerprintが変わる
 - identity namespace、revision、fingerprint、proof modelのどれかが異なるprovenanceをcurrentとして受理しない
 - 5万変数規模でも再帰stackを使わず、iterative DFS・伝播・連結成分処理を完了または上限付きで中断する
-- certificateをimmutable geometryから独立に再検証し、cell key、coverage、pair order、supporting cell、derivation、証明集計の改ざんを拒否する
+- certificateをimmutable geometryから独立に再検証し、全canonical supporting-line atom集合とのkey・exact boundary・covering faces完全一致を要求する。人工分割、結合、欠落、重複、cell key、coverage、pair order、supporting cell、derivation、証明集計の改ざんを拒否する
 - 会計対象のexact canonical payload、arrangement、snapshot、certificate構造、制約・solver buffer、検証一時値の合算論理storageについて上限ちょうどを受理し、`-1`上限、算術overflow、構築途中超過を不明へ閉じる。これはallocator実heapの上限試験とは呼ばない
 - 実certificate JSONのserialization bytesと`certificate_bytes`を一致させ、実測値ちょうどを受理し、1 byte不足を拒否する。serialization中のdeadline/cancelも終端候補を公開しない
 

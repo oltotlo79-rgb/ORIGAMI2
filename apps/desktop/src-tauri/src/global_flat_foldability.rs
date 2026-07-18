@@ -20,8 +20,8 @@ use ori_foldability::{
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityObserver,
     GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityPhase, GlobalFlatFoldabilityProgress,
     GlobalFlatFoldabilityReport, GlobalFlatFoldabilityUnknownReason,
-    GlobalFlatFoldabilityWorkCounts, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderSnapshot,
-    analyze_global_flat_foldability_with_observer,
+    GlobalFlatFoldabilityWorkCounts, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderProvenance,
+    LayerOrderSnapshot, analyze_global_flat_foldability_with_observer,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -46,6 +46,9 @@ const PHASE_PROPAGATING: u8 = 5;
 const PHASE_SEARCHING: u8 = 6;
 const PHASE_VERIFYING_CERTIFICATE: u8 = 7;
 const PHASE_COMPLETED: u8 = 8;
+
+const PROOF_MODEL_AUTHORITY_ID: &str = "convex_faces_facewise_v1";
+const LAYER_MODEL_AUTHORITY_ID: &str = "facewise_layer_order_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
@@ -232,7 +235,7 @@ pub(super) struct GlobalFlatFoldabilityBeginResponse {
 }
 
 #[derive(Default)]
-pub(super) struct GlobalFlatFoldabilityState(Mutex<GlobalFlatFoldabilitySlot>);
+pub(super) struct GlobalFlatFoldabilityState(Arc<Mutex<GlobalFlatFoldabilitySlot>>);
 
 #[derive(Default)]
 struct GlobalFlatFoldabilitySlot {
@@ -240,7 +243,8 @@ struct GlobalFlatFoldabilitySlot {
     terminal: Option<TerminalGlobalFlatFoldabilityJob>,
     last_cancelled_id: Option<GlobalFlatFoldabilityJobId>,
     last_replaced_id: Option<GlobalFlatFoldabilityJobId>,
-    current_layer_order: Option<CurrentLayerOrder>,
+    current_layer_order: Option<Arc<CurrentLayerOrderCertificate>>,
+    layer_order_generation: u64,
 }
 
 struct ActiveGlobalFlatFoldabilityJob {
@@ -255,18 +259,45 @@ struct TerminalGlobalFlatFoldabilityJob {
     claimed: bool,
 }
 
-#[allow(dead_code)]
-struct CurrentLayerOrder {
+#[derive(Clone)]
+struct CurrentLayerOrderClaims {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    topology_input: Arc<TopologyAnalysisInput>,
+    fold_model_fingerprint: Arc<str>,
+    proof_model_id: Arc<str>,
+    layer_model_id: Arc<str>,
+    snapshot_identity: Arc<LayerOrderSnapshot>,
+    snapshot_provenance: LayerOrderProvenance,
+    material_registry: Arc<[LayerFace]>,
+    generation: u64,
+}
+
+struct CurrentLayerOrderCertificate {
     binding: Arc<GlobalFlatFoldabilityBinding>,
-    snapshot: LayerOrderSnapshot,
+    snapshot: Arc<LayerOrderSnapshot>,
+    claims: CurrentLayerOrderClaims,
+}
+
+/// An in-process authority token for a native, still-current layer order.
+///
+/// Its fields deliberately remain private and the type is neither serializable
+/// nor clonable. A later native mutation boundary must use the guarded closure
+/// API so revalidation and commit share the same project and slot locks.
+#[allow(dead_code)]
+pub(super) struct CurrentLayerOrderCapability {
+    slot: Arc<Mutex<GlobalFlatFoldabilitySlot>>,
+    certificate: Arc<CurrentLayerOrderCertificate>,
+    claims: CurrentLayerOrderClaims,
 }
 
 struct GlobalFlatFoldabilityBinding {
     project_instance_id: ProjectId,
     project_id: ProjectId,
     revision: u64,
-    topology_input: TopologyAnalysisInput,
-    fold_model_fingerprint: String,
+    topology_input: Arc<TopologyAnalysisInput>,
+    fold_model_fingerprint: Arc<str>,
 }
 
 struct GlobalFlatFoldabilityRuntime {
@@ -646,8 +677,8 @@ fn capture_source(
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         revision: expected_revision,
-        topology_input: project.editor.topology_analysis_input(project.project_id),
-        fold_model_fingerprint,
+        topology_input: Arc::new(project.editor.topology_analysis_input(project.project_id)),
+        fold_model_fingerprint: Arc::from(fold_model_fingerprint),
     });
     Ok(GlobalFlatFoldabilityCapture::Ready(
         GlobalFlatFoldabilitySource {
@@ -1467,7 +1498,7 @@ fn finish_completion(
     let summary = active.runtime.summary();
     let cancellation_requested = active.runtime.cancellation.load(Ordering::SeqCst);
     let current = binding_is_current(&completion.context.binding, project);
-    let (dto, adopted_layer_order) =
+    let (dto, completed_layer_order) =
         if cancellation_requested || matches!(completion.outcome, WorkerOutcome::Cancelled) {
             (GlobalFlatFoldabilityJobDto::Cancelled { summary }, None)
         } else if !current {
@@ -1481,10 +1512,7 @@ fn finish_completion(
                     let result = result.with_summary(summary);
                     let adopted = match (&result, layer_order) {
                         (GlobalFlatFoldabilityResultDto::Possible { .. }, Some(layer_order)) => {
-                            Some(CurrentLayerOrder {
-                                binding: Arc::clone(&completion.context.binding),
-                                snapshot: *layer_order,
-                            })
+                            Some((Arc::clone(&completion.context.binding), *layer_order))
                         }
                         (
                             GlobalFlatFoldabilityResultDto::Impossible { .. }
@@ -1512,6 +1540,16 @@ fn finish_completion(
             }
         };
 
+    let adopted_layer_order = match completed_layer_order {
+        Some((binding, snapshot)) => {
+            let Ok(certificate) = mint_current_layer_order_certificate(slot, binding, snapshot)
+            else {
+                return finish_as_internal_failure(slot, completion.context.job_id, summary);
+            };
+            Some(certificate)
+        }
+        None => None,
+    };
     slot.current_layer_order = adopted_layer_order;
     slot.active = None;
     slot.terminal = Some(TerminalGlobalFlatFoldabilityJob {
@@ -1519,6 +1557,102 @@ fn finish_completion(
         dto,
         claimed: false,
     });
+}
+
+fn mint_current_layer_order_certificate(
+    slot: &mut GlobalFlatFoldabilitySlot,
+    binding: Arc<GlobalFlatFoldabilityBinding>,
+    snapshot: LayerOrderSnapshot,
+) -> Result<Arc<CurrentLayerOrderCertificate>, ()> {
+    let generation = slot.layer_order_generation.checked_add(1).ok_or(())?;
+    let snapshot = Arc::new(snapshot);
+    let material_registry: Arc<[LayerFace]> =
+        Arc::from(snapshot.material_faces.clone().into_boxed_slice());
+    let claims = CurrentLayerOrderClaims {
+        project_instance_id: binding.project_instance_id,
+        project_id: binding.project_id,
+        revision: binding.revision,
+        topology_input: Arc::clone(&binding.topology_input),
+        fold_model_fingerprint: Arc::clone(&binding.fold_model_fingerprint),
+        proof_model_id: Arc::from(PROOF_MODEL_AUTHORITY_ID),
+        layer_model_id: Arc::from(LAYER_MODEL_AUTHORITY_ID),
+        snapshot_identity: Arc::clone(&snapshot),
+        snapshot_provenance: snapshot.provenance,
+        material_registry,
+        generation,
+    };
+    let certificate = Arc::new(CurrentLayerOrderCertificate {
+        binding,
+        snapshot,
+        claims,
+    });
+    if !current_layer_order_certificate_is_internally_consistent(&certificate) {
+        return Err(());
+    }
+    slot.layer_order_generation = generation;
+    Ok(certificate)
+}
+
+fn current_layer_order_certificate_is_internally_consistent(
+    certificate: &CurrentLayerOrderCertificate,
+) -> bool {
+    let binding = &certificate.binding;
+    let snapshot = &certificate.snapshot;
+    let claims = &certificate.claims;
+    let source = snapshot.provenance.source;
+
+    claims.generation != 0
+        && claims.project_instance_id == binding.project_instance_id
+        && claims.project_id == binding.project_id
+        && claims.revision == binding.revision
+        && binding.topology_input.revision() == binding.revision
+        && Arc::ptr_eq(&claims.topology_input, &binding.topology_input)
+        && claims.topology_input.as_ref() == binding.topology_input.as_ref()
+        && Arc::ptr_eq(
+            &claims.fold_model_fingerprint,
+            &binding.fold_model_fingerprint,
+        )
+        && claims.fold_model_fingerprint.as_ref() == binding.fold_model_fingerprint.as_ref()
+        && claims.proof_model_id.as_ref() == PROOF_MODEL_AUTHORITY_ID
+        && claims.layer_model_id.as_ref() == LAYER_MODEL_AUTHORITY_ID
+        && Arc::ptr_eq(&claims.snapshot_identity, snapshot)
+        && claims.snapshot_identity.as_ref() == snapshot.as_ref()
+        && snapshot.model_id == LAYER_ORDER_MODEL_ID
+        && source.model_id == GLOBAL_FLAT_FOLDABILITY_MODEL_ID
+        && snapshot.provenance == claims.snapshot_provenance
+        && source.identity_namespace == Some(binding.project_id)
+        && source.source_revision == binding.revision
+        && source.source_fingerprint.is_some_and(|fingerprint| {
+            fingerprint.to_hex() == binding.fold_model_fingerprint.as_ref()
+        })
+        && !snapshot.material_faces.is_empty()
+        && snapshot.material_faces.as_slice() == claims.material_registry.as_ref()
+}
+
+fn current_layer_order_claims_match(
+    first: &CurrentLayerOrderClaims,
+    second: &CurrentLayerOrderClaims,
+) -> bool {
+    first.project_instance_id == second.project_instance_id
+        && first.project_id == second.project_id
+        && first.revision == second.revision
+        && Arc::ptr_eq(&first.topology_input, &second.topology_input)
+        && first.topology_input.as_ref() == second.topology_input.as_ref()
+        && Arc::ptr_eq(
+            &first.fold_model_fingerprint,
+            &second.fold_model_fingerprint,
+        )
+        && first.fold_model_fingerprint.as_ref() == second.fold_model_fingerprint.as_ref()
+        && Arc::ptr_eq(&first.proof_model_id, &second.proof_model_id)
+        && first.proof_model_id.as_ref() == second.proof_model_id.as_ref()
+        && Arc::ptr_eq(&first.layer_model_id, &second.layer_model_id)
+        && first.layer_model_id.as_ref() == second.layer_model_id.as_ref()
+        && Arc::ptr_eq(&first.snapshot_identity, &second.snapshot_identity)
+        && first.snapshot_identity.as_ref() == second.snapshot_identity.as_ref()
+        && first.snapshot_provenance == second.snapshot_provenance
+        && Arc::ptr_eq(&first.material_registry, &second.material_registry)
+        && first.material_registry.as_ref() == second.material_registry.as_ref()
+        && first.generation == second.generation
 }
 
 fn finish_as_internal_failure(
@@ -1539,13 +1673,14 @@ fn finish_as_internal_failure(
 }
 
 fn binding_is_current(binding: &GlobalFlatFoldabilityBinding, project: &ProjectState) -> bool {
+    let current_fingerprint = project.editor.fold_model_fingerprint_v1();
     binding.project_instance_id == project.instance_id
         && binding.project_id == project.project_id
         && binding.revision == project.editor.revision()
         && binding
             .topology_input
             .is_current_for(project.project_id, &project.editor)
-        && binding.fold_model_fingerprint == project.editor.fold_model_fingerprint_v1()
+        && binding.fold_model_fingerprint.as_ref() == current_fingerprint
 }
 
 fn bindings_equal(
@@ -1623,8 +1758,12 @@ fn cancel_job(
         .terminal
         .as_ref()
         .is_some_and(|terminal| terminal.job_id == job_id)
-        || slot.last_cancelled_id == Some(job_id)
     {
+        slot.current_layer_order = None;
+        slot.last_cancelled_id = Some(job_id);
+        return Ok(());
+    }
+    if slot.last_cancelled_id == Some(job_id) {
         return Ok(());
     }
     Err(GlobalFlatFoldabilityCommandError::new(
@@ -1632,17 +1771,106 @@ fn cancel_job(
     ))
 }
 
+/// Captures a private native capability without cloning the layer snapshot.
+///
+/// This is intentionally not a Tauri command and its return type is not
+/// serializable. A mutating caller must pass it to
+/// `with_revalidated_current_layer_order_capability`.
 #[allow(dead_code)]
-pub(super) fn current_layer_order_for_project(
+pub(super) fn capture_current_layer_order_capability(
     state: &GlobalFlatFoldabilityState,
     project: &ProjectState,
-) -> Result<Option<LayerOrderSnapshot>, GlobalFlatFoldabilityCommandError> {
+) -> Result<Option<CurrentLayerOrderCapability>, GlobalFlatFoldabilityCommandError> {
     let slot = lock_foldability_state(state)?;
-    Ok(slot
-        .current_layer_order
-        .as_ref()
-        .filter(|current| binding_is_current(&current.binding, project))
-        .map(|current| current.snapshot.clone()))
+    let Some(certificate) = slot.current_layer_order.as_ref() else {
+        return Ok(None);
+    };
+    if certificate.claims.generation != slot.layer_order_generation
+        || !current_layer_order_certificate_is_internally_consistent(certificate)
+        || !binding_is_current(&certificate.binding, project)
+    {
+        return Ok(None);
+    }
+    Ok(Some(CurrentLayerOrderCapability {
+        slot: Arc::clone(&state.0),
+        certificate: Arc::clone(certificate),
+        claims: certificate.claims.clone(),
+    }))
+}
+
+/// Revalidates every sealed authority claim against the live slot and project.
+///
+/// This borrow-returning helper is observation-only: the slot lock is released
+/// before the caller receives the snapshot, so it must never authorize a
+/// mutation. Use `with_revalidated_current_layer_order_capability` at a native
+/// commit boundary.
+#[allow(dead_code)]
+pub(super) fn revalidate_current_layer_order_capability<'a>(
+    state: &GlobalFlatFoldabilityState,
+    project: &ProjectState,
+    capability: &'a CurrentLayerOrderCapability,
+) -> Result<Option<&'a LayerOrderSnapshot>, GlobalFlatFoldabilityCommandError> {
+    if !Arc::ptr_eq(&state.0, &capability.slot) {
+        return Ok(None);
+    }
+    let slot = lock_foldability_state(state)?;
+    let Some(current) = slot.current_layer_order.as_ref() else {
+        return Ok(None);
+    };
+    if !current_layer_order_capability_matches_locked_slot(&slot, project, capability, current) {
+        return Ok(None);
+    }
+    Ok(Some(capability.certificate.snapshot.as_ref()))
+}
+
+/// Runs a native layer-aware commit action while project and authority stay locked.
+///
+/// The global lock order is project (`AppState`) first, then the layer-order
+/// slot. Background completion uses the same order; cancellation only takes
+/// the slot. Holding both guards through `action` prevents cancellation,
+/// replacement analysis, project editing, and reopen from creating a
+/// revalidate-to-commit race.
+#[allow(dead_code)]
+pub(super) fn with_revalidated_current_layer_order_capability<R>(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    capability: &CurrentLayerOrderCapability,
+    action: impl FnOnce(&mut ProjectState, &LayerOrderSnapshot) -> R,
+) -> Result<Option<R>, GlobalFlatFoldabilityCommandError> {
+    if !Arc::ptr_eq(&foldability_state.0, &capability.slot) {
+        return Ok(None);
+    }
+    // Do not reverse this order anywhere that needs both locks.
+    let mut project = lock_project(app_state).map_err(|_| {
+        GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
+    })?;
+    let slot = lock_foldability_state(foldability_state)?;
+    let Some(current) = slot.current_layer_order.as_ref() else {
+        return Ok(None);
+    };
+    if !current_layer_order_capability_matches_locked_slot(&slot, &project, capability, current) {
+        return Ok(None);
+    }
+
+    let output = action(&mut project, capability.certificate.snapshot.as_ref());
+    // Keep the layer slot locked for the complete action, even if future
+    // compiler lifetime shortening would otherwise make the guard look dead.
+    drop(slot);
+    Ok(Some(output))
+}
+
+fn current_layer_order_capability_matches_locked_slot(
+    slot: &GlobalFlatFoldabilitySlot,
+    project: &ProjectState,
+    capability: &CurrentLayerOrderCapability,
+    current: &Arc<CurrentLayerOrderCertificate>,
+) -> bool {
+    Arc::ptr_eq(current, &capability.certificate)
+        && current.claims.generation == slot.layer_order_generation
+        && capability.claims.generation == slot.layer_order_generation
+        && current_layer_order_claims_match(&capability.claims, &current.claims)
+        && current_layer_order_certificate_is_internally_consistent(current)
+        && binding_is_current(&current.binding, project)
 }
 
 fn usize_to_bounded_u64(value: usize, maximum: u64) -> u64 {
@@ -1659,7 +1887,14 @@ fn duration_millis(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use ori_core::{EditorState, analyze_local_flat_foldability};
+    use std::{
+        cell::Cell,
+        path::PathBuf,
+        sync::mpsc::{self, RecvTimeoutError},
+        thread,
+    };
+
+    use ori_core::{Command, EditorState, analyze_local_flat_foldability};
     use ori_domain::{Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
     use ori_foldability::{FacewiseConstraintKind, LocalNecessaryConditionViolation};
     use serde_json::json;
@@ -1686,6 +1921,46 @@ mod tests {
             panic!("ordinary fixture must be within native source limits");
         };
         source
+    }
+
+    fn install_possible_layer_order(state: &GlobalFlatFoldabilityState, project: &ProjectState) {
+        let source = source_for(project, GlobalFlatFoldabilityJobId::new());
+        {
+            let mut slot = lock_foldability_state(state).expect("lock authority slot");
+            install_active_job(&mut slot, &source);
+        }
+        let completion = guarded_run_worker(source);
+        {
+            let mut slot = lock_foldability_state(state).expect("lock completed authority slot");
+            finish_completion(&mut slot, project, completion);
+            assert!(
+                slot.current_layer_order.is_some(),
+                "fixture must install native layer authority"
+            );
+        }
+    }
+
+    fn copy_layer_order_capability(
+        capability: &CurrentLayerOrderCapability,
+    ) -> CurrentLayerOrderCapability {
+        CurrentLayerOrderCapability {
+            slot: Arc::clone(&capability.slot),
+            certificate: Arc::clone(&capability.certificate),
+            claims: capability.claims.clone(),
+        }
+    }
+
+    fn deep_clone_layer_order_certificate(
+        certificate: &CurrentLayerOrderCertificate,
+    ) -> CurrentLayerOrderCertificate {
+        let snapshot = Arc::new((*certificate.snapshot).clone());
+        let mut claims = certificate.claims.clone();
+        claims.snapshot_identity = Arc::clone(&snapshot);
+        CurrentLayerOrderCertificate {
+            binding: Arc::clone(&certificate.binding),
+            snapshot,
+            claims,
+        }
     }
 
     struct DeadlineAtFirstCoreCheckpoint;
@@ -2713,7 +2988,7 @@ mod tests {
         let mut source = source_for(&project, GlobalFlatFoldabilityJobId::new());
         Arc::get_mut(&mut source.binding)
             .expect("fixture has the only binding owner")
-            .fold_model_fingerprint = "different-internal-fingerprint".to_owned();
+            .fold_model_fingerprint = Arc::from("different-internal-fingerprint");
         let mut slot = GlobalFlatFoldabilitySlot::default();
         install_active_job(&mut slot, &source);
         let completion = unknown_completion(&source);
@@ -2781,6 +3056,458 @@ mod tests {
             })
         ));
         assert!(slot.current_layer_order.is_none());
+    }
+
+    #[test]
+    fn current_layer_order_capability_rejects_same_content_reanalysis_aba() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let first = capture_current_layer_order_capability(&state, &project)
+            .expect("capture first authority")
+            .expect("first layer authority");
+        let first_snapshot = Arc::clone(&first.certificate.snapshot);
+        let first_generation = first.claims.generation;
+
+        install_possible_layer_order(&state, &project);
+        let second = capture_current_layer_order_capability(&state, &project)
+            .expect("capture replacement authority")
+            .expect("replacement layer authority");
+
+        assert_eq!(
+            *first_snapshot, *second.certificate.snapshot,
+            "the ABA fixture deliberately re-analyzes identical contents"
+        );
+        assert!(
+            !Arc::ptr_eq(&first.certificate, &second.certificate),
+            "each successful analysis must mint a distinct certificate"
+        );
+        assert!(
+            second.claims.generation > first_generation,
+            "the authority generation must advance monotonically"
+        );
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &first)
+                .expect("revalidate replaced authority")
+                .is_none(),
+            "an old capture must not regain authority after identical re-analysis"
+        );
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &second)
+                .expect("revalidate current authority")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn current_layer_order_capability_rejects_edit_undo_and_project_reopen() {
+        let mut project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let captured = capture_current_layer_order_capability(&state, &project)
+            .expect("capture authority")
+            .expect("layer authority");
+        let original_document = project.document();
+        let original_fingerprint = project.editor.fold_model_fingerprint_v1();
+        let original_revision = project.editor.revision();
+
+        project
+            .editor
+            .execute(
+                original_revision,
+                Command::SetCuttingAllowed {
+                    allowed: !project.editor.cutting_allowed(),
+                },
+            )
+            .expect("edit project");
+        project
+            .editor
+            .undo(project.editor.revision())
+            .expect("undo project edit");
+
+        assert_eq!(project.document(), original_document);
+        assert_eq!(
+            project.editor.fold_model_fingerprint_v1(),
+            original_fingerprint
+        );
+        assert!(
+            project.editor.revision() > original_revision,
+            "Undo restores content, not the captured revision identity"
+        );
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &captured)
+                .expect("revalidate after Undo")
+                .is_none()
+        );
+
+        let reopened_state = GlobalFlatFoldabilityState::default();
+        let original = initial_project_state();
+        install_possible_layer_order(&reopened_state, &original);
+        let reopened_capture = capture_current_layer_order_capability(&reopened_state, &original)
+            .expect("capture before reopen")
+            .expect("layer authority before reopen");
+        let reopened =
+            ProjectState::from_document(original.document(), PathBuf::from("reopened.ori2"));
+
+        assert_eq!(reopened.project_id, original.project_id);
+        assert_eq!(reopened.editor.revision(), original.editor.revision());
+        assert_eq!(
+            reopened.editor.fold_model_fingerprint_v1(),
+            original.editor.fold_model_fingerprint_v1()
+        );
+        assert_ne!(reopened.instance_id, original.instance_id);
+        assert!(
+            revalidate_current_layer_order_capability(
+                &reopened_state,
+                &reopened,
+                &reopened_capture,
+            )
+            .expect("revalidate after reopen")
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn current_layer_order_capability_rejects_wrong_claims_and_forged_clones() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let captured = capture_current_layer_order_capability(&state, &project)
+            .expect("capture authority")
+            .expect("layer authority");
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &captured)
+                .expect("revalidate genuine authority")
+                .is_some()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.project_instance_id = ProjectId::new();
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged project instance")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.project_id = ProjectId::new();
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged project ID")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.revision = forged.claims.revision.saturating_add(1);
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged revision")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.proof_model_id = Arc::from("forged-proof-model");
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged proof model")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.layer_model_id = Arc::from("forged-layer-model");
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged layer model")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.fold_model_fingerprint = Arc::from("forged-fingerprint");
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged fingerprint")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.topology_input = Arc::new((*captured.claims.topology_input).clone());
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject same-content topology clone")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.snapshot_identity = Arc::new((*captured.claims.snapshot_identity).clone());
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject same-content snapshot clone")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.snapshot_provenance.source.source_revision = forged
+            .claims
+            .snapshot_provenance
+            .source
+            .source_revision
+            .saturating_add(1);
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged provenance")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.material_registry = Arc::from(
+            captured
+                .claims
+                .material_registry
+                .to_vec()
+                .into_boxed_slice(),
+        );
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject same-content material-registry clone")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.claims.generation = forged.claims.generation.saturating_add(1);
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject forged generation")
+                .is_none()
+        );
+
+        let mut forged = copy_layer_order_capability(&captured);
+        forged.certificate = Arc::new(deep_clone_layer_order_certificate(&captured.certificate));
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &forged)
+                .expect("reject deep-cloned certificate")
+                .is_none()
+        );
+
+        let wrong_state = GlobalFlatFoldabilityState::default();
+        assert!(
+            revalidate_current_layer_order_capability(&wrong_state, &project, &captured)
+                .expect("reject a different authority slot")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn capture_rejects_corrupted_current_layer_order_certificate() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let captured = capture_current_layer_order_capability(&state, &project)
+            .expect("capture authority")
+            .expect("layer authority");
+        let genuine = Arc::clone(&captured.certificate);
+
+        let mut corrupted = deep_clone_layer_order_certificate(&genuine);
+        corrupted.claims.proof_model_id = Arc::from("wrong-proof-model");
+        {
+            let mut slot = lock_foldability_state(&state).expect("replace certificate");
+            slot.current_layer_order = Some(Arc::new(corrupted));
+        }
+        assert!(
+            capture_current_layer_order_capability(&state, &project)
+                .expect("capture checks proof model")
+                .is_none()
+        );
+
+        let mut corrupted = deep_clone_layer_order_certificate(&genuine);
+        corrupted.claims.fold_model_fingerprint = Arc::from("wrong-fingerprint");
+        {
+            let mut slot = lock_foldability_state(&state).expect("replace certificate");
+            slot.current_layer_order = Some(Arc::new(corrupted));
+        }
+        assert!(
+            capture_current_layer_order_capability(&state, &project)
+                .expect("capture checks fingerprint")
+                .is_none()
+        );
+
+        let mut corrupted = deep_clone_layer_order_certificate(&genuine);
+        corrupted.claims.material_registry = Arc::from(Vec::<LayerFace>::new().into_boxed_slice());
+        {
+            let mut slot = lock_foldability_state(&state).expect("replace certificate");
+            slot.current_layer_order = Some(Arc::new(corrupted));
+        }
+        assert!(
+            capture_current_layer_order_capability(&state, &project)
+                .expect("capture checks material registry")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn commit_closure_rejects_old_generation_and_deep_clone_before_action() {
+        let app_state = AppState(Mutex::new(initial_project_state()));
+        let foldability_state = GlobalFlatFoldabilityState::default();
+        let old_capability = {
+            let project = lock_project(&app_state).expect("lock project");
+            install_possible_layer_order(&foldability_state, &project);
+            capture_current_layer_order_capability(&foldability_state, &project)
+                .expect("capture old authority")
+                .expect("old layer authority")
+        };
+        {
+            let project = lock_project(&app_state).expect("lock project for re-analysis");
+            install_possible_layer_order(&foldability_state, &project);
+        }
+
+        let action_called = Cell::new(false);
+        assert!(
+            with_revalidated_current_layer_order_capability(
+                &app_state,
+                &foldability_state,
+                &old_capability,
+                |_, _| action_called.set(true),
+            )
+            .expect("reject old generation")
+            .is_none()
+        );
+        assert!(
+            !action_called.get(),
+            "an old generation must be rejected before the action runs"
+        );
+
+        let current_capability = {
+            let project = lock_project(&app_state).expect("lock current project");
+            capture_current_layer_order_capability(&foldability_state, &project)
+                .expect("capture current authority")
+                .expect("current layer authority")
+        };
+        let mut forged = copy_layer_order_capability(&current_capability);
+        forged.certificate = Arc::new(deep_clone_layer_order_certificate(
+            &current_capability.certificate,
+        ));
+        let action_called = Cell::new(false);
+        assert!(
+            with_revalidated_current_layer_order_capability(
+                &app_state,
+                &foldability_state,
+                &forged,
+                |_, _| action_called.set(true),
+            )
+            .expect("reject cloned certificate")
+            .is_none()
+        );
+        assert!(
+            !action_called.get(),
+            "a cloned certificate must be rejected before the action runs"
+        );
+    }
+
+    #[test]
+    fn commit_closure_holds_slot_until_action_finishes_then_cancel_clears_authority() {
+        let app_state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
+        let capability = {
+            let project = lock_project(&app_state).expect("lock project");
+            install_possible_layer_order(&foldability_state, &project);
+            capture_current_layer_order_capability(&foldability_state, &project)
+                .expect("capture authority")
+                .expect("layer authority")
+        };
+        let job_id = {
+            let slot = lock_foldability_state(&foldability_state).expect("read terminal job");
+            slot.terminal
+                .as_ref()
+                .expect("possible result has a terminal job")
+                .job_id
+        };
+
+        let (action_entered_tx, action_entered_rx) = mpsc::channel();
+        let (release_action_tx, release_action_rx) = mpsc::channel();
+        let action_app_state = Arc::clone(&app_state);
+        let action_foldability_state = Arc::clone(&foldability_state);
+        let action_thread = thread::spawn(move || {
+            with_revalidated_current_layer_order_capability(
+                &action_app_state,
+                &action_foldability_state,
+                &capability,
+                |_, snapshot| {
+                    action_entered_tx.send(()).expect("announce action entry");
+                    release_action_rx.recv().expect("release action");
+                    snapshot.material_faces.len()
+                },
+            )
+            .expect("run guarded action")
+            .expect("current authority")
+        });
+        action_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("action enters with slot locked");
+
+        let (cancel_attempted_tx, cancel_attempted_rx) = mpsc::channel();
+        let (cancel_finished_tx, cancel_finished_rx) = mpsc::channel();
+        let cancel_foldability_state = Arc::clone(&foldability_state);
+        let cancel_thread = thread::spawn(move || {
+            cancel_attempted_tx
+                .send(())
+                .expect("announce cancellation attempt");
+            let mut slot =
+                lock_foldability_state(&cancel_foldability_state).expect("lock for cancellation");
+            cancel_job(&mut slot, job_id).expect("cancel completed authority");
+            cancel_finished_tx
+                .send(())
+                .expect("announce cancellation completion");
+        });
+        cancel_attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation thread starts");
+        assert_eq!(
+            cancel_finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout),
+            "cancellation must wait while the commit action holds the slot"
+        );
+
+        release_action_tx.send(()).expect("finish guarded action");
+        assert!(
+            action_thread.join().expect("join action thread") > 0,
+            "fixture has at least one material face"
+        );
+        cancel_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation completes after the action");
+        cancel_thread.join().expect("join cancellation thread");
+
+        let slot = lock_foldability_state(&foldability_state).expect("inspect cleared authority");
+        assert!(slot.current_layer_order.is_none());
+        assert_eq!(slot.last_cancelled_id, Some(job_id));
+    }
+
+    #[test]
+    fn layer_order_generation_exhaustion_fails_closed_without_wrapping() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        {
+            let mut slot = lock_foldability_state(&state).expect("lock authority slot");
+            slot.layer_order_generation = u64::MAX;
+        }
+        let source = source_for(&project, GlobalFlatFoldabilityJobId::new());
+        {
+            let mut slot = lock_foldability_state(&state).expect("install active job");
+            install_active_job(&mut slot, &source);
+        }
+        let completion = guarded_run_worker(source);
+        {
+            let mut slot = lock_foldability_state(&state).expect("finish exhausted generation");
+            finish_completion(&mut slot, &project, completion);
+            assert_eq!(slot.layer_order_generation, u64::MAX);
+            assert!(slot.current_layer_order.is_none());
+            assert!(matches!(
+                slot.terminal.as_ref().map(|terminal| &terminal.dto),
+                Some(GlobalFlatFoldabilityJobDto::Failed {
+                    error_category: GlobalFlatFoldabilityErrorCategory::InternalFailure,
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

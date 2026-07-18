@@ -20,6 +20,8 @@
 
 WebViewから渡されたface ID列、層順、face lineage、fingerprintまたはcertificateをauthorityとして受理しない。解析開始時にimmutable snapshotを取得し、重い計算はproject lock外で行う。commit直前にproject instance、ID、revision、geometry、applied pose、current layer-order slotのobject identityとbindingを再照合する。一つでも変化していればstaleとして全候補を破棄する。
 
+current applied pose、native kinematics、衝突certificate、continuous path、場所別cell-order transport、generationおよびlock順の詳細は[native current applied pose設計](native-applied-pose-design.md)を正本とする。WebViewのMatrix4、表示用衝突結果または姿勢snapshotをnative mutation authorityへ昇格させない。
+
 ## 3. 成功トランザクション
 
 将来の`ApplyStackedFold` commandは次を順に準備し、最後の一回だけ状態を確定する。

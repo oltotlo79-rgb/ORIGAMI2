@@ -78,7 +78,7 @@
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
-| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。衝突分類4×10全組合せ表と境界回帰は完成した。VAL-003のcertificate生成・current slot保管は完成済みだが、SIM-010用の同一slot capability、canonical cell照合、current applied poseとのnative結合、原子的履歴は未実装であり、これらの完成前は折り重ねUIへ着手しない |
+| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。衝突分類4×10全組合せ表と境界回帰、canonical cell完全照合、VAL-003 certificate生成、および同一slot/certificate identity・単調generation・lock保持commit closureを持つprivate layer-order capabilityは完成した。revisionもUndo/Redoを含め単調増加する。current applied poseのnative kinematics・衝突・cell-order transportとの結合、原子的command・履歴は未実装であり、これらの完成前は折り重ねUIへ着手しない |
 
 ## 折り手順
 

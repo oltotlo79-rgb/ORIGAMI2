@@ -1519,6 +1519,67 @@ fn build_overlap_cells<O: GlobalFlatFoldabilityObserver + ?Sized>(
     Ok(cells)
 }
 
+fn verify_canonical_overlap_cells<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    faces: &[FoldedFace],
+    cells: &[OverlapCell],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    runtime.checkpoint(None)?;
+    let saved_storage = runtime.exact_storage;
+    let saved_arrangement_segments = runtime.work.arrangement_segments;
+    let saved_overlap_cells = runtime.work.overlap_cells;
+
+    // The supplied arrangement remains live while the verifier reconstructs
+    // the canonical arrangement. Move its exact boundary charge into the
+    // verifier scope so the second arrangement cannot hide behind the
+    // replaceable primary arrangement slot.
+    let retained_arrangement = saved_storage
+        .verification_bytes
+        .checked_add(saved_storage.arrangement_bytes)
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    let mut reconstruction_storage = saved_storage;
+    reconstruction_storage.arrangement_bytes = 0;
+    reconstruction_storage.verification_bytes = retained_arrangement;
+    runtime.ensure_storage_values(reconstruction_storage, 0)?;
+    runtime.exact_storage = reconstruction_storage;
+
+    let verification = (|| {
+        let canonical = build_overlap_cells(faces, &[], runtime)?;
+        if canonical.len() != cells.len() {
+            return Err(certificate_failure());
+        }
+
+        let ordering_bytes = runtime.allocation_bytes(cells.len(), std::mem::size_of::<usize>())?;
+        runtime.add_verification_storage(ordering_bytes)?;
+        let mut supplied_order = Vec::new();
+        supplied_order.try_reserve_exact(cells.len()).map_err(|_| {
+            runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+        })?;
+        supplied_order.extend(0..cells.len());
+        supplied_order.sort_unstable_by_key(|index| cells[*index].key.0);
+
+        for (expected, supplied_index) in canonical.iter().zip(supplied_order) {
+            runtime.checkpoint(None)?;
+            let supplied = &cells[supplied_index];
+            if supplied.key != expected.key
+                || supplied.boundary != expected.boundary
+                || supplied.covering_faces != expected.covering_faces
+            {
+                return Err(certificate_failure());
+            }
+        }
+        Ok(())
+    })();
+
+    // Exact-operation/value counters intentionally retain reconstruction
+    // work. Only the temporary arrangement counters and live storage slots
+    // return to their pre-verification values.
+    runtime.work.arrangement_segments = saved_arrangement_segments;
+    runtime.work.overlap_cells = saved_overlap_cells;
+    runtime.exact_storage = saved_storage;
+    verification
+}
+
 fn clip_polygon_halfplane<O: GlobalFlatFoldabilityObserver + ?Sized>(
     polygon: &[Point],
     line_first: &Point,
@@ -2186,6 +2247,7 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
 ) -> FacewiseResult<()> {
     runtime.clear_verification_storage();
     runtime.checkpoint(None)?;
+    verify_canonical_overlap_cells(&embedding.faces, cells, runtime)?;
     runtime.add_verification_storage(
         runtime.allocation_bytes(embedding.faces.len(), std::mem::size_of::<LayerFace>())?,
     )?;
@@ -4254,6 +4316,21 @@ mod tests {
         }
     }
 
+    struct CancelAfter {
+        continued_checkpoints: usize,
+    }
+
+    impl GlobalFlatFoldabilityObserver for CancelAfter {
+        fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+            if self.continued_checkpoints == 0 {
+                GlobalFlatFoldabilityCheckpoint::Cancelled
+            } else {
+                self.continued_checkpoints -= 1;
+                GlobalFlatFoldabilityCheckpoint::Continue
+            }
+        }
+    }
+
     fn integer_point(x: i64, y: i64) -> Point {
         Point {
             x: Rational::from_integer(x.into()),
@@ -4350,6 +4427,95 @@ mod tests {
                 ((first + 1)..face_count).map(move |second| OverlapPair { first, second })
             })
             .collect()
+    }
+
+    fn rectangle(min_x: i64, min_y: i64, max_x: i64, max_y: i64) -> Vec<Point> {
+        vec![
+            integer_point(min_x, min_y),
+            integer_point(max_x, min_y),
+            integer_point(max_x, max_y),
+            integer_point(min_x, max_y),
+        ]
+    }
+
+    fn build_test_arrangement(faces: &[FoldedFace]) -> (Vec<OverlapPair>, Vec<OverlapCell>) {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        let pairs = build_overlap_pairs(faces, &mut runtime).expect("test overlap pairs");
+        let cells = build_overlap_cells(faces, &pairs, &mut runtime).expect("test overlap cells");
+        (pairs, cells)
+    }
+
+    fn geometry_arrangement_signature(
+        paper: &Paper,
+        pattern: &CreasePattern,
+        topology: &TopologySnapshot,
+    ) -> Vec<(OverlapCellKey, Vec<Point>, Vec<LayerFace>)> {
+        let mut canonical_faces = topology
+            .faces
+            .iter()
+            .map(|face| LayerFace {
+                face_id: face.id,
+                face_key: face.key,
+            })
+            .collect::<Vec<_>>();
+        canonical_faces
+            .sort_unstable_by_key(|face| (face.face_key, face.face_id.canonical_bytes()));
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        runtime
+            .advance(
+                GlobalFlatFoldabilityPhase::BuildingFlatEmbedding,
+                Some(canonical_faces.len()),
+            )
+            .expect("embedding phase");
+        let embedding =
+            build_flat_embedding(paper, pattern, topology, &canonical_faces, &mut runtime)
+                .expect("deterministic embedding");
+        runtime
+            .advance(GlobalFlatFoldabilityPhase::BuildingOverlapArrangement, None)
+            .expect("arrangement phase");
+        let pairs = build_overlap_pairs(&embedding.faces, &mut runtime).expect("overlap pairs");
+        build_overlap_cells(&embedding.faces, &pairs, &mut runtime)
+            .expect("canonical cells")
+            .into_iter()
+            .map(|cell| {
+                (
+                    cell.key,
+                    cell.boundary,
+                    cell.covering_faces
+                        .into_iter()
+                        .map(|index| embedding.faces[index].source.layer)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn arrangement_boundary_bytes(cells: &[OverlapCell]) -> usize {
+        cells
+            .iter()
+            .map(|cell| exact_storage_bytes_points(&cell.boundary).expect("cell exact bytes"))
+            .fold(0_usize, usize::saturating_add)
+    }
+
+    fn assert_certificate_reverification_failed(result: FacewiseResult<()>) {
+        assert!(matches!(
+            result,
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                    reason: FlatFoldabilityProofIncompleteReason::CertificateReverificationFailed
+                }
+            ))
+        ));
     }
 
     #[test]
@@ -4788,6 +4954,396 @@ mod tests {
     }
 
     #[test]
+    fn canonical_cell_reverification_rejects_split_missing_merged_and_duplicate_partitions() {
+        let overlay_faces = vec![
+            synthetic_face(0, rectangle(0, 0, 4, 4), true),
+            synthetic_face(1, rectangle(0, 0, 4, 4), false),
+        ];
+        let (_, canonical_overlay) = build_test_arrangement(&overlay_faces);
+        assert_eq!(canonical_overlay.len(), 1);
+        let original = &canonical_overlay[0];
+
+        let split_first = integer_point(1, -1);
+        let split_second = integer_point(1, 5);
+        let mut split_observer = NoopGlobalFlatFoldabilityObserver;
+        let mut split_runtime = Runtime::new(
+            &mut split_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        let first_boundary = clip_polygon_halfplane(
+            &original.boundary,
+            &split_first,
+            &split_second,
+            true,
+            0,
+            &mut split_runtime,
+        )
+        .expect("first artificial half");
+        let second_boundary = clip_polygon_halfplane(
+            &original.boundary,
+            &split_first,
+            &split_second,
+            false,
+            exact_storage_bytes_points(&first_boundary).expect("first half bytes"),
+            &mut split_runtime,
+        )
+        .expect("second artificial half");
+        let artificially_split = [first_boundary, second_boundary]
+            .into_iter()
+            .map(|boundary| OverlapCell {
+                key: overlap_cell_key(
+                    &boundary,
+                    &original.covering_faces,
+                    &overlay_faces,
+                    &mut split_runtime,
+                )
+                .expect("artificial cell key"),
+                boundary,
+                covering_faces: original.covering_faces.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_certificate_reverification_failed(verify_canonical_overlap_cells(
+            &overlay_faces,
+            &artificially_split,
+            &mut split_runtime,
+        ));
+
+        let mut missing_runtime = Runtime::new(
+            &mut split_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        assert_certificate_reverification_failed(verify_canonical_overlap_cells(
+            &overlay_faces,
+            &[],
+            &mut missing_runtime,
+        ));
+
+        let mut duplicated = canonical_overlay.clone();
+        duplicated.push(canonical_overlay[0].clone());
+        let mut duplicate_runtime = Runtime::new(
+            &mut split_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        assert_certificate_reverification_failed(verify_canonical_overlap_cells(
+            &overlay_faces,
+            &duplicated,
+            &mut duplicate_runtime,
+        ));
+
+        // The remote face contributes x=2 and x=3 supporting lines. They
+        // canonically subdivide the identical two-face overlap even though
+        // the covering set is unchanged on both sides of each line.
+        let merge_faces = vec![
+            synthetic_face(0, rectangle(0, 0, 4, 4), true),
+            synthetic_face(1, rectangle(0, 0, 4, 4), false),
+            synthetic_face(2, rectangle(2, 6, 3, 7), true),
+        ];
+        let (_, canonical_merge) = build_test_arrangement(&merge_faces);
+        assert_eq!(
+            canonical_merge
+                .iter()
+                .filter(|cell| cell.covering_faces == [0, 1])
+                .count(),
+            3
+        );
+        let mut merged = canonical_merge
+            .iter()
+            .filter(|cell| cell.covering_faces != [0, 1])
+            .cloned()
+            .collect::<Vec<_>>();
+        let merged_boundary = rectangle(0, 0, 4, 4);
+        let mut merged_runtime = Runtime::new(
+            &mut split_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        merged.push(OverlapCell {
+            key: overlap_cell_key(&merged_boundary, &[0, 1], &merge_faces, &mut merged_runtime)
+                .expect("merged cell key"),
+            boundary: merged_boundary,
+            covering_faces: vec![0, 1],
+        });
+        assert_certificate_reverification_failed(verify_canonical_overlap_cells(
+            &merge_faces,
+            &merged,
+            &mut merged_runtime,
+        ));
+
+        let mut canonical_runtime = Runtime::new(
+            &mut split_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        verify_canonical_overlap_cells(&merge_faces, &canonical_merge, &mut canonical_runtime)
+            .expect("canonical arrangement reverifies");
+        let mut reverse_stored = canonical_merge.clone();
+        reverse_stored.reverse();
+        verify_canonical_overlap_cells(&merge_faces, &reverse_stored, &mut canonical_runtime)
+            .expect("cell storage order is not geometric evidence");
+    }
+
+    #[test]
+    fn canonical_arrangement_is_invariant_to_storage_order_and_edge_direction() {
+        let (paper, pattern, topology) = three_panel_accordion();
+        let expected = geometry_arrangement_signature(&paper, &pattern, &topology);
+
+        let mut reordered_pattern = pattern.clone();
+        reordered_pattern.vertices.reverse();
+        reordered_pattern.edges.reverse();
+        let reordered_topology = extract_faces_strict(FaceExtractionInput {
+            identity_namespace: fixed_id::<ProjectId>(1),
+            source_revision: topology.source_revision,
+            paper: &paper,
+            pattern: &reordered_pattern,
+        })
+        .expect("storage-reordered topology");
+        assert_eq!(
+            geometry_arrangement_signature(&paper, &reordered_pattern, &reordered_topology),
+            expected
+        );
+
+        let mut reversed_edges = reordered_pattern;
+        for edge in &mut reversed_edges.edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        let reversed_topology = extract_faces_strict(FaceExtractionInput {
+            identity_namespace: fixed_id::<ProjectId>(1),
+            source_revision: topology.source_revision,
+            paper: &paper,
+            pattern: &reversed_edges,
+        })
+        .expect("direction-reversed topology");
+        assert_eq!(
+            geometry_arrangement_signature(&paper, &reversed_edges, &reversed_topology),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonical_cells_cover_single_partial_three_ply_and_disjoint_regions() {
+        let single_faces = vec![synthetic_face(0, rectangle(-2, -1, 3, 4), true)];
+        let (single_pairs, single_cells) = build_test_arrangement(&single_faces);
+        assert!(single_pairs.is_empty());
+        assert_eq!(single_cells.len(), 1);
+        assert_eq!(single_cells[0].covering_faces, [0]);
+        let mut single_observer = NoopGlobalFlatFoldabilityObserver;
+        let mut single_runtime = Runtime::new(
+            &mut single_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        assert_eq!(
+            signed_double_area(&single_cells[0].boundary, &mut single_runtime)
+                .expect("single-cell area"),
+            signed_double_area(&single_faces[0].polygon, &mut single_runtime)
+                .expect("single-face area")
+        );
+        verify_canonical_overlap_cells(&single_faces, &single_cells, &mut single_runtime)
+            .expect("single-face coverage reverifies");
+
+        let faces = vec![
+            synthetic_face(0, rectangle(0, 0, 6, 4), true),
+            synthetic_face(1, rectangle(2, 0, 5, 4), false),
+            synthetic_face(2, rectangle(3, 1, 4, 3), true),
+            synthetic_face(3, rectangle(10, 0, 12, 2), false),
+        ];
+        let (pairs, cells) = build_test_arrangement(&faces);
+        assert_eq!(
+            pairs
+                .iter()
+                .map(|pair| (pair.first, pair.second))
+                .collect::<Vec<_>>(),
+            [(0, 1), (0, 2), (1, 2)]
+        );
+        assert!(
+            cells
+                .iter()
+                .any(|cell| cell.covering_faces.as_slice() == [0])
+        );
+        assert!(
+            cells
+                .iter()
+                .any(|cell| cell.covering_faces.as_slice() == [0, 1])
+        );
+        assert!(
+            cells
+                .iter()
+                .any(|cell| cell.covering_faces.as_slice() == [0, 1, 2])
+        );
+        assert!(
+            cells
+                .iter()
+                .any(|cell| cell.covering_faces.as_slice() == [3])
+        );
+        assert!(
+            cells
+                .iter()
+                .all(|cell| !cell.covering_faces.contains(&3) || cell.covering_faces == [3])
+        );
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        for cell in &cells {
+            for index in 0..cell.boundary.len() {
+                assert!(
+                    cross(
+                        &cell.boundary[index],
+                        &cell.boundary[(index + 1) % cell.boundary.len()],
+                        &cell.boundary[(index + 2) % cell.boundary.len()],
+                        &mut runtime,
+                    )
+                    .expect("strict-convex cross")
+                    .is_positive()
+                );
+            }
+        }
+        verify_canonical_overlap_cells(&faces, &cells, &mut runtime)
+            .expect("mixed canonical arrangement reverifies");
+    }
+
+    #[test]
+    fn point_and_line_contacts_create_no_overlap_order() {
+        let point_contact = vec![
+            synthetic_face(0, rectangle(0, 0, 2, 2), true),
+            synthetic_face(1, rectangle(2, 2, 4, 4), false),
+        ];
+        let (point_pairs, point_cells) = build_test_arrangement(&point_contact);
+        assert!(point_pairs.is_empty());
+        assert!(
+            point_cells
+                .iter()
+                .all(|cell| cell.covering_faces.len() == 1)
+        );
+
+        let line_contact = vec![
+            synthetic_face(0, rectangle(0, 0, 2, 2), true),
+            synthetic_face(1, rectangle(0, -2, 2, 0), false),
+        ];
+        let (line_pairs, line_cells) = build_test_arrangement(&line_contact);
+        assert!(line_pairs.is_empty());
+        assert!(line_cells.iter().all(|cell| cell.covering_faces.len() == 1));
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        verify_canonical_overlap_cells(&point_contact, &point_cells, &mut runtime)
+            .expect("point-contact cells reverify");
+        verify_canonical_overlap_cells(&line_contact, &line_cells, &mut runtime)
+            .expect("line-contact cells reverify");
+    }
+
+    #[test]
+    fn canonical_reconstruction_preserves_limits_control_and_live_storage_accounting() {
+        let faces = vec![
+            synthetic_face(0, rectangle(0, 0, 4, 4), true),
+            synthetic_face(1, rectangle(1, 0, 3, 4), false),
+        ];
+        let (_, cells) = build_test_arrangement(&faces);
+        assert!(cells.len() > 1);
+        let retained_bytes = arrangement_boundary_bytes(&cells);
+
+        let mut limited_observer = NoopGlobalFlatFoldabilityObserver;
+        let mut limited = Runtime::new(
+            &mut limited_observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: retained_bytes,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        limited
+            .set_arrangement_exact_storage(retained_bytes)
+            .expect("retained source arrangement fits at equality");
+        limited.work.arrangement_segments = 17;
+        limited.work.overlap_cells = cells.len();
+        let saved_storage = limited.exact_storage;
+        assert!(matches!(
+            verify_canonical_overlap_cells(&faces, &cells, &mut limited),
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit,
+                    observed,
+                }
+            )) if limit == retained_bytes && observed > limit
+        ));
+        assert_eq!(limited.exact_storage.total(), saved_storage.total());
+        assert_eq!(limited.work.arrangement_segments, 17);
+        assert_eq!(limited.work.overlap_cells, cells.len());
+
+        let mut cell_limit_observer = NoopGlobalFlatFoldabilityObserver;
+        let mut cell_limited = Runtime::new(
+            &mut cell_limit_observer,
+            GlobalFlatFoldabilityLimits {
+                max_overlap_cells: cells.len() - 1,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        assert!(matches!(
+            verify_canonical_overlap_cells(&faces, &cells, &mut cell_limited),
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::OverlapArrangementLimitReached {
+                    resource: FlatFoldabilityResource::OverlapCells,
+                    limit,
+                    observed,
+                }
+            )) if limit == cells.len() - 1 && observed > limit
+        ));
+
+        let mut deadline_observer = DeadlineAfter {
+            continued_checkpoints: 2,
+        };
+        let mut deadline_runtime = Runtime::new(
+            &mut deadline_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        deadline_runtime
+            .set_arrangement_exact_storage(retained_bytes)
+            .expect("deadline fixture retains the source arrangement");
+        let deadline_storage = deadline_runtime.exact_storage;
+        assert!(matches!(
+            verify_canonical_overlap_cells(&faces, &cells, &mut deadline_runtime),
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+            ))
+        ));
+        assert_eq!(
+            deadline_runtime.exact_storage.total(),
+            deadline_storage.total()
+        );
+
+        let mut cancel_observer = CancelAfter {
+            continued_checkpoints: 2,
+        };
+        let mut cancel_runtime = Runtime::new(
+            &mut cancel_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        cancel_runtime
+            .set_arrangement_exact_storage(retained_bytes)
+            .expect("cancel fixture retains the source arrangement");
+        let cancel_storage = cancel_runtime.exact_storage;
+        assert!(matches!(
+            verify_canonical_overlap_cells(&faces, &cells, &mut cancel_runtime),
+            Err(FacewiseAbort::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled
+            ))
+        ));
+        assert_eq!(cancel_runtime.exact_storage.total(), cancel_storage.total());
+    }
+
+    #[test]
     fn three_panel_geometry_builds_and_reverifies_a_facewise_certificate() {
         let (paper, pattern, topology) = three_panel_accordion();
         let canonical_faces = topology
@@ -4883,7 +5439,7 @@ mod tests {
             &mut runtime,
         )
         .expect("right atomic half");
-        let cells = [first_boundary, second_boundary]
+        let artificially_split_cells = [first_boundary, second_boundary]
             .into_iter()
             .map(|boundary| {
                 let key = overlap_cell_key(
@@ -4900,12 +5456,27 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        runtime
-            .set_overlap_cells(cells.len())
+        let mut split_observer = NoopGlobalFlatFoldabilityObserver;
+        let mut split_runtime = Runtime::new(
+            &mut split_observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        split_runtime.phase = GlobalFlatFoldabilityPhase::BuildingOverlapArrangement;
+        split_runtime
+            .set_embedding_exact_storage(
+                exact_storage_bytes_embedding(&embedding).expect("embedding exact bytes"),
+            )
+            .expect("embedding storage fits");
+        split_runtime
+            .set_overlap_pairs(pairs.len())
+            .expect("overlap pairs fit");
+        split_runtime
+            .set_overlap_cells(artificially_split_cells.len())
             .expect("two split cells fit");
-        runtime
+        split_runtime
             .set_arrangement_exact_storage(
-                cells
+                artificially_split_cells
                     .iter()
                     .map(|cell| {
                         exact_storage_bytes_points(&cell.boundary).expect("cell boundary bytes")
@@ -4913,6 +5484,21 @@ mod tests {
                     .fold(0_usize, usize::saturating_add),
             )
             .expect("split-cell exact storage fits");
+        assert!(matches!(
+            solve_layer_order(
+                embedding.clone(),
+                pairs.clone(),
+                artificially_split_cells,
+                provenance,
+                &mut split_runtime,
+            ),
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                    reason: FlatFoldabilityProofIncompleteReason::CertificateReverificationFailed
+                }
+            ))
+        ));
+
         let success = solve_layer_order(
             embedding.clone(),
             pairs,
@@ -5030,9 +5616,10 @@ mod tests {
             .is_err()
         );
 
-        assert!(untampered.overlap_cells.len() >= 2);
         let mut duplicate_cell = untampered.clone();
-        duplicate_cell.overlap_cells[1] = duplicate_cell.overlap_cells[0].clone();
+        duplicate_cell
+            .overlap_cells
+            .push(duplicate_cell.overlap_cells[0].clone());
         assert!(
             verify_layer_order_snapshot(
                 &duplicate_cell,
@@ -5061,20 +5648,6 @@ mod tests {
                 &forged_internal_and_snapshot_key,
                 &embedding,
                 &forged_internal_cells,
-                &pair_values,
-                provenance,
-                &mut runtime,
-            )
-            .is_err()
-        );
-
-        let mut reordered_cells = untampered.clone();
-        reordered_cells.overlap_cells.swap(0, 1);
-        assert!(
-            verify_layer_order_snapshot(
-                &reordered_cells,
-                &embedding,
-                &cells,
                 &pair_values,
                 provenance,
                 &mut runtime,

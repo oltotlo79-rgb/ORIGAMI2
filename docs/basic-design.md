@@ -262,7 +262,7 @@ solve(current geometry, constraints, edited targets, policy)
 
 SIM-010はVAL-003の平坦折り判定が管理する層順序を正本とし、その管理機能と、8.2節および[衝突接触ポリシー](collision-contact-policy.md)で定める共有関係4種×交差証拠10種の全分類・境界回帰が完成した後に実装する。折り重ねUIを分類器より先に公開してはならない。現在の3D姿勢に対して一直線の折り線を指定し、その線をまたぐ重なり層を一括して動かす。成功した1操作は、同一command transaction内で次を確定する。
 
-面系譜、層別山谷割当て、衝突停止、層順再証明、過去step移行、Undo/Redoを含む詳細なauthorityと失敗時不変条件は[折り重ね操作の原子的トランザクション設計](stacked-fold-design.md)を正本とする。
+面系譜、層別山谷割当て、衝突停止、層順再証明、過去step移行、Undo/Redoを含む詳細なauthorityと失敗時不変条件は[折り重ね操作の原子的トランザクション設計](stacked-fold-design.md)を正本とする。表示用TS姿勢をauthorityにせず、native kinematics、current pose、衝突経路および場所別層順序transportを段階証明する境界は[native current applied pose設計](native-applied-pose-design.md)に固定する。
 
 - 対象となった層、固定側、移動側および操作前後の完全姿勢
 - 元の紙へ逆写像した層ごとの直線折り線と山谷割当て

@@ -16,7 +16,7 @@ use ori_topology::{
 };
 use thiserror::Error;
 
-use crate::Revision;
+use crate::{MAX_REVISION, Revision};
 
 pub const DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES: usize = 2_048;
 pub const DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES: usize = 2_048;
@@ -584,10 +584,10 @@ pub fn prepare_face_lineage_v1(
         limits.max_target_paper_boundary_vertices,
     )?;
 
-    let expected_target_revision = input
-        .source_revision
-        .checked_add(1)
-        .ok_or(FaceLineageError::SourceRevisionCannotAdvance)?;
+    if input.source_revision >= MAX_REVISION {
+        return Err(FaceLineageError::SourceRevisionCannotAdvance);
+    }
+    let expected_target_revision = input.source_revision + 1;
     if input.target_revision != expected_target_revision {
         return Err(FaceLineageError::TargetRevisionNotNext {
             expected: expected_target_revision,
@@ -2800,6 +2800,43 @@ mod tests {
         assert_eq!(editor.revision(), before_revision);
         assert_eq!(editor.can_undo(), before_undo);
         assert_eq!(editor.can_redo(), before_redo);
+    }
+
+    #[test]
+    fn face_lineage_rejects_json_revision_ceiling_and_larger_source_revisions() {
+        let fixture = fixture();
+        let final_source_revision = crate::MAX_REVISION - 1;
+        let final_source_layer_order = proven_layer_order(
+            fixture.identity,
+            final_source_revision,
+            &fixture.source_pattern,
+            &fixture.source_paper,
+        );
+        let final_valid_input = FaceLineageInput {
+            source_revision: final_source_revision,
+            source_layer_order: &final_source_layer_order,
+            target_revision: crate::MAX_REVISION,
+            ..fixture.input()
+        };
+        let final_lineage =
+            prepare_face_lineage_v1(final_valid_input, FaceLineageLimits::default())
+                .expect("the final JSON-safe target revision must remain admissible");
+        assert_eq!(final_lineage.source_revision(), final_source_revision);
+        assert_eq!(final_lineage.target_revision(), crate::MAX_REVISION);
+
+        for source_revision in [crate::MAX_REVISION, crate::MAX_REVISION + 1, u64::MAX] {
+            let input = FaceLineageInput {
+                source_revision,
+                target_revision: source_revision.saturating_add(1),
+                ..fixture.input()
+            };
+
+            assert_eq!(
+                prepare_face_lineage_v1(input, FaceLineageLimits::default()),
+                Err(FaceLineageError::SourceRevisionCannotAdvance),
+                "source revision {source_revision} must not produce a lineage"
+            );
+        }
     }
 
     #[test]

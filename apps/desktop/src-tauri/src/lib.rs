@@ -1,5 +1,6 @@
 mod crease_export;
 mod diagnostics;
+mod instruction_export;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -20,6 +21,10 @@ use crease_export::{
 use diagnostics::{
     DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
     save_diagnostics_share_preview,
+};
+use instruction_export::{
+    InstructionExportState, begin_instruction_export, cancel_instruction_export,
+    get_instruction_export_progress, preview_instruction_export, save_instruction_export,
 };
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, EditorTopology, IntersectionEdgeTarget,
@@ -4252,6 +4257,7 @@ pub fn run() {
         .manage(FoldImportState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
+        .manage(InstructionExportState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
@@ -4265,6 +4271,11 @@ pub fn run() {
             preview_crease_pattern_export,
             save_crease_pattern_export,
             cancel_crease_pattern_export,
+            begin_instruction_export,
+            preview_instruction_export,
+            get_instruction_export_progress,
+            save_instruction_export,
+            cancel_instruction_export,
             preview_fold_import,
             apply_fold_import,
             cancel_fold_import,

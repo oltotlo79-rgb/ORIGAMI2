@@ -2,6 +2,7 @@
 
 mod crease_pattern_export;
 mod fold;
+mod instruction_export;
 mod ori2;
 mod svg;
 
@@ -25,6 +26,15 @@ pub use fold::{
     FoldConversionOptions, FoldCreasePatternConversion, FoldEdgeAssignment, FoldFrameUnit,
     FoldImportError, FoldImportLimits, FoldPreview, FoldPreviewEdge, FoldPreviewVertex,
     FoldPreviewWarning, read_fold_preview, read_fold_preview_with_limits,
+};
+pub use instruction_export::{
+    INSTRUCTION_EXPORT_PROFILE, INSTRUCTION_EXPORT_WARNINGS, INSTRUCTION_PROJECTION_PROFILE,
+    InstructionDiagramError, InstructionDiagramLimits, InstructionExportArtifact,
+    InstructionExportError, InstructionExportFormat, InstructionExportLimits,
+    InstructionExportWarning, MAX_INSTRUCTION_EXPORT_BYTES, MAX_INSTRUCTION_EXPORT_GLYPHS,
+    MAX_INSTRUCTION_EXPORT_PAGE_BYTES, MAX_INSTRUCTION_EXPORT_PAGES,
+    MAX_INSTRUCTION_EXPORT_TITLE_CHARS, export_instruction_document,
+    export_instruction_document_with_limits,
 };
 pub use ori2::{
     CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER,

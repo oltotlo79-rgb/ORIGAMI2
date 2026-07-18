@@ -11,7 +11,9 @@
     "test:dom": "vitest run --config vitest.config.ts",
     "test:snap": "node --test \"tests/*.test.ts\"",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bundle:windows:ci": "tauri build --ci --no-sign --bundles nsis",
+    "bundle:macos:ci": "tauri build --ci --no-sign --bundles app"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   addInstructionStep,
   moveInstructionStep,
@@ -46,11 +53,14 @@ type InstructionTimelinePanelProps = {
   coreBusy: boolean
   benchmarkActive: boolean
   fileOperationActive: boolean
+  exportAvailable: boolean
+  exportButtonRef: RefObject<HTMLButtonElement | null>
   inert?: boolean
   runNativeEdit(
     action: (projectId: string, revision: number) => Promise<ProjectSnapshot>,
   ): Promise<boolean>
   applyStepPose(step: InstructionStepPresentation): boolean
+  onExport(): void
 }
 
 export function InstructionTimelinePanel({
@@ -61,9 +71,12 @@ export function InstructionTimelinePanel({
   coreBusy,
   benchmarkActive,
   fileOperationActive,
+  exportAvailable,
+  exportButtonRef,
   inert,
   runNativeEdit,
   applyStepPose,
+  onExport,
 }: InstructionTimelinePanelProps) {
   const presentation = useMemo(
     () => createInstructionTimelinePresentation(
@@ -505,6 +518,27 @@ export function InstructionTimelinePanel({
         <small>
           保存した姿勢を段階表示します。姿勢間の連続した折り経路の安全性は保証しません。
         </small>
+        <button
+          ref={exportButtonRef}
+          type="button"
+          className="instruction-export-button"
+          disabled={
+            coreBusy
+            || benchmarkActive
+            || fileOperationActive
+            || !exportAvailable
+            || steps.length === 0
+            || steps.some((step) => step.stale)
+          }
+          title={
+            steps.some((step) => step.stale)
+              ? '展開図が変わったため、要更新の手順を作り直してください。'
+              : '現在の折り手順をPDFまたはSVG画像一式へ書き出します。'
+          }
+          onClick={onExport}
+        >
+          折り図を書き出す
+        </button>
       </div>
       <div className="instruction-timeline-body">
         {presentation.kind === 'invalid' ? (

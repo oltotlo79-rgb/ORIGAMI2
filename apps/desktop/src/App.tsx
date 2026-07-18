@@ -11,6 +11,7 @@ import { CreaseExportDialog } from './components/CreaseExportDialog'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
+import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import {
@@ -19,13 +20,16 @@ import {
   analyzeProjectTopology,
   applyFoldImport,
   applySvgImport,
+  beginInstructionExportGeneration,
   cancelCreasePatternExport,
   cancelFoldImport,
+  cancelInstructionExport,
   cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
   connectTJunction,
   generateBenchmarkPattern,
+  getInstructionExportProgress,
   getProjectSnapshot,
   isNativeCoreAvailable,
   moveVertex,
@@ -33,6 +37,7 @@ import {
   openProject,
   previewCreasePatternExport,
   previewFoldImport,
+  previewInstructionExport,
   previewSvgImport,
   redo,
   removeBoundaryVertex,
@@ -42,6 +47,7 @@ import {
   saveProject,
   saveProjectAs,
   saveCreasePatternExport,
+  saveInstructionExport,
   splitBoundaryEdge,
   splitEdge,
   undo,
@@ -58,6 +64,16 @@ import {
   type CreasePatternExportFormat,
   type CreasePatternExportPreview,
 } from './lib/creaseExport'
+import {
+  INSTRUCTION_EXPORT_PROFILE,
+  INSTRUCTION_EXPORT_PROJECTION_PROFILE,
+  createInstructionExportError,
+  instructionExportErrorMessage,
+  instructionExportFormatLabel,
+  type InstructionExportFormat,
+  type InstructionExportPhase,
+  type InstructionExportPreview,
+} from './lib/instructionExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
   SvgImportPreview,
@@ -161,7 +177,14 @@ function App() {
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
   const [fileOperation, setFileOperation] = useState<
-    'open' | 'save' | 'save_as' | 'fold_import' | 'svg_import' | 'crease_export' | null
+    | 'open'
+    | 'save'
+    | 'save_as'
+    | 'fold_import'
+    | 'svg_import'
+    | 'crease_export'
+    | 'instruction_export'
+    | null
   >(null)
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -180,6 +203,17 @@ function App() {
     useState<CreasePatternExportPreview | null>(null)
   const [creaseExportError, setCreaseExportError] = useState<string | null>(null)
   const [creaseExportNotice, setCreaseExportNotice] = useState<string | null>(null)
+  const [instructionExportOpen, setInstructionExportOpen] = useState(false)
+  const [instructionExportFormat, setInstructionExportFormat] =
+    useState<InstructionExportFormat>('pdf')
+  const [instructionExportPreview, setInstructionExportPreview] =
+    useState<InstructionExportPreview | null>(null)
+  const [instructionExportGenerationActive, setInstructionExportGenerationActive] =
+    useState(false)
+  const [instructionExportPhase, setInstructionExportPhase] =
+    useState<InstructionExportPhase>('validating')
+  const [instructionExportError, setInstructionExportError] = useState<string | null>(null)
+  const [instructionExportNotice, setInstructionExportNotice] = useState<string | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -201,11 +235,15 @@ function App() {
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
   const creaseExportButtonRef = useRef<HTMLButtonElement>(null)
   const creaseExportRequestIdRef = useRef(0)
+  const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
+  const instructionExportRequestIdRef = useRef(0)
+  const instructionExportGenerationIdRef = useRef<string | null>(null)
   const modalOpen = newProjectOpen
     || diagnosticsDialogOpen
     || foldImportPreview !== null
     || svgImportPreview !== null
     || creaseExportOpen
+    || instructionExportOpen
   const closeDiagnosticsDialog = useCallback(() => {
     setDiagnosticsDialogOpen(false)
     requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
@@ -1518,6 +1556,234 @@ function App() {
     }
   }
 
+  async function prepareInstructionExport(format: InstructionExportFormat) {
+    const current = latestSnapshotRef.current
+    if (!current || !foldPreviewModel || coreOperationRef.current) return
+
+    const requestId = ++instructionExportRequestIdRef.current
+    instructionExportGenerationIdRef.current = null
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('instruction_export')
+    setInstructionExportGenerationActive(true)
+    setInstructionExportPhase('validating')
+    setInstructionExportPreview(null)
+    setInstructionExportError(null)
+    setInstructionExportNotice(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const generation = await beginInstructionExportGeneration()
+      if (generation.profile !== INSTRUCTION_EXPORT_PROFILE) {
+        await cancelInstructionExport(generation.export_id).catch(() => undefined)
+        throw createInstructionExportError('document_contract_invalid')
+      }
+      if (requestId !== instructionExportRequestIdRef.current) {
+        await cancelInstructionExport(generation.export_id).catch(() => undefined)
+        return
+      }
+      instructionExportGenerationIdRef.current = generation.export_id
+      void pollInstructionExportProgress(generation.export_id, requestId)
+      const response = await previewInstructionExport(
+        generation.export_id,
+        current.project_id,
+        current.revision,
+        format,
+      )
+      if (requestId !== instructionExportRequestIdRef.current) {
+        await cancelInstructionExport(response.preview.export_id).catch(() => undefined)
+        return
+      }
+      const latest = latestSnapshotRef.current
+      const preview = response.preview
+      if (
+        !latest
+        || preview.export_id !== generation.export_id
+        || preview.format !== format
+        || preview.profile !== INSTRUCTION_EXPORT_PROFILE
+        || preview.projection_profile !== INSTRUCTION_EXPORT_PROJECTION_PROFILE
+        || preview.expected_project_id !== current.project_id
+        || preview.expected_revision !== current.revision
+        || latest.project_id !== current.project_id
+        || latest.revision !== current.revision
+      ) {
+        await cancelInstructionExport(preview.export_id).catch(() => undefined)
+        throw createInstructionExportError('document_contract_invalid')
+      }
+      setInstructionExportPreview(preview)
+      setInstructionExportPhase('ready')
+      setCoreStatus(
+        `${instructionExportFormatLabel(preview.format)}の内容と注意事項を確認してください。`,
+      )
+    } catch (error) {
+      if (requestId !== instructionExportRequestIdRef.current) return
+      instructionExportGenerationIdRef.current = null
+      const message = instructionExportErrorMessage(error)
+      setInstructionExportError(`折り図を準備できませんでした: ${message}`)
+      setCoreStatus(`折り図書き出しエラー: ${message}`)
+    } finally {
+      if (requestId === instructionExportRequestIdRef.current) {
+        setInstructionExportGenerationActive(false)
+        setFileOperation(null)
+        coreOperationRef.current = false
+        setCoreBusy(false)
+      }
+    }
+  }
+
+  async function pollInstructionExportProgress(exportId: string, requestId: number) {
+    while (
+      requestId === instructionExportRequestIdRef.current
+      && instructionExportGenerationIdRef.current === exportId
+    ) {
+      await new Promise((resolve) => window.setTimeout(resolve, 100))
+      if (
+        requestId !== instructionExportRequestIdRef.current
+        || instructionExportGenerationIdRef.current !== exportId
+      ) return
+      try {
+        const progress = await getInstructionExportProgress(exportId)
+        if (
+          requestId !== instructionExportRequestIdRef.current
+          || instructionExportGenerationIdRef.current !== exportId
+          || progress.export_id !== exportId
+        ) return
+        setInstructionExportPhase(progress.phase)
+        if (progress.phase === 'ready') return
+      } catch (error) {
+        if (
+          requestId !== instructionExportRequestIdRef.current
+          || instructionExportGenerationIdRef.current !== exportId
+        ) return
+        setInstructionExportNotice(
+          `進捗表示を更新できませんでした: ${instructionExportErrorMessage(error)} 生成結果を待っています。`,
+        )
+        return
+      }
+    }
+  }
+
+  function beginInstructionExport() {
+    if (!latestSnapshotRef.current || !foldPreviewModel || coreOperationRef.current) return
+    setInstructionExportOpen(true)
+    setInstructionExportFormat('pdf')
+    setInstructionExportPreview(null)
+    setInstructionExportError(null)
+    setInstructionExportNotice(null)
+    void prepareInstructionExport('pdf')
+  }
+
+  function changeInstructionExportFormat(format: InstructionExportFormat) {
+    if (format === instructionExportFormat || coreOperationRef.current) return
+    setInstructionExportFormat(format)
+    void prepareInstructionExport(format)
+  }
+
+  async function closeInstructionExportDialog() {
+    if (coreOperationRef.current && !instructionExportGenerationActive) return
+    const preview = instructionExportPreview
+    const exportId = instructionExportGenerationIdRef.current ?? preview?.export_id ?? null
+    instructionExportRequestIdRef.current += 1
+    instructionExportGenerationIdRef.current = null
+    setInstructionExportGenerationActive(false)
+    if (coreOperationRef.current) {
+      setInstructionExportOpen(false)
+      setInstructionExportPreview(null)
+      setInstructionExportError(null)
+      setInstructionExportNotice(null)
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+      setCoreStatus('折り図の生成を中止しています。')
+      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
+      if (exportId) {
+        try {
+          await cancelInstructionExport(exportId)
+          setCoreStatus('折り図の生成を中止しました。')
+        } catch {
+          setCoreStatus('折り図の生成は終了済みです。')
+        }
+      }
+      return
+    }
+    if (!preview) {
+      setInstructionExportOpen(false)
+      setInstructionExportError(null)
+      setInstructionExportNotice(null)
+      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
+      return
+    }
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    try {
+      await cancelInstructionExport(preview.export_id)
+      instructionExportGenerationIdRef.current = null
+      setInstructionExportOpen(false)
+      setInstructionExportPreview(null)
+      setInstructionExportError(null)
+      setInstructionExportNotice(null)
+      setCoreStatus('折り図の書き出しをキャンセルしました。')
+      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
+    } catch (error) {
+      const message = instructionExportErrorMessage(error)
+      setInstructionExportError(`キャンセルを完了できませんでした: ${message}`)
+      setCoreStatus(`折り図キャンセルエラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function saveCurrentInstructionExport(warningsAcknowledged: boolean) {
+    const current = latestSnapshotRef.current
+    const preview = instructionExportPreview
+    if (!current || !preview || coreOperationRef.current) return
+    if (
+      current.project_id !== preview.expected_project_id
+      || current.revision !== preview.expected_revision
+    ) {
+      setInstructionExportError(
+        '編集内容が変わったため、折り図データを作り直してください。',
+      )
+      return
+    }
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('instruction_export')
+    setInstructionExportError(null)
+    setInstructionExportNotice(null)
+    try {
+      const response = await saveInstructionExport(
+        preview.export_id,
+        current.project_id,
+        current.revision,
+        warningsAcknowledged,
+      )
+      if (response.canceled) {
+        setInstructionExportNotice(
+          '保存先の選択をキャンセルしました。この画面からもう一度保存できます。',
+        )
+        setCoreStatus('折り図の保存先選択をキャンセルしました。')
+        return
+      }
+      setInstructionExportOpen(false)
+      instructionExportGenerationIdRef.current = null
+      setInstructionExportPreview(null)
+      setInstructionExportNotice(null)
+      setCoreStatus(`${preview.suggested_file_name}を書き出しました。`)
+      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
+    } catch (error) {
+      const message = instructionExportErrorMessage(error)
+      setInstructionExportError(`折り図を書き出せませんでした: ${message}`)
+      setCoreStatus(`折り図書き出しエラー: ${message}`)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function toggleBenchmark() {
     if (benchmarkRun) {
       setBenchmarkRun(null)
@@ -2529,9 +2795,12 @@ function App() {
         coreBusy={coreBusy}
         benchmarkActive={benchmarkLoading || Boolean(benchmarkRun)}
         fileOperationActive={fileOperation !== null}
+        exportAvailable={Boolean(foldPreviewModel)}
+        exportButtonRef={instructionExportButtonRef}
         inert={modalOpen}
         runNativeEdit={runNativeEdit}
         applyStepPose={applyInstructionStepPose}
+        onExport={beginInstructionExport}
       />
 
       {newProjectOpen && (
@@ -2717,6 +2986,24 @@ function App() {
             void saveCurrentCreaseExport(warningsAcknowledged)
           }}
           onCancel={() => void closeCreaseExportDialog()}
+        />
+      )}
+
+      {instructionExportOpen && (
+        <InstructionExportDialog
+          format={instructionExportFormat}
+          preview={instructionExportPreview}
+          busy={coreBusy}
+          generationActive={instructionExportGenerationActive}
+          phase={instructionExportPhase}
+          error={instructionExportError}
+          notice={instructionExportNotice}
+          onFormatChange={changeInstructionExportFormat}
+          onRetry={() => void prepareInstructionExport(instructionExportFormat)}
+          onSave={(warningsAcknowledged) => {
+            void saveCurrentInstructionExport(warningsAcknowledged)
+          }}
+          onCancel={() => void closeInstructionExportDialog()}
         />
       )}
 

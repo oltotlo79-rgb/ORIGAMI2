@@ -18,6 +18,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../../../crates/ori-formats/assets/fonts/NotoSansJP-Variable.ttf": "fonts/NotoSansJP-Variable.ttf",
+      "../../../crates/ori-formats/assets/fonts/NotoSansJP-OFL.txt": "licenses/NotoSansJP-OFL.txt"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

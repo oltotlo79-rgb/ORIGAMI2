@@ -10,3 +10,6 @@
 *.png binary
 *.ico binary
 *.icns binary
+*.ttf binary
+# Preserve the exact upstream license bytes, including its original trailing space.
+crates/ori-formats/assets/fonts/NotoSansJP-OFL.txt text eol=lf -whitespace

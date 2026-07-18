@@ -1,0 +1,16 @@
+[package]
+name = "ori-instructions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libm = { version = "=0.2.16", default-features = false }
+ori-domain = { path = "../ori-domain" }
+ori-topology = { path = "../ori-topology" }
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2 = "0.10.9"

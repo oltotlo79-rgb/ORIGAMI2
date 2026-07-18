@@ -1011,6 +1011,11 @@ button { color: inherit; }
   gap: 5px;
 }
 .timeline-controls button { padding: 4px; }
+.timeline-controls .instruction-export-button {
+  grid-column: 1 / -1;
+  margin-top: 3px;
+  padding: 6px 8px;
+}
 .timeline-controls button:disabled, .step:disabled, .instruction-editor button:disabled {
   opacity: .45;
   cursor: not-allowed;

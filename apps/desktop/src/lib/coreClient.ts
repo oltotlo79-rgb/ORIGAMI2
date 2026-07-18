@@ -15,6 +15,13 @@ import type {
   CreasePatternExportPreview,
   CreasePatternExportSaveResponse,
 } from './creaseExport.ts'
+import type {
+  InstructionExportBeginResponse,
+  InstructionExportFormat,
+  InstructionExportProgressResponse,
+  InstructionExportPreviewResponse,
+  InstructionExportSaveResponse,
+} from './instructionExport.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -407,6 +414,48 @@ export function saveCreasePatternExport(
 
 export function cancelCreasePatternExport(exportId: string) {
   return invoke<void>('cancel_crease_pattern_export', { exportId })
+}
+
+export function beginInstructionExportGeneration() {
+  return invoke<InstructionExportBeginResponse>('begin_instruction_export')
+}
+
+export function previewInstructionExport(
+  exportId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+  format: InstructionExportFormat,
+) {
+  return invoke<InstructionExportPreviewResponse>('preview_instruction_export', {
+    exportId,
+    expectedProjectId,
+    expectedRevision,
+    format,
+  })
+}
+
+export function getInstructionExportProgress(exportId: string) {
+  return invoke<InstructionExportProgressResponse>('get_instruction_export_progress', {
+    exportId,
+  })
+}
+
+export function saveInstructionExport(
+  exportId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+  warningsAcknowledged: boolean,
+) {
+  return invoke<InstructionExportSaveResponse>('save_instruction_export', {
+    exportId,
+    expectedProjectId,
+    expectedRevision,
+    warningsAcknowledged,
+  })
+}
+
+export function cancelInstructionExport(exportId: string) {
+  return invoke<void>('cancel_instruction_export', { exportId })
 }
 
 export function previewFoldImport() {

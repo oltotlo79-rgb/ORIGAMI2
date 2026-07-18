@@ -20,8 +20,8 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
@@ -39,11 +39,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - run: cargo fmt --all -- --check
       - name: Rust tests
         shell: bash
@@ -55,10 +56,35 @@ jobs:
           cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 | tee cargo-test.log
       - name: Upload Rust test log
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-test-log-${{ matrix.os }}
           path: cargo-test.log
+          if-no-files-found: ignore
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.12"
+      - name: Generate instruction PDF and SVG ZIP with outbound network blocked
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY: ${{ runner.temp }}/instruction-export-audit
+        run: ./scripts/run_instruction_export_offline_test.ps1
+      - name: Audit generated instruction PDF and SVG ZIP with external parsers
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY: ${{ runner.temp }}/instruction-export-audit
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: pypdf==6.12.2 PyMuPDF==1.27.2.3
+          python scripts/audit_instruction_exports.py "$ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY"
+      - name: Upload instruction export audit fixtures
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: instruction-export-audit-fixtures
+          path: ${{ runner.temp }}/instruction-export-audit
           if-no-files-found: ignore
       - name: Rust Clippy
         shell: bash
@@ -67,22 +93,96 @@ jobs:
           cargo clippy --workspace --locked --all-targets --all-features -- -D warnings 2>&1 | tee cargo-clippy.log
       - name: Upload Rust Clippy log
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-clippy-log-${{ matrix.os }}
           path: cargo-clippy.log
           if-no-files-found: ignore
-      - uses: actions/setup-node@v5
-        if: runner.os == 'macOS'
+
+  windows-bundle:
+    needs: [frontend, rust]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
-      - name: Install frontend dependencies for macOS bundle check
-        if: runner.os == 'macOS'
+      - name: Install frontend dependencies for bundle checks
         working-directory: apps/desktop
         run: npm ci
-      - name: Build unsigned macOS app bundle
-        if: runner.os == 'macOS'
+      - name: Remove stale Windows bundle outputs
+        shell: pwsh
+        run: |
+          $bundleDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\release\bundle\nsis'
+          if (Test-Path -LiteralPath $bundleDirectory) {
+            $resolved = (Resolve-Path -LiteralPath $bundleDirectory).Path
+            $expected = [System.IO.Path]::GetFullPath($bundleDirectory)
+            if (-not [string]::Equals($resolved, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Refusing to remove unexpected bundle path '$resolved'."
+            }
+            Remove-Item -LiteralPath $resolved -Recurse -Force
+          }
+      - name: Build unsigned Windows NSIS installer
         working-directory: apps/desktop
-        run: npm run tauri -- build --bundles app
+        run: npm run bundle:windows:ci
+      - name: Verify Windows installer resources
+        shell: pwsh
+        run: >
+          ./scripts/verify_windows_bundle.ps1
+          -BundleDirectory ./target/release/bundle/nsis
+      - name: Upload verified Windows NSIS installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ORIGAMI2-windows-nsis-${{ github.run_id }}
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  macos-bundle:
+    needs: [frontend, rust]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install frontend dependencies for bundle checks
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Remove stale macOS bundle outputs
+        shell: bash
+        run: |
+          bundle_directory="$GITHUB_WORKSPACE/target/release/bundle/macos"
+          case "$bundle_directory" in
+            "$GITHUB_WORKSPACE"/target/release/bundle/macos)
+              rm -rf -- "$bundle_directory"
+              ;;
+            *)
+              echo "Refusing to remove unexpected bundle path: $bundle_directory" >&2
+              exit 1
+              ;;
+          esac
+      - name: Build unsigned macOS app bundle
+        working-directory: apps/desktop
+        run: npm run bundle:macos:ci
+      - name: Verify macOS bundle resources
+        shell: bash
+        run: |
+          test -f target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/fonts/NotoSansJP-Variable.ttf
+          test -f target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/licenses/NotoSansJP-OFL.txt
+          echo "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f  target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/fonts/NotoSansJP-Variable.ttf" | shasum -a 256 -c -
+          echo "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9  target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/licenses/NotoSansJP-OFL.txt" | shasum -a 256 -c -

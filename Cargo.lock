@@ -1667,6 +1667,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "libredox"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,12 +2096,15 @@ version = "0.1.0"
 dependencies = [
  "ori-domain",
  "ori-geometry",
+ "ori-instructions",
+ "ori-topology",
  "quick-xml",
  "serde",
  "serde_json",
  "sha2",
  "svgtypes",
  "thiserror 2.0.18",
+ "ttf-parser",
  "zip",
 ]
 
@@ -2105,6 +2114,18 @@ version = "0.1.0"
 dependencies = [
  "num-bigint",
  "ori-domain",
+]
+
+[[package]]
+name = "ori-instructions"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "ori-domain",
+ "ori-topology",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3708,6 +3729,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "typed-path"

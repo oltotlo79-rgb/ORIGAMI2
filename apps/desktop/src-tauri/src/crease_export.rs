@@ -637,7 +637,7 @@ fn ensure_export_extension(mut path: PathBuf, format: CreaseExportFormatRequest)
     path
 }
 
-fn persist_export_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn persist_export_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if path.file_name().is_none() {
         return Err("選択された保存先はファイルパスではありません。".to_owned());
     }
@@ -673,14 +673,23 @@ fn prepare_staged_export_file(path: &Path, bytes: &[u8]) -> Result<StagedFile, S
 
 #[cfg(not(target_os = "windows"))]
 fn commit_staged_export_file(staged: &mut StagedFile, path: &Path) -> Result<(), String> {
+    let parent = containing_directory(path)
+        .ok_or_else(|| "選択された保存先はファイルパスではありません。".to_owned())?;
+    let directory =
+        File::open(parent).map_err(|_| "保存先ディレクトリを同期できませんでした。".to_owned())?;
+    directory
+        .sync_all()
+        .map_err(|_| "保存先ディレクトリを同期できませんでした。".to_owned())?;
     std::fs::rename(&staged.path, path)
         .map_err(|_| "書き出しファイルを原子的に確定できませんでした。".to_owned())?;
     staged.committed = true;
-    let parent = containing_directory(path)
-        .ok_or_else(|| "選択された保存先はファイルパスではありません。".to_owned())?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| "保存先ディレクトリを同期できませんでした。".to_owned())
+    // A directory-sync failure after rename must not be reported as an
+    // ordinary save failure: the visible destination has already changed and
+    // callers would otherwise retry under the false promise that it had not.
+    // The file itself was synced before rename; post-rename directory sync is
+    // a best-effort durability barrier.
+    let _ = directory.sync_all();
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

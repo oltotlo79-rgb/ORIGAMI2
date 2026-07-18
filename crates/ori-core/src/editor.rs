@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
+use crate::applied_pose::AppliedPoseV1;
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, InstructionPose, InstructionStep, InstructionStepId,
     InstructionTimeline, InstructionTimelineValidationError, Paper, Point2, RgbaColor, Vertex,
@@ -384,6 +385,47 @@ pub enum CommandError {
 struct HistoryEntry {
     forward: Command,
     inverse: Inverse,
+    applied_pose: AppliedPoseHistoryTransition,
+}
+
+/// Runtime-pose behavior attached to one document-history edge.
+///
+/// `Restore` already carries both sides so a future atomic stacked-fold
+/// command can store a non-planar `after` pose. Ordinary geometry commands
+/// currently start with `after: None`.
+#[derive(Debug, Clone)]
+enum AppliedPoseHistoryTransition {
+    PreserveCurrent,
+    Restore {
+        before: Option<AppliedPoseV1>,
+        after: Option<AppliedPoseV1>,
+    },
+}
+
+impl AppliedPoseHistoryTransition {
+    fn capture_after(&mut self, current: &Option<AppliedPoseV1>) {
+        if let Self::Restore { after, .. } = self {
+            after.clone_from(current);
+        }
+    }
+
+    fn capture_before(&mut self, current: &Option<AppliedPoseV1>) {
+        if let Self::Restore { before, .. } = self {
+            before.clone_from(current);
+        }
+    }
+
+    fn restore_before(&self, current: &mut Option<AppliedPoseV1>) {
+        if let Self::Restore { before, .. } = self {
+            current.clone_from(before);
+        }
+    }
+
+    fn restore_after(&self, current: &mut Option<AppliedPoseV1>) {
+        if let Self::Restore { after, .. } = self {
+            current.clone_from(after);
+        }
+    }
 }
 
 const MAX_EDITOR_HISTORY_ENTRIES: usize = 128;
@@ -1097,6 +1139,8 @@ pub struct EditorState {
     pattern: CreasePattern,
     paper: Paper,
     instruction_timeline: InstructionTimeline,
+    /// Non-persisted runtime meaning only; this is not project authority.
+    current_applied_pose: Option<AppliedPoseV1>,
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
@@ -1133,6 +1177,7 @@ impl EditorState {
             pattern,
             paper,
             instruction_timeline,
+            current_applied_pose: None,
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -1157,6 +1202,30 @@ impl EditorState {
     #[must_use]
     pub const fn instruction_timeline(&self) -> &InstructionTimeline {
         &self.instruction_timeline
+    }
+
+    /// Returns the non-persisted semantic pose currently shown as applied.
+    ///
+    /// This value is not a certificate and cannot authorize project mutation.
+    #[must_use]
+    pub const fn current_applied_pose(&self) -> Option<&AppliedPoseV1> {
+        self.current_applied_pose.as_ref()
+    }
+
+    /// Replaces the runtime semantic pose without editing the document.
+    ///
+    /// Revision, undo/redo history, and persisted dirty state are unchanged.
+    /// The caller remains responsible for checking a native project-bound
+    /// certificate before adopting a prepared semantic value.
+    pub fn adopt_current_applied_pose(&mut self, pose: AppliedPoseV1) -> Option<AppliedPoseV1> {
+        self.current_applied_pose.replace(pose)
+    }
+
+    /// Clears the runtime semantic pose without editing the document.
+    ///
+    /// Revision, undo/redo history, and persisted dirty state are unchanged.
+    pub fn clear_current_applied_pose(&mut self) -> Option<AppliedPoseV1> {
+        self.current_applied_pose.take()
     }
 
     /// Returns the identity of the current fold geometry, independent from
@@ -1189,12 +1258,25 @@ impl EditorState {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
         let result = command.changes(&self.pattern, &self.paper);
+        let geometry_before = command
+            .may_change_kinematic_geometry()
+            .then(|| self.fold_model_fingerprint_v1());
         let inverse = self.apply(&command)?;
+        let applied_pose =
+            if geometry_before.is_some_and(|before| before != self.fold_model_fingerprint_v1()) {
+                AppliedPoseHistoryTransition::Restore {
+                    before: self.current_applied_pose.take(),
+                    after: None,
+                }
+            } else {
+                AppliedPoseHistoryTransition::PreserveCurrent
+            };
         push_bounded_history(
             &mut self.undo_stack,
             HistoryEntry {
                 forward: command,
                 inverse,
+                applied_pose,
             },
         );
         self.redo_stack.clear();
@@ -1205,13 +1287,16 @@ impl EditorState {
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
-        let Some(entry) = self.undo_stack.last().cloned() else {
+        let Some(mut entry) = self.undo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
+        entry.applied_pose.capture_after(&self.current_applied_pose);
         let result = entry.inverse.changes(&self.pattern, &self.paper);
         self.apply_inverse(&entry.inverse)?;
-        let entry = self
-            .undo_stack
+        entry
+            .applied_pose
+            .restore_before(&mut self.current_applied_pose);
+        self.undo_stack
             .pop()
             .expect("the successfully applied undo entry must still be present");
         push_bounded_history(&mut self.redo_stack, entry);
@@ -1222,13 +1307,18 @@ impl EditorState {
     pub fn redo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
-        let Some(entry) = self.redo_stack.last().cloned() else {
+        let Some(mut entry) = self.redo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
+        entry
+            .applied_pose
+            .capture_before(&self.current_applied_pose);
         let result = entry.forward.changes(&self.pattern, &self.paper);
         self.apply(&entry.forward)?;
-        let entry = self
-            .redo_stack
+        entry
+            .applied_pose
+            .restore_after(&mut self.current_applied_pose);
+        self.redo_stack
             .pop()
             .expect("the successfully applied redo entry must still be present");
         push_bounded_history(&mut self.undo_stack, entry);
@@ -3019,6 +3109,36 @@ struct Changes {
 }
 
 impl Command {
+    /// Returns whether this command can change the canonical material
+    /// kinematics geometry.
+    ///
+    /// Paper thickness, appearance, and cutting permission are deliberately
+    /// excluded: they invalidate stronger native certificates through their
+    /// revision/binding, but do not change the central-surface semantic pose.
+    const fn may_change_kinematic_geometry(&self) -> bool {
+        match self {
+            Self::AddVertex { .. }
+            | Self::MoveVertex { .. }
+            | Self::RemoveVertex { .. }
+            | Self::AddEdge { .. }
+            | Self::RemoveEdge { .. }
+            | Self::ResizeRectangularPaper { .. }
+            | Self::SplitEdge { .. }
+            | Self::ConnectEdgeIntersection { .. }
+            | Self::ConnectTJunction { .. }
+            | Self::ConnectIntersectionCluster { .. }
+            | Self::SplitBoundaryEdge { .. }
+            | Self::RemoveBoundaryVertex { .. } => true,
+            Self::SetCuttingAllowed { .. }
+            | Self::UpdatePaperProperties { .. }
+            | Self::AddInstructionStep { .. }
+            | Self::UpdateInstructionStepMetadata { .. }
+            | Self::ReplaceInstructionStepPose { .. }
+            | Self::RemoveInstructionStep { .. }
+            | Self::MoveInstructionStep { .. } => false,
+        }
+    }
+
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match *self {
             Self::AddVertex { id, .. }
@@ -3350,6 +3470,7 @@ mod tests {
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
+        current_applied_pose: Option<crate::AppliedPoseV1>,
         revision: Revision,
         undo_stack: String,
         redo_stack: String,
@@ -3360,6 +3481,7 @@ mod tests {
             pattern: editor.pattern.clone(),
             paper: editor.paper.clone(),
             instruction_timeline: editor.instruction_timeline.clone(),
+            current_applied_pose: editor.current_applied_pose.clone(),
             revision: editor.revision,
             undo_stack: format!("{:?}", editor.undo_stack),
             redo_stack: format!("{:?}", editor.redo_stack),
@@ -10647,5 +10769,437 @@ mod tests {
         assert_eq!(editor.undo_stack.len(), MAX_EDITOR_HISTORY_ENTRIES);
         assert!(!editor.can_redo());
         assert_eq!(editor.pattern.vertices.len(), command_count);
+    }
+
+    fn runtime_pose(angle_degrees: f64) -> crate::AppliedPoseV1 {
+        use ori_domain::FaceId;
+
+        let mut faces = [FaceId::new(), FaceId::new()];
+        faces.sort_by_key(FaceId::canonical_bytes);
+        let hinge = EdgeId::new();
+        crate::prepare_applied_pose_v1(
+            &faces,
+            &[hinge],
+            Some(faces[0]),
+            &[(hinge, angle_degrees)],
+            crate::AppliedPoseLimitsV1::default(),
+        )
+        .expect("runtime pose fixture")
+    }
+
+    #[test]
+    fn new_and_loaded_editors_start_without_runtime_pose() {
+        let pattern = CreasePattern::empty();
+        let paper = Paper::default();
+        let timeline = InstructionTimeline::default();
+
+        assert!(
+            EditorState::new(pattern.clone())
+                .current_applied_pose()
+                .is_none()
+        );
+        assert!(
+            EditorState::with_paper(pattern.clone(), paper.clone())
+                .current_applied_pose()
+                .is_none()
+        );
+        assert!(
+            EditorState::with_document_parts(pattern, paper, timeline)
+                .current_applied_pose()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pose_only_adopt_and_clear_do_not_change_document_revision_or_history() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let document_before = (
+            editor.pattern.clone(),
+            editor.paper.clone(),
+            editor.instruction_timeline.clone(),
+        );
+        let revision_before = editor.revision();
+        let undo_before = format!("{:?}", editor.undo_stack);
+        let redo_before = format!("{:?}", editor.redo_stack);
+        let pose = runtime_pose(15.0);
+
+        assert!(editor.adopt_current_applied_pose(pose.clone()).is_none());
+        assert_eq!(editor.current_applied_pose(), Some(&pose));
+        assert_eq!(
+            (
+                editor.pattern.clone(),
+                editor.paper.clone(),
+                editor.instruction_timeline.clone(),
+            ),
+            document_before
+        );
+        assert_eq!(editor.revision(), revision_before);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+
+        assert_eq!(editor.clear_current_applied_pose(), Some(pose));
+        assert!(editor.current_applied_pose().is_none());
+        assert_eq!(editor.revision(), revision_before);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+    }
+
+    #[test]
+    fn geometry_history_dynamically_captures_both_pose_sides() {
+        let vertex = VertexId::new();
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let original_pose = runtime_pose(10.0);
+        let after_pose = runtime_pose(20.0);
+        let replacement_before_pose = runtime_pose(30.0);
+        editor.adopt_current_applied_pose(original_pose.clone());
+
+        editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(1.0, 2.0),
+                },
+            )
+            .expect("geometry edit");
+        assert!(editor.current_applied_pose().is_none());
+
+        editor.adopt_current_applied_pose(after_pose.clone());
+        editor.undo(1).expect("undo geometry");
+        assert_eq!(editor.current_applied_pose(), Some(&original_pose));
+
+        editor.adopt_current_applied_pose(replacement_before_pose.clone());
+        editor.redo(2).expect("redo geometry");
+        assert_eq!(editor.current_applied_pose(), Some(&after_pose));
+
+        editor.undo(3).expect("undo geometry again");
+        assert_eq!(
+            editor.current_applied_pose(),
+            Some(&replacement_before_pose)
+        );
+    }
+
+    #[test]
+    fn paper_properties_always_preserve_semantic_pose() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let first_pose = runtime_pose(40.0);
+        let second_pose = runtime_pose(50.0);
+        editor.adopt_current_applied_pose(first_pose.clone());
+
+        editor
+            .execute(
+                0,
+                Command::UpdatePaperProperties {
+                    thickness_mm: 3.0,
+                    front_color: RgbaColor::opaque(1, 2, 3),
+                    back_color: RgbaColor::opaque(4, 5, 6),
+                    cutting_allowed: true,
+                },
+            )
+            .expect("paper settings");
+        assert_eq!(editor.current_applied_pose(), Some(&first_pose));
+
+        editor.adopt_current_applied_pose(second_pose.clone());
+        editor.undo(1).expect("undo paper settings");
+        assert_eq!(editor.current_applied_pose(), Some(&second_pose));
+        editor.redo(2).expect("redo paper settings");
+        assert_eq!(editor.current_applied_pose(), Some(&second_pose));
+
+        editor
+            .execute(3, Command::SetCuttingAllowed { allowed: false })
+            .expect("cutting setting");
+        assert_eq!(editor.current_applied_pose(), Some(&second_pose));
+    }
+
+    #[test]
+    fn instruction_history_preserves_the_latest_adopted_pose() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let first_pose = runtime_pose(60.0);
+        let second_pose = runtime_pose(70.0);
+        let third_pose = runtime_pose(80.0);
+        editor.adopt_current_applied_pose(first_pose.clone());
+        let step = instruction_step(
+            InstructionStepId::new(),
+            "手順",
+            editor.fold_model_fingerprint_v1(),
+        );
+
+        editor
+            .execute(0, Command::AddInstructionStep { step })
+            .expect("instruction edit");
+        assert_eq!(editor.current_applied_pose(), Some(&first_pose));
+
+        editor.adopt_current_applied_pose(second_pose.clone());
+        editor.undo(1).expect("undo instruction");
+        assert_eq!(editor.current_applied_pose(), Some(&second_pose));
+        editor.adopt_current_applied_pose(third_pose.clone());
+        editor.redo(2).expect("redo instruction");
+        assert_eq!(editor.current_applied_pose(), Some(&third_pose));
+    }
+
+    #[test]
+    fn true_geometry_noop_preserves_the_latest_pose_across_history() {
+        let vertex = VertexId::new();
+        let pattern = CreasePattern {
+            vertices: vec![Vertex {
+                id: vertex,
+                position: Point2::new(-0.0, 2.0),
+            }],
+            edges: Vec::new(),
+        };
+        let mut editor = EditorState::new(pattern);
+        let first_pose = runtime_pose(90.0);
+        let latest_pose = runtime_pose(100.0);
+        editor.adopt_current_applied_pose(first_pose.clone());
+
+        editor
+            .execute(
+                0,
+                Command::MoveVertex {
+                    id: vertex,
+                    position: Point2::new(-0.0, 2.0),
+                },
+            )
+            .expect("bit-exact no-op");
+        assert_eq!(editor.current_applied_pose(), Some(&first_pose));
+
+        editor.adopt_current_applied_pose(latest_pose.clone());
+        editor.undo(1).expect("undo no-op");
+        assert_eq!(editor.current_applied_pose(), Some(&latest_pose));
+        editor.redo(2).expect("redo no-op");
+        assert_eq!(editor.current_applied_pose(), Some(&latest_pose));
+    }
+
+    #[test]
+    fn failed_and_revision_exhausted_operations_preserve_pose_and_history() {
+        let pose = runtime_pose(110.0);
+        let mut stale_editor = EditorState::new(CreasePattern::empty());
+        stale_editor.adopt_current_applied_pose(pose.clone());
+        let stale_before = editor_state_snapshot(&stale_editor);
+        assert!(matches!(
+            stale_editor.execute(
+                99,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(0.0, 0.0),
+                }
+            ),
+            Err(CommandError::RevisionConflict { .. })
+        ));
+        assert_eq!(editor_state_snapshot(&stale_editor), stale_before);
+
+        let mut invalid_editor = EditorState::new(CreasePattern::empty());
+        invalid_editor.adopt_current_applied_pose(pose.clone());
+        let invalid_before = editor_state_snapshot(&invalid_editor);
+        let missing_vertex = VertexId::new();
+        assert_eq!(
+            invalid_editor.execute(
+                0,
+                Command::MoveVertex {
+                    id: missing_vertex,
+                    position: Point2::new(0.0, 0.0),
+                }
+            ),
+            Err(CommandError::VertexNotFound(missing_vertex))
+        );
+        assert_eq!(editor_state_snapshot(&invalid_editor), invalid_before);
+
+        let mut exhausted_editor = EditorState::new(CreasePattern::empty());
+        exhausted_editor.adopt_current_applied_pose(pose);
+        exhausted_editor.revision = MAX_REVISION;
+        let exhausted_before = editor_state_snapshot(&exhausted_editor);
+        assert!(matches!(
+            exhausted_editor.execute(
+                MAX_REVISION,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(0.0, 0.0),
+                }
+            ),
+            Err(CommandError::RevisionExhausted { .. })
+        ));
+        assert_eq!(editor_state_snapshot(&exhausted_editor), exhausted_before);
+    }
+
+    #[test]
+    fn every_instruction_variant_preserves_the_latest_pose_through_history() {
+        let mut base = EditorState::new(CreasePattern::empty());
+        let fingerprint = base.fold_model_fingerprint_v1();
+        let first_id = InstructionStepId::new();
+        let second_id = InstructionStepId::new();
+        let first = instruction_step(first_id, "手順 1", fingerprint.clone());
+        let second = instruction_step(second_id, "手順 2", fingerprint.clone());
+        base.instruction_timeline = InstructionTimeline {
+            steps: vec![first.clone(), second.clone()],
+        };
+        let commands = [
+            Command::AddInstructionStep {
+                step: instruction_step(InstructionStepId::new(), "追加", fingerprint),
+            },
+            Command::UpdateInstructionStepMetadata {
+                step_id: first_id,
+                title: "更新".to_owned(),
+                description: "説明".to_owned(),
+                caution: "注意".to_owned(),
+                duration_ms: 2_000,
+            },
+            Command::ReplaceInstructionStepPose {
+                step_id: first_id,
+                pose: second.pose,
+            },
+            Command::RemoveInstructionStep { step_id: first_id },
+            Command::MoveInstructionStep {
+                step_id: first_id,
+                target_index: 1,
+            },
+        ];
+
+        for (index, command) in commands.into_iter().enumerate() {
+            let mut editor = base.clone();
+            let initial = runtime_pose(10.0 + index as f64);
+            let after_execute = runtime_pose(30.0 + index as f64);
+            let after_undo = runtime_pose(50.0 + index as f64);
+            editor.adopt_current_applied_pose(initial.clone());
+
+            editor
+                .execute(0, command)
+                .expect("execute instruction variant");
+            assert_eq!(editor.current_applied_pose(), Some(&initial));
+
+            editor.adopt_current_applied_pose(after_execute.clone());
+            editor.undo(1).expect("undo instruction variant");
+            assert_eq!(editor.current_applied_pose(), Some(&after_execute));
+
+            editor.adopt_current_applied_pose(after_undo.clone());
+            editor.redo(2).expect("redo instruction variant");
+            assert_eq!(editor.current_applied_pose(), Some(&after_undo));
+        }
+    }
+
+    #[test]
+    fn failed_undo_and_redo_leave_runtime_pose_and_history_exactly_unchanged() {
+        let vertex = VertexId::new();
+        let blocker = VertexId::new();
+        let blocking_edge = EdgeId::new();
+        let mut undo_editor = EditorState::new(CreasePattern::empty());
+        undo_editor.adopt_current_applied_pose(runtime_pose(10.0));
+        undo_editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("prepare undo");
+        undo_editor.pattern.vertices.push(Vertex {
+            id: blocker,
+            position: Point2::new(1.0, 0.0),
+        });
+        undo_editor.pattern.edges.push(Edge {
+            id: blocking_edge,
+            start: vertex,
+            end: blocker,
+            kind: EdgeKind::Auxiliary,
+        });
+        undo_editor.adopt_current_applied_pose(runtime_pose(20.0));
+        let undo_before = editor_state_snapshot(&undo_editor);
+
+        assert_eq!(
+            undo_editor.undo(1),
+            Err(CommandError::VertexHasConnectedEdge {
+                vertex,
+                edge: blocking_edge,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&undo_editor), undo_before);
+
+        let mut redo_editor = EditorState::new(CreasePattern::empty());
+        redo_editor.adopt_current_applied_pose(runtime_pose(30.0));
+        redo_editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("prepare redo");
+        redo_editor.undo(1).expect("place entry on redo stack");
+        redo_editor.pattern.vertices.push(Vertex {
+            id: vertex,
+            position: Point2::new(9.0, 9.0),
+        });
+        redo_editor.adopt_current_applied_pose(runtime_pose(40.0));
+        let redo_before = editor_state_snapshot(&redo_editor);
+
+        assert_eq!(
+            redo_editor.redo(2),
+            Err(CommandError::VertexAlreadyExists(vertex))
+        );
+        assert_eq!(editor_state_snapshot(&redo_editor), redo_before);
+    }
+
+    #[test]
+    fn revision_exhausted_undo_and_redo_preserve_some_pose_and_history() {
+        let vertex = VertexId::new();
+        let mut undo_editor = EditorState::new(CreasePattern::empty());
+        undo_editor.adopt_current_applied_pose(runtime_pose(10.0));
+        undo_editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("prepare undo");
+        undo_editor.adopt_current_applied_pose(runtime_pose(20.0));
+        undo_editor.revision = MAX_REVISION;
+        let undo_before = editor_state_snapshot(&undo_editor);
+        assert_eq!(
+            undo_editor.undo(MAX_REVISION),
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&undo_editor), undo_before);
+
+        let mut redo_editor = EditorState::new(CreasePattern::empty());
+        redo_editor.adopt_current_applied_pose(runtime_pose(30.0));
+        redo_editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: vertex,
+                    position: Point2::new(0.0, 0.0),
+                },
+            )
+            .expect("prepare redo");
+        redo_editor.undo(1).expect("place entry on redo stack");
+        redo_editor.adopt_current_applied_pose(runtime_pose(40.0));
+        redo_editor.revision = MAX_REVISION;
+        let redo_before = editor_state_snapshot(&redo_editor);
+        assert_eq!(
+            redo_editor.redo(MAX_REVISION),
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&redo_editor), redo_before);
+    }
+
+    #[test]
+    fn empty_history_undo_and_redo_preserve_some_pose_and_revision() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor.adopt_current_applied_pose(runtime_pose(70.0));
+        let before = editor_state_snapshot(&editor);
+
+        let undo = editor.undo(0).expect("empty undo is a no-op");
+        assert_eq!(undo.revision, 0);
+        assert_eq!(editor_state_snapshot(&editor), before);
+        let redo = editor.redo(0).expect("empty redo is a no-op");
+        assert_eq!(redo.revision, 0);
+        assert_eq!(editor_state_snapshot(&editor), before);
     }
 }

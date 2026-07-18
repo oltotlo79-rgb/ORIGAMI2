@@ -6,38 +6,41 @@
 
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
 };
 
 use ori_domain::{
-    CreasePattern, Edge, EdgeId, EdgeKind, FaceId, InstructionTimeline, Paper, RgbaColor, VertexId,
+    CreasePattern, EdgeId, FaceId, InstructionTimeline, Paper, RgbaColor, VertexId,
     validate_instruction_timeline,
 };
-use ori_topology::{EdgeIncidence, FoldAssignment, TopologySnapshot};
+use ori_kinematics::{
+    CanonicalHingeAngles, HingeAngle, KinematicsError, ObservationTreeKinematicsModel, Point3,
+    TreeKinematicsLimits, VertexPosition3,
+};
+use ori_topology::{FoldAssignment, TopologySnapshot};
 use thiserror::Error;
 
 const PREVIEW_WORLD_SIZE: f64 = 4.4;
 const PROJECTION_QUANTIZATION: f64 = 1_000_000_000.0;
-const DEGREES_TO_RADIANS: f64 = 0.017_453_292_519_943_295;
 
 // Fixed orthographic camera looking from the same general quadrant as the
 // interactive preview's default camera. Precomputed unit vectors avoid
 // platform-dependent normalization in the serialized drawing boundary.
-const CAMERA_TO_VIEWER: Vec3 = Vec3 {
-    x: 0.577_350_269_189_625_8,
-    y: 0.577_350_269_189_625_8,
-    z: 0.577_350_269_189_625_8,
-};
-const CAMERA_RIGHT: Vec3 = Vec3 {
-    x: std::f64::consts::FRAC_1_SQRT_2,
-    y: 0.0,
-    z: -std::f64::consts::FRAC_1_SQRT_2,
-};
-const CAMERA_UP: Vec3 = Vec3 {
-    x: -0.408_248_290_463_863_1,
-    y: 0.816_496_580_927_726_1,
-    z: -0.408_248_290_463_863_1,
-};
+const CAMERA_TO_VIEWER: [f64; 3] = [
+    0.577_350_269_189_625_8,
+    0.577_350_269_189_625_8,
+    0.577_350_269_189_625_8,
+];
+const CAMERA_RIGHT: [f64; 3] = [
+    std::f64::consts::FRAC_1_SQRT_2,
+    0.0,
+    -std::f64::consts::FRAC_1_SQRT_2,
+];
+const CAMERA_UP: [f64; 3] = [
+    -0.408_248_290_463_863_1,
+    0.816_496_580_927_726_1,
+    -0.408_248_290_463_863_1,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstructionDiagramLimits {
@@ -136,50 +139,14 @@ pub enum InstructionDiagramError {
     ResourceLimitExceeded,
 }
 
-#[derive(Clone, Copy)]
-struct Vec3 {
-    x: f64,
-    y: f64,
-    z: f64,
-}
-
-#[derive(Clone, Copy)]
-struct Transform {
-    rotation: [[f64; 3]; 3],
-    translation: Vec3,
-}
-
-#[derive(Clone)]
-struct HingeModel {
-    edge: EdgeId,
-    assignment: FoldAssignment,
-    start: Vec3,
-    end: Vec3,
-    axis: Vec3,
-}
-
-#[derive(Clone, Copy)]
-struct Neighbor {
-    face: FaceId,
-    hinge_index: usize,
-    rotation_sign: f64,
-}
-
 struct PreparedModel {
     faces: Vec<PreparedFace>,
-    face_indices: HashMap<FaceId, usize>,
-    hinges: Vec<HingeModel>,
-    adjacency: HashMap<FaceId, Vec<Neighbor>>,
+    kinematics: ObservationTreeKinematicsModel,
 }
 
 struct PreparedFace {
     id: FaceId,
-    points: Vec<Vec3>,
-}
-
-struct StepTransforms {
-    faces: HashMap<FaceId, Transform>,
-    hinge_parents: Vec<Transform>,
+    points: Vec<Point3>,
 }
 
 /// Builds a fixed-camera vector plan for every current instruction step.
@@ -233,7 +200,7 @@ pub fn build_instruction_diagram_plan_with_limits(
         .ok_or(InstructionDiagramError::ResourceLimitExceeded)?;
     let total_visits = checked_projected_vertex_visits(
         face_visits_per_step,
-        model.hinges.len(),
+        model.kinematics.hinges().len(),
         timeline.steps.len(),
         limits.max_projected_vertex_visits,
     )?;
@@ -241,45 +208,45 @@ pub fn build_instruction_diagram_plan_with_limits(
     let mut bounds: Option<DiagramBounds> = None;
     let mut previous_angles = HashMap::<EdgeId, f64>::new();
     let mut steps = Vec::with_capacity(timeline.steps.len());
-    for (step_index, step) in timeline.steps.iter().enumerate() {
-        let angles = step
-            .pose
-            .hinge_angles
-            .iter()
-            .map(|angle| (angle.edge, angle.angle_degrees))
-            .collect::<HashMap<_, _>>();
-        if angles.len() != step.pose.hinge_angles.len()
-            || angles.len() != model.hinges.len()
-            || model
-                .hinges
+    for step in &timeline.steps {
+        let angles = CanonicalHingeAngles::new(
+            step.pose
+                .hinge_angles
                 .iter()
-                .any(|hinge| !angles.contains_key(&hinge.edge))
-        {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        let transforms = face_transforms(&model, step.pose.fixed_face, &angles, step_index)?;
+                .map(|angle| HingeAngle::new(angle.edge, angle.angle_degrees))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(map_kinematics_error)?,
+        )
+        .map_err(map_kinematics_error)?;
+        let current_angles = angles
+            .as_slice()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees()))
+            .collect::<HashMap<_, _>>();
+        let pose = model
+            .kinematics
+            .solve(step.pose.fixed_face, &angles)
+            .map_err(map_kinematics_error)?;
         let mut rendered_faces = Vec::with_capacity(model.faces.len());
         for face in &model.faces {
-            let transform = transforms
-                .faces
-                .get(&face.id)
-                .copied()
+            let transform = pose
+                .face_transform(face.id)
                 .ok_or(InstructionDiagramError::UnsupportedTopology)?;
             let mut depth_total = 0.0;
             let mut points = Vec::with_capacity(face.points.len());
             for point in &face.points {
-                let transformed = transform.apply(*point)?;
+                let transformed = transform
+                    .apply_point(*point)
+                    .map_err(map_kinematics_error)?;
                 let (projected, depth) = project(transformed)?;
                 bounds = Some(expand_bounds(bounds, projected));
                 depth_total += depth;
                 points.push(projected);
             }
-            let normal = transform.rotate(Vec3 {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            })?;
-            let front_visible = dot(normal, CAMERA_TO_VIEWER) >= 0.0;
+            let normal = transform
+                .apply_vector(Point3::new(0.0, 1.0, 0.0).map_err(map_kinematics_error)?)
+                .map_err(map_kinematics_error)?;
+            let front_visible = dot_point(normal, CAMERA_TO_VIEWER) >= 0.0;
             let source_color = if front_visible {
                 paper.front.color
             } else {
@@ -293,29 +260,35 @@ pub fn build_instruction_diagram_plan_with_limits(
         }
         rendered_faces.sort_by(compare_faces);
 
-        let mut rendered_hinges = Vec::with_capacity(model.hinges.len());
+        let mut rendered_hinges = Vec::with_capacity(model.kinematics.hinges().len());
         let mut changed_hinge_count = 0;
-        for (hinge_index, hinge) in model.hinges.iter().enumerate() {
-            let parent_transform = transforms
-                .hinge_parents
-                .get(hinge_index)
-                .copied()
+        for hinge in model.kinematics.hinges() {
+            let parent_transform = pose
+                .hinge_parent_transform(hinge.edge())
                 .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            let (start, _) = project(parent_transform.apply(hinge.start)?)?;
-            let (end, _) = project(parent_transform.apply(hinge.end)?)?;
+            let (start, _) = project(
+                parent_transform
+                    .apply_point(hinge.start())
+                    .map_err(map_kinematics_error)?,
+            )?;
+            let (end, _) = project(
+                parent_transform
+                    .apply_point(hinge.end())
+                    .map_err(map_kinematics_error)?,
+            )?;
             bounds = Some(expand_bounds(bounds, start));
             bounds = Some(expand_bounds(bounds, end));
-            let current = angles
-                .get(&hinge.edge)
+            let current = current_angles
+                .get(&hinge.edge())
                 .copied()
                 .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            let previous = previous_angles.get(&hinge.edge).copied().unwrap_or(0.0);
+            let previous = previous_angles.get(&hinge.edge()).copied().unwrap_or(0.0);
             let changed = canonical_zero(current) != canonical_zero(previous);
             changed_hinge_count += usize::from(changed);
             rendered_hinges.push(InstructionDiagramHinge {
                 start,
                 end,
-                kind: match hinge.assignment {
+                kind: match hinge.assignment() {
                     FoldAssignment::Mountain => InstructionDiagramFoldKind::Mountain,
                     FoldAssignment::Valley => InstructionDiagramFoldKind::Valley,
                 },
@@ -323,7 +296,7 @@ pub fn build_instruction_diagram_plan_with_limits(
             });
         }
         rendered_hinges.sort_by(compare_hinges);
-        previous_angles = angles;
+        previous_angles = current_angles;
         steps.push(InstructionDiagramStep {
             faces: rendered_faces,
             hinges: rendered_hinges,
@@ -381,203 +354,47 @@ fn prepare_model(
         return Err(InstructionDiagramError::UnsupportedTopology);
     }
     let positions = unique_positions(pattern)?;
-    let edges = unique_edges(pattern)?;
     let frame = projection_frame(paper, &positions)?;
-
-    let mut face_indices = HashMap::with_capacity(topology.faces.len());
+    let mut embedded_positions = Vec::with_capacity(pattern.vertices.len());
+    for vertex in &pattern.vertices {
+        let position = positions
+            .get(&vertex.id)
+            .copied()
+            .ok_or(InstructionDiagramError::UnsupportedTopology)?;
+        embedded_positions.push(VertexPosition3::new(vertex.id, frame.to_world(position)?));
+    }
+    let kinematics = ObservationTreeKinematicsModel::prepare_with_positions(
+        pattern,
+        paper,
+        topology,
+        &embedded_positions,
+        TreeKinematicsLimits {
+            max_source_vertices: limits.max_source_vertices,
+            max_source_edges: limits.max_source_edges,
+            max_paper_boundary_vertices: limits.max_source_vertices,
+            max_faces: limits.max_faces_per_step,
+            max_edge_incidences: limits.max_source_edges,
+            max_hinges: limits.max_hinges_per_step,
+            max_face_boundary_vertices: limits.max_projected_vertex_visits,
+            max_adjacency_entries: limits.max_hinges_per_step.saturating_mul(2),
+        },
+    )
+    .map_err(map_kinematics_error)?;
     let mut faces = Vec::with_capacity(topology.faces.len());
-    let mut face_keys = HashSet::with_capacity(topology.faces.len());
-    let mut prepared_point_count = 0_usize;
-    for (face_index, face) in topology.faces.iter().enumerate() {
-        if face.outer.half_edges.len() < 3
-            || face_indices.insert(face.id, face_index).is_some()
-            || !face_keys.insert(face.key)
-        {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        prepared_point_count = prepared_point_count
-            .checked_add(face.outer.half_edges.len())
-            .ok_or(InstructionDiagramError::ResourceLimitExceeded)?;
-        if prepared_point_count > limits.max_projected_vertex_visits {
-            return Err(InstructionDiagramError::ResourceLimitExceeded);
-        }
+    for face in &topology.faces {
         let mut points = Vec::with_capacity(face.outer.half_edges.len());
-        for (index, half_edge) in face.outer.half_edges.iter().enumerate() {
-            let next = &face.outer.half_edges[(index + 1) % face.outer.half_edges.len()];
-            if half_edge.destination != next.origin {
-                return Err(InstructionDiagramError::UnsupportedTopology);
-            }
-            let source = edges
-                .get(&half_edge.edge)
+        for half_edge in &face.outer.half_edges {
+            let position = kinematics
+                .vertex_position(half_edge.origin)
                 .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            if !same_endpoints(
-                source.start,
-                source.end,
-                half_edge.origin,
-                half_edge.destination,
-            ) {
-                return Err(InstructionDiagramError::UnsupportedTopology);
-            }
-            let position = positions
-                .get(&half_edge.origin)
-                .copied()
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            points.push(frame.to_world(position)?);
+            points.push(position);
         }
         faces.push(PreparedFace {
             id: face.id,
             points,
         });
     }
-
-    let incidences = topology
-        .edge_incidence
-        .iter()
-        .map(|(edge, incidence)| (*edge, *incidence))
-        .collect::<HashMap<_, _>>();
-    if incidences.len() != topology.edge_incidence.len() {
-        return Err(InstructionDiagramError::UnsupportedTopology);
-    }
-    if topology.hinge_adjacency.is_empty() {
-        if topology.faces.len() != 1 {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        return Ok(PreparedModel {
-            faces,
-            face_indices,
-            hinges: Vec::new(),
-            adjacency: HashMap::from([(topology.faces[0].id, Vec::new())]),
-        });
-    }
-    if topology.hinge_adjacency.len() + 1 != topology.faces.len() {
-        return Err(InstructionDiagramError::UnsupportedTopology);
-    }
-
-    let mut hinges = Vec::with_capacity(topology.hinge_adjacency.len());
-    let mut adjacency = topology
-        .faces
-        .iter()
-        .map(|face| (face.id, Vec::new()))
-        .collect::<HashMap<_, _>>();
-    let mut hinge_edges = HashSet::with_capacity(topology.hinge_adjacency.len());
-    for adjacent in &topology.hinge_adjacency {
-        if adjacent.first == adjacent.second
-            || !face_indices.contains_key(&adjacent.first)
-            || !face_indices.contains_key(&adjacent.second)
-            || !hinge_edges.insert(adjacent.edge)
-        {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        let EdgeIncidence::Hinge {
-            left,
-            right,
-            assignment,
-        } = incidences
-            .get(&adjacent.edge)
-            .copied()
-            .ok_or(InstructionDiagramError::UnsupportedTopology)?
-        else {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        };
-        if assignment != adjacent.assignment
-            || !same_faces(adjacent.first, adjacent.second, left, right)
-        {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        let edge = edges
-            .get(&adjacent.edge)
-            .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-        if !matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
-            || edge.kind
-                != match assignment {
-                    FoldAssignment::Mountain => EdgeKind::Mountain,
-                    FoldAssignment::Valley => EdgeKind::Valley,
-                }
-        {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        let (start_id, end_id) = canonical_endpoints(edge.start, edge.end);
-        let start = frame.to_world(
-            positions
-                .get(&start_id)
-                .copied()
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?,
-        )?;
-        let end = frame.to_world(
-            positions
-                .get(&end_id)
-                .copied()
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?,
-        )?;
-        let delta = subtract(end, start)?;
-        let length = length(delta)?;
-        let axis = scale(delta, 1.0 / length)?;
-        let hinge_index = hinges.len();
-        hinges.push(HingeModel {
-            edge: adjacent.edge,
-            assignment,
-            start,
-            end,
-            axis,
-        });
-        let sign = match assignment {
-            FoldAssignment::Mountain => 1.0,
-            FoldAssignment::Valley => -1.0,
-        };
-        adjacency
-            .get_mut(&left)
-            .ok_or(InstructionDiagramError::UnsupportedTopology)?
-            .push(Neighbor {
-                face: right,
-                hinge_index,
-                rotation_sign: sign,
-            });
-        adjacency
-            .get_mut(&right)
-            .ok_or(InstructionDiagramError::UnsupportedTopology)?
-            .push(Neighbor {
-                face: left,
-                hinge_index,
-                rotation_sign: -sign,
-            });
-    }
-    for neighbors in adjacency.values_mut() {
-        neighbors.sort_by(|left, right| {
-            hinges[left.hinge_index]
-                .edge
-                .canonical_bytes()
-                .cmp(&hinges[right.hinge_index].edge.canonical_bytes())
-        });
-    }
-    if !connected(&adjacency, topology.faces[0].id, topology.faces.len()) {
-        return Err(InstructionDiagramError::UnsupportedTopology);
-    }
-    hinges.sort_by_key(|hinge| hinge.edge.canonical_bytes());
-    // Rebuild indices after canonical hinge ordering.
-    let hinge_index_by_edge = hinges
-        .iter()
-        .enumerate()
-        .map(|(index, hinge)| (hinge.edge, index))
-        .collect::<HashMap<_, _>>();
-    for neighbors in adjacency.values_mut() {
-        for neighbor in neighbors.iter_mut() {
-            let edge = topology
-                .hinge_adjacency
-                .get(neighbor.hinge_index)
-                .map(|hinge| hinge.edge)
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            neighbor.hinge_index = *hinge_index_by_edge
-                .get(&edge)
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-        }
-        neighbors.sort_by_key(|neighbor| hinges[neighbor.hinge_index].edge.canonical_bytes());
-    }
-    Ok(PreparedModel {
-        faces,
-        face_indices,
-        hinges,
-        adjacency,
-    })
+    Ok(PreparedModel { faces, kinematics })
 }
 
 fn checked_model_resource_counts(
@@ -598,83 +415,6 @@ fn checked_model_resource_counts(
     }
 }
 
-fn face_transforms(
-    model: &PreparedModel,
-    fixed_face: Option<FaceId>,
-    angles: &HashMap<EdgeId, f64>,
-    _step_index: usize,
-) -> Result<StepTransforms, InstructionDiagramError> {
-    if model.hinges.is_empty() {
-        if fixed_face.is_some() || !angles.is_empty() || model.faces.len() != 1 {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-        return Ok(StepTransforms {
-            faces: HashMap::from([(model.faces[0].id, Transform::IDENTITY)]),
-            hinge_parents: Vec::new(),
-        });
-    }
-    let root = fixed_face.ok_or(InstructionDiagramError::UnsupportedTopology)?;
-    if !model.face_indices.contains_key(&root) {
-        return Err(InstructionDiagramError::UnsupportedTopology);
-    }
-    let mut transforms = HashMap::with_capacity(model.faces.len());
-    let mut hinge_parents = vec![None; model.hinges.len()];
-    transforms.insert(root, Transform::IDENTITY);
-    let mut queue = VecDeque::from([root]);
-    while let Some(parent_face) = queue.pop_front() {
-        let parent = transforms
-            .get(&parent_face)
-            .copied()
-            .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-        let neighbors = model
-            .adjacency
-            .get(&parent_face)
-            .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-        for neighbor in neighbors {
-            if transforms.contains_key(&neighbor.face) {
-                continue;
-            }
-            let hinge = model
-                .hinges
-                .get(neighbor.hinge_index)
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            if hinge_parents
-                .get_mut(neighbor.hinge_index)
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?
-                .replace(parent)
-                .is_some()
-            {
-                return Err(InstructionDiagramError::UnsupportedTopology);
-            }
-            let angle = angles
-                .get(&hinge.edge)
-                .copied()
-                .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-            if !angle.is_finite() || !(0.0..=180.0).contains(&angle) {
-                return Err(InstructionDiagramError::UnsupportedTopology);
-            }
-            let local =
-                Transform::around_axis(hinge.start, hinge.axis, angle * neighbor.rotation_sign)?;
-            let child = parent.compose(local)?;
-            if transforms.insert(neighbor.face, child).is_some() {
-                return Err(InstructionDiagramError::UnsupportedTopology);
-            }
-            queue.push_back(neighbor.face);
-        }
-    }
-    if transforms.len() != model.faces.len() {
-        return Err(InstructionDiagramError::UnsupportedTopology);
-    }
-    let hinge_parents = hinge_parents
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-    Ok(StepTransforms {
-        faces: transforms,
-        hinge_parents,
-    })
-}
-
 struct ProjectionFrame {
     min_x: f64,
     min_y: f64,
@@ -684,12 +424,12 @@ struct ProjectionFrame {
 }
 
 impl ProjectionFrame {
-    fn to_world(&self, point: ori_domain::Point2) -> Result<Vec3, InstructionDiagramError> {
+    fn to_world(&self, point: ori_domain::Point2) -> Result<Point3, InstructionDiagramError> {
         let x = ((point.x - self.min_x) / self.largest - self.normalized_width / 2.0)
             * PREVIEW_WORLD_SIZE;
         let z = -((point.y - self.min_y) / self.largest - self.normalized_height / 2.0)
             * PREVIEW_WORLD_SIZE;
-        finite_vec(Vec3 { x, y: 0.0, z })
+        Point3::new(x, 0.0, z).map_err(map_kinematics_error)
     }
 }
 
@@ -754,143 +494,17 @@ fn unique_positions(
     Ok(positions)
 }
 
-fn unique_edges(
-    pattern: &CreasePattern,
-) -> Result<HashMap<EdgeId, &Edge>, InstructionDiagramError> {
-    let mut edges = HashMap::with_capacity(pattern.edges.len());
-    for edge in &pattern.edges {
-        if edges.insert(edge.id, edge).is_some() {
-            return Err(InstructionDiagramError::UnsupportedTopology);
-        }
-    }
-    Ok(edges)
-}
-
-fn connected(adjacency: &HashMap<FaceId, Vec<Neighbor>>, root: FaceId, expected: usize) -> bool {
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::from([root]);
-    while let Some(face) = queue.pop_front() {
-        if !visited.insert(face) {
-            continue;
-        }
-        queue.extend(
-            adjacency
-                .get(&face)
-                .into_iter()
-                .flatten()
-                .map(|neighbor| neighbor.face),
-        );
-    }
-    visited.len() == expected
-}
-
 const fn canonical_zero(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
 
-fn deterministic_sin_cos_degrees(
-    angle_degrees: f64,
-) -> Result<(f64, f64), InstructionDiagramError> {
-    if !angle_degrees.is_finite() || !(-180.0..=180.0).contains(&angle_degrees) {
-        return Err(InstructionDiagramError::UnrepresentableGeometry);
-    }
-    let (sine, cosine) = match canonical_zero(angle_degrees) {
-        0.0 => (0.0, 1.0),
-        90.0 => (1.0, 0.0),
-        -90.0 => (-1.0, 0.0),
-        180.0 | -180.0 => (0.0, -1.0),
-        angle => libm::sincos(angle * DEGREES_TO_RADIANS),
-    };
-    if sine.is_finite() && cosine.is_finite() {
-        Ok((canonical_zero(sine), canonical_zero(cosine)))
-    } else {
-        Err(InstructionDiagramError::UnrepresentableGeometry)
-    }
-}
-
-impl Transform {
-    const IDENTITY: Self = Self {
-        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        translation: Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-    };
-
-    fn around_axis(
-        point: Vec3,
-        axis: Vec3,
-        angle_degrees: f64,
-    ) -> Result<Self, InstructionDiagramError> {
-        let (sine, cosine) = deterministic_sin_cos_degrees(angle_degrees)?;
-        let one_minus = 1.0 - cosine;
-        let (x, y, z) = (axis.x, axis.y, axis.z);
-        let rotation = [
-            [
-                cosine + x * x * one_minus,
-                x * y * one_minus - z * sine,
-                x * z * one_minus + y * sine,
-            ],
-            [
-                y * x * one_minus + z * sine,
-                cosine + y * y * one_minus,
-                y * z * one_minus - x * sine,
-            ],
-            [
-                z * x * one_minus - y * sine,
-                z * y * one_minus + x * sine,
-                cosine + z * z * one_minus,
-            ],
-        ];
-        let rotated_point = rotate_matrix(rotation, point)?;
-        let translation = subtract(point, rotated_point)?;
-        finite_transform(Self {
-            rotation,
-            translation,
-        })
-    }
-
-    fn compose(self, local: Self) -> Result<Self, InstructionDiagramError> {
-        let mut rotation = [[0.0; 3]; 3];
-        for (row, target_row) in rotation.iter_mut().enumerate() {
-            for (column, target) in target_row.iter_mut().enumerate() {
-                *target = (0..3)
-                    .map(|index| self.rotation[row][index] * local.rotation[index][column])
-                    .sum();
-            }
-        }
-        let translation = add(self.rotate(local.translation)?, self.translation)?;
-        finite_transform(Self {
-            rotation,
-            translation,
-        })
-    }
-
-    fn rotate(self, point: Vec3) -> Result<Vec3, InstructionDiagramError> {
-        rotate_matrix(self.rotation, point)
-    }
-
-    fn apply(self, point: Vec3) -> Result<Vec3, InstructionDiagramError> {
-        add(self.rotate(point)?, self.translation)
-    }
-}
-
-fn rotate_matrix(matrix: [[f64; 3]; 3], point: Vec3) -> Result<Vec3, InstructionDiagramError> {
-    finite_vec(Vec3 {
-        x: matrix[0][0] * point.x + matrix[0][1] * point.y + matrix[0][2] * point.z,
-        y: matrix[1][0] * point.x + matrix[1][1] * point.y + matrix[1][2] * point.z,
-        z: matrix[2][0] * point.x + matrix[2][1] * point.y + matrix[2][2] * point.z,
-    })
-}
-
-fn project(point: Vec3) -> Result<(DiagramPoint, f64), InstructionDiagramError> {
+fn project(point: Point3) -> Result<(DiagramPoint, f64), InstructionDiagramError> {
     Ok((
         DiagramPoint {
-            x: quantize(dot(point, CAMERA_RIGHT))?,
-            y: quantize(dot(point, CAMERA_UP))?,
+            x: quantize(dot_point(point, CAMERA_RIGHT))?,
+            y: quantize(dot_point(point, CAMERA_UP))?,
         },
-        quantize(dot(point, CAMERA_TO_VIEWER))?,
+        quantize(dot_point(point, CAMERA_TO_VIEWER))?,
     ))
 }
 
@@ -966,86 +580,36 @@ fn composite_over_white(color: RgbaColor) -> DiagramColor {
     }
 }
 
-fn canonical_endpoints(first: VertexId, second: VertexId) -> (VertexId, VertexId) {
-    if first.canonical_bytes() <= second.canonical_bytes() {
-        (first, second)
-    } else {
-        (second, first)
+fn dot_point(point: Point3, vector: [f64; 3]) -> f64 {
+    point.x() * vector[0] + point.y() * vector[1] + point.z() * vector[2]
+}
+
+#[cfg(test)]
+fn dot_components(first: [f64; 3], second: [f64; 3]) -> f64 {
+    first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
+}
+
+const fn map_kinematics_error(error: KinematicsError) -> InstructionDiagramError {
+    match error {
+        KinematicsError::ResourceLimitExceeded => InstructionDiagramError::ResourceLimitExceeded,
+        KinematicsError::UnrepresentableGeometry
+        | KinematicsError::NonFiniteHingeAngle { .. }
+        | KinematicsError::HingeAngleOutOfRange { .. } => {
+            InstructionDiagramError::UnrepresentableGeometry
+        }
+        KinematicsError::UnsupportedTopology
+        | KinematicsError::DuplicateHingeAngle { .. }
+        | KinematicsError::NonCanonicalHingeAngles { .. }
+        | KinematicsError::MissingHingeAngle { .. }
+        | KinematicsError::ExtraHingeAngle { .. }
+        | KinematicsError::UnknownHingeAngle { .. }
+        | KinematicsError::MissingFixedFace
+        | KinematicsError::UnknownFixedFace { .. }
+        | KinematicsError::UnexpectedFixedFace { .. }
+        | KinematicsError::MaterialPoseIssuerMismatch => {
+            InstructionDiagramError::UnsupportedTopology
+        }
     }
-}
-
-fn same_endpoints(
-    first_start: VertexId,
-    first_end: VertexId,
-    second_start: VertexId,
-    second_end: VertexId,
-) -> bool {
-    (first_start == second_start && first_end == second_end)
-        || (first_start == second_end && first_end == second_start)
-}
-
-fn same_faces(first: FaceId, second: FaceId, left: FaceId, right: FaceId) -> bool {
-    (first == left && second == right) || (first == right && second == left)
-}
-
-fn dot(first: Vec3, second: Vec3) -> f64 {
-    first.x * second.x + first.y * second.y + first.z * second.z
-}
-
-fn add(first: Vec3, second: Vec3) -> Result<Vec3, InstructionDiagramError> {
-    finite_vec(Vec3 {
-        x: first.x + second.x,
-        y: first.y + second.y,
-        z: first.z + second.z,
-    })
-}
-
-fn subtract(first: Vec3, second: Vec3) -> Result<Vec3, InstructionDiagramError> {
-    finite_vec(Vec3 {
-        x: first.x - second.x,
-        y: first.y - second.y,
-        z: first.z - second.z,
-    })
-}
-
-fn scale(value: Vec3, scalar: f64) -> Result<Vec3, InstructionDiagramError> {
-    finite_vec(Vec3 {
-        x: value.x * scalar,
-        y: value.y * scalar,
-        z: value.z * scalar,
-    })
-}
-
-fn length(value: Vec3) -> Result<f64, InstructionDiagramError> {
-    let length = dot(value, value).sqrt();
-    if length.is_finite() && length > 0.0 {
-        Ok(length)
-    } else {
-        Err(InstructionDiagramError::UnrepresentableGeometry)
-    }
-}
-
-fn finite_vec(value: Vec3) -> Result<Vec3, InstructionDiagramError> {
-    [value.x, value.y, value.z]
-        .into_iter()
-        .all(f64::is_finite)
-        .then_some(value)
-        .ok_or(InstructionDiagramError::UnrepresentableGeometry)
-}
-
-fn finite_transform(value: Transform) -> Result<Transform, InstructionDiagramError> {
-    value
-        .rotation
-        .into_iter()
-        .flatten()
-        .chain([
-            value.translation.x,
-            value.translation.y,
-            value.translation.z,
-        ])
-        .all(f64::is_finite)
-        .then_some(value)
-        .ok_or(InstructionDiagramError::UnrepresentableGeometry)
 }
 
 fn quantize(value: f64) -> Result<f64, InstructionDiagramError> {
@@ -1069,7 +633,8 @@ mod tests {
         InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline, Paper,
         Point2, ProjectId, Vertex, VertexId,
     };
-    use ori_topology::{FaceExtractionInput, analyze_faces};
+    use ori_kinematics::deterministic_sin_cos_degrees;
+    use ori_topology::{EdgeIncidence, FaceExtractionInput, analyze_faces};
     use sha2::{Digest, Sha256};
 
     use super::*;
@@ -1266,6 +831,47 @@ mod tests {
             &fixture.topology,
         )
         .expect("reordered");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn isolated_and_auxiliary_draft_geometry_do_not_change_the_plan() {
+        let fixture = single_fold_fixture();
+        let timeline = timeline(&fixture.topology, fixture.fold, &[0.0, 90.0, 180.0]);
+        let expected = build_instruction_diagram_plan(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &timeline,
+            &fixture.topology,
+        )
+        .expect("baseline");
+
+        let auxiliary = edge(
+            99,
+            fixture_vertex_id(998),
+            fixture_vertex_id(999),
+            EdgeKind::Auxiliary,
+        );
+        let mut pattern = fixture.pattern.clone();
+        pattern.vertices.push(vertex(99, 30.0, 30.0));
+        pattern.edges.push(auxiliary.clone());
+        let mut topology = fixture.topology.clone();
+        topology
+            .edge_incidence
+            .push((auxiliary.id, EdgeIncidence::AuxiliaryIgnored));
+        topology
+            .edge_incidence
+            .sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+
+        let actual = build_instruction_diagram_plan(
+            FINGERPRINT,
+            &pattern,
+            &fixture.paper,
+            &timeline,
+            &topology,
+        )
+        .expect("draft-only geometry ignored");
         assert_eq!(actual, expected);
     }
 
@@ -1515,13 +1121,13 @@ mod tests {
 
     #[test]
     fn camera_basis_is_orthonormal_to_serialization_precision() {
-        let norm = |value: Vec3| dot(value, value);
+        let norm = |value| dot_components(value, value);
         assert!((norm(CAMERA_TO_VIEWER) - 1.0).abs() < 1.0e-12);
         assert!((norm(CAMERA_RIGHT) - 1.0).abs() < 1.0e-12);
         assert!((norm(CAMERA_UP) - 1.0).abs() < 1.0e-12);
-        assert!(dot(CAMERA_TO_VIEWER, CAMERA_RIGHT).abs() < 1.0e-12);
-        assert!(dot(CAMERA_TO_VIEWER, CAMERA_UP).abs() < 1.0e-12);
-        assert!(dot(CAMERA_RIGHT, CAMERA_UP).abs() < 1.0e-12);
+        assert!(dot_components(CAMERA_TO_VIEWER, CAMERA_RIGHT).abs() < 1.0e-12);
+        assert!(dot_components(CAMERA_TO_VIEWER, CAMERA_UP).abs() < 1.0e-12);
+        assert!(dot_components(CAMERA_RIGHT, CAMERA_UP).abs() < 1.0e-12);
     }
 
     #[test]

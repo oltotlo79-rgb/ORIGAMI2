@@ -26,8 +26,10 @@
 
 ## 完了
 
+- 表示・投影から独立した`ori-kinematics`へ決定論的tree運動を抽出し、native材料座標と折り図用observation座標を型で分離した。material model/poseはprivate `Arc` issuer identityで束縛し、同一ID・同一内容の再prepare、同一角度の再solve、別座標モデルを区別する。poseはfixed face、完全canonical角度列、自己のmaterial geometryを保持し、外部MatrixやSerializeから構成できない。有限孤立下書き頂点と`AuxiliaryIgnored`は材料運動から除外し、既存折り図のgolden digestを維持した。kinematics 15件とcompile-fail 4件、instructions 12件、topology 85件、workspace Clippyを通過した
+- `ori-core::AppliedPoseV1`をopaque・非永続のruntime意味状態として追加し、完全角度列、tree cardinality、有限`0..=180`、`-0`正規化、全資源上限を検証する。pose-only adoptionはrevision・history・dirtyを変えず、instruction/紙設定/真のgeometry no-opは最新poseを保持し、geometry変更だけがUndo/Redo両側のposeを動的に捕捉する。失敗・空stack・revision枯渇はposeを含む全状態不変とし、core 171件とcompile-fail 4件を通過した。desktop current pose certificate、native衝突証拠、折り重ね利用者経路はまだ増えていないため完成率は36.9%のままとする
 - 平坦折り解析の開始処理は、project snapshotの捕捉からactive jobのslot設置まで`AppState → GlobalFlatFoldabilityState`の固定順で両lockを保持し、設置直前にbindingを再照合する。古い捕捉が同内容reopen後の新しいterminal/current layer-orderを消す競合を`SnapshotUnavailable`で全状態不変のまま拒否し、同revisionの並行beginはproject lock取得順に直列化して後のbeginだけをcurrentにする。source件数preflightの未登録`unknown`は引き続きslotへ触れない。desktop native 203件と対象39件で回帰した
-- `topology_contact_policy_v1`の共有関係4種×交差証拠10種を言語間の正規JSON corpusへ固定し、同じ全40セルをfrontend表と新しいnative `ori-collision`表の双方から照合する。共有identityは共面正面積・横断・正体積を免除せず、共有要素と矛盾する離間・一般接触は判定保留へ閉じる。frontend Node 1,013件、DOM 39件、native表5件、本番build、lint、workspace Clippyを通過した。native表は証拠からdecisionへの純粋写像だけであり、幾何証拠生成、有限ヒンジ許容、静的・連続衝突certificateは未実装なので、SIM-010または完成率へ加算しない
+- `topology_contact_policy_v1`の共有関係4種×交差証拠10種・全40セルを互換基準として凍結し、正厚の正面積境界接触を独立させた`topology_contact_policy_v2`の4×11・全44セルも言語間の正規JSON corpusへ固定した。frontend/nativeの純粋表は一致し、v2は共有なし/共有頂点の境界面接触を`touching`、共有ヒンジを有限model必須、同一面をself除外とする。厚さ0から境界面証拠を発行しないこと、共有ヒンジを表だけで許容しないこと、runtimeのsame-face到達を内部不整合へ閉じることは次のnative証拠生成器の必須条件とする。幾何証拠生成、有限ヒンジ許容、静的・連続衝突certificateは未実装なので、SIM-010または完成率へ加算しない
 - コミット`233307b`の[CI #222](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29661102931)でfrontend、Windows/macOS Rust、Windows NSIS bundle、macOS `.app` bundleの全jobが成功した。macOSは自動ビルド・CI検証のみで、実機検証には計上しない
 - VAL-003のcurrent layer-orderをsnapshot cloneではなく、同一slot・certificate identity、project instance/ID/revision、bit-exact topology、fingerprint、proof/layer model、provenance、material registry、checked単調generationへ結合したprivate capabilityとして捕捉・再認証できるようにした。AppState→slotの固定lock順で両lockを保持するcommit closureによりcancelとのTOCTOUを閉じ、同内容再解析ABA、edit→Undo、reopen、別slot、deep clone、世代枯渇をdesktop 201件で回帰した
 - `EditorState`のrevision上限をJavaScriptで正確に往復できる`2^53-1`へ固定し、execute・Undo・Redoは次revisionをmutation前に予約する。上限ではpattern、paper、timeline、revision、Undo/Redo履歴を完全不変のまま型付きエラーで拒否し、`face_lineage_v1`も同じ一段更新契約へ統一した。通常経路のrevisionはUndo/Redoでも単調増加する
@@ -392,8 +394,8 @@
 
 ## 次の作業
 
-1. 表示・投影に依存しない決定論的tree kinematicsをnative共通crateへ抽出し、current applied poseを同一project・revision・topology・fingerprint・generationへ結合する
-2. nativeへ移植済みの衝突分類4×10純粋表へ、認証済み共有関係と幾何学的交差証拠を生成するstatic collisionを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
+1. 抽出済みのnative tree kinematicsとsemantic `AppliedPoseV1`を、desktopの同一project instance・revision・topology・fingerprint・単調generationへ結合するcurrent pose certificate/capabilityへ接続する
+2. nativeの衝突分類v2 4×11純粋表へ、認証済み共有関係と幾何学的交差証拠を生成するstatic collisionを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
 3. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
 4. MUST 87件のstatus表を各checkpointで維持し、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する

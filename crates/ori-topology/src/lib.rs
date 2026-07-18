@@ -125,6 +125,37 @@ pub struct FaceExtractionInput<'a> {
 #[serde(transparent)]
 pub struct FaceKey(pub [u8; 32]);
 
+/// Fail-closed reason why a canonical material-face key could not be derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum CanonicalFaceKeyError {
+    #[error("the face boundary length cannot be represented canonically")]
+    BoundaryLengthUnrepresentable,
+    #[error("memory for canonical face-key derivation could not be reserved")]
+    AllocationFailed,
+}
+
+/// Derives the canonical face key for a cyclic half-edge boundary.
+///
+/// The cycle start is canonicalized before hashing, so equivalent rotations
+/// produce one key. Direction is intentionally preserved because it carries
+/// the material-side orientation.
+pub fn canonical_face_key(half_edges: &[HalfEdgeRef]) -> Result<FaceKey, CanonicalFaceKeyError> {
+    let length = canonical_face_key_length(half_edges.len())?;
+    let mut canonical = Vec::new();
+    canonical
+        .try_reserve_exact(half_edges.len())
+        .map_err(|_| CanonicalFaceKeyError::AllocationFailed)?;
+    canonical.extend_from_slice(half_edges);
+    canonicalize_cycle(&mut canonical);
+    let mut hasher = Sha256::new();
+    hasher.update(FACE_KEY_DOMAIN);
+    hasher.update(length.to_be_bytes());
+    for half_edge in &canonical {
+        hasher.update(half_edge_token(half_edge));
+    }
+    Ok(FaceKey(hasher.finalize().into()))
+}
+
 /// One directed occurrence of a source edge in a face boundary walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HalfEdgeRef {
@@ -747,7 +778,8 @@ fn face_from_walk(
     if area <= 0.0 || !area.is_finite() {
         return Err(TopologyIssueKind::UnrepresentableFaceArea);
     }
-    let key = face_key(&outer.half_edges);
+    let key = canonical_face_key(&outer.half_edges)
+        .map_err(|_| TopologyIssueKind::InternalBoundaryResolution)?;
     Ok(Face {
         id: FaceId::derive_v5(identity_namespace, &key.0),
         key,
@@ -874,7 +906,8 @@ fn extract_boundary_face(
     }
     canonicalize_cycle(&mut half_edges);
 
-    let key = face_key(&half_edges);
+    let key = canonical_face_key(&half_edges)
+        .map_err(|_| TopologyIssueKind::InternalBoundaryResolution)?;
     let face_id = FaceId::derive_v5(input.identity_namespace, &key.0);
     let area = signed_double_area.abs() * 0.5;
     if area == 0.0 || !area.is_finite() {
@@ -935,14 +968,8 @@ fn half_edge_token(half_edge: &HalfEdgeRef) -> [u8; 48] {
     token
 }
 
-fn face_key(half_edges: &[HalfEdgeRef]) -> FaceKey {
-    let mut hasher = Sha256::new();
-    hasher.update(FACE_KEY_DOMAIN);
-    hasher.update((half_edges.len() as u64).to_be_bytes());
-    for half_edge in half_edges {
-        hasher.update(half_edge_token(half_edge));
-    }
-    FaceKey(hasher.finalize().into())
+fn canonical_face_key_length(length: usize) -> Result<u64, CanonicalFaceKeyError> {
+    u64::try_from(length).map_err(|_| CanonicalFaceKeyError::BoundaryLengthUnrepresentable)
 }
 
 #[cfg(test)]
@@ -1023,6 +1050,39 @@ mod tests {
             },
             CreasePattern { vertices, edges },
         )
+    }
+
+    #[test]
+    fn public_canonical_face_key_matches_snapshot_and_ignores_cycle_start() {
+        let (namespace, paper, pattern) = polygon_fixture(&[
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 3.0),
+            Point2::new(0.0, 3.0),
+        ]);
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: 9,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        let face = &report.snapshot.expect("boundary topology").faces[0];
+        assert_eq!(canonical_face_key(&face.outer.half_edges), Ok(face.key));
+        let mut rotated = face.outer.half_edges.clone();
+        rotated.rotate_left(2);
+        assert_eq!(canonical_face_key(&rotated), Ok(face.key));
+    }
+
+    #[test]
+    fn canonical_face_key_length_conversion_is_checked() {
+        if usize::BITS > u64::BITS {
+            assert_eq!(
+                canonical_face_key_length(usize::MAX),
+                Err(CanonicalFaceKeyError::BoundaryLengthUnrepresentable)
+            );
+        } else {
+            assert_eq!(canonical_face_key_length(usize::MAX), Ok(usize::MAX as u64));
+        }
     }
 
     fn strict(namespace: ProjectId, paper: &Paper, pattern: &CreasePattern) -> TopologySnapshot {

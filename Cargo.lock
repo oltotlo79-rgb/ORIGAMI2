@@ -2098,6 +2098,7 @@ dependencies = [
  "ori-foldability",
  "ori-geometry",
  "ori-topology",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -2155,11 +2156,24 @@ dependencies = [
 name = "ori-instructions"
 version = "0.1.0"
 dependencies = [
- "libm",
  "ori-domain",
+ "ori-kinematics",
  "ori-topology",
  "serde_json",
  "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ori-kinematics"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "ori-domain",
+ "ori-geometry",
+ "ori-topology",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

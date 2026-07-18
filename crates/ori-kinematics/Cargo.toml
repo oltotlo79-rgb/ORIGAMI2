@@ -1,17 +1,17 @@
 [package]
-name = "ori-core"
+name = "ori-kinematics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-num-bigint.workspace = true
+libm = { version = "=0.2.16", default-features = false }
 ori-domain = { path = "../ori-domain" }
-ori-foldability = { path = "../ori-foldability" }
 ori-geometry = { path = "../ori-geometry" }
 ori-topology = { path = "../ori-topology" }
 thiserror.workspace = true
 
 [dev-dependencies]
 serde.workspace = true
+serde_json.workspace = true

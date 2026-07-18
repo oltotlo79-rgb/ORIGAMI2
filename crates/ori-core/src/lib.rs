@@ -1,5 +1,6 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
+mod applied_pose;
 mod editor;
 mod fold_model_fingerprint;
 mod sheet;
@@ -7,6 +8,10 @@ mod stacked_fold;
 mod topology;
 mod validation;
 
+pub use applied_pose::{
+    APPLIED_POSE_MODEL_ID_V1, AppliedHingeAngleV1, AppliedPoseErrorV1, AppliedPoseLimitsV1,
+    AppliedPoseResourceV1, AppliedPoseV1, prepare_applied_pose_v1,
+};
 pub use editor::{
     Command, CommandError, CommandResult, EditorState, IntersectionEdgeTarget,
     JunctionVertexIntent, MAX_REVISION, Revision,

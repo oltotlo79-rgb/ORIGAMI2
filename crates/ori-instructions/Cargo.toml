@@ -6,8 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-libm = { version = "=0.2.16", default-features = false }
 ori-domain = { path = "../ori-domain" }
+ori-kinematics = { path = "../ori-kinematics" }
 ori-topology = { path = "../ori-topology" }
 thiserror.workspace = true
 

@@ -57,7 +57,7 @@ import {
   measureBenchmarkPayloadBytes,
   prepareBenchmarkRenderData,
 } from './lib/renderBenchmark'
-import { reportUnexpected } from './lib/diagnostics'
+import { reportUnexpected } from './lib/diagnosticsRuntime'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [

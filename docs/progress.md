@@ -20,7 +20,7 @@
 | 折り可能性・経路探索 | 18% | 10% | 1.80% | 1ヒンジCCDと、単一ヒンジ補正候補の解析専用UIを接続。候補3Dプレビュー・明示適用、川崎・前川、平坦折り、一般経路探索は未着手 |
 | 折り手順・PDF | 10% | 1% | 0.10% | タイムラインUI試作のみ |
 | 入出力・互換性 | 5% | 14% | 0.70% | 高品質な`.ori2`読込・保存は実装。SVG/FOLD/DXF/OBJ/STL/glTF/PDFは未着手 |
-| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 710件・Rust 304件とWindows/macOS CI、メモリ内redacted diagnostics基盤は実装。i18n、設定、診断の永続化・閲覧、更新、GitHub Releases配布を残す |
+| 多言語・設定・配布・QA | 5% | 30% | 1.50% | frontend 720件・Windows Rust 317件とWindows/macOS CI、環境情報を含まないredacted diagnosticsのメモリ内集計・端末内保存基盤は実装。i18n、設定、診断の閲覧・手動共有、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
 | **合計** | **100%** | — | **26.80%** | — |
 
@@ -191,6 +191,7 @@
 - `test:snap`の47ファイル手動列挙をNode test runnerの引用符付きglobへ置換し、新しい`*.test.ts`をNode 24 CIとWindowsのどちらでも自動検出する境界へ変更。既存47ファイル・frontend 692件の全実行を維持
 - `FoldPreview`から背景・camera・renderer・照明・grid・紙3材質・輪郭6材質の構築、resize、冪等破棄をReact非依存scene runtimeへ分離。exact lease、原子的scene姿勢適用、OrbitControls、gesture、ヒンジ材質は元のauthority境界へ残し、grid・材質生成途中を含む自己rollback、cleanup例外継続、既存React子要素と所有外資源の非破棄を専用8件で固定。自動検出48ファイル・frontend 700件、Rust 304件で回帰
 - 監査の「全catchを一括置換」は採用せず、キャンセル・stale・入力/編集拒否・ファイル権限/破損・判定不能・best-effort cleanupを除外して、グローバル例外、起動snapshot・topology・終了guard・検証・benchmark、3D初期化・姿勢適用・描画・姿勢予約・選択・camera・resizeの上位境界だけを計測。`reportUnexpected(scope)`は固定15コード以外を拒否し、生の例外・メッセージ・作品名・パス・ID・座標を引数として受け取らない。件数は65で飽和する6区分、固定順、8 KiB以下のメモリ内snapshotに限定し、通信・永続化・時刻・環境情報を持たない。専用10件を加え、自動検出50ファイル・frontend 710件、Rust 304件で回帰
+- frontendの上位診断境界をTauri環境だけで動くscope-only runtimeへ接続し、Rust側でも同じ15 scope・同じ`{schema, unexpected}` v1 DTOを再検証する端末内保存を追加。アプリ専用log領域の固定ファイルだけを使い、環境情報・作品情報・時刻を保存しない。8 KiB上限、bucket遷移時だけの原子的置換、Unix user-only mode、古い一時ファイルの有界清掃、破損入力のfail-closed復旧、永続化失敗後のsession circuit、非同期gateとblocking poolによる単一I/O worker、scope別65回のfrontend/native二重上限を固定した。frontend 720件・Windows Rust 317件で回帰
 - EdgeId、幾何学的左右面、共有辺両端のVertexId・座標、`centered_mid_surface_v1`を一対一で照合し、不完全・偽造・同向き境界を準備時に遮断する共有ヒンジ契約
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
@@ -307,11 +308,13 @@
 - コミット`3677d10`のCI Run `29625298125`全ジョブ完走（第三者監査の再照合、進捗是正、Undo/Redo失敗時の履歴保持、authority初期化強化、frontend 673件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`dc365ef`のCI Run `29626601401`全ジョブ完走（補正解析の複合job・UI coordinator・stale無効化・解析専用表示、frontend 692件、Windows/macOS Rust、macOS `.app` bundleを含む）
 - コミット`da24cc3`のCI Run `29626823914`全ジョブ完走（frontend testの引用符付きglob自動検出、frontend 692件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`72ab520`のCI Run `29627636649`全ジョブ完走（`FoldPreview` scene runtime分離、frontend 700件、Windows/macOS Rust、macOS `.app` bundleを含む）
+- コミット`905a2fd`のCI Run `29628436035`全ジョブ完走（privacy-safeなメモリ内redacted diagnostics境界、frontend 710件、Windows/macOS Rust、macOS `.app` bundleを含む）
 
 ## 進行中
 
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
-- redacted diagnosticsの固定DTOをRust側でも再検証し、アプリ専用領域だけへ保存する端末内永続化と、利用者が正確な内容を確認して手動共有するUI
+- 端末内へ保存したredacted diagnosticsの正確なJSONを利用者が確認し、同一内容を明示操作で保存・手動共有できるUI
 - VAL-002の川崎・前川局所判定と、対応範囲・判定不能を区別するUI
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -325,7 +328,7 @@
 
 ## 次の作業
 
-1. redacted diagnosticsのRust側端末内保存を追加し、その後に閲覧・手動コピー/保存UIを接続する
+1. redacted diagnosticsの閲覧・内容選択・同一JSON手動保存UIを接続し、自動送信なしの利用者経路を完成する
 2. VAL-002の川崎・前川局所判定を実装し、対応範囲内の成立・不成立・判定不能をUIへ示す
 3. MUST 86件のstatus表を各checkpointで維持する
 4. 折り手順、SVG/FOLD/PDF、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める

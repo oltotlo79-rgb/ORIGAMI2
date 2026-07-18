@@ -553,10 +553,13 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 ### 13.2 Redacted diagnostics境界
 
 - frontendの診断生成APIは`reportUnexpected(scope)`だけとし、raw error、message、stack、cause、任意contextを受け取らない。scopeは固定allowlistをTypeScript型と実行時検査の両方で制限する。
-- 初期実装は15 scopeの件数だけをメモリ内で集計する。各件数は65で飽和し、外部へ公開するのは`0`、`1`、`2_4`、`5_16`、`17_64`、`65_plus`の粗い区分だけとする。snapshotは固定順・8 KiB以下で、作品名、座標、寸法、entity ID、revision、ファイル名・パス、時刻、OS/GPU等の環境文字列を含めない。
+- 15 scopeの件数だけをメモリ内で集計する。各件数は65で飽和し、外部へ公開するのは`0`、`1`、`2_4`、`5_16`、`17_64`、`65_plus`の粗い区分だけとする。snapshotは固定順・8 KiB以下で、作品名、座標、寸法、entity ID、revision、ファイル名・パス、時刻、アプリ版、OS、CPU architecture、GPU等の環境情報を含めない。
 - 計測対象は、利用者向け安全停止へ移るグローバル例外と上位の起動・解析・3D runtime境界に限定する。キャンセル、stale結果の破棄、入力/編集拒否、ファイル権限・破損、作業上限、`indeterminate`、独立資源のbest-effort cleanupを予期しない障害として一括記録しない。
-- 初期実装は通信、console、Web Storage、Tauri呼出し、ファイル保存を行わない。OPS-004〜006は、Rust側の一致するenumと固定DTO再検証、アプリ専用の固定保存先と容量上限、内容確認UI、利用者の明示操作による手動共有が接続されるまで未達とする。
-- 将来の永続化commandは任意パス、作品snapshot、任意文字列を受け取らず、プロジェクトI/Oと別の状態・固定ファイルを使用する。GitHub Issues、telemetry、クラッシュ報告への自動送信は行わず、画面に表示した正確な内容だけを利用者がコピーまたは保存できるようにする。
+- frontend runtimeはメモリ内集計を先に完了し、Tauri環境でだけ`record_unexpected_diagnostic({ scope })`をfire-and-forgetで呼ぶ。任意文字列、error、context、作品snapshot、保存先pathはIPCへ渡さない。frontendとnativeの両方でscope別65回/sessionへ制限し、同期例外・非同期拒否・永続化失敗を診断機能自身へ再帰させない。
+- Rustはfrontendと完全に同じ`origami2.redacted-diagnostics.v1`の`{schema, unexpected}`だけをstrict enum・unknown field拒否・固定15件・固定順で再検証し、Tauriのアプリ専用log領域にある`redacted-diagnostics-v1.json`だけへ保存する。別形状を同じschema名で扱わず、アプリ版やOS等のnative metadataも加えない。
+- 保存は8 KiBを上限にbucketが変わる時だけ行う。同じdirectoryのcreate-new一時ファイルへ書込み、同期、同一handle再読込、bytes一致確認後に原子的置換し、POSIXでは親directoryも同期する。Unix系の新規file modeは`0600`を上限とし、既存owner modeがより厳しい場合はそれを保持する。24時間を超えた診断用一時ファイルだけを起動時に最大512件走査・32件削除し、通常ファイル以外と無関係な名前には触れない。
+- 読込時は8 KiB超過、JSON破損、unknown/欠落field、scope順序・重複・件数不一致を空の内部状態へfail closedし、元ファイルは次の正当な記録まで変更しない。永続化に一度失敗したsessionは以後のdisk I/Oを停止する。commandは真のasync functionで非同期gateを取得してから明示的にblocking poolへ移し、blocking jobを常時1本に制限する。WebViewのasync worker上ではmutex待ちや`sync_all`を実行しない。
+- 現段階でも通信、console、Web Storage、自動送信は行わない。OPS-004〜006は利用者が保存内容を確認できるUIと、確認した正確なbytesだけを明示操作で保存する経路が接続されるまで、UI利用基準では未達とする。GitHub Issues、telemetry、クラッシュ報告への自動送信は今後も行わない。
 
 ## 14. 実装フェーズ
 

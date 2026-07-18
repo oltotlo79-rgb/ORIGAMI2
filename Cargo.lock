@@ -2096,6 +2096,7 @@ dependencies = [
  "ori-domain",
  "ori-formats",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

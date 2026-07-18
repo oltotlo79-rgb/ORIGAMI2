@@ -140,9 +140,9 @@
 | OPS-001 | 未着手 | GitHub Releases更新確認なし |
 | OPS-002 | 未着手 | 更新確認設定なし |
 | OPS-003 | 未着手 | 明示更新workflow未実装 |
-| OPS-004 | 未着手 | メモリ内集計のみで、端末内diagnostics永続化なし |
-| OPS-005 | 未着手 | raw errorを受け取らないredaction基盤のみ。永続化された標準logなし |
-| OPS-006 | 未着手 | log閲覧・手動添付UIなし |
+| OPS-004 | 未着手 | アプリ専用領域への固定redacted JSON保存は実装。利用者が保存状態を確認できるUI未接続のためUI利用基準では未達 |
+| OPS-005 | 未着手 | 永続化DTOも作品・個人・path・時刻・環境情報を持たない。標準logとして確認するUI未接続のためUI利用基準では未達 |
+| OPS-006 | 未着手 | log閲覧・内容確認・手動添付UIなし |
 | OPS-007 | 部分実装 | Windows/macOS CIとmacOS `.app`生成あり。GitHub Releases配布なし |
 | OPS-008 | 未着手 | 未署名macOS版の利用者向け起動文書なし |
 

@@ -56,6 +56,18 @@ test('integrations never pass an error or arbitrary context to diagnostics', () 
   assert.match(mainSource, /const reportUnhandledRejection = \(\) => \{/)
 })
 
+test('every application reporter uses the native-aware diagnostics runtime', () => {
+  assert.match(appSource, /from '\.\/lib\/diagnosticsRuntime'/)
+  assert.match(
+    foldPreviewSource,
+    /from '\.\.\/lib\/diagnosticsRuntime'/,
+  )
+  assert.match(mainSource, /from '\.\/lib\/diagnosticsRuntime'/)
+  for (const source of [appSource, foldPreviewSource, mainSource]) {
+    assert.doesNotMatch(source, /from ['"][^'"]*\/diagnostics['"]/)
+  }
+})
+
 function collectReports(source: string) {
   return Array.from(
     source.matchAll(/reportUnexpected\('([^']+)'\)/g),

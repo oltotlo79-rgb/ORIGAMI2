@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { RgbaColor } from '../lib/coreClient'
-import { reportUnexpected } from '../lib/diagnostics'
+import { reportUnexpected } from '../lib/diagnosticsRuntime'
 import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,

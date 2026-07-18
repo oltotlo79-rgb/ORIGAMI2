@@ -1,3 +1,5 @@
+mod diagnostics;
+
 use std::{
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
@@ -9,6 +11,7 @@ use std::{
     },
 };
 
+use diagnostics::{DiagnosticsState, record_unexpected_diagnostic};
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, IntersectionEdgeTarget, JunctionVertexIntent,
     PaperValidationIssue, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
@@ -1850,6 +1853,10 @@ pub fn run() {
 
     let app = builder
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            app.manage(DiagnosticsState::from_app_handle(app.handle()));
+            Ok(())
+        })
         .manage(AppState(Mutex::new(initial_project_state())))
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
@@ -1876,7 +1883,8 @@ pub fn run() {
             connect_intersection_cluster,
             connect_t_junction,
             split_boundary_edge,
-            remove_boundary_vertex
+            remove_boundary_vertex,
+            record_unexpected_diagnostic
         ])
         .build(tauri::generate_context!())
         .expect("failed to build ORIGAMI2 desktop application");

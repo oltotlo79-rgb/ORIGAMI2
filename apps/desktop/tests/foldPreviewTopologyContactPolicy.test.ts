@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -72,6 +73,24 @@ const expected: Readonly<Record<
     .fill('ignored_self'),
 }
 
+interface NormativePolicyCorpus {
+  policy_id: string
+  topology_relations: FoldPreviewTopologyRelation[]
+  intersection_evidence: FoldPreviewIntersectionEvidence[]
+  decisions: Record<
+    FoldPreviewTopologyRelation,
+    FoldPreviewTopologyContactDecision[]
+  >
+}
+
+const normativeCorpus = JSON.parse(readFileSync(
+  new URL(
+    '../../../docs/collision-contact-policy-v1.json',
+    import.meta.url,
+  ),
+  'utf8',
+)) as NormativePolicyCorpus
+
 test('topology contact policy version and complete 4 by 10 table stay fixed', () => {
   assert.equal(
     FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
@@ -86,6 +105,24 @@ test('topology contact policy version and complete 4 by 10 table stay fixed', ()
       topology,
     )
   }
+})
+
+test('frontend policy matches the shared native normative corpus', () => {
+  assert.equal(
+    normativeCorpus.policy_id,
+    FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION,
+  )
+  assert.deepEqual(normativeCorpus.topology_relations, topologies)
+  assert.deepEqual(normativeCorpus.intersection_evidence, evidenceKinds)
+  assert.deepEqual(normativeCorpus.decisions, expected)
+  assert.deepEqual(
+    Object.fromEntries(topologies.map((topology) => [
+      topology,
+      evidenceKinds.map((evidence) =>
+        classifyFoldPreviewTopologyContact(topology, evidence)),
+    ])),
+    normativeCorpus.decisions,
+  )
 })
 
 test('shared identity never exempts area, transversal, or volume penetration', () => {

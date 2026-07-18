@@ -470,6 +470,14 @@ enum GlobalFlatFoldabilityCapture {
     },
 }
 
+enum PreparedGlobalFlatFoldabilityBegin {
+    Registered {
+        source: GlobalFlatFoldabilitySource,
+        queued: GlobalFlatFoldabilityJobDto,
+    },
+    UnregisteredSourceLimit(GlobalFlatFoldabilityBeginResponse),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SourceRecordLimitViolation {
     resource: FlatFoldabilityResource,
@@ -519,51 +527,26 @@ pub(super) fn begin_global_flat_foldability(
 
     let job_id = GlobalFlatFoldabilityJobId::new();
     let runtime = Arc::new(GlobalFlatFoldabilityRuntime::new(time_limit_ms));
-    let capture = {
-        let project = lock_project(&state).map_err(|_| {
-            GlobalFlatFoldabilityCommandError::new(
-                GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
-            )
-        })?;
-        capture_source(
-            &project,
-            expected_project_id,
-            expected_revision,
-            &expected_fold_model_fingerprint,
-            job_id,
-            Arc::clone(&runtime),
-            native_limits(),
-        )?
-    };
-    let source = match capture {
-        GlobalFlatFoldabilityCapture::Ready(source) => source,
-        GlobalFlatFoldabilityCapture::SourceLimit {
-            job_id,
-            runtime,
-            violation,
-        } => {
-            debug_assert!(violation.observed > violation.limit);
-            debug_assert!(matches!(
-                violation.resource,
-                FlatFoldabilityResource::SourceVertices
-                    | FlatFoldabilityResource::SourceEdges
-                    | FlatFoldabilityResource::PaperBoundaryVertices
-                    | FlatFoldabilityResource::TotalRecords
-            ));
-            return Ok(source_limit_begin_response(job_id, &runtime));
-        }
-    };
-    {
-        let mut slot = lock_foldability_state(&foldability_state)?;
-        install_active_job(&mut slot, &source);
-    }
-
-    let queued = active_job_dto(&runtime)?;
-    spawn_global_flat_foldability_worker(app, source);
-    Ok(GlobalFlatFoldabilityBeginResponse {
+    match prepare_global_flat_foldability_begin(
+        &state,
+        &foldability_state,
+        expected_project_id,
+        expected_revision,
+        &expected_fold_model_fingerprint,
         job_id,
-        job: queued,
-    })
+        runtime,
+        native_limits(),
+        || {},
+    )? {
+        PreparedGlobalFlatFoldabilityBegin::Registered { source, queued } => {
+            spawn_global_flat_foldability_worker(app, source);
+            Ok(GlobalFlatFoldabilityBeginResponse {
+                job_id,
+                job: queued,
+            })
+        }
+        PreparedGlobalFlatFoldabilityBegin::UnregisteredSourceLimit(response) => Ok(response),
+    }
 }
 
 #[tauri::command]
@@ -642,6 +625,66 @@ fn lock_foldability_state(
     state.0.lock().map_err(|_| {
         GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_global_flat_foldability_begin(
+    state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_fold_model_fingerprint: &str,
+    job_id: GlobalFlatFoldabilityJobId,
+    runtime: Arc<GlobalFlatFoldabilityRuntime>,
+    limits: GlobalFlatFoldabilityLimits,
+    after_capture: impl FnOnce(),
+) -> Result<PreparedGlobalFlatFoldabilityBegin, GlobalFlatFoldabilityCommandError> {
+    let project = lock_project(state).map_err(|_| {
+        GlobalFlatFoldabilityCommandError::new(
+            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+        )
+    })?;
+    let capture = capture_source(
+        &project,
+        expected_project_id,
+        expected_revision,
+        expected_fold_model_fingerprint,
+        job_id,
+        Arc::clone(&runtime),
+        limits,
+    )?;
+    // Tests synchronize at this exact boundary. Production supplies a no-op.
+    // The project guard must remain live through the later slot installation.
+    after_capture();
+    let source = match capture {
+        GlobalFlatFoldabilityCapture::Ready(source) => source,
+        GlobalFlatFoldabilityCapture::SourceLimit {
+            job_id,
+            runtime,
+            violation,
+        } => {
+            // This preflight result is deliberately unregistered. Return
+            // before taking the slot so an existing job, terminal result,
+            // or current layer certificate remains bit-for-bit unchanged.
+            debug_assert!(violation.observed > violation.limit);
+            debug_assert!(matches!(
+                violation.resource,
+                FlatFoldabilityResource::SourceVertices
+                    | FlatFoldabilityResource::SourceEdges
+                    | FlatFoldabilityResource::PaperBoundaryVertices
+                    | FlatFoldabilityResource::TotalRecords
+            ));
+            return Ok(PreparedGlobalFlatFoldabilityBegin::UnregisteredSourceLimit(
+                source_limit_begin_response(job_id, &runtime),
+            ));
+        }
+    };
+    // Finish every fallible, non-mutating response conversion before the slot
+    // changes. Holding project from capture through install linearizes begin.
+    let queued = active_job_dto(&runtime)?;
+    let mut slot = lock_foldability_state(foldability_state)?;
+    install_captured_source_if_current(&mut slot, &project, &source)?;
+    Ok(PreparedGlobalFlatFoldabilityBegin::Registered { source, queued })
 }
 
 fn capture_source(
@@ -749,6 +792,20 @@ fn source_limit_begin_response(
             ),
         },
     }
+}
+
+fn install_captured_source_if_current(
+    slot: &mut GlobalFlatFoldabilitySlot,
+    project: &ProjectState,
+    source: &GlobalFlatFoldabilitySource,
+) -> Result<(), GlobalFlatFoldabilityCommandError> {
+    if !binding_is_current(&source.binding, project) {
+        return Err(GlobalFlatFoldabilityCommandError::new(
+            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+        ));
+    }
+    install_active_job(slot, source);
+    Ok(())
 }
 
 fn install_active_job(slot: &mut GlobalFlatFoldabilitySlot, source: &GlobalFlatFoldabilitySource) {
@@ -2258,10 +2315,292 @@ mod tests {
     }
 
     #[test]
-    fn source_limit_begin_is_an_unregistered_bounded_unknown() {
+    fn stale_capture_after_same_content_reopen_preserves_new_authority() {
+        let original = initial_project_state();
+        let old_source = source_for(&original, GlobalFlatFoldabilityJobId::new());
+        let reopened = ProjectState::from_document(
+            original.document(),
+            PathBuf::from("same-content-reopen.ori2"),
+        );
+        assert_eq!(reopened.project_id, original.project_id);
+        assert_eq!(reopened.editor.revision(), original.editor.revision());
+        assert_eq!(
+            reopened.editor.fold_model_fingerprint_v1(),
+            original.editor.fold_model_fingerprint_v1()
+        );
+        assert_ne!(reopened.instance_id, original.instance_id);
+
+        let app_state = Arc::new(AppState(Mutex::new(reopened)));
+        let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
+        {
+            let project = lock_project(&app_state).expect("lock reopened project");
+            install_possible_layer_order(&foldability_state, &project);
+        }
+        let (
+            terminal_id,
+            terminal_dto,
+            terminal_claimed,
+            certificate,
+            generation,
+            last_cancelled_id,
+            last_replaced_id,
+        ) = {
+            let slot = lock_foldability_state(&foldability_state).expect("capture new authority");
+            let terminal = slot
+                .terminal
+                .as_ref()
+                .expect("new authority has a terminal result");
+            (
+                terminal.job_id,
+                terminal.dto.clone(),
+                terminal.claimed,
+                Arc::clone(
+                    slot.current_layer_order
+                        .as_ref()
+                        .expect("new authority certificate"),
+                ),
+                slot.layer_order_generation,
+                slot.last_cancelled_id,
+                slot.last_replaced_id,
+            )
+        };
+
+        let old_app_state = Arc::clone(&app_state);
+        let old_foldability_state = Arc::clone(&foldability_state);
+        let (attempted_tx, attempted_rx) = mpsc::channel();
+        let old_install = thread::spawn(move || {
+            attempted_tx.send(()).expect("announce old install");
+            let project = lock_project(&old_app_state).expect("lock current project");
+            let mut slot =
+                lock_foldability_state(&old_foldability_state).expect("lock current authority");
+            install_captured_source_if_current(&mut slot, &project, &old_source)
+        });
+        attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old install attempt starts");
+        assert_eq!(
+            old_install.join().expect("join old install"),
+            Err(GlobalFlatFoldabilityCommandError::new(
+                GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable
+            ))
+        );
+
+        let slot = lock_foldability_state(&foldability_state).expect("inspect new authority");
+        assert!(slot.active.is_none());
+        assert_eq!(
+            slot.terminal.as_ref().map(|terminal| terminal.job_id),
+            Some(terminal_id)
+        );
+        assert_eq!(
+            slot.terminal.as_ref().map(|terminal| &terminal.dto),
+            Some(&terminal_dto)
+        );
+        assert_eq!(
+            slot.terminal.as_ref().map(|terminal| terminal.claimed),
+            Some(terminal_claimed)
+        );
+        assert_eq!(slot.layer_order_generation, generation);
+        assert_eq!(slot.last_cancelled_id, last_cancelled_id);
+        assert_eq!(slot.last_replaced_id, last_replaced_id);
+        assert!(
+            Arc::ptr_eq(
+                slot.current_layer_order
+                    .as_ref()
+                    .expect("new certificate survives"),
+                &certificate,
+            ),
+            "a same-content old capture must not erase or replace new authority"
+        );
+    }
+
+    #[test]
+    fn project_lock_linearizes_same_revision_begin_install_and_later_begin_wins() {
+        let app_state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
+        let (project_id, revision, fingerprint) = {
+            let project = lock_project(&app_state).expect("read begin request");
+            (
+                project.project_id,
+                project.editor.revision(),
+                project.editor.fold_model_fingerprint_v1(),
+            )
+        };
+        let first_job_id = GlobalFlatFoldabilityJobId::new();
+        let first_runtime = Arc::new(GlobalFlatFoldabilityRuntime::new(30_000));
+        let (first_captured_tx, first_captured_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first_app_state = Arc::clone(&app_state);
+        let first_foldability_state = Arc::clone(&foldability_state);
+        let first_fingerprint = fingerprint.clone();
+        let first_runtime_for_thread = Arc::clone(&first_runtime);
+        let first_thread = thread::spawn(move || {
+            prepare_global_flat_foldability_begin(
+                &first_app_state,
+                &first_foldability_state,
+                project_id,
+                revision,
+                &first_fingerprint,
+                first_job_id,
+                first_runtime_for_thread,
+                native_limits(),
+                || {
+                    first_captured_tx
+                        .send(())
+                        .expect("announce first capture while project stays locked");
+                    release_first_rx
+                        .recv()
+                        .expect("release first begin to install");
+                },
+            )
+            .expect("prepare first begin")
+        });
+        first_captured_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first begin captures source");
+
+        let (second_attempted_tx, second_attempted_rx) = mpsc::channel();
+        let (second_captured_tx, second_captured_rx) = mpsc::channel();
+        let second_app_state = Arc::clone(&app_state);
+        let second_foldability_state = Arc::clone(&foldability_state);
+        let second_callback_state = Arc::clone(&foldability_state);
+        let second_fingerprint = fingerprint;
+        let second_job_id = GlobalFlatFoldabilityJobId::new();
+        let second_thread = thread::spawn(move || {
+            second_attempted_tx
+                .send(())
+                .expect("announce second project-lock attempt");
+            prepare_global_flat_foldability_begin(
+                &second_app_state,
+                &second_foldability_state,
+                project_id,
+                revision,
+                &second_fingerprint,
+                second_job_id,
+                Arc::new(GlobalFlatFoldabilityRuntime::new(30_000)),
+                native_limits(),
+                || {
+                    let slot = lock_foldability_state(&second_callback_state)
+                        .expect("inspect authority at second capture");
+                    assert_eq!(
+                        slot.active.as_ref().map(|active| active.job_id),
+                        Some(first_job_id),
+                        "the first install must linearize before the project lock admits a second capture"
+                    );
+                    drop(slot);
+                    second_captured_tx
+                        .send(())
+                        .expect("announce second capture after first install");
+                },
+            )
+            .expect("prepare second begin")
+        });
+        second_attempted_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second begin attempts the project lock");
+        assert_eq!(
+            second_captured_rx.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout),
+            "the second same-revision begin must not pass capture while the first holds project"
+        );
+
+        release_first_tx.send(()).expect("release first begin");
+        assert!(matches!(
+            first_thread.join().expect("join first begin"),
+            PreparedGlobalFlatFoldabilityBegin::Registered { source, .. }
+                if source.job_id == first_job_id
+        ));
+        second_captured_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second begin captures after the first install");
+        assert!(matches!(
+            second_thread.join().expect("join second begin"),
+            PreparedGlobalFlatFoldabilityBegin::Registered { source, .. }
+                if source.job_id == second_job_id
+        ));
+
+        let slot = lock_foldability_state(&foldability_state).expect("inspect linearized begins");
+        assert_eq!(
+            slot.active.as_ref().map(|active| active.job_id),
+            Some(second_job_id)
+        );
+        assert_eq!(slot.last_replaced_id, Some(first_job_id));
+        assert!(
+            first_runtime.cancellation.load(Ordering::SeqCst),
+            "the later project-lock acquirer replaces and cancels the first begin"
+        );
+        assert!(slot.terminal.is_none());
+        assert!(slot.current_layer_order.is_none());
+    }
+
+    #[test]
+    fn source_limit_begin_preserves_every_occupied_slot_field() {
+        let app_state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
+        let (project_id, revision, fingerprint, active_source) = {
+            let project = lock_project(&app_state).expect("lock source-limit project");
+            install_possible_layer_order(&foldability_state, &project);
+            (
+                project.project_id,
+                project.editor.revision(),
+                project.editor.fold_model_fingerprint_v1(),
+                source_for(&project, GlobalFlatFoldabilityJobId::new()),
+            )
+        };
+        let active_job_id = active_source.job_id;
+        let active_binding = Arc::clone(&active_source.binding);
+        let active_runtime = Arc::clone(&active_source.runtime);
+        let last_cancelled_id = GlobalFlatFoldabilityJobId::new();
+        let last_replaced_id = GlobalFlatFoldabilityJobId::new();
+        let (terminal_job_id, terminal_dto, terminal_claimed, certificate, generation) = {
+            let mut slot =
+                lock_foldability_state(&foldability_state).expect("occupy every slot field");
+            slot.active = Some(ActiveGlobalFlatFoldabilityJob {
+                job_id: active_job_id,
+                binding: Arc::clone(&active_binding),
+                runtime: Arc::clone(&active_runtime),
+            });
+            slot.last_cancelled_id = Some(last_cancelled_id);
+            slot.last_replaced_id = Some(last_replaced_id);
+            let terminal = slot
+                .terminal
+                .as_ref()
+                .expect("possible analysis installs terminal result");
+            (
+                terminal.job_id,
+                terminal.dto.clone(),
+                terminal.claimed,
+                Arc::clone(
+                    slot.current_layer_order
+                        .as_ref()
+                        .expect("possible analysis installs current certificate"),
+                ),
+                slot.layer_order_generation,
+            )
+        };
+
         let job_id = GlobalFlatFoldabilityJobId::new();
-        let runtime = GlobalFlatFoldabilityRuntime::new(30_000);
-        let response = source_limit_begin_response(job_id, &runtime);
+        let runtime = Arc::new(GlobalFlatFoldabilityRuntime::new(30_000));
+        let callback_called = Cell::new(false);
+        let limits = GlobalFlatFoldabilityLimits {
+            max_source_vertices: 0,
+            ..native_limits()
+        };
+        let prepared = prepare_global_flat_foldability_begin(
+            &app_state,
+            &foldability_state,
+            project_id,
+            revision,
+            &fingerprint,
+            job_id,
+            runtime,
+            limits,
+            || callback_called.set(true),
+        )
+        .expect("source limit is an unregistered bounded result");
+        assert!(callback_called.get(), "capture synchronization hook runs");
+        let PreparedGlobalFlatFoldabilityBegin::UnregisteredSourceLimit(response) = prepared else {
+            panic!("over-limit source must not register a worker");
+        };
         assert_eq!(response.job_id, job_id);
         assert!(matches!(
             response.job,
@@ -2273,10 +2612,29 @@ mod tests {
             }
         ));
 
-        let slot = GlobalFlatFoldabilitySlot::default();
-        assert!(slot.active.is_none());
-        assert!(slot.terminal.is_none());
-        assert!(slot.current_layer_order.is_none());
+        let slot =
+            lock_foldability_state(&foldability_state).expect("inspect untouched occupied slot");
+        let active = slot.active.as_ref().expect("active job survives");
+        assert_eq!(active.job_id, active_job_id);
+        assert!(Arc::ptr_eq(&active.binding, &active_binding));
+        assert!(Arc::ptr_eq(&active.runtime, &active_runtime));
+        assert!(
+            !active.runtime.cancellation.load(Ordering::SeqCst),
+            "source preflight must not cancel the existing active job"
+        );
+        let terminal = slot.terminal.as_ref().expect("terminal job survives");
+        assert_eq!(terminal.job_id, terminal_job_id);
+        assert_eq!(terminal.dto, terminal_dto);
+        assert_eq!(terminal.claimed, terminal_claimed);
+        assert_eq!(slot.last_cancelled_id, Some(last_cancelled_id));
+        assert_eq!(slot.last_replaced_id, Some(last_replaced_id));
+        assert_eq!(slot.layer_order_generation, generation);
+        assert!(Arc::ptr_eq(
+            slot.current_layer_order
+                .as_ref()
+                .expect("current certificate survives"),
+            &certificate
+        ));
     }
 
     #[test]

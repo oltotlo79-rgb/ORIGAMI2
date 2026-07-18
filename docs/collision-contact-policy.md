@@ -7,10 +7,12 @@
 - ポリシーバージョン: `topology_contact_policy_v1`
 - 正厚モデル: `centered_mid_surface_v1`
 - 対象: 一つの現在姿勢における、一組の材料面とその三角形対
-- 実装表: [`foldPreviewTopologyContactPolicy.ts`](../apps/desktop/src/lib/foldPreviewTopologyContactPolicy.ts)
+- 言語間の正規corpus: [`collision-contact-policy-v1.json`](collision-contact-policy-v1.json)
+- frontend実装表: [`foldPreviewTopologyContactPolicy.ts`](../apps/desktop/src/lib/foldPreviewTopologyContactPolicy.ts)
+- native実装表: [`ori-collision`](../crates/ori-collision/src/lib.rs)
 - 4×10固定表の回帰: [`foldPreviewTopologyContactPolicy.test.ts`](../apps/desktop/tests/foldPreviewTopologyContactPolicy.test.ts)
 
-本書の「必須」「禁止」「〜してはならない」は規範要件である。`topology_contact_policy_v1`の表、証明条件、fail-closedの意味は固定し、意味を変える場合は新しいポリシーバージョンを発行しなければならない。本書と実装表の不一致は、v1の再解釈ではなく欠陥として扱う。
+本書の「必須」「禁止」「〜してはならない」は規範要件である。`topology_contact_policy_v1`の表、証明条件、fail-closedの意味は固定し、意味を変える場合は新しいポリシーバージョンを発行しなければならない。正規corpus、frontend実装、native実装または本書の不一致は、v1の再解釈ではなく欠陥として扱う。両実装の全40セルは同じ正規corpusへ照合する。
 
 このポリシーは、証拠を幾何計算から導出する関数ではない。証拠生成器が肯定的に証明した共有関係と交差種別を受け取り、decisionへ写像する。証明できなかったことを、離間、接触許容または共有要素由来の免除として扱ってはならない。
 

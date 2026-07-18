@@ -1,5 +1,15 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/ori-domain", "crates/ori-geometry", "crates/ori-topology", "crates/ori-foldability", "crates/ori-instructions", "crates/ori-core", "crates/ori-formats"]
+members = [
+    "apps/desktop/src-tauri",
+    "crates/ori-collision",
+    "crates/ori-core",
+    "crates/ori-domain",
+    "crates/ori-foldability",
+    "crates/ori-formats",
+    "crates/ori-geometry",
+    "crates/ori-instructions",
+    "crates/ori-topology",
+]
 resolver = "2"
 
 [workspace.package]

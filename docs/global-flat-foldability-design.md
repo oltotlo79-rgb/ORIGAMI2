@@ -278,6 +278,8 @@ live exact storageと検証用順序bufferを同じ論理証明storage budgetへ
 
 nativeのcurrent layer-order slotはproject instance、project ID、revision、topology input、fold model fingerprint、proof/layer model、snapshot provenance、material registry、checked単調generationへ結合する。snapshot cloneではなく、同一slotとcertificateの`Arc` identityを封印した非Serialize・非Cloneのprivate capabilityだけを捕捉し、deep clone、同内容再解析ABA、編集後Undo、project reopen、別slot、世代差を拒否する。観測用の借用再検証はmutation authorityにしない。mutation境界では`AppState`からlayer slotの固定lock順で両lockを保持したまま再認証済みclosureを実行し、cancelまたは再解析が再認証とcommitの間へ入るTOCTOUを許さない。
 
+新しい解析の開始も同じ`AppState → layer slot`順を使用する。project lockをsource捕捉からslot設置完了まで保持し、slotを変更する直前に捕捉bindingがcurrent projectと一致することを再照合する。同revisionの並行beginはproject lock取得順に直列化し、後からlockを取得したbeginが前のactive jobを置換する。古い捕捉、同内容reopen、project instance差またはbinding差は`SnapshotUnavailable`として、active、terminal、current certificate、generation、cancel/replacement記録を変更せず拒否する。source件数preflightの未登録例外はproject lockだけで完了し、slotを取得または予約しない。
+
 編集またはproject置換後は利用時のbinding照合で無効として返さず、通常の新規判定開始、判定job置換、判定`unknown/impossible`、cancel、errorではslotを明示的に消去する。完了済みcertificateに対する明示cancelもslotを失効させる。source件数preflightで即時終了する未登録例外は既存slotへ触れない。stale snapshotを3D表示またはSIM-010へ渡さない。
 
 ## 11. 時間・資源上限

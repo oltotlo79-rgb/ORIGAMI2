@@ -26,6 +26,9 @@
 
 ## 完了
 
+- 平坦折り解析の開始処理は、project snapshotの捕捉からactive jobのslot設置まで`AppState → GlobalFlatFoldabilityState`の固定順で両lockを保持し、設置直前にbindingを再照合する。古い捕捉が同内容reopen後の新しいterminal/current layer-orderを消す競合を`SnapshotUnavailable`で全状態不変のまま拒否し、同revisionの並行beginはproject lock取得順に直列化して後のbeginだけをcurrentにする。source件数preflightの未登録`unknown`は引き続きslotへ触れない。desktop native 203件と対象39件で回帰した
+- `topology_contact_policy_v1`の共有関係4種×交差証拠10種を言語間の正規JSON corpusへ固定し、同じ全40セルをfrontend表と新しいnative `ori-collision`表の双方から照合する。共有identityは共面正面積・横断・正体積を免除せず、共有要素と矛盾する離間・一般接触は判定保留へ閉じる。frontend Node 1,013件、DOM 39件、native表5件、本番build、lint、workspace Clippyを通過した。native表は証拠からdecisionへの純粋写像だけであり、幾何証拠生成、有限ヒンジ許容、静的・連続衝突certificateは未実装なので、SIM-010または完成率へ加算しない
+- コミット`233307b`の[CI #222](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29661102931)でfrontend、Windows/macOS Rust、Windows NSIS bundle、macOS `.app` bundleの全jobが成功した。macOSは自動ビルド・CI検証のみで、実機検証には計上しない
 - VAL-003のcurrent layer-orderをsnapshot cloneではなく、同一slot・certificate identity、project instance/ID/revision、bit-exact topology、fingerprint、proof/layer model、provenance、material registry、checked単調generationへ結合したprivate capabilityとして捕捉・再認証できるようにした。AppState→slotの固定lock順で両lockを保持するcommit closureによりcancelとのTOCTOUを閉じ、同内容再解析ABA、edit→Undo、reopen、別slot、deep clone、世代枯渇をdesktop 201件で回帰した
 - `EditorState`のrevision上限をJavaScriptで正確に往復できる`2^53-1`へ固定し、execute・Undo・Redoは次revisionをmutation前に予約する。上限ではpattern、paper、timeline、revision、Undo/Redo履歴を完全不変のまま型付きエラーで拒否し、`face_lineage_v1`も同じ一段更新契約へ統一した。通常経路のrevisionはUndo/Redoでも単調増加する
 - `LayerOrderSnapshot`のoverlap cellをimmutable geometryから全canonical supporting-line arrangement atom集合として再構築し、保存順と独立にkey・exact boundary・covering facesの完全一致を要求するcertificate再検証を完成した。人工分割、canonical lineをまたぐ結合、欠落、重複を拒否し、single-face coverage、partial overlap、3-ply、離隔cell、点・線接触ではorderなし、source保存順・edge方向不変、資源上限・deadline・cancelをcore 69件で固定した。元arrangementと検証用arrangementの二重live storageも同一budgetへ計上する。native current poseと原子的commandは増えていないため、完成率は36.9%のままとする
@@ -390,7 +393,7 @@
 ## 次の作業
 
 1. 表示・投影に依存しない決定論的tree kinematicsをnative共通crateへ抽出し、current applied poseを同一project・revision・topology・fingerprint・generationへ結合する
-2. 衝突分類4×10表をnative static collisionへ移植し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
+2. nativeへ移植済みの衝突分類4×10純粋表へ、認証済み共有関係と幾何学的交差証拠を生成するstatic collisionを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
 3. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
 4. MUST 87件のstatus表を各checkpointで維持し、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する

@@ -510,6 +510,176 @@ fn source_storage_topology_storage_and_edge_direction_do_not_change_pose() {
     }
 }
 
+fn material_face_boundary_signatures(
+    model: &MaterialTreeKinematicsModel,
+) -> Vec<(FaceId, Vec<VertexId>, Vec<EdgeId>)> {
+    model
+        .face_ids()
+        .iter()
+        .map(|face| {
+            let boundary = model
+                .face_boundary(*face)
+                .expect("registered face boundary");
+            (
+                boundary.face(),
+                boundary.vertices().to_vec(),
+                boundary.edges().to_vec(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn material_face_boundaries_are_canonical_pose_consistent_and_issuer_bound() {
+    let fixture = non_commuting_fixture();
+    let material = model(&fixture);
+    let angles = canonical_angles(
+        &fixture
+            .hinges
+            .iter()
+            .copied()
+            .map(|edge| (edge, 0.0))
+            .collect::<Vec<_>>(),
+    );
+    let fixed_face = material.face_ids()[0];
+    let pose = material
+        .solve(Some(fixed_face), &angles)
+        .expect("material pose");
+
+    for face in material.face_ids() {
+        let from_model = material.face_boundary(*face).expect("model boundary");
+        let from_pose = pose.face_boundary(*face).expect("pose boundary");
+        let bound = material.bind_pose(&pose).expect("bound pose");
+        let from_bound = bound.face_boundary(*face).expect("bound boundary");
+
+        assert_eq!(from_model, from_pose);
+        assert_eq!(from_model, from_bound);
+        assert_eq!(from_model.face(), *face);
+        assert_eq!(from_model.vertices().len(), from_model.edges().len());
+        assert!(from_model.vertices().len() >= 3);
+        assert!(material.owns_face_boundary(from_model));
+        assert!(pose.owns_face_boundary(from_model));
+    }
+    let unknown = fixture_face_id(999);
+    assert!(material.face_boundary(unknown).is_none());
+    assert!(pose.face_boundary(unknown).is_none());
+
+    let independent = model(&fixture);
+    let independent_pose = independent
+        .solve(Some(fixed_face), &angles)
+        .expect("second material pose");
+    let face = material.face_ids()[0];
+    let first = material.face_boundary(face).expect("first boundary");
+    let second = independent.face_boundary(face).expect("second boundary");
+    assert_ne!(first, second, "separate preparation is a separate issuer");
+    assert!(!independent.owns_face_boundary(first));
+    assert!(!independent_pose.owns_face_boundary(first));
+    assert!(!material.owns_face_boundary(second));
+    assert!(!pose.owns_face_boundary(second));
+}
+
+#[test]
+fn material_face_boundary_registry_ignores_cycle_start_and_source_edge_direction() {
+    let fixture = non_commuting_fixture();
+    let baseline = model(&fixture);
+    let expected = material_face_boundary_signatures(&baseline);
+
+    for (_, vertices, edges) in &expected {
+        let tokens = edges
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| {
+                (
+                    edge.canonical_bytes(),
+                    vertices[index].canonical_bytes(),
+                    vertices[(index + 1) % vertices.len()].canonical_bytes(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let minimum = tokens.iter().min().expect("nonempty face");
+        assert_eq!(&tokens[0], minimum, "cycle start must be canonical");
+    }
+
+    let mut pattern = fixture.pattern.clone();
+    pattern.vertices.reverse();
+    pattern.edges.reverse();
+    for source in &mut pattern.edges {
+        std::mem::swap(&mut source.start, &mut source.end);
+    }
+    let mut topology = fixture.topology.clone();
+    topology.faces.reverse();
+    for (index, face) in topology.faces.iter_mut().enumerate() {
+        let length = face.outer.half_edges.len();
+        face.outer.half_edges.rotate_left((index + 1) % length);
+    }
+    topology.edge_incidence.reverse();
+    topology.hinge_adjacency.reverse();
+
+    let reordered = MaterialTreeKinematicsModel::prepare(
+        &pattern,
+        &fixture.paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("reordered model");
+    assert_eq!(material_face_boundary_signatures(&reordered), expected);
+}
+
+#[test]
+fn material_face_boundaries_preserve_shared_vertex_and_shared_hinge_relations() {
+    let fixture = non_commuting_fixture();
+    let material = model(&fixture);
+
+    for hinge in material.hinges() {
+        let left = material
+            .face_boundary(hinge.left_face())
+            .expect("left face boundary");
+        let right = material
+            .face_boundary(hinge.right_face())
+            .expect("right face boundary");
+        assert!(left.edges().contains(&hinge.edge()));
+        assert!(right.edges().contains(&hinge.edge()));
+        let shared_vertices = left
+            .vertices()
+            .iter()
+            .filter(|vertex| right.vertices().contains(vertex))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shared_vertices.len(),
+            2,
+            "one shared hinge has two endpoints"
+        );
+    }
+
+    let mut found_vertex_only_pair = false;
+    for (index, first_face) in material.face_ids().iter().enumerate() {
+        let first = material.face_boundary(*first_face).expect("first boundary");
+        for second_face in &material.face_ids()[index + 1..] {
+            let second = material
+                .face_boundary(*second_face)
+                .expect("second boundary");
+            let shared_edges = first
+                .edges()
+                .iter()
+                .filter(|edge| second.edges().contains(edge))
+                .count();
+            let shared_vertices = first
+                .vertices()
+                .iter()
+                .filter(|vertex| second.vertices().contains(vertex))
+                .count();
+            if shared_edges == 0 && shared_vertices == 1 {
+                found_vertex_only_pair = true;
+            }
+        }
+    }
+    assert!(
+        found_vertex_only_pair,
+        "the V-fold fixture must retain its vertex-only face relation"
+    );
+}
+
 #[test]
 fn caller_coordinate_embedding_is_finite_and_uniform_scale_independent() {
     let fixture = non_commuting_fixture();
@@ -841,6 +1011,7 @@ fn planar_model_requires_no_root_and_no_angles() {
 fn paper_boundary_cycle_start_and_direction_are_observationally_invariant() {
     let fixture = non_commuting_fixture();
     let baseline = model(&fixture);
+    let expected_boundaries = material_face_boundary_signatures(&baseline);
     let root = baseline.face_ids()[0];
     let angles = canonical_angles(&[(fixture.hinges[0], 19.0), (fixture.hinges[1], 73.0)]);
     let expected = baseline.solve(Some(root), &angles).expect("baseline pose");
@@ -868,6 +1039,10 @@ fn paper_boundary_cycle_start_and_direction_are_observationally_invariant() {
         let actual = actual_model
             .solve(Some(root), &angles)
             .expect("equivalent boundary pose");
+        assert_eq!(
+            material_face_boundary_signatures(&actual_model),
+            expected_boundaries
+        );
         for face in baseline.face_ids() {
             assert_eq!(actual.face_transform(*face), expected.face_transform(*face));
         }
@@ -1256,13 +1431,27 @@ fn every_model_resource_limit_accepts_exact_boundary_and_rejects_one_more() {
         max_face_boundary_vertices: face_boundary_vertices,
         max_adjacency_entries: fixture.topology.hinge_adjacency.len() * 2,
     };
-    MaterialTreeKinematicsModel::prepare(
+    let exact_model = MaterialTreeKinematicsModel::prepare(
         &fixture.pattern,
         &fixture.paper,
         &fixture.topology,
         exact,
     )
     .expect("all exact limits");
+    assert_eq!(
+        exact_model
+            .face_ids()
+            .iter()
+            .map(|face| {
+                exact_model
+                    .face_boundary(*face)
+                    .expect("bounded face registry")
+                    .vertices()
+                    .len()
+            })
+            .sum::<usize>(),
+        face_boundary_vertices
+    );
 
     for too_small in [
         TreeKinematicsLimits {

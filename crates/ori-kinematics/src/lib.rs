@@ -44,6 +44,28 @@
 //! fn require_serialize<T: serde::Serialize>() {}
 //! require_serialize::<MaterialTreePose>();
 //! ```
+//!
+//! Native material-face boundary views retain private source provenance. They
+//! cannot be constructed from matching public identifiers and are not
+//! persistence payloads.
+//!
+//! ```compile_fail
+//! use ori_kinematics::MaterialFaceBoundary;
+//!
+//! fn forge<'a>() -> MaterialFaceBoundary<'a> {
+//!     MaterialFaceBoundary {
+//!         source: todo!(),
+//!         index: 0,
+//!     }
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use ori_kinematics::MaterialFaceBoundary;
+//!
+//! fn require_serialize<T: serde::Serialize>() {}
+//! require_serialize::<MaterialFaceBoundary<'static>>();
+//! ```
 
 #![forbid(unsafe_code)]
 
@@ -56,9 +78,9 @@ use thiserror::Error;
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{
     BoundMaterialTreePose, CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles, HingeAngle,
-    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialTreeKinematicsModel, MaterialTreePose,
-    ObservationTreeKinematicsModel, ObservationTreePose, TreeHinge, TreeKinematicsLimits,
-    VertexPosition3,
+    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialFaceBoundary, MaterialTreeKinematicsModel,
+    MaterialTreePose, ObservationTreeKinematicsModel, ObservationTreePose, TreeHinge,
+    TreeKinematicsLimits, VertexPosition3,
 };
 
 /// A fail-closed error produced while preparing or solving tree kinematics.

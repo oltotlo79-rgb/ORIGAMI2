@@ -188,9 +188,17 @@ struct Neighbor {
     rotation_sign: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedFaceBoundary {
+    face: FaceId,
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct PreparedTree {
     face_ids: Vec<FaceId>,
+    face_boundaries: Vec<PreparedFaceBoundary>,
     positions: HashMap<VertexId, Point3>,
     hinges: Vec<TreeHinge>,
     adjacency: HashMap<FaceId, Vec<Neighbor>>,
@@ -219,6 +227,18 @@ pub struct MaterialTreePose {
     pose: Arc<TreePoseData>,
     fixed_face: Option<FaceId>,
     angles: Arc<CanonicalHingeAngles>,
+}
+
+/// One canonical counter-clockwise outer walk borrowed from an exact native
+/// material-model source.
+///
+/// The private source and registry index make this a provenance-bearing view,
+/// rather than a caller-constructible collection of matching identifiers.
+/// Clone and copy preserve the same source identity.
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialFaceBoundary<'a> {
+    source: &'a PreparedTree,
+    index: usize,
 }
 
 /// A material pose proven to have been issued by one exact model instance.
@@ -343,6 +363,20 @@ impl MaterialTreeKinematicsModel {
         Ok(BoundMaterialTreePose { model: self, pose })
     }
 
+    /// Returns one validated canonical CCW outer walk from this exact model.
+    #[must_use]
+    pub fn face_boundary(&self, face: FaceId) -> Option<MaterialFaceBoundary<'_>> {
+        find_material_face_boundary(&self.tree, face)
+    }
+
+    /// Returns whether `boundary` was borrowed from this exact model source.
+    ///
+    /// Deeply equal models prepared independently are intentionally distinct.
+    #[must_use]
+    pub fn owns_face_boundary(&self, boundary: MaterialFaceBoundary<'_>) -> bool {
+        owns_material_face_boundary(&self.tree, boundary)
+    }
+
     model_observers!();
 }
 
@@ -447,6 +481,40 @@ impl MaterialTreePose {
     pub fn vertex_position(&self, vertex: VertexId) -> Option<Point3> {
         self.source.positions.get(&vertex).copied()
     }
+
+    /// Returns one validated canonical CCW outer walk from this pose's private
+    /// source model.
+    #[must_use]
+    pub fn face_boundary(&self, face: FaceId) -> Option<MaterialFaceBoundary<'_>> {
+        find_material_face_boundary(&self.source, face)
+    }
+
+    /// Returns whether `boundary` belongs to this pose's exact private source.
+    #[must_use]
+    pub fn owns_face_boundary(&self, boundary: MaterialFaceBoundary<'_>) -> bool {
+        owns_material_face_boundary(&self.source, boundary)
+    }
+}
+
+impl<'a> MaterialFaceBoundary<'a> {
+    /// Returns this boundary's material face identifier.
+    #[must_use]
+    pub fn face(self) -> FaceId {
+        self.source.face_boundaries[self.index].face
+    }
+
+    /// Returns the canonical CCW vertex cycle. The first vertex is selected
+    /// deterministically from the full `(EdgeId, origin, destination)` token.
+    #[must_use]
+    pub fn vertices(self) -> &'a [VertexId] {
+        &self.source.face_boundaries[self.index].vertices
+    }
+
+    /// Returns the edge cycle aligned one-to-one with [`Self::vertices`].
+    #[must_use]
+    pub fn edges(self) -> &'a [EdgeId] {
+        &self.source.face_boundaries[self.index].edges
+    }
 }
 
 impl<'a> BoundMaterialTreePose<'a> {
@@ -461,6 +529,13 @@ impl<'a> BoundMaterialTreePose<'a> {
     #[must_use]
     pub const fn pose(&self) -> &'a MaterialTreePose {
         self.pose
+    }
+
+    /// Returns a boundary from the exact model/pose issuer pair checked by
+    /// [`MaterialTreeKinematicsModel::bind_pose`].
+    #[must_use]
+    pub fn face_boundary(&self, face: FaceId) -> Option<MaterialFaceBoundary<'a>> {
+        find_material_face_boundary(&self.model.tree, face)
     }
 }
 
@@ -486,6 +561,14 @@ impl PartialEq for MaterialTreePose {
     }
 }
 
+impl PartialEq for MaterialFaceBoundary<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.source, other.source) && self.index == other.index
+    }
+}
+
+impl Eq for MaterialFaceBoundary<'_> {}
+
 impl PartialEq for ObservationTreePose {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.source, &other.source) && self.pose == other.pose
@@ -508,7 +591,7 @@ fn prepare_tree(
     let (mut positions, source_positions) = unique_positions(pattern, supplied_positions)?;
     let edges = unique_edges(pattern, paper, &positions, &source_positions)?;
     let incidences = unique_incidences(topology, &edges)?;
-    let (face_ids, face_keys, occurrences) =
+    let (face_ids, face_boundaries, face_keys, occurrences) =
         validate_faces(topology, &edges, &positions, &source_positions)?;
     validate_incidences(&edges, &incidences, &face_ids, &occurrences)?;
     validate_adjacency_registry(topology, &incidences, &face_keys)?;
@@ -525,6 +608,7 @@ fn prepare_tree(
         adjacency.insert(face_ids[0], Vec::new());
         return Ok(PreparedTree {
             face_ids,
+            face_boundaries,
             positions,
             hinges: Vec::new(),
             adjacency,
@@ -639,6 +723,7 @@ fn prepare_tree(
     }
     Ok(PreparedTree {
         face_ids,
+        face_boundaries,
         positions,
         hinges,
         adjacency,
@@ -850,6 +935,7 @@ type EdgeOccurrence = (FaceId, VertexId, VertexId);
 type PositionMaps = (HashMap<VertexId, Point3>, HashMap<VertexId, Point2>);
 type ValidatedFaces = (
     Vec<FaceId>,
+    Vec<PreparedFaceBoundary>,
     HashMap<FaceId, FaceKey>,
     HashMap<EdgeId, Vec<EdgeOccurrence>>,
 );
@@ -875,6 +961,10 @@ fn validate_faces(
     let mut occurrences = HashMap::<EdgeId, Vec<EdgeOccurrence>>::new();
     occurrences
         .try_reserve(edges.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    let mut face_boundaries = Vec::new();
+    face_boundaries
+        .try_reserve_exact(topology.faces.len())
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     for face in &topology.faces {
         let walk = &face.outer.half_edges;
@@ -910,6 +1000,14 @@ fn validate_faces(
             return Err(KinematicsError::UnsupportedTopology);
         }
         face_keys.insert(face.id, face.key);
+        let mut boundary_vertices = Vec::new();
+        boundary_vertices
+            .try_reserve_exact(walk.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        let mut boundary_edges = Vec::new();
+        boundary_edges
+            .try_reserve_exact(walk.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
         for (index, half_edge) in walk.iter().enumerate() {
             let next = &walk[(index + 1) % walk.len()];
             let source = edges
@@ -933,7 +1031,15 @@ fn validate_faces(
                 .try_reserve(1)
                 .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
             edge_occurrences.push((face.id, half_edge.origin, half_edge.destination));
+            boundary_vertices.push(half_edge.origin);
+            boundary_edges.push(half_edge.edge);
         }
+        canonicalize_face_boundary(&mut boundary_vertices, &mut boundary_edges)?;
+        face_boundaries.push(PreparedFaceBoundary {
+            face: face.id,
+            vertices: boundary_vertices,
+            edges: boundary_edges,
+        });
     }
     let mut face_ids = Vec::new();
     face_ids
@@ -941,7 +1047,37 @@ fn validate_faces(
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     face_ids.extend(face_ids_set);
     face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
-    Ok((face_ids, face_keys, occurrences))
+    face_boundaries.sort_unstable_by_key(|boundary| boundary.face.canonical_bytes());
+    if face_ids.len() != face_boundaries.len()
+        || !face_ids
+            .iter()
+            .zip(&face_boundaries)
+            .all(|(face, boundary)| *face == boundary.face)
+    {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    Ok((face_ids, face_boundaries, face_keys, occurrences))
+}
+
+fn canonicalize_face_boundary(
+    vertices: &mut [VertexId],
+    edges: &mut [EdgeId],
+) -> Result<(), KinematicsError> {
+    if vertices.len() < 3 || vertices.len() != edges.len() {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let start = (0..vertices.len())
+        .min_by_key(|index| {
+            (
+                edges[*index].canonical_bytes(),
+                vertices[*index].canonical_bytes(),
+                vertices[(*index + 1) % vertices.len()].canonical_bytes(),
+            )
+        })
+        .ok_or(KinematicsError::UnsupportedTopology)?;
+    vertices.rotate_left(start);
+    edges.rotate_left(start);
+    Ok(())
 }
 
 fn validate_incidences(
@@ -1073,6 +1209,27 @@ fn validate_one_adjacency(
         return Err(KinematicsError::UnsupportedTopology);
     }
     Ok(())
+}
+
+fn find_material_face_boundary(
+    source: &PreparedTree,
+    face: FaceId,
+) -> Option<MaterialFaceBoundary<'_>> {
+    let index = source
+        .face_boundaries
+        .binary_search_by_key(&face.canonical_bytes(), |boundary| {
+            boundary.face.canonical_bytes()
+        })
+        .ok()?;
+    Some(MaterialFaceBoundary { source, index })
+}
+
+fn owns_material_face_boundary(source: &PreparedTree, boundary: MaterialFaceBoundary<'_>) -> bool {
+    std::ptr::eq(source, boundary.source)
+        && source
+            .face_boundaries
+            .get(boundary.index)
+            .is_some_and(|candidate| candidate.face == boundary.face())
 }
 
 fn solve_tree(

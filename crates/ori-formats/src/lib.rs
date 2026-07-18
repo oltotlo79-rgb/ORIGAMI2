@@ -1,5 +1,6 @@
 //! Versioned persistence and interchange adapters.
 
+mod fold;
 mod ori2;
 
 use ori_domain::{
@@ -9,6 +10,12 @@ use ori_domain::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use fold::{
+    FoldAssignmentCounts, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionError,
+    FoldConversionOptions, FoldCreasePatternConversion, FoldEdgeAssignment, FoldFrameUnit,
+    FoldImportError, FoldImportLimits, FoldPreview, FoldPreviewEdge, FoldPreviewVertex,
+    FoldPreviewWarning, read_fold_preview, read_fold_preview_with_limits,
+};
 pub use ori2::{
     CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER,
     ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2Limits,

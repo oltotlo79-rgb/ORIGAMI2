@@ -2062,6 +2062,7 @@ name = "ori-formats"
 version = "0.1.0"
 dependencies = [
  "ori-domain",
+ "ori-geometry",
  "serde",
  "serde_json",
  "sha2",

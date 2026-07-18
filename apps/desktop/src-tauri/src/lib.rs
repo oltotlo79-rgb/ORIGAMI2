@@ -7,7 +7,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
-        Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -18,9 +18,10 @@ use diagnostics::{
 };
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, EditorTopology, IntersectionEdgeTarget,
-    JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue, TopologyAnalysisInput,
-    TopologyIssue, TopologySnapshot, ValidationIssue, analyze_local_flat_foldability,
-    create_rectangular_sheet, validate_paper,
+    JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue, PointPolygonRelation,
+    TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
+    analyze_local_flat_foldability, create_rectangular_sheet, segment_midpoint_polygon_relation,
+    validate_paper,
 };
 use ori_domain::{
     CreasePattern, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
@@ -28,8 +29,9 @@ use ori_domain::{
     MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId, RgbaColor, VertexId,
 };
 use ori_formats::{
-    CURRENT_FORMAT_VERSION, Ori2Limits, ProjectDocument, read_project_ori2_with_limits,
-    write_project_ori2,
+    CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
+    FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, Ori2Limits,
+    ProjectDocument, read_fold_preview, read_project_ori2_with_limits, write_project_ori2,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -60,11 +62,28 @@ const UNTITLED_PROJECT_NAME: &str = "Untitled";
 const DEFAULT_SHEET_SIZE_MM: f64 = 400.0;
 const MAX_PROJECT_NAME_CHARS: usize = 120;
 const MAX_BENCHMARK_EDGE_COUNT: usize = 100_000;
+const MAX_FOLD_IMPORT_FILE_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_FOLD_IMPORT_PREVIEW_EDGES: usize = 5_000;
+const MAX_FOLD_IMPORT_CONTAINMENT_TESTS: usize = 1_000_000;
+const FOLD_IMPORT_FILE_LABEL: &str = "選択したFOLDファイル";
+const FOLD_IMPORT_FALLBACK_NAME: &str = "FOLDインポート";
 static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
 struct AppState(Mutex<ProjectState>);
+
+#[derive(Default)]
+struct FoldImportState(Mutex<Option<PendingFoldImport>>);
+
+#[derive(Clone)]
+struct PendingFoldImport {
+    import_id: ProjectId,
+    expected_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    bytes: Arc<[u8]>,
+}
 
 #[derive(Default)]
 struct ExitGuard {
@@ -217,6 +236,65 @@ struct ProjectSnapshot {
 struct ProjectFileResponse {
     canceled: bool,
     project: ProjectSnapshot,
+}
+
+#[derive(Debug, Serialize)]
+struct FoldImportPreviewResponse {
+    canceled: bool,
+    preview: Option<FoldImportPreviewSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+struct FoldImportPreviewSnapshot {
+    import_id: ProjectId,
+    file_name: &'static str,
+    suggested_name: String,
+    file_spec: Option<String>,
+    frame_unit: Option<String>,
+    default_mm_per_unit: Option<f64>,
+    vertex_count: usize,
+    edge_count: usize,
+    boundary_edge_count: usize,
+    assignments: Vec<FoldImportAssignmentSummary>,
+    preview_vertices: Vec<FoldImportPreviewVertex>,
+    preview_edges: Vec<FoldImportPreviewEdge>,
+    preview_truncated: bool,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FoldImportAssignmentSummary {
+    assignment: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+struct FoldImportPreviewVertex {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FoldImportPreviewEdge {
+    start: usize,
+    end: usize,
+    assignment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct FoldImportAssignmentMappingRequest {
+    source: String,
+    target: FoldImportTargetRequest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FoldImportTargetRequest {
+    Mountain,
+    Valley,
+    Auxiliary,
+    Cut,
+    Ignore,
 }
 
 #[derive(Debug)]
@@ -509,6 +587,126 @@ async fn save_project_as(
     state: State<'_, AppState>,
 ) -> Result<ProjectFileResponse, String> {
     save_project_with_dialog(&app, &state)
+}
+
+#[tauri::command]
+async fn preview_fold_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    import_state: State<'_, FoldImportState>,
+) -> Result<FoldImportPreviewResponse, String> {
+    let (expected_instance_id, expected_project_id, expected_revision, initial_directory) = {
+        let project = lock_project(&state)?;
+        (
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            project
+                .current_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+        )
+    };
+    // Starting a new picker invalidates an older preview. This keeps the
+    // native staging bound at one validated source even if IPC is invoked
+    // outside the normal modal UI.
+    *lock_fold_import(&import_state)? = None;
+
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("FOLD crease pattern", &["fold"])
+        .set_title("FOLD展開図を取り込む");
+    if let Some(directory) = initial_directory {
+        dialog = dialog.set_directory(directory);
+    }
+    let Some(selected) = dialog.blocking_pick_file() else {
+        return Ok(FoldImportPreviewResponse {
+            canceled: true,
+            preview: None,
+        });
+    };
+    let path = selected
+        .simplified()
+        .into_path()
+        .map_err(|_| "the selected location is not a local file".to_owned())?;
+    let (bytes, preview) =
+        tauri::async_runtime::spawn_blocking(move || load_fold_import_preview(&path))
+            .await
+            .map_err(|error| format!("FOLD import task failed: {error}"))??;
+
+    {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+    }
+    let import_id = stage_pending_fold_import(
+        &import_state,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        bytes,
+    )?;
+    Ok(FoldImportPreviewResponse {
+        canceled: false,
+        preview: Some(fold_import_preview_snapshot(import_id, &preview)),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn apply_fold_import(
+    state: State<'_, AppState>,
+    import_state: State<'_, FoldImportState>,
+    preview_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    name: String,
+    millimeters_per_unit: f64,
+    assignment_mappings: Vec<FoldImportAssignmentMappingRequest>,
+) -> Result<ProjectSnapshot, String> {
+    let name = normalize_project_name(&name)?;
+    validate_fold_import_scale(millimeters_per_unit)?;
+    let mappings = validate_fold_import_mapping_requests(assignment_mappings)?;
+    let pending = pending_fold_import(
+        &import_state,
+        preview_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let bytes = Arc::clone(&pending.bytes);
+    let replacement = tauri::async_runtime::spawn_blocking(move || {
+        build_fold_import_replacement(&bytes, name, millimeters_per_unit, mappings)
+    })
+    .await
+    .map_err(|error| format!("FOLD conversion task failed: {error}"))??;
+
+    // Lock order is always import staging before project state. Cancellation
+    // can invalidate the token while conversion runs, but cannot interleave
+    // with the final checked replacement.
+    let mut pending_slot = lock_fold_import(&import_state)?;
+    let mut project = lock_project(&state)?;
+    commit_fold_import_replacement(
+        &mut project,
+        &mut pending_slot,
+        preview_id,
+        expected_project_id,
+        expected_revision,
+        replacement,
+    )
+}
+
+#[tauri::command]
+fn cancel_fold_import(
+    state: State<'_, FoldImportState>,
+    preview_id: ProjectId,
+) -> Result<(), String> {
+    cancel_pending_fold_import(&state, preview_id)
 }
 
 #[tauri::command]
@@ -1089,6 +1287,97 @@ fn lock_project(state: &AppState) -> Result<MutexGuard<'_, ProjectState>, String
         .map_err(|_| "the project state lock is poisoned".to_owned())
 }
 
+fn lock_fold_import(
+    state: &FoldImportState,
+) -> Result<MutexGuard<'_, Option<PendingFoldImport>>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "the FOLD import state lock is poisoned".to_owned())
+}
+
+fn stage_pending_fold_import(
+    state: &FoldImportState,
+    expected_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    bytes: Vec<u8>,
+) -> Result<ProjectId, String> {
+    let import_id = ProjectId::new();
+    *lock_fold_import(state)? = Some(PendingFoldImport {
+        import_id,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        bytes: Arc::from(bytes),
+    });
+    Ok(import_id)
+}
+
+fn pending_fold_import(
+    state: &FoldImportState,
+    import_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<PendingFoldImport, String> {
+    let pending = lock_fold_import(state)?;
+    let pending = pending
+        .as_ref()
+        .ok_or_else(|| "the FOLD import preview is no longer available".to_owned())?;
+    if pending.import_id != import_id {
+        return Err("the FOLD import preview was replaced by a newer preview".to_owned());
+    }
+    if pending.expected_project_id != expected_project_id
+        || pending.expected_revision != expected_revision
+    {
+        return Err("the FOLD import preview belongs to a different project state".to_owned());
+    }
+    Ok(pending.clone())
+}
+
+fn cancel_pending_fold_import(state: &FoldImportState, import_id: ProjectId) -> Result<(), String> {
+    let mut pending = lock_fold_import(state)?;
+    match pending.as_ref() {
+        None => Ok(()),
+        Some(current) if current.import_id == import_id => {
+            *pending = None;
+            Ok(())
+        }
+        Some(_) => Err("the FOLD import preview was replaced by a newer preview".to_owned()),
+    }
+}
+
+fn commit_fold_import_replacement(
+    project: &mut ProjectState,
+    pending_slot: &mut Option<PendingFoldImport>,
+    import_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    replacement: ProjectState,
+) -> Result<ProjectSnapshot, String> {
+    let pending = pending_slot
+        .as_ref()
+        .ok_or_else(|| "the FOLD import preview is no longer available".to_owned())?;
+    if pending.import_id != import_id {
+        return Err("the FOLD import preview was replaced by a newer preview".to_owned());
+    }
+    if pending.expected_project_id != expected_project_id
+        || pending.expected_revision != expected_revision
+    {
+        return Err("the FOLD import preview belongs to a different project state".to_owned());
+    }
+    ensure_expected_project(
+        project,
+        pending.expected_instance_id,
+        pending.expected_project_id,
+        pending.expected_revision,
+    )?;
+
+    *project = replacement;
+    *pending_slot = None;
+    Ok(snapshot(project))
+}
+
 fn execute_command(
     project: &mut ProjectState,
     expected_project_id: ProjectId,
@@ -1155,6 +1444,68 @@ fn normalize_project_name(name: &str) -> Result<String, String> {
         return Err("project name must not contain control characters".to_owned());
     }
     Ok(trimmed.to_owned())
+}
+
+fn validate_fold_import_scale(millimeters_per_unit: f64) -> Result<(), String> {
+    if !millimeters_per_unit.is_finite() || millimeters_per_unit <= 0.0 {
+        return Err("FOLD import scale must be a finite number greater than zero".to_owned());
+    }
+    if millimeters_per_unit > 1_000_000_000.0 {
+        return Err("FOLD import scale must not exceed 1,000,000,000 mm per unit".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_fold_import_mapping_requests(
+    mappings: Vec<FoldImportAssignmentMappingRequest>,
+) -> Result<HashMap<String, FoldImportTargetRequest>, String> {
+    let mut validated = HashMap::with_capacity(mappings.len());
+    for mapping in mappings {
+        let source = mapping.source.as_str();
+        let allowed = match source {
+            "M" => matches!(mapping.target, FoldImportTargetRequest::Mountain),
+            "V" => matches!(mapping.target, FoldImportTargetRequest::Valley),
+            "F" => matches!(
+                mapping.target,
+                FoldImportTargetRequest::Auxiliary | FoldImportTargetRequest::Ignore
+            ),
+            "U" => matches!(
+                mapping.target,
+                FoldImportTargetRequest::Mountain
+                    | FoldImportTargetRequest::Valley
+                    | FoldImportTargetRequest::Auxiliary
+                    | FoldImportTargetRequest::Ignore
+            ),
+            "C" => matches!(
+                mapping.target,
+                FoldImportTargetRequest::Cut | FoldImportTargetRequest::Ignore
+            ),
+            "J" => matches!(
+                mapping.target,
+                FoldImportTargetRequest::Auxiliary | FoldImportTargetRequest::Ignore
+            ),
+            _ => {
+                return Err(format!(
+                    "unsupported FOLD assignment mapping source {source:?}"
+                ));
+            }
+        };
+        if !allowed {
+            return Err(format!(
+                "FOLD assignment {source} cannot be imported as {:?}",
+                mapping.target
+            ));
+        }
+        if validated
+            .insert(mapping.source.clone(), mapping.target)
+            .is_some()
+        {
+            return Err(format!(
+                "FOLD assignment {source} was mapped more than once"
+            ));
+        }
+    }
+    Ok(validated)
 }
 
 fn validate_paper_thickness(thickness_mm: f64) -> Result<(), String> {
@@ -1636,6 +1987,414 @@ fn apply_loaded_project_file(
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),
+    })
+}
+
+fn read_fold_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let file = File::open(path)
+        .map_err(|error| format!("selected FOLD file could not be opened: {error}"))?;
+    let declared_size = file
+        .metadata()
+        .map_err(|error| format!("selected FOLD file could not be inspected: {error}"))?
+        .len();
+    if declared_size > MAX_FOLD_IMPORT_FILE_SIZE {
+        return Err(format!(
+            "selected FOLD file is {declared_size} bytes; the limit is {MAX_FOLD_IMPORT_FILE_SIZE} bytes"
+        ));
+    }
+
+    let capacity = usize::try_from(declared_size)
+        .unwrap_or(0)
+        .min(usize::try_from(MAX_FOLD_IMPORT_FILE_SIZE).unwrap_or(usize::MAX));
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(MAX_FOLD_IMPORT_FILE_SIZE.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("selected FOLD file could not be read: {error}"))?;
+    if bytes.len() as u64 > MAX_FOLD_IMPORT_FILE_SIZE {
+        return Err(format!(
+            "selected FOLD file grew beyond the limit of {MAX_FOLD_IMPORT_FILE_SIZE} bytes while it was read"
+        ));
+    }
+    Ok(bytes)
+}
+
+fn load_fold_import_preview(path: &Path) -> Result<(Vec<u8>, FoldPreview), String> {
+    let bytes = read_fold_import_bytes(path)?;
+    let preview = read_fold_preview(&bytes)
+        .map_err(|error| format!("selected FOLD file is invalid: {error}"))?;
+    Ok((bytes, preview))
+}
+
+fn fold_import_preview_snapshot(
+    import_id: ProjectId,
+    preview: &FoldPreview,
+) -> FoldImportPreviewSnapshot {
+    let counts = preview.assignment_counts();
+    let assignments = [
+        (FoldEdgeAssignment::Boundary, counts.boundary),
+        (FoldEdgeAssignment::Mountain, counts.mountain),
+        (FoldEdgeAssignment::Valley, counts.valley),
+        (FoldEdgeAssignment::Flat, counts.flat),
+        (FoldEdgeAssignment::Unassigned, counts.unassigned),
+        (FoldEdgeAssignment::Cut, counts.cut),
+        (FoldEdgeAssignment::Join, counts.join),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(assignment, count)| FoldImportAssignmentSummary {
+        assignment: assignment.token().to_owned(),
+        count,
+    })
+    .collect();
+
+    let mut selected_edges = preview
+        .edges()
+        .iter()
+        .filter(|edge| edge.assignment == FoldEdgeAssignment::Boundary)
+        .collect::<Vec<_>>();
+    let sampled_assignments = [
+        FoldEdgeAssignment::Mountain,
+        FoldEdgeAssignment::Valley,
+        FoldEdgeAssignment::Flat,
+        FoldEdgeAssignment::Unassigned,
+        FoldEdgeAssignment::Cut,
+        FoldEdgeAssignment::Join,
+    ];
+    let buckets = sampled_assignments
+        .iter()
+        .map(|assignment| {
+            preview
+                .edges()
+                .iter()
+                .filter(|edge| edge.assignment == *assignment)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut bucket_offsets = vec![0_usize; buckets.len()];
+    while selected_edges.len() < MAX_FOLD_IMPORT_PREVIEW_EDGES {
+        let mut progressed = false;
+        for (bucket_index, bucket) in buckets.iter().enumerate() {
+            if selected_edges.len() == MAX_FOLD_IMPORT_PREVIEW_EDGES {
+                break;
+            }
+            let offset = &mut bucket_offsets[bucket_index];
+            if let Some(edge) = bucket.get(*offset) {
+                selected_edges.push(*edge);
+                *offset += 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    selected_edges.sort_unstable_by_key(|edge| edge.index);
+    let mut source_vertex_indices = selected_edges
+        .iter()
+        .flat_map(|edge| edge.vertices)
+        .collect::<Vec<_>>();
+    source_vertex_indices.sort_unstable();
+    source_vertex_indices.dedup();
+    let dense_vertex_indices = source_vertex_indices
+        .iter()
+        .enumerate()
+        .map(|(dense, source)| (*source, dense))
+        .collect::<HashMap<_, _>>();
+    let preview_vertices = source_vertex_indices
+        .iter()
+        .map(|source| {
+            let position = preview.vertices()[*source].position;
+            FoldImportPreviewVertex {
+                x: position.x,
+                y: position.y,
+            }
+        })
+        .collect();
+    let preview_edges = selected_edges
+        .iter()
+        .map(|edge| FoldImportPreviewEdge {
+            start: dense_vertex_indices[&edge.vertices[0]],
+            end: dense_vertex_indices[&edge.vertices[1]],
+            assignment: edge.assignment.token().to_owned(),
+        })
+        .collect();
+
+    let mut warnings = preview
+        .warnings()
+        .iter()
+        .map(fold_import_warning_message)
+        .collect::<Vec<_>>();
+    if preview
+        .title()
+        .is_some_and(|title| normalize_project_name(title).is_err())
+    {
+        warnings.push(
+            "FOLD内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。".to_owned(),
+        );
+    }
+    if counts.flat > 0 {
+        warnings.push(
+            "F（平らな折り筋）は同じ意味の線種がないため、補助線または除外へ変換します。"
+                .to_owned(),
+        );
+    }
+    if counts.unassigned > 0 {
+        warnings.push(
+            "U（未割当）は山折り・谷折り・補助線・除外のいずれかを選ぶ必要があります。".to_owned(),
+        );
+    }
+    if counts.join > 0 {
+        warnings.push(
+            "J（面の結合）は同じ意味の線種がないため、補助線または除外へ変換します。".to_owned(),
+        );
+    }
+
+    FoldImportPreviewSnapshot {
+        import_id,
+        file_name: FOLD_IMPORT_FILE_LABEL,
+        suggested_name: preview
+            .title()
+            .and_then(|title| normalize_project_name(title).ok())
+            .unwrap_or_else(|| FOLD_IMPORT_FALLBACK_NAME.to_owned()),
+        file_spec: preview.file_spec().map(|value| value.to_string()),
+        frame_unit: fold_frame_unit_name(preview.frame_unit()),
+        default_mm_per_unit: preview.recommended_millimetres_per_unit(),
+        vertex_count: preview.vertices().len(),
+        edge_count: preview.edges().len(),
+        boundary_edge_count: counts.boundary,
+        assignments,
+        preview_vertices,
+        preview_edges,
+        preview_truncated: preview.edges().len() > MAX_FOLD_IMPORT_PREVIEW_EDGES,
+        warnings,
+    }
+}
+
+fn fold_frame_unit_name(unit: &FoldFrameUnit) -> Option<String> {
+    match unit {
+        FoldFrameUnit::Unspecified => None,
+        FoldFrameUnit::Unitless => Some("unit".to_owned()),
+        FoldFrameUnit::Inch => Some("in".to_owned()),
+        FoldFrameUnit::Point => Some("pt".to_owned()),
+        FoldFrameUnit::Metre => Some("m".to_owned()),
+        FoldFrameUnit::Centimetre => Some("cm".to_owned()),
+        FoldFrameUnit::Millimetre => Some("mm".to_owned()),
+        FoldFrameUnit::Micrometre => Some("um".to_owned()),
+        FoldFrameUnit::Nanometre => Some("nm".to_owned()),
+        FoldFrameUnit::Custom(value) => Some(value.clone()),
+    }
+}
+
+fn fold_import_warning_message(warning: &FoldPreviewWarning) -> String {
+    match warning {
+        FoldPreviewWarning::MissingFileSpec => {
+            "FOLD仕様バージョンの記載がありません。対応範囲として慎重に解釈します。".to_owned()
+        }
+        FoldPreviewWarning::UnitNeedsScaleSelection => {
+            "実寸へ換算できる単位情報がないため、1単位あたりのmm値を指定してください。".to_owned()
+        }
+        FoldPreviewWarning::IgnoredFields { names } => {
+            let known_count = names
+                .iter()
+                .filter(|name| fold_ignored_field_label(name).is_some())
+                .count();
+            let mut labels = Vec::new();
+            for label in names
+                .iter()
+                .filter_map(|name| fold_ignored_field_label(name))
+            {
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            }
+            let unknown_count = names.len().saturating_sub(known_count);
+            let mut details = labels.join("、");
+            if unknown_count > 0 {
+                if !details.is_empty() {
+                    details.push('、');
+                }
+                details.push_str(&format!("その他の拡張フィールド{unknown_count}件"));
+            }
+            format!("取り込まないFOLD情報: {details}。")
+        }
+    }
+}
+
+fn fold_ignored_field_label(name: &str) -> Option<&'static str> {
+    match name {
+        "file_frames" => Some("複数フレーム"),
+        "file_creator" => Some("作成ソフト情報"),
+        "file_author" => Some("作者情報"),
+        "file_description" => Some("説明"),
+        "file_classes" => Some("ファイル分類"),
+        "frame_classes" => Some("フレーム分類"),
+        "frame_attributes" => Some("フレーム属性"),
+        "frame_title" => Some("フレーム名"),
+        "frame_parent" | "frame_inherit" => Some("フレーム継承"),
+        "faces_vertices" | "faces_edges" | "edges_faces" => Some("面情報（辺から再計算）"),
+        "faceOrders" | "edgeOrders" => Some("重なり順"),
+        "edges_foldAngle" => Some("折り角度"),
+        "edges_length" => Some("辺長メタデータ"),
+        "frame_transform" => Some("フレーム変換"),
+        _ => None,
+    }
+}
+
+fn build_fold_import_replacement(
+    bytes: &[u8],
+    name: String,
+    millimeters_per_unit: f64,
+    mappings: HashMap<String, FoldImportTargetRequest>,
+) -> Result<ProjectState, String> {
+    let preview = read_fold_preview(bytes)
+        .map_err(|error| format!("staged FOLD preview could not be revalidated: {error}"))?;
+    let counts = preview.assignment_counts();
+    for source in mappings.keys() {
+        let present = match source.as_str() {
+            "M" => counts.mountain > 0,
+            "V" => counts.valley > 0,
+            "F" => counts.flat > 0,
+            "U" => counts.unassigned > 0,
+            "C" => counts.cut > 0,
+            "J" => counts.join > 0,
+            _ => false,
+        };
+        if !present {
+            return Err(format!(
+                "FOLD assignment {source} does not occur in the staged preview"
+            ));
+        }
+    }
+    let assignment_mapping = FoldAssignmentMapping {
+        boundary: Some(FoldAssignmentTarget::ImportAs {
+            edge_kind: EdgeKind::Boundary,
+        }),
+        mountain: fold_import_assignment_target(&mappings, "M"),
+        valley: fold_import_assignment_target(&mappings, "V"),
+        flat: fold_import_assignment_target(&mappings, "F"),
+        unassigned: fold_import_assignment_target(&mappings, "U"),
+        cut: fold_import_assignment_target(&mappings, "C"),
+        join: fold_import_assignment_target(&mappings, "J"),
+    };
+    let conversion = preview
+        .convert(&FoldConversionOptions {
+            assignment_mapping,
+            millimetres_per_unit: millimeters_per_unit,
+        })
+        .map_err(|error| format!("FOLD mapping could not be applied: {error}"))?;
+    let (crease_pattern, _, _, boundary_vertices) = conversion.into_parts();
+    let mut paper = Paper {
+        boundary_vertices,
+        ..Paper::default()
+    };
+    paper.cutting_allowed = crease_pattern
+        .edges
+        .iter()
+        .any(|edge| edge.kind == EdgeKind::Cut);
+
+    let replacement = ProjectState::new_unsaved(name, crease_pattern, paper);
+    let pattern_validation = replacement.editor.validation();
+    if !pattern_validation.is_valid() {
+        return Err(format!(
+            "converted FOLD crease pattern has {} validation issue(s)",
+            pattern_validation.issues().len()
+        ));
+    }
+    let paper_validation = validate_paper(replacement.editor.paper(), replacement.editor.pattern());
+    if !paper_validation.is_valid() {
+        return Err(format!(
+            "converted FOLD paper boundary has {} validation issue(s)",
+            paper_validation.issues.len()
+        ));
+    }
+    validate_fold_import_active_edge_containment(&replacement)?;
+    Ok(replacement)
+}
+
+fn validate_fold_import_active_edge_containment(project: &ProjectState) -> Result<(), String> {
+    let positions = project
+        .editor
+        .pattern()
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    let boundary = project
+        .editor
+        .paper()
+        .boundary_vertices
+        .iter()
+        .map(|vertex| {
+            positions
+                .get(vertex)
+                .copied()
+                .ok_or_else(|| "converted FOLD boundary could not be resolved".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let active_edges = project
+        .editor
+        .pattern()
+        .edges
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.kind,
+                EdgeKind::Mountain | EdgeKind::Valley | EdgeKind::Cut
+            )
+        })
+        .collect::<Vec<_>>();
+    let containment_tests = active_edges
+        .len()
+        .checked_mul(boundary.len())
+        .ok_or_else(|| "converted FOLD containment work is not representable".to_owned())?;
+    if containment_tests > MAX_FOLD_IMPORT_CONTAINMENT_TESTS {
+        return Err(format!(
+            "converted FOLD needs {containment_tests} containment tests; the limit is {MAX_FOLD_IMPORT_CONTAINMENT_TESTS}"
+        ));
+    }
+
+    let mut outside_count = 0;
+    for edge in active_edges {
+        let start = positions
+            .get(&edge.start)
+            .copied()
+            .ok_or_else(|| "converted FOLD edge start could not be resolved".to_owned())?;
+        let end = positions
+            .get(&edge.end)
+            .copied()
+            .ok_or_else(|| "converted FOLD edge end could not be resolved".to_owned())?;
+        let relation = segment_midpoint_polygon_relation(start, end, &boundary)
+            .map_err(|_| "converted FOLD edge containment could not be classified".to_owned())?;
+        if relation != PointPolygonRelation::Inside {
+            outside_count += 1;
+        }
+    }
+    if outside_count > 0 {
+        return Err(format!(
+            "converted FOLD has {outside_count} active edge(s) outside the paper boundary"
+        ));
+    }
+    Ok(())
+}
+
+fn fold_import_assignment_target(
+    mappings: &HashMap<String, FoldImportTargetRequest>,
+    source: &str,
+) -> Option<FoldAssignmentTarget> {
+    mappings.get(source).copied().map(|target| match target {
+        FoldImportTargetRequest::Mountain => FoldAssignmentTarget::ImportAs {
+            edge_kind: EdgeKind::Mountain,
+        },
+        FoldImportTargetRequest::Valley => FoldAssignmentTarget::ImportAs {
+            edge_kind: EdgeKind::Valley,
+        },
+        FoldImportTargetRequest::Auxiliary => FoldAssignmentTarget::ImportAs {
+            edge_kind: EdgeKind::Auxiliary,
+        },
+        FoldImportTargetRequest::Cut => FoldAssignmentTarget::ImportAs {
+            edge_kind: EdgeKind::Cut,
+        },
+        FoldImportTargetRequest::Ignore => FoldAssignmentTarget::Ignore,
     })
 }
 
@@ -2368,6 +3127,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState(Mutex::new(initial_project_state())))
+        .manage(FoldImportState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
@@ -2378,6 +3138,9 @@ pub fn run() {
             open_project,
             save_project,
             save_project_as,
+            preview_fold_import,
+            apply_fold_import,
+            cancel_fold_import,
             add_vertex,
             move_vertex,
             remove_vertex,
@@ -5896,5 +6659,526 @@ mod tests {
 
         project.editor.undo(1).expect("undo to saved ordering");
         assert!(!project.is_dirty());
+    }
+
+    #[test]
+    fn fold_import_staging_keeps_only_the_latest_preview_and_cancel_is_scoped() {
+        let state = FoldImportState::default();
+        let project = initial_project_state();
+        let first = stage_pending_fold_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            br#"{"file_spec":1.2}"#.to_vec(),
+        )
+        .expect("stage first import");
+        let second = stage_pending_fold_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            br#"{"file_spec":1.2,"file_title":"newer"}"#.to_vec(),
+        )
+        .expect("stage replacement import");
+
+        assert_ne!(first, second);
+        assert!(pending_fold_import(&state, first, project.project_id, 0).is_err());
+        assert_eq!(
+            cancel_pending_fold_import(&state, first).unwrap_err(),
+            "the FOLD import preview was replaced by a newer preview"
+        );
+        assert!(pending_fold_import(&state, second, project.project_id, 0).is_ok());
+        cancel_pending_fold_import(&state, second).expect("cancel current import");
+        cancel_pending_fold_import(&state, second).expect("cancel remains idempotent");
+        assert!(lock_fold_import(&state).unwrap().is_none());
+    }
+
+    #[test]
+    fn fold_import_commit_is_an_atomic_new_unsaved_project_replacement() {
+        let mut project = unsaved_project_with_redo_history("Existing project");
+        let expected_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let import_id = ProjectId::new();
+        let mut pending = Some(PendingFoldImport {
+            import_id,
+            expected_instance_id,
+            expected_project_id,
+            expected_revision,
+            bytes: Arc::from(br#"{"file_spec":1.2}"#.as_slice()),
+        });
+        let replacement = create_new_project_state(new_project_parameters())
+            .expect("create import replacement fixture");
+        let replacement_project_id = replacement.project_id;
+        let replacement_instance_id = replacement.instance_id;
+
+        let response = commit_fold_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            replacement,
+        )
+        .expect("commit current import");
+
+        assert_eq!(response.project_id, replacement_project_id);
+        assert_eq!(project.instance_id, replacement_instance_id);
+        assert_ne!(project.project_id, expected_project_id);
+        assert_eq!(project.editor.revision(), 0);
+        assert!(!project.editor.can_undo());
+        assert!(!project.editor.can_redo());
+        assert!(project.current_path.is_none());
+        assert!(project.saved_revision.is_none());
+        assert!(project.saved_document.is_none());
+        assert!(project.is_dirty());
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn fold_import_commit_rejects_revision_and_instance_aba_without_mutation() {
+        let mut project = unsaved_project_with_redo_history("Existing project");
+        let stale_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let import_id = ProjectId::new();
+        let pending_template = PendingFoldImport {
+            import_id,
+            expected_instance_id: stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            bytes: Arc::from(br#"{"file_spec":1.2}"#.as_slice()),
+        };
+
+        project
+            .editor
+            .execute(
+                expected_revision,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(12.0, 13.0),
+                },
+            )
+            .expect("edit after preview");
+        let revision_before = project_state_signature(&project);
+        let mut pending = Some(pending_template.clone());
+        let error = commit_fold_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            create_new_project_state(new_project_parameters()).unwrap(),
+        )
+        .expect_err("stale revision must fail");
+        assert_eq!(error, "the project changed while the file dialog was open");
+        assert_eq!(project_state_signature(&project), revision_before);
+        assert!(pending.is_some());
+
+        let document = project.document();
+        project = ProjectState::from_document(document, PathBuf::from("same.ori2"));
+        project.project_id = expected_project_id;
+        assert_ne!(project.instance_id, stale_instance_id);
+        let instance_before = project_state_signature(&project);
+        let mut pending = Some(pending_template);
+        let error = commit_fold_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            create_new_project_state(new_project_parameters()).unwrap(),
+        )
+        .expect_err("reopened project instance must fail");
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&project), instance_before);
+        assert!(pending.is_some());
+    }
+
+    #[test]
+    fn fold_import_mapping_and_scale_validation_reject_ambiguous_requests() {
+        assert!(validate_fold_import_scale(1.0).is_ok());
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1_000_000_000.000_001] {
+            assert!(validate_fold_import_scale(invalid).is_err());
+        }
+
+        let valid = validate_fold_import_mapping_requests(vec![
+            FoldImportAssignmentMappingRequest {
+                source: "M".to_owned(),
+                target: FoldImportTargetRequest::Mountain,
+            },
+            FoldImportAssignmentMappingRequest {
+                source: "U".to_owned(),
+                target: FoldImportTargetRequest::Valley,
+            },
+            FoldImportAssignmentMappingRequest {
+                source: "J".to_owned(),
+                target: FoldImportTargetRequest::Ignore,
+            },
+        ])
+        .expect("validate supported mappings");
+        assert_eq!(valid.len(), 3);
+
+        assert!(
+            validate_fold_import_mapping_requests(vec![FoldImportAssignmentMappingRequest {
+                source: "M".to_owned(),
+                target: FoldImportTargetRequest::Valley,
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_fold_import_mapping_requests(vec![FoldImportAssignmentMappingRequest {
+                source: "X".to_owned(),
+                target: FoldImportTargetRequest::Ignore,
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_fold_import_mapping_requests(vec![
+                FoldImportAssignmentMappingRequest {
+                    source: "F".to_owned(),
+                    target: FoldImportTargetRequest::Auxiliary,
+                },
+                FoldImportAssignmentMappingRequest {
+                    source: "F".to_owned(),
+                    target: FoldImportTargetRequest::Ignore,
+                },
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn fold_import_mapping_or_geometry_failure_preserves_project_and_pending_preview() {
+        let project = unsaved_project_with_redo_history("Keep this project");
+        let before = project_state_signature(&project);
+        let valid_bytes = serde_json::to_vec(&serde_json::json!({
+            "file_spec": 1.2,
+            "frame_unit": "mm",
+            "vertices_coords": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            "edges_vertices": [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]],
+            "edges_assignment": ["B", "B", "B", "B", "M"]
+        }))
+        .expect("serialize mapping fixture");
+        let import_id = ProjectId::new();
+        let mut pending = Some(PendingFoldImport {
+            import_id,
+            expected_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            bytes: Arc::from(valid_bytes.clone()),
+        });
+
+        let mapping_error = build_fold_import_replacement(
+            &valid_bytes,
+            "Missing mapping".to_owned(),
+            1.0,
+            HashMap::new(),
+        )
+        .err()
+        .expect("missing M mapping must fail");
+        assert!(mapping_error.contains("no mapping was selected"));
+        assert_eq!(project_state_signature(&project), before);
+        assert_eq!(
+            pending.as_ref().map(|value| value.import_id),
+            Some(import_id)
+        );
+
+        let crossing_bytes = serde_json::to_vec(&serde_json::json!({
+            "file_spec": 1.2,
+            "frame_unit": "mm",
+            "vertices_coords": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            "edges_vertices": [
+                [0, 1], [1, 2], [2, 3], [3, 0],
+                [0, 2], [1, 3]
+            ],
+            "edges_assignment": ["B", "B", "B", "B", "M", "V"]
+        }))
+        .expect("serialize crossing fixture");
+        let geometry_error = build_fold_import_replacement(
+            &crossing_bytes,
+            "Crossing".to_owned(),
+            1.0,
+            HashMap::from([
+                ("M".to_owned(), FoldImportTargetRequest::Mountain),
+                ("V".to_owned(), FoldImportTargetRequest::Valley),
+            ]),
+        )
+        .err()
+        .expect("unsplit crossing must fail final validation");
+        assert!(geometry_error.contains("validation issue(s)"));
+        assert_eq!(project_state_signature(&project), before);
+        assert_eq!(
+            pending.as_ref().map(|value| value.import_id),
+            Some(import_id)
+        );
+
+        let replacement =
+            create_new_project_state(new_project_parameters()).expect("create unused replacement");
+        // The failed conversion path never reaches the only replacement
+        // boundary; retaining this assertion guards accidental future calls.
+        assert_ne!(replacement.project_id, project.project_id);
+        assert!(pending.take().is_some());
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn fold_import_file_errors_do_not_expose_the_selected_path() {
+        let directory = TestDirectory::new();
+        let secret_name = "private-client-design.fold";
+        let path = directory.join(secret_name);
+
+        let missing_error =
+            read_fold_import_bytes(&path).expect_err("missing import must be rejected");
+        assert!(!missing_error.contains(secret_name));
+        assert!(!missing_error.contains(&directory.path.to_string_lossy().into_owned()));
+
+        File::create(&path)
+            .expect("create oversized fixture")
+            .set_len(MAX_FOLD_IMPORT_FILE_SIZE + 1)
+            .expect("make sparse oversized fixture");
+        let oversized_error =
+            read_fold_import_bytes(&path).expect_err("oversized import must be rejected");
+        assert!(!oversized_error.contains(secret_name));
+        assert!(!oversized_error.contains(&directory.path.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn fold_import_preview_contract_and_conversion_create_a_valid_editable_project() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "file_spec": 1.2,
+            "file_title": "  取込テスト  ",
+            "frame_unit": "cm",
+            "vertices_coords": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            "edges_vertices": [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]],
+            "edges_assignment": ["B", "B", "B", "B", "M"]
+        }))
+        .expect("serialize FOLD fixture");
+        let preview = read_fold_preview(&bytes).expect("read FOLD preview");
+        let import_id = ProjectId::new();
+        let response = fold_import_preview_snapshot(import_id, &preview);
+
+        assert_eq!(response.import_id, import_id);
+        assert_eq!(response.file_name, FOLD_IMPORT_FILE_LABEL);
+        assert_eq!(response.suggested_name, "取込テスト");
+        assert_eq!(response.file_spec.as_deref(), Some("1.2"));
+        assert_eq!(response.frame_unit.as_deref(), Some("cm"));
+        assert_eq!(response.default_mm_per_unit, Some(10.0));
+        assert_eq!(response.vertex_count, 4);
+        assert_eq!(response.edge_count, 5);
+        assert_eq!(response.boundary_edge_count, 4);
+        assert_eq!(
+            response.assignments,
+            vec![
+                FoldImportAssignmentSummary {
+                    assignment: "B".to_owned(),
+                    count: 4,
+                },
+                FoldImportAssignmentSummary {
+                    assignment: "M".to_owned(),
+                    count: 1,
+                },
+            ]
+        );
+        assert_eq!(response.preview_vertices.len(), 4);
+        assert_eq!(response.preview_edges.len(), 5);
+        assert!(!response.preview_truncated);
+        assert!(response.warnings.is_empty());
+
+        let replacement = build_fold_import_replacement(
+            &bytes,
+            "取込テスト".to_owned(),
+            10.0,
+            HashMap::from([("M".to_owned(), FoldImportTargetRequest::Mountain)]),
+        )
+        .expect("convert FOLD into a project");
+        assert_eq!(replacement.name, "取込テスト");
+        assert_eq!(replacement.editor.pattern().vertices.len(), 4);
+        assert_eq!(replacement.editor.pattern().edges.len(), 5);
+        assert_eq!(replacement.editor.paper().boundary_vertices.len(), 4);
+        assert!(
+            replacement
+                .editor
+                .pattern()
+                .vertices
+                .iter()
+                .any(|vertex| vertex.position == Point2::new(20.0, 20.0))
+        );
+        assert_eq!(
+            replacement
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Mountain)
+                .count(),
+            1
+        );
+        assert!(!replacement.editor.paper().cutting_allowed);
+        assert!(replacement.editor.instruction_timeline().steps.is_empty());
+        assert_eq!(replacement.editor.revision(), 0);
+        assert!(!replacement.editor.can_undo());
+        assert!(!replacement.editor.can_redo());
+        assert!(replacement.current_path.is_none());
+        assert!(replacement.saved_document.is_none());
+        assert!(replacement.is_dirty());
+    }
+
+    #[test]
+    fn fold_import_rejects_an_active_edge_outside_the_paper() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "file_spec": 1.2,
+            "frame_unit": "mm",
+            "vertices_coords": [
+                [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+                [2.0, 0.0], [2.0, 1.0]
+            ],
+            "edges_vertices": [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5]],
+            "edges_assignment": ["B", "B", "B", "B", "M"]
+        }))
+        .expect("serialize outside-edge fixture");
+
+        let error = build_fold_import_replacement(
+            &bytes,
+            "紙外の折り線".to_owned(),
+            1.0,
+            HashMap::from([("M".to_owned(), FoldImportTargetRequest::Mountain)]),
+        )
+        .err()
+        .expect("an active edge outside the paper must be rejected");
+
+        assert!(error.contains("active edge(s) outside the paper boundary"));
+    }
+
+    #[test]
+    fn fold_import_applies_valley_cut_and_ignore_mapping_with_scale() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "file_spec": 1.2,
+            "frame_unit": "unit",
+            "vertices_coords": [
+                [0.0, 0.0], [2.0, 0.0], [4.0, 0.0],
+                [4.0, 4.0], [2.0, 4.0], [0.0, 4.0]
+            ],
+            "edges_vertices": [
+                [0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0],
+                [0, 3], [0, 4], [1, 3], [2, 5]
+            ],
+            "edges_assignment": ["B", "B", "B", "B", "B", "B", "M", "V", "C", "F"]
+        }))
+        .expect("serialize mapped FOLD fixture");
+        let replacement = build_fold_import_replacement(
+            &bytes,
+            "複数線種".to_owned(),
+            2.5,
+            HashMap::from([
+                ("M".to_owned(), FoldImportTargetRequest::Mountain),
+                ("V".to_owned(), FoldImportTargetRequest::Valley),
+                ("C".to_owned(), FoldImportTargetRequest::Cut),
+                ("F".to_owned(), FoldImportTargetRequest::Ignore),
+            ]),
+        )
+        .expect("convert explicit mapped assignments");
+        let edges = &replacement.editor.pattern().edges;
+
+        assert_eq!(edges.len(), 9);
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Boundary)
+                .count(),
+            6
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Mountain)
+                .count(),
+            1
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Valley)
+                .count(),
+            1
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Cut)
+                .count(),
+            1
+        );
+        assert!(replacement.editor.paper().cutting_allowed);
+        assert!(
+            replacement
+                .editor
+                .pattern()
+                .vertices
+                .iter()
+                .any(|vertex| vertex.position == Point2::new(10.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn fold_import_preview_truncation_remaps_every_rendered_endpoint() {
+        let interior_edge_count = MAX_FOLD_IMPORT_PREVIEW_EDGES - 3;
+        let mut vertices = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let mut edges = Vec::new();
+        let mut assignments = Vec::new();
+        for index in 0..interior_edge_count {
+            let x = 10.0 + index as f64;
+            let start = vertices.len();
+            vertices.push([x, 2.0]);
+            vertices.push([x, 3.0]);
+            edges.push([start, start + 1]);
+            assignments.push("F");
+        }
+        edges.extend([[0_usize, 1_usize], [1, 2], [2, 3], [3, 0]]);
+        assignments.extend(["B"; 4]);
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "vertices_coords": vertices,
+            "edges_vertices": edges,
+            "edges_assignment": assignments,
+            "file_classes": ["singleModel"]
+        }))
+        .expect("serialize large preview fixture");
+        let preview = read_fold_preview(&bytes).expect("read large preview");
+        let response = fold_import_preview_snapshot(ProjectId::new(), &preview);
+
+        assert!(response.preview_truncated);
+        assert_eq!(response.preview_edges.len(), MAX_FOLD_IMPORT_PREVIEW_EDGES);
+        assert!(response.preview_vertices.len() < response.vertex_count);
+        assert!(response.preview_edges.iter().all(|edge| {
+            edge.start < response.preview_vertices.len()
+                && edge.end < response.preview_vertices.len()
+        }));
+        assert_eq!(
+            response
+                .preview_edges
+                .iter()
+                .filter(|edge| edge.assignment == "B")
+                .count(),
+            4
+        );
+        assert_eq!(
+            response
+                .assignments
+                .iter()
+                .map(|summary| summary.assignment.as_str())
+                .collect::<Vec<_>>(),
+            vec!["B", "F"]
+        );
+        assert!(response.warnings.iter().all(|warning| !warning.is_ascii()));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ファイル分類"))
+        );
     }
 }

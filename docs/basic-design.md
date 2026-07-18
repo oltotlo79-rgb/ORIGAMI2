@@ -548,6 +548,31 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 
 3D出力では座標系、単位、表裏、厚さ、アニメーション対応差を出力画面に示す。
 
+### 12.1 FOLD取込
+
+現在のFOLD adapterは、FOLD 1/1.1/1.2のtop-level 2D `creasePattern`をORIGAMI2の一枚紙projectへ変換する。対応subset、線種割当、警告、上限の正本は[FOLD取込契約](fold-import-contract.md)とする。
+
+```text
+native file dialog
+  → 16 MiB上限付きread
+  → strict/bounded parse
+  → geometry・単一境界検証
+  → 1世代だけmemory stage
+  → preview / scale / assignment / warning確認
+  → 同一bytes再parse・再変換
+  → project instance・ID・revision照合
+  → 新規未保存projectへatomic replace
+```
+
+- `vertices_coords`、`edges_vertices`、`edges_assignment`を必須とし、2D座標、parallel array、添字、有限性、退化・重複・交差、単一の単純`B`境界をRust adapterで検証する。3D `foldedForm`、非ゼロZ、穴・複数紙・複数frameは拒否する。
+- `mm`、`cm`、`m`、`in`、`pt`、`um`、`nm`はmm換算値を提示し、単位なし、`unit`、独自単位は利用者へmm/単位の入力を要求する。提示値を含め、適用する有限・正の倍率は確認画面で変更できる。
+- `B`はboundary、`M`はmountain、`V`はvalleyへ固定する。`C`はcut/ignore、`F`と`J`はauxiliary/ignore、`U`はmountain/valley/auxiliary/ignoreから選択し、曖昧なassignmentを自動決定しない。
+- previewは最大5,000辺に制限するが、用紙境界を先に含め、他assignmentを決定論的に抽出する。表示の省略は変換対象を省略しない。
+- 面、折り角度、frame metadataなど永続化しない情報は具体名を警告し、明示確認を適用条件とする。未知JSONの内容、実ファイル名、path、raw JSONはWebViewへ渡さない。
+- stageはopaque ID、開始時のproject instance・ID・revision、検証対象bytesだけを保持する。適用直前の再照合に失敗したstale結果、変換失敗、取消ではprojectを変更しない。
+- 成功時は履歴、手順、保存先、保存済みbaselineを引き継がず、revision 0・dirtyの新規projectへ一度だけ置換する。旧projectへ戻るUndoは作らない。
+- 上限はファイル16 MiB、頂点1万、辺1万、境界1,414辺、交差候補100万件、変換後の内部包含判定100万件とする。未知JSONは展開・保持せず読み捨て、縮尺適用後にも作業量と幾何を再検証する。
+
 ## 13. セキュリティ設計
 
 - Tauri capabilityをファイル選択、設定、更新確認等へ限定する。

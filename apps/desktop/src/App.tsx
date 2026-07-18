@@ -8,12 +8,15 @@ import {
   type PaperPolygonPoint,
 } from './components/CreaseCanvas'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
+import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import {
   addEdge,
   addVertex,
   analyzeProjectTopology,
+  applyFoldImport,
+  cancelFoldImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
   connectTJunction,
@@ -23,6 +26,7 @@ import {
   moveVertex,
   newProject,
   openProject,
+  previewFoldImport,
   redo,
   removeBoundaryVertex,
   removeEdge,
@@ -40,6 +44,7 @@ import {
   type ValidationSnapshot,
   validateProject,
 } from './lib/coreClient'
+import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
@@ -135,11 +140,15 @@ function App() {
   )
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
-  const [fileOperation, setFileOperation] = useState<'open' | 'save' | 'save_as' | null>(null)
+  const [fileOperation, setFileOperation] = useState<
+    'open' | 'save' | 'save_as' | 'fold_import' | null
+  >(null)
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectError, setNewProjectError] = useState<string | null>(null)
   const [diagnosticsDialogOpen, setDiagnosticsDialogOpen] = useState(false)
+  const [foldImportPreview, setFoldImportPreview] = useState<FoldImportPreview | null>(null)
+  const [foldImportError, setFoldImportError] = useState<string | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -157,7 +166,8 @@ function App() {
   const benchmarkRequestIdRef = useRef(0)
   const topologyRequestIdRef = useRef(0)
   const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
-  const modalOpen = newProjectOpen || diagnosticsDialogOpen
+  const foldImportButtonRef = useRef<HTMLButtonElement>(null)
+  const modalOpen = newProjectOpen || diagnosticsDialogOpen || foldImportPreview !== null
   const closeDiagnosticsDialog = useCallback(() => {
     setDiagnosticsDialogOpen(false)
     requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
@@ -1107,6 +1117,96 @@ function App() {
     }
   }
 
+  async function beginFoldImport() {
+    if (!latestSnapshotRef.current || coreOperationRef.current) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('fold_import')
+    setFoldImportError(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const response = await previewFoldImport()
+      if (response.canceled) {
+        setCoreStatus('FOLD取込をキャンセルしました')
+        return
+      }
+      if (!response.preview) {
+        throw new Error('取込プレビューが返されませんでした')
+      }
+      setFoldImportPreview(response.preview)
+      setCoreStatus('FOLDの線種・縮尺を確認してください')
+    } catch (error) {
+      setCoreStatus(`FOLD読込エラー: ${String(error)}`)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function closeFoldImportDialog() {
+    const preview = foldImportPreview
+    if (!preview || coreOperationRef.current) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    try {
+      await cancelFoldImport(preview.import_id)
+      setCoreStatus('FOLD取込をキャンセルしました')
+    } catch (error) {
+      setCoreStatus(`FOLD取込の後始末エラー: ${String(error)}`)
+    } finally {
+      setFoldImportPreview(null)
+      setFoldImportError(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+      requestAnimationFrame(() => foldImportButtonRef.current?.focus())
+    }
+  }
+
+  async function confirmFoldImport(settings: FoldImportSettings) {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    if (
+      current.is_dirty
+      && !window.confirm('未保存の変更があります。保存せずにFOLD展開図へ置き換えますか？')
+    ) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFoldImportError(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const snapshot = await applyFoldImport(
+        current.project_id,
+        current.revision,
+        settings,
+      )
+      applySnapshot(snapshot)
+      setBenchmarkRun(null)
+      setBenchmarkStatus('FOLD取込により通常の展開図へ戻りました')
+      setFoldImportPreview(null)
+      setSelectedLineId(null)
+      setSelectedVertexId(null)
+      setPendingEdgeStart(null)
+      setParallelReferenceEdgeId(null)
+      setAppliedFoldPose(null)
+      setFoldAngleOverrides({ projectId: null, values: new Map() })
+      setFixedFaceChoice({ projectId: null, faceId: null })
+      setActiveTool('select')
+      setCoreStatus(`FOLDから「${snapshot.name}」を取り込みました。保存先はまだ設定されていません。`)
+      requestAnimationFrame(() => foldImportButtonRef.current?.focus())
+    } catch (error) {
+      const message = String(error)
+      setFoldImportError(`取り込めませんでした: ${message}`)
+      setCoreStatus(`FOLD取込エラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function toggleBenchmark() {
     if (benchmarkRun) {
       setBenchmarkRun(null)
@@ -1230,6 +1330,15 @@ function App() {
             onClick={() => void runFileOperation('open')}
           >
             {fileOperation === 'open' ? '開いています…' : '開く'}
+          </button>
+          <button
+            ref={foldImportButtonRef}
+            type="button"
+            disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
+            onClick={() => void beginFoldImport()}
+            aria-haspopup="dialog"
+          >
+            {fileOperation === 'fold_import' ? '解析中…' : 'FOLD取込'}
           </button>
           <button
             type="button"
@@ -2236,6 +2345,17 @@ function App() {
             </form>
           </section>
         </div>
+      )}
+
+      {foldImportPreview && (
+        <FoldImportDialog
+          key={foldImportPreview.import_id}
+          preview={foldImportPreview}
+          busy={coreBusy}
+          error={foldImportError}
+          onCancel={() => void closeFoldImportDialog()}
+          onImport={(settings) => void confirmFoldImport(settings)}
+        />
       )}
 
       <DiagnosticsDialog

@@ -19,7 +19,7 @@ test('the native-only status action opens one modal that makes every background 
   )
   assert.match(
     appSource,
-    /const modalOpen = newProjectOpen \|\| diagnosticsDialogOpen/u,
+    /const modalOpen = newProjectOpen \|\| diagnosticsDialogOpen \|\| foldImportPreview !== null/u,
   )
   assert.match(
     appSource,

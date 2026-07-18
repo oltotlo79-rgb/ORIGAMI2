@@ -13,7 +13,8 @@ pub use editor::{
 pub use fold_model_fingerprint::fold_model_fingerprint_v1;
 pub use ori_geometry::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
-    SegmentIntersection, ValidationIssue, validate_paper,
+    PointPolygonRelation, SegmentIntersection, ValidationIssue, segment_midpoint_polygon_relation,
+    validate_paper,
 };
 pub use ori_topology::{
     FaceExtractionReport, LocalFlatFoldabilityModel, LocalFlatFoldabilityReport,

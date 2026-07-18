@@ -66,7 +66,8 @@ button { color: inherit; }
   backdrop-filter: blur(2px);
 }
 .new-project-dialog,
-.diagnostics-dialog {
+.diagnostics-dialog,
+.fold-import-dialog {
   width: min(620px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
@@ -76,8 +77,10 @@ button { color: inherit; }
   box-shadow: 0 18px 54px rgb(15 25 34 / .3);
 }
 .diagnostics-dialog { width: min(760px, calc(100vw - 48px)); }
+.fold-import-dialog { width: min(900px, calc(100vw - 48px)); }
 .new-project-dialog > header,
-.diagnostics-dialog > header {
+.diagnostics-dialog > header,
+.fold-import-dialog > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -86,7 +89,8 @@ button { color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .new-project-dialog h2,
-.diagnostics-dialog h2 { margin: 3px 0 0; font-size: 21px; }
+.diagnostics-dialog h2,
+.fold-import-dialog h2 { margin: 3px 0 0; font-size: 21px; }
 .dialog-eyebrow {
   color: var(--accent);
   font-size: 11px;
@@ -134,14 +138,16 @@ button { color: inherit; }
 .dialog-note { color: var(--muted); }
 .dialog-error { padding: 8px 10px; border-radius: 5px; background: #f9e2e2; color: #913535; }
 .new-project-dialog footer,
-.diagnostics-dialog footer {
+.diagnostics-dialog footer,
+.fold-import-dialog > footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   padding-top: 2px;
 }
 .new-project-dialog footer button,
-.diagnostics-dialog footer button {
+.diagnostics-dialog footer button,
+.fold-import-dialog > footer button {
   min-width: 94px;
   padding: 7px 13px;
   border: 1px solid var(--border);
@@ -149,10 +155,14 @@ button { color: inherit; }
   background: var(--panel-strong);
 }
 .new-project-dialog footer .primary,
-.diagnostics-dialog footer .primary { border-color: var(--accent); background: var(--accent); color: white; }
+.diagnostics-dialog footer .primary,
+.fold-import-dialog > footer .primary { border-color: var(--accent); background: var(--accent); color: white; }
 .new-project-dialog button:disabled,
 .new-project-dialog input:disabled,
-.diagnostics-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.diagnostics-dialog button:disabled,
+.fold-import-dialog button:disabled,
+.fold-import-dialog input:disabled,
+.fold-import-dialog select:disabled { opacity: .5; cursor: not-allowed; }
 .diagnostics-dialog-body {
   display: grid;
   gap: 14px;
@@ -178,6 +188,139 @@ button { color: inherit; }
   tab-size: 2;
 }
 .diagnostics-notice { min-height: 19px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.fold-import-dialog-body {
+  display: grid;
+  gap: 16px;
+  padding: 18px 22px;
+  overflow: auto;
+}
+.fold-import-dialog > footer {
+  padding: 0 22px 22px;
+}
+.fold-import-overview {
+  display: grid;
+  grid-template-columns: minmax(300px, 1.4fr) minmax(220px, .8fr);
+  gap: 16px;
+}
+.fold-import-preview {
+  position: relative;
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, rgb(203 212 220 / .22) 1px, transparent 1px),
+    linear-gradient(rgb(203 212 220 / .22) 1px, transparent 1px),
+    var(--panel);
+  background-size: 20px 20px;
+}
+.fold-import-preview svg {
+  width: calc(100% - 24px);
+  height: 196px;
+  overflow: visible;
+}
+.fold-import-preview > p { margin: 0; color: var(--muted); font-size: 12px; }
+.fold-import-preview > span {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / .9);
+  color: var(--muted);
+  font-size: 10px;
+}
+.fold-preview-edge {
+  stroke: #7a8791;
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+}
+.fold-preview-edge.assignment-m { stroke: var(--mountain); }
+.fold-preview-edge.assignment-v { stroke: var(--valley); stroke-dasharray: 5 3; }
+.fold-preview-edge.assignment-b { stroke: #26313b; stroke-width: 2px; }
+.fold-preview-edge.assignment-c { stroke: #1e1e1e; stroke-width: 2px; stroke-dasharray: 7 2 1 2; }
+.fold-preview-edge.assignment-f,
+.fold-preview-edge.assignment-u,
+.fold-preview-edge.assignment-j { stroke: #8d969e; stroke-dasharray: 2 3; }
+.fold-import-metadata {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.fold-import-metadata div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border);
+}
+.fold-import-metadata div:last-child { border-bottom: 0; }
+.fold-import-metadata dt { color: var(--muted); font-size: 11px; font-weight: 700; }
+.fold-import-metadata dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.fold-import-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+.dialog-field small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.dialog-field [aria-invalid="true"] { border-color: #c85959; outline-color: #c85959; }
+.fold-import-mapping,
+.fold-import-warnings {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.fold-import-mapping h3,
+.fold-import-warnings h3 { margin: 0; font-size: 13px; }
+.fold-import-mapping > p,
+.fold-import-warnings > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.fold-import-mapping-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+.fold-import-mapping-list label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(135px, .8fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.fold-import-mapping-list b { color: var(--muted); font-weight: 500; }
+.fold-import-mapping-list select {
+  min-width: 0;
+  width: 100%;
+  padding: 6px 7px;
+  border: 1px solid var(--border-dark);
+  border-radius: 5px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.fold-import-fixed-mapping { color: var(--muted); }
+.fold-import-attention { color: #913535 !important; }
+.fold-import-warnings { border-color: #d9bf7b; background: #fffaf0; }
+.fold-import-warnings ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: #735d25;
+  font-size: 11px;
+  line-height: 1.5;
+}
 
 .workspace {
   min-height: 0;

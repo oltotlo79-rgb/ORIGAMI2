@@ -1,4 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
+import {
+  FOLD_ASSIGNMENT_CODES,
+  type FoldImportPreview,
+  type FoldImportSettings,
+} from './foldImport.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -97,6 +102,11 @@ export type PaperPropertySettings = {
 export type ProjectFileResponse = {
   canceled: boolean
   project: ProjectSnapshot
+}
+
+export type FoldImportPreviewResponse = {
+  canceled: boolean
+  preview: FoldImportPreview | null
 }
 
 export type EdgeIntersectionResponse = {
@@ -347,6 +357,33 @@ export function saveProject() {
 
 export function saveProjectAs() {
   return invoke<ProjectFileResponse>('save_project_as')
+}
+
+export function previewFoldImport() {
+  return invoke<FoldImportPreviewResponse>('preview_fold_import')
+}
+
+export function applyFoldImport(
+  expectedProjectId: string,
+  expectedRevision: number,
+  settings: FoldImportSettings,
+) {
+  const assignmentMappings = FOLD_ASSIGNMENT_CODES.flatMap((source) => {
+    const target = settings.mappings[source]
+    return target ? [{ source, target }] : []
+  })
+  return invoke<ProjectSnapshot>('apply_fold_import', {
+    previewId: settings.importId,
+    expectedProjectId,
+    expectedRevision,
+    name: settings.name,
+    millimetersPerUnit: settings.mmPerUnit,
+    assignmentMappings,
+  })
+}
+
+export function cancelFoldImport(previewId: string) {
+  return invoke<void>('cancel_fold_import', { previewId })
 }
 
 export function addInstructionStep(

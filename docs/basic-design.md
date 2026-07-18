@@ -573,6 +573,28 @@ native file dialog
 - 成功時は履歴、手順、保存先、保存済みbaselineを引き継がず、revision 0・dirtyの新規projectへ一度だけ置換する。旧projectへ戻るUndoは作らない。
 - 上限はファイル16 MiB、頂点1万、辺1万、境界1,414辺、交差候補100万件、変換後の内部包含判定100万件とする。未知JSONは展開・保持せず読み捨て、縮尺適用後にも作業量と幾何を再検証する。
 
+### 12.2 SVG取込
+
+静的SVG 1.1/2の直線subsetを、色だけで線種を推測せず、利用者がsource groupと用紙外周を確認して一枚紙projectへ変換する。許可する要素・path command・style、縮尺、交差分割、情報損失、資源上限の正本は[SVG取込契約](svg-import-contract.md)とする。
+
+```text
+native file dialog
+  → 16 MiB上限付きread
+  → network非依存のstrict/bounded XML parse
+  → 直線geometry・style group・閉路候補をpreview
+  → 全線種 / 外周 / 一様縮尺 / Cut許可 / 警告確認
+  → stageした同一bytesを再parse・平面graph化
+  → project instance・ID・revision照合
+  → 新規未保存projectへatomic replace
+```
+
+- `line`、`polyline`、`polygon`、非角丸`rect`と直線commandだけの`path`を扱い、nested affine transformを反映する。曲線、text、画像、`use`、script、animation、外部resourceは実行・取得・flattenしない。
+- presentation attribute、inline style、継承、単純な`.class` CSSをsource groupへ集約する。`data-origami-kind`だけは初期候補にできるが、全groupを`Boundary / Mountain / Valley / Auxiliary / Cut / Ignore`へ明示的に割り当てる。
+- 明示的な閉路候補、viewBox矩形の生成、またはBoundary割当のいずれか一つで外周を選ぶ。最大面積や線色から外周を自動確定しない。
+- 倍率、全線種割当、外周選択をRust側で非破壊検証し、最終用紙幅・高さと変換後のCut有無を表示する。opaqueな検証IDをstage token、project identity/revision、倍率のbit列、canonical mapping、外周へ束縛し、設定変更や別世代では適用を拒否する。
+- X/T接点と外周接点をexactな交点で分割する。許容差snap、隙間補修、共線重複の推測統合は行わない。
+- DTD/entity宣言を拒否し、raw XML、path、実ファイル名をWebViewへ渡さない。opaque stage IDと開始時project identityを再照合し、取消・失敗・stale操作では既存projectを変更しない。
+
 ## 13. セキュリティ設計
 
 - Tauri capabilityをファイル選択、設定、更新確認等へ限定する。

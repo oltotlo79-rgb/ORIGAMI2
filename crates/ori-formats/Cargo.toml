@@ -8,8 +8,10 @@ repository.workspace = true
 [dependencies]
 ori-domain = { path = "../ori-domain" }
 ori-geometry = { path = "../ori-geometry" }
+quick-xml = { version = "0.41.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"
+svgtypes = { version = "=0.16.1", default-features = false, features = ["std"] }
 thiserror.workspace = true
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }

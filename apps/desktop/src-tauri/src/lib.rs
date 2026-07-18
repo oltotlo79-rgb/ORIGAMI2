@@ -31,7 +31,10 @@ use ori_domain::{
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
     FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, Ori2Limits,
-    ProjectDocument, read_fold_preview, read_project_ori2_with_limits, write_project_ori2,
+    ProjectDocument, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions,
+    SvgDashPattern, SvgGroupMapping, SvgGroupTarget, SvgPreview, SvgPreviewWarning,
+    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind, read_fold_preview,
+    read_project_ori2_with_limits, read_svg_preview, write_project_ori2,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -67,6 +70,10 @@ const MAX_FOLD_IMPORT_PREVIEW_EDGES: usize = 5_000;
 const MAX_FOLD_IMPORT_CONTAINMENT_TESTS: usize = 1_000_000;
 const FOLD_IMPORT_FILE_LABEL: &str = "選択したFOLDファイル";
 const FOLD_IMPORT_FALLBACK_NAME: &str = "FOLDインポート";
+const MAX_SVG_IMPORT_FILE_SIZE: u64 = 16 * 1024 * 1024;
+const MAX_SVG_IMPORT_PREVIEW_EDGES: usize = 5_000;
+const SVG_IMPORT_FILE_LABEL: &str = "選択したSVGファイル";
+const SVG_IMPORT_FALLBACK_NAME: &str = "SVGインポート";
 static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
@@ -83,6 +90,43 @@ struct PendingFoldImport {
     expected_project_id: ProjectId,
     expected_revision: u64,
     bytes: Arc<[u8]>,
+}
+
+#[derive(Default)]
+struct SvgImportState(Mutex<SvgImportSlot>);
+
+#[derive(Default)]
+struct SvgImportSlot {
+    pending: Option<PendingSvgImport>,
+    validation_generation_id: Option<ProjectId>,
+    validation: Option<SvgImportSettingsValidation>,
+    last_cancelled_id: Option<ProjectId>,
+}
+
+#[derive(Clone)]
+struct PendingSvgImport {
+    import_id: ProjectId,
+    expected_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    bytes: Arc<[u8]>,
+}
+
+#[derive(Clone)]
+struct SvgImportSettingsValidation {
+    validation_id: ProjectId,
+    import_id: ProjectId,
+    expected_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    millimeters_per_unit_bits: u64,
+    boundary_candidate: Option<SvgBoundaryCandidateId>,
+    group_mappings: Vec<SvgGroupMapping>,
+}
+
+struct SvgImportSettingsValidationCompletion {
+    validation: SvgImportSettingsValidation,
+    geometry: SvgImportGeometryValidation,
 }
 
 #[derive(Default)]
@@ -290,6 +334,97 @@ struct FoldImportAssignmentMappingRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum FoldImportTargetRequest {
+    Mountain,
+    Valley,
+    Auxiliary,
+    Cut,
+    Ignore,
+}
+
+#[derive(Debug, Serialize)]
+struct SvgImportPreviewResponse {
+    canceled: bool,
+    preview: Option<SvgImportPreviewSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+struct SvgImportSettingsValidationResponse {
+    validation_id: ProjectId,
+    preview_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    millimeters_per_unit: f64,
+    boundary_candidate_id: Option<u16>,
+    width_mm: f64,
+    height_mm: f64,
+    has_cuts: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SvgImportPreviewSnapshot {
+    import_id: ProjectId,
+    file_name: &'static str,
+    suggested_name: String,
+    default_mm_per_unit: Option<f64>,
+    root_view_box: Option<SvgRootViewBox>,
+    root_physical_size: SvgRootPhysicalSize,
+    source_segment_count: usize,
+    style_groups: Vec<SvgImportStyleGroupSnapshot>,
+    boundary_candidates: Vec<SvgBoundaryCandidateSnapshot>,
+    preview_vertices: Vec<SvgImportPreviewVertex>,
+    preview_edges: Vec<SvgImportPreviewEdge>,
+    preview_truncated: bool,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct SvgImportStyleGroupSnapshot {
+    group_id: u16,
+    element_count: usize,
+    segment_count: usize,
+    stroke: Option<String>,
+    stroke_color: Option<String>,
+    dash_array: Option<String>,
+    classes: Vec<String>,
+    layer: Option<String>,
+    representative_id: Option<String>,
+    semantic_hint: Option<SvgImportTargetRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct SvgBoundaryCandidateSnapshot {
+    candidate_id: u16,
+    kind: &'static str,
+    segment_count: usize,
+    width: f64,
+    height: f64,
+    vertices: Vec<SvgImportPreviewVertex>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+struct SvgImportPreviewVertex {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct SvgImportPreviewEdge {
+    start: usize,
+    end: usize,
+    group_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SvgImportStyleMappingRequest {
+    group_id: u16,
+    target: SvgImportTargetRequest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SvgImportTargetRequest {
+    Boundary,
     Mountain,
     Valley,
     Auxiliary,
@@ -671,7 +806,7 @@ async fn apply_fold_import(
     assignment_mappings: Vec<FoldImportAssignmentMappingRequest>,
 ) -> Result<ProjectSnapshot, String> {
     let name = normalize_project_name(&name)?;
-    validate_fold_import_scale(millimeters_per_unit)?;
+    validate_import_scale(millimeters_per_unit)?;
     let mappings = validate_fold_import_mapping_requests(assignment_mappings)?;
     let pending = pending_fold_import(
         &import_state,
@@ -707,6 +842,254 @@ fn cancel_fold_import(
     preview_id: ProjectId,
 ) -> Result<(), String> {
     cancel_pending_fold_import(&state, preview_id)
+}
+
+#[tauri::command]
+async fn preview_svg_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    import_state: State<'_, SvgImportState>,
+) -> Result<SvgImportPreviewResponse, String> {
+    let (expected_instance_id, expected_project_id, expected_revision, initial_directory) = {
+        let project = lock_project(&state)?;
+        (
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            project
+                .current_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+        )
+    };
+    {
+        let mut slot = lock_svg_import(&import_state)?;
+        slot.pending = None;
+        slot.validation_generation_id = None;
+        slot.validation = None;
+        slot.last_cancelled_id = None;
+    }
+
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("SVG straight-line crease pattern", &["svg"])
+        .set_title("SVG展開図を取り込む");
+    if let Some(directory) = initial_directory {
+        dialog = dialog.set_directory(directory);
+    }
+    let Some(selected) = dialog.blocking_pick_file() else {
+        return Ok(SvgImportPreviewResponse {
+            canceled: true,
+            preview: None,
+        });
+    };
+    let path = selected
+        .simplified()
+        .into_path()
+        .map_err(|_| "the selected location is not a local file".to_owned())?;
+    let (bytes, preview) =
+        tauri::async_runtime::spawn_blocking(move || load_svg_import_preview(&path))
+            .await
+            .map_err(|_| "SVG import task failed".to_owned())??;
+
+    {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+    }
+    let import_id = stage_pending_svg_import(
+        &import_state,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        bytes,
+    )?;
+    let snapshot = match svg_import_preview_snapshot(import_id, &preview) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            cancel_pending_svg_import(&import_state, import_id)?;
+            return Err(error);
+        }
+    };
+    Ok(SvgImportPreviewResponse {
+        canceled: false,
+        preview: Some(snapshot),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn validate_svg_import_settings(
+    state: State<'_, AppState>,
+    import_state: State<'_, SvgImportState>,
+    preview_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    millimeters_per_unit: f64,
+    boundary_candidate_id: Option<u16>,
+    style_mappings: Vec<SvgImportStyleMappingRequest>,
+) -> Result<SvgImportSettingsValidationResponse, String> {
+    let validation_id = ProjectId::new();
+    let pending = begin_svg_import_settings_validation(
+        &import_state,
+        validation_id,
+        preview_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+
+    let result = async {
+        validate_import_scale(millimeters_per_unit)?;
+        let group_mappings = svg_import_group_mappings(style_mappings)?;
+        let boundary_candidate = boundary_candidate_id.map(SvgBoundaryCandidateId);
+        {
+            let project = lock_project(&state)?;
+            ensure_expected_project(
+                &project,
+                pending.expected_instance_id,
+                pending.expected_project_id,
+                pending.expected_revision,
+            )?;
+        }
+
+        let bytes = Arc::clone(&pending.bytes);
+        let conversion_mappings = group_mappings.clone();
+        let dimensions = tauri::async_runtime::spawn_blocking(move || {
+            validate_svg_import_geometry(
+                &bytes,
+                millimeters_per_unit,
+                conversion_mappings,
+                boundary_candidate,
+            )
+        })
+        .await
+        .map_err(|_| "SVG boundary validation task failed".to_owned())??;
+
+        let mut slot = lock_svg_import(&import_state)?;
+        let project = lock_project(&state)?;
+        complete_svg_import_settings_validation(
+            &mut slot,
+            &project,
+            SvgImportSettingsValidationCompletion {
+                validation: SvgImportSettingsValidation {
+                    validation_id,
+                    import_id: pending.import_id,
+                    expected_instance_id: pending.expected_instance_id,
+                    expected_project_id: pending.expected_project_id,
+                    expected_revision: pending.expected_revision,
+                    millimeters_per_unit_bits: millimeters_per_unit.to_bits(),
+                    boundary_candidate,
+                    group_mappings,
+                },
+                geometry: dimensions,
+            },
+        )
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = abandon_svg_import_settings_validation(&import_state, validation_id);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn apply_svg_import(
+    state: State<'_, AppState>,
+    import_state: State<'_, SvgImportState>,
+    preview_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    replace_dirty_project_confirmed: bool,
+    name: String,
+    millimeters_per_unit: f64,
+    boundary_candidate_id: Option<u16>,
+    validation_id: ProjectId,
+    boundary_confirmed: bool,
+    style_mappings: Vec<SvgImportStyleMappingRequest>,
+    warnings_acknowledged: bool,
+    cutting_allowed_confirmed: bool,
+) -> Result<ProjectSnapshot, String> {
+    let name = normalize_project_name(&name)?;
+    validate_import_scale(millimeters_per_unit)?;
+    let group_mappings = svg_import_group_mappings(style_mappings)?;
+    let boundary_candidate = boundary_candidate_id.map(SvgBoundaryCandidateId);
+    let pending = {
+        let slot = lock_svg_import(&import_state)?;
+        let pending =
+            pending_svg_import_in_slot(&slot, preview_id, expected_project_id, expected_revision)?;
+        ensure_svg_import_settings_validation(
+            &slot,
+            pending,
+            validation_id,
+            boundary_candidate,
+            millimeters_per_unit,
+            &group_mappings,
+        )?;
+        pending.clone()
+    };
+    let bytes = Arc::clone(&pending.bytes);
+    let final_group_mappings = group_mappings.clone();
+    let replacement = tauri::async_runtime::spawn_blocking(move || {
+        build_svg_import_replacement(
+            &bytes,
+            SvgImportReplacementOptions {
+                name,
+                millimeters_per_unit,
+                group_mappings,
+                boundary_candidate,
+                boundary_confirmed,
+                warnings_acknowledged,
+                cutting_allowed_confirmed,
+            },
+        )
+    })
+    .await
+    .map_err(|_| "SVG conversion task failed".to_owned())??;
+
+    let mut pending_slot = lock_svg_import(&import_state)?;
+    let mut project = lock_project(&state)?;
+    let pending = pending_svg_import_in_slot(
+        &pending_slot,
+        preview_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    ensure_svg_import_settings_validation(
+        &pending_slot,
+        pending,
+        validation_id,
+        boundary_candidate,
+        millimeters_per_unit,
+        &final_group_mappings,
+    )?;
+    let snapshot = commit_svg_import_replacement(
+        &mut project,
+        &mut pending_slot.pending,
+        preview_id,
+        expected_project_id,
+        expected_revision,
+        replace_dirty_project_confirmed,
+        replacement,
+    )?;
+    pending_slot.validation_generation_id = None;
+    pending_slot.validation = None;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn cancel_svg_import(
+    state: State<'_, SvgImportState>,
+    preview_id: ProjectId,
+) -> Result<(), String> {
+    cancel_pending_svg_import(&state, preview_id)
 }
 
 #[tauri::command]
@@ -1296,6 +1679,13 @@ fn lock_fold_import(
         .map_err(|_| "the FOLD import state lock is poisoned".to_owned())
 }
 
+fn lock_svg_import(state: &SvgImportState) -> Result<MutexGuard<'_, SvgImportSlot>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "the SVG import state lock is poisoned".to_owned())
+}
+
 fn stage_pending_fold_import(
     state: &FoldImportState,
     expected_instance_id: ProjectId,
@@ -1372,6 +1762,209 @@ fn commit_fold_import_replacement(
         pending.expected_project_id,
         pending.expected_revision,
     )?;
+    *project = replacement;
+    *pending_slot = None;
+    Ok(snapshot(project))
+}
+
+fn stage_pending_svg_import(
+    state: &SvgImportState,
+    expected_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    bytes: Vec<u8>,
+) -> Result<ProjectId, String> {
+    let import_id = ProjectId::new();
+    let mut slot = lock_svg_import(state)?;
+    slot.validation_generation_id = None;
+    slot.validation = None;
+    slot.last_cancelled_id = None;
+    slot.pending = Some(PendingSvgImport {
+        import_id,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        bytes: Arc::from(bytes),
+    });
+    Ok(import_id)
+}
+
+#[cfg(test)]
+fn pending_svg_import(
+    state: &SvgImportState,
+    import_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<PendingSvgImport, String> {
+    let slot = lock_svg_import(state)?;
+    Ok(
+        pending_svg_import_in_slot(&slot, import_id, expected_project_id, expected_revision)?
+            .clone(),
+    )
+}
+
+fn pending_svg_import_in_slot(
+    slot: &SvgImportSlot,
+    import_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<&PendingSvgImport, String> {
+    let pending = slot
+        .pending
+        .as_ref()
+        .ok_or_else(|| "the SVG import preview is no longer available".to_owned())?;
+    if pending.import_id != import_id {
+        return Err("the SVG import preview was replaced by a newer preview".to_owned());
+    }
+    if pending.expected_project_id != expected_project_id
+        || pending.expected_revision != expected_revision
+    {
+        return Err("the SVG import preview belongs to a different project state".to_owned());
+    }
+    Ok(pending)
+}
+
+fn begin_svg_import_settings_validation(
+    state: &SvgImportState,
+    validation_id: ProjectId,
+    import_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<PendingSvgImport, String> {
+    let mut slot = lock_svg_import(state)?;
+    let pending =
+        pending_svg_import_in_slot(&slot, import_id, expected_project_id, expected_revision)?
+            .clone();
+    slot.validation_generation_id = Some(validation_id);
+    slot.validation = None;
+    Ok(pending)
+}
+
+fn abandon_svg_import_settings_validation(
+    state: &SvgImportState,
+    validation_id: ProjectId,
+) -> Result<(), String> {
+    let mut slot = lock_svg_import(state)?;
+    if slot.validation_generation_id == Some(validation_id) {
+        slot.validation_generation_id = None;
+        slot.validation = None;
+    }
+    Ok(())
+}
+
+fn ensure_svg_import_settings_validation(
+    slot: &SvgImportSlot,
+    pending: &PendingSvgImport,
+    validation_id: ProjectId,
+    boundary_candidate: Option<SvgBoundaryCandidateId>,
+    millimeters_per_unit: f64,
+    group_mappings: &[SvgGroupMapping],
+) -> Result<(), String> {
+    let validation = slot
+        .validation
+        .as_ref()
+        .ok_or_else(|| "the SVG import settings have not been validated".to_owned())?;
+    if slot.validation_generation_id != Some(validation_id)
+        || validation.validation_id != validation_id
+        || validation.import_id != pending.import_id
+        || validation.expected_instance_id != pending.expected_instance_id
+        || validation.expected_project_id != pending.expected_project_id
+        || validation.expected_revision != pending.expected_revision
+        || validation.millimeters_per_unit_bits != millimeters_per_unit.to_bits()
+        || validation.boundary_candidate != boundary_candidate
+        || validation.group_mappings != group_mappings
+    {
+        return Err("the SVG import settings changed after validation".to_owned());
+    }
+    Ok(())
+}
+
+fn complete_svg_import_settings_validation(
+    slot: &mut SvgImportSlot,
+    project: &ProjectState,
+    completion: SvgImportSettingsValidationCompletion,
+) -> Result<SvgImportSettingsValidationResponse, String> {
+    let validation = &completion.validation;
+    let validation_id = validation.validation_id;
+    if slot.validation_generation_id != Some(validation_id) {
+        return Err("the SVG import settings validation was superseded".to_owned());
+    }
+    let current = pending_svg_import_in_slot(
+        slot,
+        validation.import_id,
+        validation.expected_project_id,
+        validation.expected_revision,
+    )?;
+    if current.expected_instance_id != validation.expected_instance_id {
+        return Err("the SVG import preview was replaced by a newer preview".to_owned());
+    }
+    ensure_expected_project(
+        project,
+        validation.expected_instance_id,
+        validation.expected_project_id,
+        validation.expected_revision,
+    )?;
+
+    let response = SvgImportSettingsValidationResponse {
+        validation_id,
+        preview_id: validation.import_id,
+        expected_project_id: validation.expected_project_id,
+        expected_revision: validation.expected_revision,
+        millimeters_per_unit: f64::from_bits(validation.millimeters_per_unit_bits),
+        boundary_candidate_id: validation.boundary_candidate.map(|candidate| candidate.0),
+        width_mm: completion.geometry.width_mm,
+        height_mm: completion.geometry.height_mm,
+        has_cuts: completion.geometry.has_cuts,
+    };
+    slot.validation = Some(completion.validation);
+    Ok(response)
+}
+
+fn cancel_pending_svg_import(state: &SvgImportState, import_id: ProjectId) -> Result<(), String> {
+    let mut slot = lock_svg_import(state)?;
+    match slot.pending.as_ref() {
+        None if slot.last_cancelled_id == Some(import_id) => Ok(()),
+        None => Err("the SVG import preview is no longer available".to_owned()),
+        Some(current) if current.import_id == import_id => {
+            slot.pending = None;
+            slot.validation_generation_id = None;
+            slot.validation = None;
+            slot.last_cancelled_id = Some(import_id);
+            Ok(())
+        }
+        Some(_) => Err("the SVG import preview was replaced by a newer preview".to_owned()),
+    }
+}
+
+fn commit_svg_import_replacement(
+    project: &mut ProjectState,
+    pending_slot: &mut Option<PendingSvgImport>,
+    import_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    replace_dirty_project_confirmed: bool,
+    replacement: ProjectState,
+) -> Result<ProjectSnapshot, String> {
+    let pending = pending_slot
+        .as_ref()
+        .ok_or_else(|| "the SVG import preview is no longer available".to_owned())?;
+    if pending.import_id != import_id {
+        return Err("the SVG import preview was replaced by a newer preview".to_owned());
+    }
+    if pending.expected_project_id != expected_project_id
+        || pending.expected_revision != expected_revision
+    {
+        return Err("the SVG import preview belongs to a different project state".to_owned());
+    }
+    ensure_expected_project(
+        project,
+        pending.expected_instance_id,
+        pending.expected_project_id,
+        pending.expected_revision,
+    )?;
+    if project.is_dirty() && !replace_dirty_project_confirmed {
+        return Err("replacing a dirty project requires explicit confirmation".to_owned());
+    }
 
     *project = replacement;
     *pending_slot = None;
@@ -1446,12 +2039,12 @@ fn normalize_project_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_owned())
 }
 
-fn validate_fold_import_scale(millimeters_per_unit: f64) -> Result<(), String> {
+fn validate_import_scale(millimeters_per_unit: f64) -> Result<(), String> {
     if !millimeters_per_unit.is_finite() || millimeters_per_unit <= 0.0 {
-        return Err("FOLD import scale must be a finite number greater than zero".to_owned());
+        return Err("import scale must be a finite number greater than zero".to_owned());
     }
     if millimeters_per_unit > 1_000_000_000.0 {
-        return Err("FOLD import scale must not exceed 1,000,000,000 mm per unit".to_owned());
+        return Err("import scale must not exceed 1,000,000,000 mm per unit".to_owned());
     }
     Ok(())
 }
@@ -2018,10 +2611,45 @@ fn read_fold_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn read_svg_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let file = File::open(path)
+        .map_err(|error| format!("selected SVG file could not be opened: {error}"))?;
+    let declared_size = file
+        .metadata()
+        .map_err(|error| format!("selected SVG file could not be inspected: {error}"))?
+        .len();
+    if declared_size > MAX_SVG_IMPORT_FILE_SIZE {
+        return Err(format!(
+            "selected SVG file is {declared_size} bytes; the limit is {MAX_SVG_IMPORT_FILE_SIZE} bytes"
+        ));
+    }
+
+    let capacity = usize::try_from(declared_size)
+        .unwrap_or(0)
+        .min(usize::try_from(MAX_SVG_IMPORT_FILE_SIZE).unwrap_or(usize::MAX));
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(MAX_SVG_IMPORT_FILE_SIZE.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("selected SVG file could not be read: {error}"))?;
+    if bytes.len() as u64 > MAX_SVG_IMPORT_FILE_SIZE {
+        return Err(format!(
+            "selected SVG file grew beyond the limit of {MAX_SVG_IMPORT_FILE_SIZE} bytes while it was read"
+        ));
+    }
+    Ok(bytes)
+}
+
 fn load_fold_import_preview(path: &Path) -> Result<(Vec<u8>, FoldPreview), String> {
     let bytes = read_fold_import_bytes(path)?;
     let preview = read_fold_preview(&bytes)
         .map_err(|error| format!("selected FOLD file is invalid: {error}"))?;
+    Ok((bytes, preview))
+}
+
+fn load_svg_import_preview(path: &Path) -> Result<(Vec<u8>, SvgPreview), String> {
+    let bytes = read_svg_import_bytes(path)?;
+    let preview = read_svg_preview(&bytes)
+        .map_err(|_| "selected SVG file is invalid or outside the supported subset".to_owned())?;
     Ok((bytes, preview))
 }
 
@@ -2220,6 +2848,336 @@ fn fold_import_warning_message(warning: &FoldPreviewWarning) -> String {
     }
 }
 
+fn svg_import_preview_snapshot(
+    import_id: ProjectId,
+    preview: &SvgPreview,
+) -> Result<SvgImportPreviewSnapshot, String> {
+    let mut selected_positions = Vec::new();
+    let mut selected = vec![false; preview.edges().len()];
+    let edge_positions = preview
+        .edges()
+        .iter()
+        .enumerate()
+        .map(|(position, edge)| (edge.index, position))
+        .collect::<HashMap<_, _>>();
+
+    for source_edge in preview
+        .boundary_candidates()
+        .iter()
+        .flat_map(|candidate| candidate.source_edge_indices.iter().copied())
+    {
+        let Some(&position) = edge_positions.get(&source_edge) else {
+            continue;
+        };
+        if !selected[position] && selected_positions.len() < MAX_SVG_IMPORT_PREVIEW_EDGES {
+            selected[position] = true;
+            selected_positions.push(position);
+        }
+    }
+    for group in preview.style_groups() {
+        let Some(position) = preview
+            .edges()
+            .iter()
+            .position(|edge| edge.style_group == group.id)
+        else {
+            continue;
+        };
+        if !selected[position] && selected_positions.len() < MAX_SVG_IMPORT_PREVIEW_EDGES {
+            selected[position] = true;
+            selected_positions.push(position);
+        }
+    }
+    for (position, is_selected) in selected.iter_mut().enumerate() {
+        if selected_positions.len() == MAX_SVG_IMPORT_PREVIEW_EDGES {
+            break;
+        }
+        if !*is_selected {
+            *is_selected = true;
+            selected_positions.push(position);
+        }
+    }
+    selected_positions.sort_unstable_by_key(|position| preview.edges()[*position].index);
+
+    let vertex_positions = preview
+        .vertices()
+        .iter()
+        .enumerate()
+        .map(|(position, vertex)| (vertex.index, position))
+        .collect::<HashMap<_, _>>();
+    let mut source_vertex_indices = selected_positions
+        .iter()
+        .flat_map(|position| preview.edges()[*position].vertices)
+        .filter(|source| vertex_positions.contains_key(source))
+        .collect::<Vec<_>>();
+    source_vertex_indices.sort_unstable();
+    source_vertex_indices.dedup();
+    let dense_vertex_indices = source_vertex_indices
+        .iter()
+        .enumerate()
+        .map(|(dense, source)| (*source, dense))
+        .collect::<HashMap<_, _>>();
+    let preview_vertices = source_vertex_indices
+        .iter()
+        .filter_map(|source| {
+            let source_position = *vertex_positions.get(source)?;
+            let position = preview.vertices().get(source_position)?.position;
+            Some(SvgImportPreviewVertex {
+                x: position.x,
+                y: position.y,
+            })
+        })
+        .collect::<Vec<_>>();
+    let preview_edges = selected_positions
+        .iter()
+        .filter_map(|position| {
+            let edge = preview.edges().get(*position)?;
+            Some(SvgImportPreviewEdge {
+                start: *dense_vertex_indices.get(&edge.vertices[0])?,
+                end: *dense_vertex_indices.get(&edge.vertices[1])?,
+                group_id: edge.style_group.0,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let style_groups = preview
+        .style_groups()
+        .iter()
+        .map(|group| {
+            let color = svg_import_color(group.stroke);
+            SvgImportStyleGroupSnapshot {
+                group_id: group.id.0,
+                element_count: group.element_count,
+                segment_count: group.segment_count,
+                stroke: Some(format!("{color} / 幅 {}", group.stroke_width)),
+                stroke_color: Some(color),
+                dash_array: match &group.dash_pattern {
+                    SvgDashPattern::Solid => None,
+                    SvgDashPattern::Dashes(lengths) => Some(
+                        lengths
+                            .iter()
+                            .map(|length| length.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                },
+                classes: group.classes.clone(),
+                layer: group.layer.clone(),
+                representative_id: group.representative_id.clone(),
+                semantic_hint: group.semantic.as_deref().and_then(svg_import_semantic_hint),
+            }
+        })
+        .collect::<Vec<_>>();
+    let boundary_candidates = preview
+        .boundary_candidates()
+        .iter()
+        .map(|candidate| {
+            let vertices = candidate
+                .vertex_indices
+                .iter()
+                .filter_map(|source| {
+                    let source_position = *vertex_positions.get(source)?;
+                    let position = preview.vertices().get(source_position)?.position;
+                    Some(SvgImportPreviewVertex {
+                        x: position.x,
+                        y: position.y,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let (width, height) = svg_import_candidate_dimensions(&vertices);
+            SvgBoundaryCandidateSnapshot {
+                candidate_id: candidate.id.0,
+                kind: match candidate.kind {
+                    SvgBoundaryCandidateKind::ViewBox => "view_box",
+                    SvgBoundaryCandidateKind::Polygon => "polygon",
+                    SvgBoundaryCandidateKind::Polyline => "polyline",
+                    SvgBoundaryCandidateKind::Rectangle => "rectangle",
+                    SvgBoundaryCandidateKind::ClosedPath => "closed_path",
+                },
+                segment_count: candidate.vertex_indices.len(),
+                width,
+                height,
+                vertices,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut warnings = preview
+        .warnings()
+        .iter()
+        .map(svg_import_warning_message)
+        .collect::<Vec<_>>();
+    if preview
+        .title()
+        .is_some_and(|title| normalize_project_name(title).is_err())
+    {
+        warnings.push(
+            "SVG内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。".to_owned(),
+        );
+    }
+    if !preview.style_groups().is_empty() {
+        warnings.push(
+            "SVGのstroke色、透明度、線幅、破線表現は線種確認にだけ使用し、取込後には保存しません。"
+                .to_owned(),
+        );
+    }
+    if preview.style_groups().iter().any(|group| {
+        !group.classes.is_empty()
+            || group.layer.is_some()
+            || group.representative_id.is_some()
+            || group.semantic.is_some()
+    }) {
+        warnings.push(
+            "SVGのレイヤー、class、代表ID、data-origami-kindは線種確認にだけ使用し、取込後には保存しません。"
+                .to_owned(),
+        );
+    }
+    if preview.edges().len() > MAX_SVG_IMPORT_PREVIEW_EDGES {
+        warnings.push(format!(
+            "表示上限により{}本の線をプレビューから省略しました。取込本体からは省略しません。",
+            preview.edges().len() - MAX_SVG_IMPORT_PREVIEW_EDGES
+        ));
+    }
+    if warnings.len() > 64 {
+        return Err("SVG import has more than 64 distinct warning categories".to_owned());
+    }
+
+    Ok(SvgImportPreviewSnapshot {
+        import_id,
+        file_name: SVG_IMPORT_FILE_LABEL,
+        suggested_name: preview
+            .title()
+            .and_then(|title| normalize_project_name(title).ok())
+            .unwrap_or_else(|| SVG_IMPORT_FALLBACK_NAME.to_owned()),
+        default_mm_per_unit: preview.recommended_millimetres_per_unit(),
+        root_view_box: preview.root_view_box(),
+        root_physical_size: preview.root_physical_size(),
+        source_segment_count: preview.edges().len(),
+        style_groups,
+        boundary_candidates,
+        preview_vertices,
+        preview_edges,
+        preview_truncated: selected_positions.len() < preview.edges().len(),
+        warnings,
+    })
+}
+
+fn svg_import_color(color: RgbaColor) -> String {
+    if color.alpha == u8::MAX {
+        format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue)
+    } else {
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            color.red, color.green, color.blue, color.alpha
+        )
+    }
+}
+
+fn svg_import_requires_warning_acknowledgement(preview: &SvgPreview) -> bool {
+    !preview.warnings().is_empty()
+        || !preview.style_groups().is_empty()
+        || preview
+            .title()
+            .is_some_and(|title| normalize_project_name(title).is_err())
+        || preview.style_groups().iter().any(|group| {
+            !group.classes.is_empty()
+                || group.layer.is_some()
+                || group.representative_id.is_some()
+                || group.semantic.is_some()
+        })
+        || preview.edges().len() > MAX_SVG_IMPORT_PREVIEW_EDGES
+}
+
+fn svg_import_semantic_hint(value: &str) -> Option<SvgImportTargetRequest> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "boundary" => Some(SvgImportTargetRequest::Boundary),
+        "mountain" => Some(SvgImportTargetRequest::Mountain),
+        "valley" => Some(SvgImportTargetRequest::Valley),
+        "auxiliary" => Some(SvgImportTargetRequest::Auxiliary),
+        "cut" => Some(SvgImportTargetRequest::Cut),
+        "ignore" => Some(SvgImportTargetRequest::Ignore),
+        _ => None,
+    }
+}
+
+fn svg_import_candidate_dimensions(vertices: &[SvgImportPreviewVertex]) -> (f64, f64) {
+    let Some(first) = vertices.first() else {
+        return (0.0, 0.0);
+    };
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.x, first.x, first.y, first.y);
+    for vertex in &vertices[1..] {
+        min_x = min_x.min(vertex.x);
+        max_x = max_x.max(vertex.x);
+        min_y = min_y.min(vertex.y);
+        max_y = max_y.max(vertex.y);
+    }
+    (max_x - min_x, max_y - min_y)
+}
+
+fn svg_import_warning_message(warning: &SvgPreviewWarning) -> String {
+    let count = warning.occurrences;
+    let detail = match &warning.kind {
+        SvgWarningKind::UnsupportedElement(name) => {
+            format!("未対応の要素「{name}」を除外")
+        }
+        SvgWarningKind::UnsupportedAttribute(name) => {
+            format!("未対応の属性「{name}」を無視")
+        }
+        SvgWarningKind::UnsupportedStyleProperty(name) => {
+            format!("未対応のstyle property「{name}」を無視")
+        }
+        SvgWarningKind::UnsupportedCssSelector(_) => "未対応のCSS selectorを無視".to_owned(),
+        SvgWarningKind::UnsupportedPathCommand(command) => {
+            format!("曲線など未対応のpath command「{command}」を含むpathを除外")
+        }
+        SvgWarningKind::UnsupportedPaint(_) => "未対応のstroke指定を持つ線を除外".to_owned(),
+        SvgWarningKind::UnsupportedLengthUnit(_) => {
+            "解決できない長さ指定を持つ形状を除外".to_owned()
+        }
+        SvgWarningKind::ExternalReferenceIgnored => "外部参照を取得せず除外".to_owned(),
+        SvgWarningKind::HiddenGeometryIgnored => "非表示の形状を除外".to_owned(),
+        SvgWarningKind::GeometryWithoutStrokeIgnored => "strokeのない形状を除外".to_owned(),
+        SvgWarningKind::FillIgnored => "塗り情報を保存しない".to_owned(),
+        SvgWarningKind::MetadataIgnored => "SVG metadataを保存しない".to_owned(),
+        SvgWarningKind::EmptyGeometryIgnored => "空の形状を除外".to_owned(),
+        SvgWarningKind::PhysicalScaleNeedsSelection => {
+            "物理寸法を一意に決められないため縮尺の入力が必要".to_owned()
+        }
+        SvgWarningKind::CssPixelScaleAssumed => {
+            "CSSの96 px = 1 inch換算を使用しました。作者の意図と一致しない可能性があります"
+                .to_owned()
+        }
+    };
+    format!("{detail}（{count}件）。")
+}
+
+fn svg_import_group_target(target: SvgImportTargetRequest) -> SvgGroupTarget {
+    match target {
+        SvgImportTargetRequest::Boundary => SvgGroupTarget::Boundary,
+        SvgImportTargetRequest::Mountain => SvgGroupTarget::Mountain,
+        SvgImportTargetRequest::Valley => SvgGroupTarget::Valley,
+        SvgImportTargetRequest::Auxiliary => SvgGroupTarget::Auxiliary,
+        SvgImportTargetRequest::Cut => SvgGroupTarget::Cut,
+        SvgImportTargetRequest::Ignore => SvgGroupTarget::Ignore,
+    }
+}
+
+fn svg_import_group_mappings(
+    style_mappings: Vec<SvgImportStyleMappingRequest>,
+) -> Result<Vec<SvgGroupMapping>, String> {
+    if style_mappings.len() > 64 {
+        return Err("SVG style mapping has more than 64 groups".to_owned());
+    }
+    let mut group_mappings = style_mappings
+        .into_iter()
+        .map(|mapping| SvgGroupMapping {
+            group: SvgStyleGroupId(mapping.group_id),
+            target: svg_import_group_target(mapping.target),
+        })
+        .collect::<Vec<_>>();
+    group_mappings.sort_by_key(|mapping| mapping.group);
+    Ok(group_mappings)
+}
+
 fn fold_ignored_field_label(name: &str) -> Option<&'static str> {
     match name {
         "file_frames" => Some("複数フレーム"),
@@ -2307,11 +3265,169 @@ fn build_fold_import_replacement(
             paper_validation.issues.len()
         ));
     }
-    validate_fold_import_active_edge_containment(&replacement)?;
+    validate_import_active_edge_containment(&replacement, "FOLD")?;
     Ok(replacement)
 }
 
-fn validate_fold_import_active_edge_containment(project: &ProjectState) -> Result<(), String> {
+struct SvgImportReplacementOptions {
+    name: String,
+    millimeters_per_unit: f64,
+    group_mappings: Vec<SvgGroupMapping>,
+    boundary_candidate: Option<SvgBoundaryCandidateId>,
+    boundary_confirmed: bool,
+    warnings_acknowledged: bool,
+    cutting_allowed_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SvgImportGeometryValidation {
+    width_mm: f64,
+    height_mm: f64,
+    has_cuts: bool,
+}
+
+fn build_svg_import_replacement(
+    bytes: &[u8],
+    options: SvgImportReplacementOptions,
+) -> Result<ProjectState, String> {
+    let SvgImportReplacementOptions {
+        name,
+        millimeters_per_unit,
+        group_mappings,
+        boundary_candidate,
+        boundary_confirmed,
+        warnings_acknowledged,
+        cutting_allowed_confirmed,
+    } = options;
+    let preview = read_svg_preview(bytes)
+        .map_err(|_| "staged SVG preview could not be revalidated".to_owned())?;
+    if !boundary_confirmed {
+        return Err("SVG paper boundary must be explicitly confirmed".to_owned());
+    }
+    if svg_import_requires_warning_acknowledgement(&preview) && !warnings_acknowledged {
+        return Err("SVG import warnings must be explicitly acknowledged".to_owned());
+    }
+    let (replacement, has_cuts) = convert_svg_import_project(
+        &preview,
+        name,
+        millimeters_per_unit,
+        group_mappings,
+        boundary_candidate,
+    )?;
+    if has_cuts && !cutting_allowed_confirmed {
+        return Err(
+            "SVG contains imported cut lines; cutting must be explicitly allowed".to_owned(),
+        );
+    }
+    Ok(replacement)
+}
+
+fn validate_svg_import_geometry(
+    bytes: &[u8],
+    millimeters_per_unit: f64,
+    group_mappings: Vec<SvgGroupMapping>,
+    boundary_candidate: Option<SvgBoundaryCandidateId>,
+) -> Result<SvgImportGeometryValidation, String> {
+    validate_import_scale(millimeters_per_unit)?;
+    let preview = read_svg_preview(bytes)
+        .map_err(|_| "staged SVG preview could not be revalidated".to_owned())?;
+    let (project, has_cuts) = convert_svg_import_project(
+        &preview,
+        SVG_IMPORT_FALLBACK_NAME.to_owned(),
+        millimeters_per_unit,
+        group_mappings,
+        boundary_candidate,
+    )?;
+    let (width_mm, height_mm) = svg_import_paper_dimensions(&project)?;
+    Ok(SvgImportGeometryValidation {
+        width_mm,
+        height_mm,
+        has_cuts,
+    })
+}
+
+fn convert_svg_import_project(
+    preview: &SvgPreview,
+    name: String,
+    millimeters_per_unit: f64,
+    group_mappings: Vec<SvgGroupMapping>,
+    boundary_candidate: Option<SvgBoundaryCandidateId>,
+) -> Result<(ProjectState, bool), String> {
+    let conversion = preview
+        .convert(&SvgConversionOptions {
+            millimetres_per_unit: millimeters_per_unit,
+            group_mappings,
+            boundary_candidate,
+        })
+        .map_err(|error| format!("SVG mapping could not be applied: {error}"))?;
+    let (crease_pattern, boundary_vertices, _, has_cuts) = conversion.into_parts();
+    let mut paper = Paper {
+        boundary_vertices,
+        ..Paper::default()
+    };
+    paper.cutting_allowed = has_cuts;
+
+    let replacement = ProjectState::new_unsaved(name, crease_pattern, paper);
+    let pattern_validation = replacement.editor.validation();
+    if !pattern_validation.is_valid() {
+        return Err(format!(
+            "converted SVG crease pattern has {} validation issue(s)",
+            pattern_validation.issues().len()
+        ));
+    }
+    let paper_validation = validate_paper(replacement.editor.paper(), replacement.editor.pattern());
+    if !paper_validation.is_valid() {
+        return Err(format!(
+            "converted SVG paper boundary has {} validation issue(s)",
+            paper_validation.issues.len()
+        ));
+    }
+    validate_import_active_edge_containment(&replacement, "SVG")?;
+    Ok((replacement, has_cuts))
+}
+
+fn svg_import_paper_dimensions(project: &ProjectState) -> Result<(f64, f64), String> {
+    let positions = project
+        .editor
+        .pattern()
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    let mut boundary_positions = project
+        .editor
+        .paper()
+        .boundary_vertices
+        .iter()
+        .map(|vertex_id| {
+            positions.get(vertex_id).copied().ok_or_else(|| {
+                "converted SVG paper boundary references a missing vertex".to_owned()
+            })
+        });
+    let first = boundary_positions
+        .next()
+        .transpose()?
+        .ok_or_else(|| "converted SVG paper boundary is empty".to_owned())?;
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.x, first.x, first.y, first.y);
+    for position in boundary_positions {
+        let position = position?;
+        min_x = min_x.min(position.x);
+        max_x = max_x.max(position.x);
+        min_y = min_y.min(position.y);
+        max_y = max_y.max(position.y);
+    }
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err("converted SVG paper dimensions are invalid".to_owned());
+    }
+    Ok((width, height))
+}
+
+fn validate_import_active_edge_containment(
+    project: &ProjectState,
+    format_label: &str,
+) -> Result<(), String> {
     let positions = project
         .editor
         .pattern()
@@ -2328,7 +3444,7 @@ fn validate_fold_import_active_edge_containment(project: &ProjectState) -> Resul
             positions
                 .get(vertex)
                 .copied()
-                .ok_or_else(|| "converted FOLD boundary could not be resolved".to_owned())
+                .ok_or_else(|| format!("converted {format_label} boundary could not be resolved"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let active_edges = project
@@ -2346,10 +3462,10 @@ fn validate_fold_import_active_edge_containment(project: &ProjectState) -> Resul
     let containment_tests = active_edges
         .len()
         .checked_mul(boundary.len())
-        .ok_or_else(|| "converted FOLD containment work is not representable".to_owned())?;
+        .ok_or_else(|| format!("converted {format_label} containment work is not representable"))?;
     if containment_tests > MAX_FOLD_IMPORT_CONTAINMENT_TESTS {
         return Err(format!(
-            "converted FOLD needs {containment_tests} containment tests; the limit is {MAX_FOLD_IMPORT_CONTAINMENT_TESTS}"
+            "converted {format_label} needs {containment_tests} containment tests; the limit is {MAX_FOLD_IMPORT_CONTAINMENT_TESTS}"
         ));
     }
 
@@ -2358,20 +3474,21 @@ fn validate_fold_import_active_edge_containment(project: &ProjectState) -> Resul
         let start = positions
             .get(&edge.start)
             .copied()
-            .ok_or_else(|| "converted FOLD edge start could not be resolved".to_owned())?;
+            .ok_or_else(|| format!("converted {format_label} edge start could not be resolved"))?;
         let end = positions
             .get(&edge.end)
             .copied()
-            .ok_or_else(|| "converted FOLD edge end could not be resolved".to_owned())?;
-        let relation = segment_midpoint_polygon_relation(start, end, &boundary)
-            .map_err(|_| "converted FOLD edge containment could not be classified".to_owned())?;
+            .ok_or_else(|| format!("converted {format_label} edge end could not be resolved"))?;
+        let relation = segment_midpoint_polygon_relation(start, end, &boundary).map_err(|_| {
+            format!("converted {format_label} edge containment could not be classified")
+        })?;
         if relation != PointPolygonRelation::Inside {
             outside_count += 1;
         }
     }
     if outside_count > 0 {
         return Err(format!(
-            "converted FOLD has {outside_count} active edge(s) outside the paper boundary"
+            "converted {format_label} has {outside_count} active edge(s) outside the paper boundary"
         ));
     }
     Ok(())
@@ -3128,6 +4245,7 @@ pub fn run() {
         })
         .manage(AppState(Mutex::new(initial_project_state())))
         .manage(FoldImportState::default())
+        .manage(SvgImportState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
@@ -3141,6 +4259,10 @@ pub fn run() {
             preview_fold_import,
             apply_fold_import,
             cancel_fold_import,
+            preview_svg_import,
+            validate_svg_import_settings,
+            apply_svg_import,
+            cancel_svg_import,
             add_vertex,
             move_vertex,
             remove_vertex,
@@ -3648,7 +4770,7 @@ mod tests {
                 edge: hinge.edge,
                 angle_degrees: 0.0,
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         assert_eq!(
             instruction_pose_from_topology(
@@ -6695,6 +7817,580 @@ mod tests {
     }
 
     #[test]
+    fn svg_import_staging_keeps_only_the_latest_preview_and_cancel_is_scoped() {
+        let state = SvgImportState::default();
+        let project = initial_project_state();
+        let first = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.to_vec(),
+        )
+        .expect("stage first SVG import");
+        let second = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            br#"<svg xmlns="http://www.w3.org/2000/svg"><title>newer</title></svg>"#.to_vec(),
+        )
+        .expect("stage replacement SVG import");
+
+        assert_ne!(first, second);
+        assert!(pending_svg_import(&state, first, project.project_id, 0).is_err());
+        assert_eq!(
+            cancel_pending_svg_import(&state, first).unwrap_err(),
+            "the SVG import preview was replaced by a newer preview"
+        );
+        assert!(pending_svg_import(&state, second, project.project_id, 0).is_ok());
+        cancel_pending_svg_import(&state, second).expect("cancel current import");
+        cancel_pending_svg_import(&state, second).expect("cancel remains idempotent");
+        assert!(lock_svg_import(&state).unwrap().pending.is_none());
+        assert!(cancel_pending_svg_import(&state, ProjectId::new()).is_err());
+    }
+
+    #[test]
+    fn svg_import_settings_validation_returns_exact_dimensions_without_replacing_project() {
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">
+              <rect x="0" y="0" width="100" height="50"
+                    fill="none" stroke="#222" data-origami-kind="boundary"/>
+              <line x1="0" y1="25" x2="100" y2="25"
+                    stroke="#111" data-origami-kind="cut"/>
+            </svg>"##;
+        let preview = read_svg_preview(bytes).expect("read validation fixture");
+        let mut mappings = preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: match group.semantic.as_deref() {
+                    Some("boundary") => SvgGroupTarget::Boundary,
+                    Some("cut") => SvgGroupTarget::Cut,
+                    _ => SvgGroupTarget::Ignore,
+                },
+            })
+            .collect::<Vec<_>>();
+        mappings.sort_by_key(|mapping| mapping.group);
+
+        let state = SvgImportState::default();
+        let project = initial_project_state();
+        let project_before = project_state_signature(&project);
+        let import_id = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            bytes.to_vec(),
+        )
+        .expect("stage validation fixture");
+        let validation_id = ProjectId::new();
+        let pending = begin_svg_import_settings_validation(
+            &state,
+            validation_id,
+            import_id,
+            project.project_id,
+            project.editor.revision(),
+        )
+        .expect("begin validation");
+        let geometry = validate_svg_import_geometry(&pending.bytes, 2.0, mappings.clone(), None)
+            .expect("validate boundary-group geometry");
+
+        let response = {
+            let mut slot = lock_svg_import(&state).expect("lock validation state");
+            let response = complete_svg_import_settings_validation(
+                &mut slot,
+                &project,
+                SvgImportSettingsValidationCompletion {
+                    validation: SvgImportSettingsValidation {
+                        validation_id,
+                        import_id: pending.import_id,
+                        expected_instance_id: pending.expected_instance_id,
+                        expected_project_id: pending.expected_project_id,
+                        expected_revision: pending.expected_revision,
+                        millimeters_per_unit_bits: 2.0_f64.to_bits(),
+                        boundary_candidate: None,
+                        group_mappings: mappings.clone(),
+                    },
+                    geometry,
+                },
+            )
+            .expect("complete validation");
+            let current =
+                pending_svg_import_in_slot(&slot, import_id, project.project_id, 0).unwrap();
+            ensure_svg_import_settings_validation(
+                &slot,
+                current,
+                validation_id,
+                None,
+                2.0,
+                &mappings,
+            )
+            .expect("bind validation to exact settings");
+            assert!(
+                slot.pending.is_some(),
+                "validation must retain staged bytes"
+            );
+            response
+        };
+
+        assert_eq!(response.validation_id, validation_id);
+        assert_eq!(response.preview_id, import_id);
+        assert_eq!(response.expected_project_id, project.project_id);
+        assert_eq!(response.expected_revision, 0);
+        assert_eq!(response.millimeters_per_unit, 2.0);
+        assert_eq!(response.boundary_candidate_id, None);
+        assert_eq!(response.width_mm, 200.0);
+        assert_eq!(response.height_mm, 100.0);
+        assert!(response.has_cuts);
+        assert_eq!(project_state_signature(&project), project_before);
+    }
+
+    #[test]
+    fn svg_import_settings_validation_binds_candidate_and_effective_cut_result() {
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">
+              <polygon points="0,0 100,0 100,50 0,50"
+                       fill="none" stroke="#111" data-origami-kind="cut"/>
+            </svg>"##;
+        let preview = read_svg_preview(bytes).expect("read candidate fixture");
+        let candidate = preview
+            .boundary_candidates()
+            .iter()
+            .find(|candidate| candidate.kind == SvgBoundaryCandidateKind::Polygon)
+            .expect("polygon candidate");
+        let mappings = preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: SvgGroupTarget::Cut,
+            })
+            .collect::<Vec<_>>();
+        let snapshot = svg_import_preview_snapshot(ProjectId::new(), &preview)
+            .expect("build candidate snapshot");
+        assert!(
+            snapshot
+                .boundary_candidates
+                .iter()
+                .any(|candidate| candidate.kind == "polygon")
+        );
+
+        let state = SvgImportState::default();
+        let project = initial_project_state();
+        let import_id = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            0,
+            bytes.to_vec(),
+        )
+        .expect("stage candidate fixture");
+        let validation_id = ProjectId::new();
+        let pending = begin_svg_import_settings_validation(
+            &state,
+            validation_id,
+            import_id,
+            project.project_id,
+            0,
+        )
+        .expect("begin candidate validation");
+        let geometry =
+            validate_svg_import_geometry(&pending.bytes, 1.0, mappings.clone(), Some(candidate.id))
+                .expect("validate selected polygon");
+        let response = {
+            let mut slot = lock_svg_import(&state).unwrap();
+            complete_svg_import_settings_validation(
+                &mut slot,
+                &project,
+                SvgImportSettingsValidationCompletion {
+                    validation: SvgImportSettingsValidation {
+                        validation_id,
+                        import_id: pending.import_id,
+                        expected_instance_id: pending.expected_instance_id,
+                        expected_project_id: pending.expected_project_id,
+                        expected_revision: pending.expected_revision,
+                        millimeters_per_unit_bits: 1.0_f64.to_bits(),
+                        boundary_candidate: Some(candidate.id),
+                        group_mappings: mappings,
+                    },
+                    geometry,
+                },
+            )
+            .expect("complete candidate validation")
+        };
+
+        assert_eq!(response.boundary_candidate_id, Some(candidate.id.0));
+        assert_eq!((response.width_mm, response.height_mm), (100.0, 50.0));
+        assert!(
+            !response.has_cuts,
+            "selected source edges become Boundary before effective Cut detection"
+        );
+    }
+
+    #[test]
+    fn svg_import_preview_preserves_every_boundary_candidate_origin() {
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"
+                              fill="none" stroke="#111">
+              <polygon points="0,0 10,0 10,10 0,10"/>
+              <polyline points="20,0 30,0 30,10 20,10 20,0"/>
+              <rect x="40" y="0" width="10" height="10"/>
+              <path d="M 60 0 L 70 0 L 70 10 L 60 10 Z"/>
+            </svg>"##;
+        let preview = read_svg_preview(bytes).expect("read every candidate origin");
+        let snapshot = svg_import_preview_snapshot(ProjectId::new(), &preview)
+            .expect("build every candidate origin");
+        let kinds = snapshot
+            .boundary_candidates
+            .iter()
+            .map(|candidate| candidate.kind)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            kinds,
+            BTreeSet::from([
+                "closed_path",
+                "polygon",
+                "polyline",
+                "rectangle",
+                "view_box"
+            ])
+        );
+    }
+
+    #[test]
+    fn svg_import_settings_validation_rejects_stale_and_superseded_requests() {
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg">
+              <rect x="0" y="0" width="10" height="20"
+                    fill="none" stroke="#222" data-origami-kind="boundary"/>
+            </svg>"##;
+        let preview = read_svg_preview(bytes).expect("read validation fixture");
+        let mappings = preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: SvgGroupTarget::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let state = SvgImportState::default();
+        let project = initial_project_state();
+        let import_id = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            0,
+            bytes.to_vec(),
+        )
+        .expect("stage validation fixture");
+
+        assert!(
+            begin_svg_import_settings_validation(
+                &state,
+                ProjectId::new(),
+                ProjectId::new(),
+                project.project_id,
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            begin_svg_import_settings_validation(
+                &state,
+                ProjectId::new(),
+                import_id,
+                project.project_id,
+                1,
+            )
+            .is_err()
+        );
+
+        let first_validation_id = ProjectId::new();
+        let first = begin_svg_import_settings_validation(
+            &state,
+            first_validation_id,
+            import_id,
+            project.project_id,
+            0,
+        )
+        .expect("begin first generation");
+        let first_geometry =
+            validate_svg_import_geometry(&first.bytes, 1.0, mappings.clone(), None).unwrap();
+        let second_validation_id = ProjectId::new();
+        let second = begin_svg_import_settings_validation(
+            &state,
+            second_validation_id,
+            import_id,
+            project.project_id,
+            0,
+        )
+        .expect("begin second generation");
+        {
+            let mut slot = lock_svg_import(&state).unwrap();
+            assert!(
+                complete_svg_import_settings_validation(
+                    &mut slot,
+                    &project,
+                    SvgImportSettingsValidationCompletion {
+                        validation: SvgImportSettingsValidation {
+                            validation_id: first_validation_id,
+                            import_id: first.import_id,
+                            expected_instance_id: first.expected_instance_id,
+                            expected_project_id: first.expected_project_id,
+                            expected_revision: first.expected_revision,
+                            millimeters_per_unit_bits: 1.0_f64.to_bits(),
+                            boundary_candidate: None,
+                            group_mappings: mappings.clone(),
+                        },
+                        geometry: first_geometry,
+                    },
+                )
+                .is_err(),
+                "late completion from the old generation must be rejected"
+            );
+        }
+        let second_geometry =
+            validate_svg_import_geometry(&second.bytes, 2.0, mappings.clone(), None).unwrap();
+        {
+            let mut slot = lock_svg_import(&state).unwrap();
+            complete_svg_import_settings_validation(
+                &mut slot,
+                &project,
+                SvgImportSettingsValidationCompletion {
+                    validation: SvgImportSettingsValidation {
+                        validation_id: second_validation_id,
+                        import_id: second.import_id,
+                        expected_instance_id: second.expected_instance_id,
+                        expected_project_id: second.expected_project_id,
+                        expected_revision: second.expected_revision,
+                        millimeters_per_unit_bits: 2.0_f64.to_bits(),
+                        boundary_candidate: None,
+                        group_mappings: mappings.clone(),
+                    },
+                    geometry: second_geometry,
+                },
+            )
+            .expect("complete current generation");
+            let pending =
+                pending_svg_import_in_slot(&slot, import_id, project.project_id, 0).unwrap();
+            assert!(
+                ensure_svg_import_settings_validation(
+                    &slot,
+                    pending,
+                    first_validation_id,
+                    None,
+                    2.0,
+                    &mappings,
+                )
+                .is_err()
+            );
+            assert!(
+                ensure_svg_import_settings_validation(
+                    &slot,
+                    pending,
+                    second_validation_id,
+                    None,
+                    1.0,
+                    &mappings,
+                )
+                .is_err(),
+                "a changed scale must not reuse old dimensions"
+            );
+            let mut changed_mappings = mappings.clone();
+            changed_mappings[0].target = SvgGroupTarget::Ignore;
+            assert!(
+                ensure_svg_import_settings_validation(
+                    &slot,
+                    pending,
+                    second_validation_id,
+                    None,
+                    2.0,
+                    &changed_mappings,
+                )
+                .is_err(),
+                "changed mappings must not reuse old dimensions"
+            );
+        }
+
+        let replacement_id = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            0,
+            bytes.to_vec(),
+        )
+        .expect("stage a newer preview");
+        let slot = lock_svg_import(&state).unwrap();
+        assert_ne!(replacement_id, import_id);
+        assert!(slot.validation.is_none());
+        assert!(slot.validation_generation_id.is_none());
+    }
+
+    #[test]
+    fn svg_import_settings_validation_rejects_a_project_revision_change_without_mutation() {
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg">
+              <rect x="0" y="0" width="10" height="20"
+                    fill="none" stroke="#222" data-origami-kind="boundary"/>
+            </svg>"##;
+        let preview = read_svg_preview(bytes).expect("read stale revision fixture");
+        let mappings = preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: SvgGroupTarget::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let state = SvgImportState::default();
+        let mut project = initial_project_state();
+        let import_id = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            project.project_id,
+            0,
+            bytes.to_vec(),
+        )
+        .expect("stage stale revision fixture");
+        let validation_id = ProjectId::new();
+        let pending = begin_svg_import_settings_validation(
+            &state,
+            validation_id,
+            import_id,
+            project.project_id,
+            0,
+        )
+        .expect("begin stale revision validation");
+        let geometry =
+            validate_svg_import_geometry(&pending.bytes, 1.0, mappings.clone(), None).unwrap();
+        execute_command(
+            &mut project,
+            pending.expected_project_id,
+            0,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(12.0, 34.0),
+            },
+        )
+        .expect("change project after validation starts");
+        let changed_project = project_state_signature(&project);
+
+        {
+            let mut slot = lock_svg_import(&state).unwrap();
+            assert!(
+                complete_svg_import_settings_validation(
+                    &mut slot,
+                    &project,
+                    SvgImportSettingsValidationCompletion {
+                        validation: SvgImportSettingsValidation {
+                            validation_id,
+                            import_id: pending.import_id,
+                            expected_instance_id: pending.expected_instance_id,
+                            expected_project_id: pending.expected_project_id,
+                            expected_revision: pending.expected_revision,
+                            millimeters_per_unit_bits: 1.0_f64.to_bits(),
+                            boundary_candidate: None,
+                            group_mappings: mappings,
+                        },
+                        geometry,
+                    },
+                )
+                .is_err()
+            );
+            assert!(slot.validation.is_none());
+            assert!(slot.pending.is_some());
+        }
+        abandon_svg_import_settings_validation(&state, validation_id)
+            .expect("clear failed validation generation");
+        assert_eq!(project_state_signature(&project), changed_project);
+    }
+
+    #[test]
+    fn svg_import_settings_validation_rejects_invalid_boundaries_and_mappings() {
+        let open = br##"<svg xmlns="http://www.w3.org/2000/svg" stroke="#111">
+              <line x1="0" y1="0" x2="10" y2="0" data-origami-kind="boundary"/>
+              <line x1="10" y1="0" x2="10" y2="10" data-origami-kind="boundary"/>
+              <line x1="10" y1="10" x2="0" y2="10" data-origami-kind="boundary"/>
+            </svg>"##;
+        let open_preview = read_svg_preview(open).expect("read open boundary");
+        let open_mappings = open_preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: SvgGroupTarget::Boundary,
+            })
+            .collect();
+        assert!(validate_svg_import_geometry(open, 1.0, open_mappings, None).is_err());
+
+        let multiple = br##"<svg xmlns="http://www.w3.org/2000/svg" stroke="#111">
+              <rect x="0" y="0" width="10" height="10"
+                    fill="none" data-origami-kind="boundary"/>
+              <rect x="20" y="0" width="10" height="10"
+                    fill="none" data-origami-kind="boundary"/>
+            </svg>"##;
+        let multiple_preview = read_svg_preview(multiple).expect("read multiple boundaries");
+        let multiple_mappings = multiple_preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: SvgGroupTarget::Boundary,
+            })
+            .collect();
+        assert!(validate_svg_import_geometry(multiple, 1.0, multiple_mappings, None).is_err());
+
+        let valid = br##"<svg xmlns="http://www.w3.org/2000/svg" stroke="#111">
+              <rect x="0" y="0" width="10" height="10"
+                    fill="none" data-origami-kind="boundary"/>
+              <line x1="0" y1="5" x2="10" y2="5" data-origami-kind="mountain"/>
+            </svg>"##;
+        let valid_preview = read_svg_preview(valid).expect("read complete mapping fixture");
+        let boundary_only = valid_preview
+            .style_groups()
+            .iter()
+            .filter(|group| group.semantic.as_deref() == Some("boundary"))
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: SvgGroupTarget::Boundary,
+            })
+            .collect();
+        assert!(
+            validate_svg_import_geometry(valid, 1.0, boundary_only, None).is_err(),
+            "every retained style group must be mapped"
+        );
+        assert!(validate_svg_import_geometry(valid, 0.0, Vec::new(), None).is_err());
+    }
+
+    #[test]
+    fn svg_import_cancel_rejects_an_applied_token() {
+        let state = SvgImportState::default();
+        let mut project = initial_project_state();
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let import_id = stage_pending_svg_import(
+            &state,
+            project.instance_id,
+            expected_project_id,
+            expected_revision,
+            br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.to_vec(),
+        )
+        .expect("stage SVG import");
+        {
+            let mut slot = lock_svg_import(&state).expect("lock SVG stage");
+            commit_svg_import_replacement(
+                &mut project,
+                &mut slot.pending,
+                import_id,
+                expected_project_id,
+                expected_revision,
+                true,
+                create_new_project_state(new_project_parameters()).unwrap(),
+            )
+            .expect("apply SVG replacement");
+        }
+        assert!(cancel_pending_svg_import(&state, import_id).is_err());
+    }
+
+    #[test]
     fn fold_import_commit_is_an_atomic_new_unsaved_project_replacement() {
         let mut project = unsaved_project_with_redo_history("Existing project");
         let expected_instance_id = project.instance_id;
@@ -6734,6 +8430,131 @@ mod tests {
         assert!(project.saved_document.is_none());
         assert!(project.is_dirty());
         assert!(pending.is_none());
+    }
+
+    #[test]
+    fn svg_import_commit_is_an_atomic_new_unsaved_project_replacement() {
+        let mut project = unsaved_project_with_redo_history("Existing project");
+        let expected_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let import_id = ProjectId::new();
+        let mut pending = Some(PendingSvgImport {
+            import_id,
+            expected_instance_id,
+            expected_project_id,
+            expected_revision,
+            bytes: Arc::from(br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.as_slice()),
+        });
+        let replacement = create_new_project_state(new_project_parameters())
+            .expect("create SVG import replacement fixture");
+
+        let before = project_state_signature(&project);
+        let error = commit_svg_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            false,
+            replacement,
+        )
+        .expect_err("dirty SVG replacement must require confirmation");
+        assert!(error.contains("explicit confirmation"));
+        assert_eq!(project_state_signature(&project), before);
+        assert!(pending.is_some());
+
+        let replacement = create_new_project_state(new_project_parameters())
+            .expect("create confirmed SVG import replacement fixture");
+        let replacement_project_id = replacement.project_id;
+        let replacement_instance_id = replacement.instance_id;
+        let response = commit_svg_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            true,
+            replacement,
+        )
+        .expect("commit current SVG import");
+
+        assert_eq!(response.project_id, replacement_project_id);
+        assert_eq!(project.instance_id, replacement_instance_id);
+        assert_ne!(project.project_id, expected_project_id);
+        assert_eq!(project.editor.revision(), 0);
+        assert!(!project.editor.can_undo());
+        assert!(!project.editor.can_redo());
+        assert!(project.current_path.is_none());
+        assert!(project.saved_revision.is_none());
+        assert!(project.saved_document.is_none());
+        assert!(project.is_dirty());
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn svg_import_commit_rejects_revision_and_instance_aba_without_mutation() {
+        let mut project = unsaved_project_with_redo_history("Existing project");
+        let stale_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let import_id = ProjectId::new();
+        let pending_template = PendingSvgImport {
+            import_id,
+            expected_instance_id: stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            bytes: Arc::from(br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.as_slice()),
+        };
+
+        project
+            .editor
+            .execute(
+                expected_revision,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(12.0, 13.0),
+                },
+            )
+            .expect("edit after SVG preview");
+        let revision_before = project_state_signature(&project);
+        let mut pending = Some(pending_template.clone());
+        let error = commit_svg_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            true,
+            create_new_project_state(new_project_parameters()).unwrap(),
+        )
+        .expect_err("stale SVG revision must fail");
+        assert_eq!(error, "the project changed while the file dialog was open");
+        assert_eq!(project_state_signature(&project), revision_before);
+        assert!(pending.is_some());
+
+        let document = project.document();
+        project = ProjectState::from_document(document, PathBuf::from("same.ori2"));
+        project.project_id = expected_project_id;
+        assert_ne!(project.instance_id, stale_instance_id);
+        let instance_before = project_state_signature(&project);
+        let mut pending = Some(pending_template);
+        let error = commit_svg_import_replacement(
+            &mut project,
+            &mut pending,
+            import_id,
+            expected_project_id,
+            expected_revision,
+            true,
+            create_new_project_state(new_project_parameters()).unwrap(),
+        )
+        .expect_err("reopened project instance must fail");
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&project), instance_before);
+        assert!(pending.is_some());
     }
 
     #[test]
@@ -6801,9 +8622,9 @@ mod tests {
 
     #[test]
     fn fold_import_mapping_and_scale_validation_reject_ambiguous_requests() {
-        assert!(validate_fold_import_scale(1.0).is_ok());
+        assert!(validate_import_scale(1.0).is_ok());
         for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1_000_000_000.000_001] {
-            assert!(validate_fold_import_scale(invalid).is_err());
+            assert!(validate_import_scale(invalid).is_err());
         }
 
         let valid = validate_fold_import_mapping_requests(vec![
@@ -7179,6 +9000,316 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("ファイル分類"))
+        );
+    }
+
+    #[test]
+    fn svg_import_file_errors_do_not_expose_the_selected_path() {
+        let directory = TestDirectory::new();
+        let secret_name = "private-client-design.svg";
+        let path = directory.join(secret_name);
+
+        let missing_error =
+            read_svg_import_bytes(&path).expect_err("missing SVG import must be rejected");
+        assert!(!missing_error.contains(secret_name));
+        assert!(!missing_error.contains(&directory.path.to_string_lossy().into_owned()));
+
+        fs::write(
+            &path,
+            br#"<svg xmlns="http://www.w3.org/2000/svg"><SECRET_MARKER></OTHER_SECRET></svg>"#,
+        )
+        .expect("write malformed SVG fixture");
+        let malformed_error =
+            load_svg_import_preview(&path).expect_err("malformed SVG import must be rejected");
+        assert!(!malformed_error.contains("SECRET_MARKER"));
+        assert!(!malformed_error.contains("OTHER_SECRET"));
+        assert!(!malformed_error.contains(secret_name));
+
+        File::create(&path)
+            .expect("create oversized SVG fixture")
+            .set_len(MAX_SVG_IMPORT_FILE_SIZE + 1)
+            .expect("make sparse oversized SVG fixture");
+        let oversized_error =
+            read_svg_import_bytes(&path).expect_err("oversized SVG import must be rejected");
+        assert!(!oversized_error.contains(secret_name));
+        assert!(!oversized_error.contains(&directory.path.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn svg_import_warning_messages_do_not_echo_source_style_values() {
+        for kind in [
+            SvgWarningKind::UnsupportedCssSelector("#SECRET_SELECTOR".to_owned()),
+            SvgWarningKind::UnsupportedPaint("url(SECRET_PAINT)".to_owned()),
+            SvgWarningKind::UnsupportedLengthUnit("SECRET_LENGTH".to_owned()),
+        ] {
+            let message = svg_import_warning_message(&SvgPreviewWarning {
+                kind,
+                occurrences: 1,
+            });
+            assert!(!message.contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn svg_import_preview_contract_and_conversion_create_a_valid_editable_project() {
+        let source = r##"<?xml version="1.0" encoding="UTF-8"?>
+            <svg xmlns="http://www.w3.org/2000/svg"
+                 viewBox="0 0 100 100" width="100mm" height="100mm">
+              <title>  SVG取込テスト  </title>
+              <rect x="0" y="0" width="100" height="100"
+                    fill="none" stroke="#222222" data-origami-kind="boundary"/>
+              <line id="main-fold" x1="0" y1="0" x2="100" y2="100"
+                    stroke="#cc3344" data-origami-kind="mountain"/>
+            </svg>"##;
+        let bytes = source.as_bytes();
+        let preview = read_svg_preview(bytes).expect("read SVG preview");
+        let import_id = ProjectId::new();
+        let response =
+            svg_import_preview_snapshot(import_id, &preview).expect("build bounded SVG preview");
+
+        assert_eq!(response.import_id, import_id);
+        assert_eq!(response.file_name, SVG_IMPORT_FILE_LABEL);
+        assert_eq!(response.suggested_name, "SVG取込テスト");
+        assert_eq!(response.default_mm_per_unit, Some(1.0));
+        assert_eq!(
+            response.root_view_box,
+            Some(SvgRootViewBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            })
+        );
+        assert_eq!(response.root_physical_size.width_millimetres, Some(100.0));
+        assert_eq!(response.root_physical_size.height_millimetres, Some(100.0));
+        assert_eq!(response.source_segment_count, 5);
+        assert_eq!(response.style_groups.len(), 2);
+        assert!(response.style_groups.iter().all(|group| {
+            group.element_count > 0
+                && group.segment_count > 0
+                && group
+                    .stroke_color
+                    .as_deref()
+                    .is_some_and(|color| color.starts_with('#'))
+        }));
+        assert!(response.style_groups.iter().any(|group| {
+            group.representative_id.as_deref() == Some("main-fold")
+                && group.element_count == 1
+                && group.segment_count == 1
+        }));
+        assert_eq!(response.preview_edges.len(), 5);
+        assert!(!response.preview_truncated);
+        assert!(response.preview_edges.iter().all(|edge| {
+            edge.start < response.preview_vertices.len()
+                && edge.end < response.preview_vertices.len()
+        }));
+        assert!(
+            response
+                .boundary_candidates
+                .iter()
+                .any(|candidate| candidate.kind == "view_box")
+        );
+        assert!(
+            response
+                .boundary_candidates
+                .iter()
+                .any(|candidate| candidate.kind == "rectangle")
+        );
+        assert!(response.boundary_candidates.iter().all(|candidate| {
+            candidate.segment_count == candidate.vertices.len() && candidate.segment_count >= 3
+        }));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("data-origami-kind"))
+        );
+
+        let rectangle = preview
+            .boundary_candidates()
+            .iter()
+            .find(|candidate| candidate.kind == SvgBoundaryCandidateKind::Rectangle)
+            .expect("rectangle boundary candidate");
+        let mappings: Vec<SvgGroupMapping> = preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: match group.semantic.as_deref() {
+                    Some("mountain") => SvgGroupTarget::Mountain,
+                    _ => SvgGroupTarget::Ignore,
+                },
+            })
+            .collect();
+        let boundary_error = build_svg_import_replacement(
+            bytes,
+            SvgImportReplacementOptions {
+                name: "SVG取込テスト".to_owned(),
+                millimeters_per_unit: 1.0,
+                group_mappings: mappings.clone(),
+                boundary_candidate: Some(rectangle.id),
+                boundary_confirmed: false,
+                warnings_acknowledged: true,
+                cutting_allowed_confirmed: false,
+            },
+        )
+        .err()
+        .expect("boundary must require explicit confirmation");
+        assert!(boundary_error.contains("boundary must be explicitly confirmed"));
+        let warning_error = build_svg_import_replacement(
+            bytes,
+            SvgImportReplacementOptions {
+                name: "SVG取込テスト".to_owned(),
+                millimeters_per_unit: 1.0,
+                group_mappings: mappings.clone(),
+                boundary_candidate: Some(rectangle.id),
+                boundary_confirmed: true,
+                warnings_acknowledged: false,
+                cutting_allowed_confirmed: false,
+            },
+        )
+        .err()
+        .expect("warnings must require explicit confirmation");
+        assert!(warning_error.contains("warnings must be explicitly acknowledged"));
+        let replacement = build_svg_import_replacement(
+            bytes,
+            SvgImportReplacementOptions {
+                name: "SVG取込テスト".to_owned(),
+                millimeters_per_unit: 1.0,
+                group_mappings: mappings,
+                boundary_candidate: Some(rectangle.id),
+                boundary_confirmed: true,
+                warnings_acknowledged: true,
+                cutting_allowed_confirmed: false,
+            },
+        )
+        .expect("convert SVG into a project");
+
+        assert_eq!(replacement.name, "SVG取込テスト");
+        assert_eq!(replacement.editor.pattern().edges.len(), 5);
+        assert_eq!(replacement.editor.paper().boundary_vertices.len(), 4);
+        assert_eq!(
+            replacement
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Mountain)
+                .count(),
+            1
+        );
+        assert!(!replacement.editor.paper().cutting_allowed);
+        assert!(replacement.editor.instruction_timeline().steps.is_empty());
+        assert_eq!(replacement.editor.revision(), 0);
+        assert!(!replacement.editor.can_undo());
+        assert!(!replacement.editor.can_redo());
+        assert!(replacement.current_path.is_none());
+        assert!(replacement.saved_document.is_none());
+        assert!(replacement.is_dirty());
+    }
+
+    #[test]
+    fn svg_import_preview_rejects_more_than_sixty_four_warning_categories() {
+        let mut source = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"
+                     width="100mm" height="100mm" fill="none" stroke="#111">
+                   <title>{}</title>"##,
+            "a".repeat(MAX_PROJECT_NAME_CHARS + 1)
+        );
+        for index in 0..63 {
+            let class = if index == 0 { r#" class="fold""# } else { "" };
+            source.push_str(&format!(
+                r#"<line{class} unsupported{index}="x" x1="0" y1="{index}" x2="1" y2="{index}"/>"#
+            ));
+        }
+        source.push_str("</svg>");
+
+        let preview = read_svg_preview(source.as_bytes()).expect("bounded warning fixture");
+        assert_eq!(preview.warnings().len(), 63);
+        let error = svg_import_preview_snapshot(ProjectId::new(), &preview)
+            .expect_err("synthetic warning categories must not be truncated");
+        assert!(error.contains("more than 64"));
+    }
+
+    #[test]
+    fn svg_cut_mapping_requires_explicit_permission_and_splits_crossings() {
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+              <rect x="0" y="0" width="100" height="100"
+                    fill="none" stroke="#222" data-origami-kind="boundary"/>
+              <line x1="0" y1="0" x2="100" y2="100"
+                    stroke="#c33" data-origami-kind="mountain"/>
+              <line x1="0" y1="50" x2="100" y2="50"
+                    stroke="#111" data-origami-kind="cut"/>
+            </svg>"##;
+        let preview = read_svg_preview(bytes).expect("read cut SVG preview");
+        let rectangle = preview
+            .boundary_candidates()
+            .iter()
+            .find(|candidate| candidate.kind == SvgBoundaryCandidateKind::Rectangle)
+            .expect("rectangle boundary candidate");
+        let mappings = preview
+            .style_groups()
+            .iter()
+            .map(|group| SvgGroupMapping {
+                group: group.id,
+                target: match group.semantic.as_deref() {
+                    Some("mountain") => SvgGroupTarget::Mountain,
+                    Some("cut") => SvgGroupTarget::Cut,
+                    _ => SvgGroupTarget::Ignore,
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let error = build_svg_import_replacement(
+            bytes,
+            SvgImportReplacementOptions {
+                name: "切断確認".to_owned(),
+                millimeters_per_unit: 1.0,
+                group_mappings: mappings.clone(),
+                boundary_candidate: Some(rectangle.id),
+                boundary_confirmed: true,
+                warnings_acknowledged: true,
+                cutting_allowed_confirmed: false,
+            },
+        )
+        .err()
+        .expect("cutting must require explicit confirmation");
+        assert!(error.contains("cutting must be explicitly allowed"));
+
+        let replacement = build_svg_import_replacement(
+            bytes,
+            SvgImportReplacementOptions {
+                name: "切断確認".to_owned(),
+                millimeters_per_unit: 1.0,
+                group_mappings: mappings,
+                boundary_candidate: Some(rectangle.id),
+                boundary_confirmed: true,
+                warnings_acknowledged: true,
+                cutting_allowed_confirmed: true,
+            },
+        )
+        .expect("confirmed cut SVG must convert");
+        let edges = &replacement.editor.pattern().edges;
+        assert!(replacement.editor.paper().cutting_allowed);
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Mountain)
+                .count(),
+            2,
+            "the mountain line must split at the X intersection"
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Cut)
+                .count(),
+            2,
+            "the cut line must split at the X intersection"
+        );
+        assert!(
+            replacement.editor.paper().boundary_vertices.len() > 4,
+            "cut contacts must split the paper boundary at both T junctions"
         );
     }
 }

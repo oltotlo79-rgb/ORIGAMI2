@@ -11,12 +11,15 @@ import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
+import { SvgImportDialog } from './components/SvgImportDialog'
 import {
   addEdge,
   addVertex,
   analyzeProjectTopology,
   applyFoldImport,
+  applySvgImport,
   cancelFoldImport,
+  cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
   connectTJunction,
@@ -27,6 +30,7 @@ import {
   newProject,
   openProject,
   previewFoldImport,
+  previewSvgImport,
   redo,
   removeBoundaryVertex,
   removeEdge,
@@ -42,9 +46,16 @@ import {
   type ProjectTopologyResponse,
   type RgbaColor,
   type ValidationSnapshot,
+  validateSvgImportSettings,
   validateProject,
 } from './lib/coreClient'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
+import type {
+  SvgImportPreview,
+  SvgImportSettings,
+  SvgImportSettingsDraft,
+  SvgImportSettingsValidation,
+} from './lib/svgImport'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
@@ -141,7 +152,7 @@ function App() {
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
   const [fileOperation, setFileOperation] = useState<
-    'open' | 'save' | 'save_as' | 'fold_import' | null
+    'open' | 'save' | 'save_as' | 'fold_import' | 'svg_import' | null
   >(null)
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -149,6 +160,10 @@ function App() {
   const [diagnosticsDialogOpen, setDiagnosticsDialogOpen] = useState(false)
   const [foldImportPreview, setFoldImportPreview] = useState<FoldImportPreview | null>(null)
   const [foldImportError, setFoldImportError] = useState<string | null>(null)
+  const [svgImportPreview, setSvgImportPreview] = useState<SvgImportPreview | null>(null)
+  const [svgImportError, setSvgImportError] = useState<string | null>(null)
+  const [svgImportValidation, setSvgImportValidation] =
+    useState<SvgImportSettingsValidation | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -167,7 +182,11 @@ function App() {
   const topologyRequestIdRef = useRef(0)
   const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
-  const modalOpen = newProjectOpen || diagnosticsDialogOpen || foldImportPreview !== null
+  const svgImportButtonRef = useRef<HTMLButtonElement>(null)
+  const modalOpen = newProjectOpen
+    || diagnosticsDialogOpen
+    || foldImportPreview !== null
+    || svgImportPreview !== null
   const closeDiagnosticsDialog = useCallback(() => {
     setDiagnosticsDialogOpen(false)
     requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
@@ -1207,6 +1226,133 @@ function App() {
     }
   }
 
+  async function beginSvgImport() {
+    if (!latestSnapshotRef.current || coreOperationRef.current) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('svg_import')
+    setSvgImportError(null)
+    setSvgImportValidation(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const response = await previewSvgImport()
+      if (response.canceled) {
+        setCoreStatus('SVG取込をキャンセルしました')
+        return
+      }
+      if (!response.preview) {
+        throw new Error('取込プレビューが返されませんでした')
+      }
+      setSvgImportPreview(response.preview)
+      setCoreStatus('SVGの外周・線種・縮尺を確認してください')
+    } catch (error) {
+      setCoreStatus(`SVG読込エラー: ${String(error)}`)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function closeSvgImportDialog() {
+    const preview = svgImportPreview
+    if (!preview || coreOperationRef.current) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    try {
+      await cancelSvgImport(preview.import_id)
+      setCoreStatus('SVG取込をキャンセルしました')
+      setSvgImportPreview(null)
+      setSvgImportError(null)
+      setSvgImportValidation(null)
+      requestAnimationFrame(() => svgImportButtonRef.current?.focus())
+    } catch (error) {
+      const message = String(error)
+      setSvgImportError(`取消を完了できませんでした: ${message}`)
+      setCoreStatus(`SVG取込の後始末エラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function validateSvgImportDraft(settings: SvgImportSettingsDraft) {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setSvgImportError(null)
+    setSvgImportValidation(null)
+    try {
+      const validation = await validateSvgImportSettings(
+        current.project_id,
+        current.revision,
+        settings,
+      )
+      setSvgImportValidation(validation)
+      setCoreStatus(
+        `SVG外周を検証しました: ${validation.width_mm.toLocaleString()} × ${
+          validation.height_mm.toLocaleString()
+        } mm`,
+      )
+    } catch (error) {
+      const message = String(error)
+      setSvgImportError(`外周を検証できませんでした: ${message}`)
+      setCoreStatus(`SVG外周検証エラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function confirmSvgImport(settings: SvgImportSettings) {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    const replaceDirtyProjectConfirmed = current.is_dirty
+    if (
+      replaceDirtyProjectConfirmed
+      && !window.confirm('未保存の変更があります。保存せずにSVG展開図へ置き換えますか？')
+    ) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setSvgImportError(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const snapshot = await applySvgImport(
+        current.project_id,
+        current.revision,
+        settings,
+        replaceDirtyProjectConfirmed,
+      )
+      applySnapshot(snapshot)
+      setBenchmarkRun(null)
+      setBenchmarkStatus('SVG取込により通常の展開図へ戻りました')
+      setSvgImportPreview(null)
+      setSvgImportValidation(null)
+      setSelectedLineId(null)
+      setSelectedVertexId(null)
+      setPendingEdgeStart(null)
+      setParallelReferenceEdgeId(null)
+      setAppliedFoldPose(null)
+      setFoldAngleOverrides({ projectId: null, values: new Map() })
+      setFixedFaceChoice({ projectId: null, faceId: null })
+      setActiveTool('select')
+      setCoreStatus(`SVGから「${snapshot.name}」を取り込みました。保存先はまだ設定されていません。`)
+      requestAnimationFrame(() => svgImportButtonRef.current?.focus())
+    } catch (error) {
+      const message = String(error)
+      setSvgImportError(`取り込めませんでした: ${message}`)
+      setCoreStatus(`SVG取込エラー: ${message}`)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function toggleBenchmark() {
     if (benchmarkRun) {
       setBenchmarkRun(null)
@@ -1339,6 +1485,15 @@ function App() {
             aria-haspopup="dialog"
           >
             {fileOperation === 'fold_import' ? '解析中…' : 'FOLD取込'}
+          </button>
+          <button
+            ref={svgImportButtonRef}
+            type="button"
+            disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
+            onClick={() => void beginSvgImport()}
+            aria-haspopup="dialog"
+          >
+            {fileOperation === 'svg_import' ? '解析中…' : 'SVG取込'}
           </button>
           <button
             type="button"
@@ -2355,6 +2510,23 @@ function App() {
           error={foldImportError}
           onCancel={() => void closeFoldImportDialog()}
           onImport={(settings) => void confirmFoldImport(settings)}
+        />
+      )}
+
+      {svgImportPreview && (
+        <SvgImportDialog
+          key={svgImportPreview.import_id}
+          preview={svgImportPreview}
+          validation={svgImportValidation}
+          busy={coreBusy}
+          error={svgImportError}
+          onInvalidateValidation={() => {
+            setSvgImportValidation(null)
+            setSvgImportError(null)
+          }}
+          onValidate={(settings) => void validateSvgImportDraft(settings)}
+          onCancel={() => void closeSvgImportDialog()}
+          onImport={(settings) => void confirmSvgImport(settings)}
         />
       )}
 

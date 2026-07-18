@@ -83,4 +83,4 @@
 - FOLD内の面、折り角度、層順、frame metadataの永続化
 - FOLD書出し
 
-したがって要件IO-004は「部分実装」であり、SVG取込を利用者経路へ接続するまで「実装済み」にはしない。
+SVG取込も[SVG取込契約](svg-import-contract.md)に基づく利用者経路へ接続したため、FOLDとSVGの対応subsetを合わせて要件IO-004を「実装済み」とする。FOLDの複数frame、3D `foldedForm`、穴・複数紙は引き続き本契約の対象外である。

@@ -2,6 +2,7 @@
 
 mod fold;
 mod ori2;
+mod svg;
 
 use ori_domain::{
     CreasePattern, InstructionTimeline, InstructionTimelineValidationError, Paper, ProjectId,
@@ -21,6 +22,13 @@ pub use ori2::{
     ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2Limits,
     Ori2Manifest, Ori2ProjectEntry, read_project_ori2, read_project_ori2_with_limits,
     write_project_ori2, write_project_ori2_with_limits,
+};
+pub use svg::{
+    SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,
+    SvgConversionOptions, SvgConvertedGroup, SvgCreasePatternConversion, SvgDashPattern,
+    SvgGroupMapping, SvgGroupTarget, SvgImportError, SvgImportLimits, SvgPreview, SvgPreviewEdge,
+    SvgPreviewVertex, SvgPreviewWarning, SvgRootLengthUnit, SvgRootPhysicalSize, SvgRootViewBox,
+    SvgStyleGroup, SvgStyleGroupId, SvgWarningKind, read_svg_preview, read_svg_preview_with_limits,
 };
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;

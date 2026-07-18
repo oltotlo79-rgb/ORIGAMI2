@@ -4,6 +4,12 @@ import {
   type FoldImportPreview,
   type FoldImportSettings,
 } from './foldImport.ts'
+import type {
+  SvgImportPreview,
+  SvgImportSettings,
+  SvgImportSettingsDraft,
+  SvgImportSettingsValidation,
+} from './svgImport.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -107,6 +113,11 @@ export type ProjectFileResponse = {
 export type FoldImportPreviewResponse = {
   canceled: boolean
   preview: FoldImportPreview | null
+}
+
+export type SvgImportPreviewResponse = {
+  canceled: boolean
+  preview: SvgImportPreview | null
 }
 
 export type EdgeIntersectionResponse = {
@@ -384,6 +395,58 @@ export function applyFoldImport(
 
 export function cancelFoldImport(previewId: string) {
   return invoke<void>('cancel_fold_import', { previewId })
+}
+
+export function previewSvgImport() {
+  return invoke<SvgImportPreviewResponse>('preview_svg_import')
+}
+
+export function validateSvgImportSettings(
+  expectedProjectId: string,
+  expectedRevision: number,
+  settings: SvgImportSettingsDraft,
+) {
+  return invoke<SvgImportSettingsValidation>('validate_svg_import_settings', {
+    previewId: settings.importId,
+    expectedProjectId,
+    expectedRevision,
+    millimetersPerUnit: settings.mmPerUnit,
+    boundaryCandidateId: settings.boundaryCandidateId,
+    styleMappings: svgImportStyleMappings(settings.mappings),
+  })
+}
+
+export function applySvgImport(
+  expectedProjectId: string,
+  expectedRevision: number,
+  settings: SvgImportSettings,
+  replaceDirtyProjectConfirmed: boolean,
+) {
+  return invoke<ProjectSnapshot>('apply_svg_import', {
+    previewId: settings.importId,
+    expectedProjectId,
+    expectedRevision,
+    name: settings.name,
+    millimetersPerUnit: settings.mmPerUnit,
+    boundaryCandidateId: settings.boundaryCandidateId,
+    validationId: settings.validationId,
+    boundaryConfirmed: settings.boundaryConfirmed,
+    styleMappings: svgImportStyleMappings(settings.mappings),
+    warningsAcknowledged: settings.warningsAcknowledged,
+    cuttingAllowedConfirmed: settings.cuttingAllowedConfirmed,
+    replaceDirtyProjectConfirmed,
+  })
+}
+
+export function cancelSvgImport(previewId: string) {
+  return invoke<void>('cancel_svg_import', { previewId })
+}
+
+function svgImportStyleMappings(settings: SvgImportSettingsDraft['mappings']) {
+  return Object.entries(settings)
+    .filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => Boolean(entry[1]))
+    .map(([groupId, target]) => ({ groupId: Number(groupId), target }))
+    .sort((left, right) => left.groupId - right.groupId)
 }
 
 export function addInstructionStep(

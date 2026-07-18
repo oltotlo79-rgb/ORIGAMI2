@@ -87,7 +87,8 @@ export type FoldPreviewNarrowPhaseWitnessCoverage = Readonly<{
   omittedByLimitCount: number
   /**
    * False when an authoritative non-adjacent scan stopped at its first
-   * penetration or no positive-thickness SAT scan was performed.
+   * penetration, or when neither the positive-thickness prism classifier nor
+   * the zero-thickness surface classifier scanned a non-adjacent pair.
    */
   authoritativePairScanComplete: boolean
 }>
@@ -269,7 +270,7 @@ export type FoldPreviewNarrowPhaseAnalysisJobWorkBounds = Readonly<{
   entireStepTimeBounded: false
   /** Transform snapshot, broad phase, and prism construction are synchronous. */
   synchronousFactoryPreparation: true
-  /** Hinge policy classification remains synchronous, including zero thickness. */
+  /** Hinge policy finalization remains synchronous after every pair scan. */
   synchronousHingePolicyFinalization: true
   /** Complete-result snapshotting and deep freezing remain synchronous. */
   synchronousResultFinalization: true
@@ -325,8 +326,9 @@ export type FoldPreviewNarrowPhaseAnalysisJob = Readonly<{
    * Advances at most `workBudget` resumable cursor units.
    *
    * This is not a whole-frame wall-clock bound. Transform snapshotting, broad
-   * phase, prism construction, and zero-thickness hinge classification happen
-   * synchronously in the factory. A pair unit which completes a
+   * phase and prism construction happen synchronously in the factory. Both
+   * zero- and positive-thickness triangle pairs use the resumable cursor. A
+   * pair unit which completes a
    * hinge-adjacent candidate can also synchronously run the hinge-contact
    * policy outside the metered cursor work, and a witness unit runs its
    * derivation helper to completion. Complete-result snapshotting and deep
@@ -350,8 +352,8 @@ export type FoldPreviewNarrowPhaseAnalyzer = Readonly<{
   ): FoldPreviewNarrowPhaseResult | null
   /**
    * Creates a resumable authoritative SAT/witness cursor. Transform
-   * snapshotting, broad phase, prism preparation, and zero-thickness hinge
-   * classification remain synchronous factory work.
+   * snapshotting, broad phase, and prism preparation remain synchronous
+   * factory work; zero-thickness surface classification is cursor work.
    */
   createAnalysisJob(
     faceTransforms: ReadonlyMap<string, Matrix4>,
@@ -395,8 +397,14 @@ type FoldPreviewNarrowPhaseFace = Readonly<{
 type TrianglePrism = Readonly<{
   triangleIndex: number
   vertices: readonly Vector3[]
+  topologyVertices: readonly Readonly<{
+    vertexId: string | null
+    x: number
+    z: number
+  }>[]
   faceAxes: readonly Vector3[]
   edgeDirections: readonly Vector3[]
+  zeroThickness: boolean
   witnessFrame: FoldPreviewWitnessFrame | null
   bounds: Readonly<{
     minX: number
@@ -699,50 +707,6 @@ function refineFoldPreviewNarrowPhase(
   )
   const broadPhaseNonAdjacentCandidates = broadPhase.candidates.length
     - broadPhaseHingeAdjacentCandidates
-  if (thickness === 0) {
-    return {
-      broadPhaseCandidates: broadPhase.candidates.length,
-      broadPhaseNonAdjacentCandidates,
-      broadPhaseHingeAdjacentCandidates,
-      interactions: broadPhase.candidates.map((candidate) => {
-        const interaction: FoldPreviewNarrowPhaseInteraction = {
-          firstFaceId: candidate.firstFaceId,
-          secondFaceId: candidate.secondFaceId,
-          relation: candidate.relation,
-          hingeEdgeIds: candidate.hingeEdgeIds,
-          geometryClass: 'indeterminate',
-        }
-        if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
-          return {
-            ...interaction,
-            hingeDecision: hingeContactPolicy.classify({
-              firstFaceId: candidate.firstFaceId,
-              secondFaceId: candidate.secondFaceId,
-              hingeEdgeIds: candidate.hingeEdgeIds,
-              faceTransforms,
-              thickness,
-              numericalMargin,
-              testedTrianglePairs: 0,
-              pairs: [],
-            }),
-          }
-        }
-        return interaction
-      }),
-      trianglePairTests: 0,
-      satTests: 0,
-      numericalMargin,
-      witnessSamples: Object.freeze([]),
-      witnessCoverage: freezeWitnessCoverage({
-        eligiblePairCount: 0,
-        attemptedPairCount: 0,
-        unavailablePairCount: 0,
-        omittedByLimitCount: 0,
-        authoritativePairScanComplete: false,
-      }),
-    }
-  }
-
   const prismCache = new Map<string, readonly TrianglePrism[]>()
   let trianglePairTests = 0
   let satTests = 0
@@ -975,60 +939,6 @@ function refineFoldPreviewNarrowPhase(
   }
 }
 
-function createZeroThicknessNarrowPhaseResult(
-  faceTransforms: ReadonlyMap<string, Matrix4>,
-  broadPhase: FoldPreviewBroadPhaseResult,
-  hingeContactPolicy: FoldPreviewHingeContactPolicy | null,
-  numericalMargin: number,
-): FoldPreviewNarrowPhaseResult {
-  const broadPhaseHingeAdjacentCandidates = broadPhase.candidates.reduce(
-    (count, candidate) => count + Number(candidate.relation === 'hinge_adjacent'),
-    0,
-  )
-  return {
-    broadPhaseCandidates: broadPhase.candidates.length,
-    broadPhaseNonAdjacentCandidates:
-      broadPhase.candidates.length - broadPhaseHingeAdjacentCandidates,
-    broadPhaseHingeAdjacentCandidates,
-    interactions: broadPhase.candidates.map((candidate) => {
-      const interaction: FoldPreviewNarrowPhaseInteraction = {
-        firstFaceId: candidate.firstFaceId,
-        secondFaceId: candidate.secondFaceId,
-        relation: candidate.relation,
-        hingeEdgeIds: candidate.hingeEdgeIds,
-        geometryClass: 'indeterminate',
-      }
-      if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
-        return {
-          ...interaction,
-          hingeDecision: hingeContactPolicy.classify({
-            firstFaceId: candidate.firstFaceId,
-            secondFaceId: candidate.secondFaceId,
-            hingeEdgeIds: candidate.hingeEdgeIds,
-            faceTransforms,
-            thickness: 0,
-            numericalMargin,
-            testedTrianglePairs: 0,
-            pairs: [],
-          }),
-        }
-      }
-      return interaction
-    }),
-    trianglePairTests: 0,
-    satTests: 0,
-    numericalMargin,
-    witnessSamples: Object.freeze([]),
-    witnessCoverage: freezeWitnessCoverage({
-      eligiblePairCount: 0,
-      attemptedPairCount: 0,
-      unavailablePairCount: 0,
-      omittedByLimitCount: 0,
-      authoritativePairScanComplete: false,
-    }),
-  }
-}
-
 function createFoldPreviewNarrowPhaseAnalysisJob(
   faces: readonly PreparedFoldPreviewNarrowPhaseFace[],
   faceTransforms: ReadonlyMap<string, Matrix4>,
@@ -1047,58 +957,48 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
   const broadPhaseNonAdjacentCandidates = broadPhase.candidates.length
     - broadPhaseHingeAdjacentCandidates
 
-  let immediateResult: FoldPreviewNarrowPhaseResult | null = null
   const preparedCandidates: PreparedNarrowPhaseCandidate[] = []
   let potentialTrianglePairCount = 0
   let potentialNonAdjacentTrianglePairCount = 0
 
   try {
-    if (thickness === 0) {
-      immediateResult = createZeroThicknessNarrowPhaseResult(
-        faceTransforms,
-        broadPhase,
-        hingeContactPolicy,
-        numericalMargin,
-      )
-    } else {
-      const prismCache = new Map<string, readonly TrianglePrism[]>()
-      const prismsForFace = (faceId: string) => {
-        const cached = prismCache.get(faceId)
-        if (cached) return cached
-        const face = facesById.get(faceId)
-        const transform = faceTransforms.get(faceId)
-        if (!face || !transform) return null
-        const prisms = buildTrianglePrisms(face, transform, thickness)
-        if (!prisms) return null
-        prismCache.set(faceId, prisms)
-        return prisms
-      }
+    const prismCache = new Map<string, readonly TrianglePrism[]>()
+    const prismsForFace = (faceId: string) => {
+      const cached = prismCache.get(faceId)
+      if (cached) return cached
+      const face = facesById.get(faceId)
+      const transform = faceTransforms.get(faceId)
+      if (!face || !transform) return null
+      const prisms = buildTrianglePrisms(face, transform, thickness)
+      if (!prisms) return null
+      prismCache.set(faceId, prisms)
+      return prisms
+    }
 
-      for (const candidate of broadPhase.candidates) {
-        const firstPrisms = prismsForFace(candidate.firstFaceId)
-        const secondPrisms = prismsForFace(candidate.secondFaceId)
-        if (!firstPrisms || !secondPrisms) return null
-        const candidatePairCount =
-          firstPrisms.length * secondPrisms.length
-        if (!Number.isSafeInteger(candidatePairCount)) return null
-        potentialTrianglePairCount += candidatePairCount
-        if (!Number.isSafeInteger(potentialTrianglePairCount)) return null
-        if (candidate.relation === 'non_adjacent') {
-          potentialNonAdjacentTrianglePairCount += candidatePairCount
-          if (
-            !Number.isSafeInteger(potentialNonAdjacentTrianglePairCount)
-          ) return null
-        }
-        preparedCandidates.push(Object.freeze({
-          firstFaceId: candidate.firstFaceId,
-          secondFaceId: candidate.secondFaceId,
-          relation: candidate.relation,
-          hingeEdgeIds: candidate.hingeEdgeIds,
-          firstPrisms,
-          secondPrisms,
-          potentialTrianglePairCount: candidatePairCount,
-        }))
+    for (const candidate of broadPhase.candidates) {
+      const firstPrisms = prismsForFace(candidate.firstFaceId)
+      const secondPrisms = prismsForFace(candidate.secondFaceId)
+      if (!firstPrisms || !secondPrisms) return null
+      const candidatePairCount =
+        firstPrisms.length * secondPrisms.length
+      if (!Number.isSafeInteger(candidatePairCount)) return null
+      potentialTrianglePairCount += candidatePairCount
+      if (!Number.isSafeInteger(potentialTrianglePairCount)) return null
+      if (candidate.relation === 'non_adjacent') {
+        potentialNonAdjacentTrianglePairCount += candidatePairCount
+        if (
+          !Number.isSafeInteger(potentialNonAdjacentTrianglePairCount)
+        ) return null
       }
+      preparedCandidates.push(Object.freeze({
+        firstFaceId: candidate.firstFaceId,
+        secondFaceId: candidate.secondFaceId,
+        relation: candidate.relation,
+        hingeEdgeIds: candidate.hingeEdgeIds,
+        firstPrisms,
+        secondPrisms,
+        potentialTrianglePairCount: candidatePairCount,
+      }))
     }
   } catch {
     return null
@@ -1201,8 +1101,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
     workBounds,
   })
 
-  const result = (): FoldPreviewNarrowPhaseResult =>
-    immediateResult ?? {
+  const result = (): FoldPreviewNarrowPhaseResult => ({
       broadPhaseCandidates: broadPhase.candidates.length,
       broadPhaseNonAdjacentCandidates,
       broadPhaseHingeAdjacentCandidates,
@@ -1220,7 +1119,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
         authoritativePairScanComplete:
           performedNonAdjacentSatScan && nonAdjacentPairScansComplete,
       }),
-    }
+    })
 
   const completeStep = () => {
     const resultSnapshot = freezeNarrowPhaseResultSnapshot(result())
@@ -1544,14 +1443,6 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       if (cancelled) {
         return checkedStep(
           cancelledStep(),
-          previousWork,
-          workBudget,
-          processed,
-        )
-      }
-      if (immediateResult) {
-        return checkedStep(
-          completeStep(),
           previousWork,
           workBudget,
           processed,
@@ -2356,8 +2247,14 @@ function buildTrianglePrisms(
     prisms.push({
       triangleIndex,
       vertices,
+      topologyVertices: triangle.map((index) => ({
+        vertexId: face.polygon[index].vertexId ?? null,
+        x: face.polygon[index].x,
+        z: face.polygon[index].z,
+      })),
       faceAxes,
       edgeDirections,
+      zeroThickness: thickness === 0,
       witnessFrame,
       bounds,
     })
@@ -2370,6 +2267,11 @@ function classifyTrianglePrisms(
   second: TrianglePrism,
   margin: number,
 ): PrismIntersection | null {
+  if (first.zeroThickness || second.zeroThickness) {
+    return first.zeroThickness && second.zeroThickness
+      ? classifyZeroThicknessTriangles(first, second, margin)
+      : 'indeterminate'
+  }
   const axes = [...first.faceAxes, ...second.faceAxes]
   let uncertainAxis = false
   for (const firstEdge of first.edgeDirections) {
@@ -2404,6 +2306,554 @@ function classifyTrianglePrisms(
   }
   if (uncertainAxis) return 'indeterminate'
   return boundaryContact ? 'touching' : 'penetrating'
+}
+
+type TrianglePlaneSection = Readonly<{
+  points: readonly Vector3[]
+  crossesInterior: boolean
+  crossesInteriorByRawSigns: boolean
+  hasSubMarginPlaneDistance: boolean
+  mergedNumericallyDistinctPoint: boolean
+}>
+
+type ProjectionRange = Readonly<{
+  min: number
+  max: number
+}>
+
+/**
+ * Classifies the intersection dimension of two ideal paper triangles.
+ *
+ * A point or boundary segment is contact. A coplanar area overlap, or a
+ * positive-length line segment where both triangle interiors cross the other
+ * plane, is penetration. This geometric proof is intentionally independent of
+ * face-level shared vertex IDs: merely sharing a topology vertex never grants
+ * an exemption.
+ */
+function classifyZeroThicknessTriangles(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  margin: number,
+): PrismIntersection | null {
+  const firstVertices = first.vertices.slice(0, 3)
+  const secondVertices = second.vertices.slice(0, 3)
+  const firstNormal = first.faceAxes[0]?.clone()
+  const secondNormal = second.faceAxes[0]?.clone()
+  if (
+    firstVertices.length !== 3
+    || secondVertices.length !== 3
+    || !firstNormal
+    || !secondNormal
+    || !finiteVectors([...firstVertices, ...secondVertices])
+    || !finiteVector(firstNormal)
+    || !finiteVector(secondNormal)
+  ) return null
+
+  const firstNormalLength = firstNormal.length()
+  const secondNormalLength = secondNormal.length()
+  const minimumEdgeLength = Math.min(
+    minimumTriangleEdgeLength(firstVertices),
+    minimumTriangleEdgeLength(secondVertices),
+  )
+  if (
+    !Number.isFinite(firstNormalLength)
+    || !Number.isFinite(secondNormalLength)
+    || !Number.isFinite(minimumEdgeLength)
+    || firstNormalLength === 0
+    || secondNormalLength === 0
+    || minimumEdgeLength === 0
+  ) return null
+  if (margin * 16 >= minimumEdgeLength) return 'indeterminate'
+  firstNormal.multiplyScalar(1 / firstNormalLength)
+  secondNormal.multiplyScalar(1 / secondNormalLength)
+
+  const firstDistances = signedPlaneDistances(
+    firstVertices,
+    secondVertices,
+    secondNormal,
+  )
+  const secondDistances = signedPlaneDistances(
+    secondVertices,
+    firstVertices,
+    firstNormal,
+  )
+  if (!firstDistances || !secondDistances) return null
+  if (
+    strictlyOnOneSide(firstDistances, margin)
+    || strictlyOnOneSide(secondDistances, margin)
+  ) return 'separated'
+
+  const intersectionDirection = firstNormal.clone().cross(secondNormal)
+  const directionLength = intersectionDirection.length()
+  if (!Number.isFinite(directionLength)) return null
+  if (directionLength <= PARALLEL_AXIS_TOLERANCE) {
+    const maximumPlaneDistance = Math.max(
+      ...firstDistances.map(Math.abs),
+      ...secondDistances.map(Math.abs),
+    )
+    if (!Number.isFinite(maximumPlaneDistance)) return null
+    if (maximumPlaneDistance > margin) return 'separated'
+    if (maximumPlaneDistance > 0) return 'indeterminate'
+    const exactlyParallel = intersectionDirection.x === 0
+      && intersectionDirection.y === 0
+      && intersectionDirection.z === 0
+    if (!exactlyParallel) return 'indeterminate'
+    return classifyCoplanarTriangleOverlap(
+      firstVertices,
+      secondVertices,
+      firstNormal,
+      margin,
+    )
+  }
+  intersectionDirection.multiplyScalar(1 / directionLength)
+
+  const firstSection = trianglePlaneSection(
+    firstVertices,
+    firstDistances,
+    intersectionDirection,
+    margin,
+  )
+  const secondSection = trianglePlaneSection(
+    secondVertices,
+    secondDistances,
+    intersectionDirection,
+    margin,
+  )
+  if (!firstSection || !secondSection) return null
+  if (firstSection.points.length === 0 || secondSection.points.length === 0) {
+    return firstSection.hasSubMarginPlaneDistance
+      || secondSection.hasSubMarginPlaneDistance
+      || firstSection.mergedNumericallyDistinctPoint
+      || secondSection.mergedNumericallyDistinctPoint
+      ? 'indeterminate'
+      : 'separated'
+  }
+  const firstRange = projectPointRange(
+    firstSection.points,
+    intersectionDirection,
+    firstVertices[0],
+  )
+  const secondRange = projectPointRange(
+    secondSection.points,
+    intersectionDirection,
+    firstVertices[0],
+  )
+  if (!firstRange || !secondRange) return null
+  const gap = Math.max(
+    secondRange.min - firstRange.max,
+    firstRange.min - secondRange.max,
+  )
+  if (!Number.isFinite(gap)) return null
+  if (gap > margin) return 'separated'
+  const overlap = Math.min(firstRange.max, secondRange.max)
+    - Math.max(firstRange.min, secondRange.min)
+  const overlapMinimum = Math.max(firstRange.min, secondRange.min)
+  const overlapMaximum = Math.min(firstRange.max, secondRange.max)
+  if (!Number.isFinite(overlap)) return null
+  const mergedNumericallyDistinctPoint =
+    firstSection.mergedNumericallyDistinctPoint
+    || secondSection.mergedNumericallyDistinctPoint
+  const hasSubMarginPlaneDistance =
+    firstSection.hasSubMarginPlaneDistance
+    || secondSection.hasSubMarginPlaneDistance
+  if (overlap === 0) {
+    if (mergedNumericallyDistinctPoint) return 'indeterminate'
+    if (!hasSubMarginPlaneDistance) return 'touching'
+    const contactCoordinate = Math.max(firstRange.min, secondRange.min)
+    return sharedTopologyPointProvesContact(
+      first,
+      second,
+      firstDistances,
+      secondDistances,
+      intersectionDirection,
+      firstVertices[0],
+      contactCoordinate,
+      margin,
+    )
+      && !firstSection.crossesInteriorByRawSigns
+      && !secondSection.crossesInteriorByRawSigns
+      ? 'touching'
+      : 'indeterminate'
+  }
+  if (overlap <= margin) return 'indeterminate'
+  if (
+    !mergedNumericallyDistinctPoint
+    && hasSubMarginPlaneDistance
+    && !firstSection.crossesInterior
+    && !secondSection.crossesInterior
+    && sharedTopologySegmentProvesContact(
+      first,
+      second,
+      firstDistances,
+      secondDistances,
+      intersectionDirection,
+      firstVertices[0],
+      overlapMinimum,
+      overlapMaximum,
+      margin,
+    )
+  ) return 'touching'
+  if (mergedNumericallyDistinctPoint || hasSubMarginPlaneDistance) {
+    return 'indeterminate'
+  }
+  return firstSection.crossesInterior && secondSection.crossesInterior
+    ? 'penetrating'
+    : 'touching'
+}
+
+function classifyCoplanarTriangleOverlap(
+  first: readonly Vector3[],
+  second: readonly Vector3[],
+  normal: Vector3,
+  margin: number,
+): PrismIntersection | null {
+  const basisU = first[1].clone().sub(first[0])
+  const basisULength = basisU.length()
+  if (!Number.isFinite(basisULength) || basisULength === 0) return null
+  basisU.multiplyScalar(1 / basisULength)
+  const basisV = normal.clone().cross(basisU)
+  const basisVLength = basisV.length()
+  if (!Number.isFinite(basisVLength) || basisVLength === 0) return null
+  basisV.multiplyScalar(1 / basisVLength)
+
+  const first2d = projectTriangleToPlane(
+    first,
+    basisU,
+    basisV,
+    first[0],
+  )
+  const second2d = projectTriangleToPlane(
+    second,
+    basisU,
+    basisV,
+    first[0],
+  )
+  if (!first2d || !second2d) return null
+  let boundaryContact = false
+  let uncertainBoundary = false
+  for (const triangle of [first2d, second2d]) {
+    for (let index = 0; index < 3; index += 1) {
+      const start = triangle[index]
+      const end = triangle[(index + 1) % 3]
+      const deltaX = end.x - start.x
+      const deltaY = end.y - start.y
+      const axisLength = Math.hypot(deltaX, deltaY)
+      if (!Number.isFinite(axisLength) || axisLength === 0) return null
+      const axisX = -deltaY / axisLength
+      const axisY = deltaX / axisLength
+      const firstRange = projectPoints2d(first2d, axisX, axisY)
+      const secondRange = projectPoints2d(second2d, axisX, axisY)
+      if (!firstRange || !secondRange) return null
+      const gap = Math.max(
+        secondRange.min - firstRange.max,
+        firstRange.min - secondRange.max,
+      )
+      if (!Number.isFinite(gap)) return null
+      if (gap > margin) return 'separated'
+      const overlap = Math.min(firstRange.max, secondRange.max)
+        - Math.max(firstRange.min, secondRange.min)
+      if (!Number.isFinite(overlap)) return null
+      if (overlap === 0) boundaryContact = true
+      else if (overlap <= margin) uncertainBoundary = true
+    }
+  }
+  if (uncertainBoundary) return 'indeterminate'
+  return boundaryContact ? 'touching' : 'penetrating'
+}
+
+function trianglePlaneSection(
+  vertices: readonly Vector3[],
+  distances: readonly number[],
+  lineDirection: Vector3,
+  margin: number,
+): TrianglePlaneSection | null {
+  if (vertices.length !== 3 || distances.length !== 3) return null
+  const hasNumericallyAmbiguousDistance = distances.some((distance) =>
+    distance !== 0 && Math.abs(distance) <= margin)
+  let mergedNumericallyDistinctPoint = false
+  const points: Vector3[] = []
+  for (let index = 0; index < 3; index += 1) {
+    if (Math.abs(distances[index]) <= margin) {
+      mergedNumericallyDistinctPoint =
+        addDistinctPoint(points, vertices[index], margin)
+        || mergedNumericallyDistinctPoint
+    }
+  }
+  for (let index = 0; index < 3; index += 1) {
+    const nextIndex = (index + 1) % 3
+    const firstDistance = distances[index]
+    const secondDistance = distances[nextIndex]
+    if (
+      (firstDistance > margin && secondDistance < -margin)
+      || (firstDistance < -margin && secondDistance > margin)
+    ) {
+      const denominator = firstDistance - secondDistance
+      if (!Number.isFinite(denominator) || denominator === 0) return null
+      const interpolation = firstDistance / denominator
+      if (!Number.isFinite(interpolation)) return null
+      const point = vertices[index].clone().lerp(
+        vertices[nextIndex],
+        interpolation,
+      )
+      if (!finiteVector(point)) return null
+      mergedNumericallyDistinctPoint =
+        addDistinctPoint(points, point, margin)
+        || mergedNumericallyDistinctPoint
+    }
+  }
+  if (points.length > 2) {
+    const origin = points[0]
+    const range = projectPointRange(points, lineDirection, origin)
+    if (!range) return null
+    const minimum = points.reduce((best, point) =>
+      point.clone().sub(origin).dot(lineDirection)
+        < best.clone().sub(origin).dot(lineDirection)
+        ? point
+        : best)
+    const maximum = points.reduce((best, point) =>
+      point.clone().sub(origin).dot(lineDirection)
+        > best.clone().sub(origin).dot(lineDirection)
+        ? point
+        : best)
+    points.splice(0, points.length, minimum, maximum)
+  }
+  const hasPositive = distances.some((distance) => distance > margin)
+  const hasNegative = distances.some((distance) => distance < -margin)
+  return {
+    points,
+    crossesInterior: hasPositive && hasNegative,
+    crossesInteriorByRawSigns:
+      distances.some((distance) => distance > 0)
+      && distances.some((distance) => distance < 0),
+    hasSubMarginPlaneDistance: hasNumericallyAmbiguousDistance,
+    mergedNumericallyDistinctPoint,
+  }
+}
+
+function sharedTopologyPointProvesContact(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  firstDistances: readonly number[],
+  secondDistances: readonly number[],
+  lineDirection: Vector3,
+  projectionOrigin: Vector3,
+  contactCoordinate: number,
+  margin: number,
+) {
+  for (
+    let firstIndex = 0;
+    firstIndex < first.topologyVertices.length;
+    firstIndex += 1
+  ) {
+    const firstTopology = first.topologyVertices[firstIndex]
+    const firstWorld = first.vertices[firstIndex]
+    if (
+      !firstTopology
+      || !firstWorld
+      || firstTopology.vertexId === null
+      || Math.abs(firstDistances[firstIndex] ?? Number.POSITIVE_INFINITY)
+        > margin
+    ) continue
+    for (
+      let secondIndex = 0;
+      secondIndex < second.topologyVertices.length;
+      secondIndex += 1
+    ) {
+      const secondTopology = second.topologyVertices[secondIndex]
+      const secondWorld = second.vertices[secondIndex]
+      if (
+        !secondTopology
+        || !secondWorld
+        || secondTopology.vertexId !== firstTopology.vertexId
+        || secondTopology.x !== firstTopology.x
+        || secondTopology.z !== firstTopology.z
+        || Math.abs(secondDistances[secondIndex] ?? Number.POSITIVE_INFINITY)
+          > margin
+        || firstWorld.distanceTo(secondWorld) > margin
+      ) continue
+      const firstCoordinate = firstWorld.clone()
+        .sub(projectionOrigin)
+        .dot(lineDirection)
+      const secondCoordinate = secondWorld.clone()
+        .sub(projectionOrigin)
+        .dot(lineDirection)
+      if (
+        Number.isFinite(firstCoordinate)
+        && Number.isFinite(secondCoordinate)
+        && Math.abs(firstCoordinate - contactCoordinate) <= margin
+        && Math.abs(secondCoordinate - contactCoordinate) <= margin
+      ) return true
+    }
+  }
+  return false
+}
+
+function sharedTopologySegmentProvesContact(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  firstDistances: readonly number[],
+  secondDistances: readonly number[],
+  lineDirection: Vector3,
+  projectionOrigin: Vector3,
+  overlapMinimum: number,
+  overlapMaximum: number,
+  margin: number,
+) {
+  const coordinates: number[] = []
+  for (
+    let firstIndex = 0;
+    firstIndex < first.topologyVertices.length;
+    firstIndex += 1
+  ) {
+    const firstTopology = first.topologyVertices[firstIndex]
+    const firstWorld = first.vertices[firstIndex]
+    if (
+      !firstTopology
+      || !firstWorld
+      || firstTopology.vertexId === null
+      || Math.abs(firstDistances[firstIndex] ?? Number.POSITIVE_INFINITY)
+        > margin
+    ) continue
+    for (
+      let secondIndex = 0;
+      secondIndex < second.topologyVertices.length;
+      secondIndex += 1
+    ) {
+      const secondTopology = second.topologyVertices[secondIndex]
+      const secondWorld = second.vertices[secondIndex]
+      if (
+        !secondTopology
+        || !secondWorld
+        || secondTopology.vertexId !== firstTopology.vertexId
+        || secondTopology.x !== firstTopology.x
+        || secondTopology.z !== firstTopology.z
+        || Math.abs(secondDistances[secondIndex] ?? Number.POSITIVE_INFINITY)
+          > margin
+        || firstWorld.distanceTo(secondWorld) > margin
+      ) continue
+      const coordinate = firstWorld.clone()
+        .sub(projectionOrigin)
+        .dot(lineDirection)
+      if (Number.isFinite(coordinate)) coordinates.push(coordinate)
+    }
+  }
+  if (coordinates.length < 2) return false
+  const minimum = Math.min(...coordinates)
+  const maximum = Math.max(...coordinates)
+  return maximum - minimum > margin
+    && minimum <= overlapMinimum + margin
+    && maximum >= overlapMaximum - margin
+}
+
+function signedPlaneDistances(
+  vertices: readonly Vector3[],
+  planeVertices: readonly Vector3[],
+  planeNormal: Vector3,
+) {
+  if (planeVertices.length !== 3) return null
+  const distances = vertices.map((vertex) => {
+    let closest = planeVertices[0]
+    let closestDistanceSquared = vertex.distanceToSquared(closest)
+    for (let index = 1; index < planeVertices.length; index += 1) {
+      const distanceSquared = vertex.distanceToSquared(planeVertices[index])
+      if (
+        !Number.isFinite(distanceSquared)
+        || distanceSquared >= closestDistanceSquared
+      ) continue
+      closest = planeVertices[index]
+      closestDistanceSquared = distanceSquared
+    }
+    return vertex.clone().sub(closest).dot(planeNormal)
+  })
+  return distances.every(Number.isFinite) ? distances : null
+}
+
+function strictlyOnOneSide(distances: readonly number[], margin: number) {
+  return distances.every((distance) => distance > margin)
+    || distances.every((distance) => distance < -margin)
+}
+
+function addDistinctPoint(
+  target: Vector3[],
+  point: Vector3,
+  margin: number,
+) {
+  const duplicateMargin = Math.max(margin, Number.EPSILON)
+  for (const candidate of target) {
+    const distanceSquared = candidate.distanceToSquared(point)
+    if (distanceSquared <= duplicateMargin * duplicateMargin) {
+      return distanceSquared > 0
+    }
+  }
+  target.push(point.clone())
+  return false
+}
+
+function projectPointRange(
+  points: readonly Vector3[],
+  axis: Vector3,
+  origin: Vector3,
+): ProjectionRange | null {
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  for (const point of points) {
+    const projection = point.clone().sub(origin).dot(axis)
+    if (!Number.isFinite(projection)) return null
+    min = Math.min(min, projection)
+    max = Math.max(max, projection)
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null
+}
+
+function projectTriangleToPlane(
+  vertices: readonly Vector3[],
+  basisU: Vector3,
+  basisV: Vector3,
+  origin: Vector3,
+) {
+  const points = vertices.map((vertex) => ({
+    x: vertex.clone().sub(origin).dot(basisU),
+    y: vertex.clone().sub(origin).dot(basisV),
+  }))
+  return points.every((point) =>
+    Number.isFinite(point.x) && Number.isFinite(point.y))
+    ? points
+    : null
+}
+
+function projectPoints2d(
+  points: readonly Readonly<{ x: number; y: number }>[],
+  axisX: number,
+  axisY: number,
+): ProjectionRange | null {
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  for (const point of points) {
+    const projection = point.x * axisX + point.y * axisY
+    if (!Number.isFinite(projection)) return null
+    min = Math.min(min, projection)
+    max = Math.max(max, projection)
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null
+}
+
+function finiteVectors(vectors: readonly Vector3[]) {
+  return vectors.every(finiteVector)
+}
+
+function finiteVector(vector: Vector3) {
+  return Number.isFinite(vector.x)
+    && Number.isFinite(vector.y)
+    && Number.isFinite(vector.z)
+}
+
+function minimumTriangleEdgeLength(vertices: readonly Vector3[]) {
+  if (vertices.length !== 3) return Number.NaN
+  return Math.min(
+    vertices[0].distanceTo(vertices[1]),
+    vertices[1].distanceTo(vertices[2]),
+    vertices[2].distanceTo(vertices[0]),
+  )
 }
 
 function boundsForVertices(vertices: readonly Vector3[]) {

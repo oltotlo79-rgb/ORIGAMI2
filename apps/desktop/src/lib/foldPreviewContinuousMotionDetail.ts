@@ -206,6 +206,7 @@ const HINGE_REASON_SUFFIXES = new Set([
   'multiple_shared_hinges',
   'pose_mismatch',
   'unsupported_flat_fold',
+  'layer_offset_unmodeled',
   'numerical_geometry',
   'corridor_boundary',
   'non_hinge_triangle',
@@ -1286,6 +1287,9 @@ function describeBlocker(blocker: NormalizedBlocker) {
 }
 
 function describeReason(reasonCode: string) {
+  if (reasonCode === 'hinge_layer_offset_unmodeled') {
+    return '紙厚による層ずらしを初版では再現しないため、この角度以降は安全を判定できませんでした'
+  }
   if (reasonCode === 'work_limit' || reasonCode === 'uncertified_interval') {
     return '計算上限内で経路区間の安全を確認できませんでした'
   }

@@ -8,6 +8,7 @@ import {
 import { findFoldPreviewSingleAxisSweptAabb } from './foldPreviewContinuousInterval.ts'
 import type { FoldPreviewCollisionAdjacency } from './foldPreviewCollision.ts'
 import {
+  calculateFoldPreviewCenteredSlabHingeRadius,
   prepareFoldPreviewHingeContactPolicy,
   type FoldPreviewHingeContactConstraint,
   type FoldPreviewHingePolicyFace,
@@ -189,13 +190,19 @@ export function prepareFoldPreviewSingleFoldContinuousCollision(
           ? null
           : calculateFoldPreviewNarrowPhaseNumericalMargin(coordinateScale)
         if (numericalMargin === null) return null
+        const hingeLength = Math.hypot(
+          axisEnd.x - axisStart.x,
+          axisEnd.z - axisStart.z,
+        )
+        if (!Number.isFinite(hingeLength) || hingeLength <= 0) return null
         // The pointwise hinge frame subtracts margin + endpoint pose error
         // from the analytic corridor radius. Endpoint error is itself bounded
         // by one margin. Requiring four times that theoretical minimum, via
         // this factor of eight against full thickness, also covers transform
         // round-off across the complete rotation interval.
-        const staticSupportNumericallySafe = thickness
-          >= numericalMargin * HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR
+        const staticSupportNumericallySafe = thickness === 0
+          || thickness
+            >= numericalMargin * HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR
         const fixedTransform = new Matrix4()
         const fixedBounds = fixedFace.triangles.map((triangle) =>
           findFoldPreviewSingleAxisSweptAabb(
@@ -264,6 +271,15 @@ export function prepareFoldPreviewSingleFoldContinuousCollision(
                 kind: 'indeterminate',
                 reason: 'invalid_interpolated_interval',
               }
+            }
+            if (intervalExceedsFiniteHingeRadius(
+              startAngle,
+              endAngle,
+              thickness,
+              hingeLength,
+              numericalMargin,
+            )) {
+              return { kind: 'unresolved' }
             }
             // Subdivide toward, but never certify through, the exact singular
             // target. The point evaluator will make the terminal reason clear.
@@ -422,6 +438,28 @@ function snapshotModel(
 
 function validAngle(value: number) {
   return Number.isFinite(value) && value >= 0 && value <= 180
+}
+
+function intervalExceedsFiniteHingeRadius(
+  startAngleDegrees: number,
+  endAngleDegrees: number,
+  thickness: number,
+  hingeLength: number,
+  numericalMargin: number,
+) {
+  if (thickness === 0) return false
+  const maximumAngleDegrees = Math.max(
+    startAngleDegrees,
+    endAngleDegrees,
+  )
+  const cosineHalfAngle = Math.cos(
+    maximumAngleDegrees * Math.PI / 360,
+  )
+  const radius = calculateFoldPreviewCenteredSlabHingeRadius(
+    thickness,
+    cosineHalfAngle,
+  )
+  return radius === null || radius > hingeLength + numericalMargin
 }
 
 function continuousCoordinateScaleUpperBound(

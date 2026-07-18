@@ -40,6 +40,33 @@ test('either single-fold face can be fixed while hinge points stay coincident', 
   }
 })
 
+test('single-fold kinematics emits exact 90 and 180 degree collision poses', () => {
+  const model = singleFoldModel()
+  const ninety = calculateSingleFoldPose(model, 'left', 90)
+  const flatFold = calculateSingleFoldPose(model, 'left', 180)
+  const nearby = calculateSingleFoldPose(model, 'left', 89.999999)
+  assert.ok(ninety && flatFold && nearby)
+  const point = new Vector3(1, 0, 0)
+  assert.deepEqual(
+    point.clone().applyMatrix4(
+      ninety.faceTransforms.get('right')!,
+    ).toArray(),
+    [0, 1, 0],
+  )
+  assert.deepEqual(
+    point.clone().applyMatrix4(
+      flatFold.faceTransforms.get('right')!,
+    ).toArray(),
+    [-1, 0, 0],
+  )
+  assert.notEqual(
+    point.clone().applyMatrix4(
+      nearby.faceTransforms.get('right')!,
+    ).x,
+    0,
+  )
+})
+
 test('valley assignment reverses the canonical moving-side rotation', () => {
   const model = singleFoldModel()
   const valley: SingleFoldPreviewModel = {

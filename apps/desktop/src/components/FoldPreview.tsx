@@ -26,6 +26,9 @@ import {
   type FoldPreviewCollisionAdjacency,
 } from '../lib/foldPreviewCollision'
 import {
+  makeFoldPreviewCanonicalPivotMatrix,
+} from '../lib/foldPreviewCanonicalRotation'
+import {
   summarizeFoldPreviewCollision,
   type FoldPreviewFaceCollisionSeverity,
 } from '../lib/foldPreviewCollisionPresentation'
@@ -805,6 +808,10 @@ export function FoldPreview({
             hingeInteractions: presentation.hingeInteractions,
             hingeModelAllowedContacts: presentation.hingeModelAllowedContacts,
             hingeModelCorridorOverlaps: presentation.hingeModelCorridorOverlaps,
+            hingeModelFlatSurfaceStacks:
+              presentation.hingeModelFlatSurfaceStacks,
+            hingeLayerOffsetUnmodeled:
+              presentation.hingeLayerOffsetUnmodeled,
             hingeOutsidePenetrations: presentation.hingeOutsidePenetrations,
             hingeOutsideContacts: presentation.hingeOutsideContacts,
             hingeUnresolvedInteractions: presentation.hingeUnresolvedInteractions,
@@ -1107,7 +1114,9 @@ export function FoldPreview({
             || pose.fixedFaceId !== singleAnchor.fixedFace.id
             || pose.movingFaceId !== singleAnchor.movingFace.id
           ) return false
-          applyFoldRotation(pivot, axis, rotationSign, nextAngle)
+          if (!applyFoldRotation(pivot, axis, rotationSign, nextAngle)) {
+            return false
+          }
           updateCollision(pose.faceTransforms, collisionPoseKey(
             model,
             resolvedFixedFaceId,
@@ -4319,6 +4328,12 @@ export function FoldPreview({
       data-hinge-model-corridor-overlaps={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.hingeModelCorridorOverlaps
         : undefined}
+      data-hinge-model-flat-surface-stacks={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeModelFlatSurfaceStacks
+        : undefined}
+      data-hinge-layer-offset-unmodeled={currentCollisionSummary?.kind === 'ready'
+        ? currentCollisionSummary.hingeLayerOffsetUnmodeled
+        : undefined}
       data-hinge-outside-penetrations={currentCollisionSummary?.kind === 'ready'
         ? currentCollisionSummary.hingeOutsidePenetrations
         : undefined}
@@ -4572,10 +4587,16 @@ function applyFoldRotation(
   rotationSign: 1 | -1,
   angle: number,
 ) {
-  pivot.quaternion.setFromAxisAngle(
+  const matrix = makeFoldPreviewCanonicalPivotMatrix(
     axis,
+    pivot.position,
     THREE.MathUtils.degToRad(angle * rotationSign),
   )
+  if (!matrix) return false
+  pivot.matrixAutoUpdate = false
+  pivot.matrix.copy(matrix)
+  pivot.matrixWorldNeedsUpdate = true
+  return true
 }
 
 function describeTreeAngles(

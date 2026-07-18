@@ -45,6 +45,55 @@ test('allowed hinge-model interactions remain informational instead of collision
   assert.equal(collisionBadgeText(boundaryOnly), 'ヒンジ境界接触 1・他衝突 0')
 })
 
+test('flat stacks and unmodeled layer offsets have dedicated user-facing labels', () => {
+  const flatStack = ready({
+    totalCandidates: 1,
+    hingeAdjacentCandidates: 1,
+    narrowInteractions: 1,
+    hingeInteractions: 1,
+    hingeModelFlatSurfaceStacks: 1,
+  })
+  assert.equal(collisionDataStatus(flatStack), 'hinge-model')
+  assert.equal(collisionBadgeClass(flatStack), 'has-hinge-candidates')
+  assert.equal(
+    collisionBadgeText(flatStack),
+    '厚さ0の許容平坦積層 1・通常貫通 0',
+  )
+
+  const layerOffset = ready({
+    totalCandidates: 1,
+    hingeAdjacentCandidates: 1,
+    narrowInteractions: 1,
+    hingeInteractions: 1,
+    hingeLayerOffsetUnmodeled: 1,
+    hingeUnresolvedInteractions: 1,
+  })
+  assert.equal(collisionDataStatus(layerOffset), 'hinge-unresolved')
+  assert.equal(collisionBadgeClass(layerOffset), 'has-indeterminate')
+  assert.equal(
+    collisionBadgeText(layerOffset),
+    '層ずらし未再現のため判定不能 1・貫通許可なし',
+  )
+  assert.match(
+    describeCollisionSummary(layerOffset, true),
+    /層ずらし未再現1件/,
+  )
+
+  const layerOffsetWithContact = {
+    ...layerOffset,
+    nonAdjacentContacts: 1,
+    indeterminateInteractions: 2,
+  }
+  assert.equal(
+    collisionDataStatus(layerOffsetWithContact),
+    'hinge-unresolved',
+  )
+  assert.equal(
+    collisionBadgeText(layerOffsetWithContact),
+    '層ずらし未再現のため判定不能 1・貫通許可なし',
+  )
+})
+
 test('outside-hinge penetrations and contacts use blocking collision states', () => {
   const contact = ready({
     totalCandidates: 1,
@@ -101,6 +150,8 @@ test('summary equality observes every hinge-policy presentation field', () => {
   const fields = [
     'hingeModelAllowedContacts',
     'hingeModelCorridorOverlaps',
+    'hingeModelFlatSurfaceStacks',
+    'hingeLayerOffsetUnmodeled',
     'hingeOutsidePenetrations',
     'hingeOutsideContacts',
     'hingeUnresolvedInteractions',
@@ -210,6 +261,8 @@ function ready(overrides: Partial<ReadyCollisionSummary> = {}): ReadyCollisionSu
     hingeInteractions: 0,
     hingeModelAllowedContacts: 0,
     hingeModelCorridorOverlaps: 0,
+    hingeModelFlatSurfaceStacks: 0,
+    hingeLayerOffsetUnmodeled: 0,
     hingeOutsidePenetrations: 0,
     hingeOutsideContacts: 0,
     hingeUnresolvedInteractions: 0,

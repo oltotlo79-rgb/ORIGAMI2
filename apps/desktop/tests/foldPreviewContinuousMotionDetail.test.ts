@@ -190,6 +190,31 @@ test('indeterminate motion reports an unresolved path without blocker metadata',
   assert.equal(detail.hingeDecision, null)
 })
 
+test('an unmodeled layer offset has a dedicated stop explanation', () => {
+  const detail = describeFoldPreviewContinuousMotionDetail(state({
+    start: 0,
+    requested: 180,
+    applied: 170,
+    status: 'indeterminate',
+    reason: 'hinge_layer_offset_unmodeled',
+    result: {
+      kind: 'indeterminate',
+      certifiedSafeThrough: 17 / 18,
+      stopTime: 17 / 18,
+      unresolvedBracket: [17 / 18, 35 / 36],
+      reason: 'hinge_layer_offset_unmodeled',
+      stats,
+    },
+  }))
+
+  assert.ok(detail)
+  assert.equal(detail.reasonCode, 'hinge_layer_offset_unmodeled')
+  assert.ok(detail.rows.some((row) =>
+    row.kind === 'user'
+    && row.value.includes('層ずらし')
+    && row.value.includes('判定できません')))
+})
+
 test('unknown runner reasons are classified without exposing raw text', () => {
   const rawReason = 'secret_backend_payload:do-not-display'
   const detail = describeFoldPreviewContinuousMotionDetail(state({

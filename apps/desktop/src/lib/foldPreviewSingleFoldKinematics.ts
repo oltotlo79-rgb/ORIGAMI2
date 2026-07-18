@@ -1,5 +1,6 @@
 import { Matrix4, Vector3 } from 'three'
 import { resolveSingleFoldAnchor } from './foldPreviewAnchoring.ts'
+import { makeFoldPreviewCanonicalAxisRotation } from './foldPreviewCanonicalRotation.ts'
 import type { SingleFoldPreviewModel } from './foldPreviewModel'
 
 export type FoldPreviewSingleFoldPose = Readonly<{
@@ -50,9 +51,14 @@ export function calculateSingleFoldPose(
     * anchor.movingRotationSign
     * Math.PI
     / 180
+  const axisRotation = makeFoldPreviewCanonicalAxisRotation(
+    axis,
+    signedAngleRadians,
+  )
+  if (!axisRotation) return null
   const movingTransform = new Matrix4()
     .makeTranslation(model.hinge.start.x, 0, model.hinge.start.z)
-    .multiply(new Matrix4().makeRotationAxis(axis, signedAngleRadians))
+    .multiply(axisRotation)
     .multiply(new Matrix4().makeTranslation(
       -model.hinge.start.x,
       0,

@@ -83,6 +83,30 @@ test('hinge policy separates model contact, corridor overlap, and outside collis
   assert.equal(presentation.faceSeverities.get('i'), 'indeterminate')
 })
 
+test('flat surface stacks and unmodeled layer offsets remain dedicated hinge states', () => {
+  const presentation = summarizeFoldPreviewCollision(result([
+    interaction('stack-a', 'stack-b', 'hinge_adjacent', 'penetrating', {
+      kind: 'allowed_by_hinge_model',
+      hingeEdgeId: 'hinge',
+      geometry: 'flat_surface_stack',
+      thicknessRule: 'centered_mid_surface_v1',
+    }),
+    interaction('offset-a', 'offset-b', 'hinge_adjacent', 'penetrating', {
+      kind: 'indeterminate',
+      hingeEdgeIds: ['hinge'],
+      reason: 'layer_offset_unmodeled',
+    }),
+  ]))
+  assert.equal(presentation.hingeModelFlatSurfaceStacks, 1)
+  assert.equal(presentation.hingeLayerOffsetUnmodeled, 1)
+  assert.equal(presentation.hingeUnresolvedInteractions, 1)
+  assert.equal(presentation.indeterminateInteractions, 1)
+  assert.equal(presentation.faceSeverities.has('stack-a'), false)
+  assert.equal(presentation.faceSeverities.has('stack-b'), false)
+  assert.equal(presentation.faceSeverities.get('offset-a'), 'indeterminate')
+  assert.equal(presentation.faceSeverities.get('offset-b'), 'indeterminate')
+})
+
 test('presentation fails closed for misplaced and contradictory hinge decisions', () => {
   const presentation = summarizeFoldPreviewCollision(result([
     interaction('a', 'b', 'non_adjacent', 'penetrating', {
@@ -139,6 +163,8 @@ test('presentation counts preserve broad and narrow categories independently', (
     hingeInteractions: presentation.hingeInteractions,
     hingeModelAllowedContacts: presentation.hingeModelAllowedContacts,
     hingeModelCorridorOverlaps: presentation.hingeModelCorridorOverlaps,
+    hingeModelFlatSurfaceStacks: presentation.hingeModelFlatSurfaceStacks,
+    hingeLayerOffsetUnmodeled: presentation.hingeLayerOffsetUnmodeled,
     hingeOutsidePenetrations: presentation.hingeOutsidePenetrations,
     hingeOutsideContacts: presentation.hingeOutsideContacts,
     hingeUnresolvedInteractions: presentation.hingeUnresolvedInteractions,
@@ -153,6 +179,8 @@ test('presentation counts preserve broad and narrow categories independently', (
     hingeInteractions: 1,
     hingeModelAllowedContacts: 0,
     hingeModelCorridorOverlaps: 0,
+    hingeModelFlatSurfaceStacks: 0,
+    hingeLayerOffsetUnmodeled: 0,
     hingeOutsidePenetrations: 0,
     hingeOutsideContacts: 0,
     hingeUnresolvedInteractions: 1,

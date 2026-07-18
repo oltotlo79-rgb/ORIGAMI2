@@ -1,4 +1,5 @@
 import { Matrix4, Vector3, type Matrix4 as ThreeMatrix4 } from 'three'
+import { makeFoldPreviewCanonicalAxisRotation } from './foldPreviewCanonicalRotation.ts'
 import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
@@ -18,6 +19,7 @@ import {
 } from './foldPreviewContinuousMotion.ts'
 import { findFoldPreviewSingleAxisSweptAabb } from './foldPreviewContinuousInterval.ts'
 import {
+  calculateFoldPreviewCenteredSlabHingeRadius,
   prepareFoldPreviewHingeContactPolicy,
   type FoldPreviewHingeContactConstraint,
   type FoldPreviewHingePolicyFace,
@@ -552,8 +554,15 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
           ? null
           : calculateFoldPreviewNarrowPhaseNumericalMargin(coordinateScale)
         if (numericalMargin === null) return null
-        const staticSupportNumericallySafe = thickness
-          >= numericalMargin * HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR
+        const staticSupportNumericallySafe = thickness === 0
+          || thickness
+            >= numericalMargin * HINGE_INTERVAL_NUMERICAL_SAFETY_FACTOR
+        const hingeLength = new Vector3(
+          worldAxis.end.x - worldAxis.start.x,
+          worldAxis.end.y - worldAxis.start.y,
+          worldAxis.end.z - worldAxis.start.z,
+        ).length()
+        if (!Number.isFinite(hingeLength) || hingeLength <= 0) return null
         const stationaryBounds = triangleBoundsAtPose(
           stationaryFaces,
           basePose.faceTransforms,
@@ -722,6 +731,15 @@ export function prepareFoldPreviewTreeSingleHingeContinuousCollision(
                 kind: 'indeterminate',
                 reason: 'invalid_interpolated_interval',
               }
+            }
+            if (intervalExceedsFiniteHingeRadius(
+              startAngle,
+              endAngle,
+              thickness,
+              hingeLength,
+              numericalMargin,
+            )) {
+              return { kind: 'unresolved' }
             }
             if (Math.max(startAngle, endAngle) >= 180) {
               return { kind: 'unresolved' }
@@ -950,9 +968,14 @@ function worldAxisRotation(
   const length = direction.length()
   if (!Number.isFinite(length) || length <= 0) return null
   direction.multiplyScalar(1 / length)
+  const axisRotation = makeFoldPreviewCanonicalAxisRotation(
+    direction,
+    radians,
+  )
+  if (!axisRotation) return null
   const rotation = new Matrix4()
     .makeTranslation(axis.start.x, axis.start.y, axis.start.z)
-    .multiply(new Matrix4().makeRotationAxis(direction, radians))
+    .multiply(axisRotation)
     .multiply(new Matrix4().makeTranslation(
       -axis.start.x,
       -axis.start.y,
@@ -1891,6 +1914,28 @@ function validAngle(value: unknown): value is number {
   return Number.isFinite(value)
     && (value as number) >= 0
     && (value as number) <= 180
+}
+
+function intervalExceedsFiniteHingeRadius(
+  startAngleDegrees: number,
+  endAngleDegrees: number,
+  thickness: number,
+  hingeLength: number,
+  numericalMargin: number,
+) {
+  if (thickness === 0) return false
+  const maximumAngleDegrees = Math.max(
+    startAngleDegrees,
+    endAngleDegrees,
+  )
+  const cosineHalfAngle = Math.cos(
+    maximumAngleDegrees * Math.PI / 360,
+  )
+  const radius = calculateFoldPreviewCenteredSlabHingeRadius(
+    thickness,
+    cosineHalfAngle,
+  )
+  return radius === null || radius > hingeLength + numericalMargin
 }
 
 function validUnitTime(value: unknown): value is number {

@@ -123,12 +123,14 @@ test('shared hinges stay tagged for the later origami contact policy', () => {
   assert.equal(unresolvedOverlap.interactions[0]?.geometryClass, 'penetrating')
 })
 
-test('zero-thickness candidates remain explicitly indeterminate', () => {
+test('zero-thickness coplanar area overlap is an explicit penetration', () => {
   const result = analyze([face('a'), face('b')], undefined, 0)
   assert.ok(result)
-  assert.equal(result.interactions[0]?.geometryClass, 'indeterminate')
-  assert.equal(result.trianglePairTests, 0)
-  assert.equal(result.satTests, 0)
+  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
+  assert.equal(result.trianglePairTests, 1)
+  assert.equal(result.satTests, 1)
+  assert.equal(result.witnessSamples.length, 0)
+  assert.equal(result.witnessCoverage.unavailablePairCount, 1)
 })
 
 test('near-parallel numerical axes do not produce a false penetration claim', () => {
@@ -367,7 +369,7 @@ test('preparation rejects malformed static geometry and adjacency snapshots', ()
   ), null)
 })
 
-test('one-shot analysis preserves lazy zero-thickness handling', () => {
+test('one-shot zero-thickness analysis rejects malformed polygons', () => {
   const degeneratePolygon = [
     { x: 0, z: 0 },
     { x: 1, z: 0 },
@@ -381,14 +383,12 @@ test('one-shot analysis preserves lazy zero-thickness handling', () => {
     ['a', new Matrix4()],
     ['b', new Matrix4()],
   ])
-  const oneShot = findFoldPreviewNarrowPhaseInteractions(
+  assert.equal(findFoldPreviewNarrowPhaseInteractions(
     faces,
     transforms,
     0,
     [],
-  )
-  assert.ok(oneShot)
-  assert.equal(oneShot.interactions[0]?.geometryClass, 'indeterminate')
+  ), null)
   assert.equal(prepareFoldPreviewNarrowPhase(faces, []), null)
 })
 
@@ -505,7 +505,7 @@ test('resumable narrow scans preserve synchronous output for every chunk size', 
   }
 })
 
-test('zero-thickness analysis is an immediate stable zero-work job', () => {
+test('zero-thickness analysis uses the same bounded pair cursor as positive thickness', () => {
   const faces = [face('a'), face('b')]
   const transforms = new Map(faces.map((item) => [item.id, new Matrix4()]))
   const analyzer = prepareFoldPreviewNarrowPhase(faces, [])
@@ -518,18 +518,18 @@ test('zero-thickness analysis is an immediate stable zero-work job', () => {
     synchronousFactoryPreparation: true,
     synchronousHingePolicyFinalization: true,
     synchronousResultFinalization: true,
-    potentialTrianglePairCount: 0,
-    maximumTrianglePairTests: 0,
-    maximumWitnessDerivations: 0,
-    maximumTotalWorkUnits: 0,
+    potentialTrianglePairCount: 4,
+    maximumTrianglePairTests: 4,
+    maximumWitnessDerivations: 4,
+    maximumTotalWorkUnits: 8,
   })
-  const terminal = job.step(1)
+  const terminal = drainAnalysisJob(job, 1)
   assert.equal(terminal.kind, 'complete')
   assert.deepEqual(terminal.result, synchronous)
   assert.deepEqual(terminal.work, {
-    totalWorkUnits: 0,
-    trianglePairTests: 0,
-    witnessDerivations: 0,
+    totalWorkUnits: 2,
+    trianglePairTests: 1,
+    witnessDerivations: 1,
   })
   assert.strictEqual(job.step(1), terminal)
   assertFrozenJobStep(terminal)

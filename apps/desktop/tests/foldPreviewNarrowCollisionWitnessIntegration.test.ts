@@ -98,15 +98,15 @@ test('hinge-adjacent and zero-thickness interactions expose no Phase B sample', 
   assert.equal(hinge.witnessCoverage.eligiblePairCount, 0)
   assert.equal(hinge.witnessCoverage.attemptedPairCount, 0)
   assert.equal(hinge.witnessCoverage.authoritativePairScanComplete, false)
-  assert.equal(zeroThickness.interactions[0]?.geometryClass, 'indeterminate')
+  assert.equal(zeroThickness.interactions[0]?.geometryClass, 'penetrating')
   assert.deepEqual(zeroThickness.witnessSamples, [])
   assert.deepEqual(zeroThickness.witnessCoverage, {
     scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',
-    eligiblePairCount: 0,
-    attemptedPairCount: 0,
-    unavailablePairCount: 0,
+    eligiblePairCount: 1,
+    attemptedPairCount: 1,
+    unavailablePairCount: 1,
     omittedByLimitCount: 0,
-    authoritativePairScanComplete: false,
+    authoritativePairScanComplete: true,
   })
 })
 

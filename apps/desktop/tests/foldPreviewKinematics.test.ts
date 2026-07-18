@@ -69,6 +69,39 @@ test('reversing traversal rotation changes the moving side but preserves the hin
   assertPoint(axisPoint.clone().applyMatrix4(negativePose.faceTransforms.get('moving')!), [0, 0, 0.5])
 })
 
+test('tree kinematics preserves exact cardinal endpoints without rounding nearby input', () => {
+  const positiveNinety = calculateFoldTreePose(oneJointTree(1), 90)
+  const negativeNinety = calculateFoldTreePose(oneJointTree(-1), 90)
+  const positiveFlatFold = calculateFoldTreePose(oneJointTree(1), 180)
+  const nearby = calculateFoldTreePose(oneJointTree(1), 89.999999)
+  assert.ok(positiveNinety && negativeNinety && positiveFlatFold && nearby)
+  const point = new Vector3(1, 0, 0)
+  assert.deepEqual(
+    point.clone().applyMatrix4(
+      positiveNinety.faceTransforms.get('moving')!,
+    ).toArray(),
+    [0, 1, 0],
+  )
+  assert.deepEqual(
+    point.clone().applyMatrix4(
+      negativeNinety.faceTransforms.get('moving')!,
+    ).toArray(),
+    [0, -1, 0],
+  )
+  assert.deepEqual(
+    point.clone().applyMatrix4(
+      positiveFlatFold.faceTransforms.get('moving')!,
+    ).toArray(),
+    [-1, 0, 0],
+  )
+  assert.notEqual(
+    point.clone().applyMatrix4(
+      nearby.faceTransforms.get('moving')!,
+    ).x,
+    0,
+  )
+})
+
 test('invalid angles and non-topological joint orders fail closed', () => {
   assert.equal(calculateFoldTreePose(oneJointTree(1), Number.NaN), null)
   assert.equal(calculateFoldTreePose(oneJointTree(1), -1), null)

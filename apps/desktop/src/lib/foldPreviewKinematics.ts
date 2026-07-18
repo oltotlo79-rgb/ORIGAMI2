@@ -1,4 +1,5 @@
 import { Matrix4, Vector3 } from 'three'
+import { makeFoldPreviewCanonicalAxisRotation } from './foldPreviewCanonicalRotation.ts'
 import type { FoldPreviewGraphKinematics } from './foldPreviewModel'
 
 export type FoldPreviewTreeKinematics = Extract<
@@ -71,9 +72,11 @@ export function calculateFoldTreePoseWithAngles(
     if (!Number.isFinite(axisLength) || axisLength <= 0) return null
     axis.multiplyScalar(1 / axisLength)
     const radians = angleDegrees * joint.childRotationSign * Math.PI / 180
+    const axisRotation = makeFoldPreviewCanonicalAxisRotation(axis, radians)
+    if (!axisRotation) return null
     const localRotation = new Matrix4()
       .makeTranslation(hinge.start.x, 0, hinge.start.z)
-      .multiply(new Matrix4().makeRotationAxis(axis, radians))
+      .multiply(axisRotation)
       .multiply(new Matrix4().makeTranslation(-hinge.start.x, 0, -hinge.start.z))
     const child = parent.clone().multiply(localRotation)
     if (!child.elements.every(Number.isFinite)) return null

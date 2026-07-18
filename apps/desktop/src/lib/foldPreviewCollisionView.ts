@@ -14,6 +14,8 @@ export type CollisionSummary =
       hingeInteractions: number
       hingeModelAllowedContacts: number
       hingeModelCorridorOverlaps: number
+      hingeModelFlatSurfaceStacks: number
+      hingeLayerOffsetUnmodeled: number
       hingeOutsidePenetrations: number
       hingeOutsideContacts: number
       hingeUnresolvedInteractions: number
@@ -44,6 +46,8 @@ export function collisionSummariesEqual(
       && first.hingeInteractions === second.hingeInteractions
       && first.hingeModelAllowedContacts === second.hingeModelAllowedContacts
       && first.hingeModelCorridorOverlaps === second.hingeModelCorridorOverlaps
+      && first.hingeModelFlatSurfaceStacks === second.hingeModelFlatSurfaceStacks
+      && first.hingeLayerOffsetUnmodeled === second.hingeLayerOffsetUnmodeled
       && first.hingeOutsidePenetrations === second.hingeOutsidePenetrations
       && first.hingeOutsideContacts === second.hingeOutsideContacts
       && first.hingeUnresolvedInteractions === second.hingeUnresolvedInteractions
@@ -99,11 +103,12 @@ export function describeCollisionSummary(
   const contactCount = summary.nonAdjacentContacts + summary.hingeOutsideContacts
   const hingeModelCount = summary.hingeModelAllowedContacts
     + summary.hingeModelCorridorOverlaps
+    + summary.hingeModelFlatSurfaceStacks
   const limitation = pathDisclosure === 'separately_reported'
     ? 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖と層ずれは未検証です。単一ヒンジの連続経路判定は別に表示しています'
     : 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖、層ずれ、連続運動中の衝突は未検証です'
   return accessible
-    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、数値または方針不確定${summary.indeterminateInteractions}件。${limitation}`
+    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、数値または方針不確定${summary.indeterminateInteractions}件。${limitation}`
     : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・不確定 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
 }
 
@@ -113,10 +118,16 @@ export function collisionDataStatus(summary: CollisionSummary | null) {
   if (summary.nonAdjacentPenetrations + summary.hingeOutsidePenetrations > 0) {
     return 'penetrating'
   }
+  if (summary.hingeLayerOffsetUnmodeled > 0) return 'hinge-unresolved'
   if (summary.indeterminateInteractions > 0) return 'indeterminate'
   if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'contact'
   if (summary.hingeUnresolvedInteractions > 0) return 'hinge-unresolved'
-  if (summary.hingeModelAllowedContacts + summary.hingeModelCorridorOverlaps > 0) {
+  if (
+    summary.hingeModelAllowedContacts
+      + summary.hingeModelCorridorOverlaps
+      + summary.hingeModelFlatSurfaceStacks
+    > 0
+  ) {
     return 'hinge-model'
   }
   return 'clear'
@@ -127,11 +138,15 @@ export function collisionBadgeClass(summary: CollisionSummary | null) {
   if (summary.nonAdjacentPenetrations + summary.hingeOutsidePenetrations > 0) {
     return 'has-penetrations'
   }
+  if (summary.hingeLayerOffsetUnmodeled > 0) return 'has-indeterminate'
   if (summary.indeterminateInteractions > 0) return 'has-indeterminate'
   if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'has-contact'
   if (
     summary.hingeUnresolvedInteractions > 0
-    || summary.hingeModelAllowedContacts + summary.hingeModelCorridorOverlaps > 0
+    || summary.hingeModelAllowedContacts
+      + summary.hingeModelCorridorOverlaps
+      + summary.hingeModelFlatSurfaceStacks
+      > 0
   ) return 'has-hinge-candidates'
   return 'is-clear'
 }
@@ -145,6 +160,9 @@ export function collisionBadgeText(summary: CollisionSummary | null) {
   if (penetrationCount > 0) {
     return `貫通 ${penetrationCount}（ヒンジ外 ${summary.hingeOutsidePenetrations}）・接触 ${contactCount}`
   }
+  if (summary.hingeLayerOffsetUnmodeled > 0) {
+    return `層ずらし未再現のため判定不能 ${summary.hingeLayerOffsetUnmodeled}・貫通許可なし`
+  }
   if (summary.indeterminateInteractions > 0) {
     return `不確定 ${summary.indeterminateInteractions}・ヒンジ未解決 ${summary.hingeUnresolvedInteractions}`
   }
@@ -153,6 +171,9 @@ export function collisionBadgeText(summary: CollisionSummary | null) {
   }
   if (summary.hingeUnresolvedInteractions > 0) {
     return `ヒンジ未解決 ${summary.hingeUnresolvedInteractions}・貫通 0`
+  }
+  if (summary.hingeModelFlatSurfaceStacks > 0) {
+    return `厚さ0の許容平坦積層 ${summary.hingeModelFlatSurfaceStacks}・通常貫通 0`
   }
   if (summary.hingeModelCorridorOverlaps > 0) {
     return `許容折り目領域内重なり ${summary.hingeModelCorridorOverlaps}・境界接触 ${summary.hingeModelAllowedContacts}`

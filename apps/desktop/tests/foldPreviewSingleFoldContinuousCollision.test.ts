@@ -86,7 +86,7 @@ test('unsupported remote triangles require and pass strict swept-AABB separation
   assert.ok(result.stats.intervalTests >= 1)
 })
 
-test('the exact 180-degree singularity is approached but never certified', () => {
+test('finite hinge support stops before layer offset would be required', () => {
   const analyzer = prepareFoldPreviewSingleFoldContinuousCollision(
     rectangleModel(),
     'left',
@@ -100,11 +100,11 @@ test('the exact 180-degree singularity is approached but never certified', () =>
   const result = run(job)
   assert.equal(result.kind, 'indeterminate')
   assert.ok(result.kind === 'indeterminate')
-  assert.ok(result.certifiedSafeThrough > 0.99)
+  assert.ok(result.certifiedSafeThrough > 0)
   assert.ok(result.certifiedSafeThrough < 1)
   assert.equal(result.stopTime, result.certifiedSafeThrough)
-  assert.equal(result.unresolvedBracket[1], 1)
-  assert.match(result.reason, /unsupported_flat_fold|uncertified_interval/u)
+  assert.ok(result.unresolvedBracket[1] < 1)
+  assert.equal(result.reason, 'hinge_layer_offset_unmodeled')
 })
 
 test('an analytic interval cannot overrule an indeterminate target policy', () => {
@@ -113,18 +113,29 @@ test('an analytic interval cannot overrule an indeterminate target policy', () =
     'left',
   )
   assert.ok(analyzer)
-  for (const [start, target, thickness] of [
-    [0, 179.999999, 0.1],
-    [0, 90, 1e-14],
-  ] as const) {
-    const job = analyzer.createJob(start, target, thickness)
-    assert.ok(job)
-    const result = run(job)
-    assert.equal(result.kind, 'indeterminate')
-    assert.ok(result.kind === 'indeterminate')
-    assert.equal(result.certifiedSafeThrough, 0)
-    assert.equal(result.unresolvedBracket[1], 1)
-  }
+  const layerOffsetJob = analyzer.createJob(0, 179.999999, 0.1)
+  assert.ok(layerOffsetJob)
+  const layerOffsetResult = run(layerOffsetJob)
+  assert.equal(layerOffsetResult.kind, 'indeterminate')
+  assert.ok(layerOffsetResult.kind === 'indeterminate')
+  assert.ok(layerOffsetResult.certifiedSafeThrough > 0)
+  assert.ok(layerOffsetResult.unresolvedBracket[1] < 1)
+  assert.equal(
+    layerOffsetResult.reason,
+    'hinge_layer_offset_unmodeled',
+  )
+
+  const numericalMarginJob = analyzer.createJob(0, 90, 1e-14)
+  assert.ok(numericalMarginJob)
+  const numericalMarginResult = run(numericalMarginJob)
+  assert.equal(numericalMarginResult.kind, 'indeterminate')
+  assert.ok(numericalMarginResult.kind === 'indeterminate')
+  assert.equal(numericalMarginResult.certifiedSafeThrough, 0)
+  assert.deepEqual(numericalMarginResult.unresolvedBracket, [0, 1])
+  assert.equal(
+    numericalMarginResult.reason,
+    'hinge_interval_numerical_margin',
+  )
 })
 
 test('static support cannot skip a point-policy gap for ultra-thin paper', () => {
@@ -156,20 +167,16 @@ test('static support cannot skip a point-policy gap for ultra-thin paper', () =>
   }
 })
 
-test('zero physical thickness remains explicitly indeterminate at the start pose', () => {
+test('zero physical thickness certifies an ordinary shared-edge path', () => {
   const analyzer = prepareFoldPreviewSingleFoldContinuousCollision(
     rectangleModel(),
     'left',
   )
   const job = analyzer?.createJob(0, 90, 0)
   assert.ok(analyzer && job)
-  const result = job.step(1)
-  assert.equal(result.kind, 'indeterminate')
-  assert.equal(result.kind === 'indeterminate' && result.certifiedSafeThrough, 0)
-  assert.equal(
-    result.kind === 'indeterminate' && result.reason,
-    'hinge_zero_thickness',
-  )
+  const result = run(job)
+  assert.equal(result.kind, 'clear')
+  assert.equal(result.certifiedSafeThrough, 1)
 })
 
 test('an endpoint-outside concave overlap is blocking before motion', () => {

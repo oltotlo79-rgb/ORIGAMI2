@@ -26,7 +26,10 @@ export type FoldPreviewHingeContactDecision =
   | Readonly<{
       kind: 'allowed_by_hinge_model'
       hingeEdgeId: string
-      geometry: 'boundary_contact' | 'corridor_overlap'
+      geometry:
+        | 'boundary_contact'
+        | 'corridor_overlap'
+        | 'flat_surface_stack'
       thicknessRule: 'centered_mid_surface_v1'
     }>
   | Readonly<{
@@ -46,6 +49,7 @@ export type FoldPreviewHingeContactDecision =
         | 'multiple_shared_hinges'
         | 'pose_mismatch'
         | 'unsupported_flat_fold'
+        | 'layer_offset_unmodeled'
         | 'numerical_geometry'
         | 'corridor_boundary'
         | 'non_hinge_triangle'
@@ -120,6 +124,27 @@ export type FoldPreviewHingePolicyFace = Readonly<{
   triangles: readonly FoldPreviewTriangleIndices[]
 }>
 
+/**
+ * Returns the centered-slab radius h / cos(theta / 2).
+ *
+ * Callers provide the already validated cosine so point and continuous hinge
+ * policies use the same finite-radius model near a flat fold.
+ */
+export function calculateFoldPreviewCenteredSlabHingeRadius(
+  thickness: number,
+  cosineHalfAngle: number,
+): number | null {
+  if (
+    !Number.isFinite(thickness)
+    || thickness < 0
+    || !Number.isFinite(cosineHalfAngle)
+    || cosineHalfAngle <= 0
+    || cosineHalfAngle > 1
+  ) return null
+  const radius = (thickness / 2) / cosineHalfAngle
+  return Number.isFinite(radius) && radius >= 0 ? radius : null
+}
+
 type PreparedPolicyFace = Readonly<{
   id: string
   polygon: readonly FoldPreviewCollisionPoint[]
@@ -152,6 +177,8 @@ type HingeFrame = Readonly<{
   outerRadius: number
   outerMargin: number
   flat: boolean
+  flatFold: boolean
+  zeroThickness: boolean
 }>
 
 type ProjectionRange = Readonly<{ min: number; max: number }>
@@ -403,10 +430,8 @@ function classifyHingeContact(
       hingeEdgeIds.length === 0 ? 'missing_constraint' : 'multiple_shared_hinges',
     )
   }
-  if (!Number.isFinite(input.thickness) || input.thickness <= 0) {
-    return indeterminate(hingeEdgeIds, input.thickness === 0
-      ? 'zero_thickness'
-      : 'numerical_geometry')
+  if (!Number.isFinite(input.thickness) || input.thickness < 0) {
+    return indeterminate(hingeEdgeIds, 'numerical_geometry')
   }
   if (!Number.isFinite(input.numericalMargin) || input.numericalMargin < 0) {
     return indeterminate(hingeEdgeIds, 'numerical_geometry')
@@ -519,6 +544,37 @@ function classifyHingeContact(
       unresolvedReason ??= 'non_hinge_triangle'
       continue
     }
+    if (frameResult.frame.zeroThickness) {
+      if (!hingeProof.axiallyBounded) {
+        unresolvedReason ??= 'corridor_boundary'
+        continue
+      }
+      if (frameResult.frame.flatFold) {
+        // The verified opposing material half-planes coincide on the same
+        // side of the shared edge at an exact 180-degree fold.  Every
+        // in-range interaction is therefore part of the intended
+        // zero-thickness layer stack, including a triangle pair whose
+        // coplanar boundary is numerically marginal.
+        hasPenetration = true
+        continue
+      }
+      if (pair.geometryClass === 'indeterminate') {
+        // Away from the exact flat-fold pose, two rigid faces sharing the
+        // verified axis can intersect only on that axis.  The opposing
+        // material-half-plane and finite-axis proofs therefore resolve a
+        // numerically marginal surface pair as the intended hinge boundary.
+        hasContact = true
+        continue
+      }
+      if (
+        pair.geometryClass === 'penetrating'
+      ) {
+        outsidePenetration = true
+        continue
+      }
+      hasContact = true
+      continue
+    }
     if (frameResult.frame.flat && pair.geometryClass === 'penetrating') {
       unresolvedReason ??= 'flat_pose_penetration'
       continue
@@ -549,7 +605,11 @@ function classifyHingeContact(
   return {
     kind: 'allowed_by_hinge_model',
     hingeEdgeId: constraint.edgeId,
-    geometry: hasPenetration ? 'corridor_overlap' : 'boundary_contact',
+    geometry: hasPenetration
+      ? frameResult.frame.flatFold
+        ? 'flat_surface_stack'
+        : 'corridor_overlap'
+      : 'boundary_contact',
     thicknessRule: constraint.thicknessRule,
   }
 }
@@ -639,20 +699,50 @@ function createHingeFrame(
   }
   const normalDot = Math.max(-1, Math.min(1, rawNormalDot))
   const cosineHalfAngle = Math.sqrt(Math.max(0, (1 + normalDot) / 2))
-  if (
-    !Number.isFinite(cosineHalfAngle)
-    || cosineHalfAngle <= Math.sqrt(Number.EPSILON)
-  ) return { kind: 'error', reason: 'unsupported_flat_fold' }
-  const radius = (thickness / 2) / cosineHalfAngle
+  if (!Number.isFinite(cosineHalfAngle)) {
+    return { kind: 'error', reason: 'numerical_geometry' }
+  }
   const poseError = Math.max(startError, endError)
   const outerMargin = margin + poseError
+  const exactlyParallel = normalCross.x === 0
+    && normalCross.y === 0
+    && normalCross.z === 0
+  const flatFold = cosineHalfAngle <= Math.sqrt(Number.EPSILON)
+  if (flatFold && thickness > 0) {
+    return { kind: 'error', reason: 'layer_offset_unmodeled' }
+  }
+  if (thickness === 0) {
+    return {
+      kind: 'ready',
+      frame: {
+        start,
+        axis,
+        normal,
+        binormal,
+        length,
+        innerRadius: 0,
+        outerRadius: outerMargin,
+        outerMargin,
+        flat: !flatFold
+          && exactlyParallel
+          && 1 - normalDot <= RIGID_TRANSFORM_TOLERANCE
+          && poseError <= margin,
+        flatFold,
+        zeroThickness: true,
+      },
+    }
+  }
+  const radius = calculateFoldPreviewCenteredSlabHingeRadius(
+    thickness,
+    cosineHalfAngle,
+  )
+  if (radius === null || radius > length + outerMargin) {
+    return { kind: 'error', reason: 'layer_offset_unmodeled' }
+  }
   // A dot-product tolerance alone creates a finite "flat" angle band even
   // though every representable non-zero fold has a valid analytic corridor.
   // Exact parallelism is tested component-wise so subnormal cross components
   // are not lost by squaring them in Vector3.length().
-  const exactlyParallel = normalCross.x === 0
-    && normalCross.y === 0
-    && normalCross.z === 0
   const flat = exactlyParallel
     && 1 - normalDot <= RIGID_TRANSFORM_TOLERANCE
     && poseError <= margin
@@ -676,6 +766,8 @@ function createHingeFrame(
       outerRadius,
       outerMargin,
       flat,
+      flatFold: false,
+      zeroThickness: false,
     },
   }
 }
@@ -806,8 +898,14 @@ function pairHingeProof(
     radiallyBounded: Boolean(
       proof.left?.materialSide && proof.right?.materialSide,
     ),
+    // The interaction is the intersection of both triangles.  If either
+    // triangle lies wholly between the finite hinge endpoints, that
+    // intersection is axially bounded as well.  Requiring both triangles to
+    // be bounded incorrectly rejects a normal polygon triangulation whose
+    // non-hinge triangle extends past one endpoint but only meets the other
+    // face at the shared hinge endpoint.
     axiallyBounded: Boolean(
-      proof.left?.axiallyBounded && proof.right?.axiallyBounded,
+      proof.left?.axiallyBounded || proof.right?.axiallyBounded,
     ),
   }
 }
@@ -1039,7 +1137,7 @@ function expectedPrismVertices(
   if (
     !triangle
     || !Number.isFinite(halfThickness)
-    || halfThickness <= 0
+    || halfThickness < 0
   ) return null
   const top = triangle.map((index) =>
     transformedFacePoint(face.polygon[index], halfThickness, transform))

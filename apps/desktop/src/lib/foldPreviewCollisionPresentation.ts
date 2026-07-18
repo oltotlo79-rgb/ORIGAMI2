@@ -24,6 +24,8 @@ export type FoldPreviewCollisionPresentation = Readonly<{
   hingeInteractions: number
   hingeModelAllowedContacts: number
   hingeModelCorridorOverlaps: number
+  hingeModelFlatSurfaceStacks: number
+  hingeLayerOffsetUnmodeled: number
   hingeOutsidePenetrations: number
   hingeOutsideContacts: number
   hingeUnresolvedInteractions: number
@@ -35,6 +37,8 @@ type HingePresentationKind =
   | 'not_hinge'
   | 'allowed_contact'
   | 'allowed_overlap'
+  | 'allowed_flat_stack'
+  | 'layer_offset_unmodeled'
   | 'outside_penetration'
   | 'outside_contact'
   | 'indeterminate'
@@ -48,6 +52,8 @@ export function summarizeFoldPreviewCollision(
   let hingeInteractions = 0
   let hingeModelAllowedContacts = 0
   let hingeModelCorridorOverlaps = 0
+  let hingeModelFlatSurfaceStacks = 0
+  let hingeLayerOffsetUnmodeled = 0
   let hingeOutsidePenetrations = 0
   let hingeOutsideContacts = 0
   let hingeUnresolvedInteractions = 0
@@ -60,6 +66,12 @@ export function summarizeFoldPreviewCollision(
       hingeInteractions += 1
       if (hingeKind === 'allowed_contact') hingeModelAllowedContacts += 1
       else if (hingeKind === 'allowed_overlap') hingeModelCorridorOverlaps += 1
+      else if (hingeKind === 'allowed_flat_stack') {
+        hingeModelFlatSurfaceStacks += 1
+      } else if (hingeKind === 'layer_offset_unmodeled') {
+        hingeLayerOffsetUnmodeled += 1
+        hingeUnresolvedInteractions += 1
+      }
       else if (hingeKind === 'outside_penetration') hingeOutsidePenetrations += 1
       else if (hingeKind === 'outside_contact') hingeOutsideContacts += 1
       else hingeUnresolvedInteractions += 1
@@ -67,6 +79,7 @@ export function summarizeFoldPreviewCollision(
     if (
       interaction.geometryClass === 'indeterminate'
       || hingeKind === 'indeterminate'
+      || hingeKind === 'layer_offset_unmodeled'
     ) indeterminateInteractions += 1
     if (
       interaction.relation === 'non_adjacent'
@@ -93,6 +106,8 @@ export function summarizeFoldPreviewCollision(
     hingeInteractions,
     hingeModelAllowedContacts,
     hingeModelCorridorOverlaps,
+    hingeModelFlatSurfaceStacks,
+    hingeLayerOffsetUnmodeled,
     hingeOutsidePenetrations,
     hingeOutsideContacts,
     hingeUnresolvedInteractions,
@@ -107,7 +122,11 @@ function classifyHingePresentation(
   if (interaction.relation !== 'hinge_adjacent') return 'not_hinge'
   const decision = interaction.hingeDecision
   if (!decision) return 'unresolved'
-  if (decision.kind === 'indeterminate') return 'indeterminate'
+  if (decision.kind === 'indeterminate') {
+    return decision.reason === 'layer_offset_unmodeled'
+      ? 'layer_offset_unmodeled'
+      : 'indeterminate'
+  }
   if (!interaction.hingeEdgeIds.includes(decision.hingeEdgeId)) return 'indeterminate'
   if (decision.kind === 'outside_hinge_penetration') {
     return interaction.geometryClass === 'penetrating'
@@ -127,6 +146,10 @@ function classifyHingePresentation(
     decision.geometry === 'corridor_overlap'
     && interaction.geometryClass === 'penetrating'
   ) return 'allowed_overlap'
+  if (
+    decision.geometry === 'flat_surface_stack'
+    && interaction.geometryClass === 'penetrating'
+  ) return 'allowed_flat_stack'
   return 'indeterminate'
 }
 
@@ -139,6 +162,7 @@ function faceSeverity(
     if (hingeKind === 'outside_contact') return 'contact'
     if (
       hingeKind === 'indeterminate'
+      || hingeKind === 'layer_offset_unmodeled'
       || interaction.geometryClass === 'indeterminate'
     ) return 'indeterminate'
     return null

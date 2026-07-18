@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { Matrix4, Vector3 } from 'three'
 import type { FoldPreviewCollisionAdjacency } from '../src/lib/foldPreviewCollision.ts'
+import { makeFoldPreviewCanonicalAxisRotation } from '../src/lib/foldPreviewCanonicalRotation.ts'
 import {
   prepareFoldPreviewHingeContactPolicy,
   type FoldPreviewHingeContactConstraint,
@@ -176,7 +177,7 @@ test('hinge decisions are invariant under one shared non-trivial rigid world tra
   }
 })
 
-test('zero thickness and a flat-fold singularity stay explicitly indeterminate', () => {
+test('zero thickness distinguishes shared-edge contact and a flat surface stack', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     faces,
     adjacency,
@@ -186,20 +187,30 @@ test('zero thickness and a flat-fold singularity stay explicitly indeterminate',
   const zeroThickness = analyzer.analyze(identityPose(), 0)
   assert.ok(zeroThickness)
   assert.deepEqual(zeroThickness.interactions[0]?.hingeDecision, {
-    kind: 'indeterminate',
-    hingeEdgeIds: ['hinge'],
-    reason: 'zero_thickness',
+    kind: 'allowed_by_hinge_model',
+    hingeEdgeId: 'hinge',
+    geometry: 'boundary_contact',
+    thicknessRule: 'centered_mid_surface_v1',
   })
 
-  const flatFold = analyzer.analyze(new Map([
-    ['left', new Matrix4()],
-    ['right', new Matrix4().makeRotationZ(Math.PI)],
-  ]), 0.1)
-  assert.ok(flatFold)
-  assert.deepEqual(flatFold.interactions[0]?.hingeDecision, {
+  const zeroThicknessFlatFold = analyzer.analyze(foldedPose(180), 0)
+  assert.ok(zeroThicknessFlatFold)
+  assert.deepEqual(
+    zeroThicknessFlatFold.interactions[0]?.hingeDecision,
+    {
+      kind: 'allowed_by_hinge_model',
+      hingeEdgeId: 'hinge',
+      geometry: 'flat_surface_stack',
+      thicknessRule: 'centered_mid_surface_v1',
+    },
+  )
+
+  const thickFlatFold = analyzer.analyze(foldedPose(180), 0.1)
+  assert.ok(thickFlatFold)
+  assert.deepEqual(thickFlatFold.interactions[0]?.hingeDecision, {
     kind: 'indeterminate',
     hingeEdgeIds: ['hinge'],
-    reason: 'unsupported_flat_fold',
+    reason: 'layer_offset_unmodeled',
   })
 })
 
@@ -650,7 +661,12 @@ function identityPose() {
 }
 
 function hingeRotation(degrees: number) {
-  return new Matrix4().makeRotationZ(degrees * Math.PI / 180)
+  const rotation = makeFoldPreviewCanonicalAxisRotation(
+    new Vector3(0, 0, 1),
+    degrees * Math.PI / 180,
+  )
+  assert.ok(rotation)
+  return rotation
 }
 
 function foldedPose(degrees: number) {

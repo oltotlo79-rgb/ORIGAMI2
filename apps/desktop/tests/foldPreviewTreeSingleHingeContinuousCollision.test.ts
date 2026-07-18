@@ -1549,7 +1549,7 @@ test('a rerooted valley hinge supports reverse selected-only motion', () => {
   assert.equal(run(job).kind, 'clear')
 })
 
-test('the selected hinge never certifies through the exact 180-degree singularity', () => {
+test('the selected hinge stops before finite support needs layer offset', () => {
   const analyzer = prepareFoldPreviewTreeSingleHingeContinuousCollision(
     treeModel(),
     'root',
@@ -1569,7 +1569,8 @@ test('the selected hinge never certifies through the exact 180-degree singularit
   assert.ok(result.kind === 'indeterminate')
   assert.ok(result.certifiedSafeThrough > 0)
   assert.ok(result.certifiedSafeThrough < 1)
-  assert.equal(result.unresolvedBracket[1], 1)
+  assert.ok(result.unresolvedBracket[1] < 1)
+  assert.equal(result.reason, 'hinge_layer_offset_unmodeled')
 })
 
 test('an exact 180-degree start pose allows no reverse escape', () => {
@@ -1595,7 +1596,7 @@ test('an exact 180-degree start pose allows no reverse escape', () => {
   )
   assert.match(
     result.kind === 'indeterminate' ? result.reason : '',
-    /unsupported_flat_fold/u,
+    /hinge_layer_offset_unmodeled/u,
   )
 })
 

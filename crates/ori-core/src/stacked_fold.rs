@@ -1,14 +1,15 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigInt;
-use ori_domain::{CreasePattern, FaceId, Paper, Point2, ProjectId, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId};
 use ori_foldability::{
     FoldModelFingerprintV1, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace,
     LayerOrderSnapshot, fold_model_fingerprint_v1,
 };
 use ori_geometry::{
-    GeometryError, Orientation, PointPolygonRelation, exact_orientation, point_polygon_relation,
+    GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, exact_orientation,
+    point_polygon_relation, point_segment_relation,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -166,6 +167,295 @@ impl FaceLineageV1 {
     pub fn records(&self) -> &[FaceLineageRecord] {
         &self.records
     }
+}
+
+pub const DEFAULT_MAX_STACKED_FOLD_EXPECTED_CREASES: usize = 10_000;
+pub const DEFAULT_MAX_STACKED_FOLD_EDGE_CARRIER_TESTS: usize = 10_000_000;
+pub const DEFAULT_MAX_STACKED_FOLD_CARRIER_OVERLAP_TESTS: usize = 10_000_000;
+pub const DEFAULT_MAX_STACKED_FOLD_LINEAGE_RECORDS: usize = DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES;
+pub const DEFAULT_MAX_STACKED_FOLD_LINEAGE_DESCENDANTS: usize =
+    DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES;
+
+/// Deterministic count limits for one stacked-fold geometry-delta proof.
+///
+/// The edge-carrier limit counts the complete Cartesian product of target
+/// edges and source/expected carriers. The overlap limit counts every
+/// source/expected and expected/expected carrier pair. Equality is admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackedFoldGeometryLimitsV1 {
+    pub max_source_vertices: usize,
+    pub max_source_edges: usize,
+    pub max_source_paper_boundary_vertices: usize,
+    pub max_target_vertices: usize,
+    pub max_target_edges: usize,
+    pub max_target_paper_boundary_vertices: usize,
+    pub max_expected_creases: usize,
+    pub max_lineage_records: usize,
+    pub max_lineage_descendants: usize,
+    pub max_edge_carrier_tests: usize,
+    pub max_carrier_overlap_tests: usize,
+}
+
+impl Default for StackedFoldGeometryLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_source_vertices: crate::DEFAULT_MAX_SOURCE_VERTICES,
+            max_source_edges: crate::DEFAULT_MAX_SOURCE_EDGES,
+            max_source_paper_boundary_vertices: crate::DEFAULT_MAX_PAPER_BOUNDARY_VERTICES,
+            max_target_vertices: crate::DEFAULT_MAX_SOURCE_VERTICES,
+            max_target_edges: crate::DEFAULT_MAX_SOURCE_EDGES,
+            max_target_paper_boundary_vertices: crate::DEFAULT_MAX_PAPER_BOUNDARY_VERTICES,
+            max_expected_creases: DEFAULT_MAX_STACKED_FOLD_EXPECTED_CREASES,
+            max_lineage_records: DEFAULT_MAX_STACKED_FOLD_LINEAGE_RECORDS,
+            max_lineage_descendants: DEFAULT_MAX_STACKED_FOLD_LINEAGE_DESCENDANTS,
+            max_edge_carrier_tests: DEFAULT_MAX_STACKED_FOLD_EDGE_CARRIER_TESTS,
+            max_carrier_overlap_tests: DEFAULT_MAX_STACKED_FOLD_CARRIER_OVERLAP_TESTS,
+        }
+    }
+}
+
+/// One untrusted, reverse-mapped crease that the target is expected to add.
+///
+/// This type deliberately does not certify where the segment came from.
+/// Version 1 only admits mountain and valley assignments. A future native
+/// `ApplyStackedFold` command must authenticate this set against its selected
+/// world-space fold operation and current layer authority before committing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExpectedStackedFoldCreaseV1 {
+    pub start: Point2,
+    pub end: Point2,
+    pub kind: EdgeKind,
+}
+
+/// Immutable inputs for proving one narrow source-to-target geometry delta.
+///
+/// [`FaceLineageV1`] is a required premise and is rebound to all identity,
+/// revision, and fold-model fingerprints. This input and its result make no
+/// claim that the expected segments came from one world-space straight line,
+/// that every required layer was selected, or that any layer-order snapshot
+/// remains authoritative. Those checks belong to a future native command.
+#[derive(Debug, Clone, Copy)]
+pub struct StackedFoldGeometryInputV1<'a> {
+    pub identity_namespace: ProjectId,
+    pub source_revision: Revision,
+    pub source_paper: &'a Paper,
+    pub source_pattern: &'a CreasePattern,
+    pub target_revision: Revision,
+    pub target_paper: &'a Paper,
+    pub target_pattern: &'a CreasePattern,
+    pub face_lineage: &'a FaceLineageV1,
+    pub expected_creases: &'a [ExpectedStackedFoldCreaseV1],
+}
+
+/// Canonical target subdivision of one source edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEdgeSubdivisionV1 {
+    source_edge: EdgeId,
+    target_edges: Vec<EdgeId>,
+}
+
+impl SourceEdgeSubdivisionV1 {
+    #[must_use]
+    pub const fn source_edge(&self) -> EdgeId {
+        self.source_edge
+    }
+
+    /// Target edge IDs are ordered by canonical RFC bytes.
+    #[must_use]
+    pub fn target_edges(&self) -> &[EdgeId] {
+        &self.target_edges
+    }
+}
+
+/// Canonical target subdivision of one explicitly expected new crease.
+///
+/// Records are published in canonical `(start, end, kind)` order, independent
+/// of caller slice order and segment direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedCreaseSubdivisionV1 {
+    start_x_bits: u64,
+    start_y_bits: u64,
+    end_x_bits: u64,
+    end_y_bits: u64,
+    kind: EdgeKind,
+    target_edges: Vec<EdgeId>,
+}
+
+impl ExpectedCreaseSubdivisionV1 {
+    #[must_use]
+    pub fn start(&self) -> Point2 {
+        Point2::new(
+            f64::from_bits(self.start_x_bits),
+            f64::from_bits(self.start_y_bits),
+        )
+    }
+
+    #[must_use]
+    pub fn end(&self) -> Point2 {
+        Point2::new(
+            f64::from_bits(self.end_x_bits),
+            f64::from_bits(self.end_y_bits),
+        )
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> EdgeKind {
+        self.kind
+    }
+
+    /// Target edge IDs are ordered by canonical RFC bytes.
+    #[must_use]
+    pub fn target_edges(&self) -> &[EdgeId] {
+        &self.target_edges
+    }
+}
+
+/// Unforgeable proof that the target changes only admissible edge
+/// subdivisions and the explicitly expected M/V crease set.
+///
+/// This proof owns its [`FaceLineageV1`] premise, so identity, revisions,
+/// source/target fingerprints, face refinement, and this geometry delta travel
+/// together. It is still read-only evidence, not layer authority and not a
+/// project command.
+///
+/// ```compile_fail
+/// use ori_core::StackedFoldGeometryProofV1;
+///
+/// fn discard_delta(proof: StackedFoldGeometryProofV1) -> StackedFoldGeometryProofV1 {
+///     StackedFoldGeometryProofV1 {
+///         source_edges: Vec::new(),
+///         ..proof
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackedFoldGeometryProofV1 {
+    lineage: FaceLineageV1,
+    source_edges: Vec<SourceEdgeSubdivisionV1>,
+    expected_creases: Vec<ExpectedCreaseSubdivisionV1>,
+}
+
+impl StackedFoldGeometryProofV1 {
+    #[must_use]
+    pub const fn lineage(&self) -> &FaceLineageV1 {
+        &self.lineage
+    }
+
+    #[must_use]
+    pub fn source_edges(&self) -> &[SourceEdgeSubdivisionV1] {
+        &self.source_edges
+    }
+
+    #[must_use]
+    pub fn expected_creases(&self) -> &[ExpectedCreaseSubdivisionV1] {
+        &self.expected_creases
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackedFoldGeometryResourceV1 {
+    SourceVertices,
+    SourceEdges,
+    SourcePaperBoundaryVertices,
+    TargetVertices,
+    TargetEdges,
+    TargetPaperBoundaryVertices,
+    ExpectedCreases,
+    LineageRecords,
+    LineageDescendants,
+    EdgeCarrierTests,
+    CarrierOverlapTests,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackedFoldGeometryCarrierV1 {
+    SourceEdge(EdgeId),
+    /// Index in the proof's canonical expected-crease order, not caller order.
+    ExpectedCrease(usize),
+}
+
+/// Deterministic failure of the narrow geometry-delta proof.
+///
+/// Every `expected_index`, `first`, and `second` value addresses the canonical
+/// expected-crease order described by [`ExpectedCreaseSubdivisionV1`].
+#[derive(Debug, Error, PartialEq)]
+pub enum StackedFoldGeometryErrorV1 {
+    #[error("face lineage belongs to another project identity")]
+    LineageIdentityMismatch,
+    #[error("face lineage revisions do not match the immutable geometry input")]
+    LineageRevisionMismatch,
+    #[error("face lineage source fingerprint does not match the immutable source geometry")]
+    LineageSourceFingerprintMismatch,
+    #[error("face lineage target fingerprint does not match the immutable target geometry")]
+    LineageTargetFingerprintMismatch,
+    #[error("{resource:?} exceeds its limit: {actual} > {maximum}")]
+    ResourceLimit {
+        resource: StackedFoldGeometryResourceV1,
+        actual: usize,
+        maximum: usize,
+    },
+    #[error("at least one explicit expected crease is required")]
+    ExpectedCreaseSetEmpty,
+    #[error("expected creases must contain finite coordinates")]
+    ExpectedCreaseNonFinite,
+    #[error("expected creases must have positive geometric length")]
+    ExpectedCreaseDegenerate,
+    #[error("expected creases must use only mountain or valley assignments")]
+    ExpectedCreaseKindUnsupported,
+    #[error("expected crease {expected_index} overlaps source edge {source_edge:?}")]
+    ExpectedCreaseOverlapsSourceEdge {
+        expected_index: usize,
+        source_edge: EdgeId,
+    },
+    #[error("expected creases {first} and {second} overlap")]
+    ExpectedCreasesOverlap { first: usize, second: usize },
+    #[error("{topology:?} contains duplicate vertex ID {vertex:?}")]
+    DuplicateVertex {
+        topology: FaceLineageTopology,
+        vertex: VertexId,
+    },
+    #[error("{topology:?} vertex {vertex:?} is non-finite")]
+    NonFiniteVertex {
+        topology: FaceLineageTopology,
+        vertex: VertexId,
+    },
+    #[error("target geometry removed source vertex {vertex:?}")]
+    SourceVertexMissing { vertex: VertexId },
+    #[error("target geometry moved source vertex {vertex:?}")]
+    SourceVertexMoved { vertex: VertexId },
+    #[error("new target vertex {vertex:?} is unrelated to every target edge")]
+    NewTargetVertexIsolated { vertex: VertexId },
+    #[error("{topology:?} contains duplicate edge ID {edge:?}")]
+    DuplicateEdge {
+        topology: FaceLineageTopology,
+        edge: EdgeId,
+    },
+    #[error("{topology:?} edge {edge:?} has a missing endpoint")]
+    EdgeEndpointMissing {
+        topology: FaceLineageTopology,
+        edge: EdgeId,
+    },
+    #[error("{topology:?} edge {edge:?} has zero geometric length")]
+    DegenerateEdge {
+        topology: FaceLineageTopology,
+        edge: EdgeId,
+    },
+    #[error("target geometry removed source edge identity {edge:?}")]
+    SourceEdgeIdentityMissing { edge: EdgeId },
+    #[error("target geometry changed the kind of source edge {edge:?}")]
+    SourceEdgeKindChanged { edge: EdgeId },
+    #[error("target geometry moved source edge identity {edge:?} off its original segment")]
+    SourceEdgeGeometryChanged { edge: EdgeId },
+    #[error("target edge {edge:?} does not belong to a source or expected carrier")]
+    TargetEdgeWithoutCarrier { edge: EdgeId },
+    #[error("target edge {edge:?} belongs to more than one carrier")]
+    TargetEdgeWithMultipleCarriers { edge: EdgeId },
+    #[error("target subdivisions do not exactly cover {carrier:?}")]
+    CarrierCoverageMismatch {
+        carrier: StackedFoldGeometryCarrierV1,
+    },
+    #[error("exact geometry predicate failed: {0}")]
+    Geometry(#[from] GeometryError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -461,6 +751,603 @@ pub fn prepare_face_lineage_v1(
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GeometryVertexRecord {
+    id: VertexId,
+    position: Point2,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GeometryEdgeRecord {
+    id: EdgeId,
+    start_vertex: VertexId,
+    end_vertex: VertexId,
+    start: Point2,
+    end: Point2,
+    kind: EdgeKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CanonicalExpectedCrease {
+    start: Point2,
+    end: Point2,
+    kind: EdgeKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GeometryCarrier {
+    public: StackedFoldGeometryCarrierV1,
+    start: Point2,
+    end: Point2,
+    kind: EdgeKind,
+}
+
+/// Proves the exact, narrow geometry-delta class admitted by stacked-fold v1.
+///
+/// Every source vertex ID and its binary64 coordinate bits are preserved.
+/// Every source edge ID survives as one member of a same-kind subdivision, and
+/// target subdivisions have an exact, gap-free, overlap-free union equal to
+/// that source segment. Every remaining target edge must form the corresponding
+/// exact union of one explicitly expected M/V crease. New isolated vertices,
+/// unrelated edges, extra creases, coincident expected carriers, and any
+/// unpreserved source material are rejected.
+///
+/// The function is pure over immutable inputs. It does not create an editor
+/// command and cannot mutate project geometry, revision, history, or timeline.
+/// Its expected-crease slice is comparison data only; the proof does not
+/// authenticate reverse mapping, world-line straightness, selected layers, or
+/// current layer authority.
+pub fn prepare_stacked_fold_geometry_v1(
+    input: StackedFoldGeometryInputV1<'_>,
+    limits: StackedFoldGeometryLimitsV1,
+) -> Result<StackedFoldGeometryProofV1, StackedFoldGeometryErrorV1> {
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::SourceVertices,
+        input.source_pattern.vertices.len(),
+        limits.max_source_vertices,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::SourceEdges,
+        input.source_pattern.edges.len(),
+        limits.max_source_edges,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::SourcePaperBoundaryVertices,
+        input.source_paper.boundary_vertices.len(),
+        limits.max_source_paper_boundary_vertices,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::TargetVertices,
+        input.target_pattern.vertices.len(),
+        limits.max_target_vertices,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::TargetEdges,
+        input.target_pattern.edges.len(),
+        limits.max_target_edges,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::TargetPaperBoundaryVertices,
+        input.target_paper.boundary_vertices.len(),
+        limits.max_target_paper_boundary_vertices,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::ExpectedCreases,
+        input.expected_creases.len(),
+        limits.max_expected_creases,
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::LineageRecords,
+        input.face_lineage.records.len(),
+        limits.max_lineage_records,
+    )?;
+    let lineage_descendants = input
+        .face_lineage
+        .records
+        .iter()
+        .try_fold(0_usize, |total, record| {
+            total.checked_add(record.descendants.len())
+        })
+        .ok_or(StackedFoldGeometryErrorV1::ResourceLimit {
+            resource: StackedFoldGeometryResourceV1::LineageDescendants,
+            actual: usize::MAX,
+            maximum: limits.max_lineage_descendants,
+        })?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::LineageDescendants,
+        lineage_descendants,
+        limits.max_lineage_descendants,
+    )?;
+
+    if input.face_lineage.identity_namespace != input.identity_namespace {
+        return Err(StackedFoldGeometryErrorV1::LineageIdentityMismatch);
+    }
+    if input.face_lineage.source_revision != input.source_revision
+        || input.face_lineage.target_revision != input.target_revision
+    {
+        return Err(StackedFoldGeometryErrorV1::LineageRevisionMismatch);
+    }
+    let source_fingerprint = fold_model_fingerprint_v1(input.source_pattern, input.source_paper);
+    if input.face_lineage.source_fingerprint != source_fingerprint {
+        return Err(StackedFoldGeometryErrorV1::LineageSourceFingerprintMismatch);
+    }
+    let target_fingerprint = fold_model_fingerprint_v1(input.target_pattern, input.target_paper);
+    if input.face_lineage.target_fingerprint != target_fingerprint {
+        return Err(StackedFoldGeometryErrorV1::LineageTargetFingerprintMismatch);
+    }
+
+    let expected_creases = canonical_expected_creases(input.expected_creases)?;
+    if expected_creases.is_empty() {
+        return Err(StackedFoldGeometryErrorV1::ExpectedCreaseSetEmpty);
+    }
+
+    let source_vertices =
+        geometry_vertex_records(input.source_pattern, FaceLineageTopology::Source)?;
+    let target_vertices =
+        geometry_vertex_records(input.target_pattern, FaceLineageTopology::Target)?;
+    let source_positions = vertex_position_map(&source_vertices);
+    let target_positions = vertex_position_map(&target_vertices);
+    for source in &source_vertices {
+        let Some(target_position) = target_positions.get(&source.id) else {
+            return Err(StackedFoldGeometryErrorV1::SourceVertexMissing { vertex: source.id });
+        };
+        if !point_bits_equal(source.position, *target_position) {
+            return Err(StackedFoldGeometryErrorV1::SourceVertexMoved { vertex: source.id });
+        }
+    }
+
+    let source_edges = geometry_edge_records(
+        input.source_pattern,
+        &source_positions,
+        FaceLineageTopology::Source,
+    )?;
+    let target_edges = geometry_edge_records(
+        input.target_pattern,
+        &target_positions,
+        FaceLineageTopology::Target,
+    )?;
+    let target_incident_vertices = target_edges
+        .iter()
+        .flat_map(|edge| [edge.start_vertex, edge.end_vertex])
+        .collect::<HashSet<_>>();
+    for target in &target_vertices {
+        if !source_positions.contains_key(&target.id)
+            && !target_incident_vertices.contains(&target.id)
+        {
+            return Err(StackedFoldGeometryErrorV1::NewTargetVertexIsolated { vertex: target.id });
+        }
+    }
+
+    let overlap_tests = checked_overlap_test_count(source_edges.len(), expected_creases.len())
+        .ok_or(StackedFoldGeometryErrorV1::ResourceLimit {
+            resource: StackedFoldGeometryResourceV1::CarrierOverlapTests,
+            actual: usize::MAX,
+            maximum: limits.max_carrier_overlap_tests,
+        })?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::CarrierOverlapTests,
+        overlap_tests,
+        limits.max_carrier_overlap_tests,
+    )?;
+    for (expected_index, expected) in expected_creases.iter().enumerate() {
+        for source in &source_edges {
+            if segments_share_positive_collinear_interval(
+                expected.start,
+                expected.end,
+                source.start,
+                source.end,
+            )? {
+                return Err(
+                    StackedFoldGeometryErrorV1::ExpectedCreaseOverlapsSourceEdge {
+                        expected_index,
+                        source_edge: source.id,
+                    },
+                );
+            }
+        }
+    }
+    for first in 0..expected_creases.len() {
+        for second in (first + 1)..expected_creases.len() {
+            if segments_share_positive_collinear_interval(
+                expected_creases[first].start,
+                expected_creases[first].end,
+                expected_creases[second].start,
+                expected_creases[second].end,
+            )? {
+                return Err(StackedFoldGeometryErrorV1::ExpectedCreasesOverlap { first, second });
+            }
+        }
+    }
+
+    let mut carriers = source_edges
+        .iter()
+        .map(|edge| GeometryCarrier {
+            public: StackedFoldGeometryCarrierV1::SourceEdge(edge.id),
+            start: edge.start,
+            end: edge.end,
+            kind: edge.kind,
+        })
+        .collect::<Vec<_>>();
+    carriers.extend(
+        expected_creases
+            .iter()
+            .enumerate()
+            .map(|(index, crease)| GeometryCarrier {
+                public: StackedFoldGeometryCarrierV1::ExpectedCrease(index),
+                start: crease.start,
+                end: crease.end,
+                kind: crease.kind,
+            }),
+    );
+    let carrier_tests = target_edges.len().checked_mul(carriers.len()).ok_or(
+        StackedFoldGeometryErrorV1::ResourceLimit {
+            resource: StackedFoldGeometryResourceV1::EdgeCarrierTests,
+            actual: usize::MAX,
+            maximum: limits.max_edge_carrier_tests,
+        },
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::EdgeCarrierTests,
+        carrier_tests,
+        limits.max_edge_carrier_tests,
+    )?;
+
+    let source_edge_indices = source_edges
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| (edge.id, index))
+        .collect::<HashMap<_, _>>();
+    let mut source_identities_seen = vec![false; source_edges.len()];
+    let mut assignments = vec![Vec::<GeometryEdgeRecord>::new(); carriers.len()];
+    for target in &target_edges {
+        if let Some(source_index) = source_edge_indices.get(&target.id).copied() {
+            let source = source_edges[source_index];
+            source_identities_seen[source_index] = true;
+            if target.kind != source.kind {
+                return Err(StackedFoldGeometryErrorV1::SourceEdgeKindChanged { edge: target.id });
+            }
+            if !segment_is_within_carrier(*target, source.start, source.end)? {
+                return Err(StackedFoldGeometryErrorV1::SourceEdgeGeometryChanged {
+                    edge: target.id,
+                });
+            }
+        }
+
+        let mut matching_carrier = None;
+        for (carrier_index, carrier) in carriers.iter().enumerate() {
+            if target.kind == carrier.kind
+                && segment_is_within_carrier(*target, carrier.start, carrier.end)?
+                && matching_carrier.replace(carrier_index).is_some()
+            {
+                return Err(StackedFoldGeometryErrorV1::TargetEdgeWithMultipleCarriers {
+                    edge: target.id,
+                });
+            }
+        }
+        let carrier_index = matching_carrier
+            .ok_or(StackedFoldGeometryErrorV1::TargetEdgeWithoutCarrier { edge: target.id })?;
+        if let Some(source_index) = source_edge_indices.get(&target.id)
+            && *source_index != carrier_index
+        {
+            return Err(StackedFoldGeometryErrorV1::SourceEdgeGeometryChanged { edge: target.id });
+        }
+        assignments[carrier_index].push(*target);
+    }
+    for (source_index, source) in source_edges.iter().enumerate() {
+        if !source_identities_seen[source_index] {
+            return Err(StackedFoldGeometryErrorV1::SourceEdgeIdentityMissing { edge: source.id });
+        }
+    }
+    for (carrier, assigned_edges) in carriers.iter().zip(&assignments) {
+        if !carrier_has_exact_coverage(*carrier, assigned_edges) {
+            return Err(StackedFoldGeometryErrorV1::CarrierCoverageMismatch {
+                carrier: carrier.public,
+            });
+        }
+    }
+
+    let source_subdivisions = source_edges
+        .iter()
+        .enumerate()
+        .map(|(index, source)| SourceEdgeSubdivisionV1 {
+            source_edge: source.id,
+            target_edges: canonical_edge_ids(&assignments[index]),
+        })
+        .collect();
+    let expected_subdivisions = expected_creases
+        .iter()
+        .enumerate()
+        .map(|(expected_index, expected)| {
+            let target_edges =
+                canonical_edge_ids(&assignments[source_edges.len() + expected_index]);
+            ExpectedCreaseSubdivisionV1 {
+                start_x_bits: canonical_coordinate_bits(expected.start.x),
+                start_y_bits: canonical_coordinate_bits(expected.start.y),
+                end_x_bits: canonical_coordinate_bits(expected.end.x),
+                end_y_bits: canonical_coordinate_bits(expected.end.y),
+                kind: expected.kind,
+                target_edges,
+            }
+        })
+        .collect();
+
+    Ok(StackedFoldGeometryProofV1 {
+        lineage: input.face_lineage.clone(),
+        source_edges: source_subdivisions,
+        expected_creases: expected_subdivisions,
+    })
+}
+
+fn check_stacked_fold_limit(
+    resource: StackedFoldGeometryResourceV1,
+    actual: usize,
+    maximum: usize,
+) -> Result<(), StackedFoldGeometryErrorV1> {
+    if actual > maximum {
+        Err(StackedFoldGeometryErrorV1::ResourceLimit {
+            resource,
+            actual,
+            maximum,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn canonical_expected_creases(
+    expected: &[ExpectedStackedFoldCreaseV1],
+) -> Result<Vec<CanonicalExpectedCrease>, StackedFoldGeometryErrorV1> {
+    if expected.iter().any(|crease| {
+        !crease.start.x.is_finite()
+            || !crease.start.y.is_finite()
+            || !crease.end.x.is_finite()
+            || !crease.end.y.is_finite()
+    }) {
+        return Err(StackedFoldGeometryErrorV1::ExpectedCreaseNonFinite);
+    }
+    if expected
+        .iter()
+        .any(|crease| !matches!(crease.kind, EdgeKind::Mountain | EdgeKind::Valley))
+    {
+        return Err(StackedFoldGeometryErrorV1::ExpectedCreaseKindUnsupported);
+    }
+    if expected.iter().any(|crease| crease.start == crease.end) {
+        return Err(StackedFoldGeometryErrorV1::ExpectedCreaseDegenerate);
+    }
+
+    let mut canonical = expected
+        .iter()
+        .map(|crease| {
+            let first = canonical_point(crease.start);
+            let second = canonical_point(crease.end);
+            let (start, end) = if compare_points(first, second) == Ordering::Greater {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            CanonicalExpectedCrease {
+                start,
+                end,
+                kind: crease.kind,
+            }
+        })
+        .collect::<Vec<_>>();
+    canonical.sort_unstable_by(compare_expected_creases);
+    Ok(canonical)
+}
+
+fn geometry_vertex_records(
+    pattern: &CreasePattern,
+    topology: FaceLineageTopology,
+) -> Result<Vec<GeometryVertexRecord>, StackedFoldGeometryErrorV1> {
+    let mut vertices = pattern.vertices.iter().collect::<Vec<_>>();
+    vertices.sort_unstable_by_key(|vertex| vertex.id.canonical_bytes());
+    for pair in vertices.windows(2) {
+        if pair[0].id == pair[1].id {
+            return Err(StackedFoldGeometryErrorV1::DuplicateVertex {
+                topology,
+                vertex: pair[0].id,
+            });
+        }
+    }
+    vertices
+        .into_iter()
+        .map(|vertex| {
+            if !vertex.position.x.is_finite() || !vertex.position.y.is_finite() {
+                Err(StackedFoldGeometryErrorV1::NonFiniteVertex {
+                    topology,
+                    vertex: vertex.id,
+                })
+            } else {
+                Ok(GeometryVertexRecord {
+                    id: vertex.id,
+                    position: vertex.position,
+                })
+            }
+        })
+        .collect()
+}
+
+fn vertex_position_map(vertices: &[GeometryVertexRecord]) -> HashMap<VertexId, Point2> {
+    vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect()
+}
+
+fn geometry_edge_records(
+    pattern: &CreasePattern,
+    positions: &HashMap<VertexId, Point2>,
+    topology: FaceLineageTopology,
+) -> Result<Vec<GeometryEdgeRecord>, StackedFoldGeometryErrorV1> {
+    let mut edges = pattern.edges.iter().collect::<Vec<_>>();
+    edges.sort_unstable_by_key(|edge| edge.id.canonical_bytes());
+    for pair in edges.windows(2) {
+        if pair[0].id == pair[1].id {
+            return Err(StackedFoldGeometryErrorV1::DuplicateEdge {
+                topology,
+                edge: pair[0].id,
+            });
+        }
+    }
+    edges
+        .into_iter()
+        .map(|edge| {
+            let start = positions.get(&edge.start).copied().ok_or(
+                StackedFoldGeometryErrorV1::EdgeEndpointMissing {
+                    topology,
+                    edge: edge.id,
+                },
+            )?;
+            let end = positions.get(&edge.end).copied().ok_or(
+                StackedFoldGeometryErrorV1::EdgeEndpointMissing {
+                    topology,
+                    edge: edge.id,
+                },
+            )?;
+            if start == end {
+                return Err(StackedFoldGeometryErrorV1::DegenerateEdge {
+                    topology,
+                    edge: edge.id,
+                });
+            }
+            Ok(GeometryEdgeRecord {
+                id: edge.id,
+                start_vertex: edge.start,
+                end_vertex: edge.end,
+                start,
+                end,
+                kind: edge.kind,
+            })
+        })
+        .collect()
+}
+
+fn checked_overlap_test_count(source_edges: usize, expected_creases: usize) -> Option<usize> {
+    let source_expected = source_edges.checked_mul(expected_creases)?;
+    let expected_pairs = expected_creases.checked_mul(expected_creases.saturating_sub(1))? / 2;
+    source_expected.checked_add(expected_pairs)
+}
+
+fn segments_share_positive_collinear_interval(
+    first_start: Point2,
+    first_end: Point2,
+    second_start: Point2,
+    second_end: Point2,
+) -> Result<bool, GeometryError> {
+    if exact_orientation(first_start, first_end, second_start)? != Orientation::Collinear
+        || exact_orientation(first_start, first_end, second_end)? != Orientation::Collinear
+    {
+        return Ok(false);
+    }
+    let use_x = first_start.x != first_end.x;
+    let first_low = carrier_scalar(first_start, use_x).min(carrier_scalar(first_end, use_x));
+    let first_high = carrier_scalar(first_start, use_x).max(carrier_scalar(first_end, use_x));
+    let second_low = carrier_scalar(second_start, use_x).min(carrier_scalar(second_end, use_x));
+    let second_high = carrier_scalar(second_start, use_x).max(carrier_scalar(second_end, use_x));
+    Ok(first_low.max(second_low) < first_high.min(second_high))
+}
+
+fn segment_is_within_carrier(
+    edge: GeometryEdgeRecord,
+    carrier_start: Point2,
+    carrier_end: Point2,
+) -> Result<bool, GeometryError> {
+    Ok(
+        point_segment_relation(edge.start, carrier_start, carrier_end)?
+            != PointSegmentRelation::Outside
+            && point_segment_relation(edge.end, carrier_start, carrier_end)?
+                != PointSegmentRelation::Outside,
+    )
+}
+
+fn carrier_has_exact_coverage(carrier: GeometryCarrier, edges: &[GeometryEdgeRecord]) -> bool {
+    if edges.is_empty() {
+        return false;
+    }
+    let use_x = carrier.start.x != carrier.end.x;
+    let carrier_start = carrier_scalar(carrier.start, use_x);
+    let carrier_end = carrier_scalar(carrier.end, use_x);
+    let carrier_low = carrier_start.min(carrier_end);
+    let carrier_high = carrier_start.max(carrier_end);
+    let mut intervals = edges
+        .iter()
+        .map(|edge| {
+            let start = carrier_scalar(edge.start, use_x);
+            let end = carrier_scalar(edge.end, use_x);
+            (start.min(end), start.max(end), edge.id)
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_unstable_by(|left, right| {
+        compare_finite_coordinates(left.0, right.0)
+            .then_with(|| compare_finite_coordinates(left.1, right.1))
+            .then_with(|| left.2.canonical_bytes().cmp(&right.2.canonical_bytes()))
+    });
+    let mut covered_until = carrier_low;
+    for (low, high, _) in intervals {
+        if low != covered_until || high <= low {
+            return false;
+        }
+        covered_until = high;
+    }
+    covered_until == carrier_high
+}
+
+fn canonical_edge_ids(edges: &[GeometryEdgeRecord]) -> Vec<EdgeId> {
+    let mut ids = edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+    ids.sort_unstable_by_key(EdgeId::canonical_bytes);
+    ids
+}
+
+fn canonical_point(point: Point2) -> Point2 {
+    Point2::new(canonical_coordinate(point.x), canonical_coordinate(point.y))
+}
+
+fn canonical_coordinate(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
+}
+
+fn canonical_coordinate_bits(value: f64) -> u64 {
+    canonical_coordinate(value).to_bits()
+}
+
+fn compare_points(left: Point2, right: Point2) -> Ordering {
+    compare_finite_coordinates(left.x, right.x)
+        .then_with(|| compare_finite_coordinates(left.y, right.y))
+}
+
+fn compare_expected_creases(
+    left: &CanonicalExpectedCrease,
+    right: &CanonicalExpectedCrease,
+) -> Ordering {
+    compare_points(left.start, right.start)
+        .then_with(|| compare_points(left.end, right.end))
+        .then_with(|| edge_kind_rank(left.kind).cmp(&edge_kind_rank(right.kind)))
+}
+
+fn compare_finite_coordinates(left: f64, right: f64) -> Ordering {
+    debug_assert!(left.is_finite() && right.is_finite());
+    left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+}
+
+const fn edge_kind_rank(kind: EdgeKind) -> u8 {
+    match kind {
+        EdgeKind::Mountain => 0,
+        EdgeKind::Valley => 1,
+        EdgeKind::Auxiliary => 2,
+        EdgeKind::Boundary => 3,
+        EdgeKind::Cut => 4,
+    }
+}
+
+const fn carrier_scalar(point: Point2, use_x: bool) -> f64 {
+    if use_x { point.x } else { point.y }
+}
+
+fn point_bits_equal(first: Point2, second: Point2) -> bool {
+    first.x.to_bits() == second.x.to_bits() && first.y.to_bits() == second.y.to_bits()
+}
+
 fn check_limit(
     resource: FaceLineageResource,
     actual: usize,
@@ -742,6 +1629,224 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct GeometryFixture {
+        identity: ProjectId,
+        source_revision: Revision,
+        target_revision: Revision,
+        source_pattern: CreasePattern,
+        source_paper: Paper,
+        source_layer_order: LayerOrderSnapshot,
+        target_pattern: CreasePattern,
+        target_paper: Paper,
+        expected_creases: Vec<ExpectedStackedFoldCreaseV1>,
+    }
+
+    impl GeometryFixture {
+        fn lineage_input(&self) -> FaceLineageInput<'_> {
+            FaceLineageInput {
+                identity_namespace: self.identity,
+                source_revision: self.source_revision,
+                source_paper: &self.source_paper,
+                source_pattern: &self.source_pattern,
+                source_layer_order: &self.source_layer_order,
+                target_revision: self.target_revision,
+                target_paper: &self.target_paper,
+                target_pattern: &self.target_pattern,
+            }
+        }
+
+        fn lineage(&self) -> FaceLineageV1 {
+            prepare_face_lineage_v1(self.lineage_input(), FaceLineageLimits::default())
+                .expect("prepare geometry fixture lineage")
+        }
+
+        fn geometry_input<'a>(
+            &'a self,
+            lineage: &'a FaceLineageV1,
+        ) -> StackedFoldGeometryInputV1<'a> {
+            StackedFoldGeometryInputV1 {
+                identity_namespace: self.identity,
+                source_revision: self.source_revision,
+                source_paper: &self.source_paper,
+                source_pattern: &self.source_pattern,
+                target_revision: self.target_revision,
+                target_paper: &self.target_paper,
+                target_pattern: &self.target_pattern,
+                face_lineage: lineage,
+                expected_creases: &self.expected_creases,
+            }
+        }
+    }
+
+    fn simple_geometry_fixture() -> GeometryFixture {
+        let fixture = fixture();
+        let expected_creases = vec![ExpectedStackedFoldCreaseV1 {
+            start: vertex_position(
+                &fixture.source_pattern,
+                fixture.source_paper.boundary_vertices[0],
+            ),
+            end: vertex_position(
+                &fixture.source_pattern,
+                fixture.source_paper.boundary_vertices[2],
+            ),
+            kind: EdgeKind::Mountain,
+        }];
+        GeometryFixture {
+            identity: fixture.identity,
+            source_revision: 7,
+            target_revision: 8,
+            source_pattern: fixture.source_pattern,
+            source_paper: fixture.source_paper,
+            source_layer_order: fixture.source_layer_order,
+            target_pattern: fixture.target_pattern,
+            target_paper: fixture.target_paper,
+            expected_creases,
+        }
+    }
+
+    fn subdivided_cross_geometry_fixture() -> GeometryFixture {
+        let identity = ProjectId::new();
+        let source_revision = 12;
+        let target_revision = 13;
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (mut source_pattern, paper) = sheet.into_parts();
+        let source_hinge = EdgeId::new();
+        source_pattern.edges.push(Edge {
+            id: source_hinge,
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Mountain,
+        });
+        let source_layer_order =
+            proven_layer_order(identity, source_revision, &source_pattern, &paper);
+
+        let mut target_pattern = source_pattern.clone();
+        let center = VertexId::new();
+        target_pattern.vertices.push(Vertex {
+            id: center,
+            position: Point2::new(200.0, 200.0),
+        });
+        target_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == source_hinge)
+            .expect("source hinge")
+            .end = center;
+        target_pattern.edges.extend([
+            Edge {
+                id: EdgeId::new(),
+                start: center,
+                end: paper.boundary_vertices[2],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: paper.boundary_vertices[1],
+                end: center,
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: center,
+                end: paper.boundary_vertices[3],
+                kind: EdgeKind::Valley,
+            },
+        ]);
+        let expected_creases = vec![ExpectedStackedFoldCreaseV1 {
+            start: vertex_position(&source_pattern, paper.boundary_vertices[1]),
+            end: vertex_position(&source_pattern, paper.boundary_vertices[3]),
+            kind: EdgeKind::Valley,
+        }];
+
+        GeometryFixture {
+            identity,
+            source_revision,
+            target_revision,
+            source_pattern,
+            source_paper: paper.clone(),
+            source_layer_order,
+            target_pattern,
+            target_paper: paper,
+            expected_creases,
+        }
+    }
+
+    fn two_new_crossing_creases_fixture() -> GeometryFixture {
+        let identity = ProjectId::new();
+        let source_revision = 20;
+        let target_revision = 21;
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (source_pattern, paper) = sheet.into_parts();
+        let source_layer_order =
+            proven_layer_order(identity, source_revision, &source_pattern, &paper);
+        let center = VertexId::new();
+        let mut target_pattern = source_pattern.clone();
+        target_pattern.vertices.push(Vertex {
+            id: center,
+            position: Point2::new(200.0, 200.0),
+        });
+        target_pattern.edges.extend([
+            Edge {
+                id: EdgeId::new(),
+                start: paper.boundary_vertices[0],
+                end: center,
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: center,
+                end: paper.boundary_vertices[2],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: paper.boundary_vertices[1],
+                end: center,
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: EdgeId::new(),
+                start: center,
+                end: paper.boundary_vertices[3],
+                kind: EdgeKind::Valley,
+            },
+        ]);
+        let expected_creases = vec![
+            ExpectedStackedFoldCreaseV1 {
+                start: vertex_position(&source_pattern, paper.boundary_vertices[0]),
+                end: vertex_position(&source_pattern, paper.boundary_vertices[2]),
+                kind: EdgeKind::Mountain,
+            },
+            ExpectedStackedFoldCreaseV1 {
+                start: vertex_position(&source_pattern, paper.boundary_vertices[1]),
+                end: vertex_position(&source_pattern, paper.boundary_vertices[3]),
+                kind: EdgeKind::Valley,
+            },
+        ];
+
+        GeometryFixture {
+            identity,
+            source_revision,
+            target_revision,
+            source_pattern,
+            source_paper: paper.clone(),
+            source_layer_order,
+            target_pattern,
+            target_paper: paper,
+            expected_creases,
+        }
+    }
+
+    fn vertex_position(pattern: &CreasePattern, id: VertexId) -> Point2 {
+        pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == id)
+            .expect("fixture vertex")
+            .position
+    }
+
     fn proven_layer_order(
         identity: ProjectId,
         revision: Revision,
@@ -904,6 +2009,663 @@ mod tests {
             .map(|face| face.face_id)
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(descendant_ids.len(), 4);
+    }
+
+    #[test]
+    fn geometry_proof_accepts_only_the_explicit_mountain_delta() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let proof = prepare_stacked_fold_geometry_v1(
+            fixture.geometry_input(&lineage),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("prove simple stacked-fold geometry");
+
+        assert_eq!(proof.lineage(), &lineage);
+        assert_eq!(
+            proof.source_edges().len(),
+            fixture.source_pattern.edges.len()
+        );
+        assert!(
+            proof
+                .source_edges()
+                .iter()
+                .all(|subdivision| subdivision.target_edges().len() == 1)
+        );
+        assert_eq!(proof.expected_creases().len(), 1);
+        assert_eq!(proof.expected_creases()[0].start(), Point2::new(0.0, 0.0));
+        assert_eq!(proof.expected_creases()[0].end(), Point2::new(400.0, 400.0));
+        assert_eq!(proof.expected_creases()[0].kind(), EdgeKind::Mountain);
+        assert_eq!(proof.expected_creases()[0].target_edges().len(), 1);
+    }
+
+    #[test]
+    fn geometry_proof_accepts_exact_source_and_expected_subdivisions() {
+        let fixture = subdivided_cross_geometry_fixture();
+        let source_hinge = fixture
+            .source_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Mountain)
+            .expect("source hinge")
+            .id;
+        let lineage = fixture.lineage();
+        let proof = prepare_stacked_fold_geometry_v1(
+            fixture.geometry_input(&lineage),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("prove subdivided source and expected crease");
+
+        let source_subdivision = proof
+            .source_edges()
+            .iter()
+            .find(|subdivision| subdivision.source_edge() == source_hinge)
+            .expect("source hinge subdivision");
+        assert_eq!(source_subdivision.target_edges().len(), 2);
+        assert_eq!(proof.expected_creases().len(), 1);
+        assert_eq!(proof.expected_creases()[0].kind(), EdgeKind::Valley);
+        assert_eq!(proof.expected_creases()[0].target_edges().len(), 2);
+    }
+
+    #[test]
+    fn geometry_proof_is_invariant_to_storage_expected_order_and_edge_direction() {
+        let fixture = two_new_crossing_creases_fixture();
+        let lineage = fixture.lineage();
+        let expected = prepare_stacked_fold_geometry_v1(
+            fixture.geometry_input(&lineage),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("baseline geometry proof");
+
+        let mut source_pattern = fixture.source_pattern.clone();
+        source_pattern.vertices.reverse();
+        source_pattern.edges.reverse();
+        for edge in &mut source_pattern.edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        let mut target_pattern = fixture.target_pattern.clone();
+        target_pattern.vertices.reverse();
+        target_pattern.edges.reverse();
+        for edge in &mut target_pattern.edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        let mut source_paper = fixture.source_paper.clone();
+        source_paper.boundary_vertices.rotate_left(1);
+        source_paper.boundary_vertices.reverse();
+        let mut target_paper = fixture.target_paper.clone();
+        target_paper.boundary_vertices.rotate_right(1);
+        target_paper.boundary_vertices.reverse();
+        let mut expected_creases = fixture.expected_creases.clone();
+        expected_creases.reverse();
+        for crease in &mut expected_creases {
+            std::mem::swap(&mut crease.start, &mut crease.end);
+        }
+        let reordered_input = StackedFoldGeometryInputV1 {
+            identity_namespace: fixture.identity,
+            source_revision: fixture.source_revision,
+            source_paper: &source_paper,
+            source_pattern: &source_pattern,
+            target_revision: fixture.target_revision,
+            target_paper: &target_paper,
+            target_pattern: &target_pattern,
+            face_lineage: &lineage,
+            expected_creases: &expected_creases,
+        };
+
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                reordered_input,
+                StackedFoldGeometryLimitsV1::default()
+            ),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn geometry_proof_rebinds_identity_revisions_and_both_fingerprints() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let input = fixture.geometry_input(&lineage);
+
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    identity_namespace: ProjectId::new(),
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::LineageIdentityMismatch)
+        );
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    target_revision: fixture.target_revision + 1,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::LineageRevisionMismatch)
+        );
+
+        let mut changed_source = fixture.source_pattern.clone();
+        changed_source.vertices[0].position.x = 1.0;
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    source_pattern: &changed_source,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::LineageSourceFingerprintMismatch)
+        );
+
+        let mut changed_target = fixture.target_pattern.clone();
+        changed_target.vertices.push(Vertex {
+            id: VertexId::new(),
+            position: Point2::new(123.0, 234.0),
+        });
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    target_pattern: &changed_target,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::LineageTargetFingerprintMismatch)
+        );
+    }
+
+    #[test]
+    fn expected_crease_input_is_nonempty_finite_nondegenerate_and_mv_only() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let input = fixture.geometry_input(&lineage);
+
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &[],
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::ExpectedCreaseSetEmpty)
+        );
+
+        let non_finite = [ExpectedStackedFoldCreaseV1 {
+            start: Point2::new(f64::NAN, 0.0),
+            ..fixture.expected_creases[0]
+        }];
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &non_finite,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::ExpectedCreaseNonFinite)
+        );
+
+        let degenerate = [ExpectedStackedFoldCreaseV1 {
+            end: fixture.expected_creases[0].start,
+            ..fixture.expected_creases[0]
+        }];
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &degenerate,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::ExpectedCreaseDegenerate)
+        );
+
+        for kind in [EdgeKind::Auxiliary, EdgeKind::Boundary, EdgeKind::Cut] {
+            let unsupported = [ExpectedStackedFoldCreaseV1 {
+                kind,
+                ..fixture.expected_creases[0]
+            }];
+            assert_eq!(
+                prepare_stacked_fold_geometry_v1(
+                    StackedFoldGeometryInputV1 {
+                        expected_creases: &unsupported,
+                        ..input
+                    },
+                    StackedFoldGeometryLimitsV1::default(),
+                ),
+                Err(StackedFoldGeometryErrorV1::ExpectedCreaseKindUnsupported)
+            );
+        }
+    }
+
+    #[test]
+    fn coincident_expected_and_source_carriers_are_rejected() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let input = fixture.geometry_input(&lineage);
+        let duplicate = [
+            fixture.expected_creases[0],
+            ExpectedStackedFoldCreaseV1 {
+                start: fixture.expected_creases[0].end,
+                end: fixture.expected_creases[0].start,
+                kind: EdgeKind::Mountain,
+            },
+        ];
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &duplicate,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::ExpectedCreasesOverlap {
+                first: 0,
+                second: 1,
+            })
+        );
+
+        let boundary_start = fixture.source_paper.boundary_vertices[0];
+        let boundary_end = fixture.source_paper.boundary_vertices[1];
+        let boundary_edge = fixture
+            .source_pattern
+            .edges
+            .iter()
+            .find(|edge| {
+                (edge.start == boundary_start && edge.end == boundary_end)
+                    || (edge.start == boundary_end && edge.end == boundary_start)
+            })
+            .expect("source boundary edge")
+            .id;
+        let overlaps_source = [ExpectedStackedFoldCreaseV1 {
+            start: vertex_position(&fixture.source_pattern, boundary_start),
+            end: vertex_position(&fixture.source_pattern, boundary_end),
+            kind: EdgeKind::Mountain,
+        }];
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &overlaps_source,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(
+                StackedFoldGeometryErrorV1::ExpectedCreaseOverlapsSourceEdge {
+                    expected_index: 0,
+                    source_edge: boundary_edge,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn wrong_missing_and_extra_expected_creases_are_rejected_exactly() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let input = fixture.geometry_input(&lineage);
+        let target_fold = fixture
+            .target_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Mountain)
+            .expect("target fold")
+            .id;
+        let wrong_kind = [ExpectedStackedFoldCreaseV1 {
+            kind: EdgeKind::Valley,
+            ..fixture.expected_creases[0]
+        }];
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &wrong_kind,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::TargetEdgeWithoutCarrier { edge: target_fold })
+        );
+
+        let missing_target = [
+            fixture.expected_creases[0],
+            ExpectedStackedFoldCreaseV1 {
+                start: Point2::new(0.0, 400.0),
+                end: Point2::new(400.0, 0.0),
+                kind: EdgeKind::Valley,
+            },
+        ];
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &missing_target,
+                    ..input
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::CarrierCoverageMismatch {
+                carrier: StackedFoldGeometryCarrierV1::ExpectedCrease(1),
+            })
+        );
+
+        let two_creases = two_new_crossing_creases_fixture();
+        let two_lineage = two_creases.lineage();
+        let only_mountain = [two_creases.expected_creases[0]];
+        assert!(matches!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &only_mountain,
+                    ..two_creases.geometry_input(&two_lineage)
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::TargetEdgeWithoutCarrier { edge })
+                if two_creases
+                    .target_pattern
+                    .edges
+                    .iter()
+                    .any(|candidate| candidate.id == edge && candidate.kind == EdgeKind::Valley)
+        ));
+    }
+
+    #[test]
+    fn source_edge_identity_and_kind_cannot_change_during_subdivision() {
+        let fixture = subdivided_cross_geometry_fixture();
+        let source_hinge = fixture
+            .source_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Mountain)
+            .expect("source hinge")
+            .id;
+
+        let mut changed_kind = fixture.clone();
+        changed_kind
+            .target_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == source_hinge)
+            .expect("target source edge")
+            .kind = EdgeKind::Valley;
+        let changed_kind_lineage = changed_kind.lineage();
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                changed_kind.geometry_input(&changed_kind_lineage),
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::SourceEdgeKindChanged { edge: source_hinge })
+        );
+
+        let mut changed_identity = fixture;
+        changed_identity
+            .target_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == source_hinge)
+            .expect("target source edge")
+            .id = EdgeId::new();
+        let changed_identity_lineage = changed_identity.lineage();
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                changed_identity.geometry_input(&changed_identity_lineage),
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::SourceEdgeIdentityMissing { edge: source_hinge })
+        );
+    }
+
+    #[test]
+    fn new_unrelated_target_vertices_are_rejected_even_with_valid_lineage() {
+        let mut fixture = simple_geometry_fixture();
+        let isolated = VertexId::new();
+        fixture.target_pattern.vertices.push(Vertex {
+            id: isolated,
+            position: Point2::new(123.0, 234.0),
+        });
+        let lineage = fixture.lineage();
+
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                fixture.geometry_input(&lineage),
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::NewTargetVertexIsolated { vertex: isolated })
+        );
+    }
+
+    #[test]
+    fn moving_an_existing_unrelated_vertex_is_rejected_even_with_valid_lineage() {
+        let identity = ProjectId::new();
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (mut source_pattern, paper) = sheet.into_parts();
+        let isolated = VertexId::new();
+        source_pattern.vertices.push(Vertex {
+            id: isolated,
+            position: Point2::new(500.0, 500.0),
+        });
+        let source_layer_order = proven_layer_order(identity, 30, &source_pattern, &paper);
+        let mut target_pattern = source_pattern.clone();
+        target_pattern
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == isolated)
+            .expect("isolated source vertex")
+            .position = Point2::new(501.0, 500.0);
+        target_pattern.edges.push(Edge {
+            id: EdgeId::new(),
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Mountain,
+        });
+        let expected_creases = [ExpectedStackedFoldCreaseV1 {
+            start: vertex_position(&source_pattern, paper.boundary_vertices[0]),
+            end: vertex_position(&source_pattern, paper.boundary_vertices[2]),
+            kind: EdgeKind::Mountain,
+        }];
+        let lineage = prepare_face_lineage_v1(
+            FaceLineageInput {
+                identity_namespace: identity,
+                source_revision: 30,
+                source_paper: &paper,
+                source_pattern: &source_pattern,
+                source_layer_order: &source_layer_order,
+                target_revision: 31,
+                target_paper: &paper,
+                target_pattern: &target_pattern,
+            },
+            FaceLineageLimits::default(),
+        )
+        .expect("lineage intentionally ignores isolated draft movement");
+
+        assert_eq!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    identity_namespace: identity,
+                    source_revision: 30,
+                    source_paper: &paper,
+                    source_pattern: &source_pattern,
+                    target_revision: 31,
+                    target_paper: &paper,
+                    target_pattern: &target_pattern,
+                    face_lineage: &lineage,
+                    expected_creases: &expected_creases,
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            ),
+            Err(StackedFoldGeometryErrorV1::SourceVertexMoved { vertex: isolated })
+        );
+    }
+
+    #[test]
+    fn geometry_resource_limits_admit_equality_and_reject_one_less() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let exact = StackedFoldGeometryLimitsV1 {
+            max_source_vertices: 4,
+            max_source_edges: 4,
+            max_source_paper_boundary_vertices: 4,
+            max_target_vertices: 4,
+            max_target_edges: 5,
+            max_target_paper_boundary_vertices: 4,
+            max_expected_creases: 1,
+            max_lineage_records: 1,
+            max_lineage_descendants: 2,
+            max_edge_carrier_tests: 25,
+            max_carrier_overlap_tests: 4,
+        };
+        prepare_stacked_fold_geometry_v1(fixture.geometry_input(&lineage), exact)
+            .expect("all documented limits admit equality");
+
+        for (limits, resource, actual, maximum) in [
+            (
+                StackedFoldGeometryLimitsV1 {
+                    max_edge_carrier_tests: 24,
+                    ..exact
+                },
+                StackedFoldGeometryResourceV1::EdgeCarrierTests,
+                25,
+                24,
+            ),
+            (
+                StackedFoldGeometryLimitsV1 {
+                    max_carrier_overlap_tests: 3,
+                    ..exact
+                },
+                StackedFoldGeometryResourceV1::CarrierOverlapTests,
+                4,
+                3,
+            ),
+            (
+                StackedFoldGeometryLimitsV1 {
+                    max_lineage_descendants: 1,
+                    ..exact
+                },
+                StackedFoldGeometryResourceV1::LineageDescendants,
+                2,
+                1,
+            ),
+            (
+                StackedFoldGeometryLimitsV1 {
+                    max_expected_creases: 0,
+                    ..exact
+                },
+                StackedFoldGeometryResourceV1::ExpectedCreases,
+                1,
+                0,
+            ),
+        ] {
+            assert_eq!(
+                prepare_stacked_fold_geometry_v1(fixture.geometry_input(&lineage), limits),
+                Err(StackedFoldGeometryErrorV1::ResourceLimit {
+                    resource,
+                    actual,
+                    maximum,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_failure_is_pure_and_leaves_editor_state_unchanged() {
+        let fixture = simple_geometry_fixture();
+        let lineage = fixture.lineage();
+        let editor =
+            EditorState::with_paper(fixture.source_pattern.clone(), fixture.source_paper.clone());
+        let before_pattern = editor.pattern().clone();
+        let before_paper = editor.paper().clone();
+        let before_timeline = editor.instruction_timeline().clone();
+        let before_revision = editor.revision();
+        let before_undo = editor.can_undo();
+        let before_redo = editor.can_redo();
+        let wrong_kind = [ExpectedStackedFoldCreaseV1 {
+            kind: EdgeKind::Valley,
+            ..fixture.expected_creases[0]
+        }];
+
+        assert!(
+            prepare_stacked_fold_geometry_v1(
+                StackedFoldGeometryInputV1 {
+                    expected_creases: &wrong_kind,
+                    ..fixture.geometry_input(&lineage)
+                },
+                StackedFoldGeometryLimitsV1::default(),
+            )
+            .is_err()
+        );
+        assert_eq!(editor.pattern(), &before_pattern);
+        assert_eq!(editor.paper(), &before_paper);
+        assert_eq!(editor.instruction_timeline(), &before_timeline);
+        assert_eq!(editor.revision(), before_revision);
+        assert_eq!(editor.can_undo(), before_undo);
+        assert_eq!(editor.can_redo(), before_redo);
+    }
+
+    #[test]
+    fn exact_carrier_coverage_distinguishes_adjacency_gap_and_overlap() {
+        let carrier = GeometryCarrier {
+            public: StackedFoldGeometryCarrierV1::ExpectedCrease(0),
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(3.0, 0.0),
+            kind: EdgeKind::Mountain,
+        };
+        let edge = |start: f64, end: f64| GeometryEdgeRecord {
+            id: EdgeId::new(),
+            start_vertex: VertexId::new(),
+            end_vertex: VertexId::new(),
+            start: Point2::new(start, 0.0),
+            end: Point2::new(end, 0.0),
+            kind: EdgeKind::Mountain,
+        };
+
+        assert!(carrier_has_exact_coverage(
+            carrier,
+            &[edge(3.0, 2.0), edge(0.0, 1.0), edge(2.0, 1.0)]
+        ));
+        assert!(!carrier_has_exact_coverage(
+            carrier,
+            &[edge(0.0, 1.0), edge(2.0, 3.0)]
+        ));
+        assert!(!carrier_has_exact_coverage(
+            carrier,
+            &[edge(0.0, 2.0), edge(1.0, 3.0)]
+        ));
+    }
+
+    #[test]
+    fn exact_overlap_rejects_positive_interval_but_allows_point_contact_and_crossing() {
+        let horizontal_start = Point2::new(0.0, 0.0);
+        let horizontal_end = Point2::new(2.0, 0.0);
+        assert!(
+            segments_share_positive_collinear_interval(
+                horizontal_start,
+                horizontal_end,
+                Point2::new(3.0, 0.0),
+                Point2::new(1.0, 0.0),
+            )
+            .unwrap()
+        );
+        assert!(
+            !segments_share_positive_collinear_interval(
+                horizontal_start,
+                horizontal_end,
+                Point2::new(2.0, 0.0),
+                Point2::new(3.0, 0.0),
+            )
+            .unwrap()
+        );
+        assert!(
+            !segments_share_positive_collinear_interval(
+                horizontal_start,
+                horizontal_end,
+                Point2::new(1.0, -1.0),
+                Point2::new(1.0, 1.0),
+            )
+            .unwrap()
+        );
     }
 
     #[test]

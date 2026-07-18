@@ -346,6 +346,8 @@ SAT軸の入力順不変回帰として、scale 1の同一三角形slab、共通
 
 ## 10. 初版の非対象
 
+native側の最初の静的幾何証拠は、単一material face・no-hingeでunordered face pairの期待数と解析数がともに0の場合だけ発行する。exact material model issuer、pose instance、紙厚bits、`centered_mid_surface_v1`、`topology_contact_policy_v2`へ結合するが、current projectまたはpose generationは証明しない。複数面は本書の分類表へ到達する前であっても、全pair evidenceが未実装ならblocking errorとし、衝突なしとは表示しない。current certificateへの昇格にはdesktop current pose capabilityとの別の再結合を必須とする。
+
 `topology_contact_policy_v1`と`centered_mid_surface_v1`は、現在姿勢の中央面基準解析を定める。次は安全証明の対象外である。
 
 - 厳密な層ずらし、層順および多層の積層順序

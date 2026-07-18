@@ -3,6 +3,29 @@
 //! This crate deliberately separates evidence classification from geometry
 //! evidence generation. A caller must positively prove both the topology
 //! relation and the intersection evidence before using this table.
+//!
+//! Native static geometry proofs are opaque runtime values and cannot be
+//! persisted or reconstructed from caller-provided fields. A geometry proof
+//! is intentionally not current-project authority: a stronger desktop
+//! boundary must bind it to the exact current-pose certificate identity and
+//! generation before calling the result a current collision certificate.
+//!
+//! ```compile_fail
+//! use ori_collision::NativeStaticCollisionGeometryProof;
+//!
+//! fn require_serialize<T: serde::Serialize>() {}
+//! require_serialize::<NativeStaticCollisionGeometryProof>();
+//! ```
+
+#![forbid(unsafe_code)]
+
+mod static_collision;
+
+pub use static_collision::{
+    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
+    NativeStaticCollisionGeometryProof, StaticCollisionError, StaticCollisionLimits,
+    prove_static_collision_geometry,
+};
 
 /// Immutable identifier for the first native topology/contact policy.
 pub const TOPOLOGY_CONTACT_POLICY_V1: &str = "topology_contact_policy_v1";
@@ -352,6 +375,28 @@ pub const fn classify_topology_contact_v2(
     TOPOLOGY_CONTACT_POLICY_TABLE_V2[topology.table_index()][evidence.table_index()]
 }
 
+/// Applies the V2 table at the runtime pair-dispatch boundary.
+///
+/// A correctly constructed dispatcher enumerates each unordered pair once and
+/// therefore never observes [`TopologyRelation::SameFace`]. Reaching that
+/// relation at runtime is an internal coverage/identity inconsistency, not an
+/// `IgnoredSelf` permission. It consequently fails closed as
+/// [`TopologyContactDecision::Indeterminate`].
+///
+/// Like the policy-table function, this function does not authenticate either
+/// input and is not a collision certificate.
+#[must_use]
+pub const fn classify_runtime_topology_contact_v2(
+    topology: TopologyRelation,
+    evidence: IntersectionEvidenceV2,
+) -> TopologyContactDecision {
+    if matches!(topology, TopologyRelation::SameFace) {
+        TopologyContactDecision::Indeterminate
+    } else {
+        classify_topology_contact_v2(topology, evidence)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -601,6 +646,33 @@ mod tests {
                 classify_topology_contact_v1(TopologyRelation::SameFace, evidence),
                 TopologyContactDecision::IgnoredSelf
             );
+        }
+    }
+
+    #[test]
+    fn runtime_same_face_arrival_is_an_internal_indeterminate() {
+        for evidence in IntersectionEvidenceV2::ALL {
+            assert_eq!(
+                classify_runtime_topology_contact_v2(TopologyRelation::SameFace, evidence),
+                TopologyContactDecision::Indeterminate,
+                "{}",
+                evidence.identifier()
+            );
+        }
+        for topology in [
+            TopologyRelation::NoSharedFeature,
+            TopologyRelation::SharedVertex,
+            TopologyRelation::SharedHingeEdge,
+        ] {
+            for evidence in IntersectionEvidenceV2::ALL {
+                assert_eq!(
+                    classify_runtime_topology_contact_v2(topology, evidence),
+                    classify_topology_contact_v2(topology, evidence),
+                    "{}:{}",
+                    topology.identifier(),
+                    evidence.identifier()
+                );
+            }
         }
     }
 }

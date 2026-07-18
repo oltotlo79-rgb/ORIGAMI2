@@ -2085,8 +2085,12 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 name = "ori-collision"
 version = "0.1.0"
 dependencies = [
+ "ori-domain",
+ "ori-kinematics",
+ "ori-topology",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2194,10 +2198,12 @@ dependencies = [
 name = "origami2-desktop"
 version = "0.1.0"
 dependencies = [
+ "ori-collision",
  "ori-core",
  "ori-domain",
  "ori-foldability",
  "ori-formats",
+ "ori-kinematics",
  "serde",
  "serde_json",
  "tauri",

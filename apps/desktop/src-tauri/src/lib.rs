@@ -1,3 +1,4 @@
+mod applied_pose;
 mod crease_export;
 mod diagnostics;
 mod global_flat_foldability;
@@ -16,6 +17,7 @@ use std::{
     },
 };
 
+use applied_pose::{CurrentAppliedPoseAuthority, commit_project_replacement};
 use crease_export::{
     CreaseExportState, cancel_crease_pattern_export, preview_crease_pattern_export,
     save_crease_pattern_export,
@@ -211,6 +213,11 @@ struct ProjectState {
     name: String,
     current_path: Option<PathBuf>,
     editor: EditorState,
+    /// In-process native current-pose authority for this open project.
+    ///
+    /// The authority has its own slot so the global lock order remains
+    /// `project -> pose -> layer order`. It is never persisted.
+    applied_pose_authority: CurrentAppliedPoseAuthority,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
 }
@@ -229,6 +236,7 @@ impl ProjectState {
             name: UNTITLED_PROJECT_NAME.to_owned(),
             current_path: None,
             editor,
+            applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             saved_revision: None,
             saved_document: None,
         };
@@ -247,6 +255,7 @@ impl ProjectState {
             name,
             current_path: None,
             editor,
+            applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             saved_revision: None,
             saved_document: None,
         }
@@ -265,6 +274,7 @@ impl ProjectState {
             name: document.name,
             current_path: Some(current_path),
             saved_revision: Some(editor.revision()),
+            applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             saved_document: Some(saved_document),
             editor,
         }
@@ -1296,12 +1306,7 @@ fn undo(
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    ensure_project_identity(&project, expected_project_id)?;
-    project
-        .editor
-        .undo(expected_revision)
-        .map_err(|error| error.to_string())?;
-    Ok(snapshot(&project))
+    execute_undo(&mut project, expected_project_id, expected_revision)
 }
 
 #[tauri::command]
@@ -1311,12 +1316,63 @@ fn redo(
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    ensure_project_identity(&project, expected_project_id)?;
+    execute_redo(&mut project, expected_project_id, expected_revision)
+}
+
+fn execute_undo(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<ProjectSnapshot, String> {
+    ensure_project_identity(project, expected_project_id)?;
+    if project.editor.revision() != expected_revision
+        || !project.editor.can_undo()
+        || project.editor.revision() == ori_core::MAX_REVISION
+    {
+        project
+            .editor
+            .undo(expected_revision)
+            .map_err(|error| error.to_string())?;
+        return Ok(snapshot(project));
+    }
+    let authority = project.applied_pose_authority.clone();
+    let invalidation = authority
+        .begin_invalidation()
+        .map_err(|error| error.to_string())?;
+    project
+        .editor
+        .undo(expected_revision)
+        .map_err(|error| error.to_string())?;
+    invalidation.commit();
+    Ok(snapshot(project))
+}
+
+fn execute_redo(
+    project: &mut ProjectState,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<ProjectSnapshot, String> {
+    ensure_project_identity(project, expected_project_id)?;
+    if project.editor.revision() != expected_revision
+        || !project.editor.can_redo()
+        || project.editor.revision() == ori_core::MAX_REVISION
+    {
+        project
+            .editor
+            .redo(expected_revision)
+            .map_err(|error| error.to_string())?;
+        return Ok(snapshot(project));
+    }
+    let authority = project.applied_pose_authority.clone();
+    let invalidation = authority
+        .begin_invalidation()
+        .map_err(|error| error.to_string())?;
     project
         .editor
         .redo(expected_revision)
         .map_err(|error| error.to_string())?;
-    Ok(snapshot(&project))
+    invalidation.commit();
+    Ok(snapshot(project))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1863,7 +1919,7 @@ fn commit_fold_import_replacement(
         pending.expected_project_id,
         pending.expected_revision,
     )?;
-    *project = replacement;
+    commit_project_replacement(project, replacement).map_err(|error| error.to_string())?;
     *pending_slot = None;
     Ok(snapshot(project))
 }
@@ -2067,7 +2123,7 @@ fn commit_svg_import_replacement(
         return Err("replacing a dirty project requires explicit confirmation".to_owned());
     }
 
-    *project = replacement;
+    commit_project_replacement(project, replacement).map_err(|error| error.to_string())?;
     *pending_slot = None;
     Ok(snapshot(project))
 }
@@ -2079,10 +2135,24 @@ fn execute_command(
     command: Command,
 ) -> Result<ProjectSnapshot, String> {
     ensure_project_identity(project, expected_project_id)?;
+    if project.editor.revision() != expected_revision
+        || project.editor.revision() == ori_core::MAX_REVISION
+    {
+        project
+            .editor
+            .execute(expected_revision, command)
+            .map_err(|error| error.to_string())?;
+        return Ok(snapshot(project));
+    }
+    let authority = project.applied_pose_authority.clone();
+    let invalidation = authority
+        .begin_invalidation()
+        .map_err(|error| error.to_string())?;
     project
         .editor
         .execute(expected_revision, command)
         .map_err(|error| error.to_string())?;
+    invalidation.commit();
     Ok(snapshot(project))
 }
 
@@ -2101,7 +2171,7 @@ fn replace_with_new_project(
     }
 
     let replacement = create_new_project_state(parameters)?;
-    *project = replacement;
+    commit_project_replacement(project, replacement).map_err(|error| error.to_string())?;
     Ok(snapshot(project))
 }
 
@@ -2689,7 +2759,11 @@ fn apply_loaded_project_file(
         expected_project_id,
         expected_revision,
     )?;
-    *project = ProjectState::from_document(loaded.document, loaded.path);
+    commit_project_replacement(
+        project,
+        ProjectState::from_document(loaded.document, loaded.path),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),

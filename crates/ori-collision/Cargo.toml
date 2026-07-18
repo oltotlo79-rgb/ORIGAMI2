@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+ori-kinematics = { path = "../ori-kinematics" }
+thiserror.workspace = true
+
 [dev-dependencies]
+ori-domain = { path = "../ori-domain" }
+ori-topology = { path = "../ori-topology" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

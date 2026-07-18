@@ -1880,25 +1880,27 @@ pub(super) fn revalidate_current_layer_order_capability<'a>(
     Ok(Some(capability.certificate.snapshot.as_ref()))
 }
 
-/// Runs a native layer-aware commit action while project and authority stay locked.
+/// Runs a native layer-aware observation while project and authority stay locked.
 ///
 /// The global lock order is project (`AppState`) first, then the layer-order
 /// slot. Background completion uses the same order; cancellation only takes
 /// the slot. Holding both guards through `action` prevents cancellation,
 /// replacement analysis, project editing, and reopen from creating a
-/// revalidate-to-commit race.
+/// revalidate-to-observe race. The project is deliberately shared-only: a
+/// future mutation that also needs current pose authority must use a dedicated
+/// `project -> pose -> layer-order` combined commit helper.
 #[allow(dead_code)]
 pub(super) fn with_revalidated_current_layer_order_capability<R>(
     app_state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,
     capability: &CurrentLayerOrderCapability,
-    action: impl FnOnce(&mut ProjectState, &LayerOrderSnapshot) -> R,
+    action: impl FnOnce(&ProjectState, &LayerOrderSnapshot) -> R,
 ) -> Result<Option<R>, GlobalFlatFoldabilityCommandError> {
     if !Arc::ptr_eq(&foldability_state.0, &capability.slot) {
         return Ok(None);
     }
     // Do not reverse this order anywhere that needs both locks.
-    let mut project = lock_project(app_state).map_err(|_| {
+    let project = lock_project(app_state).map_err(|_| {
         GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
     })?;
     let slot = lock_foldability_state(foldability_state)?;
@@ -1909,7 +1911,7 @@ pub(super) fn with_revalidated_current_layer_order_capability<R>(
         return Ok(None);
     }
 
-    let output = action(&mut project, capability.certificate.snapshot.as_ref());
+    let output = action(&project, capability.certificate.snapshot.as_ref());
     // Keep the layer slot locked for the complete action, even if future
     // compiler lifetime shortening would otherwise make the guard look dead.
     drop(slot);

@@ -14,10 +14,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ori-collision = { path = "../../../crates/ori-collision" }
 ori-core = { path = "../../../crates/ori-core" }
 ori-domain = { path = "../../../crates/ori-domain" }
 ori-foldability = { path = "../../../crates/ori-foldability" }
 ori-formats = { path = "../../../crates/ori-formats" }
+ori-kinematics = { path = "../../../crates/ori-kinematics" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }

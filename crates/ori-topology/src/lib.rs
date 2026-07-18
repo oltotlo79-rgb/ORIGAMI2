@@ -9,12 +9,16 @@ use std::collections::{HashMap, HashSet};
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId,
 };
-use ori_geometry::{polygon_signed_double_area, validate_crease_pattern, validate_paper};
+use ori_geometry::{
+    polygon_signed_double_area, validate_crease_pattern_with_checkpoint,
+    validate_paper_with_checkpoint,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const FACE_KEY_DOMAIN: &[u8] = b"ORIGAMI2_FACE_KEY_V1";
+const COOPERATIVE_CHECK_INTERVAL: usize = 64;
 
 // The embedding internals remain crate-private; only validated snapshots and
 // stable diagnostics cross the public analysis boundary.
@@ -27,14 +31,85 @@ mod local_flat_foldability;
 mod single_fold;
 
 use admission::PaperGraphAdmissionError;
-use fold_graph::{FoldGraphError, extract_fold_graph_snapshot};
+use fold_graph::{FoldGraphError, extract_fold_graph_snapshot_with_checkpoint};
 use single_fold::{SingleFoldError, extract_single_fold_faces};
 
 pub use local_flat_foldability::{
     LocalFlatFoldabilityModel, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
     LocalFoldabilityConditionStatus, LocalFoldabilityReason, LocalVertexFoldability,
     LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, analyze_local_flat_foldability,
+    analyze_local_flat_foldability_with_checkpoint,
 };
+
+/// Result requested by a cooperative preprocessing checkpoint.
+///
+/// Cancellation and deadline expiry remain distinct so a native caller can
+/// preserve the difference between an explicit user action and a bounded
+/// analysis that returned `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CooperativeAnalysisCheckpoint {
+    Continue,
+    Cancelled,
+    DeadlineReached,
+}
+
+/// Stable reason why cooperative topology preprocessing stopped early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum CooperativeAnalysisAbort {
+    #[error("topology preprocessing was cancelled")]
+    Cancelled,
+    #[error("topology preprocessing reached its deadline")]
+    DeadlineReached,
+}
+
+pub(crate) fn run_cooperative_checkpoint<F>(
+    checkpoint: &mut F,
+) -> Result<(), CooperativeAnalysisAbort>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    match checkpoint() {
+        CooperativeAnalysisCheckpoint::Continue => Ok(()),
+        CooperativeAnalysisCheckpoint::Cancelled => Err(CooperativeAnalysisAbort::Cancelled),
+        CooperativeAnalysisCheckpoint::DeadlineReached => {
+            Err(CooperativeAnalysisAbort::DeadlineReached)
+        }
+    }
+}
+
+pub(crate) fn poll_cooperative_checkpoint<F>(
+    checkpoint: &mut F,
+    iteration: usize,
+) -> Result<(), CooperativeAnalysisAbort>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    if iteration.is_multiple_of(COOPERATIVE_CHECK_INTERVAL) {
+        run_cooperative_checkpoint(checkpoint)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CooperativeOperationError<E> {
+    Aborted(CooperativeAnalysisAbort),
+    Operation(E),
+}
+
+impl<E> From<CooperativeAnalysisAbort> for CooperativeOperationError<E> {
+    fn from(abort: CooperativeAnalysisAbort) -> Self {
+        Self::Aborted(abort)
+    }
+}
+
+impl<E> CooperativeOperationError<E> {
+    pub(crate) fn map_operation<T>(self, map: impl FnOnce(E) -> T) -> CooperativeOperationError<T> {
+        match self {
+            Self::Aborted(abort) => CooperativeOperationError::Aborted(abort),
+            Self::Operation(error) => CooperativeOperationError::Operation(map(error)),
+        }
+    }
+}
 
 /// Immutable input used to derive a topology snapshot.
 #[derive(Debug, Clone, Copy)]
@@ -228,9 +303,31 @@ impl FaceExtractionRejected {
 /// blocked; silently treating them as auxiliary would create unsafe 3D input.
 #[must_use]
 pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    match analyze_faces_with_checkpoint(input, &mut checkpoint) {
+        Ok(report) => report,
+        Err(_) => unreachable!("the no-op topology checkpoint cannot abort"),
+    }
+}
+
+/// Analyzes the document with bounded-frequency cooperative interruption.
+///
+/// The callback is polled at phase boundaries and at least once every 64
+/// records in the vertex/edge preprocessing loops. Existing callers that do
+/// not need interruption can continue to use [`analyze_faces`].
+pub fn analyze_faces_with_checkpoint<F>(
+    input: FaceExtractionInput<'_>,
+    checkpoint: &mut F,
+) -> Result<FaceExtractionReport, CooperativeAnalysisAbort>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    run_cooperative_checkpoint(checkpoint)?;
+
     let mut vertex_ids = HashSet::with_capacity(input.pattern.vertices.len());
     let mut duplicate_vertex = None;
-    for vertex in &input.pattern.vertices {
+    for (index, vertex) in input.pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
         if !vertex_ids.insert(vertex.id)
             && duplicate_vertex.is_none_or(|current: VertexId| {
                 vertex.id.canonical_bytes() < current.canonical_bytes()
@@ -240,15 +337,16 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
         }
     }
     if let Some(vertex) = duplicate_vertex {
-        return rejected(
+        return Ok(rejected(
             TopologyIssueSeverity::Fatal,
             TopologyIssueKind::DuplicateVertexId { vertex },
-        );
+        ));
     }
 
     let mut edge_ids = HashSet::with_capacity(input.pattern.edges.len());
     let mut duplicate_edge = None;
-    for edge in &input.pattern.edges {
+    for (index, edge) in input.pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
         if !edge_ids.insert(edge.id)
             && duplicate_edge
                 .is_none_or(|current: EdgeId| edge.id.canonical_bytes() < current.canonical_bytes())
@@ -257,54 +355,65 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
         }
     }
     if let Some(edge) = duplicate_edge {
-        return rejected(
+        return Ok(rejected(
             TopologyIssueSeverity::Fatal,
             TopologyIssueKind::DuplicateEdgeId { edge },
-        );
+        ));
     }
 
-    let paper_validation = validate_paper(input.paper, input.pattern);
+    let paper_validation = {
+        let mut geometry_checkpoint = || run_cooperative_checkpoint(checkpoint);
+        validate_paper_with_checkpoint(input.paper, input.pattern, &mut geometry_checkpoint)?
+    };
+    run_cooperative_checkpoint(checkpoint)?;
     if !paper_validation.is_valid() {
-        return rejected(
+        return Ok(rejected(
             TopologyIssueSeverity::Fatal,
             TopologyIssueKind::InvalidPaper {
                 issue_count: paper_validation.issues.len(),
             },
-        );
+        ));
     }
 
-    if let Some(edge) = input
-        .pattern
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::Cut)
-        .min_by_key(|edge| edge.id.canonical_bytes())
-    {
-        return rejected(
+    let mut first_cut = None;
+    for (index, edge) in input.pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if edge.kind == EdgeKind::Cut
+            && first_cut.is_none_or(|current: &Edge| {
+                edge.id.canonical_bytes() < current.id.canonical_bytes()
+            })
+        {
+            first_cut = Some(edge);
+        }
+    }
+    if let Some(edge) = first_cut {
+        return Ok(rejected(
             TopologyIssueSeverity::BlocksSimulation,
             TopologyIssueKind::UnsupportedActiveEdge {
                 edge: edge.id,
                 edge_kind: edge.kind,
             },
-        );
+        ));
     }
 
-    let mut fold_edges = input
-        .pattern
-        .edges
-        .iter()
-        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
-        .collect::<Vec<_>>();
-    fold_edges.sort_by_key(|edge| edge.id.canonical_bytes());
-    if !fold_edges.is_empty() {
-        let issue_count = validate_fold_participants(input.pattern);
-        if issue_count != 0 {
-            return rejected(
-                TopologyIssueSeverity::Fatal,
-                TopologyIssueKind::InvalidCreasePattern { issue_count },
-            );
+    let mut fold_edges = Vec::new();
+    for (index, edge) in input.pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley) {
+            fold_edges.push(edge);
         }
     }
+    fold_edges.sort_by_key(|edge| edge.id.canonical_bytes());
+    if !fold_edges.is_empty() {
+        let issue_count = validate_fold_participants(input.pattern, checkpoint)?;
+        if issue_count != 0 {
+            return Ok(rejected(
+                TopologyIssueSeverity::Fatal,
+                TopologyIssueKind::InvalidCreasePattern { issue_count },
+            ));
+        }
+    }
+    run_cooperative_checkpoint(checkpoint)?;
     let extracted = match fold_edges.len() {
         0 => extract_boundary_face(input).map_err(|kind| (TopologyIssueSeverity::Fatal, kind)),
         1 => {
@@ -313,27 +422,32 @@ pub fn analyze_faces(input: FaceExtractionInput<'_>) -> FaceExtractionReport {
             endpoints.sort_by_key(VertexId::canonical_bytes);
             for vertex in endpoints {
                 if !input.paper.boundary_vertices.contains(&vertex) {
-                    return rejected(
+                    return Ok(rejected(
                         TopologyIssueSeverity::BlocksSimulation,
                         TopologyIssueKind::FoldEndpointNotOnBoundary {
                             edge: fold.id,
                             vertex,
                         },
-                    );
+                    ));
                 }
             }
             extract_single_fold_snapshot(input, fold)
         }
-        _ => extract_fold_graph_snapshot(input).map_err(map_fold_graph_error),
+        _ => match extract_fold_graph_snapshot_with_checkpoint(input, checkpoint) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(CooperativeOperationError::Aborted(abort)) => return Err(abort),
+            Err(CooperativeOperationError::Operation(error)) => Err(map_fold_graph_error(error)),
+        },
     };
+    run_cooperative_checkpoint(checkpoint)?;
 
-    match extracted {
+    Ok(match extracted {
         Ok(snapshot) => FaceExtractionReport {
             snapshot: Some(snapshot),
             issues: Vec::new(),
         },
         Err((severity, kind)) => rejected(severity, kind),
-    }
+    })
 }
 
 fn map_fold_graph_error(error: FoldGraphError) -> (TopologyIssueSeverity, TopologyIssueKind) {
@@ -444,35 +558,50 @@ fn rejected(severity: TopologyIssueSeverity, kind: TopologyIssueKind) -> FaceExt
 /// overlap, or reference incomplete draft vertices without changing a face.
 /// Global record-ID uniqueness is checked before this function, so excluding
 /// auxiliary records cannot hide an identity collision.
-fn validate_fold_participants(pattern: &CreasePattern) -> usize {
-    let participant_edges = pattern
-        .edges
-        .iter()
-        .filter(|edge| {
-            matches!(
-                edge.kind,
-                EdgeKind::Boundary | EdgeKind::Mountain | EdgeKind::Valley
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let participant_vertices = participant_edges
-        .iter()
-        .flat_map(|edge| [edge.start, edge.end])
-        .collect::<HashSet<_>>();
-    let vertices = pattern
-        .vertices
-        .iter()
-        .filter(|vertex| participant_vertices.contains(&vertex.id))
-        .cloned()
-        .collect::<Vec<_>>();
+fn validate_fold_participants<F>(
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<usize, CooperativeAnalysisAbort>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let mut participant_edges = Vec::new();
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if matches!(
+            edge.kind,
+            EdgeKind::Boundary | EdgeKind::Mountain | EdgeKind::Valley
+        ) {
+            participant_edges.push(edge.clone());
+        }
+    }
+    let mut participant_vertices = HashSet::new();
+    for (index, edge) in participant_edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        participant_vertices.extend([edge.start, edge.end]);
+    }
+    let mut vertices = Vec::new();
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if participant_vertices.contains(&vertex.id) {
+            vertices.push(vertex.clone());
+        }
+    }
 
-    validate_crease_pattern(&CreasePattern {
-        vertices,
-        edges: participant_edges,
-    })
-    .issues
-    .len()
+    let issue_count = {
+        let mut geometry_checkpoint = || run_cooperative_checkpoint(checkpoint);
+        validate_crease_pattern_with_checkpoint(
+            &CreasePattern {
+                vertices,
+                edges: participant_edges,
+            },
+            &mut geometry_checkpoint,
+        )?
+        .issues
+        .len()
+    };
+    run_cooperative_checkpoint(checkpoint)?;
+    Ok(issue_count)
 }
 
 fn extract_single_fold_snapshot(

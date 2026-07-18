@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 ori-core = { path = "../../../crates/ori-core" }
 ori-domain = { path = "../../../crates/ori-domain" }
+ori-foldability = { path = "../../../crates/ori-foldability" }
 ori-formats = { path = "../../../crates/ori-formats" }
 serde.workspace = true
 serde_json.workspace = true

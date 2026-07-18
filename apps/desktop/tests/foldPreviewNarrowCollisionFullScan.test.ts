@@ -9,6 +9,7 @@ import type {
 import {
   FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
   findFoldPreviewNarrowPhaseInteractions,
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   prepareFoldPreviewNarrowPhase,
@@ -407,6 +408,50 @@ test('resumable full scans preserve synchronous output at every chunk size', () 
     job.cancel()
     assert.strictEqual(job.step(17), terminal)
     assertDeeplyFrozen(terminal)
+  }
+})
+
+test('full scan shares the exact fallback cap and keeps later definitive penetration', () => {
+  const fixture = exactFallbackFixture(
+    MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS + 1,
+    true,
+  )
+  const analyzer = prepareFoldPreviewNarrowPhase(fixture.faces, [])
+  assert.ok(analyzer)
+  const synchronous = analyzer.collectFullScanNonAdjacentWitnessSet(
+    fixture.transforms,
+    THICKNESS,
+  )
+  assert.ok(synchronous)
+  assert.equal(synchronous.kind, 'unavailable')
+  assert.deepEqual(synchronous.exactTransversalProofWork, {
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    skippedByLimit: 1,
+  })
+  assert.equal(synchronous.coverage.indeterminatePairCount, 1)
+  assert.ok(
+    synchronous.coverage.penetratingPairCount
+      > MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    'the post-cap definitive pair remains penetrating',
+  )
+  assert.ok(synchronous.reasons.includes('indeterminate_pair'))
+
+  for (const chunkSize of [1, 17, 10_000]) {
+    const job = analyzer.createFullScanNonAdjacentWitnessSetJob(
+      fixture.transforms,
+      THICKNESS,
+    )
+    assert.ok(job)
+    const terminal = drainFullScanJob(job, chunkSize)
+    assert.equal(terminal.kind, 'complete')
+    assert.deepEqual(terminal.result, synchronous)
+    assert.deepEqual(
+      terminal.exactTransversalProofWork,
+      synchronous.exactTransversalProofWork,
+    )
   }
 })
 
@@ -836,6 +881,10 @@ function drainFullScanJob(
     trianglePairTests: 0,
     witnessDerivations: 0,
   }
+  let previousExact = {
+    attempted: 0,
+    skippedByLimit: 0,
+  }
   for (let index = 0; index < 10_000; index += 1) {
     const step = job.step(workBudget)
     assert.equal(
@@ -849,9 +898,25 @@ function drainFullScanJob(
       step.work.trianglePairTests - previous.trianglePairTests
     const witnessDelta =
       step.work.witnessDerivations - previous.witnessDerivations
+    const exactAttemptDelta =
+      step.exactTransversalProofWork.attempted - previousExact.attempted
+    const exactSkippedDelta =
+      step.exactTransversalProofWork.skippedByLimit
+      - previousExact.skippedByLimit
     assert.ok(totalDelta >= 0 && totalDelta <= workBudget)
     assert.ok(trianglePairDelta >= 0 && trianglePairDelta <= workBudget)
     assert.ok(witnessDelta >= 0 && witnessDelta <= workBudget)
+    assert.ok(exactAttemptDelta >= 0)
+    assert.ok(exactSkippedDelta >= 0)
+    assert.ok(exactAttemptDelta + exactSkippedDelta <= trianglePairDelta)
+    assert.equal(
+      step.exactTransversalProofWork.maximumAttempts,
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    )
+    assert.ok(
+      step.exactTransversalProofWork.attempted
+        <= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    )
     assert.equal(totalDelta, trianglePairDelta + witnessDelta)
     assert.equal(
       step.work.totalWorkUnits,
@@ -872,6 +937,7 @@ function drainFullScanJob(
     if (step.kind !== 'pending') return step
     assert.ok(totalDelta > 0, 'a pending step must make bounded progress')
     previous = step.work
+    previousExact = step.exactTransversalProofWork
   }
   assert.fail('full-scan job did not reach a terminal result')
 }
@@ -887,6 +953,56 @@ function identityTransforms(
   faces: readonly FoldPreviewCollisionPoseFace[],
 ) {
   return new Map(faces.map((current) => [current.id, new Matrix4()]))
+}
+
+function exactFallbackFixture(
+  pairCount: number,
+  appendDefinitivePenetration: boolean,
+) {
+  const polygon = [
+    { x: -2, z: -2 },
+    { x: 2, z: -2 },
+    { x: 0, z: 2 },
+  ] as const
+  const faces: FoldPreviewCollisionPoseFace[] = []
+  const transforms = new Map<string, Matrix4>()
+  const shallowRotation = new Matrix4().makeRotationX(
+    Number.EPSILON * 64,
+  )
+  for (let index = 0; index < pairCount; index += 1) {
+    const prefix = `exact-${String(index).padStart(4, '0')}`
+    const offset = index * 10
+    faces.push(
+      face(`${prefix}-first`, polygon),
+      face(`${prefix}-second`, polygon),
+    )
+    transforms.set(
+      `${prefix}-first`,
+      new Matrix4().makeTranslation(offset, 0, 0),
+    )
+    transforms.set(
+      `${prefix}-second`,
+      new Matrix4()
+        .makeTranslation(offset, 0, 0)
+        .multiply(shallowRotation),
+    )
+  }
+  if (appendDefinitivePenetration) {
+    const offset = (pairCount + 1) * 10
+    faces.push(
+      face('zz-definitive-first', polygon),
+      face('zz-definitive-second', polygon),
+    )
+    transforms.set(
+      'zz-definitive-first',
+      new Matrix4().makeTranslation(offset, 0, 0),
+    )
+    transforms.set(
+      'zz-definitive-second',
+      new Matrix4().makeTranslation(offset, 0, 0),
+    )
+  }
+  return { faces, transforms }
 }
 
 function oneReadIdentityMatrix(label: string): Matrix4 {

@@ -134,7 +134,7 @@ test('apply closes and resets editor state only after success while errors keep 
   const catchBody = sourceSection(confirm, '} catch (error) {', '} finally {')
   const finallyBody = sourceSection(confirm, '} finally {', '\n    }\n  }')
   const applyIndex = tryBody.indexOf('await applyFoldImport(')
-  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot)')
+  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
   const closeIndex = tryBody.indexOf('setFoldImportPreview(null)')
 
   assert.ok(applyIndex >= 0, 'missing FOLD apply call')
@@ -163,7 +163,7 @@ test('apply closes and resets editor state only after success while errors keep 
 test('performance data cannot outlive or obscure a FOLD project replacement', () => {
   const confirm = appFunction('confirmFoldImport', 'toggleBenchmark')
   const tryBody = sourceSection(confirm, 'try {', '} catch (error) {')
-  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot)')
+  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
   const clearBenchmarkIndex = tryBody.indexOf('setBenchmarkRun(null)')
 
   assert.ok(snapshotIndex >= 0, 'missing imported snapshot application')

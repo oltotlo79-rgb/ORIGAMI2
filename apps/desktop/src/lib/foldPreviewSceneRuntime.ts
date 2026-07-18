@@ -68,6 +68,11 @@ export function createFoldPreviewSceneRuntime(
     if (renderer) {
       attemptCleanup(() => renderer?.renderLists.dispose())
       attemptCleanup(() => renderer?.dispose())
+      // `dispose()` releases Three.js resources but intentionally keeps the
+      // browser WebGL context alive. FoldPreview owns this renderer, so losing
+      // the context during teardown prevents repeated project/HMR rebuilds
+      // from exhausting the browser's finite context pool.
+      attemptCleanup(() => renderer?.forceContextLoss())
     }
     attemptCleanup(() => canvas?.remove())
   }
@@ -96,7 +101,7 @@ export function createFoldPreviewSceneRuntime(
     createdRenderer.setSize(initialSize?.width ?? 1, initialSize?.height ?? 1, false)
     createdRenderer.outputColorSpace = THREE.SRGBColorSpace
     createdRenderer.shadowMap.enabled = true
-    createdRenderer.shadowMap.type = THREE.PCFSoftShadowMap
+    createdRenderer.shadowMap.type = THREE.PCFShadowMap
     createdCanvas.setAttribute('aria-hidden', 'true')
     input.host.appendChild(createdCanvas)
 

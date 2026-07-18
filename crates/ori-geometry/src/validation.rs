@@ -11,6 +11,17 @@ use crate::{
 // The smallest binary64 value is 2^-1074, so every coordinate product can be
 // represented as one integer multiple of this shared exponent.
 const EXACT_PRODUCT_EXPONENT: i32 = -2148;
+const COOPERATIVE_VALIDATION_CHECK_INTERVAL: usize = 1_024;
+
+fn poll_validation_checkpoint<F, E>(checkpoint: &mut F, iteration: usize) -> Result<(), E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    if iteration.is_multiple_of(COOPERATIVE_VALIDATION_CHECK_INTERVAL) {
+        checkpoint()?;
+    }
+    Ok(())
+}
 
 /// Identifies which endpoint of an edge references a missing vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +193,27 @@ impl PaperValidation {
 /// counter-clockwise simple polygons are accepted, including concave ones.
 #[must_use]
 pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation {
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match validate_paper_with_checkpoint(paper, pattern, &mut checkpoint) {
+        Ok(validation) => validation,
+        Err(never) => match never {},
+    }
+}
+
+/// Validates paper geometry with cooperative interruption.
+///
+/// The callback is polled at phase boundaries and at least once every 1,024
+/// records in validation loops. Returning an error stops validation without
+/// publishing a partial report.
+pub fn validate_paper_with_checkpoint<F, E>(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<PaperValidation, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint()?;
     let mut issues = Vec::new();
 
     if !paper.thickness_mm.is_finite() {
@@ -203,6 +235,7 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
 
     let mut first_boundary_indices = HashMap::with_capacity(boundary.len());
     for (index, vertex) in boundary.iter().copied().enumerate() {
+        poll_validation_checkpoint(checkpoint, index)?;
         if let Some(first_index) = first_boundary_indices.get(&vertex).copied() {
             issues.push(PaperValidationIssue::DuplicateBoundaryVertex {
                 vertex,
@@ -214,10 +247,11 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
         }
     }
 
-    validate_boundary_edge_topology(boundary, pattern, &mut issues);
+    validate_boundary_edge_topology(boundary, pattern, &mut issues, checkpoint)?;
 
     let mut pattern_vertices = HashMap::with_capacity(pattern.vertices.len());
-    for vertex in &pattern.vertices {
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_validation_checkpoint(checkpoint, index)?;
         // Match crease-pattern validation by resolving duplicate records with
         // the first occurrence, keeping malformed external data deterministic.
         pattern_vertices.entry(vertex.id).or_insert(vertex.position);
@@ -226,6 +260,7 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
     let mut resolved_vertices = Vec::with_capacity(boundary.len());
     let mut all_vertices_resolved = true;
     for (boundary_index, vertex) in boundary.iter().copied().enumerate() {
+        poll_validation_checkpoint(checkpoint, boundary_index)?;
         let Some(position) = pattern_vertices.get(&vertex).copied() else {
             issues.push(PaperValidationIssue::MissingBoundaryVertex {
                 boundary_index,
@@ -252,6 +287,7 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
     let mut resolved_edges = Vec::with_capacity(boundary.len());
     if !boundary.is_empty() {
         for edge_index in 0..boundary.len() {
+            poll_validation_checkpoint(checkpoint, edge_index)?;
             let end_index = (edge_index + 1) % boundary.len();
             let edge = BoundaryEdgeRef {
                 index: edge_index,
@@ -278,9 +314,10 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
         }
     }
 
-    validate_boundary_intersections(&resolved_edges, boundary.len(), &mut issues);
+    validate_boundary_intersections(&resolved_edges, boundary.len(), &mut issues, checkpoint)?;
 
     if boundary.len() >= 3 && all_vertices_resolved {
+        checkpoint()?;
         let positions: Vec<_> = resolved_vertices
             .iter()
             .map(|position| position.expect("all boundary vertices were resolved"))
@@ -302,9 +339,11 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
                 error,
             }),
         }
+        checkpoint()?;
     }
 
-    PaperValidation { issues }
+    checkpoint()?;
+    Ok(PaperValidation { issues })
 }
 
 /// Validates basic topology and segment intersections in a crease pattern.
@@ -315,11 +354,31 @@ pub fn validate_paper(paper: &Paper, pattern: &CreasePattern) -> PaperValidation
 /// two edge records share the same endpoint vertex ID.
 #[must_use]
 pub fn validate_crease_pattern(pattern: &CreasePattern) -> CreasePatternValidation {
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match validate_crease_pattern_with_checkpoint(pattern, &mut checkpoint) {
+        Ok(validation) => validation,
+        Err(never) => match never {},
+    }
+}
+
+/// Validates crease geometry with cooperative interruption.
+///
+/// The callback is polled at phase boundaries and throughout both the sweep
+/// broad phase and its potentially quadratic narrow-phase candidate scan.
+pub fn validate_crease_pattern_with_checkpoint<F, E>(
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<CreasePatternValidation, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint()?;
     let mut issues = Vec::new();
     let mut vertices = HashMap::with_capacity(pattern.vertices.len());
     let mut positions = HashMap::with_capacity(pattern.vertices.len());
 
-    for vertex in &pattern.vertices {
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_validation_checkpoint(checkpoint, index)?;
         // Keep the first record for a repeated ID so endpoint resolution remains
         // deterministic even for malformed external data.
         vertices.entry(vertex.id).or_insert(vertex.position);
@@ -346,6 +405,7 @@ pub fn validate_crease_pattern(pattern: &CreasePattern) -> CreasePatternValidati
 
     let mut resolved_edges = Vec::with_capacity(pattern.edges.len());
     for (index, edge) in pattern.edges.iter().enumerate() {
+        poll_validation_checkpoint(checkpoint, index)?;
         let start = vertices.get(&edge.start).copied();
         let end = vertices.get(&edge.end).copied();
 
@@ -388,8 +448,9 @@ pub fn validate_crease_pattern(pattern: &CreasePattern) -> CreasePatternValidati
         });
     }
 
-    validate_intersections(&resolved_edges, &mut issues);
-    CreasePatternValidation { issues }
+    validate_intersections(&resolved_edges, &mut issues, checkpoint)?;
+    checkpoint()?;
+    Ok(CreasePatternValidation { issues })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -435,7 +496,14 @@ impl Bounds {
     }
 }
 
-fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIssue>) {
+fn validate_intersections<F, E>(
+    edges: &[ResolvedEdge],
+    issues: &mut Vec<ValidationIssue>,
+    checkpoint: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
     // Sweep on the x-axis as a broad phase. This avoids testing every pair for
     // ordinary sparse diagrams while retaining exact narrow-phase semantics.
     let mut by_min_x: Vec<_> = (0..edges.len()).collect();
@@ -450,11 +518,16 @@ fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIss
                     .cmp(&edges[*right].original_index)
             })
     });
+    checkpoint()?;
 
     let mut found = Vec::new();
     for (position, left_index) in by_min_x.iter().copied().enumerate() {
+        poll_validation_checkpoint(checkpoint, position)?;
         let left = edges[left_index];
-        for right_index in by_min_x.iter().copied().skip(position + 1) {
+        for (candidate_index, right_index) in
+            by_min_x.iter().copied().skip(position + 1).enumerate()
+        {
+            poll_validation_checkpoint(checkpoint, candidate_index)?;
             let right = edges[right_index];
             if right.bounds.min_x > left.bounds.max_x {
                 break;
@@ -493,8 +566,11 @@ fn validate_intersections(edges: &[ResolvedEdge], issues: &mut Vec<ValidationIss
         }
     }
 
+    checkpoint()?;
     found.sort_unstable_by_key(|(first, second, _)| (*first, *second));
     issues.extend(found.into_iter().map(|(_, _, issue)| issue));
+    checkpoint()?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -503,11 +579,15 @@ struct BoundaryEdgeGroup {
     actual: Vec<EdgeId>,
 }
 
-fn validate_boundary_edge_topology(
+fn validate_boundary_edge_topology<F, E>(
     boundary: &[VertexId],
     pattern: &CreasePattern,
     issues: &mut Vec<PaperValidationIssue>,
-) {
+    checkpoint: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
     // Both directions point to one group, allowing undirected lookup without
     // requiring an ordering operation on opaque entity IDs. Group and record
     // vectors retain source order for deterministic multiset diagnostics.
@@ -516,6 +596,7 @@ fn validate_boundary_edge_topology(
     let mut groups: Vec<BoundaryEdgeGroup> = Vec::with_capacity(boundary.len());
     if !boundary.is_empty() {
         for index in 0..boundary.len() {
+            poll_validation_checkpoint(checkpoint, index)?;
             let boundary_edge = BoundaryEdgeRef {
                 index,
                 start: boundary[index],
@@ -540,11 +621,11 @@ fn validate_boundary_edge_topology(
     }
 
     let mut unexpected = Vec::new();
-    for edge in pattern
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::Boundary)
-    {
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        poll_validation_checkpoint(checkpoint, index)?;
+        if edge.kind != EdgeKind::Boundary {
+            continue;
+        }
         if let Some(group_index) = group_by_direction.get(&(edge.start, edge.end)).copied() {
             groups[group_index].actual.push(edge.id);
         } else {
@@ -556,7 +637,8 @@ fn validate_boundary_edge_topology(
         }
     }
 
-    for group in groups {
+    for (index, group) in groups.into_iter().enumerate() {
+        poll_validation_checkpoint(checkpoint, index)?;
         if group.actual.len() < group.expected.len() {
             issues.extend(
                 group
@@ -581,6 +663,8 @@ fn validate_boundary_edge_topology(
         }
     }
     issues.extend(unexpected);
+    checkpoint()?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -591,11 +675,15 @@ struct ResolvedBoundaryEdge {
     bounds: Bounds,
 }
 
-fn validate_boundary_intersections(
+fn validate_boundary_intersections<F, E>(
     edges: &[ResolvedBoundaryEdge],
     boundary_length: usize,
     issues: &mut Vec<PaperValidationIssue>,
-) {
+    checkpoint: &mut F,
+) -> Result<(), E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
     let mut by_min_x: Vec<_> = (0..edges.len()).collect();
     by_min_x.sort_unstable_by(|left, right| {
         edges[*left]
@@ -605,11 +693,16 @@ fn validate_boundary_intersections(
             .then_with(|| edges[*left].edge.index.cmp(&edges[*right].edge.index))
             .then_with(|| left.cmp(right))
     });
+    checkpoint()?;
 
     let mut found = Vec::new();
     for (position, left_index) in by_min_x.iter().copied().enumerate() {
+        poll_validation_checkpoint(checkpoint, position)?;
         let left = edges[left_index];
-        for right_index in by_min_x.iter().copied().skip(position + 1) {
+        for (candidate_index, right_index) in
+            by_min_x.iter().copied().skip(position + 1).enumerate()
+        {
+            poll_validation_checkpoint(checkpoint, candidate_index)?;
             let right = edges[right_index];
             if right.bounds.min_x > left.bounds.max_x {
                 break;
@@ -650,8 +743,11 @@ fn validate_boundary_intersections(
         }
     }
 
+    checkpoint()?;
     found.sort_unstable_by_key(|(first, second, _)| (*first, *second));
     issues.extend(found.into_iter().map(|(_, _, issue)| issue));
+    checkpoint()?;
+    Ok(())
 }
 
 fn boundary_edges_are_adjacent(first: usize, second: usize, boundary_length: usize) -> bool {
@@ -1720,8 +1816,10 @@ mod tests {
             },
         ];
         let mut issues = Vec::new();
+        let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
 
-        validate_boundary_intersections(&resolved, 8, &mut issues);
+        validate_boundary_intersections(&resolved, 8, &mut issues, &mut checkpoint)
+            .expect("no-op checkpoint");
 
         assert!(matches!(
             issues.as_slice(),
@@ -1738,6 +1836,40 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    #[test]
+    fn cooperative_intersection_scan_aborts_inside_dense_candidate_loop() {
+        let edges = (0..256)
+            .map(|index| {
+                let start = Point2::new(0.0, index as f64);
+                let end = Point2::new(1.0, index as f64);
+                ResolvedEdge {
+                    original_index: index,
+                    id: EdgeId::new(),
+                    start_id: VertexId::new(),
+                    end_id: VertexId::new(),
+                    start,
+                    end,
+                    bounds: Bounds::from_points(start, end),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut issues = Vec::new();
+        let mut checkpoint_calls = 0;
+
+        let result = validate_intersections(&edges, &mut issues, &mut || {
+            checkpoint_calls += 1;
+            if checkpoint_calls >= 3 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(result, Err("cancelled"));
+        assert_eq!(checkpoint_calls, 3);
+        assert!(issues.is_empty());
     }
 
     #[test]

@@ -202,11 +202,10 @@ manifest.json
 pages/page-0001.svg
 pages/page-0002.svg
 ...
-fonts/NotoSansJP-Variable.ttf
 licenses/NotoSansJP-OFL.txt
 ```
 
-`manifest.json`はUTF-8のcanonical JSONとし、schema ID `origami2.instruction-svg-pages.v1`、profile、projection profile、page数、step数、各pageのfile名・step index・step開始/continuation種別、continuation番号、固定assetのSHA-256を含める。projectの保存path、端末情報、生成日時、stage IDは含めない。
+`manifest.json`はUTF-8のcanonical JSONとし、schema ID `origami2.instruction-svg-pages.v2`、profile、projection profile、page数、step数、各pageのfile名・step index・step開始/continuation種別、continuation番号、`font.rendering = "glyph_outlines"`、outline生成に使ったfont sourceのSHA-256、license pathとSHA-256を含める。projectの保存path、端末情報、生成日時、stage IDは含めない。旧v1はfont fileをZIPへ同梱するarchive構造であり、fontを参照しないoutline-only構造へ変更したv2と同一schemaとして扱わない。
 
 - entry名はASCIIの固定名だけとし、絶対path、drive prefix、`..`、backslash、NUL、重複名を許さない。
 - entry順、CRC、圧縮方式、圧縮level、extra field、外部属性、commentを固定する。
@@ -219,8 +218,7 @@ licenses/NotoSansJP-OFL.txt
 
 - `script`、event handler、animation、`foreignObject`、外部URL、network参照、外部画像、再帰参照を含めない。
 - textとattributeをcontextに応じてescapeし、利用者文字列をmarkupとして解釈しない。
-- fontは`../fonts/NotoSansJP-Variable.ttf`だけを相対参照し、OS fontやnetwork fallbackを指定しない。
-- text runはcanonical planで改行・開始位置・font sizeを固定し、SVG側の自動折返しを使わない。kerningを無効にし、PDFと同じadvance前提を使用する。
+- text runはcanonical planで改行・開始位置・font sizeを固定し、すべての文字をfontから得た`path` outlineとして配置する。`text`、`@font-face`、font URL、OS font、network fallback、SVG側の自動折返しを使用せず、PDFと同じadvance前提を使用する。
 - page間参照を作らず、各pageの図形内容を自己完結させる。
 - canonical element順、attribute順、数値書式、改行、UTF-8 encodingを使用する。
 
@@ -239,7 +237,7 @@ ZIPは「複数SVG pageを一つに配布するcontainer」であり、IO-003の
 | license | SIL Open Font License 1.1 |
 | license SHA-256 | `1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9` |
 
-source記録は`crates/ori-formats/assets/fonts/FONT-SOURCE.md`、license全文は`NotoSansJP-OFL.txt`を正本とする。application packageにはfontとlicenseを同梱する。PDFはglyph outlineへ変換し、SVG ZIPはfont fileとlicense全文を含める。
+source記録は`crates/ori-formats/assets/fonts/FONT-SOURCE.md`、license全文は`NotoSansJP-OFL.txt`を正本とする。application packageにはoutline生成に必要なfontとlicenseを同梱する。PDFとSVGはいずれもglyph outlineへ変換し、SVG ZIPには重複するfont fileを入れず、license全文とfont sourceのSHA-256を含める。
 
 必要なUnicode scalarをfontのglyphへ決定論的に割り当てられない場合は、replacement character、豆腐glyph、system fallbackで代替せず、書き出し全体を`unsupported_glyph`として拒否する。禁止制御文字、未paired surrogateに相当する不正入力、非正規な内部文字列も生成前に拒否する。
 
@@ -305,11 +303,11 @@ WebViewへ返してよいものは、opaque export ID、期待project ID・revis
 1. 利用者が選んだ最終fileと同じdirectoryに、application所有のcreate-new一時fileを作る。
 2. stageしたexact bytesを書き、fileをflush・syncする。
 3. 同じhandleから再読込し、長さとbytesがstage内容に一致することを確認する。
-4. Windowsではhandleを基準とする置換、POSIXでは同一filesystem上のrenameを行う。
-5. 対応platformでは親directoryもsyncする。
+4. OS dialogで正しい拡張子の保存先が確認済みなら、Windowsではhandleを基準とする置換、POSIXでは同一filesystem上のrenameを行う。拡張子を補正した保存先はatomic create-newへ固定し、Windowsでは`ReplaceIfExists = false`、POSIXでは同一directoryのstageから排他的なhard linkを作成してstage名を外す。
+5. POSIXではpublish前に親directoryをopen・syncする。publish後もbest effortでsyncするが、見える出力先が既に変わった後のdurability failureを通常の保存失敗として返さない。
 6. 成功時だけstageを一度消費する。
 
-失敗時はapplicationが作った一時fileだけをRAIIで削除し、既存の出力先を変更しない。保存失敗ではstageを保持して再試行を許す。errorは固定categoryとし、raw path、OS user名、file内容をWebViewや標準logへ露出しない。
+失敗時はapplicationが作った一時fileだけをRAIIで削除し、既存の出力先を変更しない。特に拡張子補正の事前確認後にfile、directory、symlinkが補正先を占有した場合も原子的に拒否する。保存失敗では生成stageを保持して再試行を許す。errorは固定categoryとし、raw path、OS user名、file内容をWebViewや標準logへ露出しない。
 
 ## 12. warningと保証しない事項
 
@@ -360,7 +358,8 @@ WebViewへ返してよいものは、opaque export ID、期待project ID・revis
 
 - entry名、順序、固定timestamp、重複なし、path traversalなし、manifest mapping、CRCを検証する。
 - 各SVGをXML parserで読み、A4寸法、固定`viewBox`、well-formed、script/event/`foreignObject`/外部URLなしを検証する。
-- fontとOFL全文が存在し、第8章のSHA-256と一致する。
+- 各文字が`path` outlineであり、`text`、`@font-face`、font URL、font file entryが存在しないことを検証する。
+- OFL全文が存在し、manifestのfont source SHA-256とlicense SHA-256が第8章の固定値と一致する。
 - networkを遮断しsystem fontを無効化した環境でpageをrenderできる。
 - archiveの展開時に指定directory外へfileを作れない。
 

@@ -9,6 +9,10 @@ import type {
 import { makeFoldPreviewCanonicalAxisRotation } from '../src/lib/foldPreviewCanonicalRotation.ts'
 import type { FoldPreviewHingeContactConstraint } from '../src/lib/foldPreviewHingeCollision.ts'
 import {
+  calculateFoldTreePoseWithAngles,
+  type FoldPreviewTreeKinematics,
+} from '../src/lib/foldPreviewKinematics.ts'
+import {
   findFoldPreviewNarrowPhaseInteractions,
   prepareFoldPreviewNarrowPhase,
 } from '../src/lib/foldPreviewNarrowCollision.ts'
@@ -145,6 +149,127 @@ readonly FoldPreviewHingeContactConstraint[] = [
   },
 ]
 
+const midpointM = {
+  vertexId: 'midpoint-m',
+  x: 200,
+  z: 0,
+} as const
+const midpointTopLeft = {
+  vertexId: 'midpoint-top-left',
+  x: 0,
+  z: 400,
+} as const
+const midpointTopRight = {
+  vertexId: 'midpoint-top-right',
+  x: 400,
+  z: 400,
+} as const
+const reportedMidpointVFaces:
+readonly FoldPreviewCollisionPoseFace[] = [
+  {
+    id: 'midpoint-left',
+    polygon: [
+      midpointM,
+      { vertexId: 'midpoint-bottom-left', x: 0, z: 0 },
+      midpointTopLeft,
+    ],
+  },
+  {
+    id: 'midpoint-middle',
+    polygon: [midpointM, midpointTopLeft, midpointTopRight],
+  },
+  {
+    id: 'midpoint-right',
+    polygon: [
+      midpointM,
+      midpointTopRight,
+      { vertexId: 'midpoint-bottom-right', x: 400, z: 0 },
+    ],
+  },
+]
+const reportedMidpointVAdjacencies:
+readonly FoldPreviewCollisionAdjacency[] = [
+  {
+    edgeId: 'midpoint-left-hinge',
+    firstFaceId: 'midpoint-left',
+    secondFaceId: 'midpoint-middle',
+  },
+  {
+    edgeId: 'midpoint-right-hinge',
+    firstFaceId: 'midpoint-middle',
+    secondFaceId: 'midpoint-right',
+  },
+]
+const reportedMidpointVConstraints:
+readonly FoldPreviewHingeContactConstraint[] = [
+  {
+    edgeId: 'midpoint-left-hinge',
+    leftFaceId: 'midpoint-left',
+    rightFaceId: 'midpoint-middle',
+    start: midpointM,
+    end: midpointTopLeft,
+    thicknessRule: 'centered_mid_surface_v1',
+  },
+  {
+    edgeId: 'midpoint-right-hinge',
+    leftFaceId: 'midpoint-middle',
+    rightFaceId: 'midpoint-right',
+    start: midpointM,
+    end: midpointTopRight,
+    thicknessRule: 'centered_mid_surface_v1',
+  },
+]
+const midpointLeftAxisLength = Math.hypot(
+  midpointTopLeft.x - midpointM.x,
+  midpointTopLeft.z - midpointM.z,
+)
+const midpointRightAxisLength = Math.hypot(
+  midpointTopRight.x - midpointM.x,
+  midpointTopRight.z - midpointM.z,
+)
+const reportedMidpointMountainTree: FoldPreviewTreeKinematics = {
+  kind: 'tree',
+  rootFaceId: 'midpoint-middle',
+  joints: [
+    {
+      parentFaceId: 'midpoint-middle',
+      childFaceId: 'midpoint-left',
+      childRotationSign: -1,
+      hinge: {
+        edgeId: 'midpoint-left-hinge',
+        leftFaceId: 'midpoint-left',
+        rightFaceId: 'midpoint-middle',
+        start: midpointM,
+        end: midpointTopLeft,
+        axis: {
+          x: (midpointTopLeft.x - midpointM.x) / midpointLeftAxisLength,
+          z: (midpointTopLeft.z - midpointM.z) / midpointLeftAxisLength,
+        },
+        assignment: 'mountain',
+        rotationSign: 1,
+      },
+    },
+    {
+      parentFaceId: 'midpoint-middle',
+      childFaceId: 'midpoint-right',
+      childRotationSign: 1,
+      hinge: {
+        edgeId: 'midpoint-right-hinge',
+        leftFaceId: 'midpoint-middle',
+        rightFaceId: 'midpoint-right',
+        start: midpointM,
+        end: midpointTopRight,
+        axis: {
+          x: (midpointTopRight.x - midpointM.x) / midpointRightAxisLength,
+          z: (midpointTopRight.z - midpointM.z) / midpointRightAxisLength,
+        },
+        assignment: 'mountain',
+        rotationSign: 1,
+      },
+    },
+  ],
+}
+
 test('reported A: a zero-thickness 10 degree V fold keeps non-adjacent shared-vertex contact out of penetration', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     reportedVFoldFaces,
@@ -187,6 +312,122 @@ test('reported B: fully overlapping zero-thickness faces at 180 degrees remain p
   assert.ok(outerFaces)
   assert.equal(outerFaces.relation, 'non_adjacent')
   assert.equal(outerFaces.geometryClass, 'penetrating')
+})
+
+test('reported midpoint mountain-mountain V has an explicit 3 by 3 diagnostic snapshot', () => {
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    reportedMidpointVFaces,
+    reportedMidpointVAdjacencies,
+    reportedMidpointVConstraints,
+  )
+  assert.ok(analyzer)
+
+  for (const thickness of [0, 0.1, 3]) {
+    for (const degrees of [90, 135, 179]) {
+      const pose = calculateFoldTreePoseWithAngles(
+        reportedMidpointMountainTree,
+        {
+          kind: 'per_hinge',
+          angles: [
+            {
+              edgeId: 'midpoint-left-hinge',
+              angleDegrees: degrees,
+            },
+            {
+              edgeId: 'midpoint-right-hinge',
+              angleDegrees: degrees,
+            },
+          ],
+        },
+      )
+      assert.ok(pose)
+      const result = analyzer.analyze(pose.faceTransforms, thickness)
+      assert.ok(result)
+      const outerFaces = result.interactions.find((interaction) =>
+        interaction.firstFaceId === 'midpoint-left'
+        && interaction.secondFaceId === 'midpoint-right')
+      assert.ok(
+        outerFaces,
+        `outer pair must remain a candidate for ${thickness}:${degrees}`,
+      )
+      assert.equal(
+        outerFaces.geometryClass,
+        thickness === 0 && degrees === 90 ? 'touching' : 'penetrating',
+        `${thickness} mm at ${degrees} degrees`,
+      )
+      const presentation = summarizeFoldPreviewCollision(result)
+      assert.equal(presentation.indeterminateInteractions, 0)
+      assert.equal(
+        presentation.nonAdjacentPenetrations,
+        thickness === 0 && degrees === 90 ? 0 : 1,
+      )
+      assert.equal(
+        presentation.nonAdjacentContacts,
+        thickness === 0 && degrees === 90 ? 1 : 0,
+      )
+    }
+  }
+})
+
+test('exact binary64 transversal proof precedes near-parallel indeterminate fallback', () => {
+  const firstPolygon = [
+    { vertexId: 'exact-first-a', x: -2, z: -2 },
+    { vertexId: 'exact-first-b', x: 2, z: -2 },
+    { vertexId: 'exact-first-c', x: 0, z: 2 },
+  ] as const
+  const secondPolygon = [
+    { vertexId: 'exact-second-a', x: -2, z: -2 },
+    { vertexId: 'exact-second-b', x: 2, z: -2 },
+    { vertexId: 'exact-second-c', x: 0, z: 2 },
+  ] as const
+  const analyzer = prepareFoldPreviewNarrowPhase([
+    { id: 'exact-first', polygon: firstPolygon },
+    { id: 'exact-second', polygon: secondPolygon },
+  ], [])
+  assert.ok(analyzer)
+  const shallowTransversal = makeFoldPreviewCanonicalAxisRotation(
+    new Vector3(1, 0, 0),
+    Number.EPSILON * 64,
+  )
+  assert.ok(shallowTransversal)
+
+  for (const thickness of [0, 0.1, 3]) {
+    const result = analyzer.analyze(new Map([
+      ['exact-first', new Matrix4()],
+      ['exact-second', shallowTransversal],
+    ]), thickness)
+    assert.ok(result)
+    assert.equal(result.interactions.length, 1)
+    assert.equal(
+      result.interactions[0]?.geometryClass,
+      'penetrating',
+      `${thickness} mm`,
+    )
+  }
+})
+
+test('exact transversal proof outranks a sub-margin positive-thickness contact label', () => {
+  const polygon = [
+    { x: -2, z: -2 },
+    { x: 2, z: -2 },
+    { x: 0, z: 2 },
+  ] as const
+  const analyzer = prepareFoldPreviewNarrowPhase([
+    { id: 'sub-margin-first', polygon },
+    { id: 'sub-margin-second', polygon },
+  ], [])
+  assert.ok(analyzer)
+  const crossing = makeFoldPreviewCanonicalAxisRotation(
+    new Vector3(1, 0, 0),
+    Math.PI / 4,
+  )
+  assert.ok(crossing)
+  const result = analyzer.analyze(new Map([
+    ['sub-margin-first', new Matrix4()],
+    ['sub-margin-second', crossing],
+  ]), 1e-14)
+  assert.ok(result)
+  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
 })
 
 test('reported A/B remain correct through the UI summary on a non-origin 400 mm square', () => {
@@ -676,7 +917,7 @@ test('parallel surfaces with a positive sub-margin gap are not promoted to copla
   assert.equal(result.interactions[0]?.geometryClass, 'indeterminate')
 })
 
-test('non-coplanar surface crossings supported only by sub-margin plane distances fail closed', () => {
+test('exact transversal proof resolves crossings hidden inside the floating margin', () => {
   const triangle = [
     { x: -1, z: -1 },
     { x: 1, z: -1 },
@@ -696,10 +937,10 @@ test('non-coplanar surface crossings supported only by sub-margin plane distance
     ['nearly-flat-b', transform],
   ]), 0)
   assert.ok(result)
-  assert.equal(result.interactions[0]?.geometryClass, 'indeterminate')
+  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
 })
 
-test('a positive line overlap collapsed by point de-duplication stays indeterminate', () => {
+test('exact proof recovers a positive line overlap collapsed by point de-duplication', () => {
   const delta = 5e-14
   const analyzer = prepareFoldPreviewNarrowPhase([
     {
@@ -730,7 +971,7 @@ test('a positive line overlap collapsed by point de-duplication stays indetermin
     ['short-section-b', exactQuarterTurn],
   ]), 0)
   assert.ok(result)
-  assert.equal(result.interactions[0]?.geometryClass, 'indeterminate')
+  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
 })
 
 test('common-origin projection preserves large translations and fails closed after precision is exhausted', () => {

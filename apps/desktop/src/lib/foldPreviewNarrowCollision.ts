@@ -25,8 +25,16 @@ import {
   type FoldPreviewTrianglePrismWitness,
   type FoldPreviewWitnessFrame,
 } from './foldPreviewNarrowCollisionWitness.ts'
+import {
+  provesFoldPreviewBinary64TransversalTriangleIntersection,
+} from './foldPreviewExactTriangleIntersection.ts'
 
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS = 1_000_000
+/**
+ * Maximum BigInt binary64 transversal-intersection proofs per immutable pose
+ * analysis. Proof requests beyond this cap fail closed as indeterminate.
+ */
+export const MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS = 256
 /** Bounds synchronous deep-copy and triangulation during preview setup. */
 export const MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES = 100_000
 /** Bounds explanatory derivation work independently of collision classification. */
@@ -41,6 +49,16 @@ const MAX_FOLD_PREVIEW_FULL_SCAN_JOB_WORK_UNITS =
 const MAX_FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_WORK_UNITS =
   MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
   + MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES
+
+export type FoldPreviewExactTransversalProofWork = Readonly<{
+  algorithm: 'binary64_transversal_triangle_intersection_v1'
+  maximumAttempts:
+    typeof MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+  /** Proof helpers actually entered; this never exceeds maximumAttempts. */
+  attempted: number
+  /** Requests left unproved after the cap; every such pair is indeterminate. */
+  skippedByLimit: number
+}>
 
 /**
  * Returns the exact SAT/hinge-policy margin for an upper bound on all absolute
@@ -141,6 +159,7 @@ type FoldPreviewFullScanNonAdjacentWitnessBase = Readonly<{
   requestIdentityBound: false
   collisionThickness: number
   numericalMargin: number
+  exactTransversalProofWork: FoldPreviewExactTransversalProofWork
   /**
    * This is diagnostic geometry only. It is not a legal origami movement and
    * must be rebound to an immutable pose before any later verification.
@@ -197,6 +216,7 @@ export type FoldPreviewFullScanNonAdjacentWitnessJobStep =
       phase: 'triangle_pair_scan' | 'witness_derivation'
       work: FoldPreviewFullScanNonAdjacentWitnessJobWork
       workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
   | Readonly<{
       version:
@@ -205,6 +225,7 @@ export type FoldPreviewFullScanNonAdjacentWitnessJobStep =
       result: FoldPreviewFullScanNonAdjacentWitnessSet
       work: FoldPreviewFullScanNonAdjacentWitnessJobWork
       workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
   | Readonly<{
       version:
@@ -216,6 +237,7 @@ export type FoldPreviewFullScanNonAdjacentWitnessJobStep =
         | 'work_accounting_error'
       work: FoldPreviewFullScanNonAdjacentWitnessJobWork
       workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
   | Readonly<{
       version:
@@ -223,6 +245,7 @@ export type FoldPreviewFullScanNonAdjacentWitnessJobStep =
       kind: 'cancelled'
       work: FoldPreviewFullScanNonAdjacentWitnessJobWork
       workBounds: FoldPreviewFullScanNonAdjacentWitnessJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
 
 export type FoldPreviewFullScanNonAdjacentWitnessJob = Readonly<{
@@ -250,6 +273,7 @@ export type FoldPreviewNarrowPhaseResult = Readonly<{
   trianglePairTests: number
   satTests: number
   numericalMargin: number
+  exactTransversalProofWork: FoldPreviewExactTransversalProofWork
   witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
   witnessCoverage: FoldPreviewNarrowPhaseWitnessCoverage
 }>
@@ -295,6 +319,7 @@ export type FoldPreviewNarrowPhaseAnalysisJobStep =
       phase: 'triangle_pair_scan' | 'witness_derivation'
       work: FoldPreviewNarrowPhaseAnalysisJobWork
       workBounds: FoldPreviewNarrowPhaseAnalysisJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
   | Readonly<{
       version: typeof FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION
@@ -302,6 +327,7 @@ export type FoldPreviewNarrowPhaseAnalysisJobStep =
       result: FoldPreviewNarrowPhaseResult
       work: FoldPreviewNarrowPhaseAnalysisJobWork
       workBounds: FoldPreviewNarrowPhaseAnalysisJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
   | Readonly<{
       version: typeof FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION
@@ -313,12 +339,14 @@ export type FoldPreviewNarrowPhaseAnalysisJobStep =
         | 'work_accounting_error'
       work: FoldPreviewNarrowPhaseAnalysisJobWork
       workBounds: FoldPreviewNarrowPhaseAnalysisJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
   | Readonly<{
       version: typeof FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION
       kind: 'cancelled'
       work: FoldPreviewNarrowPhaseAnalysisJobWork
       workBounds: FoldPreviewNarrowPhaseAnalysisJobWorkBounds
+      exactTransversalProofWork: FoldPreviewExactTransversalProofWork
     }>
 
 export type FoldPreviewNarrowPhaseAnalysisJob = Readonly<{
@@ -418,6 +446,16 @@ type TrianglePrism = Readonly<{
 
 type PrismIntersection = 'separated' | 'touching' | 'penetrating' | 'indeterminate'
 
+type FoldPreviewExactTransversalProofBudget = {
+  attempted: number
+  skippedByLimit: number
+}
+
+type FoldPreviewExactTransversalProofDecision =
+  | 'proved'
+  | 'not_proved'
+  | 'budget_exhausted'
+
 type WitnessPairSeed = Readonly<{
   first: TrianglePrism
   second: TrianglePrism
@@ -458,6 +496,66 @@ type FullScanNonAdjacentWitnessCounts = Readonly<{
   indeterminatePairCount: number
 }>
 
+function createFoldPreviewExactTransversalProofBudget():
+  FoldPreviewExactTransversalProofBudget {
+  return {
+    attempted: 0,
+    skippedByLimit: 0,
+  }
+}
+
+function snapshotFoldPreviewExactTransversalProofWork(
+  budget: FoldPreviewExactTransversalProofBudget,
+): FoldPreviewExactTransversalProofWork {
+  return Object.freeze({
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: budget.attempted,
+    skippedByLimit: budget.skippedByLimit,
+  })
+}
+
+function sameFoldPreviewExactTransversalProofWork(
+  first: FoldPreviewExactTransversalProofWork,
+  second: FoldPreviewExactTransversalProofWork,
+) {
+  return first.algorithm === second.algorithm
+    && first.maximumAttempts === second.maximumAttempts
+    && first.attempted === second.attempted
+    && first.skippedByLimit === second.skippedByLimit
+}
+
+function validFoldPreviewExactTransversalProofWork(
+  value: FoldPreviewExactTransversalProofWork,
+) {
+  return value.algorithm
+      === 'binary64_transversal_triangle_intersection_v1'
+    && value.maximumAttempts
+      === MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && Number.isSafeInteger(value.attempted)
+    && value.attempted >= 0
+    && value.attempted
+      <= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && Number.isSafeInteger(value.skippedByLimit)
+    && value.skippedByLimit >= 0
+    && value.skippedByLimit
+      <= MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS
+}
+
+function exactProofLimitHingeDecision(
+  hingeEdgeIds: readonly string[],
+): FoldPreviewHingeContactDecision {
+  return Object.freeze({
+    kind: 'indeterminate',
+    hingeEdgeIds: Object.freeze([...hingeEdgeIds]),
+    // The exact-work snapshot carries the dedicated limit diagnosis. Reuse
+    // the existing closed hinge reason so every current continuous-motion
+    // consumer keeps treating this as a blocking numerical uncertainty.
+    reason: 'numerical_geometry',
+  })
+}
+
 /**
  * Refines conservative face AABBs with SAT tests between triangulated paper
  * prisms. The output is still geometric, not an origami legality decision:
@@ -472,20 +570,21 @@ export function findFoldPreviewNarrowPhaseInteractions(
   adjacencies: readonly FoldPreviewCollisionAdjacency[],
 ): FoldPreviewNarrowPhaseResult | null {
   try {
-    const broadPhase = findFoldPreviewPoseBroadPhaseCandidates(
+    const transformSnapshot = snapshotRigidFaceTransforms(
       faces,
       faceTransforms,
+    )
+    if (!transformSnapshot) return null
+    const broadPhase = findFoldPreviewPoseBroadPhaseCandidates(
+      faces,
+      transformSnapshot,
       thickness,
       adjacencies,
     )
     if (!broadPhase) return null
-    for (const face of faces) {
-      const transform = faceTransforms.get(face.id)
-      if (!transform || !rigidTransform(transform)) return null
-    }
     return refineFoldPreviewNarrowPhase(
       faces,
-      faceTransforms,
+      transformSnapshot,
       thickness,
       broadPhase,
       null,
@@ -719,6 +818,8 @@ function refineFoldPreviewNarrowPhase(
   let unavailableWitnessPairCount = 0
   let performedNonAdjacentSatScan = false
   let nonAdjacentPairScansComplete = true
+  const exactTransversalProofBudget =
+    createFoldPreviewExactTransversalProofBudget()
 
   try {
     const prismsForFace = (faceId: string) => {
@@ -745,6 +846,7 @@ function refineFoldPreviewNarrowPhase(
       let touchingWitnessPairCount = 0
       let penetratingWitnessPairCount = 0
       let candidateTrianglePairTests = 0
+      let candidateExactProofSkippedByLimit = false
       pairSearch:
       for (const first of firstPrisms) {
         for (const second of secondPrisms) {
@@ -756,7 +858,18 @@ function refineFoldPreviewNarrowPhase(
           if (candidate.relation === 'non_adjacent') {
             performedNonAdjacentSatScan = true
           }
-          const intersection = classifyTrianglePrisms(first, second, numericalMargin)
+          const skippedBefore =
+            exactTransversalProofBudget.skippedByLimit
+          const intersection = classifyTrianglePrisms(
+            first,
+            second,
+            numericalMargin,
+            exactTransversalProofBudget,
+          )
+          if (
+            exactTransversalProofBudget.skippedByLimit
+              > skippedBefore
+          ) candidateExactProofSkippedByLimit = true
           if (!intersection) return null
           if (intersection === 'separated') continue
           if (candidate.relation === 'non_adjacent') {
@@ -853,16 +966,18 @@ function refineFoldPreviewNarrowPhase(
           geometryClass,
         }
         if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
-          const hingeDecision = hingeContactPolicy.classify({
-            firstFaceId: candidate.firstFaceId,
-            secondFaceId: candidate.secondFaceId,
-            hingeEdgeIds: candidate.hingeEdgeIds,
-            faceTransforms,
-            thickness,
-            numericalMargin,
-            testedTrianglePairs: candidateTrianglePairTests,
-            pairs: hingePairs,
-          })
+          const hingeDecision = candidateExactProofSkippedByLimit
+            ? exactProofLimitHingeDecision(candidate.hingeEdgeIds)
+            : hingeContactPolicy.classify({
+                firstFaceId: candidate.firstFaceId,
+                secondFaceId: candidate.secondFaceId,
+                hingeEdgeIds: candidate.hingeEdgeIds,
+                faceTransforms,
+                thickness,
+                numericalMargin,
+                testedTrianglePairs: candidateTrianglePairTests,
+                pairs: hingePairs,
+              })
           interaction = {
             ...interaction,
             geometryClass: hingeDecision.kind === 'allowed_by_hinge_model'
@@ -926,6 +1041,10 @@ function refineFoldPreviewNarrowPhase(
     trianglePairTests,
     satTests,
     numericalMargin,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
     witnessSamples: Object.freeze(witnessSamples),
     witnessCoverage: freezeWitnessCoverage({
       eligiblePairCount: eligibleWitnessPairCount,
@@ -1026,6 +1145,8 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       maximumWitnessDerivations,
       maximumTotalWorkUnits,
     })
+  const exactTransversalProofBudget =
+    createFoldPreviewExactTransversalProofBudget()
 
   let candidateIndex = 0
   let firstTriangleIndex = 0
@@ -1051,6 +1172,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
   let penetratingWitnessSeeds: WitnessPairSeed[] = []
   let touchingWitnessPairCount = 0
   let penetratingWitnessPairCount = 0
+  let candidateExactProofSkippedByLimit = false
 
   let selectedSeeds: readonly EligibleWitnessPairSeed[] = []
   let witnessIndex = 0
@@ -1092,6 +1214,10 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
     reason,
     work: work(),
     workBounds,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
   })
 
   const cancelledStep = () => freezeUnpublishedStep({
@@ -1099,6 +1225,10 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
     kind: 'cancelled',
     work: work(),
     workBounds,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
   })
 
   const result = (): FoldPreviewNarrowPhaseResult => ({
@@ -1109,6 +1239,10 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       trianglePairTests,
       satTests,
       numericalMargin,
+      exactTransversalProofWork:
+        snapshotFoldPreviewExactTransversalProofWork(
+          exactTransversalProofBudget,
+        ),
       witnessSamples: Object.freeze(witnessSamples),
       witnessCoverage: freezeWitnessCoverage({
         eligiblePairCount: eligibleWitnessPairCount,
@@ -1129,6 +1263,10 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       result: resultSnapshot,
       work: work(),
       workBounds,
+      exactTransversalProofWork:
+        snapshotFoldPreviewExactTransversalProofWork(
+          exactTransversalProofBudget,
+        ),
     })
   }
 
@@ -1142,6 +1280,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
     penetratingWitnessSeeds = []
     touchingWitnessPairCount = 0
     penetratingWitnessPairCount = 0
+    candidateExactProofSkippedByLimit = false
   }
 
   const enterWitnessDerivationPhase = () => {
@@ -1219,16 +1358,18 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
         geometryClass: candidateGeometryClass,
       }
       if (candidate.relation === 'hinge_adjacent' && hingeContactPolicy) {
-        const hingeDecision = hingeContactPolicy.classify({
-          firstFaceId: candidate.firstFaceId,
-          secondFaceId: candidate.secondFaceId,
-          hingeEdgeIds: candidate.hingeEdgeIds,
-          faceTransforms,
-          thickness,
-          numericalMargin,
-          testedTrianglePairs: candidateTrianglePairTests,
-          pairs: hingePairs,
-        })
+        const hingeDecision = candidateExactProofSkippedByLimit
+          ? exactProofLimitHingeDecision(candidate.hingeEdgeIds)
+          : hingeContactPolicy.classify({
+              firstFaceId: candidate.firstFaceId,
+              secondFaceId: candidate.secondFaceId,
+              hingeEdgeIds: candidate.hingeEdgeIds,
+              faceTransforms,
+              thickness,
+              numericalMargin,
+              testedTrianglePairs: candidateTrianglePairTests,
+              pairs: hingePairs,
+            })
         if (terminal) return terminal
         if (cancelled) return cancelledStep()
         interaction = {
@@ -1283,11 +1424,17 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       if (candidate.relation === 'non_adjacent') {
         performedNonAdjacentSatScan = true
       }
+      const skippedBefore =
+        exactTransversalProofBudget.skippedByLimit
       const intersection = classifyTrianglePrisms(
         first,
         second,
         numericalMargin,
+        exactTransversalProofBudget,
       )
+      if (
+        exactTransversalProofBudget.skippedByLimit > skippedBefore
+      ) candidateExactProofSkippedByLimit = true
       if (terminal) return terminal
       if (cancelled) return cancelledStep()
       if (!intersection) return indeterminateStep('scan_error')
@@ -1392,21 +1539,35 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
     phase,
     work: work(),
     workBounds,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
   })
 
   const checkedStep = (
     value: FoldPreviewNarrowPhaseAnalysisJobStep,
     previousWork: FoldPreviewNarrowPhaseAnalysisJobWork,
+    previousExactWork: FoldPreviewExactTransversalProofWork,
     workBudget: number,
     processed: number,
   ) => {
     const currentWork = work()
+    const currentExactWork =
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      )
     const totalDelta =
       currentWork.totalWorkUnits - previousWork.totalWorkUnits
     const trianglePairDelta =
       currentWork.trianglePairTests - previousWork.trianglePairTests
     const witnessDelta =
       currentWork.witnessDerivations - previousWork.witnessDerivations
+    const exactAttemptDelta =
+      currentExactWork.attempted - previousExactWork.attempted
+    const exactSkippedDelta =
+      currentExactWork.skippedByLimit - previousExactWork.skippedByLimit
+    const exactRequestDelta = exactAttemptDelta + exactSkippedDelta
     if (
       !Number.isSafeInteger(currentWork.totalWorkUnits)
       || currentWork.totalWorkUnits !== currentWork.trianglePairTests
@@ -1414,6 +1575,9 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       || totalDelta < 0
       || trianglePairDelta < 0
       || witnessDelta < 0
+      || exactAttemptDelta < 0
+      || exactSkippedDelta < 0
+      || exactRequestDelta > trianglePairDelta
       || totalDelta !== trianglePairDelta + witnessDelta
       || totalDelta !== processed
       || totalDelta > workBudget
@@ -1423,10 +1587,17 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       || currentWork.witnessDerivations
         > workBounds.maximumWitnessDerivations
       || currentWork.totalWorkUnits > workBounds.maximumTotalWorkUnits
+      || currentExactWork.attempted
+        > MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+      || currentExactWork.skippedByLimit > currentWork.trianglePairTests
       || value.work.totalWorkUnits !== currentWork.totalWorkUnits
       || value.work.trianglePairTests !== currentWork.trianglePairTests
       || value.work.witnessDerivations !== currentWork.witnessDerivations
       || value.workBounds !== workBounds
+      || !sameFoldPreviewExactTransversalProofWork(
+        value.exactTransversalProofWork,
+        currentExactWork,
+      )
     ) return publish(indeterminateStep('work_accounting_error'))
     return publish(value)
   }
@@ -1434,16 +1605,24 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
   const runStep = (
     workBudget: number,
     previousWork: FoldPreviewNarrowPhaseAnalysisJobWork,
+    previousExactWork: FoldPreviewExactTransversalProofWork,
   ): FoldPreviewNarrowPhaseAnalysisJobStep => {
     let processed = 0
     while (processed < workBudget) {
       if (terminal) {
-        return checkedStep(terminal, previousWork, workBudget, processed)
+        return checkedStep(
+          terminal,
+          previousWork,
+          previousExactWork,
+          workBudget,
+          processed,
+        )
       }
       if (cancelled) {
         return checkedStep(
           cancelledStep(),
           previousWork,
+          previousExactWork,
           workBudget,
           processed,
         )
@@ -1457,6 +1636,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
           return checkedStep(
             phaseResult,
             previousWork,
+            previousExactWork,
             workBudget,
             processed,
           )
@@ -1470,6 +1650,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
         return checkedStep(
           indeterminateStep('work_limit_exceeded'),
           previousWork,
+          previousExactWork,
           workBudget,
           processed,
         )
@@ -1483,6 +1664,7 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
         return checkedStep(
           stepResult,
           previousWork,
+          previousExactWork,
           workBudget,
           processed,
         )
@@ -1494,12 +1676,19 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
         return checkedStep(
           indeterminateStep('work_limit_exceeded'),
           previousWork,
+          previousExactWork,
           workBudget,
           processed,
         )
       }
     }
-    return checkedStep(pending(), previousWork, workBudget, processed)
+    return checkedStep(
+      pending(),
+      previousWork,
+      previousExactWork,
+      workBudget,
+      processed,
+    )
   }
 
   return Object.freeze({
@@ -1515,9 +1704,15 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
       }
       stepping = true
       let previousWork: FoldPreviewNarrowPhaseAnalysisJobWork | null = null
+      let previousExactWork:
+        FoldPreviewExactTransversalProofWork | null = null
       let validatedWorkBudget: number | null = null
       try {
         previousWork = work()
+        previousExactWork =
+          snapshotFoldPreviewExactTransversalProofWork(
+            exactTransversalProofBudget,
+          )
         if (terminal) return terminal
         if (cancelled) return publish(cancelledStep())
         const validWorkBudget =
@@ -1528,26 +1723,40 @@ function createFoldPreviewNarrowPhaseAnalysisJob(
           return publish(indeterminateStep('invalid_work_budget'))
         }
         validatedWorkBudget = workBudget
-        return runStep(validatedWorkBudget, previousWork)
+        return runStep(
+          validatedWorkBudget,
+          previousWork,
+          previousExactWork,
+        )
       } catch {
         if (terminal) return terminal
         if (cancelled) {
-          if (previousWork && validatedWorkBudget !== null) {
+          if (
+            previousWork
+            && previousExactWork
+            && validatedWorkBudget !== null
+          ) {
             return checkedStep(
               cancelledStep(),
               previousWork,
+              previousExactWork,
               validatedWorkBudget,
               work().totalWorkUnits - previousWork.totalWorkUnits,
             )
           }
           return publish(cancelledStep())
         }
-        if (!previousWork || validatedWorkBudget === null) {
+        if (
+          !previousWork
+          || !previousExactWork
+          || validatedWorkBudget === null
+        ) {
           return publish(indeterminateStep('scan_error'))
         }
         return checkedStep(
           indeterminateStep('scan_error'),
           previousWork,
+          previousExactWork,
           validatedWorkBudget,
           work().totalWorkUnits - previousWork.totalWorkUnits,
         )
@@ -1629,6 +1838,8 @@ function createFullScanNonAdjacentWitnessSetJob(
       maximumWitnessDerivations,
       maximumTotalWorkUnits,
     })
+  const exactTransversalProofBudget =
+    createFoldPreviewExactTransversalProofBudget()
 
   const eligibleSeeds: EligibleWitnessPairSeed[] = []
   let candidateIndex = 0
@@ -1686,6 +1897,10 @@ function createFullScanNonAdjacentWitnessSetJob(
     reason,
     work: work(),
     workBounds,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
   })
 
   const cancelledStep = () => freezeUnpublishedStep({
@@ -1693,6 +1908,10 @@ function createFullScanNonAdjacentWitnessSetJob(
     kind: 'cancelled',
     work: work(),
     workBounds,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
   })
 
   const completeStep = () => {
@@ -1712,6 +1931,10 @@ function createFullScanNonAdjacentWitnessSetJob(
       },
       witnessSamples,
       unavailablePairCount,
+      exactTransversalProofWork:
+        snapshotFoldPreviewExactTransversalProofWork(
+          exactTransversalProofBudget,
+        ),
     })
     if (!result) return indeterminateStep('scan_error')
     return freezeUnpublishedStep({
@@ -1720,6 +1943,10 @@ function createFullScanNonAdjacentWitnessSetJob(
       result,
       work: work(),
       workBounds,
+      exactTransversalProofWork:
+        snapshotFoldPreviewExactTransversalProofWork(
+          exactTransversalProofBudget,
+        ),
     })
   }
 
@@ -1774,6 +2001,7 @@ function createFullScanNonAdjacentWitnessSetJob(
         first,
         second,
         numericalMargin,
+        exactTransversalProofBudget,
       )
       if (terminal) return terminal
       if (cancelled) return cancelledStep()
@@ -1849,21 +2077,35 @@ function createFullScanNonAdjacentWitnessSetJob(
     phase,
     work: work(),
     workBounds,
+    exactTransversalProofWork:
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      ),
   })
 
   const checkedStep = (
     value: FoldPreviewFullScanNonAdjacentWitnessJobStep,
     previousWork: FoldPreviewFullScanNonAdjacentWitnessJobWork,
+    previousExactWork: FoldPreviewExactTransversalProofWork,
     workBudget: number,
     processed: number,
   ) => {
     const currentWork = work()
+    const currentExactWork =
+      snapshotFoldPreviewExactTransversalProofWork(
+        exactTransversalProofBudget,
+      )
     const totalDelta =
       currentWork.totalWorkUnits - previousWork.totalWorkUnits
     const trianglePairDelta =
       currentWork.trianglePairTests - previousWork.trianglePairTests
     const witnessDelta =
       currentWork.witnessDerivations - previousWork.witnessDerivations
+    const exactAttemptDelta =
+      currentExactWork.attempted - previousExactWork.attempted
+    const exactSkippedDelta =
+      currentExactWork.skippedByLimit - previousExactWork.skippedByLimit
+    const exactRequestDelta = exactAttemptDelta + exactSkippedDelta
     if (
       !Number.isSafeInteger(currentWork.totalWorkUnits)
       || currentWork.totalWorkUnits !== currentWork.trianglePairTests
@@ -1871,6 +2113,9 @@ function createFullScanNonAdjacentWitnessSetJob(
       || totalDelta < 0
       || trianglePairDelta < 0
       || witnessDelta < 0
+      || exactAttemptDelta < 0
+      || exactSkippedDelta < 0
+      || exactRequestDelta > trianglePairDelta
       || totalDelta !== trianglePairDelta + witnessDelta
       || totalDelta !== processed
       || totalDelta > workBudget
@@ -1880,10 +2125,17 @@ function createFullScanNonAdjacentWitnessSetJob(
       || currentWork.witnessDerivations
         > workBounds.maximumWitnessDerivations
       || currentWork.totalWorkUnits > workBounds.maximumTotalWorkUnits
+      || currentExactWork.attempted
+        > MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+      || currentExactWork.skippedByLimit > currentWork.trianglePairTests
       || value.work.totalWorkUnits !== currentWork.totalWorkUnits
       || value.work.trianglePairTests !== currentWork.trianglePairTests
       || value.work.witnessDerivations !== currentWork.witnessDerivations
       || value.workBounds !== workBounds
+      || !sameFoldPreviewExactTransversalProofWork(
+        value.exactTransversalProofWork,
+        currentExactWork,
+      )
     ) return publish(indeterminateStep('work_accounting_error'))
     return publish(value)
   }
@@ -1891,16 +2143,24 @@ function createFullScanNonAdjacentWitnessSetJob(
   const runStep = (
     workBudget: number,
     previousWork: FoldPreviewFullScanNonAdjacentWitnessJobWork,
+    previousExactWork: FoldPreviewExactTransversalProofWork,
   ): FoldPreviewFullScanNonAdjacentWitnessJobStep => {
     let processed = 0
     while (processed < workBudget) {
       if (terminal) {
-        return checkedStep(terminal, previousWork, workBudget, processed)
+        return checkedStep(
+          terminal,
+          previousWork,
+          previousExactWork,
+          workBudget,
+          processed,
+        )
       }
       if (cancelled) {
         return checkedStep(
           cancelledStep(),
           previousWork,
+          previousExactWork,
           workBudget,
           processed,
         )
@@ -1911,7 +2171,13 @@ function createFullScanNonAdjacentWitnessSetJob(
       ) {
         const result = enterWitnessDerivationPhase()
         if (result) {
-          return checkedStep(result, previousWork, workBudget, processed)
+          return checkedStep(
+            result,
+            previousWork,
+            previousExactWork,
+            workBudget,
+            processed,
+          )
         }
         continue
       }
@@ -1921,10 +2187,22 @@ function createFullScanNonAdjacentWitnessSetJob(
         : processWitnessDerivation()
       processed += 1
       if (result) {
-        return checkedStep(result, previousWork, workBudget, processed)
+        return checkedStep(
+          result,
+          previousWork,
+          previousExactWork,
+          workBudget,
+          processed,
+        )
       }
     }
-    return checkedStep(pending(), previousWork, workBudget, processed)
+    return checkedStep(
+      pending(),
+      previousWork,
+      previousExactWork,
+      workBudget,
+      processed,
+    )
   }
 
   return Object.freeze({
@@ -1941,9 +2219,15 @@ function createFullScanNonAdjacentWitnessSetJob(
       stepping = true
       let previousWork:
         FoldPreviewFullScanNonAdjacentWitnessJobWork | null = null
+      let previousExactWork:
+        FoldPreviewExactTransversalProofWork | null = null
       let validatedWorkBudget: number | null = null
       try {
         previousWork = work()
+        previousExactWork =
+          snapshotFoldPreviewExactTransversalProofWork(
+            exactTransversalProofBudget,
+          )
         if (terminal) return terminal
         if (cancelled) return publish(cancelledStep())
         const validWorkBudget =
@@ -1954,26 +2238,40 @@ function createFullScanNonAdjacentWitnessSetJob(
           return publish(indeterminateStep('invalid_work_budget'))
         }
         validatedWorkBudget = workBudget
-        return runStep(validatedWorkBudget, previousWork)
+        return runStep(
+          validatedWorkBudget,
+          previousWork,
+          previousExactWork,
+        )
       } catch {
         if (terminal) return terminal
         if (cancelled) {
-          if (previousWork && validatedWorkBudget !== null) {
+          if (
+            previousWork
+            && previousExactWork
+            && validatedWorkBudget !== null
+          ) {
             return checkedStep(
               cancelledStep(),
               previousWork,
+              previousExactWork,
               validatedWorkBudget,
               work().totalWorkUnits - previousWork.totalWorkUnits,
             )
           }
           return publish(cancelledStep())
         }
-        if (!previousWork || validatedWorkBudget === null) {
+        if (
+          !previousWork
+          || !previousExactWork
+          || validatedWorkBudget === null
+        ) {
           return publish(indeterminateStep('scan_error'))
         }
         return checkedStep(
           indeterminateStep('scan_error'),
           previousWork,
+          previousExactWork,
           validatedWorkBudget,
           work().totalWorkUnits - previousWork.totalWorkUnits,
         )
@@ -1993,13 +2291,22 @@ function createFullScanNonAdjacentWitnessSet({
   counts,
   witnessSamples,
   unavailablePairCount,
+  exactTransversalProofWork,
 }: Readonly<{
   thickness: number
   numericalMargin: number
   counts: FullScanNonAdjacentWitnessCounts
   witnessSamples: readonly FoldPreviewNarrowPhaseWitnessSample[]
   unavailablePairCount: number
+  exactTransversalProofWork: FoldPreviewExactTransversalProofWork
 }>): FoldPreviewFullScanNonAdjacentWitnessSet | null {
+  if (
+    !validFoldPreviewExactTransversalProofWork(
+      exactTransversalProofWork,
+    )
+    || exactTransversalProofWork.skippedByLimit
+      > counts.indeterminatePairCount
+  ) return null
   const eligiblePairCount =
     counts.touchingPairCount + counts.penetratingPairCount
   if (!Number.isSafeInteger(eligiblePairCount)) return null
@@ -2032,6 +2339,12 @@ function createFullScanNonAdjacentWitnessSet({
     requestIdentityBound: false as const,
     collisionThickness: thickness,
     numericalMargin,
+    exactTransversalProofWork: Object.freeze({
+      algorithm: exactTransversalProofWork.algorithm,
+      maximumAttempts: exactTransversalProofWork.maximumAttempts,
+      attempted: exactTransversalProofWork.attempted,
+      skippedByLimit: exactTransversalProofWork.skippedByLimit,
+    }),
     autoApplicable: false as const,
   }
   if (allCollisionConstraintsRepresented) {
@@ -2157,7 +2470,7 @@ function snapshotNarrowPhaseInputs(
 }
 
 function snapshotRigidFaceTransforms(
-  faces: readonly PreparedFoldPreviewNarrowPhaseFace[],
+  faces: readonly Readonly<{ id: string }>[],
   faceTransforms: ReadonlyMap<string, Matrix4>,
 ): ReadonlyMap<string, Matrix4> | null {
   try {
@@ -2266,11 +2579,27 @@ function classifyTrianglePrisms(
   first: TrianglePrism,
   second: TrianglePrism,
   margin: number,
+  exactTransversalProofBudget: FoldPreviewExactTransversalProofBudget,
 ): PrismIntersection | null {
   if (first.zeroThickness || second.zeroThickness) {
-    return first.zeroThickness && second.zeroThickness
+    const surfaceIntersection = first.zeroThickness && second.zeroThickness
       ? classifyZeroThicknessTriangles(first, second, margin)
       : 'indeterminate'
+    // A tolerance-based contact/unknown cannot overrule a strict intersection
+    // proof over the exact stored coordinates.
+    if (
+      surfaceIntersection === 'touching'
+      || surfaceIntersection === 'indeterminate'
+    ) {
+      const exactDecision = attemptTransversalTriangleIntersectionProof(
+        first,
+        second,
+        exactTransversalProofBudget,
+      )
+      if (exactDecision === 'proved') return 'penetrating'
+      if (exactDecision === 'budget_exhausted') return 'indeterminate'
+    }
+    return surfaceIntersection
   }
   const axes = [...first.faceAxes, ...second.faceAxes]
   let uncertainAxis = false
@@ -2304,8 +2633,48 @@ function classifyTrianglePrisms(
     if (!Number.isFinite(gap) || !Number.isFinite(overlap)) return null
     if (overlap <= margin) boundaryContact = true
   }
-  if (uncertainAxis) return 'indeterminate'
+  if (uncertainAxis) {
+    const exactDecision = attemptTransversalTriangleIntersectionProof(
+      first,
+      second,
+      exactTransversalProofBudget,
+    )
+    return exactDecision === 'proved' ? 'penetrating' : 'indeterminate'
+  }
+  // A positive but sub-margin slab overlap may look like SAT boundary contact.
+  // Crossing central surfaces prove positive-volume overlap for every positive
+  // representable thickness, without widening the SAT margin.
+  if (boundaryContact) {
+    const exactDecision = attemptTransversalTriangleIntersectionProof(
+      first,
+      second,
+      exactTransversalProofBudget,
+    )
+    if (exactDecision === 'proved') return 'penetrating'
+    if (exactDecision === 'budget_exhausted') return 'indeterminate'
+  }
   return boundaryContact ? 'touching' : 'penetrating'
+}
+
+function attemptTransversalTriangleIntersectionProof(
+  first: TrianglePrism,
+  second: TrianglePrism,
+  budget: FoldPreviewExactTransversalProofBudget,
+): FoldPreviewExactTransversalProofDecision {
+  if (
+    budget.attempted
+    >= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+  ) {
+    budget.skippedByLimit += 1
+    return 'budget_exhausted'
+  }
+  budget.attempted += 1
+  return provesFoldPreviewBinary64TransversalTriangleIntersection(
+    first.vertices.slice(0, 3),
+    second.vertices.slice(0, 3),
+  )
+    ? 'proved'
+    : 'not_proved'
 }
 
 type TrianglePlaneSection = Readonly<{
@@ -3028,6 +3397,14 @@ function freezeNarrowPhaseResultSnapshot(
     trianglePairTests: value.trianglePairTests,
     satTests: value.satTests,
     numericalMargin: value.numericalMargin,
+    exactTransversalProofWork: Object.freeze({
+      algorithm: value.exactTransversalProofWork.algorithm,
+      maximumAttempts:
+        value.exactTransversalProofWork.maximumAttempts,
+      attempted: value.exactTransversalProofWork.attempted,
+      skippedByLimit:
+        value.exactTransversalProofWork.skippedByLimit,
+    }),
     witnessSamples,
     witnessCoverage,
   })

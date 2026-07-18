@@ -138,8 +138,20 @@ test('penetration outranks indeterminate, which outranks contact', () => {
   assert.equal(collisionBadgeClass(contact), 'has-contact')
   assert.equal(collisionDataStatus(indeterminate), 'indeterminate')
   assert.equal(collisionBadgeClass(indeterminate), 'has-indeterminate')
+  assert.equal(
+    collisionBadgeText(indeterminate),
+    '交差の可能性・判定保留 1・安全確認が必要',
+  )
+  assert.match(
+    describeCollisionSummary(indeterminate, true),
+    /交差の可能性・判定保留1件。判定保留は安全確認が必要です/u,
+  )
   assert.equal(collisionDataStatus(penetration), 'penetrating')
   assert.equal(collisionBadgeClass(penetration), 'has-penetrations')
+  assert.equal(
+    collisionBadgeText(penetration),
+    '貫通 1（ヒンジ外 0）・接触 1・交差の可能性・判定保留 1・安全確認が必要',
+  )
 })
 
 test('summary equality observes every hinge-policy presentation field', () => {

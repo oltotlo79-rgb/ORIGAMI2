@@ -40,6 +40,7 @@ import type {
 } from './foldPreviewModel.ts'
 import { createFoldPreviewTreeSceneCollisionPoseKey } from './foldPreviewTreeScenePose.ts'
 import {
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   calculateFoldPreviewNarrowPhaseNumericalMargin,
@@ -1496,12 +1497,22 @@ function validCompleteFullScanCoverage(
   evidence: FoldPreviewCompleteNonAdjacentWitnessSet,
 ) {
   const coverage = evidence.coverage
+  const exactWork = evidence.exactTransversalProofWork
   const sampleCount = evidence.witnessSamples.length
   return evidence.algorithm === 'full_non_adjacent_prism_witness_scan_v2'
     && Number.isFinite(evidence.collisionThickness)
     && evidence.collisionThickness > 0
     && Number.isFinite(evidence.numericalMargin)
     && evidence.numericalMargin >= 0
+    && exactWork.algorithm
+      === 'binary64_transversal_triangle_intersection_v1'
+    && exactWork.maximumAttempts
+      === MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && Number.isSafeInteger(exactWork.attempted)
+    && exactWork.attempted >= 0
+    && exactWork.attempted
+      <= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && exactWork.skippedByLimit === 0
     && coverage.scope
       === 'all_broad_phase_non_adjacent_triangle_pairs_full_scan_v2'
     && coverage.authoritativePairScanComplete === true

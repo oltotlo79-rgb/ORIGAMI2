@@ -46,9 +46,9 @@ rootの`viewBox`、`width`、`height`と、root以下の対応要素にある入
 
 ### 3.2 styleの読取り
 
-線種候補の集約に必要な範囲として、presentation attribute、inline `style`、継承、および埋込み`style`の単純な`.class` selectorを処理する。対象propertyは少なくとも`stroke`、`stroke-dasharray`、`display`、`visibility`、`color`、`opacity`、`stroke-opacity`とする。
+線種候補の集約に必要な範囲として、presentation attribute、inline `style`、継承、および埋込み`style`の単純な`.class` selectorを処理する。対象propertyは`stroke`、`color`、`fill`、`stroke-width`、`stroke-dasharray`、`stroke-opacity`、`opacity`、`display`、`visibility`の9種とする。対応propertyの`!important`は、同一class ruleの文書順、class rule、presentation attribute、inline styleの優先関係を保って解決する。
 
-複雑なselectorは規則全体を無視して具体警告を出す。対応済みgeometryは正規化したclass集合をgroup keyに残すため、利用者が線種を明示mappingできる。CSS variable、外部参照、`url(...)` paint、解決不能なstroke・dash・単位や宣言は推測せず、中心線の意味を安全に復元できないgeometryを要素単位で除外して具体警告と確認を要求する。`display:none`または`visibility:hidden`のgeometryも除外して件数を警告する。
+複雑なselectorは規則全体を無視して具体警告を出す。未対応propertyはproperty名だけを有界な警告へ記録し、値を保持・表示・解釈せず無視する。未対応propertyの個数や値長だけで文書全体を拒否しないが、style text全体の256 KiB上限と警告種類64件上限は走査時から適用する。対応済みgeometryは正規化したclass集合をgroup keyに残すため、利用者が線種を明示mappingできる。CSS variable、外部参照、`url(...)` paint、解決不能なstroke・dash・単位や宣言は推測せず、中心線の意味を安全に復元できないgeometryを要素単位で除外して具体警告と確認を要求する。`display:none`または`visibility:hidden`のgeometryも除外して件数を警告する。
 
 fill、gradient、pattern、stroke幅、line cap/join、marker、opacityなどの描画情報はORIGAMI2の線geometryへ保存しない。中心線を復元できない塗り潰し輪郭や展開済みstrokeを自動的に中心線へ変換しない。
 
@@ -85,7 +85,7 @@ SvgSourceGroupKeyV1
 - 保持したgroup行にはstroke見本、dash見本、layer path、class、canonicalな`data-origami-kind`、source要素件数、生成線分件数、無害化した代表ID、表示属性を永続化しない旨の損失badgeを表示する。未解決paint、非表示、未対応geometry等は保持groupへ混ぜず要素ごと除外し、全体警告へ種類別件数を表示して確認を要求する。
 - group数が64を超えた場合、似たstyleを黙って統合せず資源上限エラーにする。
 
-UIへ渡すlayer path、`data-origami-kind`等の表示hintは120 Unicode scalar value以内とし、代表IDだけは制御文字を除いて120で切り詰める。classは最大32 token、各tokenはASCII英数字・`-`・`_`だけの64 byte以内とする。CSS selectorとstyle property値はそれぞれ120 Unicode scalar value、`title`/`desc`の解析保持は512 Unicode scalar valueを上限とし、超過入力を無制限に保持・表示しない。
+UIへ渡すlayer path、`data-origami-kind`等の表示hintは120 Unicode scalar value以内とし、代表IDだけは制御文字を除いて120で切り詰める。classは最大32 token、各tokenはASCII英数字・`-`・`_`だけの64 byte以内とする。CSS selectorと対応する9種のstyle property値はそれぞれ120 Unicode scalar value、`title`/`desc`の解析保持は512 Unicode scalar valueを上限とし、超過入力を無制限に保持・表示しない。未対応propertyの値は保持せず、個別の120 scalar上限の対象にしない。
 
 利用者は全groupを`Boundary / Mountain / Valley / Auxiliary / Cut / Ignore`のいずれかへ明示mappingする。属性や色に基づくpresetは初期選択を提案するだけで、未選択・競合groupが1つでもあれば適用できない。赤と青の山谷対応を普遍的な規則として固定しない。
 
@@ -192,8 +192,9 @@ FOLD取込と同じ状態契約を用いる。
 | attribute | 1 elementあたり64 |
 | source線分 | 10,000 |
 | split後の最終線分 | 10,000 |
+| 一つのstyle text | 256 KiB |
 | 埋込みstyle rule | 128 |
-| 表示hint / CSS selector / style property値 | それぞれ120 Unicode scalar value |
+| 表示hint / CSS selector / 対応style property値 | それぞれ120 Unicode scalar value |
 | class | 最大32 token、各ASCII 64 byte |
 | `title` / `desc` | 各512 Unicode scalar value |
 | path command | 合計20,000 |
@@ -220,7 +221,8 @@ FOLD取込と同じ状態契約を用いる。
 - 曲線、circle/ellipse、text/image/use、script、animation、filter/clip/mask等を実行・flattenせず、具体警告と確認を要求する。
 - DTD/entity宣言、XXE、外部stylesheet/resource、再帰的構造、深いXML、過大属性、NaN/Infinity、数値overflowをnetwork accessなしで安全に拒否または除外する。
 - 各資源上限の境界値と上限+1をtestし、10,000本の有効線図を上限内で処理する。preview 5,000本への省略が本体を削減しない。
-- CSS selectorとstyle property値はbyte数ではなくUnicode scalar value数で120まで受理し、121を入力段階で拒否する。
+- CSS selectorと対応する9種のstyle property値はbyte数ではなくUnicode scalar value数で120まで受理し、121を入力段階で拒否する。未対応propertyは値を保持せず具体警告へ集約し、長い値や33件以上の宣言だけを理由に文書全体を拒否しない。style text全体の256 KiB超過は拒否する。
+- stylesheetとinline styleの`!important`をCSS優先関係に従って解決し、未対応property内の文字列を対応propertyへ誤適用しない。
 - warning acknowledgement、dirty確認、取消、重複取消、token世代、instance/project/revisionのstale検出を確認する。
 - 実DOMへ確認画面をrenderし、Tab/Shift+Tabと外部focusのtrap、IME変換中Escapeの無視、縮尺・mapping・外周変更時のvalidation/確認解除、検証・取消・適用失敗時のdialog保持をeventで確認する。
 - 事前検証IDを倍率・mapping・外周・project identityへ束縛し、旧世代・改変・未検証のIDによる適用を拒否する。変換後のCut有無と最終幅・高さが事前検証とapplyで一致する。

@@ -2,32 +2,43 @@
 
 ## 完成率
 
-**全体完成率: 約32.8%（2026-07-18、暫定の重み付き概算）**
+**全体完成率: 約36.9%（2026-07-19、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。2026-07-18の第三者監査（対象`013ba08`と当時の作業ツリー）を現在コードと再照合した26.44%を基準に、単一ヒンジ補正候補の解析専用UIで0.36ポイント、端末内redacted diagnosticsの閲覧・同一内容手動保存UIで0.50ポイント、川崎・前川の局所必要条件検証UIで0.36ポイント、折り手順の作成・保存・段階再生で1.40ポイント、`.ori2`の手順格納範囲拡大で0.10ポイント、FOLD 2D展開図取込で0.70ポイント、SVG静的直線展開図の取込・線種確認・原子的適用で0.70ポイント、FOLD 1.2/SVG展開図の情報損失確認付き原子的書き出しで0.60ポイント、実寸PDF 1.7/DXF AC1021展開図の同経路書き出しで0.60ポイント、折り図PDF・SVGページ画像ZIPの利用者経路で1.00ポイントを加えた算術結果32.76%を小数第1位へ丸めて表示している。直近の1.00ポイントは「折り手順・PDF」の領域進捗を15%から25%へ更新した差分（全体比率10% × 10ポイント）である。FOLDの3D・複数frame、3D完成形出力は計上していない。入力値自体が概数なので、32.76%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前の追跡値32.76%に対し、時間制限つき全体平坦折り3値判定、場所別層順序、native background worker、進捗・中止・終端状態のUI接続により、「折り可能性・経路探索」を12%から35%へ更新した差分4.14ポイント（全体比率18% × 23ポイント）を加えた36.90%を小数第1位へ丸めて表示している。専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力は計上していない。入力値自体が概数なので、36.90%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
 | 領域 | 全体比率 | 現在の領域進捗 | 全体への寄与 | 状態 |
 |---|---:|---:|---:|---|
-| 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りの層順序管理を残す |
+| 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
 | プロジェクト・保存・履歴 | 8% | 40% | 3.20% | 原子的編集、差分Undo/Redoの固定128件上限、`.ori2`保存は実装。利用者設定、履歴永続化、自動保存、クラッシュ復旧は未着手 |
 | 2D展開図エディター | 15% | 50% | 7.50% | 基本編集と9種スナップは実装。面編集、数式作図、レイヤー、対称編集を残す |
 | 数式・幾何制約 | 9% | 0% | 0.00% | EDT-004/005/008/009の数式入力、式保持、11種制約、矛盾特定は未着手。3D衝突用の数値計算はこの領域へ計上しない |
-| 3D折り・紙厚・衝突 | 17% | 50% | 8.50% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持を実装。閉路、切断由来、全体層順を残す |
-| 折り可能性・経路探索 | 18% | 12% | 2.16% | 1ヒンジCCD、単一ヒンジ補正候補の解析専用UI、川崎・前川の局所必要条件検証を接続。候補3Dプレビュー・明示適用、局所十分性、全体平坦折り、一般経路探索を残す |
+| 3D折り・紙厚・衝突 | 17% | 50% | 8.50% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持を実装。層順正本は得られたが、専用3D表示、折り重ね、閉路、切断由来を残す |
+| 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
 | 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
 | 多言語・設定・配布・QA | 5% | 40% | 2.00% | frontend/Rustの自動回帰、Windows/macOS CI、環境・作品情報を含まないredacted diagnosticsの端末内保存・正確な内容確認・同一JSON手動保存を実装。i18n、設定、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **32.76%** | — |
+| **合計** | **100%** | — | **36.90%** | — |
 
 ## 完了
 
+- 利用者報告の共有頂点A、180度重なりB、辺中点からの山山V字を実寸400 mm fixtureで再現し、厚さ`0 / 0.1 / 3 mm`と角度表を固定した。保存binary64座標のBigInt厳密横断証明で、退化三角柱・近平行SATから判定保留へ退避していた実在交差を貫通へ確定し、点・共有辺だけの接触は貫通へ昇格しない
+- BigInt厳密横断証明は不変姿勢の1解析につき最大256回へ制限し、one-shot、同期drain、増分job、full scanの全経路でcandidate・stepをまたぐ同一budgetを共有する。超過pairはヒンジ許容へ落とさず「交差の可能性・判定保留」としてblocking表示し、attempt・省略数をdeep-frozen snapshotへ記録する
+- 全体平坦折りsolverを128 MiBの決定論的な論理証明storage budgetへ統合し、`TupleConstraint`本体と内側buffer、固定代入、返却assignment、Union-Findと連続bufferによる連結成分、domain、明示stack、rollback trail、元問題と検証再生成問題の同時保持を会計した。対象確保はchecked算術と`try_reserve`の前に上限判定し、再確保時の旧・新buffer peak、1 byte不足、overflow、deadline・cancel優先を回帰する。この値をallocator metadataやBigInt objectを含む実heap/RSSのhard上限とは呼ばず、構造件数・bit長・演算回数の別上限と組み合わせる
+- 2026-07-19のコードレビューを現行コードへ再照合し、拡張子補正先の無確認上書き防止、折り図errorの型付け、旧project検証中のmutex解放、SVG ZIP v2からの未使用font削除、SVG styleの未対応propertyと`!important`互換性を採用した。FOLD任意fieldは境界候補選択までを一体で設計する条件付き課題、モノリス分割はSIM-010前の保守作業として分離した
+- `.ori2`・FOLD・SVGの読込、project保存前検証、topology構築、background worker失敗を原因別の固定文言へ閉じ、選択path、raw OS error、parser内部値、panic payload、作品名や座標をWebViewへ反射しない。失敗時に既存project・履歴・保存先・取込stageを変えないことをnative回帰する
+- Windows上でdesktop native 193件、frontend Node 890件、DOM 35件、本番build、lint、全Rust workspaceのClippy `-D warnings`を通過した。外部parserは生成したPDF約1.04 MBとoutline-only SVG ZIP約245 KBを検証し、ブラウザMCPでは全体平坦折りpanelの時間制限・対象クラス・保証外事項を確認し、console error 0・warning 0を確認した
+- 凸material faceを対象とする`convex_faces_facewise_v1`の全体平坦折り判定をUIへ接続し、証明できた可・不可と、対象外・時間切れ・資源上限・証明不足による不明を区別する。`possible`だけが場所別`facewise_layer_order_v1`をnative current slotへ採用する
+- project identity、revision、version付きSHA-256 fold model fingerprint、proof modelをprovenanceへ束縛し、同revisionへ戻るABA、project再open、同一IDの別内容、旧job完了をstaleとして拒否する。source snapshotとactive/completion/current layer-orderは同一`Arc` bindingを共有し、pointer identityも照合する
+- 1〜300秒の時間制限、単調phase、上限付き件数、利用者中止、panicを閉じた失敗へ変換するnative background workerとUI panelを接続した。source件数はfingerprint・topology構築前に上限確認し、超過時だけcurrent job/層順slotへ触れない未登録の不明結果を即時返す
+- coreはimmutable geometryからtopologyと局所必要条件を独立に再生成して入力artifactと完全一致を確認し、exact平面配置・重なりcell・facewise制約・反復DFS・certificate再検証を行う。証明構築、検証、serializationを合わせたstorage budgetとchecked overflowを持ち、上限・deadline・cancel到達時は候補証明を公開しない
+- VAL-003/005/006/007/009を実装済みへ更新した。MUST 87件の現在集計は実装済み32・部分実装27・未着手28。SIM-010と専用の層順3D viewerは未着手のままで、完成扱いしていない
 - commit `48f4de6`の[CI #213](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29643184224)でfrontend、Windows/macOS Rust、Windows NSIS bundle、macOS `.app` bundleの全jobが成功。Windows配布物では同梱Noto Sans JPとOFLのSHA-256、外向き通信を遮断した折り図生成、外部parserによるPDF・SVG ZIP監査を通し、折り図書き出しcheckpointを採用
-- 折り手順timelineから、説明・注意事項・固定3D図を載せたA4複数ページPDFとページ別SVG画像ZIPを書き出す利用者経路を追加。INS-010を部分実装へ更新し、MUST 87件の現在集計は実装済み27・部分実装31・未着手29
+- 折り手順timelineから、説明・注意事項・固定3D図を載せたA4複数ページPDFとページ別SVG画像ZIPを書き出す利用者経路を追加。INS-010を部分実装へ更新し、当該checkpoint時点のMUST 87件集計を実装済み27・部分実装31・未着手29とした
 - 書き出し前の形式・ページ数・警告確認、revisionに固定した一度限りの生成、進捗表示、native保存ダイアログと原子的保存、取消後の再試行を接続。初版で省略する滑らかな連続動作、折る方向の矢印、手指guide、照明・影・透明表現を明示する
 - 一枚紙展開図のPDF 1.7/DXF AC1021書き出しを既存の確認画面へ接続し、要件IO-006の列挙4形式をUIから利用可能にした。当該checkpoint時点のMUST 86件集計は実装済み26・部分実装30・未着手30
 - PDFは全描画辺boundsへ四辺10 mm余白を加えた一ページを実寸1:1で生成し、`PrintScaling=None`、14,400 pt page上限、DeviceGray黒の5線種、UTF-16BE作品名、固定5 object/xref、64文字数値上限、未参照頂点拒否、edge向き・順序非依存の決定論的bytesを保証する
@@ -49,7 +60,7 @@
 - FOLD取込は単一の単純境界を持つ一枚紙へ限定し、3D `foldedForm`、非ゼロZ、穴・複数紙、未知版を安全側に拒否。16 MiB、頂点1万、辺1万、境界1,414辺、交差候補100万件、包含判定100万件、表示5,000辺の上限を固定し、未知JSONを保持せず読み捨てる
 - FOLD bytesはRust側の1世代stageだけに保持し、path・実ファイル名・raw JSONをWebViewへ渡さない。project instance・ID・revisionを適用直前に再照合し、成功時だけ原子的に置換する。取消・失敗・stale操作では既存projectを変更しない。対応subsetと制限を`docs/fold-import-contract.md`へ固定
 - FOLD取込の独立最終監査はC0/H0/M0。frontend 776件、FOLD adapterを含む`ori-formats` 50件、Tauri desktop 99件、production build、lint、format、全target/all-feature Clippyで回帰
-- IO-004を未着手から部分実装へ更新。MUST 86件の現在集計は実装済み23・部分実装30・未着手33で、SVG未実装のためIO-004を実装済みには上げない
+- IO-004を未着手から部分実装へ更新。当該checkpoint時点のMUST 86件集計を実装済み23・部分実装30・未着手33とし、SVG未実装のためIO-004を実装済みには上げなかった
 - 第三者監査を現在コードへ再照合し、UI未接続基盤・研究実装・QA件数を利用者向け機能完成率へ直接加算しない方式へ是正。数式・幾何制約をUI基準の0%へ補正した暫定概算26.44%へ更新し、採用・条件付き採用・不採用の根拠を`docs/audit-assessment-2026-07-18.md`へ記録
 - 監査後、単一ヒンジ補正候補の静的解析と候補別連続経路解析を4段階の増分jobへ統合し、1 RAFにつき1 stepで進めるgeneration付きcoordinatorを`FoldPreview`へ接続。作業中・対応範囲内での候補なし・判定不能・認定済みを分け、request・姿勢・選択・固定面・紙厚の変更では旧結果をstaleとして先に無効化
 - 補正解析UIへ渡すのは切り離した表示DTOだけとし、exact terminal lease、motion context、binding、完全角度vector、適用tokenをReact stateへ流出させない。認定結果も解析専用で、`sceneApplied: false`・`autoApplicable: false`を維持し、候補3Dプレビューやscene・設計dataへの適用は行わない
@@ -352,7 +363,8 @@
 
 ## 進行中
 
-- VAL-003の時間制限つき全体平坦折り3値判定と、SIM-010へ引き渡す場所別の層順序管理
+- VAL-003の確定実装に対する全回帰、Windows/macOS CI、文書間整合の最終確認。専用の層順3D viewerはこのcheckpointの対象外
+- VAL-003が保持する場所別層順序を正本に、SIM-010の原子的な折り重ねcommand、face lineage、展開図への層別山谷線追加、timeline 1 step記録へ着手する準備
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -367,8 +379,8 @@
 
 ## 次の作業
 
-1. VAL-003の時間制限つき全体平坦折り3値判定と、その前提となる層順序管理を実装する
-2. VAL-003の層順序管理完成後、SIM-010の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を実装する
+1. SIM-010の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を実装する
+2. `ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する
 3. MUST 87件のstatus表を各checkpointで維持する
 4. 履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する

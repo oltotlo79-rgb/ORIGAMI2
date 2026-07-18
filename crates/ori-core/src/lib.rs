@@ -11,16 +11,43 @@ pub use editor::{
     JunctionVertexIntent, Revision,
 };
 pub use fold_model_fingerprint::fold_model_fingerprint_v1;
+pub use ori_foldability::{
+    DEFAULT_MAX_ARRANGEMENT_SEGMENTS, DEFAULT_MAX_CERTIFICATE_BYTES, DEFAULT_MAX_CONSTRAINTS,
+    DEFAULT_MAX_EDGE_INCIDENCE_RECORDS, DEFAULT_MAX_EXACT_INTEGER_BITS,
+    DEFAULT_MAX_EXACT_OPERATIONS, DEFAULT_MAX_FACE_BOUNDARY_HALF_EDGES, DEFAULT_MAX_FACES,
+    DEFAULT_MAX_HINGES, DEFAULT_MAX_LOCAL_VERTICES, DEFAULT_MAX_OVERLAP_CELLS,
+    DEFAULT_MAX_OVERLAP_FACE_PAIRS, DEFAULT_MAX_PAPER_BOUNDARY_VERTICES, DEFAULT_MAX_SEARCH_NODES,
+    DEFAULT_MAX_SOURCE_EDGES, DEFAULT_MAX_SOURCE_VERTICES, DEFAULT_MAX_TOTAL_RECORDS,
+    ExactAffineTransform, ExactPointValue, ExactRationalValue, ExactSign, FacePairOrderSnapshot,
+    FacewiseConstraintKind, FacewiseProofSummary, FlatFoldabilityInputArtifact,
+    FlatFoldabilityInputConsistencyIssue, FlatFoldabilityProofIncompleteReason,
+    FlatFoldabilityResource, FoldModelFingerprintV1, FoldedFaceOrientation, FoldedFaceSnapshot,
+    GLOBAL_FLAT_FOLDABILITY_MODEL_ID, GlobalFlatFoldabilityCheckpoint,
+    GlobalFlatFoldabilityExecutionControl, GlobalFlatFoldabilityExecutionError,
+    GlobalFlatFoldabilityImpossibleReason, GlobalFlatFoldabilityInput,
+    GlobalFlatFoldabilityInternalError, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityModelId,
+    GlobalFlatFoldabilityObserver, GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityPhase,
+    GlobalFlatFoldabilityPossibleReason, GlobalFlatFoldabilityProgress,
+    GlobalFlatFoldabilityProvenance, GlobalFlatFoldabilityReport,
+    GlobalFlatFoldabilityUnknownReason, GlobalFlatFoldabilityVerdict,
+    GlobalFlatFoldabilityWorkCounts, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderDerivation,
+    LayerOrderModelId, LayerOrderProvenance, LayerOrderSnapshot, LocalNecessaryConditionViolation,
+    NoopGlobalFlatFoldabilityObserver, OverlapCellKey, OverlapCellSnapshot,
+    UnsupportedFlatFoldabilityTopology, analyze_global_flat_foldability,
+    analyze_global_flat_foldability_with_control, analyze_global_flat_foldability_with_observer,
+};
 pub use ori_geometry::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
     PointPolygonRelation, SegmentIntersection, ValidationIssue, segment_midpoint_polygon_relation,
     validate_paper,
 };
 pub use ori_topology::{
-    FaceExtractionReport, LocalFlatFoldabilityModel, LocalFlatFoldabilityReport,
-    LocalFlatFoldabilityReportStatus, LocalFoldabilityConditionStatus, LocalFoldabilityReason,
-    LocalVertexFoldability, LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, TopologyIssue,
-    TopologyIssueKind, TopologyIssueSeverity, TopologySnapshot, analyze_local_flat_foldability,
+    CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, FaceExtractionReport,
+    LocalFlatFoldabilityModel, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
+    LocalFoldabilityConditionStatus, LocalFoldabilityReason, LocalVertexFoldability,
+    LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, TopologyIssue, TopologyIssueKind,
+    TopologyIssueSeverity, TopologySnapshot, analyze_local_flat_foldability,
+    analyze_local_flat_foldability_with_checkpoint,
 };
 pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
 pub use topology::{EditorTopology, TopologyAnalysisInput};

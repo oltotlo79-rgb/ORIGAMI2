@@ -14,6 +14,9 @@ import type {
 import {
   createFoldPreviewTreeSceneCollisionPoseKey,
 } from '../src/lib/foldPreviewTreeScenePose.ts'
+import {
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+} from '../src/lib/foldPreviewNarrowCollision.ts'
 
 type Point = Readonly<{ x: number; y: number; z: number }>
 type Body = 'stationary' | 'moving'
@@ -305,6 +308,27 @@ test('partition, witness index, identity, and coverage corruption is rejected', 
         stationaryFaceIds: binding.partition.stationaryFaceIds.filter(
           (faceId) => faceId !== binding.identity.fixedFaceId,
         ),
+      },
+    },
+    {
+      ...binding,
+      evidence: {
+        ...binding.evidence,
+        exactTransversalProofWork: {
+          ...binding.evidence.exactTransversalProofWork,
+          skippedByLimit: 1,
+        },
+      },
+    },
+    {
+      ...binding,
+      evidence: {
+        ...binding.evidence,
+        exactTransversalProofWork: {
+          ...binding.evidence.exactTransversalProofWork,
+          attempted:
+            MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS + 1,
+        },
       },
     },
     {
@@ -908,6 +932,13 @@ function bindingFor(
       requestIdentityBound: false,
       collisionThickness: 0.02,
       numericalMargin,
+      exactTransversalProofWork: {
+        algorithm: 'binary64_transversal_triangle_intersection_v1',
+        maximumAttempts:
+          MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+        attempted: 0,
+        skippedByLimit: 0,
+      },
       autoApplicable: false,
       coverage: {
         scope: 'all_broad_phase_non_adjacent_triangle_pairs_full_scan_v2',

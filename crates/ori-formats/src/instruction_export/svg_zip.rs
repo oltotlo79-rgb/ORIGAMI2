@@ -9,14 +9,13 @@ use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 use super::{
     CanonicalInstructionPlanV1, InstructionExportError,
     font::{
-        GlyphPathCommand, InstructionFont, NOTO_SANS_JP_BYTES, NOTO_SANS_JP_LICENSE,
-        NOTO_SANS_JP_LICENSE_SHA256, NOTO_SANS_JP_SHA256,
+        GlyphPathCommand, InstructionFont, NOTO_SANS_JP_LICENSE, NOTO_SANS_JP_LICENSE_SHA256,
+        NOTO_SANS_JP_SHA256,
     },
     layout::{InstructionPage, PAGE_HEIGHT_POINTS, PAGE_WIDTH_POINTS, PageColor, PageLineDash},
 };
 
 const MANIFEST_PATH: &str = "manifest.json";
-const FONT_PATH: &str = "fonts/NotoSansJP-Variable.ttf";
 const FONT_LICENSE_PATH: &str = "licenses/NotoSansJP-OFL.txt";
 const MAX_NUMBER_CHARS: usize = 64;
 
@@ -48,9 +47,9 @@ struct SvgPageEntry {
 #[derive(Serialize)]
 struct SvgFontEntry {
     family: &'static str,
-    path: &'static str,
+    rendering: &'static str,
+    source_sha256: &'static str,
     license_path: &'static str,
-    sha256: &'static str,
     license_sha256: &'static str,
 }
 
@@ -107,7 +106,7 @@ fn serialize_instruction_svg_zip_pages(
     }
 
     let manifest = SvgPageManifest {
-        schema: "origami2.instruction-svg-pages.v1",
+        schema: "origami2.instruction-svg-pages.v2",
         generator: "ORIGAMI2",
         profile: super::INSTRUCTION_EXPORT_PROFILE,
         projection_profile: super::INSTRUCTION_PROJECTION_PROFILE,
@@ -123,9 +122,9 @@ fn serialize_instruction_svg_zip_pages(
         pages: manifest_pages,
         font: SvgFontEntry {
             family: "Noto Sans JP",
-            path: FONT_PATH,
+            rendering: "glyph_outlines",
+            source_sha256: NOTO_SANS_JP_SHA256,
             license_path: FONT_LICENSE_PATH,
-            sha256: NOTO_SANS_JP_SHA256,
             license_sha256: NOTO_SANS_JP_LICENSE_SHA256,
         },
         warnings: warnings
@@ -146,11 +145,6 @@ fn serialize_instruction_svg_zip_pages(
         .compression_level(Some(6))
         .last_modified_time(DateTime::DEFAULT)
         .unix_permissions(0o644);
-    let stored = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Stored)
-        .last_modified_time(DateTime::DEFAULT)
-        .unix_permissions(0o644);
-
     write_entry(
         &mut archive,
         MANIFEST_PATH,
@@ -169,13 +163,6 @@ fn serialize_instruction_svg_zip_pages(
         }
         write_entry(&mut archive, &path, &bytes, deflated, max_output_bytes)?;
     }
-    write_entry(
-        &mut archive,
-        FONT_PATH,
-        NOTO_SANS_JP_BYTES,
-        stored,
-        max_output_bytes,
-    )?;
     write_entry(
         &mut archive,
         FONT_LICENSE_PATH,
@@ -249,9 +236,6 @@ fn serialize_svg_page(
         xml_escape(title)
     )
     .map_err(|_| InstructionExportError::StructureNotRepresentable)?;
-    output.push_str(
-        "<defs><style><![CDATA[@font-face{font-family:'Noto Sans JP';src:url('../fonts/NotoSansJP-Variable.ttf') format('truetype');font-weight:100 900;font-style:normal}]]></style></defs>\n",
-    );
     output.push_str("<g id=\"page\">\n");
 
     for polygon in &page.polygons {
@@ -547,12 +531,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            [
-                MANIFEST_PATH,
-                "pages/page-0001.svg",
-                FONT_PATH,
-                FONT_LICENSE_PATH
-            ]
+            [MANIFEST_PATH, "pages/page-0001.svg", FONT_LICENSE_PATH]
         );
         assert!(
             entries
@@ -566,10 +545,17 @@ mod tests {
             .read_to_string(&mut manifest)
             .expect("read manifest");
         let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("parse manifest");
-        assert_eq!(manifest["schema"], "origami2.instruction-svg-pages.v1");
+        assert_eq!(manifest["schema"], "origami2.instruction-svg-pages.v2");
         assert_eq!(manifest["profile"], "instruction_export_v1");
         assert_eq!(manifest["projection_profile"], "orthographic_isometric_v1");
-        assert_eq!(manifest["font"]["sha256"], NOTO_SANS_JP_SHA256);
+        assert_eq!(manifest["font"]["rendering"], "glyph_outlines");
+        assert_eq!(manifest["font"]["source_sha256"], NOTO_SANS_JP_SHA256);
+        assert!(manifest["font"].get("path").is_none());
+        assert!(manifest["font"].get("sha256").is_none());
+        assert_eq!(
+            manifest["font"]["license_path"],
+            "licenses/NotoSansJP-OFL.txt"
+        );
         assert_eq!(
             manifest["font"]["license_sha256"],
             NOTO_SANS_JP_LICENSE_SHA256
@@ -595,7 +581,10 @@ mod tests {
             .expect("read SVG");
         assert!(svg.contains("作品 &amp; 一"));
         assert!(svg.contains("折る &amp; &lt;確認&gt;"));
-        assert!(svg.contains("../fonts/NotoSansJP-Variable.ttf"));
+        assert!(!svg.contains("@font-face"));
+        assert!(!svg.contains("<style"));
+        assert!(!svg.contains("../fonts/"));
+        assert!(!svg.contains("url("));
         assert!(svg.contains("<g data-glyph=\"1\" data-x=\"20\" data-scalar=\"U+6298\""));
         assert!(svg.contains("data-glyph-id="));
         assert!(svg.contains("data-advance="));
@@ -607,13 +596,14 @@ mod tests {
         ));
         assert!(!svg.to_ascii_lowercase().contains("<script"));
 
-        let mut font = Vec::new();
+        assert!(archive.by_name("fonts/NotoSansJP-Variable.ttf").is_err());
+        let mut license = Vec::new();
         archive
-            .by_name(FONT_PATH)
-            .expect("font")
-            .read_to_end(&mut font)
-            .expect("read font");
-        assert_eq!(font, NOTO_SANS_JP_BYTES);
+            .by_name(FONT_LICENSE_PATH)
+            .expect("font license")
+            .read_to_end(&mut license)
+            .expect("read font license");
+        assert_eq!(license, NOTO_SANS_JP_LICENSE);
     }
 
     #[test]

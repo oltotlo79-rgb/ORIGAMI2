@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { summarizeFoldPreviewCollision } from '../src/lib/foldPreviewCollisionPresentation.ts'
+import {
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+} from '../src/lib/foldPreviewNarrowCollision.ts'
 import type {
   FoldPreviewNarrowPhaseInteraction,
   FoldPreviewNarrowPhaseResult,
@@ -203,6 +206,13 @@ function result(
     trianglePairTests: interactions.length,
     satTests: interactions.length,
     numericalMargin: Number.EPSILON * 64,
+    exactTransversalProofWork: {
+      algorithm: 'binary64_transversal_triangle_intersection_v1',
+      maximumAttempts:
+        MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+      attempted: 0,
+      skippedByLimit: 0,
+    },
     witnessSamples: [],
     witnessCoverage: {
       scope: 'detected_non_adjacent_triangle_pairs_in_authoritative_scan_v1',

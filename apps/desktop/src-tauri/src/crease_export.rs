@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsStr,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -11,14 +10,15 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
-#[cfg(not(target_os = "windows"))]
-use super::containing_directory;
 #[cfg(target_os = "windows")]
-use super::rename_windows_staged_file;
+use super::rename_windows_staged_file_with_policy;
+use super::save_path::{DialogSaveDestination, ExistingDestinationPolicy};
 use super::{
     AppState, ProjectState, StagedFile, create_staged_file, ensure_expected_project,
     ensure_project_identity, lock_project, validate_import_active_edge_containment,
 };
+#[cfg(not(target_os = "windows"))]
+use super::{containing_directory, publish_unix_staged_file};
 #[cfg(not(target_os = "windows"))]
 use std::fs::File;
 
@@ -280,18 +280,18 @@ pub(super) async fn save_crease_pattern_export(
         .simplified()
         .into_path()
         .map_err(|_| "選択された保存先はローカルファイルではありません。".to_owned())?;
-    let path = ensure_export_extension(selected_path, pending.format);
+    let destination = ensure_export_extension(selected_path, pending.format)?;
 
     let mut slot = lock_crease_export(&export_state)?;
     let project = lock_project(&state)?;
-    commit_pending_export_to_path(
+    commit_pending_export_to_destination(
         &mut slot,
         &project,
         export_id,
         expected_project_id,
         expected_revision,
         warnings_acknowledged,
-        &path,
+        &destination,
     )?;
     Ok(CreaseExportSaveResponse { canceled: false })
 }
@@ -551,6 +551,7 @@ fn checked_pending<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn commit_pending_export_to_path(
     slot: &mut CreaseExportSlot,
     project: &ProjectState,
@@ -560,6 +561,27 @@ fn commit_pending_export_to_path(
     warnings_acknowledged: bool,
     path: &Path,
 ) -> Result<(), String> {
+    commit_pending_export_to_destination(
+        slot,
+        project,
+        export_id,
+        expected_project_id,
+        expected_revision,
+        warnings_acknowledged,
+        &DialogSaveDestination::confirmed(path.to_path_buf()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_pending_export_to_destination(
+    slot: &mut CreaseExportSlot,
+    project: &ProjectState,
+    export_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    warnings_acknowledged: bool,
+    destination: &DialogSaveDestination,
+) -> Result<(), String> {
     let pending = checked_pending(
         slot,
         project,
@@ -568,7 +590,7 @@ fn commit_pending_export_to_path(
         expected_revision,
     )?;
     require_warning_acknowledgement(pending, warnings_acknowledged)?;
-    persist_export_bytes_atomically(path, &pending.bytes)?;
+    persist_export_bytes_to_destination(destination, &pending.bytes)?;
     slot.pending = None;
     slot.active_generation_id = None;
     Ok(())
@@ -625,24 +647,31 @@ fn suggested_export_file_name(project_name: &str, extension: &str) -> String {
     format!("{base}.{extension}")
 }
 
-fn ensure_export_extension(mut path: PathBuf, format: CreaseExportFormatRequest) -> PathBuf {
-    let expected = format.extension();
-    let already_expected = path
-        .extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected));
-    if !already_expected {
-        path.set_extension(expected);
-    }
-    path
+fn ensure_export_extension(
+    path: PathBuf,
+    format: CreaseExportFormatRequest,
+) -> Result<DialogSaveDestination, String> {
+    super::save_path::normalize_dialog_save_path(path, format.extension())
 }
 
+#[cfg(test)]
 pub(super) fn persist_export_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    persist_export_bytes_to_destination(
+        &DialogSaveDestination::confirmed(path.to_path_buf()),
+        bytes,
+    )
+}
+
+pub(super) fn persist_export_bytes_to_destination(
+    destination: &DialogSaveDestination,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let path = destination.path();
     if path.file_name().is_none() {
         return Err("選択された保存先はファイルパスではありません。".to_owned());
     }
     let mut staged = prepare_staged_export_file(path, bytes)?;
-    commit_staged_export_file(&mut staged, path)
+    commit_staged_export_file(&mut staged, path, destination.existing_destination_policy())
 }
 
 fn prepare_staged_export_file(path: &Path, bytes: &[u8]) -> Result<StagedFile, String> {
@@ -672,7 +701,11 @@ fn prepare_staged_export_file(path: &Path, bytes: &[u8]) -> Result<StagedFile, S
 }
 
 #[cfg(not(target_os = "windows"))]
-fn commit_staged_export_file(staged: &mut StagedFile, path: &Path) -> Result<(), String> {
+fn commit_staged_export_file(
+    staged: &mut StagedFile,
+    path: &Path,
+    existing_destination_policy: ExistingDestinationPolicy,
+) -> Result<(), String> {
     let parent = containing_directory(path)
         .ok_or_else(|| "選択された保存先はファイルパスではありません。".to_owned())?;
     let directory =
@@ -680,9 +713,8 @@ fn commit_staged_export_file(staged: &mut StagedFile, path: &Path) -> Result<(),
     directory
         .sync_all()
         .map_err(|_| "保存先ディレクトリを同期できませんでした。".to_owned())?;
-    std::fs::rename(&staged.path, path)
+    publish_unix_staged_file(staged, path, existing_destination_policy)
         .map_err(|_| "書き出しファイルを原子的に確定できませんでした。".to_owned())?;
-    staged.committed = true;
     // A directory-sync failure after rename must not be reported as an
     // ordinary save failure: the visible destination has already changed and
     // callers would otherwise retry under the false promise that it had not.
@@ -693,8 +725,12 @@ fn commit_staged_export_file(staged: &mut StagedFile, path: &Path) -> Result<(),
 }
 
 #[cfg(target_os = "windows")]
-fn commit_staged_export_file(staged: &mut StagedFile, path: &Path) -> Result<(), String> {
-    rename_windows_staged_file(staged.file(), path)
+fn commit_staged_export_file(
+    staged: &mut StagedFile,
+    path: &Path,
+    existing_destination_policy: ExistingDestinationPolicy,
+) -> Result<(), String> {
+    rename_windows_staged_file_with_policy(staged.file(), path, existing_destination_policy)
         .map_err(|_| "書き出しファイルを原子的に確定できませんでした。".to_owned())?;
     staged.committed = true;
     Ok(())
@@ -947,19 +983,23 @@ mod tests {
         let directory = TestDirectory::new();
         let path = directory.path().join("missing").join("sample.fold");
 
-        assert!(
-            commit_pending_export_to_path(
-                &mut slot,
-                &project,
-                export_id,
-                project.project_id,
-                project.editor.revision(),
-                true,
-                &path,
-            )
-            .is_err()
-        );
+        let error = commit_pending_export_to_path(
+            &mut slot,
+            &project,
+            export_id,
+            project.project_id,
+            project.editor.revision(),
+            true,
+            &path,
+        )
+        .expect_err("a missing confirmed destination directory must fail safely");
 
+        assert_eq!(
+            error,
+            "保存先と同じ場所に一時ファイルを作成できませんでした。"
+        );
+        assert!(!error.contains("sample.fold"));
+        assert!(!error.contains(&directory.path().display().to_string()));
         assert!(slot.pending.is_some());
         assert_eq!(slot.active_generation_id, Some(export_id));
         assert_eq!(slot.last_cancelled_id, None);
@@ -990,15 +1030,18 @@ mod tests {
             let path = directory
                 .path()
                 .join(format!("sample.{}", format.extension()));
+            fs::write(&path, b"OS-confirmed previous export").unwrap();
+            let destination = ensure_export_extension(path.clone(), format)
+                .expect("accept the existing dialog-confirmed destination");
 
-            commit_pending_export_to_path(
+            commit_pending_export_to_destination(
                 &mut slot,
                 &project,
                 export_id,
                 project.project_id,
                 project.editor.revision(),
                 true,
-                &path,
+                &destination,
             )
             .unwrap();
 
@@ -1067,20 +1110,119 @@ mod tests {
             ensure_export_extension(
                 PathBuf::from("sample.json"),
                 CreaseExportFormatRequest::Fold
-            ),
+            )
+            .unwrap(),
             PathBuf::from("sample.fold")
         );
         assert_eq!(
-            ensure_export_extension(PathBuf::from("sample.SVG"), CreaseExportFormatRequest::Svg),
+            ensure_export_extension(PathBuf::from("sample.SVG"), CreaseExportFormatRequest::Svg)
+                .unwrap(),
             PathBuf::from("sample.SVG")
         );
         assert_eq!(
-            ensure_export_extension(PathBuf::from("sample.txt"), CreaseExportFormatRequest::Pdf),
+            ensure_export_extension(PathBuf::from("sample.txt"), CreaseExportFormatRequest::Pdf)
+                .unwrap(),
             PathBuf::from("sample.pdf")
         );
         assert_eq!(
-            ensure_export_extension(PathBuf::from("sample.DXF"), CreaseExportFormatRequest::Dxf),
+            ensure_export_extension(PathBuf::from("sample.DXF"), CreaseExportFormatRequest::Dxf)
+                .unwrap(),
             PathBuf::from("sample.DXF")
+        );
+    }
+
+    #[test]
+    fn extension_correction_cannot_target_an_existing_unconfirmed_crease_export() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.path().join("crease.txt");
+        let corrected_path = directory.path().join("crease.pdf");
+        let confirmed_path = directory.path().join("confirmed.PDF");
+        fs::write(&corrected_path, b"keep existing crease export").unwrap();
+        fs::write(&confirmed_path, b"OS-confirmed overwrite target").unwrap();
+
+        let error = ensure_export_extension(selected_path, CreaseExportFormatRequest::Pdf)
+            .expect_err("an unconfirmed corrected destination must not be overwritten");
+
+        assert!(error.contains("上書き確認"));
+        assert!(
+            !error.contains(&corrected_path.display().to_string()),
+            "save-path errors crossing IPC must not expose the local path"
+        );
+        assert_eq!(
+            fs::read(&corrected_path).unwrap(),
+            b"keep existing crease export"
+        );
+        assert_eq!(
+            ensure_export_extension(confirmed_path.clone(), CreaseExportFormatRequest::Pdf)
+                .expect("an existing selected destination was confirmed by the OS dialog"),
+            confirmed_path
+        );
+    }
+
+    #[test]
+    fn extension_correction_race_preserves_the_crease_stage_and_new_destination() {
+        let project = super::super::initial_project_state();
+        let pending = pending_for(&project, CreaseExportFormatRequest::Pdf);
+        let export_id = pending.export_id;
+        let mut slot = CreaseExportSlot {
+            active_generation_id: Some(export_id),
+            pending: Some(pending),
+            last_cancelled_id: None,
+        };
+        let directory = TestDirectory::new();
+        let selected_path = directory.path().join("race-target.txt");
+        let corrected_path = directory.path().join("race-target.pdf");
+        let destination = ensure_export_extension(selected_path, CreaseExportFormatRequest::Pdf)
+            .expect("preflight an unused corrected path");
+        fs::write(&corrected_path, b"created after extension preflight").unwrap();
+
+        let error = commit_pending_export_to_destination(
+            &mut slot,
+            &project,
+            export_id,
+            project.project_id,
+            project.editor.revision(),
+            true,
+            &destination,
+        )
+        .expect_err("atomic create-new commit must reject the intervening destination");
+
+        assert!(!error.contains("race-target"));
+        assert_eq!(
+            fs::read(&corrected_path).unwrap(),
+            b"created after extension preflight"
+        );
+        assert_eq!(
+            slot.pending.as_ref().map(|pending| pending.export_id),
+            Some(export_id)
+        );
+        assert_eq!(slot.active_generation_id, Some(export_id));
+        assert!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".origami2-")),
+            "a rejected create-new commit must clean its staged file"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_extension_correction_detects_an_existing_target_with_different_path_case() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.path().join("CaseTarget.txt");
+        let existing_path = directory.path().join("casetarget.PDF");
+        fs::write(&existing_path, b"keep case-insensitive target").unwrap();
+
+        ensure_export_extension(selected_path, CreaseExportFormatRequest::Pdf)
+            .expect_err("Windows path lookup must reject a differently-cased existing target");
+
+        assert_eq!(
+            fs::read(existing_path).unwrap(),
+            b"keep case-insensitive target"
         );
     }
 

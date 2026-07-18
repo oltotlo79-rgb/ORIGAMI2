@@ -30,7 +30,6 @@ use thiserror::Error;
 
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 const MAX_STYLE_TEXT_BYTES: usize = 256 * 1024;
-const MAX_STYLE_DECLARATIONS: usize = 32;
 const MAX_DASH_ITEMS: usize = 32;
 const MAX_CLASS_TOKENS: usize = 32;
 const MAX_HINT_CHARS: usize = 120;
@@ -539,25 +538,49 @@ impl Affine {
     }
 }
 
+#[derive(Debug, Clone)]
+struct StyleDeclaration {
+    value: String,
+    important: bool,
+}
+
+impl StyleDeclaration {
+    fn normal(value: String) -> Self {
+        Self {
+            value,
+            important: false,
+        }
+    }
+}
+
+fn cascade_style_declaration(target: &mut Option<StyleDeclaration>, candidate: StyleDeclaration) {
+    let should_replace = target
+        .as_ref()
+        .is_none_or(|current| candidate.important || !current.important);
+    if should_replace {
+        *target = Some(candidate);
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct StyleDeclarations {
-    stroke: Option<String>,
-    color: Option<String>,
-    fill: Option<String>,
-    stroke_width: Option<String>,
-    stroke_dasharray: Option<String>,
-    stroke_opacity: Option<String>,
-    opacity: Option<String>,
-    display: Option<String>,
-    visibility: Option<String>,
+    stroke: Option<StyleDeclaration>,
+    color: Option<StyleDeclaration>,
+    fill: Option<StyleDeclaration>,
+    stroke_width: Option<StyleDeclaration>,
+    stroke_dasharray: Option<StyleDeclaration>,
+    stroke_opacity: Option<StyleDeclaration>,
+    opacity: Option<StyleDeclaration>,
+    display: Option<StyleDeclaration>,
+    visibility: Option<StyleDeclaration>,
 }
 
 impl StyleDeclarations {
     fn overlay(&mut self, other: Self) {
         macro_rules! overlay {
             ($field:ident) => {
-                if other.$field.is_some() {
-                    self.$field = other.$field;
+                if let Some(candidate) = other.$field {
+                    cascade_style_declaration(&mut self.$field, candidate);
                 }
             };
         }
@@ -575,23 +598,28 @@ impl StyleDeclarations {
 
 #[derive(Default)]
 struct StyleDeclarationRefs<'a> {
-    stroke: Option<&'a str>,
-    color: Option<&'a str>,
-    fill: Option<&'a str>,
-    stroke_width: Option<&'a str>,
-    stroke_dasharray: Option<&'a str>,
-    stroke_opacity: Option<&'a str>,
-    opacity: Option<&'a str>,
-    display: Option<&'a str>,
-    visibility: Option<&'a str>,
+    stroke: Option<&'a StyleDeclaration>,
+    color: Option<&'a StyleDeclaration>,
+    fill: Option<&'a StyleDeclaration>,
+    stroke_width: Option<&'a StyleDeclaration>,
+    stroke_dasharray: Option<&'a StyleDeclaration>,
+    stroke_opacity: Option<&'a StyleDeclaration>,
+    opacity: Option<&'a StyleDeclaration>,
+    display: Option<&'a StyleDeclaration>,
+    visibility: Option<&'a StyleDeclaration>,
 }
 
 impl<'a> StyleDeclarationRefs<'a> {
     fn overlay(&mut self, other: &'a StyleDeclarations) {
         macro_rules! overlay {
             ($field:ident) => {
-                if let Some(value) = other.$field.as_deref() {
-                    self.$field = Some(value);
+                if let Some(candidate) = other.$field.as_ref() {
+                    let should_replace = self
+                        .$field
+                        .is_none_or(|current| candidate.important || !current.important);
+                    if should_replace {
+                        self.$field = Some(candidate);
+                    }
                 }
             };
         }
@@ -609,8 +637,14 @@ impl<'a> StyleDeclarationRefs<'a> {
     fn apply_to(self, target: &mut StyleDeclarations) {
         macro_rules! apply {
             ($field:ident) => {
-                if let Some(value) = self.$field {
-                    target.$field = Some(value.to_owned());
+                if let Some(candidate) = self.$field {
+                    let should_replace = target
+                        .$field
+                        .as_ref()
+                        .is_none_or(|current| candidate.important || !current.important);
+                    if should_replace {
+                        target.$field = Some(candidate.clone());
+                    }
                 }
             };
         }
@@ -657,12 +691,23 @@ impl Default for ComputedStyle {
 
 impl ComputedStyle {
     fn child(parent: &Self, declarations: &StyleDeclarations) -> Result<Self, SvgImportError> {
-        let inherited = |value: &Option<String>, parent: &str| match value.as_deref() {
+        let inherited = |value: &Option<StyleDeclaration>, parent: &str| match value
+            .as_ref()
+            .map(|declaration| declaration.value.as_str())
+        {
             None | Some("inherit") => parent.to_owned(),
             Some(value) => value.to_owned(),
         };
-        let local_opacity = parse_opacity(declarations.opacity.as_deref().unwrap_or("1"))?;
-        let display_none = declarations.display.as_deref() == Some("none");
+        let local_opacity = parse_opacity(
+            declarations
+                .opacity
+                .as_ref()
+                .map_or("1", |declaration| declaration.value.as_str()),
+        )?;
+        let display_none = declarations
+            .display
+            .as_ref()
+            .is_some_and(|declaration| declaration.value == "none");
         Ok(Self {
             stroke: inherited(&declarations.stroke, &parent.stroke),
             color: inherited(&declarations.color, &parent.color),
@@ -1977,6 +2022,7 @@ fn presentation_declarations(
             .get(name)
             .map(|value| checked_style_value(name, value))
             .transpose()
+            .map(|value| value.map(StyleDeclaration::normal))
     };
     Ok(StyleDeclarations {
         stroke: value("stroke")?,
@@ -2006,47 +2052,83 @@ fn parse_declarations(
         return Err(SvgImportError::InvalidCss);
     }
     let mut declarations = StyleDeclarations::default();
-    let mut count = 0_usize;
     for declaration in text.split(';') {
         let declaration = declaration.trim();
         if declaration.is_empty() {
             continue;
         }
-        count += 1;
-        if count > MAX_STYLE_DECLARATIONS {
-            return Err(SvgImportError::InvalidCss);
-        }
         let (property, value) = declaration
             .split_once(':')
             .ok_or(SvgImportError::InvalidCss)?;
         let property = property.trim();
-        let value = value.trim();
-        if property.is_empty()
-            || value.is_empty()
-            || value.contains("!important")
-            || property
-                .chars()
-                .any(|c| !(c.is_ascii_lowercase() || c == '-'))
-        {
+        if property.is_empty() {
             return Err(SvgImportError::InvalidCss);
         }
-        let value = checked_style_value(property, value)?;
-        match property {
-            "stroke" => declarations.stroke = Some(value),
-            "color" => declarations.color = Some(value),
-            "fill" => declarations.fill = Some(value),
-            "stroke-width" => declarations.stroke_width = Some(value),
-            "stroke-dasharray" => declarations.stroke_dasharray = Some(value),
-            "stroke-opacity" => declarations.stroke_opacity = Some(value),
-            "opacity" => declarations.opacity = Some(value),
-            "display" => declarations.display = Some(value),
-            "visibility" => declarations.visibility = Some(value),
-            _ => warnings.add(SvgWarningKind::UnsupportedStyleProperty(bounded_detail(
+        if !is_supported_style_property(property) {
+            warnings.add(SvgWarningKind::UnsupportedStyleProperty(bounded_detail(
                 property,
-            )))?,
+            )))?;
+            continue;
+        }
+        let (value, important) = parse_css_declaration_value(value)?;
+        let declaration = StyleDeclaration {
+            value: checked_style_value(property, value)?,
+            important,
+        };
+        match property {
+            "stroke" => cascade_style_declaration(&mut declarations.stroke, declaration),
+            "color" => cascade_style_declaration(&mut declarations.color, declaration),
+            "fill" => cascade_style_declaration(&mut declarations.fill, declaration),
+            "stroke-width" => {
+                cascade_style_declaration(&mut declarations.stroke_width, declaration)
+            }
+            "stroke-dasharray" => {
+                cascade_style_declaration(&mut declarations.stroke_dasharray, declaration)
+            }
+            "stroke-opacity" => {
+                cascade_style_declaration(&mut declarations.stroke_opacity, declaration)
+            }
+            "opacity" => cascade_style_declaration(&mut declarations.opacity, declaration),
+            "display" => cascade_style_declaration(&mut declarations.display, declaration),
+            "visibility" => cascade_style_declaration(&mut declarations.visibility, declaration),
+            _ => unreachable!("supported style property was checked above"),
         }
     }
     Ok(declarations)
+}
+
+fn is_supported_style_property(property: &str) -> bool {
+    matches!(
+        property,
+        "stroke"
+            | "color"
+            | "fill"
+            | "stroke-width"
+            | "stroke-dasharray"
+            | "stroke-opacity"
+            | "opacity"
+            | "display"
+            | "visibility"
+    )
+}
+
+fn parse_css_declaration_value(value: &str) -> Result<(&str, bool), SvgImportError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(SvgImportError::InvalidCss);
+    }
+    let Some(marker_start) = value.rfind('!') else {
+        return Ok((value, false));
+    };
+    let marker = value[marker_start + 1..].trim();
+    if !marker.eq_ignore_ascii_case("important") {
+        return Err(SvgImportError::InvalidCss);
+    }
+    let value = value[..marker_start].trim();
+    if value.is_empty() || value.contains('!') {
+        return Err(SvgImportError::InvalidCss);
+    }
+    Ok((value, true))
 }
 
 fn checked_style_value(property: &str, value: &str) -> Result<String, SvgImportError> {
@@ -4126,15 +4208,15 @@ mod tests {
 
     #[test]
     fn bounds_individual_css_selectors_and_property_values() {
-        let exact_value = "a".repeat(MAX_STYLE_VALUE_CHARS);
+        let exact_value = format!("{}1", "0".repeat(MAX_STYLE_VALUE_CHARS - 1));
         let source = standard_document(&format!(
-            r#"<line style="unknown-property:{exact_value}" x2="1"/>"#
+            r#"<line style="stroke-width:{exact_value}" x2="1"/>"#
         ));
-        read_svg_preview(source.as_bytes()).expect("exact style value limit");
+        read_svg_preview(source.as_bytes()).expect("exact supported style value limit");
 
-        let oversized_value = "a".repeat(MAX_STYLE_VALUE_CHARS + 1);
+        let oversized_value = format!("{}1", "0".repeat(MAX_STYLE_VALUE_CHARS));
         let source = standard_document(&format!(
-            r#"<line style="unknown-property:{oversized_value}" x2="1"/>"#
+            r#"<line style="stroke-width:{oversized_value}" x2="1"/>"#
         ));
         assert!(matches!(
             read_svg_preview(source.as_bytes()),
@@ -4155,6 +4237,83 @@ mod tests {
             read_svg_preview(source.as_bytes()),
             Err(SvgImportError::CssSelectorTooLong { maximum: 120 })
         ));
+    }
+
+    #[test]
+    fn ignores_bounded_unsupported_style_declarations_without_rejecting_geometry() {
+        let oversized_unsupported_value = "x".repeat(MAX_STYLE_VALUE_CHARS + 1);
+        let unsupported = (0..40)
+            .map(|index| format!("vendor-property-{index}:{oversized_unsupported_value}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        let source = standard_document(&format!(
+            r#"<line style="{unsupported};stroke:#ff0000 !important" x1="10" y1="10" x2="90" y2="90"/>"#
+        ));
+
+        let preview = read_svg_preview(source.as_bytes())
+            .expect("bounded unsupported declarations must be ignored");
+
+        assert_eq!(preview.edges().len(), 1);
+        assert_eq!(
+            preview.style_groups()[0].stroke,
+            RgbaColor::opaque(255, 0, 0)
+        );
+        for index in 0..40 {
+            assert!(has_warning(
+                &preview,
+                &SvgWarningKind::UnsupportedStyleProperty(format!("vendor-property-{index}"))
+            ));
+        }
+    }
+
+    #[test]
+    fn unsupported_styles_remain_bounded_by_the_document_style_text_limit() {
+        let oversized_style = format!("vendor-property:{}", "x".repeat(MAX_STYLE_TEXT_BYTES));
+        let source = standard_document(&format!(
+            r#"<line style="{oversized_style}" x1="10" y1="10" x2="90" y2="90"/>"#
+        ));
+
+        assert!(matches!(
+            read_svg_preview(source.as_bytes()),
+            Err(SvgImportError::InvalidCss)
+        ));
+    }
+
+    #[test]
+    fn important_declarations_follow_css_cascade_instead_of_rejecting_the_document() {
+        let source = standard_document(
+            r#"
+                <style>
+                    .fold { stroke: #ff0000 !important; }
+                    .fold { stroke: #0000ff; }
+                    .same-priority { stroke: #0000ff !important; }
+                    .same-priority { stroke: #ffff00 !important; }
+                </style>
+                <line class="fold" style="stroke:#00ff00" x1="10" y1="10" x2="90" y2="90"/>
+                <line class="fold" style="stroke:#00ff00 !important" x1="10" y1="90" x2="90" y2="10"/>
+                <line class="same-priority" x1="10" y1="50" x2="90" y2="50"/>
+            "#,
+        );
+
+        let preview = read_svg_preview(source.as_bytes()).expect("important CSS");
+
+        assert_eq!(preview.edges().len(), 3);
+        assert_eq!(preview.style_groups().len(), 3);
+        assert_eq!(
+            preview.style_groups()[0].stroke,
+            RgbaColor::opaque(255, 0, 0),
+            "stylesheet !important must beat a normal inline declaration"
+        );
+        assert_eq!(
+            preview.style_groups()[1].stroke,
+            RgbaColor::opaque(0, 255, 0),
+            "inline !important must beat stylesheet !important"
+        );
+        assert_eq!(
+            preview.style_groups()[2].stroke,
+            RgbaColor::opaque(255, 255, 0),
+            "a later declaration must win at equal specificity and importance"
+        );
     }
 
     #[test]

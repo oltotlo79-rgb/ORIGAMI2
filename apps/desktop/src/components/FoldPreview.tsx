@@ -33,14 +33,13 @@ import {
   type FoldPreviewFaceCollisionSeverity,
 } from '../lib/foldPreviewCollisionPresentation'
 import {
-  collisionBadgeClass,
-  collisionBadgeText,
   collisionDataStatus,
   collisionPoseKey,
   collisionSummariesEqual,
   describeCollisionSummary,
   type CollisionSummary,
 } from '../lib/foldPreviewCollisionView'
+import { FoldPreviewCollisionBadge } from './FoldPreviewCollisionBadge'
 import {
   createFoldPreviewContinuousMotionRunner,
   type FoldPreviewContinuousMotionRunner,
@@ -4365,12 +4364,10 @@ export function FoldPreview({
         ) : null}
         {previewAvailable ? (
           <div className="fold-preview-status-stack" aria-hidden="true">
-            <span
-              className={`fold-preview-collision ${collisionBadgeClass(currentCollisionSummary)}`}
-              title={collisionDescription}
-            >
-              表示姿勢｜{collisionBadgeText(currentCollisionSummary)}
-            </span>
+            <FoldPreviewCollisionBadge
+              summary={currentCollisionSummary}
+              description={collisionDescription}
+            />
             {motionView ? (
               <span
                 className={`fold-preview-motion ${motionBadgeClass}`}

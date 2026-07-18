@@ -15,6 +15,7 @@ import {
 import {
   FOLD_PREVIEW_FULL_SCAN_NON_ADJACENT_WITNESS_JOB_VERSION,
   FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION,
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   prepareFoldPreviewNarrowPhase,
   type FoldPreviewFullScanNonAdjacentWitnessJob,
@@ -1547,9 +1548,19 @@ function fullNonAdjacentScanIsClear(
 > {
   if (!value || value.kind !== 'complete') return false
   const coverage = value.coverage
+  const exactWork = value.exactTransversalProofWork
   return value.sourcePose === 'analyzed_input_pose'
     && value.requestIdentityBound === false
     && value.autoApplicable === false
+    && exactWork.algorithm
+      === 'binary64_transversal_triangle_intersection_v1'
+    && exactWork.maximumAttempts
+      === MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && Number.isSafeInteger(exactWork.attempted)
+    && exactWork.attempted >= 0
+    && exactWork.attempted
+      <= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && exactWork.skippedByLimit === 0
     && value.witnessSamples.length === 0
     && coverage.authoritativePairScanComplete === true
     && coverage.allCollisionConstraintsRepresented === true
@@ -1574,6 +1585,18 @@ function staticClearAnalysis(
     { kind: 'complete' }
   >,
 ): FoldPreviewTreeSingleHingeStaticCorrectionAnalysis | null {
+  const exactWork = result.exactTransversalProofWork
+  if (
+    exactWork.algorithm
+      !== 'binary64_transversal_triangle_intersection_v1'
+    || exactWork.maximumAttempts
+      !== MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    || !Number.isSafeInteger(exactWork.attempted)
+    || exactWork.attempted < 0
+    || exactWork.attempted
+      > MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    || exactWork.skippedByLimit !== 0
+  ) return null
   let allowedHingeInteractionCount = 0
   for (const interaction of result.interactions) {
     if (

@@ -297,6 +297,12 @@ SIM-010はVAL-003の平坦折り判定が管理する層順序を正本とし、
 
 厚さ0は正厚の退化三角柱として扱わず、理想三角形面どうしの交差次元を分類する。非隣接面の一点または境界辺だけの交差は`touching`、共面の正面積重なり、または両面内部を横断する正長線分は`penetrating`とする。共有VertexIdや共有EdgeIdだけで貫通を免除せず、同じrest座標を持つ共有点・共有辺と現在world位置が数値margin内で一致し、内部横断がない場合に限り、剛体変換の丸め残差をtopological contactの証拠として使う。正面積、正長、面間距離または点併合がmargin以下で次元を断定できない場合は`touching`へ落とさず`indeterminate`へ退避する。
 
+三角柱SATまたは厚さ0の面交差分類が近平行軸・sub-margin距離によって`indeterminate`になる直前に、同じworld-space三角形3頂点の保存済みbinary64値を厳密な2進有理数として読み直す。各三角形が相手平面の正負両側に頂点を持ち、2本の平面交線区間が正長で重なることをBigInt演算で証明できた場合だけ、`binary64_transversal_triangle_intersection_v1`の横断交差として`penetrating`へ確定する。相手平面上の頂点は交線区間の端点として厳密に扱うが、正負straddleを省略しない。共有点または共有辺だけの一点・境界接触は正長の内部横断にならないため成立せず、許容marginも広げない。証明できない場合は従来どおり`indeterminate`を維持する。
+
+BigIntによる厳密横断証明は、同じ不変姿勢を対象とする1解析につき最大`MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS = 256`回とする。この値は、最大1,000,000件のSAT pairがすべて任意精度演算へ進む最悪経路を約1/3906へ制限しつつ、A/B再現および3×3回帰の少数候補を厳密化できる明示的な初版工学上限である。予算は解析入口で一度だけ生成し、全candidateとresumable stepで共有する。candidate切替やstep再開ではリセットせず、別の同期解析、one-shot解析、full-scan解析を開始したときだけ新しくする。cancel済み解析の会計を後続解析へ引き継がない。
+
+許容差分類が厳密証明を要求した時点で1 attemptを消費する。上限後はBigInt helperを呼ばず、`skippedByLimit`を加算し、そのtriangle pairを必ず`indeterminate`とする。これは接触・安全・衝突なしを意味せず、UIでは貫通と同じblocking riskとして「交差の可能性・判定保留」を維持する。共有ヒンジcandidateでも予算超過由来の不確定を解析的な許容境界接触・corridor・平坦積層へ再分類しない。同じface candidateの後続pairまたは後続candidateで通常SATがmarginに依存せず`penetrating`を確定できた場合は、予算枯渇後でもseverityを`penetrating`へ昇格してよい。`exactTransversalProofWork`はalgorithm、固定上限、実attempt数、上限により省略した数をresultと全job stepへdeep-frozen snapshotとして公開する。
+
 厚さ0の共有ヒンジでは、通常角の境界辺接触を`boundary_contact`として許容し、厳密な180度で同じヒンジに属する面が平坦に重なる場合だけ`flat_surface_stack`として許容する。非隣接面の平坦な正面積重なりは共有ヒンジ許容の対象外であり、引き続き`penetrating`である。複数共有ヒンジ、姿勢不一致、走査未完了、偽造・重複した三角形対、許容境界を安全に分類できない場合は`indeterminate`へ退避する。許容領域外の体積重なりを証明できた場合だけヒンジ外貫通、境界接触を証明できた場合だけヒンジ外接触とする。
 
 利用者が指定した厳密な0、±90、±180度は、衝突診断と3D描画の双方でsin/cosを代数的な0、±1へ正規化した同一Matrix4を使う。`89.999999`度のような近傍値は丸めず、近平行またはsub-marginの不確実性を厳密角へ昇格しない。
@@ -327,6 +333,16 @@ SIM-010はVAL-003の平坦折り判定が管理する層順序を正本とし、
 
 利用者報告A/Bは上記の忠実fixtureを使い、各折り線長を400 mmに固定する。Aは厚さ0、左10度、右0度で、非隣接外側面を「貫通0・接触1」、共有ヒンジ2件を許容境界接触、数値・方針不確定0とする。Bは厚さ0、左右180度で、非隣接外側面を「貫通1」とする。非隣接の`touching`は`penetrating`とは区別して表示するが、連続運動では紙同士の最初の接触として安全側に停止する。共有ヒンジモデルで明示許容した接触だけは停止対象から除く。
 
+2026-07-19の追加回帰では、400×400 mm紙の一辺中点`M=(200, 0)`から遠い2角`(0, 400)`、`(400, 400)`へ山折りを引き、中央面を固定して外側2面を互いに反対符号で回転する。対象の非隣接外側面ペアは全組で広域候補に残し、次の分類を正本とする。厚さ0・90度は横断開始の幾何学的境界であり、貫通や判定保留へ誤昇格させず接触とする。
+
+| 辺中点Mからの山山V字 | 90度 | 135度 | 179度 |
+|---|---|---|---|
+| 厚さ0 mm | 接触 | 貫通 | 貫通 |
+| 厚さ0.1 mm | 貫通 | 貫通 | 貫通 |
+| 厚さ3 mm | 貫通 | 貫通 | 貫通 |
+
+`indeterminate`は安全を意味しない。UIでは「交差の可能性・判定保留」と明記し、貫通と同じblocking risk属性、赤系の枠・背景、太字で表示する。判定保留面の3D輪郭も維持し、無表示または安全色へ縮約しない。
+
 静的分類単独では連続運動を保証しない。単一折りUIと、木構造の選択1ヒンジについて他ヒンジを固定する物理把持UIから連続経路を判定する。複数ヒンジvectorの同時連続運動は未検証として扱う。いずれも実際の折り癖、材料変形、厳密な層ずれを保証しない。2026-07-18のオーナー決定により、この`centered_mid_surface_v1`を初版の正式な厚さ仕様として確定し、厳密な層ずれ再現は将来課題とする。UIでも中央面基準モデルによる近似であることを明示する。
 
 #### 8.2.2 三角柱SAT witness seed
@@ -356,6 +372,7 @@ SIM-010はVAL-003の平坦折り判定が管理する層順序を正本とし、
 - `full_non_adjacent_prism_witness_scan_job_v1`はcandidate、first triangle、second triangleのcursorを保持し、AABB rejectを含むtriangle-pair visit 1件または選択済みwitness導出1件を1 work unitとして中断・再開する。exact pair数、最大witness導出数、合計work上限を不変`workBounds`で公開し、各`step`の増分、累積値、終端snapshotを照合してからだけ結果を確定する。cancel、再入、不正budget、走査例外は部分witnessを公開せず同一参照の終端へ退避する。
 - 既存の同期full-scan APIは同じjobを最大1,000,016 unitsでdrainする互換wrapperとし、走査順・coverage・witnessを維持する。この初期jobのfactoryではtransform snapshot、broad phase、triangle-prism準備を同期実行するため、triangle-pair/witness部分だけが増分化済みであり、描画frame全体の時間上限はまだ主張しない。後続でbroad phaseとprism準備もcursor化する。
 - `narrow_phase_sat_witness_cursor_job_v1`は通常の早期停止解析についてもcandidate、triangle pair、witnessのcursorを保持し、AABB rejectを含むpair visitまたは選択済みwitness導出を1 work unitとして中断・再開する。non-adjacentまたはpolicyなしhingeの最初のpenetrationではそのcandidateだけを早期終了し、後続candidateを継続する。最終face severityと一致するseedだけを集め、全penetrating、全touchingの順で最大16件を導出する。同期`analyze()`は同じjobを最大1,000,016 unitsでdrainし、one-shotとの出力・順序・coverageを維持する。
+- 厳密横断証明はtriangle-pair visit内で必要時だけ完了まで同期実行するsubworkであり、追加cursor unitとして`totalWorkUnits`へ加算しない。その代わり、各stepの`exactTransversalProofWork`についてattempt/skippedが単調、attemptが256以下、同じstepで増えたrequest数が課金済みtriangle-pair増分以下であることを照合する。この上限はBigInt fallbackだけを制限し、既存の最大1,000,000 triangle-pair visitと最大16 witness導出を変更しない。
 - 通常jobの`workBounds`はpotential pair数、実pair上限、witness上限、合計cursor上限に加え、`entireStepTimeBounded: false`、`synchronousFactoryPreparation: true`、`synchronousHingePolicyFinalization: true`、`synchronousResultFinalization: true`を固定する。potentialが100万を超えても早期停止により実訪問が上限内なら拒否せず、100万ちょうどは完了し、次のpairが必要な場合だけ未課金のまま`work_limit_exceeded`へ退避する。transform snapshot、broad phase、prism準備、hinge policy、完成resultの切り離し・deep freezeはまだ同期であり、真のframe時間上限にはこれらの追加cursor化またはworker分離が必要である。
 - 通常/full-scan両jobはbudget検証前から再入guardを有効にする。budget検証、SAT、hinge policy、witness中の再入またはcancelは外側処理より優先し、cancel後に例外が発生しても`scan_error`で上書きしない。課金済みunitとwork boundsを照合してから同一参照の終端を公開する。
 - `complete`が保証するのは、同じ解析姿勢で全非隣接衝突pairの局所制約を取り出せたことだけであり、出力は`requestIdentityBound: false`を固定する。次層でproject・revision・request・完全角度vector・危険時刻へ再結合するまではsolver入力にしない。固定側・可動subtreeのpartition、正のclearance、合法なヒンジ角への投影、新規衝突の全面再検証、そこまでの連続経路認定、層順・材料変形は別段階とし、raw translationや局所hintを3D姿勢またはプロジェクトへ適用しない。
@@ -515,7 +532,7 @@ Schema
 
 ### 9.3 完全性
 
-全体平坦折り判定は、設定された時間制限内で「可」「不可」「不明」を返し、可否を証明できる対象クラスと根拠を結果に含める。対象外、時間切れ、処理上限到達または証明不足を「不可」と断定しない。3D操作の運動検証は一般経路を完全探索せず、要求された操作経路で最初に検出した衝突の直前へ停止し、対象面・位置・理由を表示する。
+全体平坦折り判定は、設定された時間制限内で「可」「不可」「不明」を返し、可否を証明できる対象クラスと根拠を結果に含める。対象外、時間切れ、処理上限到達または証明不足を「不可」と断定しない。初版の対象クラス、version付きprovenance、facewise制約、場所別層順序、native background job、時間・資源上限の正本は[全体平坦折り判定と層順序管理の設計](global-flat-foldability-design.md)に置く。3D操作の運動検証は一般経路を完全探索せず、要求された操作経路で最初に検出した衝突の直前へ停止し、対象面・位置・理由を表示する。
 
 ### 9.4 局所平坦折り必要条件
 
@@ -799,14 +816,13 @@ project instance・ID・revision・形式を固定
 
 ## 16. 設計上の未解決事項
 
-OQ-001は、全入力を時間制限つきの「可／不可／不明」で返し、証明可能な対象クラスと根拠を明示する契約として初版解決した。OQ-002は`centered_mid_surface_v1`を初版正式仕様とし、厳密な層ずれを将来課題とすることで解決した。
+OQ-001は、全入力を時間制限つきの「可／不可／不明」で返し、証明可能な対象クラスと根拠を明示する契約として初版解決した。OQ-002は`centered_mid_surface_v1`を初版正式仕様とし、厳密な層ずれを将来課題とすることで解決した。OQ-004は、外部汎用solverを採用せず、exact facewise制約のBFS伝播と明示stackによる決定論的DFS、独立certificate再検証を`convex_faces_facewise_v1`として実装したため初版解決した。詳細は[全体平坦折り判定と層順序管理の設計](global-flat-foldability-design.md)を正本とする。
 
 OQ-007「PDF図記号とレイアウト規則」は、[折り手順書き出し契約](instruction-export-contract.md)の`instruction_export_v1`として初版解決した。将来profileで図記号やlayoutを拡張する場合も、初版profileの決定論的出力は変更しない。
 
 | ID | 項目 | 解決時期 |
 |---|---|---|
 | OQ-003 | 高精度数値ライブラリ | Phase 0 |
-| OQ-004 | 制約ソルバーと競合制約抽出 | Phase 2前 |
 | OQ-005 | 2D Canvas/WebGL切替基準 | Phase 0 |
 | OQ-006 | `.ori2`スキーマと履歴圧縮 | Phase 1前 |
 | OQ-008 | 各外部形式の対応バージョン | Phase 2/6前 |

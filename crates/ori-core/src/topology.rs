@@ -1,5 +1,8 @@
 use ori_domain::{CreasePattern, Paper, ProjectId};
-use ori_topology::{FaceExtractionInput, FaceExtractionReport, analyze_faces};
+use ori_topology::{
+    CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, FaceExtractionInput,
+    FaceExtractionReport, analyze_faces, analyze_faces_with_checkpoint,
+};
 
 use crate::{EditorState, Revision};
 
@@ -31,10 +34,44 @@ impl TopologyAnalysisInput {
         }
     }
 
+    /// Runs read-only face extraction with cooperative interruption.
+    pub fn analyze_with_checkpoint<F>(
+        &self,
+        checkpoint: &mut F,
+    ) -> Result<EditorTopology, CooperativeAnalysisAbort>
+    where
+        F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+    {
+        Ok(EditorTopology {
+            revision: self.revision,
+            report: analyze_faces_with_checkpoint(
+                FaceExtractionInput {
+                    identity_namespace: self.identity_namespace,
+                    source_revision: self.revision,
+                    paper: &self.paper,
+                    pattern: &self.pattern,
+                },
+                checkpoint,
+            )?,
+        })
+    }
+
     /// Returns the editor revision captured with this input.
     #[must_use]
     pub const fn revision(&self) -> Revision {
         self.revision
+    }
+
+    /// Returns the immutable paper captured for this analysis.
+    #[must_use]
+    pub const fn paper(&self) -> &Paper {
+        &self.paper
+    }
+
+    /// Returns the immutable crease pattern captured beside the paper.
+    #[must_use]
+    pub const fn pattern(&self) -> &CreasePattern {
+        &self.pattern
     }
 
     /// Checks that a delayed result still describes the active editor input.
@@ -303,5 +340,49 @@ mod tests {
 
         assert!(input.is_current_for(namespace, &editor));
         assert!(input.analyze().is_simulation_ready());
+    }
+
+    #[test]
+    fn topology_analysis_distinguishes_cooperative_cancel_and_deadline() {
+        let editor = rectangular_editor();
+        let input = editor.topology_analysis_input(ProjectId::new());
+
+        let mut cancel_calls = 0;
+        let cancelled = input.analyze_with_checkpoint(&mut || {
+            cancel_calls += 1;
+            if cancel_calls >= 2 {
+                CooperativeAnalysisCheckpoint::Cancelled
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        });
+        assert_eq!(cancelled, Err(CooperativeAnalysisAbort::Cancelled));
+        assert!(
+            cancel_calls >= 2,
+            "cancellation must be observed during analysis"
+        );
+
+        let mut deadline_calls = 0;
+        let deadline = input.analyze_with_checkpoint(&mut || {
+            deadline_calls += 1;
+            if deadline_calls >= 2 {
+                CooperativeAnalysisCheckpoint::DeadlineReached
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        });
+        assert_eq!(deadline, Err(CooperativeAnalysisAbort::DeadlineReached));
+        assert!(
+            deadline_calls >= 2,
+            "deadline must be observed during analysis"
+        );
+
+        let mut continue_only = || CooperativeAnalysisCheckpoint::Continue;
+        assert_eq!(
+            input
+                .analyze_with_checkpoint(&mut continue_only)
+                .expect("continue-only checkpoint"),
+            input.analyze()
+        );
     }
 }

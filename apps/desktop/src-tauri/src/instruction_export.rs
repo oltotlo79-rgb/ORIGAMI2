@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsStr,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -19,12 +18,14 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
+#[cfg(test)]
 use super::crease_export::persist_export_bytes_atomically;
+use super::crease_export::persist_export_bytes_to_destination;
+use super::save_path::DialogSaveDestination;
 use super::{
     AppState, ProjectState, ensure_expected_project, ensure_project_identity, lock_project,
 };
 
-const GENERATION_CANCELLED_MESSAGE: &str = "折り図の生成はキャンセルされました。";
 const PHASE_VALIDATING: u8 = 0;
 const PHASE_ANALYZING_TOPOLOGY: u8 = 1;
 const PHASE_BUILDING_DOCUMENT: u8 = 2;
@@ -49,6 +50,9 @@ pub(super) enum InstructionExportErrorCategory {
     WarningAcknowledgementRequired,
     SaveTargetInvalid,
     SaveFailed,
+    // Stable fail-closed IPC category. Keep this wire value even when every
+    // currently known failure boundary has a more specific category.
+    #[allow(dead_code)]
     UnexpectedFailure,
 }
 
@@ -103,77 +107,15 @@ impl InstructionExportCommandError {
             message_ja: category.message_ja(),
         }
     }
+}
 
-    fn from_internal(error: &str) -> Self {
-        let category = if error == GENERATION_CANCELLED_MESSAGE {
-            InstructionExportErrorCategory::GenerationCancelled
-        } else if error.contains("置き換え") {
-            InstructionExportErrorCategory::GenerationReplaced
-        } else if error.contains("状態を利用できません") || error.contains("state lock is poisoned")
-        {
-            InstructionExportErrorCategory::StateUnavailable
-        } else if error.contains("active project changed")
-            || error.contains("open project instance changed")
-            || error.contains("project changed while")
-            || error.contains("expected revision")
-            || error.contains("生成中に展開図")
-            || error.contains("別の編集状態")
-        {
-            InstructionExportErrorCategory::ProjectChanged
-        } else if error.contains("折り手順が1件もない") {
-            InstructionExportErrorCategory::TimelineEmpty
-        } else if error.contains("現在の展開図より古い")
-            || error == "折り図の手順が現在の展開図より古くなっています。"
-        {
-            InstructionExportErrorCategory::TimelineStale
-        } else if error.contains("元データが上限") {
-            InstructionExportErrorCategory::SourceLimitExceeded
-        } else if error.contains("3D折り図を生成できる面構造")
-            || error == "折り図の面構造または形状に対応していません。"
-        {
-            InstructionExportErrorCategory::TopologyUnsupported
-        } else if error == "折り図に含められない入力があります。" {
-            InstructionExportErrorCategory::DocumentInputInvalid
-        } else if error == "折り図の出力上限を超えています。" {
-            InstructionExportErrorCategory::DocumentLimitExceeded
-        } else if error == "折り図データの生成に失敗しました。"
-            || error.contains("生成処理を完了できませんでした")
-        {
-            InstructionExportErrorCategory::DocumentGenerationFailed
-        } else if error.contains("生成された折り図") || error.contains("進捗を前の段階")
-        {
-            InstructionExportErrorCategory::DocumentContractInvalid
-        } else if error.contains("制約に関する確認が必要") {
-            InstructionExportErrorCategory::WarningAcknowledgementRequired
-        } else if error.contains("保存先はファイルパスではありません")
-            || error.contains("ローカルファイルではありません")
-        {
-            InstructionExportErrorCategory::SaveTargetInvalid
-        } else if error.contains("一時ファイル")
-            || error.contains("書き出しファイルを原子的に確定")
-            || error.contains("保存先ディレクトリ")
-        {
-            InstructionExportErrorCategory::SaveFailed
-        } else if error.contains("既に開始")
-            || error.contains("既に破棄")
-            || error.contains("進捗状態が不正")
-            || error.contains("プレビューは既に")
-            || error.contains("指定された折り図プレビューは存在")
-            || error.contains("形式が生成開始時")
-        {
-            InstructionExportErrorCategory::GenerationUnavailable
-        } else {
-            InstructionExportErrorCategory::UnexpectedFailure
-        };
+impl From<InstructionExportErrorCategory> for InstructionExportCommandError {
+    fn from(category: InstructionExportErrorCategory) -> Self {
         Self::new(category)
     }
 }
 
-impl From<String> for InstructionExportCommandError {
-    fn from(error: String) -> Self {
-        Self::from_internal(&error)
-    }
-}
+type InstructionExportResult<T> = Result<T, InstructionExportErrorCategory>;
 
 #[derive(Default)]
 pub(super) struct InstructionExportState(Mutex<InstructionExportSlot>);
@@ -368,7 +310,7 @@ pub(super) async fn preview_instruction_export(
             Ok(built) => built,
             Err(_) => {
                 abandon_export_generation(&export_state, export_id)?;
-                return Err("折り図の生成処理を完了できませんでした。".to_owned().into());
+                return Err(InstructionExportErrorCategory::DocumentGenerationFailed.into());
             }
         };
     let pending = match built {
@@ -380,7 +322,8 @@ pub(super) async fn preview_instruction_export(
     };
 
     let mut slot = lock_instruction_export(&export_state)?;
-    let project = lock_project(&state)?;
+    let project =
+        lock_project(&state).map_err(|_| InstructionExportErrorCategory::StateUnavailable)?;
     ensure_generation_is_current(&slot, export_id)?;
     if let Err(error) = ensure_pending_is_current(&pending, &project) {
         slot.active = None;
@@ -402,7 +345,7 @@ pub(super) fn get_instruction_export_progress(
     let active = slot
         .active
         .as_ref()
-        .ok_or_else(|| "この折り図生成は既に破棄されています。".to_owned())?;
+        .ok_or(InstructionExportErrorCategory::GenerationUnavailable)?;
     Ok(InstructionExportProgressResponse {
         export_id,
         phase: instruction_export_phase(active.phase.load(Ordering::SeqCst))?,
@@ -421,7 +364,8 @@ pub(super) async fn save_instruction_export(
 ) -> Result<InstructionExportSaveResponse, InstructionExportCommandError> {
     let (pending, initial_directory) = {
         let slot = lock_instruction_export(&export_state)?;
-        let project = lock_project(&state)?;
+        let project =
+            lock_project(&state).map_err(|_| InstructionExportErrorCategory::StateUnavailable)?;
         let pending = checked_pending(
             &slot,
             &project,
@@ -451,7 +395,8 @@ pub(super) async fn save_instruction_export(
     }
     let Some(selected) = dialog.blocking_save_file() else {
         let slot = lock_instruction_export(&export_state)?;
-        let project = lock_project(&state)?;
+        let project =
+            lock_project(&state).map_err(|_| InstructionExportErrorCategory::StateUnavailable)?;
         let pending = checked_pending(
             &slot,
             &project,
@@ -465,19 +410,20 @@ pub(super) async fn save_instruction_export(
     let selected_path = selected
         .simplified()
         .into_path()
-        .map_err(|_| "選択された保存先はローカルファイルではありません。".to_owned())?;
-    let path = ensure_export_extension(selected_path, pending.format);
+        .map_err(|_| InstructionExportErrorCategory::SaveTargetInvalid)?;
+    let destination = ensure_export_extension(selected_path, pending.format)?;
 
     let mut slot = lock_instruction_export(&export_state)?;
-    let project = lock_project(&state)?;
-    commit_pending_export_to_path(
+    let project =
+        lock_project(&state).map_err(|_| InstructionExportErrorCategory::StateUnavailable)?;
+    commit_pending_export_to_destination(
         &mut slot,
         &project,
         export_id,
         expected_project_id,
         expected_revision,
         warnings_acknowledged,
-        &path,
+        &destination,
     )?;
     Ok(InstructionExportSaveResponse { canceled: false })
 }
@@ -492,17 +438,17 @@ pub(super) fn cancel_instruction_export(
 
 fn lock_instruction_export(
     state: &InstructionExportState,
-) -> Result<MutexGuard<'_, InstructionExportSlot>, String> {
+) -> InstructionExportResult<MutexGuard<'_, InstructionExportSlot>> {
     state
         .0
         .lock()
-        .map_err(|_| "折り図書き出し状態を利用できません。".to_owned())
+        .map_err(|_| InstructionExportErrorCategory::StateUnavailable)
 }
 
 fn begin_export_generation(
     state: &InstructionExportState,
     export_id: ProjectId,
-) -> Result<Arc<AtomicBool>, String> {
+) -> InstructionExportResult<Arc<AtomicBool>> {
     let mut slot = lock_instruction_export(state)?;
     if let Some(active) = slot.active.take() {
         active.cancellation.store(true, Ordering::SeqCst);
@@ -523,38 +469,34 @@ fn claim_generation(
     state: &InstructionExportState,
     export_id: ProjectId,
     format: InstructionExportFormatRequest,
-) -> Result<(Arc<AtomicBool>, Arc<AtomicU8>), String> {
+) -> InstructionExportResult<(Arc<AtomicBool>, Arc<AtomicU8>)> {
     let mut slot = lock_instruction_export(state)?;
     ensure_generation_is_current(&slot, export_id)?;
     if slot.pending.is_some() {
-        return Err(
-            "この折り図生成は既に開始されています。新しい生成を開始してください。".to_owned(),
-        );
+        return Err(InstructionExportErrorCategory::GenerationUnavailable);
     }
     let active = slot
         .active
         .as_mut()
-        .ok_or_else(|| "この折り図生成は既に破棄されています。".to_owned())?;
+        .ok_or(InstructionExportErrorCategory::GenerationUnavailable)?;
     if active.claimed_format.is_some() {
-        return Err(
-            "この折り図生成は既に開始されています。新しい生成を開始してください。".to_owned(),
-        );
+        return Err(InstructionExportErrorCategory::GenerationUnavailable);
     }
     if active.phase.load(Ordering::SeqCst) != PHASE_VALIDATING {
-        return Err("折り図生成の進捗状態が不正です。".to_owned());
+        return Err(InstructionExportErrorCategory::GenerationUnavailable);
     }
     active.claimed_format = Some(format);
     Ok((Arc::clone(&active.cancellation), Arc::clone(&active.phase)))
 }
 
-fn advance_generation_phase(phase: &AtomicU8, next: u8) -> Result<(), String> {
+fn advance_generation_phase(phase: &AtomicU8, next: u8) -> InstructionExportResult<()> {
     if next > PHASE_READY {
-        return Err("折り図生成の進捗状態が不正です。".to_owned());
+        return Err(InstructionExportErrorCategory::GenerationUnavailable);
     }
     let mut current = phase.load(Ordering::SeqCst);
     loop {
         if current > next {
-            return Err("折り図生成の進捗を前の段階へ戻せません。".to_owned());
+            return Err(InstructionExportErrorCategory::DocumentContractInvalid);
         }
         if current == next {
             return Ok(());
@@ -566,20 +508,20 @@ fn advance_generation_phase(phase: &AtomicU8, next: u8) -> Result<(), String> {
     }
 }
 
-fn instruction_export_phase(value: u8) -> Result<InstructionExportPhase, String> {
+fn instruction_export_phase(value: u8) -> InstructionExportResult<InstructionExportPhase> {
     match value {
         PHASE_VALIDATING => Ok(InstructionExportPhase::Validating),
         PHASE_ANALYZING_TOPOLOGY => Ok(InstructionExportPhase::AnalyzingTopology),
         PHASE_BUILDING_DOCUMENT => Ok(InstructionExportPhase::BuildingDocument),
         PHASE_READY => Ok(InstructionExportPhase::Ready),
-        _ => Err("折り図生成の進捗状態が不正です。".to_owned()),
+        _ => Err(InstructionExportErrorCategory::GenerationUnavailable),
     }
 }
 
 fn abandon_export_generation(
     state: &InstructionExportState,
     export_id: ProjectId,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
     let mut slot = lock_instruction_export(state)?;
     if slot.active.as_ref().map(|active| active.export_id) == Some(export_id) {
         slot.active = None;
@@ -591,24 +533,24 @@ fn abandon_export_generation(
 fn ensure_generation_is_current(
     slot: &InstructionExportSlot,
     export_id: ProjectId,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
     match slot.active.as_ref() {
         Some(active)
             if active.export_id == export_id && !active.cancellation.load(Ordering::SeqCst) =>
         {
             Ok(())
         }
-        Some(_) => Err("この折り図生成は新しい処理に置き換えられました。".to_owned()),
+        Some(_) => Err(InstructionExportErrorCategory::GenerationReplaced),
         None if slot.last_cancelled_id == Some(export_id) => {
-            Err(GENERATION_CANCELLED_MESSAGE.to_owned())
+            Err(InstructionExportErrorCategory::GenerationCancelled)
         }
-        None => Err("この折り図生成は既に破棄されています。".to_owned()),
+        None => Err(InstructionExportErrorCategory::GenerationUnavailable),
     }
 }
 
-fn ensure_not_cancelled(cancellation: &AtomicBool) -> Result<(), String> {
+fn ensure_not_cancelled(cancellation: &AtomicBool) -> InstructionExportResult<()> {
     if cancellation.load(Ordering::SeqCst) {
-        Err(GENERATION_CANCELLED_MESSAGE.to_owned())
+        Err(InstructionExportErrorCategory::GenerationCancelled)
     } else {
         Ok(())
     }
@@ -622,34 +564,30 @@ fn capture_export_source(
     format: InstructionExportFormatRequest,
     cancellation: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
-) -> Result<InstructionExportSource, String> {
+) -> InstructionExportResult<InstructionExportSource> {
     ensure_not_cancelled(&cancellation)?;
-    let project = lock_project(state)?;
-    ensure_project_identity(&project, expected_project_id)?;
+    let project =
+        lock_project(state).map_err(|_| InstructionExportErrorCategory::StateUnavailable)?;
+    ensure_project_identity(&project, expected_project_id)
+        .map_err(|_| InstructionExportErrorCategory::ProjectChanged)?;
     if project.editor.revision() != expected_revision {
-        return Err(format!(
-            "expected revision {expected_revision}, but the current revision is {}",
-            project.editor.revision()
-        ));
+        return Err(InstructionExportErrorCategory::ProjectChanged);
     }
     let timeline = project.editor.instruction_timeline().clone();
     if timeline.steps.is_empty() {
-        return Err("折り手順が1件もないため、折り図を書き出せません。".to_owned());
+        return Err(InstructionExportErrorCategory::TimelineEmpty);
     }
     validate_source_counts(
         project.editor.pattern().vertices.len(),
         project.editor.pattern().edges.len(),
     )?;
     let current_fold_model_fingerprint = project.editor.fold_model_fingerprint_v1();
-    if let Some(step_index) = timeline
+    if timeline
         .steps
         .iter()
-        .position(|step| step.pose.source_model_fingerprint != current_fold_model_fingerprint)
+        .any(|step| step.pose.source_model_fingerprint != current_fold_model_fingerprint)
     {
-        return Err(format!(
-            "手順{}は現在の展開図より古いため、姿勢を取り直してください。",
-            step_index + 1
-        ));
+        return Err(InstructionExportErrorCategory::TimelineStale);
     }
     Ok(InstructionExportSource {
         export_id,
@@ -670,18 +608,18 @@ fn capture_export_source(
 
 fn build_pending_export(
     source: InstructionExportSource,
-) -> Result<PendingInstructionExport, String> {
+) -> InstructionExportResult<PendingInstructionExport> {
     ensure_not_cancelled(&source.cancellation)?;
     validate_source_counts(source.pattern.vertices.len(), source.pattern.edges.len())?;
     advance_generation_phase(&source.phase, PHASE_ANALYZING_TOPOLOGY)?;
     let topology = source.topology_input.analyze();
     ensure_not_cancelled(&source.cancellation)?;
     if topology.revision() != source.expected_revision {
-        return Err("折り図用の面解析が予期しない編集リビジョンを返しました。".to_owned());
+        return Err(InstructionExportErrorCategory::DocumentContractInvalid);
     }
     let snapshot = topology
         .simulation_snapshot()
-        .ok_or_else(|| "現在の展開図は3D折り図を生成できる面構造になっていません。".to_owned())?;
+        .ok_or(InstructionExportErrorCategory::TopologyUnsupported)?;
     advance_generation_phase(&source.phase, PHASE_BUILDING_DOCUMENT)?;
     let artifact = export_instruction_document(
         source.format.exporter_format(),
@@ -692,7 +630,7 @@ fn build_pending_export(
         &source.timeline,
         snapshot,
     )
-    .map_err(|error| instruction_document_failure_message(error).to_owned())?;
+    .map_err(instruction_document_failure_category)?;
     ensure_not_cancelled(&source.cancellation)?;
     validate_artifact_contract(source.format, &source.timeline, &artifact)?;
     let warnings = instruction_export_warning_snapshots(&artifact.warnings);
@@ -716,44 +654,51 @@ fn build_pending_export(
     })
 }
 
-fn instruction_document_failure_message(error: InstructionExportError) -> &'static str {
+fn instruction_document_failure_category(
+    error: InstructionExportError,
+) -> InstructionExportErrorCategory {
     match error {
         InstructionExportError::TitleTooLong { .. }
         | InstructionExportError::InvalidTitle
-        | InstructionExportError::UnsupportedGlyph { .. } => "折り図に含められない入力があります。",
+        | InstructionExportError::UnsupportedGlyph { .. } => {
+            InstructionExportErrorCategory::DocumentInputInvalid
+        }
         InstructionExportError::Diagram(error) => match error {
-            InstructionDiagramError::InvalidTimeline => "折り図に含められない入力があります。",
-            InstructionDiagramError::EmptyTimeline => {
-                "折り手順が1件もないため、折り図を書き出せません。"
+            InstructionDiagramError::InvalidTimeline => {
+                InstructionExportErrorCategory::DocumentInputInvalid
             }
+            InstructionDiagramError::EmptyTimeline => InstructionExportErrorCategory::TimelineEmpty,
             InstructionDiagramError::StaleStep { .. } => {
-                "折り図の手順が現在の展開図より古くなっています。"
+                InstructionExportErrorCategory::TimelineStale
             }
             InstructionDiagramError::UnsupportedTopology
             | InstructionDiagramError::UnrepresentableGeometry => {
-                "折り図の面構造または形状に対応していません。"
+                InstructionExportErrorCategory::TopologyUnsupported
             }
-            InstructionDiagramError::ResourceLimitExceeded => "折り図の出力上限を超えています。",
+            InstructionDiagramError::ResourceLimitExceeded => {
+                InstructionExportErrorCategory::DocumentLimitExceeded
+            }
         },
         InstructionExportError::LayoutLimitExceeded
         | InstructionExportError::PageTooLarge { .. }
-        | InstructionExportError::OutputTooLarge { .. } => "折り図の出力上限を超えています。",
+        | InstructionExportError::OutputTooLarge { .. } => {
+            InstructionExportErrorCategory::DocumentLimitExceeded
+        }
         InstructionExportError::InvalidBundledFont
         | InstructionExportError::FontAssetMismatch
         | InstructionExportError::StructureNotRepresentable
         | InstructionExportError::Zip(_)
         | InstructionExportError::Io(_)
-        | InstructionExportError::Json(_) => "折り図データの生成に失敗しました。",
+        | InstructionExportError::Json(_) => {
+            InstructionExportErrorCategory::DocumentGenerationFailed
+        }
     }
 }
 
-fn validate_source_counts(vertex_count: usize, edge_count: usize) -> Result<(), String> {
+fn validate_source_counts(vertex_count: usize, edge_count: usize) -> InstructionExportResult<()> {
     let limits = ori_formats::InstructionDiagramLimits::default();
     if vertex_count > limits.max_source_vertices || edge_count > limits.max_source_edges {
-        return Err(format!(
-            "折り図の元データが上限を超えています（頂点は最大{}件、辺は最大{}件）。",
-            limits.max_source_vertices, limits.max_source_edges
-        ));
+        return Err(InstructionExportErrorCategory::SourceLimitExceeded);
     }
     Ok(())
 }
@@ -762,7 +707,7 @@ fn validate_artifact_contract(
     requested: InstructionExportFormatRequest,
     timeline: &ori_domain::InstructionTimeline,
     artifact: &InstructionExportArtifact,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
     if artifact.format != requested.exporter_format()
         || artifact.file_extension != requested.extension()
         || artifact.media_type != requested.media_type()
@@ -770,7 +715,7 @@ fn validate_artifact_contract(
         || artifact.projection_profile != INSTRUCTION_EXPORT_PROJECTION_PROFILE
         || artifact.warnings != INSTRUCTION_EXPORT_WARNINGS
     {
-        return Err("生成された折り図の形式が要求と一致しません。".to_owned());
+        return Err(InstructionExportErrorCategory::DocumentContractInvalid);
     }
     let caution_count = timeline
         .steps
@@ -784,7 +729,7 @@ fn validate_artifact_contract(
         || artifact.projected_vertex_visits == 0
         || artifact.bytes.is_empty()
     {
-        return Err("生成された折り図の件数または内容が入力と一致しません。".to_owned());
+        return Err(InstructionExportErrorCategory::DocumentContractInvalid);
     }
     Ok(())
 }
@@ -822,18 +767,19 @@ fn preview_snapshot(pending: &PendingInstructionExport) -> InstructionExportPrev
 fn ensure_pending_is_current(
     pending: &PendingInstructionExport,
     project: &ProjectState,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
     ensure_expected_project(
         project,
         pending.expected_instance_id,
         pending.expected_project_id,
         pending.expected_revision,
-    )?;
+    )
+    .map_err(|_| InstructionExportErrorCategory::ProjectChanged)?;
     if !pending
         .topology_input
         .is_current_for(project.project_id, &project.editor)
     {
-        return Err("折り図の生成中に展開図または用紙設定が変わりました。".to_owned());
+        return Err(InstructionExportErrorCategory::ProjectChanged);
     }
     Ok(())
 }
@@ -844,26 +790,26 @@ fn checked_pending<'a>(
     export_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
-) -> Result<&'a PendingInstructionExport, String> {
+) -> InstructionExportResult<&'a PendingInstructionExport> {
     let pending = slot
         .pending
         .as_ref()
-        .ok_or_else(|| "折り図のプレビューは既に破棄されています。".to_owned())?;
+        .ok_or(InstructionExportErrorCategory::GenerationUnavailable)?;
     if pending.export_id != export_id {
-        return Err("折り図のプレビューは新しいプレビューに置き換えられました。".to_owned());
+        return Err(InstructionExportErrorCategory::GenerationReplaced);
     }
     if pending.expected_project_id != expected_project_id
         || pending.expected_revision != expected_revision
     {
-        return Err("折り図のプレビューは別の編集状態に属しています。".to_owned());
+        return Err(InstructionExportErrorCategory::ProjectChanged);
     }
     ensure_generation_is_current(slot, export_id)?;
     let active = slot
         .active
         .as_ref()
-        .ok_or_else(|| "この折り図生成は既に破棄されています。".to_owned())?;
+        .ok_or(InstructionExportErrorCategory::GenerationUnavailable)?;
     if active.claimed_format != Some(pending.format) {
-        return Err("折り図の形式が生成開始時の指定と一致しません。".to_owned());
+        return Err(InstructionExportErrorCategory::GenerationUnavailable);
     }
     ensure_pending_is_current(pending, project)?;
     Ok(pending)
@@ -872,15 +818,16 @@ fn checked_pending<'a>(
 fn require_warning_acknowledgement(
     pending: &PendingInstructionExport,
     warnings_acknowledged: bool,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
     if !pending.warnings.is_empty() && !warnings_acknowledged {
-        Err("折り図の制約に関する確認が必要です。".to_owned())
+        Err(InstructionExportErrorCategory::WarningAcknowledgementRequired)
     } else {
         Ok(())
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn commit_pending_export_to_path(
     slot: &mut InstructionExportSlot,
     project: &ProjectState,
@@ -889,7 +836,28 @@ fn commit_pending_export_to_path(
     expected_revision: u64,
     warnings_acknowledged: bool,
     path: &Path,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
+    commit_pending_export_to_destination(
+        slot,
+        project,
+        export_id,
+        expected_project_id,
+        expected_revision,
+        warnings_acknowledged,
+        &DialogSaveDestination::confirmed(path.to_path_buf()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_pending_export_to_destination(
+    slot: &mut InstructionExportSlot,
+    project: &ProjectState,
+    export_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    warnings_acknowledged: bool,
+    destination: &DialogSaveDestination,
+) -> InstructionExportResult<()> {
     let pending = checked_pending(
         slot,
         project,
@@ -898,16 +866,36 @@ fn commit_pending_export_to_path(
         expected_revision,
     )?;
     require_warning_acknowledgement(pending, warnings_acknowledged)?;
-    persist_export_bytes_atomically(path, &pending.bytes)?;
+    persist_instruction_export_bytes_to_destination(destination, &pending.bytes)?;
     slot.pending = None;
     slot.active = None;
     Ok(())
 }
 
+#[cfg(test)]
+fn persist_instruction_export_bytes(path: &Path, bytes: &[u8]) -> InstructionExportResult<()> {
+    if path.file_name().is_none() {
+        return Err(InstructionExportErrorCategory::SaveTargetInvalid);
+    }
+    persist_export_bytes_atomically(path, bytes)
+        .map_err(|_| InstructionExportErrorCategory::SaveFailed)
+}
+
+fn persist_instruction_export_bytes_to_destination(
+    destination: &DialogSaveDestination,
+    bytes: &[u8],
+) -> InstructionExportResult<()> {
+    if destination.path().file_name().is_none() {
+        return Err(InstructionExportErrorCategory::SaveTargetInvalid);
+    }
+    persist_export_bytes_to_destination(destination, bytes)
+        .map_err(|_| InstructionExportErrorCategory::SaveFailed)
+}
+
 fn cancel_export_generation(
     state: &InstructionExportState,
     export_id: ProjectId,
-) -> Result<(), String> {
+) -> InstructionExportResult<()> {
     let mut slot = lock_instruction_export(state)?;
     if slot.active.as_ref().map(|active| active.export_id) == Some(export_id) {
         if let Some(active) = slot.active.take() {
@@ -921,9 +909,9 @@ fn cancel_export_generation(
         return Ok(());
     }
     if slot.active.is_some() {
-        return Err("このプレビューは新しい折り図生成に置き換えられました。".to_owned());
+        return Err(InstructionExportErrorCategory::GenerationReplaced);
     }
-    Err("指定された折り図プレビューは存在しません。".to_owned())
+    Err(InstructionExportErrorCategory::GenerationUnavailable)
 }
 
 fn suggested_export_file_name(project_name: &str, extension: &str) -> String {
@@ -949,16 +937,12 @@ fn suggested_export_file_name(project_name: &str, extension: &str) -> String {
     format!("{base}-折り図.{extension}")
 }
 
-fn ensure_export_extension(mut path: PathBuf, format: InstructionExportFormatRequest) -> PathBuf {
-    let expected = format.extension();
-    let already_expected = path
-        .extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected));
-    if !already_expected {
-        path.set_extension(expected);
-    }
-    path
+fn ensure_export_extension(
+    path: PathBuf,
+    format: InstructionExportFormatRequest,
+) -> InstructionExportResult<DialogSaveDestination> {
+    super::save_path::normalize_dialog_save_path(path, format.extension())
+        .map_err(|_| InstructionExportErrorCategory::SaveTargetInvalid)
 }
 
 #[cfg(test)]
@@ -1157,7 +1141,8 @@ mod tests {
     #[test]
     fn command_errors_are_closed_and_do_not_expose_internal_values() {
         let private_value = r"C:\Users\alice\秘密の作品.ori";
-        let error = InstructionExportCommandError::from_internal(private_value);
+        let error =
+            InstructionExportCommandError::from(InstructionExportErrorCategory::UnexpectedFailure);
         assert_eq!(
             error.category,
             InstructionExportErrorCategory::UnexpectedFailure
@@ -1174,20 +1159,120 @@ mod tests {
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(!serialized.contains("alice"));
         assert!(!serialized.contains("秘密の作品"));
+        assert!(!serialized.contains(private_value));
 
         let unsupported_glyph =
-            instruction_document_failure_message(InstructionExportError::UnsupportedGlyph {
+            instruction_document_failure_category(InstructionExportError::UnsupportedGlyph {
                 code_point: 0x1F4A5,
             });
-        assert_eq!(unsupported_glyph, "折り図に含められない入力があります。");
-        assert!(!unsupported_glyph.contains("1F4A5"));
+        assert_eq!(
+            unsupported_glyph,
+            InstructionExportErrorCategory::DocumentInputInvalid
+        );
         let output_limit =
-            instruction_document_failure_message(InstructionExportError::OutputTooLarge {
+            instruction_document_failure_category(InstructionExportError::OutputTooLarge {
                 actual: usize::MAX,
                 maximum: 1,
             });
-        assert_eq!(output_limit, "折り図の出力上限を超えています。");
-        assert!(!output_limit.contains(&usize::MAX.to_string()));
+        assert_eq!(
+            output_limit,
+            InstructionExportErrorCategory::DocumentLimitExceeded
+        );
+    }
+
+    #[test]
+    fn command_error_category_wire_values_remain_stable() {
+        for (category, wire_value) in [
+            (
+                InstructionExportErrorCategory::StateUnavailable,
+                "state_unavailable",
+            ),
+            (
+                InstructionExportErrorCategory::GenerationUnavailable,
+                "generation_unavailable",
+            ),
+            (
+                InstructionExportErrorCategory::GenerationReplaced,
+                "generation_replaced",
+            ),
+            (
+                InstructionExportErrorCategory::GenerationCancelled,
+                "generation_cancelled",
+            ),
+            (
+                InstructionExportErrorCategory::ProjectChanged,
+                "project_changed",
+            ),
+            (
+                InstructionExportErrorCategory::TimelineEmpty,
+                "timeline_empty",
+            ),
+            (
+                InstructionExportErrorCategory::TimelineStale,
+                "timeline_stale",
+            ),
+            (
+                InstructionExportErrorCategory::SourceLimitExceeded,
+                "source_limit_exceeded",
+            ),
+            (
+                InstructionExportErrorCategory::TopologyUnsupported,
+                "topology_unsupported",
+            ),
+            (
+                InstructionExportErrorCategory::DocumentInputInvalid,
+                "document_input_invalid",
+            ),
+            (
+                InstructionExportErrorCategory::DocumentLimitExceeded,
+                "document_limit_exceeded",
+            ),
+            (
+                InstructionExportErrorCategory::DocumentGenerationFailed,
+                "document_generation_failed",
+            ),
+            (
+                InstructionExportErrorCategory::DocumentContractInvalid,
+                "document_contract_invalid",
+            ),
+            (
+                InstructionExportErrorCategory::WarningAcknowledgementRequired,
+                "warning_acknowledgement_required",
+            ),
+            (
+                InstructionExportErrorCategory::SaveTargetInvalid,
+                "save_target_invalid",
+            ),
+            (InstructionExportErrorCategory::SaveFailed, "save_failed"),
+            (
+                InstructionExportErrorCategory::UnexpectedFailure,
+                "unexpected_failure",
+            ),
+        ] {
+            let value =
+                serde_json::to_value(InstructionExportCommandError::from(category)).unwrap();
+            assert_eq!(value["category"], wire_value);
+            assert_eq!(value["message_ja"], category.message_ja());
+        }
+    }
+
+    #[test]
+    fn internal_failure_categories_are_assigned_at_their_sources() {
+        let cancellation = AtomicBool::new(true);
+        assert_eq!(
+            ensure_not_cancelled(&cancellation),
+            Err(InstructionExportErrorCategory::GenerationCancelled)
+        );
+
+        let limits = ori_formats::InstructionDiagramLimits::default();
+        assert_eq!(
+            validate_source_counts(limits.max_source_vertices + 1, limits.max_source_edges),
+            Err(InstructionExportErrorCategory::SourceLimitExceeded)
+        );
+        assert_eq!(
+            persist_instruction_export_bytes(Path::new(""), b"not written"),
+            Err(InstructionExportErrorCategory::SaveTargetInvalid)
+        );
     }
 
     #[test]
@@ -1195,18 +1280,18 @@ mod tests {
         let empty = super::super::initial_project_state();
         let empty_project_id = empty.project_id;
         let cancellation = Arc::new(AtomicBool::new(false));
-        assert!(
-            capture_export_source(
-                &AppState(Mutex::new(empty)),
-                ProjectId::new(),
-                empty_project_id,
-                0,
-                InstructionExportFormatRequest::Pdf,
-                cancellation,
-                Arc::new(AtomicU8::new(PHASE_VALIDATING)),
-            )
-            .is_err()
-        );
+        let empty_error = capture_export_source(
+            &AppState(Mutex::new(empty)),
+            ProjectId::new(),
+            empty_project_id,
+            0,
+            InstructionExportFormatRequest::Pdf,
+            cancellation,
+            Arc::new(AtomicU8::new(PHASE_VALIDATING)),
+        )
+        .err()
+        .expect("empty timeline must be rejected");
+        assert_eq!(empty_error, InstructionExportErrorCategory::TimelineEmpty);
 
         let mut stale = project_with_instruction();
         stale
@@ -1221,7 +1306,7 @@ mod tests {
             .unwrap();
         let stale_project_id = stale.project_id;
         let stale_revision = stale.editor.revision();
-        let error = capture_export_source(
+        let stale_error = capture_export_source(
             &AppState(Mutex::new(stale)),
             ProjectId::new(),
             stale_project_id,
@@ -1232,7 +1317,7 @@ mod tests {
         )
         .err()
         .expect("stale step must be rejected");
-        assert!(error.contains("古い"));
+        assert_eq!(stale_error, InstructionExportErrorCategory::TimelineStale);
     }
 
     #[test]
@@ -1268,10 +1353,9 @@ mod tests {
                 .any(|warning| warning.category == "discrete_step_endpoints_only"
                     && warning.message_ja.contains("連続動作"))
         );
-        assert!(
-            require_warning_acknowledgement(&pending, false)
-                .unwrap_err()
-                .contains("確認")
+        assert_eq!(
+            require_warning_acknowledgement(&pending, false),
+            Err(InstructionExportErrorCategory::WarningAcknowledgementRequired)
         );
         require_warning_acknowledgement(&pending, true).unwrap();
     }
@@ -1281,15 +1365,15 @@ mod tests {
         let limits = ori_formats::InstructionDiagramLimits::default();
         validate_source_counts(limits.max_source_vertices, limits.max_source_edges)
             .expect("inclusive source limits");
-        assert!(
+        assert_eq!(
             validate_source_counts(limits.max_source_vertices + 1, limits.max_source_edges)
-                .unwrap_err()
-                .contains("上限")
+                .unwrap_err(),
+            InstructionExportErrorCategory::SourceLimitExceeded
         );
-        assert!(
+        assert_eq!(
             validate_source_counts(limits.max_source_vertices, limits.max_source_edges + 1)
-                .unwrap_err()
-                .contains("上限")
+                .unwrap_err(),
+            InstructionExportErrorCategory::SourceLimitExceeded
         );
 
         assert_eq!(
@@ -1308,13 +1392,19 @@ mod tests {
             instruction_export_phase(PHASE_READY).unwrap(),
             InstructionExportPhase::Ready
         );
-        assert!(instruction_export_phase(u8::MAX).is_err());
+        assert_eq!(
+            instruction_export_phase(u8::MAX),
+            Err(InstructionExportErrorCategory::GenerationUnavailable)
+        );
 
         let phase = AtomicU8::new(PHASE_VALIDATING);
         advance_generation_phase(&phase, PHASE_ANALYZING_TOPOLOGY).unwrap();
         advance_generation_phase(&phase, PHASE_BUILDING_DOCUMENT).unwrap();
         advance_generation_phase(&phase, PHASE_READY).unwrap();
-        assert!(advance_generation_phase(&phase, PHASE_VALIDATING).is_err());
+        assert_eq!(
+            advance_generation_phase(&phase, PHASE_VALIDATING),
+            Err(InstructionExportErrorCategory::DocumentContractInvalid)
+        );
         assert_eq!(phase.load(Ordering::SeqCst), PHASE_READY);
     }
 
@@ -1329,7 +1419,7 @@ mod tests {
         advance_generation_phase(&phase, PHASE_BUILDING_DOCUMENT).unwrap();
         let error = claim_generation(&state, export_id, InstructionExportFormatRequest::SvgZip)
             .unwrap_err();
-        assert!(error.contains("既に開始"));
+        assert_eq!(error, InstructionExportErrorCategory::GenerationUnavailable);
         assert_eq!(phase.load(Ordering::SeqCst), PHASE_BUILDING_DOCUMENT);
         let slot = lock_instruction_export(&state).unwrap();
         assert_eq!(
@@ -1473,7 +1563,7 @@ mod tests {
             build_pending_export(source)
                 .err()
                 .expect("cancelled work must fail"),
-            GENERATION_CANCELLED_MESSAGE
+            InstructionExportErrorCategory::GenerationCancelled
         );
     }
 
@@ -1551,15 +1641,17 @@ mod tests {
                 .path()
                 .join(format!("sample.{}", format.extension()));
             fs::write(&path, b"previous export").unwrap();
+            let destination = ensure_export_extension(path.clone(), format)
+                .expect("accept the existing dialog-confirmed destination");
 
-            commit_pending_export_to_path(
+            commit_pending_export_to_destination(
                 &mut slot,
                 &project,
                 export_id,
                 project.project_id,
                 project.editor.revision(),
                 true,
-                &path,
+                &destination,
             )
             .unwrap();
 
@@ -1638,7 +1730,7 @@ mod tests {
         let path = directory.path().join("missing").join("sample.zip");
 
         let mut slot = lock_instruction_export(&state).unwrap();
-        assert!(
+        assert_eq!(
             commit_pending_export_to_path(
                 &mut slot,
                 &project,
@@ -1647,8 +1739,8 @@ mod tests {
                 project.editor.revision(),
                 true,
                 &path,
-            )
-            .is_err()
+            ),
+            Err(InstructionExportErrorCategory::SaveFailed)
         );
         assert!(slot.pending.is_some());
         assert_eq!(
@@ -1696,18 +1788,22 @@ mod tests {
         let occupied = directory.path().join("occupied.zip");
         fs::create_dir(&occupied).unwrap();
 
-        assert!(
-            commit_pending_export_to_path(
-                &mut slot,
-                &project,
-                export_id,
-                project.project_id,
-                project.editor.revision(),
-                true,
-                &occupied,
-            )
-            .is_err()
+        let result = commit_pending_export_to_path(
+            &mut slot,
+            &project,
+            export_id,
+            project.project_id,
+            project.editor.revision(),
+            true,
+            &occupied,
         );
+        assert_eq!(result, Err(InstructionExportErrorCategory::SaveFailed));
+        let serialized = serde_json::to_string(&InstructionExportCommandError::from(
+            InstructionExportErrorCategory::SaveFailed,
+        ))
+        .unwrap();
+        assert!(!serialized.contains("occupied.zip"));
+        assert!(!serialized.contains(&directory.path().display().to_string()));
         assert!(occupied.is_dir());
         assert!(slot.pending.is_some());
         assert!(
@@ -1814,19 +1910,103 @@ mod tests {
             ensure_export_extension(
                 PathBuf::from("guide.txt"),
                 InstructionExportFormatRequest::Pdf,
-            ),
+            )
+            .unwrap(),
             PathBuf::from("guide.pdf")
         );
         assert_eq!(
             ensure_export_extension(
                 PathBuf::from("guide.ZIP"),
                 InstructionExportFormatRequest::SvgZip,
-            ),
+            )
+            .unwrap(),
             PathBuf::from("guide.ZIP")
         );
         assert_eq!(
             suggested_export_file_name("  鶴:<test>/\u{0001}  ", "pdf"),
             "鶴__test___-折り図.pdf"
+        );
+    }
+
+    #[test]
+    fn extension_correction_cannot_target_an_existing_unconfirmed_instruction_export() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.path().join("instructions.txt");
+        let corrected_path = directory.path().join("instructions.pdf");
+        fs::write(&corrected_path, b"keep existing instructions").unwrap();
+
+        let category = ensure_export_extension(selected_path, InstructionExportFormatRequest::Pdf)
+            .expect_err("an unconfirmed corrected destination must not be overwritten");
+        assert_eq!(category, InstructionExportErrorCategory::SaveTargetInvalid);
+        let serialized =
+            serde_json::to_string(&InstructionExportCommandError::from(category)).unwrap();
+        assert!(!serialized.contains("instructions.pdf"));
+        assert!(!serialized.contains(&directory.path().display().to_string()));
+        assert_eq!(
+            fs::read(corrected_path).unwrap(),
+            b"keep existing instructions"
+        );
+    }
+
+    #[test]
+    fn extension_correction_race_preserves_the_instruction_stage_and_new_destination() {
+        let project = project_with_instruction();
+        let pending = fake_pending(
+            &project,
+            InstructionExportFormatRequest::Pdf,
+            b"%PDF-protected-stage",
+        );
+        let export_id = pending.export_id;
+        let mut slot = InstructionExportSlot {
+            active: Some(ActiveInstructionExport {
+                export_id,
+                cancellation: Arc::new(AtomicBool::new(false)),
+                phase: Arc::new(AtomicU8::new(PHASE_READY)),
+                claimed_format: Some(InstructionExportFormatRequest::Pdf),
+            }),
+            pending: Some(pending),
+            last_cancelled_id: None,
+        };
+        let directory = TestDirectory::new();
+        let selected_path = directory.path().join("race-target.txt");
+        let corrected_path = directory.path().join("race-target.pdf");
+        let destination =
+            ensure_export_extension(selected_path, InstructionExportFormatRequest::Pdf)
+                .expect("preflight an unused corrected path");
+        fs::write(&corrected_path, b"created after extension preflight").unwrap();
+
+        let result = commit_pending_export_to_destination(
+            &mut slot,
+            &project,
+            export_id,
+            project.project_id,
+            project.editor.revision(),
+            true,
+            &destination,
+        );
+
+        assert_eq!(result, Err(InstructionExportErrorCategory::SaveFailed));
+        assert_eq!(
+            fs::read(&corrected_path).unwrap(),
+            b"created after extension preflight"
+        );
+        assert_eq!(
+            slot.pending.as_ref().map(|pending| pending.export_id),
+            Some(export_id)
+        );
+        assert_eq!(
+            slot.active.as_ref().map(|active| active.export_id),
+            Some(export_id)
+        );
+        assert!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".origami2-")),
+            "a rejected create-new commit must clean its staged file"
         );
     }
 }

@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 ori-domain = { path = "../ori-domain" }
+ori-foldability = { path = "../ori-foldability" }
 ori-geometry = { path = "../ori-geometry" }
 ori-topology = { path = "../ori-topology" }
-sha2 = "0.10.9"
 thiserror.workspace = true

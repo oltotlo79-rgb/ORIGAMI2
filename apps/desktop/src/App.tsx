@@ -11,6 +11,7 @@ import { CreaseExportDialog } from './components/CreaseExportDialog'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
+import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { SvgImportDialog } from './components/SvgImportDialog'
@@ -108,6 +109,16 @@ import {
   localFlatFoldabilityReasonLabel,
   type LocalFlatFoldabilityPresentation,
 } from './lib/localFlatFoldabilityPresentation'
+import {
+  DEFAULT_GLOBAL_FLAT_FOLDABILITY_TIME_PRESET,
+  type GlobalFlatFoldabilityJobDto,
+  type GlobalFlatFoldabilityTimePreset,
+} from './lib/globalFlatFoldability'
+import {
+  createGlobalFlatFoldabilityCoordinator,
+  type GlobalFlatFoldabilityCoordinator,
+} from './lib/globalFlatFoldabilityCoordinator'
+import { createGlobalFlatFoldabilityNativeTransport } from './lib/globalFlatFoldabilityNative'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
 import { isDiagnosticsShareAvailable } from './lib/diagnosticsShare'
 import './App.css'
@@ -171,6 +182,12 @@ function App() {
     isNativeCoreAvailable() ? '面・ヒンジ解析待ち' : '3D解析はデスクトップ版で利用できます',
   )
   const [validation, setValidation] = useState<ValidationSnapshot | null>(null)
+  const [globalFlatFoldabilityJob, setGlobalFlatFoldabilityJob] =
+    useState<GlobalFlatFoldabilityJobDto | null>(null)
+  const [globalFlatFoldabilityTimeLimit, setGlobalFlatFoldabilityTimeLimit] =
+    useState<GlobalFlatFoldabilityTimePreset>(
+      DEFAULT_GLOBAL_FLAT_FOLDABILITY_TIME_PRESET,
+    )
   const [coreStatus, setCoreStatus] = useState(
     isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
   )
@@ -227,6 +244,8 @@ function App() {
   }))
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
+  const globalFlatFoldabilityCoordinatorRef =
+    useRef<GlobalFlatFoldabilityCoordinator | null>(null)
   const angleInputRef = useRef<HTMLInputElement>(null)
   const benchmarkRequestIdRef = useRef(0)
   const topologyRequestIdRef = useRef(0)
@@ -248,9 +267,17 @@ function App() {
     setDiagnosticsDialogOpen(false)
     requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
   }, [])
-  const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
+  const applySnapshot = useCallback((
+    snapshot: ProjectSnapshot,
+    forceReplacement = false,
+  ) => {
     topologyRequestIdRef.current += 1
     latestSnapshotRef.current = snapshot
+    globalFlatFoldabilityCoordinatorRef.current?.invalidate({
+      projectId: snapshot.project_id,
+      revision: snapshot.revision,
+      foldModelFingerprint: snapshot.fold_model_fingerprint,
+    }, forceReplacement)
     setNativeSnapshot(snapshot)
     setValidation(null)
     setTopologyResponse(null)
@@ -583,6 +610,31 @@ function App() {
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
+    let mounted = true
+    const coordinator = createGlobalFlatFoldabilityCoordinator<number>({
+      transport: createGlobalFlatFoldabilityNativeTransport(),
+      scheduler: {
+        setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+        clearTimeout: (handle) => window.clearTimeout(handle),
+      },
+      onState: ({ job }) => {
+        if (mounted) setGlobalFlatFoldabilityJob(job)
+      },
+    })
+    if (!coordinator) return
+    globalFlatFoldabilityCoordinatorRef.current = coordinator
+
+    return () => {
+      mounted = false
+      if (globalFlatFoldabilityCoordinatorRef.current === coordinator) {
+        globalFlatFoldabilityCoordinatorRef.current = null
+      }
+      coordinator.dispose()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isNativeCoreAvailable()) return
     getProjectSnapshot()
       .then((snapshot) => {
         applySnapshot(snapshot)
@@ -705,6 +757,30 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+
+  const startGlobalFlatFoldability = useCallback((
+    timeLimitSeconds: GlobalFlatFoldabilityTimePreset,
+  ) => {
+    const current = latestSnapshotRef.current
+    if (
+      !current
+      || coreOperationRef.current
+      || benchmarkLoading
+      || benchmarkRun
+    ) return
+    globalFlatFoldabilityCoordinatorRef.current?.start(
+      {
+        projectId: current.project_id,
+        revision: current.revision,
+        foldModelFingerprint: current.fold_model_fingerprint,
+      },
+      timeLimitSeconds,
+    )
+  }, [benchmarkLoading, benchmarkRun])
+
+  const cancelGlobalFlatFoldability = useCallback(() => {
+    globalFlatFoldabilityCoordinatorRef.current?.cancel()
+  }, [])
 
   const deleteSelection = useCallback(async () => {
     if (benchmarkRun) {
@@ -1129,7 +1205,7 @@ function App() {
         frontColor,
         backColor,
       })
-      applySnapshot(snapshot)
+      applySnapshot(snapshot, true)
       setValidation(null)
       setSelectedLineId(null)
       setSelectedVertexId(null)
@@ -1169,7 +1245,10 @@ function App() {
             ? saveProject()
             : saveProjectAs()
       )
-      applySnapshot(response.project)
+      applySnapshot(
+        response.project,
+        operation === 'open' && !response.canceled,
+      )
       if (response.canceled) {
         setCoreStatus('ファイル操作をキャンセルしました')
         return
@@ -1259,7 +1338,7 @@ function App() {
         current.revision,
         settings,
       )
-      applySnapshot(snapshot)
+      applySnapshot(snapshot, true)
       setBenchmarkRun(null)
       setBenchmarkStatus('FOLD取込により通常の展開図へ戻りました')
       setFoldImportPreview(null)
@@ -1385,7 +1464,7 @@ function App() {
         settings,
         replaceDirtyProjectConfirmed,
       )
-      applySnapshot(snapshot)
+      applySnapshot(snapshot, true)
       setBenchmarkRun(null)
       setBenchmarkStatus('SVG取込により通常の展開図へ戻りました')
       setSvgImportPreview(null)
@@ -2545,6 +2624,20 @@ function App() {
               </p>
             </section>
           )}
+          <GlobalFlatFoldabilityPanel
+            job={globalFlatFoldabilityJob}
+            timeLimitSeconds={globalFlatFoldabilityTimeLimit}
+            startDisabled={
+              coreBusy
+              || benchmarkLoading
+              || Boolean(benchmarkRun)
+              || !nativeSnapshot
+              || !isNativeCoreAvailable()
+            }
+            onTimeLimitChange={setGlobalFlatFoldabilityTimeLimit}
+            onStart={startGlobalFlatFoldability}
+            onCancel={cancelGlobalFlatFoldability}
+          />
           <section>
             <h2>紙</h2>
             <form

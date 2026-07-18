@@ -22,7 +22,7 @@ test('scene runtime preserves the preview camera, renderer, lights, grid, and pa
   assert.deepEqual(harness.sizes, [{ width: 800, height: 400, updateStyle: false }])
   assert.equal(harness.renderer.outputColorSpace, THREE.SRGBColorSpace)
   assert.equal(harness.renderer.shadowMap.enabled, true)
-  assert.equal(harness.renderer.shadowMap.type, THREE.PCFSoftShadowMap)
+  assert.equal(harness.renderer.shadowMap.type, THREE.PCFShadowMap)
   assert.equal(harness.attributes.get('aria-hidden'), 'true')
   assert.deepEqual(harness.children, [harness.sentinel, harness.canvas])
 
@@ -244,6 +244,7 @@ test('dispose is best-effort, idempotent, and releases only runtime-owned resour
   }
   assert.equal(harness.renderListsDisposals, 1)
   assert.equal(harness.rendererDisposals, 1)
+  assert.equal(harness.contextLosses, 1)
   assert.equal(harness.canvasRemovals, 1)
   assert.equal(replacementCanvasRemovals, 0)
   assert.deepEqual(harness.children, [harness.sentinel])
@@ -266,6 +267,7 @@ test('construction failures roll back the exact renderer canvas and rethrow', ()
     )
     assert.equal(harness.renderListsDisposals, 1)
     assert.equal(harness.rendererDisposals, 1)
+    assert.equal(harness.contextLosses, 1)
     assert.equal(harness.canvasRemovals, 1)
     assert.deepEqual(harness.children, [harness.sentinel])
     assert.equal(
@@ -318,6 +320,7 @@ test('a late construction failure releases the grid and already-owned palette pr
   assert.equal(materialDisposals, 2)
   assert.equal(harness.renderListsDisposals, 1)
   assert.equal(harness.rendererDisposals, 1)
+  assert.equal(harness.contextLosses, 1)
   assert.equal(harness.canvasRemovals, 1)
   assert.deepEqual(harness.children, [harness.sentinel])
 })
@@ -485,6 +488,7 @@ function fakeRendererHarness(options: Readonly<{
   let canvasRemovals = 0
   let renderListsDisposals = 0
   let rendererDisposals = 0
+  let contextLosses = 0
   const failures = {
     setSize: false,
     render: false,
@@ -545,6 +549,9 @@ function fakeRendererHarness(options: Readonly<{
     dispose() {
       rendererDisposals += 1
     },
+    forceContextLoss() {
+      contextLosses += 1
+    },
   } as unknown as THREE.WebGLRenderer
 
   return {
@@ -570,6 +577,9 @@ function fakeRendererHarness(options: Readonly<{
     },
     get rendererDisposals() {
       return rendererDisposals
+    },
+    get contextLosses() {
+      return contextLosses
     },
   }
 }

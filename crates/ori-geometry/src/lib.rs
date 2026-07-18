@@ -10,7 +10,8 @@ mod validation;
 pub use validation::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, PaperValidation, PaperValidationIssue,
     ValidationIssue, exact_polygon_orientation, polygon_signed_double_area,
-    validate_crease_pattern, validate_paper,
+    validate_crease_pattern, validate_crease_pattern_with_checkpoint, validate_paper,
+    validate_paper_with_checkpoint,
 };
 
 /// The orientation of an ordered point triple or polygon boundary.

@@ -180,7 +180,7 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
   const catchBody = sourceSection(confirm, '} catch (error) {', '} finally {')
   const finallyBody = sourceSection(confirm, '} finally {', '\n    }\n  }')
   const applyIndex = tryBody.indexOf('await applySvgImport(')
-  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot)')
+  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
   const closeIndex = tryBody.indexOf('setSvgImportPreview(null)')
 
   assert.ok(applyIndex >= 0, 'missing SVG apply call')

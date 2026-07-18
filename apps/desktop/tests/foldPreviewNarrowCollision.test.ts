@@ -10,7 +10,11 @@ import type {
   FoldPreviewHingeContactConstraint,
 } from '../src/lib/foldPreviewHingeCollision.ts'
 import {
+  summarizeFoldPreviewCollision,
+} from '../src/lib/foldPreviewCollisionPresentation.ts'
+import {
   FOLD_PREVIEW_NARROW_PHASE_ANALYSIS_JOB_VERSION,
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_TRIANGLE_TESTS,
   MAX_FOLD_PREVIEW_NARROW_PHASE_WITNESS_SAMPLES,
   MAX_FOLD_PREVIEW_NARROW_PHASE_PREPARED_VERTICES,
@@ -206,6 +210,38 @@ test('prepared analysis is equivalent to the one-shot compatibility API', () => 
       adjacencies,
     ),
   )
+})
+
+test('one-shot analysis snapshots a stateful transform map once before broad phase', () => {
+  const faces = [face('a'), face('b')]
+  const reads = new Map<string, number>()
+  let sizeReads = 0
+  const transforms = {
+    get size() {
+      sizeReads += 1
+      return faces.length
+    },
+    get(faceId: string) {
+      const readCount = reads.get(faceId) ?? 0
+      reads.set(faceId, readCount + 1)
+      return faceId === 'b' && readCount > 0
+        ? new Matrix4().makeTranslation(100, 0, 0)
+        : new Matrix4()
+    },
+  } as ReadonlyMap<string, Matrix4>
+
+  const result = findFoldPreviewNarrowPhaseInteractions(
+    faces,
+    transforms,
+    0.1,
+    [],
+  )
+
+  assert.ok(result)
+  assert.equal(sizeReads, 1)
+  assert.deepEqual([...reads], [['a', 1], ['b', 1]])
+  assert.equal(result.broadPhaseCandidates, 1)
+  assert.equal(result.interactions[0]?.geometryClass, 'penetrating')
 })
 
 test('prepared geometry is a deep snapshot of faces and adjacencies', () => {
@@ -533,6 +569,205 @@ test('zero-thickness analysis uses the same bounded pair cursor as positive thic
   })
   assert.strictEqual(job.step(1), terminal)
   assertFrozenJobStep(terminal)
+})
+
+test('exact fallback budget is shared across candidates and closes limit plus one as indeterminate', () => {
+  const atLimit = exactFallbackFixture(
+    MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+  )
+  const atLimitAnalyzer = prepareFoldPreviewNarrowPhase(atLimit.faces, [])
+  assert.ok(atLimitAnalyzer)
+  const atLimitResult = atLimitAnalyzer.analyze(atLimit.transforms, 0)
+  assert.ok(atLimitResult)
+  assert.deepEqual(atLimitResult.exactTransversalProofWork, {
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    skippedByLimit: 0,
+  })
+  assert.equal(
+    atLimitResult.interactions.every(
+      ({ geometryClass }) => geometryClass === 'penetrating',
+    ),
+    true,
+  )
+
+  const overLimit = exactFallbackFixture(
+    MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS + 1,
+    true,
+  )
+  const analyzer = prepareFoldPreviewNarrowPhase(overLimit.faces, [])
+  assert.ok(analyzer)
+  const synchronous = analyzer.analyze(overLimit.transforms, 0)
+  const oneShot = findFoldPreviewNarrowPhaseInteractions(
+    overLimit.faces,
+    overLimit.transforms,
+    0,
+    [],
+  )
+  assert.ok(synchronous && oneShot)
+  assert.deepEqual(oneShot, synchronous)
+  assert.deepEqual(synchronous.exactTransversalProofWork, {
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    skippedByLimit: 1,
+  })
+  assert.equal(
+    synchronous.interactions[
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    ]?.geometryClass,
+    'indeterminate',
+  )
+  assert.equal(
+    synchronous.interactions.at(-1)?.geometryClass,
+    'penetrating',
+    'a later definitive SAT penetration must still raise severity',
+  )
+  const presentation = summarizeFoldPreviewCollision(synchronous)
+  assert.equal(presentation.indeterminateInteractions, 1)
+  assert.equal(presentation.nonAdjacentPenetrations, 257)
+
+  for (const chunkSize of [1, 17, 10_000]) {
+    const job = analyzer.createAnalysisJob(overLimit.transforms, 0)
+    assert.ok(job)
+    const terminal = drainAnalysisJob(job, chunkSize)
+    assert.equal(terminal.kind, 'complete')
+    assert.deepEqual(terminal.result, synchronous)
+    assert.deepEqual(
+      terminal.exactTransversalProofWork,
+      synchronous.exactTransversalProofWork,
+    )
+  }
+})
+
+test('exact fallback accounting resets per analysis and cancellation cannot revive or leak it', () => {
+  const fixture = exactFallbackFixture(2)
+  const analyzer = prepareFoldPreviewNarrowPhase(fixture.faces, [])
+  assert.ok(analyzer)
+
+  const first = analyzer.createAnalysisJob(fixture.transforms, 0)
+  assert.ok(first)
+  const afterOnePair = first.step(1)
+  assert.equal(afterOnePair.kind, 'pending')
+  assert.deepEqual(afterOnePair.exactTransversalProofWork, {
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: 1,
+    skippedByLimit: 0,
+  })
+  first.cancel()
+  const cancelled = first.step(1)
+  assert.equal(cancelled.kind, 'cancelled')
+  assert.deepEqual(
+    cancelled.exactTransversalProofWork,
+    afterOnePair.exactTransversalProofWork,
+  )
+  assert.strictEqual(first.step(1), cancelled)
+
+  const replacement = analyzer.createAnalysisJob(fixture.transforms, 0)
+  assert.ok(replacement)
+  const replacementFirstPair = replacement.step(1)
+  assert.equal(replacementFirstPair.kind, 'pending')
+  assert.deepEqual(
+    replacementFirstPair.exactTransversalProofWork,
+    afterOnePair.exactTransversalProofWork,
+    'a replacement analysis starts from a fresh zero budget',
+  )
+  const replacementTerminal = replacement.step(100)
+  assert.equal(replacementTerminal.kind, 'complete')
+  assert.equal(replacementTerminal.exactTransversalProofWork.attempted, 2)
+  assert.equal(replacementTerminal.exactTransversalProofWork.skippedByLimit, 0)
+
+  const synchronousFirst = analyzer.analyze(fixture.transforms, 0)
+  const synchronousSecond = analyzer.analyze(fixture.transforms, 0)
+  assert.ok(synchronousFirst && synchronousSecond)
+  assert.deepEqual(
+    synchronousSecond.exactTransversalProofWork,
+    synchronousFirst.exactTransversalProofWork,
+  )
+  assert.equal(synchronousSecond.exactTransversalProofWork.attempted, 2)
+})
+
+test('exact fallback exhaustion cannot be reclassified as allowed hinge contact', () => {
+  const fixture = exactFallbackFixture(
+    MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+  )
+  const offset =
+    (MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS + 1) * 10
+  const start = {
+    vertexId: 'limit-hinge-start',
+    x: offset,
+    z: -2,
+  } as const
+  const end = {
+    vertexId: 'limit-hinge-end',
+    x: offset,
+    z: 2,
+  } as const
+  fixture.faces.push(
+    face('zz-limit-hinge-left', [
+      start,
+      { vertexId: 'limit-hinge-left-tip', x: offset - 2, z: 0 },
+      end,
+    ]),
+    face('zz-limit-hinge-right', [
+      end,
+      { vertexId: 'limit-hinge-right-tip', x: offset + 2, z: 0 },
+      start,
+    ]),
+  )
+  fixture.transforms.set('zz-limit-hinge-left', new Matrix4())
+  fixture.transforms.set('zz-limit-hinge-right', new Matrix4())
+  const adjacency: FoldPreviewCollisionAdjacency = {
+    edgeId: 'limit-hinge',
+    firstFaceId: 'zz-limit-hinge-left',
+    secondFaceId: 'zz-limit-hinge-right',
+  }
+  const constraint: FoldPreviewHingeContactConstraint = {
+    edgeId: 'limit-hinge',
+    leftFaceId: 'zz-limit-hinge-left',
+    rightFaceId: 'zz-limit-hinge-right',
+    start,
+    end,
+    thicknessRule: 'centered_mid_surface_v1',
+  }
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    fixture.faces,
+    [adjacency],
+    [constraint],
+  )
+  assert.ok(analyzer)
+  const result = analyzer.analyze(fixture.transforms, 0)
+  assert.ok(result)
+  assert.deepEqual(result.exactTransversalProofWork, {
+    algorithm: 'binary64_transversal_triangle_intersection_v1',
+    maximumAttempts:
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    attempted: MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    skippedByLimit: 1,
+  })
+  const hinge = result.interactions.find(
+    ({ firstFaceId, secondFaceId }) =>
+      firstFaceId === 'zz-limit-hinge-left'
+      && secondFaceId === 'zz-limit-hinge-right',
+  )
+  assert.ok(hinge)
+  assert.equal(hinge.geometryClass, 'indeterminate')
+  assert.deepEqual(hinge.hingeDecision, {
+    kind: 'indeterminate',
+    hingeEdgeIds: ['limit-hinge'],
+    reason: 'numerical_geometry',
+  })
+  const presentation = summarizeFoldPreviewCollision(result)
+  assert.equal(presentation.indeterminateInteractions, 1)
+  assert.equal(
+    presentation.faceSeverities.get('zz-limit-hinge-left'),
+    'indeterminate',
+  )
 })
 
 test('cancellation is stable in pair-scan and witness cursor phases', () => {
@@ -1120,6 +1355,56 @@ function face(
   return { id, polygon }
 }
 
+function exactFallbackFixture(
+  pairCount: number,
+  appendDefinitivePenetration = false,
+) {
+  const polygon = [
+    { x: -2, z: -2 },
+    { x: 2, z: -2 },
+    { x: 0, z: 2 },
+  ] as const
+  const faces: FoldPreviewCollisionPoseFace[] = []
+  const transforms = new Map<string, Matrix4>()
+  const shallowRotation = new Matrix4().makeRotationX(
+    Number.EPSILON * 64,
+  )
+  for (let index = 0; index < pairCount; index += 1) {
+    const prefix = `exact-${String(index).padStart(4, '0')}`
+    const offset = index * 10
+    faces.push(
+      face(`${prefix}-first`, polygon),
+      face(`${prefix}-second`, polygon),
+    )
+    transforms.set(
+      `${prefix}-first`,
+      new Matrix4().makeTranslation(offset, 0, 0),
+    )
+    transforms.set(
+      `${prefix}-second`,
+      new Matrix4()
+        .makeTranslation(offset, 0, 0)
+        .multiply(shallowRotation),
+    )
+  }
+  if (appendDefinitivePenetration) {
+    const offset = (pairCount + 1) * 10
+    faces.push(
+      face('zz-definitive-first', polygon),
+      face('zz-definitive-second', polygon),
+    )
+    transforms.set(
+      'zz-definitive-first',
+      new Matrix4().makeTranslation(offset, 0, 0),
+    )
+    transforms.set(
+      'zz-definitive-second',
+      new Matrix4().makeTranslation(offset, 0, 0),
+    )
+  }
+  return { faces, transforms }
+}
+
 function drainAnalysisJob(
   job: FoldPreviewNarrowPhaseAnalysisJob,
   workBudget: number,
@@ -1146,6 +1431,10 @@ function drainAnalysisJob(
     trianglePairTests: 0,
     witnessDerivations: 0,
   }
+  let previousExact = {
+    attempted: 0,
+    skippedByLimit: 0,
+  }
   for (let index = 0; index < 10_000; index += 1) {
     const step = job.step(workBudget)
     assert.equal(
@@ -1159,9 +1448,25 @@ function drainAnalysisJob(
       step.work.trianglePairTests - previous.trianglePairTests
     const witnessDelta =
       step.work.witnessDerivations - previous.witnessDerivations
+    const exactAttemptDelta =
+      step.exactTransversalProofWork.attempted - previousExact.attempted
+    const exactSkippedDelta =
+      step.exactTransversalProofWork.skippedByLimit
+      - previousExact.skippedByLimit
     assert.ok(totalDelta >= 0 && totalDelta <= workBudget)
     assert.ok(trianglePairDelta >= 0 && trianglePairDelta <= workBudget)
     assert.ok(witnessDelta >= 0 && witnessDelta <= workBudget)
+    assert.ok(exactAttemptDelta >= 0)
+    assert.ok(exactSkippedDelta >= 0)
+    assert.ok(exactAttemptDelta + exactSkippedDelta <= trianglePairDelta)
+    assert.equal(
+      step.exactTransversalProofWork.maximumAttempts,
+      MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    )
+    assert.ok(
+      step.exactTransversalProofWork.attempted
+        <= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+    )
     assert.equal(totalDelta, trianglePairDelta + witnessDelta)
     assert.equal(
       step.work.totalWorkUnits,
@@ -1181,6 +1486,7 @@ function drainAnalysisJob(
     if (step.kind !== 'pending') return step
     assert.ok(totalDelta > 0, 'a pending step must make bounded cursor progress')
     previous = step.work
+    previousExact = step.exactTransversalProofWork
   }
   assert.fail('narrow analysis job did not reach a terminal result')
 }

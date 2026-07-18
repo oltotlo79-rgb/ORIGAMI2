@@ -1,12 +1,4 @@
-use ori_domain::{CreasePattern, EdgeKind, Paper, VertexId};
-use sha2::{Digest, Sha256};
-
-/// Domain separator for the first persisted fold-model fingerprint format.
-///
-/// Changing the encoded fields or their normalization requires a new version
-/// and a new separator. This prevents the same byte stream from being confused
-/// with a hash used for another purpose.
-const FOLD_MODEL_FINGERPRINT_V1_DOMAIN: &[u8] = b"ORIGAMI2\0fold-model-fingerprint\0v1\0";
+use ori_domain::{CreasePattern, Paper};
 
 /// Produces the stable SHA-256 identity of the geometry that determines a fold
 /// model.
@@ -22,141 +14,13 @@ const FOLD_MODEL_FINGERPRINT_V1_DOMAIN: &[u8] = b"ORIGAMI2\0fold-model-fingerpri
 /// assets are intentionally outside this fingerprint's domain.
 #[must_use]
 pub fn fold_model_fingerprint_v1(pattern: &CreasePattern, paper: &Paper) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(FOLD_MODEL_FINGERPRINT_V1_DOMAIN);
-
-    let mut vertices: Vec<_> = pattern.vertices.iter().collect();
-    vertices.sort_by_key(|vertex| {
-        (
-            vertex.id.canonical_bytes(),
-            vertex.position.x.to_bits(),
-            vertex.position.y.to_bits(),
-        )
-    });
-    hash_len(&mut hasher, vertices.len());
-    for vertex in vertices {
-        hasher.update(vertex.id.canonical_bytes());
-        hasher.update(vertex.position.x.to_bits().to_be_bytes());
-        hasher.update(vertex.position.y.to_bits().to_be_bytes());
-    }
-
-    let mut edges: Vec<_> = pattern.edges.iter().collect();
-    edges.sort_by_key(|edge| {
-        let mut endpoints = [edge.start.canonical_bytes(), edge.end.canonical_bytes()];
-        endpoints.sort_unstable();
-        (
-            edge.id.canonical_bytes(),
-            endpoints,
-            edge_kind_tag(edge.kind),
-        )
-    });
-    hash_len(&mut hasher, edges.len());
-    for edge in edges {
-        let mut endpoints = [edge.start.canonical_bytes(), edge.end.canonical_bytes()];
-        endpoints.sort_unstable();
-        hasher.update(edge.id.canonical_bytes());
-        hasher.update(endpoints[0]);
-        hasher.update(endpoints[1]);
-        hasher.update([edge_kind_tag(edge.kind)]);
-    }
-
-    let boundary = canonical_boundary(&paper.boundary_vertices);
-    hash_len(&mut hasher, boundary.len());
-    for vertex in boundary {
-        hasher.update(vertex.canonical_bytes());
-    }
-    hasher.update([u8::from(paper.cutting_allowed)]);
-    hasher.update(paper.thickness_mm.to_bits().to_be_bytes());
-
-    let digest = hasher.finalize();
-    let mut encoded = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
-}
-
-fn hash_len(hasher: &mut Sha256, len: usize) {
-    hasher.update(
-        u64::try_from(len)
-            .expect("a collection length must fit in u64 on supported targets")
-            .to_be_bytes(),
-    );
-}
-
-const fn edge_kind_tag(kind: EdgeKind) -> u8 {
-    match kind {
-        EdgeKind::Mountain => 0,
-        EdgeKind::Valley => 1,
-        EdgeKind::Auxiliary => 2,
-        EdgeKind::Boundary => 3,
-        EdgeKind::Cut => 4,
-    }
-}
-
-fn canonical_boundary(boundary: &[VertexId]) -> Vec<VertexId> {
-    if boundary.len() < 2 {
-        return boundary.to_vec();
-    }
-
-    let forward_bytes: Vec<_> = boundary.iter().map(VertexId::canonical_bytes).collect();
-    let reverse_bytes: Vec<_> = forward_bytes.iter().copied().rev().collect();
-    let forward_start = least_rotation_start(&forward_bytes);
-    let reverse_start = least_rotation_start(&reverse_bytes);
-
-    let forward_key = rotated(&forward_bytes, forward_start);
-    let reverse_key = rotated(&reverse_bytes, reverse_start);
-    if forward_key <= reverse_key {
-        rotated(boundary, forward_start)
-    } else {
-        let reversed: Vec<_> = boundary.iter().copied().rev().collect();
-        rotated(&reversed, reverse_start)
-    }
-}
-
-/// Booth's algorithm for the lexicographically least cyclic rotation.
-fn least_rotation_start<T: Ord>(values: &[T]) -> usize {
-    let len = values.len();
-    if len < 2 {
-        return 0;
-    }
-    let (mut first, mut second, mut offset) = (0, 1, 0);
-    while first < len && second < len && offset < len {
-        use std::cmp::Ordering;
-        match values[(first + offset) % len].cmp(&values[(second + offset) % len]) {
-            Ordering::Equal => offset += 1,
-            Ordering::Greater => {
-                first += offset + 1;
-                if first == second {
-                    first += 1;
-                }
-                offset = 0;
-            }
-            Ordering::Less => {
-                second += offset + 1;
-                if first == second {
-                    second += 1;
-                }
-                offset = 0;
-            }
-        }
-    }
-    first.min(second) % len
-}
-
-fn rotated<T: Copy>(values: &[T], start: usize) -> Vec<T> {
-    values[start..]
-        .iter()
-        .chain(&values[..start])
-        .copied()
-        .collect()
+    ori_foldability::fold_model_fingerprint_v1(pattern, paper).to_hex()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ori_domain::{Edge, EdgeId, Point2, Vertex};
+    use ori_domain::{Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId};
 
     fn fixture() -> (CreasePattern, Paper) {
         let first = VertexId::new();
@@ -229,28 +93,6 @@ mod tests {
     }
 
     #[test]
-    fn least_rotation_matches_exhaustive_reference_with_duplicate_values() {
-        for len in 1_u32..=7 {
-            for encoded in 0_u32..3_u32.pow(len) {
-                let mut remaining = encoded;
-                let values: Vec<_> = (0..len)
-                    .map(|_| {
-                        let value = (remaining % 3) as u8;
-                        remaining /= 3;
-                        value
-                    })
-                    .collect();
-                let expected = (0..values.len())
-                    .map(|start| rotated(&values, start))
-                    .min()
-                    .expect("non-empty sequence has a rotation");
-                let actual = rotated(&values, least_rotation_start(&values));
-                assert_eq!(actual, expected, "values: {values:?}");
-            }
-        }
-    }
-
-    #[test]
     fn duplicate_invalid_records_do_not_reintroduce_storage_order_dependence() {
         let (mut pattern, paper) = fixture();
         pattern.vertices.push(Vertex {
@@ -305,5 +147,40 @@ mod tests {
         changed.back.color.alpha = 2;
 
         assert_eq!(fold_model_fingerprint_v1(&pattern, &changed), expected);
+    }
+
+    #[test]
+    fn core_hex_fingerprint_matches_solver_provenance_exactly() {
+        let sheet = crate::create_rectangular_sheet(8.0, 6.0, false).expect("rectangle");
+        let (pattern, paper) = sheet.into_parts();
+        let editor = crate::EditorState::with_paper(pattern, paper);
+        let identity_namespace = ProjectId::new();
+        let analyzed = editor.topology_analysis_input(identity_namespace).analyze();
+        let topology = analyzed.simulation_snapshot().expect("rectangle topology");
+        let local = ori_topology::analyze_local_flat_foldability(editor.paper(), editor.pattern());
+        let report = ori_foldability::analyze_global_flat_foldability(
+            ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                identity_namespace,
+                editor.paper(),
+                editor.pattern(),
+                topology,
+                &local,
+            ),
+            ori_foldability::GlobalFlatFoldabilityLimits::default(),
+        )
+        .expect("solver executes");
+
+        assert_eq!(
+            report
+                .provenance
+                .source_fingerprint
+                .expect("geometry-backed report fingerprint")
+                .to_hex(),
+            fold_model_fingerprint_v1(editor.pattern(), editor.paper())
+        );
+        assert_eq!(
+            report.provenance.identity_namespace,
+            Some(identity_namespace)
+        );
     }
 }

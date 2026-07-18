@@ -5,6 +5,9 @@ import {
 import {
   createFoldPreviewTreeSceneCollisionPoseKey,
 } from './foldPreviewTreeScenePose.ts'
+import {
+  MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS,
+} from './foldPreviewNarrowCollision.ts'
 
 export const FOLD_PREVIEW_TWO_BODY_CORRECTION_CANDIDATE_VERSION =
   'two_body_translation_candidate_v1'
@@ -699,6 +702,7 @@ function snapshotEvidence(
   const requestIdentityBound = value.requestIdentityBound
   const rawThickness = value.collisionThickness
   const numericalMargin = value.numericalMargin
+  const exactTransversalProofWork = value.exactTransversalProofWork
   const rawCoverage = value.coverage
   const rawSamples = value.witnessSamples
   const autoApplicable = value.autoApplicable
@@ -709,6 +713,9 @@ function snapshotEvidence(
     || requestIdentityBound !== false
     || rawThickness !== collisionThickness
     || !validNonNegative(numericalMargin)
+    || !validCompleteExactTransversalProofWork(
+      exactTransversalProofWork,
+    )
     || autoApplicable !== false
     || !Array.isArray(rawSamples)
   ) return null
@@ -750,6 +757,20 @@ function snapshotEvidence(
     numericalMargin,
     samples: Object.freeze(samples),
   })
+}
+
+function validCompleteExactTransversalProofWork(value: unknown) {
+  if (!isRecord(value)) return false
+  const attempted = value.attempted
+  return value.algorithm
+      === 'binary64_transversal_triangle_intersection_v1'
+    && value.maximumAttempts
+      === MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && Number.isSafeInteger(attempted)
+    && (attempted as number) >= 0
+    && (attempted as number)
+      <= MAX_FOLD_PREVIEW_EXACT_TRANSVERSAL_PROOF_ATTEMPTS
+    && value.skippedByLimit === 0
 }
 
 type CompleteCoverageSnapshot = Readonly<{

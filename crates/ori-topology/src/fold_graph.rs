@@ -16,12 +16,12 @@ use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, VertexId}
 use ori_geometry::Orientation;
 
 use crate::{
-    BoundaryWalk, EdgeIncidence, Face, FaceAdjacency, FaceExtractionInput, FoldAssignment,
-    HalfEdgeRef, TopologyIssueKind, TopologySnapshot,
-    admission::PaperGraphAdmissionError,
-    admission::build_admitted_paper_walks,
+    BoundaryWalk, CooperativeAnalysisCheckpoint, CooperativeOperationError, EdgeIncidence, Face,
+    FaceAdjacency, FaceExtractionInput, FoldAssignment, HalfEdgeRef, TopologyIssueKind,
+    TopologySnapshot,
+    admission::{PaperGraphAdmissionError, build_admitted_paper_walks_with_checkpoint},
     dcel::{HalfEdgeIndex, PaperWalkSet, WalkIndex},
-    face_from_walk,
+    face_from_walk, poll_cooperative_checkpoint, run_cooperative_checkpoint,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,30 +59,60 @@ struct IncidenceResult {
 }
 
 /// Extracts one deterministic snapshot from an admitted, cut-free fold graph.
+#[cfg(test)]
 pub(crate) fn extract_fold_graph_snapshot(
     input: FaceExtractionInput<'_>,
 ) -> Result<TopologySnapshot, FoldGraphError> {
-    let walks = build_admitted_paper_walks(input.paper, input.pattern)
-        .map_err(FoldGraphError::Admission)?;
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    match extract_fold_graph_snapshot_with_checkpoint(input, &mut checkpoint) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(CooperativeOperationError::Operation(error)) => Err(error),
+        Err(CooperativeOperationError::Aborted(_)) => {
+            unreachable!("the no-op fold-graph checkpoint cannot abort")
+        }
+    }
+}
 
-    if let Some(cut) = input
-        .pattern
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::Cut)
-        .min_by_key(|edge| edge.id.canonical_bytes())
-    {
-        return Err(FoldGraphError::UnsupportedCut { edge: cut.id });
+pub(crate) fn extract_fold_graph_snapshot_with_checkpoint<F>(
+    input: FaceExtractionInput<'_>,
+    checkpoint: &mut F,
+) -> Result<TopologySnapshot, CooperativeOperationError<FoldGraphError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let walks = build_admitted_paper_walks_with_checkpoint(input.paper, input.pattern, checkpoint)
+        .map_err(|error| error.map_operation(FoldGraphError::Admission))?;
+
+    let mut first_cut = None;
+    for (index, edge) in input.pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if edge.kind == EdgeKind::Cut
+            && first_cut
+                .is_none_or(|current: EdgeId| edge.id.canonical_bytes() < current.canonical_bytes())
+        {
+            first_cut = Some(edge.id);
+        }
+    }
+    if let Some(edge) = first_cut {
+        return Err(CooperativeOperationError::Operation(
+            FoldGraphError::UnsupportedCut { edge },
+        ));
     }
 
-    let counts = ensure_connected_participants(input.paper, input.pattern)?;
-    ensure_euler_partition(&walks, counts)?;
-    let halves_by_edge = index_half_edges(&walks)?;
-    let fold_sides = resolve_fold_sides(input.pattern.edges.as_slice(), &walks, &halves_by_edge)?;
-    ensure_single_ccw_component_per_face(&walks)?;
-    ensure_simple_material_walks(&walks)?;
+    run_cooperative_checkpoint(checkpoint)?;
+    let counts = ensure_connected_participants(input.paper, input.pattern)
+        .map_err(CooperativeOperationError::Operation)?;
+    run_cooperative_checkpoint(checkpoint)?;
+    ensure_euler_partition(&walks, counts).map_err(CooperativeOperationError::Operation)?;
+    let halves_by_edge = index_half_edges(&walks).map_err(CooperativeOperationError::Operation)?;
+    run_cooperative_checkpoint(checkpoint)?;
+    let fold_sides = resolve_fold_sides(input.pattern.edges.as_slice(), &walks, &halves_by_edge)
+        .map_err(CooperativeOperationError::Operation)?;
+    run_cooperative_checkpoint(checkpoint)?;
+    ensure_single_ccw_component_per_face(&walks).map_err(CooperativeOperationError::Operation)?;
+    ensure_simple_material_walks(&walks).map_err(CooperativeOperationError::Operation)?;
 
-    let (mut faces, faces_by_walk) = build_faces(input.identity_namespace, &walks)?;
+    let (mut faces, faces_by_walk) = build_faces(input.identity_namespace, &walks, checkpoint)?;
     let IncidenceResult {
         edges: mut edge_incidence,
         hinges: mut hinge_adjacency,
@@ -92,11 +122,15 @@ pub(crate) fn extract_fold_graph_snapshot(
         &halves_by_edge,
         &fold_sides,
         &faces_by_walk,
-    )?;
+    )
+    .map_err(CooperativeOperationError::Operation)?;
 
+    run_cooperative_checkpoint(checkpoint)?;
     faces.sort_by_key(|face| face.key);
     edge_incidence.sort_by_key(|(edge, _)| edge.canonical_bytes());
-    sort_hinge_adjacency(&mut hinge_adjacency, &faces)?;
+    sort_hinge_adjacency(&mut hinge_adjacency, &faces)
+        .map_err(CooperativeOperationError::Operation)?;
+    run_cooperative_checkpoint(checkpoint)?;
 
     Ok(TopologySnapshot {
         source_revision: input.source_revision,
@@ -408,16 +442,23 @@ fn minimum_edge(current: Option<EdgeId>, candidate: Option<EdgeId>) -> Option<Ed
         .min_by_key(EdgeId::canonical_bytes)
 }
 
-fn build_faces(
+type BuiltFaces = (Vec<Face>, HashMap<WalkIndex, Face>);
+
+fn build_faces<F>(
     identity_namespace: ori_domain::ProjectId,
     walks: &PaperWalkSet,
-) -> Result<(Vec<Face>, HashMap<WalkIndex, Face>), FoldGraphError> {
+    checkpoint: &mut F,
+) -> Result<BuiltFaces, CooperativeOperationError<FoldGraphError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     let mut faces = Vec::with_capacity(walks.walks().len().saturating_sub(1));
     let mut by_walk = HashMap::with_capacity(faces.capacity());
     let mut keys = HashSet::with_capacity(faces.capacity());
     let mut ids = HashSet::with_capacity(faces.capacity());
 
     for (walk_index, walk) in walks.walks().iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, walk_index)?;
         let walk_index = WalkIndex(walk_index);
         if walk_index == walks.exterior() {
             continue;
@@ -434,7 +475,9 @@ fn build_faces(
                         origin: half_edge.origin,
                         destination: half_edge.destination,
                     })
-                    .ok_or(FoldGraphError::InternalInvariant)
+                    .ok_or({
+                        CooperativeOperationError::Operation(FoldGraphError::InternalInvariant)
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let face = face_from_walk(
@@ -444,15 +487,20 @@ fn build_faces(
                 signed_double_area: walk.signed_double_area,
             },
         )
-        .map_err(FoldGraphError::FaceBuild)?;
+        .map_err(|error| CooperativeOperationError::Operation(FoldGraphError::FaceBuild(error)))?;
         if !keys.insert(face.key) || !ids.insert(face.id) {
-            return Err(FoldGraphError::InternalInvariant);
+            return Err(CooperativeOperationError::Operation(
+                FoldGraphError::InternalInvariant,
+            ));
         }
         if by_walk.insert(walk_index, face.clone()).is_some() {
-            return Err(FoldGraphError::InternalInvariant);
+            return Err(CooperativeOperationError::Operation(
+                FoldGraphError::InternalInvariant,
+            ));
         }
         faces.push(face);
     }
+    run_cooperative_checkpoint(checkpoint)?;
     Ok((faces, by_walk))
 }
 

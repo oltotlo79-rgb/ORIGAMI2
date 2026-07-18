@@ -10,12 +10,16 @@ use std::collections::{HashMap, HashSet};
 
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, VertexId};
 use ori_geometry::{
-    PointPolygonRelation, segment_midpoint_polygon_relation, validate_crease_pattern,
-    validate_paper,
+    PointPolygonRelation, segment_midpoint_polygon_relation,
+    validate_crease_pattern_with_checkpoint, validate_paper_with_checkpoint,
 };
 
-use crate::dcel::{
-    DcelBuildError, DcelEmbedding, PaperWalkSet, build_embedding, build_paper_walks_unchecked,
+use crate::{
+    CooperativeAnalysisCheckpoint, CooperativeOperationError,
+    dcel::{
+        DcelBuildError, DcelEmbedding, PaperWalkSet, build_embedding, build_paper_walks_unchecked,
+    },
+    poll_cooperative_checkpoint, run_cooperative_checkpoint,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,10 +61,32 @@ pub(crate) fn build_admitted_paper_walks(
     paper: &Paper,
     pattern: &CreasePattern,
 ) -> Result<PaperWalkSet, PaperGraphAdmissionError> {
-    let validated = validate_for_containment(paper, pattern)?;
-    let admitted = admit_contained_graph(validated)?;
-    build_paper_walks_unchecked(admitted.pattern, admitted.paper)
-        .map_err(PaperGraphAdmissionError::Dcel)
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    match build_admitted_paper_walks_with_checkpoint(paper, pattern, &mut checkpoint) {
+        Ok(walks) => Ok(walks),
+        Err(CooperativeOperationError::Operation(error)) => Err(error),
+        Err(CooperativeOperationError::Aborted(_)) => {
+            unreachable!("the no-op admission checkpoint cannot abort")
+        }
+    }
+}
+
+pub(crate) fn build_admitted_paper_walks_with_checkpoint<F>(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<PaperWalkSet, CooperativeOperationError<PaperGraphAdmissionError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let validated = validate_for_containment_with_checkpoint(paper, pattern, checkpoint)?;
+    let admitted = admit_contained_graph_with_checkpoint(validated, checkpoint)?;
+    run_cooperative_checkpoint(checkpoint)?;
+    let walks = build_paper_walks_unchecked(admitted.pattern, admitted.paper).map_err(|error| {
+        CooperativeOperationError::Operation(PaperGraphAdmissionError::Dcel(error))
+    })?;
+    run_cooperative_checkpoint(checkpoint)?;
+    Ok(walks)
 }
 
 /// Validates and embeds the material-participating graph without requiring
@@ -75,40 +101,86 @@ pub(crate) fn build_admitted_embedding(
     paper: &Paper,
     pattern: &CreasePattern,
 ) -> Result<DcelEmbedding, PaperGraphAdmissionError> {
-    let validated = validate_for_containment(paper, pattern)?;
-    let admitted = admit_contained_graph(validated)?;
-    build_embedding(admitted.pattern).map_err(PaperGraphAdmissionError::Dcel)
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    match build_admitted_embedding_with_checkpoint(paper, pattern, &mut checkpoint) {
+        Ok(embedding) => Ok(embedding),
+        Err(CooperativeOperationError::Operation(error)) => Err(error),
+        Err(CooperativeOperationError::Aborted(_)) => {
+            unreachable!("the no-op admission checkpoint cannot abort")
+        }
+    }
 }
 
-fn validate_for_containment<'a>(
+pub(crate) fn build_admitted_embedding_with_checkpoint<F>(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<DcelEmbedding, CooperativeOperationError<PaperGraphAdmissionError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let validated = validate_for_containment_with_checkpoint(paper, pattern, checkpoint)?;
+    let admitted = admit_contained_graph_with_checkpoint(validated, checkpoint)?;
+    run_cooperative_checkpoint(checkpoint)?;
+    let embedding = build_embedding(admitted.pattern).map_err(|error| {
+        CooperativeOperationError::Operation(PaperGraphAdmissionError::Dcel(error))
+    })?;
+    run_cooperative_checkpoint(checkpoint)?;
+    Ok(embedding)
+}
+
+fn validate_for_containment_with_checkpoint<'a, F>(
     paper: &'a Paper,
     pattern: &'a CreasePattern,
-) -> Result<IntersectionValidatedInput<'a>, PaperGraphAdmissionError> {
-    ensure_unique_global_ids(pattern)?;
+    checkpoint: &mut F,
+) -> Result<IntersectionValidatedInput<'a>, CooperativeOperationError<PaperGraphAdmissionError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    ensure_unique_global_ids_with_checkpoint(pattern, checkpoint)?;
 
-    let paper_validation = validate_paper(paper, pattern);
+    let paper_validation = {
+        let mut geometry_checkpoint = || run_cooperative_checkpoint(checkpoint);
+        validate_paper_with_checkpoint(paper, pattern, &mut geometry_checkpoint)?
+    };
     if !paper_validation.is_valid() {
-        return Err(PaperGraphAdmissionError::InvalidPaper {
-            issue_count: paper_validation.issues.len(),
-        });
+        return Err(CooperativeOperationError::Operation(
+            PaperGraphAdmissionError::InvalidPaper {
+                issue_count: paper_validation.issues.len(),
+            },
+        ));
     }
 
-    if !paper.cutting_allowed
-        && let Some(edge) = pattern
-            .edges
-            .iter()
-            .filter(|edge| edge.kind == EdgeKind::Cut)
-            .min_by_key(|edge| edge.id.canonical_bytes())
-    {
-        return Err(PaperGraphAdmissionError::CutNotAllowed { edge: edge.id });
+    let mut first_cut = None;
+    if !paper.cutting_allowed {
+        for (index, edge) in pattern.edges.iter().enumerate() {
+            poll_cooperative_checkpoint(checkpoint, index)?;
+            if edge.kind == EdgeKind::Cut
+                && first_cut.is_none_or(|current: EdgeId| {
+                    edge.id.canonical_bytes() < current.canonical_bytes()
+                })
+            {
+                first_cut = Some(edge.id);
+            }
+        }
+    }
+    if let Some(edge) = first_cut {
+        return Err(CooperativeOperationError::Operation(
+            PaperGraphAdmissionError::CutNotAllowed { edge },
+        ));
     }
 
-    let participants = participant_pattern(pattern);
-    let participant_validation = validate_crease_pattern(&participants);
+    let participants = participant_pattern_with_checkpoint(pattern, checkpoint)?;
+    let participant_validation = {
+        let mut geometry_checkpoint = || run_cooperative_checkpoint(checkpoint);
+        validate_crease_pattern_with_checkpoint(&participants, &mut geometry_checkpoint)?
+    };
     if !participant_validation.is_valid() {
-        return Err(PaperGraphAdmissionError::InvalidParticipantPattern {
-            issue_count: participant_validation.issues.len(),
-        });
+        return Err(CooperativeOperationError::Operation(
+            PaperGraphAdmissionError::InvalidParticipantPattern {
+                issue_count: participant_validation.issues.len(),
+            },
+        ));
     }
 
     Ok(IntersectionValidatedInput { paper, pattern })
@@ -117,55 +189,86 @@ fn validate_for_containment<'a>(
 fn admit_contained_graph(
     validated: IntersectionValidatedInput<'_>,
 ) -> Result<AdmittedPaperGraph<'_>, PaperGraphAdmissionError> {
-    let positions = validated
-        .pattern
-        .vertices
-        .iter()
-        .map(|vertex| (vertex.id, vertex.position))
-        .collect::<HashMap<_, _>>();
-    let boundary = validated
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    match admit_contained_graph_with_checkpoint(validated, &mut checkpoint) {
+        Ok(admitted) => Ok(admitted),
+        Err(CooperativeOperationError::Operation(error)) => Err(error),
+        Err(CooperativeOperationError::Aborted(_)) => {
+            unreachable!("the no-op containment checkpoint cannot abort")
+        }
+    }
+}
+
+fn admit_contained_graph_with_checkpoint<'a, F>(
+    validated: IntersectionValidatedInput<'a>,
+    checkpoint: &mut F,
+) -> Result<AdmittedPaperGraph<'a>, CooperativeOperationError<PaperGraphAdmissionError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let mut positions = HashMap::with_capacity(validated.pattern.vertices.len());
+    for (index, vertex) in validated.pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        positions.insert(vertex.id, vertex.position);
+    }
+    let mut boundary = Vec::with_capacity(validated.paper.boundary_vertices.len());
+    for (index, vertex) in validated
         .paper
         .boundary_vertices
         .iter()
-        .map(|vertex| {
-            positions
-                .get(vertex)
-                .copied()
-                .ok_or(PaperGraphAdmissionError::InternalBoundaryResolution)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .copied()
+        .enumerate()
+    {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        let position = positions.get(&vertex).copied().ok_or({
+            CooperativeOperationError::Operation(
+                PaperGraphAdmissionError::InternalBoundaryResolution,
+            )
+        })?;
+        boundary.push(position);
+    }
 
-    let mut active_edges = validated
-        .pattern
-        .edges
-        .iter()
-        .filter(|edge| active_edge_kind(edge.kind))
-        .collect::<Vec<_>>();
+    let mut active_edges = Vec::new();
+    for (index, edge) in validated.pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if active_edge_kind(edge.kind) {
+            active_edges.push(edge);
+        }
+    }
     active_edges.sort_by_key(|edge| edge.id.canonical_bytes());
+    run_cooperative_checkpoint(checkpoint)?;
 
-    for edge in active_edges {
-        let start = positions
-            .get(&edge.start)
-            .copied()
-            .ok_or(PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id })?;
-        let end = positions
-            .get(&edge.end)
-            .copied()
-            .ok_or(PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id })?;
-        match segment_midpoint_polygon_relation(start, end, &boundary)
-            .map_err(|_| PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id })?
-        {
+    for (index, edge) in active_edges.into_iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        let start = positions.get(&edge.start).copied().ok_or({
+            CooperativeOperationError::Operation(
+                PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id },
+            )
+        })?;
+        let end = positions.get(&edge.end).copied().ok_or({
+            CooperativeOperationError::Operation(
+                PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id },
+            )
+        })?;
+        match segment_midpoint_polygon_relation(start, end, &boundary).map_err(|_| {
+            CooperativeOperationError::Operation(
+                PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id },
+            )
+        })? {
             PointPolygonRelation::Outside => {
-                return Err(PaperGraphAdmissionError::ActiveEdgeOutsidePaper { edge: edge.id });
+                return Err(CooperativeOperationError::Operation(
+                    PaperGraphAdmissionError::ActiveEdgeOutsidePaper { edge: edge.id },
+                ));
             }
             PointPolygonRelation::Boundary => {
-                return Err(PaperGraphAdmissionError::ContainmentInvariantViolation {
-                    edge: edge.id,
-                });
+                return Err(CooperativeOperationError::Operation(
+                    PaperGraphAdmissionError::ContainmentInvariantViolation { edge: edge.id },
+                ));
             }
             PointPolygonRelation::Inside => {}
         }
     }
+    run_cooperative_checkpoint(checkpoint)?;
 
     Ok(AdmittedPaperGraph {
         paper: validated.paper,
@@ -173,49 +276,79 @@ fn admit_contained_graph(
     })
 }
 
-fn ensure_unique_global_ids(pattern: &CreasePattern) -> Result<(), PaperGraphAdmissionError> {
+fn ensure_unique_global_ids_with_checkpoint<F>(
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<(), CooperativeOperationError<PaperGraphAdmissionError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     let mut vertex_ids = HashSet::with_capacity(pattern.vertices.len());
-    let duplicate_vertex = pattern
-        .vertices
-        .iter()
-        .map(|vertex| vertex.id)
-        .filter(|vertex| !vertex_ids.insert(*vertex))
-        .min_by_key(VertexId::canonical_bytes);
+    let mut duplicate_vertex = None;
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if !vertex_ids.insert(vertex.id)
+            && duplicate_vertex.is_none_or(|current: VertexId| {
+                vertex.id.canonical_bytes() < current.canonical_bytes()
+            })
+        {
+            duplicate_vertex = Some(vertex.id);
+        }
+    }
     if let Some(vertex) = duplicate_vertex {
-        return Err(PaperGraphAdmissionError::DuplicateVertexId { vertex });
+        return Err(CooperativeOperationError::Operation(
+            PaperGraphAdmissionError::DuplicateVertexId { vertex },
+        ));
     }
 
     let mut edge_ids = HashSet::with_capacity(pattern.edges.len());
-    let duplicate_edge = pattern
-        .edges
-        .iter()
-        .map(|edge| edge.id)
-        .filter(|edge| !edge_ids.insert(*edge))
-        .min_by_key(EdgeId::canonical_bytes);
-    if let Some(edge) = duplicate_edge {
-        return Err(PaperGraphAdmissionError::DuplicateEdgeId { edge });
+    let mut duplicate_edge = None;
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if !edge_ids.insert(edge.id)
+            && duplicate_edge
+                .is_none_or(|current: EdgeId| edge.id.canonical_bytes() < current.canonical_bytes())
+        {
+            duplicate_edge = Some(edge.id);
+        }
     }
+    if let Some(edge) = duplicate_edge {
+        return Err(CooperativeOperationError::Operation(
+            PaperGraphAdmissionError::DuplicateEdgeId { edge },
+        ));
+    }
+    run_cooperative_checkpoint(checkpoint)?;
     Ok(())
 }
 
-fn participant_pattern(pattern: &CreasePattern) -> CreasePattern {
-    let edges = pattern
-        .edges
-        .iter()
-        .filter(|edge| topology_participant_kind(edge.kind))
-        .cloned()
-        .collect::<Vec<_>>();
-    let vertex_ids = edges
-        .iter()
-        .flat_map(|edge| [edge.start, edge.end])
-        .collect::<HashSet<_>>();
-    let vertices = pattern
-        .vertices
-        .iter()
-        .filter(|vertex| vertex_ids.contains(&vertex.id))
-        .cloned()
-        .collect();
-    CreasePattern { vertices, edges }
+fn participant_pattern_with_checkpoint<F>(
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<CreasePattern, CooperativeOperationError<PaperGraphAdmissionError>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let mut edges = Vec::new();
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if topology_participant_kind(edge.kind) {
+            edges.push(edge.clone());
+        }
+    }
+    let mut vertex_ids = HashSet::new();
+    for (index, edge) in edges.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        vertex_ids.extend([edge.start, edge.end]);
+    }
+    let mut vertices = Vec::new();
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        if vertex_ids.contains(&vertex.id) {
+            vertices.push(vertex.clone());
+        }
+    }
+    run_cooperative_checkpoint(checkpoint)?;
+    Ok(CreasePattern { vertices, edges })
 }
 
 fn topology_participant_kind(kind: EdgeKind) -> bool {

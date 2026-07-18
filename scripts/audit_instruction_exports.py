@@ -18,7 +18,6 @@ from pypdf import PdfReader
 
 FONT_SHA256 = "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f"
 LICENSE_SHA256 = "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9"
-FONT_PATH = "fonts/NotoSansJP-Variable.ttf"
 LICENSE_PATH = "licenses/NotoSansJP-OFL.txt"
 SVG_NAMESPACE = "http://www.w3.org/2000/svg"
 FORBIDDEN_SVG_ELEMENTS = {
@@ -115,8 +114,10 @@ def audit_zip(path: Path) -> None:
             raise AssertionError("duplicate ZIP entry")
         if not names or names[0] != "manifest.json":
             raise AssertionError("manifest is not the first ZIP entry")
-        if names[-2:] != [FONT_PATH, LICENSE_PATH]:
-            raise AssertionError("font and license entry order differs")
+        if not names or names[-1] != LICENSE_PATH:
+            raise AssertionError("license entry order differs")
+        if any(name.startswith("fonts/") for name in names):
+            raise AssertionError("unused font file is present in the SVG ZIP")
         for info in infos:
             candidate = PurePosixPath(info.filename)
             if (
@@ -130,7 +131,7 @@ def audit_zip(path: Path) -> None:
                 raise AssertionError(f"non-canonical ZIP timestamp: {info.filename}")
 
         manifest = json.loads(archive.read("manifest.json"))
-        if manifest["schema"] != "origami2.instruction-svg-pages.v1":
+        if manifest["schema"] != "origami2.instruction-svg-pages.v2":
             raise AssertionError("manifest schema differs")
         if manifest["profile"] != "instruction_export_v1":
             raise AssertionError("manifest profile differs")
@@ -141,10 +142,16 @@ def audit_zip(path: Path) -> None:
         if manifest["page_count"] != len(manifest["pages"]) or manifest["step_count"] != 2:
             raise AssertionError("manifest counts differ")
         expected_pages = [entry["file"] for entry in manifest["pages"]]
-        if names[1:-2] != expected_pages:
+        if names[1:-1] != expected_pages:
             raise AssertionError("manifest page mapping differs from ZIP order")
-        if manifest["font"]["sha256"] != FONT_SHA256:
-            raise AssertionError("manifest font digest differs")
+        if manifest["font"]["rendering"] != "glyph_outlines":
+            raise AssertionError("manifest font rendering mode differs")
+        if manifest["font"]["source_sha256"] != FONT_SHA256:
+            raise AssertionError("manifest font source digest differs")
+        if manifest["font"]["license_path"] != LICENSE_PATH:
+            raise AssertionError("manifest font license path differs")
+        if "path" in manifest["font"] or "sha256" in manifest["font"]:
+            raise AssertionError("manifest retains the removed font-file contract")
         if manifest["font"]["license_sha256"] != LICENSE_SHA256:
             raise AssertionError("manifest license digest differs")
         warnings = [
@@ -154,10 +161,7 @@ def audit_zip(path: Path) -> None:
         if warnings != EXPECTED_WARNINGS:
             raise AssertionError("manifest warning categories or messages differ")
 
-        font = archive.read(FONT_PATH)
         license_text = archive.read(LICENSE_PATH)
-        if hashlib.sha256(font).hexdigest() != FONT_SHA256:
-            raise AssertionError("font digest differs")
         if hashlib.sha256(license_text).hexdigest() != LICENSE_SHA256:
             raise AssertionError("license digest differs")
 
@@ -176,18 +180,8 @@ def audit_svg(data: bytes, page_path: str) -> None:
         raise AssertionError(f"unexpected SVG viewBox: {view_box!r}")
 
     decoded = data.decode("utf-8")
-    if "../fonts/NotoSansJP-Variable.ttf" not in decoded:
-        raise AssertionError(f"local font reference is missing: {page_path}")
-    if "font-family:" in decoded.replace(
-        "@font-face{font-family:'Noto Sans JP';", "@font-face{"
-    ):
-        raise AssertionError(f"SVG declares a system font fallback: {page_path}")
-    if re.search(
-        r"url\(\s*['\"]?\s*(?:https?:|data:|//)|@import\b",
-        decoded,
-        flags=re.IGNORECASE,
-    ):
-        raise AssertionError(f"external SVG resource: {page_path}")
+    if re.search(r"@font-face|font-family\s*:|url\s*\(|@import\b", decoded, re.IGNORECASE):
+        raise AssertionError(f"SVG retains a font or external resource reference: {page_path}")
     page_group = next(
         (
             element

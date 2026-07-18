@@ -1,10 +1,12 @@
 mod crease_export;
 mod diagnostics;
+mod global_flat_foldability;
 mod instruction_export;
+mod save_path;
 
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -21,6 +23,10 @@ use crease_export::{
 use diagnostics::{
     DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
     save_diagnostics_share_preview,
+};
+use global_flat_foldability::{
+    GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
+    get_global_flat_foldability_progress, get_global_flat_foldability_result,
 };
 use instruction_export::{
     InstructionExportState, begin_instruction_export, cancel_instruction_export,
@@ -84,9 +90,66 @@ const MAX_SVG_IMPORT_FILE_SIZE: u64 = 16 * 1024 * 1024;
 const MAX_SVG_IMPORT_PREVIEW_EDGES: usize = 5_000;
 const SVG_IMPORT_FILE_LABEL: &str = "選択したSVGファイル";
 const SVG_IMPORT_FALLBACK_NAME: &str = "SVGインポート";
+const TOPOLOGY_ANALYSIS_TASK_FAILED_MESSAGE: &str =
+    "構造解析処理を完了できませんでした。もう一度実行してください。";
+const INSTRUCTION_TOPOLOGY_ANALYSIS_TASK_FAILED_MESSAGE: &str =
+    "折り手順の構造解析処理を完了できませんでした。もう一度実行してください。";
+const FOLD_IMPORT_TASK_FAILED_MESSAGE: &str =
+    "FOLDファイルの解析処理を完了できませんでした。もう一度実行してください。";
+const FOLD_CONVERSION_TASK_FAILED_MESSAGE: &str =
+    "FOLDファイルの変換処理を完了できませんでした。もう一度実行してください。";
+const PROJECT_FILE_OPEN_FAILED_MESSAGE: &str = "選択されたプロジェクトファイルを開けませんでした。";
+const PROJECT_FILE_INSPECTION_FAILED_MESSAGE: &str =
+    "選択されたプロジェクトファイルのサイズを確認できませんでした。";
+const PROJECT_FILE_TOO_LARGE_MESSAGE: &str =
+    "選択されたプロジェクトファイルはサイズ上限を超えています。";
+const PROJECT_FILE_READ_FAILED_MESSAGE: &str =
+    "選択されたプロジェクトファイルを読み込めませんでした。";
+const PROJECT_FILE_INVALID_MESSAGE: &str =
+    "選択されたプロジェクトファイルが破損しているか、対応していない形式です。";
+const PROJECT_INSTRUCTIONS_INVALID_MESSAGE: &str =
+    "プロジェクト内の折り手順データを検証できませんでした。";
+const PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE: &str =
+    "プロジェクト内の折り手順データを安全に保存できませんでした。";
+const PROJECT_SERIALIZATION_FAILED_MESSAGE: &str =
+    "プロジェクトの保存データを作成できませんでした。";
+const FOLD_FILE_OPEN_FAILED_MESSAGE: &str = "選択されたFOLDファイルを開けませんでした。";
+const FOLD_FILE_INSPECTION_FAILED_MESSAGE: &str =
+    "選択されたFOLDファイルのサイズを確認できませんでした。";
+const FOLD_FILE_TOO_LARGE_MESSAGE: &str = "選択されたFOLDファイルはサイズ上限を超えています。";
+const FOLD_FILE_READ_FAILED_MESSAGE: &str = "選択されたFOLDファイルを読み込めませんでした。";
+const FOLD_FILE_INVALID_MESSAGE: &str =
+    "選択されたFOLDファイルが破損しているか、対応していない形式です。";
+const SVG_FILE_OPEN_FAILED_MESSAGE: &str = "選択されたSVGファイルを開けませんでした。";
+const SVG_FILE_INSPECTION_FAILED_MESSAGE: &str =
+    "選択されたSVGファイルのサイズを確認できませんでした。";
+const SVG_FILE_TOO_LARGE_MESSAGE: &str = "選択されたSVGファイルはサイズ上限を超えています。";
+const SVG_FILE_READ_FAILED_MESSAGE: &str = "選択されたSVGファイルを読み込めませんでした。";
+const SVG_FILE_INVALID_MESSAGE: &str =
+    "選択されたSVGファイルが破損しているか、対応していない形式です。";
 static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
+
+fn topology_analysis_task_error<T>(_: T) -> String {
+    TOPOLOGY_ANALYSIS_TASK_FAILED_MESSAGE.to_owned()
+}
+
+fn instruction_topology_analysis_task_error<T>(_: T) -> String {
+    INSTRUCTION_TOPOLOGY_ANALYSIS_TASK_FAILED_MESSAGE.to_owned()
+}
+
+fn fold_import_task_error<T>(_: T) -> String {
+    FOLD_IMPORT_TASK_FAILED_MESSAGE.to_owned()
+}
+
+fn fold_conversion_task_error<T>(_: T) -> String {
+    FOLD_CONVERSION_TASK_FAILED_MESSAGE.to_owned()
+}
+
+fn fold_file_invalid_error<T>(_: T) -> String {
+    FOLD_FILE_INVALID_MESSAGE.to_owned()
+}
 
 struct AppState(Mutex<ProjectState>);
 
@@ -486,6 +549,18 @@ struct ValidationSnapshot {
     local_flat_foldability: LocalFlatFoldabilityReport,
 }
 
+struct ValidationAnalysisInput {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    source: TopologyAnalysisInput,
+}
+
+struct AnalyzedProjectValidation {
+    input: ValidationAnalysisInput,
+    source_model_fingerprint: String,
+    snapshot: ValidationSnapshot,
+}
+
 #[derive(Debug, Serialize)]
 struct ValidationIssueSnapshot {
     code: &'static str,
@@ -634,9 +709,33 @@ fn new_project(
 }
 
 #[tauri::command]
-fn validate_project(state: State<'_, AppState>) -> Result<ValidationSnapshot, String> {
-    let project = lock_project(&state)?;
-    Ok(validation_snapshot(&project))
+async fn validate_project(state: State<'_, AppState>) -> Result<ValidationSnapshot, String> {
+    validate_project_with_worker(&state, |input| Ok(analyze_validation_input(input))).await
+}
+
+const VALIDATION_ANALYSIS_FAILED_MESSAGE: &str =
+    "検証処理を完了できませんでした。もう一度実行してください。";
+
+async fn validate_project_with_worker<F>(
+    state: &AppState,
+    worker: F,
+) -> Result<ValidationSnapshot, String>
+where
+    F: FnOnce(ValidationAnalysisInput) -> Result<AnalyzedProjectValidation, String>
+        + Send
+        + 'static,
+{
+    let input = {
+        let project = lock_project(state)?;
+        capture_validation_input(&project)
+    };
+    let analyzed = tauri::async_runtime::spawn_blocking(move || worker(input))
+        .await
+        .map_err(|_| VALIDATION_ANALYSIS_FAILED_MESSAGE.to_owned())?
+        .map_err(|_| VALIDATION_ANALYSIS_FAILED_MESSAGE.to_owned())?;
+
+    let project = lock_project(state)?;
+    finish_validation_snapshot(&project, analyzed)
 }
 
 /// Analyzes immutable topology input away from the project-state lock.
@@ -659,7 +758,7 @@ async fn analyze_project_topology(
         (input, topology)
     })
     .await
-    .map_err(|error| format!("topology analysis task failed: {error}"))?;
+    .map_err(topology_analysis_task_error)?;
 
     let project = lock_project(&state)?;
     finish_topology_response(&project, &input, topology)
@@ -699,7 +798,7 @@ async fn open_project(
     let path = selected
         .simplified()
         .into_path()
-        .map_err(|error| format!("the selected location is not a local file: {error}"))?;
+        .map_err(|_| "選択されたファイルはローカルファイルではありません。".to_owned())?;
     let loaded = load_project_file(path)?;
 
     let mut project = lock_project(&state)?;
@@ -779,7 +878,7 @@ async fn preview_fold_import(
     let (bytes, preview) =
         tauri::async_runtime::spawn_blocking(move || load_fold_import_preview(&path))
             .await
-            .map_err(|error| format!("FOLD import task failed: {error}"))??;
+            .map_err(fold_import_task_error)??;
 
     {
         let project = lock_project(&state)?;
@@ -829,7 +928,7 @@ async fn apply_fold_import(
         build_fold_import_replacement(&bytes, name, millimeters_per_unit, mappings)
     })
     .await
-    .map_err(|error| format!("FOLD conversion task failed: {error}"))??;
+    .map_err(fold_conversion_task_error)??;
 
     // Lock order is always import staging before project state. Cancellation
     // can invalidate the token while conversion runs, but cannot interleave
@@ -2197,7 +2296,7 @@ async fn analyze_instruction_pose(
         (input, topology)
     })
     .await
-    .map_err(|error| format!("instruction topology analysis task failed: {error}"))?;
+    .map_err(instruction_topology_analysis_task_error)?;
 
     Ok(AnalyzedInstructionPose {
         project_instance_id,
@@ -2526,7 +2625,7 @@ fn save_project_with_dialog(
     let path = selected
         .simplified()
         .into_path()
-        .map_err(|error| format!("the selected location is not a local file: {error}"))?;
+        .map_err(project_save_target_conversion_error)?;
     let mut project = lock_project(state)?;
     save_project_as_selected_path(
         &mut project,
@@ -2535,6 +2634,10 @@ fn save_project_with_dialog(
         expected_revision,
         path,
     )
+}
+
+fn project_save_target_conversion_error<T>(_: T) -> String {
+    "選択された保存先はローカルファイルではありません。".to_owned()
 }
 
 fn save_project_as_selected_path(
@@ -2550,15 +2653,23 @@ fn save_project_as_selected_path(
         expected_project_id,
         expected_revision,
     )?;
-    save_project_to_path(project, ensure_ori2_extension(selected_path))
+    save_project_to_destination(project, ensure_ori2_extension(selected_path)?)
 }
 
 fn save_project_to_path(
     project: &mut ProjectState,
     path: PathBuf,
 ) -> Result<ProjectFileResponse, String> {
+    save_project_to_destination(project, save_path::DialogSaveDestination::confirmed(path))
+}
+
+fn save_project_to_destination(
+    project: &mut ProjectState,
+    destination: save_path::DialogSaveDestination,
+) -> Result<ProjectFileResponse, String> {
     let document = project.document();
-    persist_document(&path, &document)?;
+    persist_document_to_destination(&destination, &document)?;
+    let path = destination.into_path();
     project.current_path = Some(path);
     project.saved_revision = Some(project.editor.revision());
     project.saved_document = Some(document);
@@ -2594,16 +2705,13 @@ fn apply_loaded_project_file(
 }
 
 fn read_fold_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
-    let file = File::open(path)
-        .map_err(|error| format!("selected FOLD file could not be opened: {error}"))?;
+    let file = File::open(path).map_err(|_| FOLD_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     let declared_size = file
         .metadata()
-        .map_err(|error| format!("selected FOLD file could not be inspected: {error}"))?
+        .map_err(|_| FOLD_FILE_INSPECTION_FAILED_MESSAGE.to_owned())?
         .len();
     if declared_size > MAX_FOLD_IMPORT_FILE_SIZE {
-        return Err(format!(
-            "selected FOLD file is {declared_size} bytes; the limit is {MAX_FOLD_IMPORT_FILE_SIZE} bytes"
-        ));
+        return Err(FOLD_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
 
     let capacity = usize::try_from(declared_size)
@@ -2612,26 +2720,21 @@ fn read_fold_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::with_capacity(capacity);
     file.take(MAX_FOLD_IMPORT_FILE_SIZE.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("selected FOLD file could not be read: {error}"))?;
+        .map_err(|_| FOLD_FILE_READ_FAILED_MESSAGE.to_owned())?;
     if bytes.len() as u64 > MAX_FOLD_IMPORT_FILE_SIZE {
-        return Err(format!(
-            "selected FOLD file grew beyond the limit of {MAX_FOLD_IMPORT_FILE_SIZE} bytes while it was read"
-        ));
+        return Err(FOLD_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
     Ok(bytes)
 }
 
 fn read_svg_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
-    let file = File::open(path)
-        .map_err(|error| format!("selected SVG file could not be opened: {error}"))?;
+    let file = File::open(path).map_err(|_| SVG_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     let declared_size = file
         .metadata()
-        .map_err(|error| format!("selected SVG file could not be inspected: {error}"))?
+        .map_err(|_| SVG_FILE_INSPECTION_FAILED_MESSAGE.to_owned())?
         .len();
     if declared_size > MAX_SVG_IMPORT_FILE_SIZE {
-        return Err(format!(
-            "selected SVG file is {declared_size} bytes; the limit is {MAX_SVG_IMPORT_FILE_SIZE} bytes"
-        ));
+        return Err(SVG_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
 
     let capacity = usize::try_from(declared_size)
@@ -2640,26 +2743,22 @@ fn read_svg_import_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::with_capacity(capacity);
     file.take(MAX_SVG_IMPORT_FILE_SIZE.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("selected SVG file could not be read: {error}"))?;
+        .map_err(|_| SVG_FILE_READ_FAILED_MESSAGE.to_owned())?;
     if bytes.len() as u64 > MAX_SVG_IMPORT_FILE_SIZE {
-        return Err(format!(
-            "selected SVG file grew beyond the limit of {MAX_SVG_IMPORT_FILE_SIZE} bytes while it was read"
-        ));
+        return Err(SVG_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
     Ok(bytes)
 }
 
 fn load_fold_import_preview(path: &Path) -> Result<(Vec<u8>, FoldPreview), String> {
     let bytes = read_fold_import_bytes(path)?;
-    let preview = read_fold_preview(&bytes)
-        .map_err(|error| format!("selected FOLD file is invalid: {error}"))?;
+    let preview = read_fold_preview(&bytes).map_err(fold_file_invalid_error)?;
     Ok((bytes, preview))
 }
 
 fn load_svg_import_preview(path: &Path) -> Result<(Vec<u8>, SvgPreview), String> {
     let bytes = read_svg_import_bytes(path)?;
-    let preview = read_svg_preview(&bytes)
-        .map_err(|_| "selected SVG file is invalid or outside the supported subset".to_owned())?;
+    let preview = read_svg_preview(&bytes).map_err(|_| SVG_FILE_INVALID_MESSAGE.to_owned())?;
     Ok((bytes, preview))
 }
 
@@ -3214,8 +3313,7 @@ fn build_fold_import_replacement(
     millimeters_per_unit: f64,
     mappings: HashMap<String, FoldImportTargetRequest>,
 ) -> Result<ProjectState, String> {
-    let preview = read_fold_preview(bytes)
-        .map_err(|error| format!("staged FOLD preview could not be revalidated: {error}"))?;
+    let preview = read_fold_preview(bytes).map_err(fold_file_invalid_error)?;
     let counts = preview.assignment_counts();
     for source in mappings.keys() {
         let present = match source.as_str() {
@@ -3527,18 +3625,13 @@ fn fold_import_assignment_target(
 
 fn load_document_from_path(path: &Path) -> Result<ProjectDocument, String> {
     let limits = Ori2Limits::default();
-    let file =
-        File::open(path).map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let file = File::open(path).map_err(|_| PROJECT_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     let declared_size = file
         .metadata()
-        .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
+        .map_err(|_| PROJECT_FILE_INSPECTION_FAILED_MESSAGE.to_owned())?
         .len();
     if declared_size > limits.max_archive_size {
-        return Err(format!(
-            "{} is {declared_size} bytes; the .ori2 limit is {} bytes",
-            path.display(),
-            limits.max_archive_size
-        ));
+        return Err(PROJECT_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
 
     let capacity = usize::try_from(declared_size)
@@ -3548,23 +3641,15 @@ fn load_document_from_path(path: &Path) -> Result<ProjectDocument, String> {
     let mut bounded_reader = file.take(limits.max_archive_size.saturating_add(1));
     bounded_reader
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        .map_err(|_| PROJECT_FILE_READ_FAILED_MESSAGE.to_owned())?;
     if bytes.len() as u64 > limits.max_archive_size {
-        return Err(format!(
-            "{} grew beyond the .ori2 limit of {} bytes while it was read",
-            path.display(),
-            limits.max_archive_size
-        ));
+        return Err(PROJECT_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
 
     let document = read_project_ori2_with_limits(&bytes, limits)
-        .map_err(|error| format!("failed to validate {}: {error}", path.display()))?;
-    validate_document_instruction_poses(&document).map_err(|error| {
-        format!(
-            "failed to validate folding instructions in {}: {error}",
-            path.display()
-        )
-    })?;
+        .map_err(|_| PROJECT_FILE_INVALID_MESSAGE.to_owned())?;
+    validate_document_instruction_poses(&document)
+        .map_err(|_| PROJECT_INSTRUCTIONS_INVALID_MESSAGE.to_owned())?;
     Ok(document)
 }
 
@@ -3609,16 +3694,41 @@ fn validate_document_instruction_poses(document: &ProjectDocument) -> Result<(),
     Ok(())
 }
 
+#[cfg(test)]
 fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), String> {
+    persist_document_to_destination(
+        &save_path::DialogSaveDestination::confirmed(path.to_path_buf()),
+        document,
+    )
+}
+
+fn persist_document_to_destination(
+    destination: &save_path::DialogSaveDestination,
+    document: &ProjectDocument,
+) -> Result<(), String> {
+    let path = destination.path();
     if path.file_name().is_none() {
-        return Err(format!("{} is not a file path", path.display()));
+        return Err("選択された保存先はファイルパスではありません。".to_owned());
     }
 
     validate_document_instruction_poses(document)
-        .map_err(|error| format!("failed to validate folding instructions before save: {error}"))?;
+        .map_err(|_| PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE.to_owned())?;
     let bytes = write_project_ori2(document)
-        .map_err(|error| format!("failed to create .ori2 data: {error}"))?;
-    persist_document_atomically(path, document, &bytes)
+        .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
+    let result = persist_document_atomically(
+        path,
+        document,
+        &bytes,
+        destination.existing_destination_policy(),
+    );
+    match destination.existing_destination_policy() {
+        save_path::ExistingDestinationPolicy::RejectExisting => result.map_err(|_| {
+            "拡張子を補正した保存先を安全に確定できなかったため、保存を中止しました。".to_owned()
+        }),
+        save_path::ExistingDestinationPolicy::ReplaceConfirmed => result.map_err(|_| {
+            "プロジェクトを保存先へ安全に確定できなかったため、保存を中止しました。".to_owned()
+        }),
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3626,21 +3736,26 @@ fn persist_document_atomically(
     path: &Path,
     document: &ProjectDocument,
     bytes: &[u8],
+    existing_destination_policy: save_path::ExistingDestinationPolicy,
 ) -> Result<(), String> {
     let mut staged = prepare_staged_file(path, document, bytes)?;
-    std::fs::rename(&staged.path, path)
-        .map_err(|error| format!("failed to commit {} atomically: {error}", path.display()))?;
-    staged.committed = true;
     let parent = containing_directory(path)
         .ok_or_else(|| format!("{} is not a file path", path.display()))?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            format!(
-                "failed to synchronize the project directory for {}: {error}",
-                path.display()
-            )
-        })?;
+    let directory = File::open(parent).map_err(|error| {
+        format!(
+            "failed to open the project directory for {}: {error}",
+            path.display()
+        )
+    })?;
+    commit_unix_staged_project_file(&mut staged, path, existing_destination_policy, || {
+        directory.sync_all()
+    })
+    .map_err(|error| {
+        format!(
+            "failed to commit and synchronize {} atomically: {error}",
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -3649,10 +3764,60 @@ fn persist_document_atomically(
     path: &Path,
     document: &ProjectDocument,
     bytes: &[u8],
+    existing_destination_policy: save_path::ExistingDestinationPolicy,
 ) -> Result<(), String> {
     let mut staged = prepare_staged_file(path, document, bytes)?;
-    rename_windows_staged_file(staged.file(), path)?;
+    rename_windows_staged_file_with_policy(staged.file(), path, existing_destination_policy)?;
     staged.committed = true;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn publish_unix_staged_file(
+    staged: &mut StagedFile,
+    destination: &Path,
+    existing_destination_policy: save_path::ExistingDestinationPolicy,
+) -> std::io::Result<()> {
+    match existing_destination_policy {
+        save_path::ExistingDestinationPolicy::ReplaceConfirmed => {
+            std::fs::rename(&staged.path, destination)?;
+            staged.committed = true;
+        }
+        save_path::ExistingDestinationPolicy::RejectExisting => {
+            // The staged file is in the destination directory, so creating a
+            // hard link is an atomic create-new publish on the same file
+            // system. Unlike a preflight existence check followed by rename,
+            // this cannot replace a path created by another process in the
+            // intervening window.
+            std::fs::hard_link(&staged.path, destination)?;
+            if std::fs::remove_file(&staged.path).is_ok() {
+                staged.committed = true;
+            }
+            // If unlinking the staging name failed, Drop retries it. The
+            // destination is already the verified inode and must be reported
+            // as committed rather than encouraging a duplicate save.
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn commit_unix_staged_project_file<F>(
+    staged: &mut StagedFile,
+    destination: &Path,
+    existing_destination_policy: save_path::ExistingDestinationPolicy,
+    mut sync_directory: F,
+) -> std::io::Result<()>
+where
+    F: FnMut() -> std::io::Result<()>,
+{
+    // Any reported error must occur before the visible destination changes.
+    // Once publish succeeds, a directory durability failure cannot be
+    // reported as an ordinary save failure because callers would retain the
+    // old saved baseline and may retry despite the new file being visible.
+    sync_directory()?;
+    publish_unix_staged_file(staged, destination, existing_destination_policy)?;
+    let _ = sync_directory();
     Ok(())
 }
 
@@ -3813,6 +3978,19 @@ fn containing_directory(path: &Path) -> Option<&Path> {
 
 #[cfg(target_os = "windows")]
 fn rename_windows_staged_file(staged_file: &File, destination: &Path) -> Result<(), String> {
+    rename_windows_staged_file_with_policy(
+        staged_file,
+        destination,
+        save_path::ExistingDestinationPolicy::ReplaceConfirmed,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn rename_windows_staged_file_with_policy(
+    staged_file: &File,
+    destination: &Path,
+    existing_destination_policy: save_path::ExistingDestinationPolicy,
+) -> Result<(), String> {
     let destination_wide = destination.as_os_str().encode_wide().collect::<Vec<_>>();
     if destination_wide.contains(&0) {
         return Err(format!(
@@ -3863,7 +4041,10 @@ fn rename_windows_staged_file(staged_file: &File, destination: &Path) -> Result<
     // by `staged_file` throughout the call. FileRenameInfo renames that exact
     // open file, so a pathname swap cannot substitute unverified bytes.
     let renamed = unsafe {
-        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).Anonymous.ReplaceIfExists = matches!(
+            existing_destination_policy,
+            save_path::ExistingDestinationPolicy::ReplaceConfirmed
+        );
         (*info).RootDirectory = ptr::null_mut();
         (*info).FileNameLength = file_name_bytes;
         let file_name = ptr::addr_of_mut!((*info).FileName).cast::<u16>();
@@ -3894,15 +4075,8 @@ fn verify_generated_ori2(document: &ProjectDocument, bytes: &[u8]) -> Result<(),
     Ok(())
 }
 
-fn ensure_ori2_extension(mut path: PathBuf) -> PathBuf {
-    let already_ori2 = path
-        .extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("ori2"));
-    if !already_ori2 {
-        path.set_extension("ori2");
-    }
-    path
+fn ensure_ori2_extension(path: PathBuf) -> Result<save_path::DialogSaveDestination, String> {
+    save_path::normalize_dialog_save_path(path, "ori2")
 }
 
 fn suggested_file_name(project_name: &str) -> String {
@@ -3928,11 +4102,31 @@ fn suggested_file_name(project_name: &str) -> String {
     format!("{base}.ori2")
 }
 
+fn capture_validation_input(project: &ProjectState) -> ValidationAnalysisInput {
+    ValidationAnalysisInput {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        source: project.editor.topology_analysis_input(project.project_id),
+    }
+}
+
+#[cfg(test)]
 fn validation_snapshot(project: &ProjectState) -> ValidationSnapshot {
-    let crease_validation = project.editor.validation();
-    let paper_validation = validate_paper(project.editor.paper(), project.editor.pattern());
+    finish_validation_snapshot(
+        project,
+        analyze_validation_input(capture_validation_input(project)),
+    )
+    .expect("synchronous validation fixture must remain current")
+}
+
+fn analyze_validation_input(input: ValidationAnalysisInput) -> AnalyzedProjectValidation {
+    let analysis_editor =
+        EditorState::with_paper(input.source.pattern().clone(), input.source.paper().clone());
+    let source_model_fingerprint = analysis_editor.fold_model_fingerprint_v1();
+    let crease_validation = analysis_editor.validation();
+    let paper_validation = validate_paper(analysis_editor.paper(), analysis_editor.pattern());
     let local_flat_foldability =
-        analyze_local_flat_foldability(project.editor.paper(), project.editor.pattern());
+        analyze_local_flat_foldability(analysis_editor.paper(), analysis_editor.pattern());
     let mut issues =
         Vec::with_capacity(crease_validation.issues().len() + paper_validation.issues.len());
     issues.extend(
@@ -3941,19 +4135,50 @@ fn validation_snapshot(project: &ProjectState) -> ValidationSnapshot {
             .iter()
             .map(validation_issue_snapshot),
     );
-    issues.extend(
-        paper_validation
-            .issues
-            .iter()
-            .map(|issue| paper_validation_issue_snapshot(issue, project)),
-    );
-    ValidationSnapshot {
-        project_id: project.project_id,
-        revision: crease_validation.revision(),
-        is_valid: issues.is_empty(),
-        issues,
-        local_flat_foldability,
+    issues.extend(paper_validation.issues.iter().map(|issue| {
+        paper_validation_issue_snapshot(issue, analysis_editor.paper(), analysis_editor.pattern())
+    }));
+    AnalyzedProjectValidation {
+        snapshot: ValidationSnapshot {
+            project_id: input.project_id,
+            revision: input.source.revision(),
+            is_valid: issues.is_empty(),
+            issues,
+            local_flat_foldability,
+        },
+        input,
+        source_model_fingerprint,
     }
+}
+
+fn finish_validation_snapshot(
+    project: &ProjectState,
+    analyzed: AnalyzedProjectValidation,
+) -> Result<ValidationSnapshot, String> {
+    if project.instance_id != analyzed.input.project_instance_id
+        || !analyzed
+            .input
+            .source
+            .is_current_for(project.project_id, &project.editor)
+    {
+        return Err("the project changed while validation was being analyzed".to_owned());
+    }
+    if analyzed.snapshot.project_id != project.project_id
+        || analyzed.snapshot.revision != analyzed.input.source.revision()
+    {
+        return Err("validation analysis returned unexpected source identity".to_owned());
+    }
+    if !valid_fold_model_fingerprint(&analyzed.source_model_fingerprint) {
+        return Err("validation analysis returned an invalid source fingerprint".to_owned());
+    }
+    Ok(analyzed.snapshot)
+}
+
+fn valid_fold_model_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validation_issue_snapshot(issue: &ValidationIssue) -> ValidationIssueSnapshot {
@@ -4003,9 +4228,9 @@ fn validation_issue_snapshot(issue: &ValidationIssue) -> ValidationIssueSnapshot
 
 fn paper_validation_issue_snapshot(
     issue: &PaperValidationIssue,
-    project: &ProjectState,
+    paper: &Paper,
+    pattern: &CreasePattern,
 ) -> ValidationIssueSnapshot {
-    let pattern = project.editor.pattern();
     match issue {
         PaperValidationIssue::NonFiniteThickness { .. } => ValidationIssueSnapshot {
             code: "non_finite_thickness",
@@ -4019,7 +4244,7 @@ fn paper_validation_issue_snapshot(
         },
         PaperValidationIssue::TooFewBoundaryVertices { .. } => ValidationIssueSnapshot {
             code: "too_few_boundary_vertices",
-            vertices: unique_vertex_ids(project.editor.paper().boundary_vertices.iter().copied()),
+            vertices: unique_vertex_ids(paper.boundary_vertices.iter().copied()),
             edges: Vec::new(),
         },
         PaperValidationIssue::DuplicateBoundaryVertex { vertex, .. } => ValidationIssueSnapshot {
@@ -4257,6 +4482,7 @@ pub fn run() {
         .manage(FoldImportState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
+        .manage(GlobalFlatFoldabilityState::default())
         .manage(InstructionExportState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
@@ -4265,6 +4491,10 @@ pub fn run() {
             new_project,
             validate_project,
             analyze_project_topology,
+            begin_global_flat_foldability,
+            get_global_flat_foldability_progress,
+            get_global_flat_foldability_result,
+            cancel_global_flat_foldability,
             open_project,
             save_project,
             save_project_as,
@@ -4372,8 +4602,13 @@ mod tests {
     use std::{
         collections::BTreeSet,
         fs,
-        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
-        time::{SystemTime, UNIX_EPOCH},
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering as AtomicOrdering},
+            mpsc,
+        },
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use ori_domain::{Edge, Vertex};
@@ -4949,7 +5184,8 @@ mod tests {
         let error = persist_document(&path, &document)
             .expect_err("semantic validation must run before staging a save");
 
-        assert!(error.starts_with("failed to validate folding instructions before save:"));
+        assert_eq!(error, PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE);
+        assert!(!error.contains("不正な現在姿勢"));
         assert_eq!(fs::read(&path).expect("read preserved target"), original);
         assert_eq!(
             fs::read_dir(&directory.path)
@@ -5042,6 +5278,151 @@ mod tests {
                 .expect_err("same identity/revision with different content is stale"),
             "the project changed while topology was being analyzed"
         );
+    }
+
+    #[test]
+    fn validation_worker_releases_project_lock_during_exact_analysis() {
+        let state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let worker_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+
+        let validation = thread::spawn(move || {
+            tauri::async_runtime::block_on(validate_project_with_worker(
+                &worker_state,
+                move |input| {
+                    entered_tx.send(()).expect("announce worker entry");
+                    release_rx.recv().expect("release validation worker");
+                    Ok(analyze_validation_input(input))
+                },
+            ))
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("validation worker must start");
+        let lock_was_available = state.0.try_lock().is_ok();
+        release_tx.send(()).expect("release validation worker");
+
+        let snapshot = validation
+            .join()
+            .expect("validation caller thread must not panic")
+            .expect("unchanged validation must finish");
+        assert!(
+            lock_was_available,
+            "the project mutex must not be held during exact validation"
+        );
+        assert_eq!(snapshot.revision, 0);
+    }
+
+    #[test]
+    fn validation_worker_rejects_same_revision_aba_content() {
+        let state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let worker_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+
+        let validation = thread::spawn(move || {
+            tauri::async_runtime::block_on(validate_project_with_worker(
+                &worker_state,
+                move |input| {
+                    entered_tx.send(()).expect("announce worker entry");
+                    release_rx.recv().expect("release validation worker");
+                    Ok(analyze_validation_input(input))
+                },
+            ))
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("validation worker must start");
+        {
+            let Ok(mut project) = state.0.try_lock() else {
+                release_tx
+                    .send(())
+                    .expect("release blocked validation worker");
+                validation
+                    .join()
+                    .expect("validation caller thread must not panic")
+                    .expect("unchanged validation must finish");
+                panic!("the project mutex must be available while validation is running");
+            };
+            let replacement =
+                create_rectangular_sheet(210.0, 297.0, false).expect("replacement rectangle");
+            let (pattern, paper) = replacement.into_parts();
+            project.editor = EditorState::with_paper(pattern, paper);
+            assert_eq!(project.editor.revision(), 0, "ABA revision fixture");
+        }
+        release_tx.send(()).expect("release validation worker");
+
+        let error = validation
+            .join()
+            .expect("validation caller thread must not panic")
+            .expect_err("same-revision replacement must make the result stale");
+        assert_eq!(
+            error,
+            "the project changed while validation was being analyzed"
+        );
+    }
+
+    #[test]
+    fn validation_worker_panic_and_reported_failure_are_redacted_and_fail_closed() {
+        let state = AppState(Mutex::new(initial_project_state()));
+        let private_panic = r"C:\Users\alice\秘密の作品.ori2 at vertex=(12.3,45.6)";
+
+        let panic_error = tauri::async_runtime::block_on(validate_project_with_worker(
+            &state,
+            move |_| -> Result<AnalyzedProjectValidation, String> {
+                panic!("{private_panic}");
+            },
+        ))
+        .expect_err("a panicking worker must fail the command");
+        assert_eq!(panic_error, VALIDATION_ANALYSIS_FAILED_MESSAGE);
+        assert!(!panic_error.contains("alice"));
+        assert!(!panic_error.contains("秘密の作品"));
+        assert!(!panic_error.contains("12.3"));
+
+        let private_failure = r"C:\Users\bob\非公開.ori2; internal_id=validation-7";
+        let reported_error =
+            tauri::async_runtime::block_on(validate_project_with_worker(&state, move |_| {
+                Err(private_failure.to_owned())
+            }))
+            .expect_err("a reported worker failure must fail the command");
+        assert_eq!(reported_error, VALIDATION_ANALYSIS_FAILED_MESSAGE);
+        assert!(!reported_error.contains("bob"));
+        assert!(!reported_error.contains("非公開"));
+        assert!(!reported_error.contains("validation-7"));
+        assert!(
+            state.0.try_lock().is_ok(),
+            "worker failures must not poison or retain the project mutex"
+        );
+    }
+
+    #[test]
+    fn background_task_failures_discard_private_panic_payloads() {
+        let private_payload = r"C:\Users\alice\秘密の作品.ori2; face_id=private; point=(12.3,45.6)";
+        let errors = [
+            topology_analysis_task_error(private_payload),
+            instruction_topology_analysis_task_error(private_payload),
+            fold_import_task_error(private_payload),
+            fold_conversion_task_error(private_payload),
+        ];
+
+        assert_eq!(
+            errors,
+            [
+                TOPOLOGY_ANALYSIS_TASK_FAILED_MESSAGE,
+                INSTRUCTION_TOPOLOGY_ANALYSIS_TASK_FAILED_MESSAGE,
+                FOLD_IMPORT_TASK_FAILED_MESSAGE,
+                FOLD_CONVERSION_TASK_FAILED_MESSAGE,
+            ]
+        );
+        for error in errors {
+            assert!(!error.contains("alice"));
+            assert!(!error.contains("秘密の作品"));
+            assert!(!error.contains("face_id"));
+            assert!(!error.contains("12.3"));
+        }
     }
 
     fn unsaved_project_with_redo_history(name: &str) -> ProjectState {
@@ -7444,6 +7825,54 @@ mod tests {
         assert_eq!(load_document_from_path(&path).unwrap(), project.document());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unix_directory_sync_failure_is_only_reported_before_publish() {
+        let directory = TestDirectory::new();
+        let path = directory.join("directory-sync.ori2");
+        let document = file_document("Directory sync", 42.0);
+        let bytes = write_project_ori2(&document).unwrap();
+
+        fs::write(&path, b"keep before failed pre-publish sync").unwrap();
+        let mut staged = prepare_staged_file(&path, &document, &bytes).unwrap();
+        let error = commit_unix_staged_project_file(
+            &mut staged,
+            &path,
+            save_path::ExistingDestinationPolicy::ReplaceConfirmed,
+            || Err(std::io::Error::other("injected pre-publish sync failure")),
+        )
+        .expect_err("a pre-publish directory sync failure must abort the commit");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        drop(staged);
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"keep before failed pre-publish sync"
+        );
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
+
+        let mut staged = prepare_staged_file(&path, &document, &bytes).unwrap();
+        let mut sync_calls = 0_u8;
+        commit_unix_staged_project_file(
+            &mut staged,
+            &path,
+            save_path::ExistingDestinationPolicy::ReplaceConfirmed,
+            || {
+                sync_calls += 1;
+                if sync_calls == 1 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other("injected post-publish sync failure"))
+                }
+            },
+        )
+        .expect("a post-publish durability failure must not report an ordinary save failure");
+        drop(staged);
+
+        assert_eq!(sync_calls, 2);
+        assert_eq!(load_document_from_path(&path).unwrap(), document);
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
+    }
+
     #[test]
     fn native_open_replaces_the_project_only_after_loading_and_validation() {
         let directory = TestDirectory::new();
@@ -7479,15 +7908,87 @@ mod tests {
     #[test]
     fn corrupt_native_open_preserves_project_state_and_history() {
         let directory = TestDirectory::new();
-        let path = directory.join("corrupt.ori2");
-        fs::write(&path, b"not an ORIGAMI2 archive").expect("write corrupt fixture");
+        let secret_name = "private-client-corrupt.ori2";
+        let path = directory.join(secret_name);
+        let private_payload = b"not an ORIGAMI2 archive: SECRET_PROJECT_CONTENT";
+        fs::write(&path, private_payload).expect("write corrupt fixture");
         let project = unsaved_project_with_redo_history("Unaffected project");
         let before = project_state_signature(&project);
 
-        let error = load_project_file(path).expect_err("corrupt project must fail validation");
+        let error =
+            load_project_file(path.clone()).expect_err("corrupt project must fail validation");
 
-        assert!(error.contains("failed to validate"));
+        assert_eq!(error, PROJECT_FILE_INVALID_MESSAGE);
+        assert!(!error.contains(secret_name));
+        assert!(!error.contains("SECRET_PROJECT_CONTENT"));
+        assert!(!error.contains(&directory.path.to_string_lossy().into_owned()));
         assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn native_open_file_failures_use_fixed_path_free_categories() {
+        let directory = TestDirectory::new();
+        let secret_name = "private-client-missing.ori2";
+        let missing_path = directory.join(secret_name);
+
+        let missing_error =
+            load_project_file(missing_path).expect_err("missing project must be rejected");
+        assert_eq!(missing_error, PROJECT_FILE_OPEN_FAILED_MESSAGE);
+        assert!(!missing_error.contains(secret_name));
+        assert!(!missing_error.contains(&directory.path.to_string_lossy().into_owned()));
+        assert!(!missing_error.to_ascii_lowercase().contains("os error"));
+
+        let oversized_name = "private-client-oversized.ori2";
+        let oversized_path = directory.join(oversized_name);
+        File::create(&oversized_path)
+            .expect("create oversized project fixture")
+            .set_len(Ori2Limits::default().max_archive_size + 1)
+            .expect("make sparse oversized project fixture");
+
+        let oversized_error =
+            load_project_file(oversized_path).expect_err("oversized project must be rejected");
+        assert_eq!(oversized_error, PROJECT_FILE_TOO_LARGE_MESSAGE);
+        assert!(!oversized_error.contains(oversized_name));
+        assert!(
+            !oversized_error.contains(&(Ori2Limits::default().max_archive_size + 1).to_string())
+        );
+        assert!(!oversized_error.contains(&directory.path.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn native_open_instruction_failure_discards_private_semantic_details() {
+        let project = initial_project_state();
+        let mut document = project.document();
+        let private_title = "SECRET_PRIVATE_INSTRUCTION";
+        let private_face = FaceId::new();
+        document.instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: private_title.to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: 1_000,
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+                fixed_face: Some(private_face),
+                hinge_angles: Vec::new(),
+            },
+        });
+        let bytes = write_project_ori2(&document)
+            .expect("syntactically valid project can carry a semantically invalid pose");
+        let directory = TestDirectory::new();
+        let secret_name = "private-instruction-project.ori2";
+        let path = directory.join(secret_name);
+        fs::write(&path, bytes).expect("write instruction failure fixture");
+
+        let error =
+            load_project_file(path).expect_err("semantic instruction failure must be rejected");
+
+        assert_eq!(error, PROJECT_INSTRUCTIONS_INVALID_MESSAGE);
+        assert!(!error.contains(private_title));
+        assert!(!error.contains(&format!("{private_face:?}")));
+        assert!(!error.contains(secret_name));
+        assert!(!error.contains(&directory.path.to_string_lossy().into_owned()));
     }
 
     #[test]
@@ -7601,7 +8102,12 @@ mod tests {
         )
         .expect_err("a directory cannot be replaced by a project file");
 
-        assert!(error.contains("failed to"));
+        assert_eq!(
+            error,
+            "プロジェクトを保存先へ安全に確定できなかったため、保存を中止しました。"
+        );
+        assert!(!error.contains("occupied.ori2"));
+        assert!(!error.contains(&directory.path.display().to_string()));
         assert_eq!(project_state_signature(&project), before);
         assert_eq!(fs::read(&sentinel).unwrap(), b"keep this directory");
         assert!(occupied_path.is_dir());
@@ -7644,17 +8150,108 @@ mod tests {
     }
 
     #[test]
+    fn native_save_as_cannot_overwrite_an_existing_unconfirmed_corrected_path() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.join("project.txt");
+        let corrected_path = directory.join("project.ori2");
+        fs::write(&corrected_path, b"keep existing project").unwrap();
+        let mut project = unsaved_project_with_redo_history("Protected project");
+        let expected_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let before = project_state_signature(&project);
+
+        let error = save_project_as_selected_path(
+            &mut project,
+            expected_instance_id,
+            expected_project_id,
+            expected_revision,
+            selected_path.clone(),
+        )
+        .expect_err("an unconfirmed corrected destination must not be overwritten");
+
+        assert!(error.contains("上書き確認"));
+        assert_eq!(project_state_signature(&project), before);
+        assert_eq!(fs::read(corrected_path).unwrap(), b"keep existing project");
+        assert!(!selected_path.exists());
+    }
+
+    #[test]
+    fn project_save_target_conversion_error_discards_the_raw_path_and_os_error() {
+        let raw_error = r"C:\Users\private-work\secret.ori2: injected operating-system detail";
+
+        let error = project_save_target_conversion_error(raw_error);
+
+        assert_eq!(error, "選択された保存先はローカルファイルではありません。");
+        assert!(!error.contains("private-work"));
+        assert!(!error.contains("operating-system"));
+    }
+
+    #[test]
+    fn extension_correction_race_cannot_replace_a_new_destination() {
+        let directory = TestDirectory::new();
+        let selected_path = directory.join("race-target.backup");
+        let corrected_path = directory.join("race-target.ori2");
+        let destination =
+            ensure_ori2_extension(selected_path).expect("preflight an unused corrected path");
+        assert_eq!(
+            destination.existing_destination_policy(),
+            save_path::ExistingDestinationPolicy::RejectExisting
+        );
+
+        let protected_bytes = b"created after extension preflight";
+        fs::write(&corrected_path, protected_bytes).unwrap();
+        let mut project = unsaved_project_with_redo_history("Race-safe project");
+        let before = project_state_signature(&project);
+
+        let error = save_project_to_destination(&mut project, destination)
+            .expect_err("atomic create-new commit must reject the intervening destination");
+
+        assert!(error.contains("安全に確定"));
+        assert!(!error.contains("race-target"));
+        assert_eq!(fs::read(&corrected_path).unwrap(), protected_bytes);
+        assert_eq!(project_state_signature(&project), before);
+        assert!(
+            fs::read_dir(&directory.path)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".origami2-")),
+            "a rejected create-new commit must clean its staged file"
+        );
+    }
+
+    #[test]
+    fn correct_extension_keeps_the_dialog_confirmed_overwrite() {
+        let directory = TestDirectory::new();
+        let path = directory.join("confirmed.ori2");
+        fs::write(&path, b"OS-confirmed old bytes").unwrap();
+        let mut project = unsaved_project_with_redo_history("Confirmed overwrite");
+        let expected_document = project.document();
+        let destination =
+            ensure_ori2_extension(path.clone()).expect("accept a dialog-confirmed extension");
+
+        save_project_to_destination(&mut project, destination)
+            .expect("replace the dialog-confirmed destination");
+
+        assert_eq!(load_document_from_path(&path).unwrap(), expected_document);
+        assert_eq!(project.current_path.as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
     fn save_as_extension_is_normalized_without_changing_valid_case() {
         assert_eq!(
-            ensure_ori2_extension(PathBuf::from("crane")),
+            ensure_ori2_extension(PathBuf::from("crane")).unwrap(),
             PathBuf::from("crane.ori2")
         );
         assert_eq!(
-            ensure_ori2_extension(PathBuf::from("crane.json")),
+            ensure_ori2_extension(PathBuf::from("crane.json")).unwrap(),
             PathBuf::from("crane.ori2")
         );
         assert_eq!(
-            ensure_ori2_extension(PathBuf::from("crane.ORI2")),
+            ensure_ori2_extension(PathBuf::from("crane.ORI2")).unwrap(),
             PathBuf::from("crane.ORI2")
         );
     }
@@ -8775,8 +9372,37 @@ mod tests {
 
         let missing_error =
             read_fold_import_bytes(&path).expect_err("missing import must be rejected");
+        assert_eq!(missing_error, FOLD_FILE_OPEN_FAILED_MESSAGE);
         assert!(!missing_error.contains(secret_name));
         assert!(!missing_error.contains(&directory.path.to_string_lossy().into_owned()));
+        assert!(!missing_error.to_ascii_lowercase().contains("os error"));
+
+        let private_file_spec = 987_654_321.125_f64;
+        let private_value = private_file_spec.to_string();
+        let malformed = serde_json::to_vec(&serde_json::json!({
+            "file_spec": private_file_spec,
+            "vertices_coords": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            "edges_vertices": [[0, 1], [1, 2], [2, 3], [3, 0]],
+            "edges_assignment": ["B", "B", "B", "B"]
+        }))
+        .expect("serialize private malformed FOLD fixture");
+        fs::write(&path, &malformed).expect("write malformed FOLD fixture");
+        let malformed_error =
+            load_fold_import_preview(&path).expect_err("unsupported FOLD version must be rejected");
+        assert_eq!(malformed_error, FOLD_FILE_INVALID_MESSAGE);
+        assert!(!malformed_error.contains(&private_value));
+        assert!(!malformed_error.contains(secret_name));
+
+        let staged_error = build_fold_import_replacement(
+            &malformed,
+            "Private staged input".to_owned(),
+            1.0,
+            HashMap::new(),
+        )
+        .err()
+        .expect("staged unsupported FOLD version must be rejected");
+        assert_eq!(staged_error, FOLD_FILE_INVALID_MESSAGE);
+        assert!(!staged_error.contains(&private_value));
 
         File::create(&path)
             .expect("create oversized fixture")
@@ -8784,8 +9410,10 @@ mod tests {
             .expect("make sparse oversized fixture");
         let oversized_error =
             read_fold_import_bytes(&path).expect_err("oversized import must be rejected");
+        assert_eq!(oversized_error, FOLD_FILE_TOO_LARGE_MESSAGE);
         assert!(!oversized_error.contains(secret_name));
         assert!(!oversized_error.contains(&directory.path.to_string_lossy().into_owned()));
+        assert!(!oversized_error.contains(&(MAX_FOLD_IMPORT_FILE_SIZE + 1).to_string()));
     }
 
     #[test]
@@ -9031,8 +9659,10 @@ mod tests {
 
         let missing_error =
             read_svg_import_bytes(&path).expect_err("missing SVG import must be rejected");
+        assert_eq!(missing_error, SVG_FILE_OPEN_FAILED_MESSAGE);
         assert!(!missing_error.contains(secret_name));
         assert!(!missing_error.contains(&directory.path.to_string_lossy().into_owned()));
+        assert!(!missing_error.to_ascii_lowercase().contains("os error"));
 
         fs::write(
             &path,
@@ -9041,6 +9671,7 @@ mod tests {
         .expect("write malformed SVG fixture");
         let malformed_error =
             load_svg_import_preview(&path).expect_err("malformed SVG import must be rejected");
+        assert_eq!(malformed_error, SVG_FILE_INVALID_MESSAGE);
         assert!(!malformed_error.contains("SECRET_MARKER"));
         assert!(!malformed_error.contains("OTHER_SECRET"));
         assert!(!malformed_error.contains(secret_name));
@@ -9051,8 +9682,10 @@ mod tests {
             .expect("make sparse oversized SVG fixture");
         let oversized_error =
             read_svg_import_bytes(&path).expect_err("oversized SVG import must be rejected");
+        assert_eq!(oversized_error, SVG_FILE_TOO_LARGE_MESSAGE);
         assert!(!oversized_error.contains(secret_name));
         assert!(!oversized_error.contains(&directory.path.to_string_lossy().into_owned()));
+        assert!(!oversized_error.contains(&(MAX_SVG_IMPORT_FILE_SIZE + 1).to_string()));
     }
 
     #[test]

@@ -108,8 +108,8 @@ export function describeCollisionSummary(
     ? 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖と層ずれは未検証です。単一ヒンジの連続経路判定は別に表示しています'
     : 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖、層ずれ、連続運動中の衝突は未検証です'
   return accessible
-    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、数値または方針不確定${summary.indeterminateInteractions}件。${limitation}`
-    : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・不確定 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
+    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、交差の可能性・判定保留${summary.indeterminateInteractions}件。判定保留は安全確認が必要です。${limitation}`
+    : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・交差の可能性・判定保留 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
 }
 
 export function collisionDataStatus(summary: CollisionSummary | null) {
@@ -158,13 +158,16 @@ export function collisionBadgeText(summary: CollisionSummary | null) {
     + summary.hingeOutsidePenetrations
   const contactCount = summary.nonAdjacentContacts + summary.hingeOutsideContacts
   if (penetrationCount > 0) {
-    return `貫通 ${penetrationCount}（ヒンジ外 ${summary.hingeOutsidePenetrations}）・接触 ${contactCount}`
+    const indeterminateWarning = summary.indeterminateInteractions > 0
+      ? `・交差の可能性・判定保留 ${summary.indeterminateInteractions}・安全確認が必要`
+      : ''
+    return `貫通 ${penetrationCount}（ヒンジ外 ${summary.hingeOutsidePenetrations}）・接触 ${contactCount}${indeterminateWarning}`
   }
   if (summary.hingeLayerOffsetUnmodeled > 0) {
     return `層ずらし未再現のため判定不能 ${summary.hingeLayerOffsetUnmodeled}・貫通許可なし`
   }
   if (summary.indeterminateInteractions > 0) {
-    return `不確定 ${summary.indeterminateInteractions}・ヒンジ未解決 ${summary.hingeUnresolvedInteractions}`
+    return `交差の可能性・判定保留 ${summary.indeterminateInteractions}・安全確認が必要`
   }
   if (contactCount > 0) {
     return `接触 ${contactCount}（ヒンジ外 ${summary.hingeOutsideContacts}）・貫通 0`

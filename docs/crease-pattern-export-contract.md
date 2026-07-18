@@ -193,7 +193,7 @@ DXFは`image/vnd.dxf`として、AutoCAD 2007相当の`AC1021`テキスト形式
 
 - 選択先と同じdirectoryへ衝突しない`create_new`一時ファイルを作る。
 - 全bytesを書き、fileを同期し、同じhandleを先頭へ戻して再読込し、stage bytesと完全一致することを確認する。
-- Windowsでは検証したopen handle自体を`FILE_RENAME_INFO`で置換し、path差替えを許さない。POSIXでは同一directory rename後に親directoryも同期する。
+- OS dialogで利用者が正しい拡張子の保存先を確認した場合は原子的置換を許可する。拡張子を補正した保存先はatomic create-newへ固定し、Windowsでは検証したopen handle自体を`FILE_RENAME_INFO`へ渡して`ReplaceIfExists = false`、POSIXでは同一directoryのstageから排他的なhard linkを作成してstage名を外す。事前確認後に補正先が作られても既存内容を置換しない。POSIXではpublish前の親directory syncだけを失敗として返し、確定後のsyncはbest effortとする。見える出力先が既に変わった後で通常の保存失敗を返してstageを誤って再試行させない。
 - 既存通常ファイル以外を走査・削除しない。確定前の失敗ではRAIIで今回の一時ファイルだけを削除する。
 - dialog取消、I/O失敗、stale project、未知・旧token、未確認警告、生成失敗ではprojectを変更しない。
 - 保存失敗ではstageを保持して再試行可能とする。成功時だけstageを一度消費し、同じtokenの再保存を拒否する。
@@ -213,6 +213,7 @@ DXFは`image/vnd.dxf`として、AutoCAD 2007相当の`AC1021`テキスト形式
 - preview DTOにbytes、content、pathが含まれない。
 - token改変、別project、別revision、別instance、旧世代、保存済みtokenを拒否する。
 - 保存先取消は無書込みでstageを保持し、確認画面から再試行できる。
+- 拡張子補正の事前確認後にfile、directory、symlinkが補正先を占有しても既存内容、project、書き出しstageを維持し、今回の一時fileだけを清掃する。
 - 成功時は選択先へstageと同じbytesだけが保存され、projectのdocument、dirty、revision、履歴が変化しない。
 - 警告未確認ではnative保存ダイアログを開かない。
 - 確認画面のTab/Shift+Tab、外部focus、IME中Escape、busy中の閉じる操作、失敗後のretryを実DOM eventで確認する。

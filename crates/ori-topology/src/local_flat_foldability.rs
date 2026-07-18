@@ -12,8 +12,10 @@ use ori_domain::{CreasePattern, EdgeKind, Paper, Point2, VertexId};
 use serde::Serialize;
 
 use crate::{
-    admission::build_admitted_embedding,
+    CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, CooperativeOperationError,
+    admission::build_admitted_embedding_with_checkpoint,
     dcel::{DcelEmbedding, HalfEdgeIndex, VertexRotation},
+    poll_cooperative_checkpoint, run_cooperative_checkpoint,
 };
 
 /// Maximum incident mountain/valley degree evaluated by the exact Kawasaki
@@ -166,47 +168,74 @@ pub fn analyze_local_flat_foldability(
     paper: &Paper,
     pattern: &CreasePattern,
 ) -> LocalFlatFoldabilityReport {
-    let Ok(embedding) = build_admitted_embedding(paper, pattern) else {
-        return LocalFlatFoldabilityReport::blocked();
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    match analyze_local_flat_foldability_with_checkpoint(paper, pattern, &mut checkpoint) {
+        Ok(report) => report,
+        Err(_) => unreachable!("the no-op local-foldability checkpoint cannot abort"),
+    }
+}
+
+/// Evaluates local necessary conditions with cooperative interruption.
+///
+/// The callback is polled at phase boundaries and with bounded frequency
+/// while source vertices and embedding rotations are indexed and analyzed.
+/// Existing callers that do not need interruption can continue to use
+/// [`analyze_local_flat_foldability`].
+pub fn analyze_local_flat_foldability_with_checkpoint<F>(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> Result<LocalFlatFoldabilityReport, CooperativeAnalysisAbort>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    run_cooperative_checkpoint(checkpoint)?;
+    let embedding = match build_admitted_embedding_with_checkpoint(paper, pattern, checkpoint) {
+        Ok(embedding) => embedding,
+        Err(CooperativeOperationError::Aborted(abort)) => return Err(abort),
+        Err(CooperativeOperationError::Operation(_)) => {
+            return Ok(LocalFlatFoldabilityReport::blocked());
+        }
     };
-    let positions = pattern
-        .vertices
-        .iter()
-        .map(|vertex| (vertex.id, vertex.position))
-        .collect::<HashMap<_, _>>();
-    let rotations = embedding
-        .rotations
-        .iter()
-        .map(|rotation| (rotation.vertex, rotation))
-        .collect::<HashMap<_, _>>();
-    let boundary_vertices = paper
-        .boundary_vertices
-        .iter()
-        .copied()
-        .collect::<HashSet<_>>();
-    let mut vertices = pattern
-        .vertices
-        .iter()
-        .map(|vertex| vertex.id)
-        .collect::<Vec<_>>();
+
+    let mut positions = HashMap::with_capacity(pattern.vertices.len());
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        positions.insert(vertex.id, vertex.position);
+    }
+    let mut rotations = HashMap::with_capacity(embedding.rotations.len());
+    for (index, rotation) in embedding.rotations.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        rotations.insert(rotation.vertex, rotation);
+    }
+    let mut boundary_vertices = HashSet::with_capacity(paper.boundary_vertices.len());
+    for (index, vertex) in paper.boundary_vertices.iter().copied().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        boundary_vertices.insert(vertex);
+    }
+    let mut vertices = Vec::with_capacity(pattern.vertices.len());
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        vertices.push(vertex.id);
+    }
     vertices.sort_by_key(VertexId::canonical_bytes);
 
-    let vertices = vertices
-        .into_iter()
-        .map(|vertex| {
-            analyze_vertex(
-                vertex,
-                rotations.get(&vertex).copied(),
-                &embedding,
-                &positions,
-                &boundary_vertices,
-            )
-        })
-        .collect::<Option<Vec<_>>>();
-    vertices.map_or_else(
-        LocalFlatFoldabilityReport::blocked,
-        LocalFlatFoldabilityReport::analyzed,
-    )
+    let mut analyzed = Vec::with_capacity(vertices.len());
+    for (index, vertex) in vertices.into_iter().enumerate() {
+        poll_cooperative_checkpoint(checkpoint, index)?;
+        let Some(result) = analyze_vertex(
+            vertex,
+            rotations.get(&vertex).copied(),
+            &embedding,
+            &positions,
+            &boundary_vertices,
+        ) else {
+            return Ok(LocalFlatFoldabilityReport::blocked());
+        };
+        analyzed.push(result);
+    }
+    run_cooperative_checkpoint(checkpoint)?;
+    Ok(LocalFlatFoldabilityReport::analyzed(analyzed))
 }
 
 fn analyze_vertex(
@@ -521,6 +550,68 @@ mod tests {
             .expect("center report")
             .clone();
         (report, center)
+    }
+
+    #[test]
+    fn cooperative_local_analysis_distinguishes_cancel_and_deadline() {
+        let fixture = octagonal_sheet(
+            &[3, 5, 7, 1],
+            &[
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+            ],
+        );
+
+        let mut cancel_calls = 0;
+        let cancelled = analyze_local_flat_foldability_with_checkpoint(
+            &fixture.paper,
+            &fixture.pattern,
+            &mut || {
+                cancel_calls += 1;
+                if cancel_calls >= 2 {
+                    CooperativeAnalysisCheckpoint::Cancelled
+                } else {
+                    CooperativeAnalysisCheckpoint::Continue
+                }
+            },
+        );
+        assert_eq!(cancelled, Err(CooperativeAnalysisAbort::Cancelled));
+        assert!(
+            cancel_calls >= 2,
+            "cancellation must be observed during local analysis"
+        );
+
+        let mut deadline_calls = 0;
+        let deadline = analyze_local_flat_foldability_with_checkpoint(
+            &fixture.paper,
+            &fixture.pattern,
+            &mut || {
+                deadline_calls += 1;
+                if deadline_calls >= 2 {
+                    CooperativeAnalysisCheckpoint::DeadlineReached
+                } else {
+                    CooperativeAnalysisCheckpoint::Continue
+                }
+            },
+        );
+        assert_eq!(deadline, Err(CooperativeAnalysisAbort::DeadlineReached));
+        assert!(
+            deadline_calls >= 2,
+            "deadline must be observed during local analysis"
+        );
+
+        let mut continue_only = || CooperativeAnalysisCheckpoint::Continue;
+        assert_eq!(
+            analyze_local_flat_foldability_with_checkpoint(
+                &fixture.paper,
+                &fixture.pattern,
+                &mut continue_only,
+            )
+            .expect("continue-only checkpoint"),
+            analyze_local_flat_foldability(&fixture.paper, &fixture.pattern)
+        );
     }
 
     #[test]

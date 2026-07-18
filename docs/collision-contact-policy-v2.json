@@ -1,0 +1,76 @@
+{
+  "policy_id": "topology_contact_policy_v2",
+  "topology_relations": [
+    "no_shared_feature",
+    "shared_vertex",
+    "shared_hinge_edge",
+    "same_face"
+  ],
+  "intersection_evidence": [
+    "separated",
+    "point_contact",
+    "boundary_line_contact",
+    "boundary_area_contact",
+    "shared_feature_contact",
+    "shared_feature_thickness_overlap",
+    "shared_feature_flat_stack",
+    "coplanar_area_overlap",
+    "transversal_crossing",
+    "positive_volume_overlap",
+    "indeterminate"
+  ],
+  "decisions": {
+    "no_shared_feature": [
+      "separated",
+      "touching",
+      "touching",
+      "touching",
+      "indeterminate",
+      "indeterminate",
+      "indeterminate",
+      "penetrating",
+      "penetrating",
+      "penetrating",
+      "indeterminate"
+    ],
+    "shared_vertex": [
+      "indeterminate",
+      "touching",
+      "touching",
+      "touching",
+      "allowed_shared_vertex_contact",
+      "allowed_shared_vertex_contact",
+      "indeterminate",
+      "penetrating",
+      "penetrating",
+      "penetrating",
+      "indeterminate"
+    ],
+    "shared_hinge_edge": [
+      "indeterminate",
+      "indeterminate",
+      "indeterminate",
+      "requires_hinge_model",
+      "requires_hinge_model",
+      "requires_hinge_model",
+      "requires_hinge_model",
+      "penetrating",
+      "penetrating",
+      "penetrating",
+      "indeterminate"
+    ],
+    "same_face": [
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self",
+      "ignored_self"
+    ]
+  }
+}

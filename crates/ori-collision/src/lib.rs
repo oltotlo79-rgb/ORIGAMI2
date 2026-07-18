@@ -7,6 +7,10 @@
 /// Immutable identifier for the first native topology/contact policy.
 pub const TOPOLOGY_CONTACT_POLICY_V1: &str = "topology_contact_policy_v1";
 
+/// Immutable identifier for the policy that adds positive-area boundary
+/// contact between positive-thickness material solids.
+pub const TOPOLOGY_CONTACT_POLICY_V2: &str = "topology_contact_policy_v2";
+
 /// Policy label for the topology relation between two material faces.
 ///
 /// Constructing this enum does not authenticate the relation. A geometry
@@ -21,7 +25,7 @@ pub enum TopologyRelation {
 }
 
 impl TopologyRelation {
-    /// Canonical order used by the normative 4 × 10 policy corpus.
+    /// Canonical order shared by the normative v1 and v2 policy corpora.
     pub const ALL: [Self; 4] = [
         Self::NoSharedFeature,
         Self::SharedVertex,
@@ -114,6 +118,97 @@ impl IntersectionEvidence {
     }
 }
 
+/// Geometry evidence admitted by [`TOPOLOGY_CONTACT_POLICY_V2`].
+///
+/// V2 preserves every V1 evidence kind and adds `BoundaryAreaContact` for a
+/// positive-area, zero-positive-volume intersection of two positive-thickness
+/// material-solid boundaries. Constructing this enum is not a proof; runtime
+/// evidence generators must bind a positive proof to the exact pose and pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntersectionEvidenceV2 {
+    Separated,
+    PointContact,
+    BoundaryLineContact,
+    BoundaryAreaContact,
+    SharedFeatureContact,
+    SharedFeatureThicknessOverlap,
+    SharedFeatureFlatStack,
+    CoplanarAreaOverlap,
+    TransversalCrossing,
+    PositiveVolumeOverlap,
+    Indeterminate,
+}
+
+impl IntersectionEvidenceV2 {
+    /// Canonical order used by the normative 4 × 11 policy corpus.
+    pub const ALL: [Self; 11] = [
+        Self::Separated,
+        Self::PointContact,
+        Self::BoundaryLineContact,
+        Self::BoundaryAreaContact,
+        Self::SharedFeatureContact,
+        Self::SharedFeatureThicknessOverlap,
+        Self::SharedFeatureFlatStack,
+        Self::CoplanarAreaOverlap,
+        Self::TransversalCrossing,
+        Self::PositiveVolumeOverlap,
+        Self::Indeterminate,
+    ];
+
+    #[must_use]
+    pub const fn identifier(self) -> &'static str {
+        match self {
+            Self::Separated => "separated",
+            Self::PointContact => "point_contact",
+            Self::BoundaryLineContact => "boundary_line_contact",
+            Self::BoundaryAreaContact => "boundary_area_contact",
+            Self::SharedFeatureContact => "shared_feature_contact",
+            Self::SharedFeatureThicknessOverlap => "shared_feature_thickness_overlap",
+            Self::SharedFeatureFlatStack => "shared_feature_flat_stack",
+            Self::CoplanarAreaOverlap => "coplanar_area_overlap",
+            Self::TransversalCrossing => "transversal_crossing",
+            Self::PositiveVolumeOverlap => "positive_volume_overlap",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+
+    /// Embeds one frozen V1 evidence kind into V2 without changing its
+    /// semantics.
+    #[must_use]
+    pub const fn from_v1(evidence: IntersectionEvidence) -> Self {
+        match evidence {
+            IntersectionEvidence::Separated => Self::Separated,
+            IntersectionEvidence::PointContact => Self::PointContact,
+            IntersectionEvidence::BoundaryLineContact => Self::BoundaryLineContact,
+            IntersectionEvidence::SharedFeatureContact => Self::SharedFeatureContact,
+            IntersectionEvidence::SharedFeatureThicknessOverlap => {
+                Self::SharedFeatureThicknessOverlap
+            }
+            IntersectionEvidence::SharedFeatureFlatStack => Self::SharedFeatureFlatStack,
+            IntersectionEvidence::CoplanarAreaOverlap => Self::CoplanarAreaOverlap,
+            IntersectionEvidence::TransversalCrossing => Self::TransversalCrossing,
+            IntersectionEvidence::PositiveVolumeOverlap => Self::PositiveVolumeOverlap,
+            IntersectionEvidence::Indeterminate => Self::Indeterminate,
+        }
+    }
+
+    const fn table_index(self) -> usize {
+        match self {
+            Self::Separated => 0,
+            Self::PointContact => 1,
+            Self::BoundaryLineContact => 2,
+            Self::BoundaryAreaContact => 3,
+            Self::SharedFeatureContact => 4,
+            Self::SharedFeatureThicknessOverlap => 5,
+            Self::SharedFeatureFlatStack => 6,
+            Self::CoplanarAreaOverlap => 7,
+            Self::TransversalCrossing => 8,
+            Self::PositiveVolumeOverlap => 9,
+            Self::Indeterminate => 10,
+        }
+    }
+}
+
 /// Policy result. This is not itself a geometry certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TopologyContactDecision {
@@ -186,6 +281,49 @@ const TOPOLOGY_CONTACT_POLICY_TABLE_V1: [[TopologyContactDecision; 10]; 4] = [
     [IgnoredSelf; 10],
 ];
 
+const TOPOLOGY_CONTACT_POLICY_TABLE_V2: [[TopologyContactDecision; 11]; 4] = [
+    [
+        Separated,
+        Touching,
+        Touching,
+        Touching,
+        Indeterminate,
+        Indeterminate,
+        Indeterminate,
+        Penetrating,
+        Penetrating,
+        Penetrating,
+        Indeterminate,
+    ],
+    [
+        Indeterminate,
+        Touching,
+        Touching,
+        Touching,
+        AllowedSharedVertexContact,
+        AllowedSharedVertexContact,
+        Indeterminate,
+        Penetrating,
+        Penetrating,
+        Penetrating,
+        Indeterminate,
+    ],
+    [
+        Indeterminate,
+        Indeterminate,
+        Indeterminate,
+        RequiresHingeModel,
+        RequiresHingeModel,
+        RequiresHingeModel,
+        RequiresHingeModel,
+        Penetrating,
+        Penetrating,
+        Penetrating,
+        Indeterminate,
+    ],
+    [IgnoredSelf; 11],
+];
+
 /// Applies the complete topology relation × intersection evidence policy.
 ///
 /// This pure function does not prove either input and does not grant a hinge
@@ -199,6 +337,19 @@ pub const fn classify_topology_contact_v1(
     evidence: IntersectionEvidence,
 ) -> TopologyContactDecision {
     TOPOLOGY_CONTACT_POLICY_TABLE_V1[topology.table_index()][evidence.table_index()]
+}
+
+/// Applies the complete V2 topology relation × intersection evidence policy.
+///
+/// `BoundaryAreaContact` is a generic non-penetrating contact for unrelated
+/// or shared-vertex faces. A shared-hinge pair must still pass the separate
+/// finite-axis hinge model; this pure table never grants that exception.
+#[must_use]
+pub const fn classify_topology_contact_v2(
+    topology: TopologyRelation,
+    evidence: IntersectionEvidenceV2,
+) -> TopologyContactDecision {
+    TOPOLOGY_CONTACT_POLICY_TABLE_V2[topology.table_index()][evidence.table_index()]
 }
 
 #[cfg(test)]
@@ -217,16 +368,23 @@ mod tests {
         decisions: BTreeMap<String, Vec<String>>,
     }
 
-    fn normative_corpus() -> NormativePolicyCorpus {
+    fn normative_corpus_v1() -> NormativePolicyCorpus {
         serde_json::from_str(include_str!(
             "../../../docs/collision-contact-policy-v1.json"
         ))
-        .expect("the normative policy corpus must remain valid JSON")
+        .expect("the normative V1 policy corpus must remain valid JSON")
+    }
+
+    fn normative_corpus_v2() -> NormativePolicyCorpus {
+        serde_json::from_str(include_str!(
+            "../../../docs/collision-contact-policy-v2.json"
+        ))
+        .expect("the normative V2 policy corpus must remain valid JSON")
     }
 
     #[test]
     fn normative_corpus_and_native_table_match_all_forty_cells() {
-        let corpus = normative_corpus();
+        let corpus = normative_corpus_v1();
         assert_eq!(corpus.policy_id, TOPOLOGY_CONTACT_POLICY_V1);
         assert_eq!(
             corpus.topology_relations,
@@ -267,6 +425,98 @@ mod tests {
                 .into_iter()
                 .collect()
         );
+    }
+
+    #[test]
+    fn v2_corpus_and_native_table_match_all_forty_four_cells() {
+        let corpus = normative_corpus_v2();
+        assert_eq!(corpus.policy_id, TOPOLOGY_CONTACT_POLICY_V2);
+        assert_eq!(
+            corpus.topology_relations,
+            TopologyRelation::ALL
+                .map(TopologyRelation::identifier)
+                .map(str::to_owned)
+        );
+        assert_eq!(
+            corpus.intersection_evidence,
+            IntersectionEvidenceV2::ALL
+                .map(IntersectionEvidenceV2::identifier)
+                .map(str::to_owned)
+        );
+        assert_eq!(
+            corpus.topology_relations.len() * corpus.intersection_evidence.len(),
+            44
+        );
+
+        for topology in TopologyRelation::ALL {
+            let expected = corpus
+                .decisions
+                .get(topology.identifier())
+                .unwrap_or_else(|| panic!("missing corpus row for {}", topology.identifier()));
+            let actual = IntersectionEvidenceV2::ALL
+                .map(|evidence| classify_topology_contact_v2(topology, evidence).identifier());
+            assert_eq!(
+                expected,
+                &actual.map(str::to_owned),
+                "{}",
+                topology.identifier()
+            );
+        }
+        assert_eq!(
+            corpus.decisions.keys().cloned().collect::<BTreeSet<_>>(),
+            TopologyRelation::ALL
+                .map(TopologyRelation::identifier)
+                .map(str::to_owned)
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn v2_embeds_every_v1_cell_without_reinterpretation() {
+        for topology in TopologyRelation::ALL {
+            for evidence in IntersectionEvidence::ALL {
+                assert_eq!(
+                    classify_topology_contact_v2(
+                        topology,
+                        IntersectionEvidenceV2::from_v1(evidence)
+                    ),
+                    classify_topology_contact_v1(topology, evidence),
+                    "{}:{}",
+                    topology.identifier(),
+                    evidence.identifier()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn positive_area_boundary_contact_has_all_four_fixed_decisions() {
+        for (topology, expected) in [
+            (
+                TopologyRelation::NoSharedFeature,
+                TopologyContactDecision::Touching,
+            ),
+            (
+                TopologyRelation::SharedVertex,
+                TopologyContactDecision::Touching,
+            ),
+            (
+                TopologyRelation::SharedHingeEdge,
+                TopologyContactDecision::RequiresHingeModel,
+            ),
+            (
+                TopologyRelation::SameFace,
+                TopologyContactDecision::IgnoredSelf,
+            ),
+        ] {
+            assert_eq!(
+                classify_topology_contact_v2(topology, IntersectionEvidenceV2::BoundaryAreaContact),
+                expected,
+                "{}",
+                topology.identifier()
+            );
+        }
     }
 
     #[test]

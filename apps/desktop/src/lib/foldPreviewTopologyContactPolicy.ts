@@ -1,6 +1,9 @@
 export const FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_VERSION =
   'topology_contact_policy_v1'
 
+export const FOLD_PREVIEW_TOPOLOGY_CONTACT_POLICY_V2 =
+  'topology_contact_policy_v2'
+
 export type FoldPreviewTopologyRelation =
   | 'no_shared_feature'
   | 'shared_vertex'
@@ -18,6 +21,10 @@ export type FoldPreviewIntersectionEvidence =
   | 'transversal_crossing'
   | 'positive_volume_overlap'
   | 'indeterminate'
+
+export type FoldPreviewIntersectionEvidenceV2 =
+  | FoldPreviewIntersectionEvidence
+  | 'boundary_area_contact'
 
 export type FoldPreviewTopologyContactDecision =
   | 'separated'
@@ -100,4 +107,21 @@ export function classifyFoldPreviewTopologyContact(
   }
 
   return 'indeterminate'
+}
+
+/**
+ * Exhaustive V2 policy. V1 remains frozen for existing runtime certificates;
+ * new native evidence generators bind V2 and may additionally prove a
+ * positive-area, zero-positive-volume material-boundary contact.
+ */
+export function classifyFoldPreviewTopologyContactV2(
+  topology: FoldPreviewTopologyRelation,
+  evidence: FoldPreviewIntersectionEvidenceV2,
+): FoldPreviewTopologyContactDecision {
+  if (evidence !== 'boundary_area_contact') {
+    return classifyFoldPreviewTopologyContact(topology, evidence)
+  }
+  if (topology === 'same_face') return 'ignored_self'
+  if (topology === 'shared_hinge_edge') return 'requires_hinge_model'
+  return 'touching'
 }

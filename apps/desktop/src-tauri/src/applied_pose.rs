@@ -16,9 +16,8 @@ mod static_collision;
 // production command consumer.
 #[allow(unused_imports)]
 pub(super) use static_collision::{
-    CurrentStaticCollisionCertificate, CurrentStaticCollisionError,
-    CurrentStaticCollisionView, certify_current_static_collision,
-    with_revalidated_current_static_collision_certificate,
+    CurrentStaticCollisionCertificate, CurrentStaticCollisionError, CurrentStaticCollisionView,
+    certify_current_static_collision, with_revalidated_current_static_collision_certificate,
 };
 
 use std::{

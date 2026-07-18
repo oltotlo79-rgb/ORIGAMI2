@@ -171,6 +171,30 @@ impl AppliedPoseV1 {
     pub fn hinge_angles(&self) -> &[AppliedHingeAngleV1] {
         &self.hinge_angles
     }
+
+    /// Duplicates this validated semantic pose without using `Vec::clone`.
+    ///
+    /// This is intended for authority commit paths that must report an
+    /// allocation failure before mutating live editor or certificate state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppliedPoseErrorV1::AllocationFailed`] when storage for the
+    /// complete hinge-angle vector cannot be reserved.
+    pub fn try_clone(&self) -> Result<Self, AppliedPoseErrorV1> {
+        let mut hinge_angles = Vec::new();
+        hinge_angles
+            .try_reserve_exact(self.hinge_angles.len())
+            .map_err(|_| AppliedPoseErrorV1::AllocationFailed {
+                resource: AppliedPoseResourceV1::AngleRecords,
+            })?;
+        hinge_angles.extend_from_slice(&self.hinge_angles);
+        Ok(Self {
+            model: self.model,
+            fixed_face: self.fixed_face,
+            hinge_angles,
+        })
+    }
 }
 
 /// Prepares a complete canonical semantic pose against explicit registries.
@@ -446,6 +470,29 @@ mod tests {
         assert_eq!(pose.hinge_angles()[0].angle_degrees().to_bits(), 0);
         assert_eq!(pose.hinge_angles()[1].edge(), hinges[1]);
         assert_eq!(pose.hinge_angles()[1].angle_degrees(), 180.0);
+    }
+
+    #[test]
+    fn fallible_clone_preserves_the_complete_pose_and_uses_independent_storage() {
+        let faces = sorted_faces(2);
+        let hinge = sorted_edges(1)[0];
+        let pose = prepare_applied_pose_v1(
+            &faces,
+            &[hinge],
+            Some(faces[0]),
+            &[(hinge, 135.0)],
+            limits(),
+        )
+        .expect("valid pose");
+
+        let cloned = pose.try_clone().expect("fallible clone");
+
+        assert_eq!(cloned, pose);
+        assert_ne!(
+            cloned.hinge_angles().as_ptr(),
+            pose.hinge_angles().as_ptr(),
+            "a semantic duplicate must own an independent angle allocation"
+        );
     }
 
     #[test]

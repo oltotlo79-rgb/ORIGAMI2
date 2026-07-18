@@ -10,6 +10,14 @@
     reason = "A/B native authority is intentionally sealed before its IPC and collision consumers"
 )]
 
+mod static_collision;
+
+pub(super) use static_collision::{
+    CurrentStaticCollisionCertificate, CurrentStaticCollisionError,
+    CurrentStaticCollisionView, certify_current_static_collision,
+    with_revalidated_current_static_collision_certificate,
+};
+
 use std::{
     error::Error,
     fmt,
@@ -318,6 +326,19 @@ impl CurrentAppliedPoseAuthority {
         project: &mut ProjectState,
         prepared: PreparedNativePose,
     ) -> Result<CurrentAppliedPoseCapability, PoseAuthorityError> {
+        self.commit_prepared_with_semantic_clone(project, prepared, |semantic| {
+            semantic
+                .try_clone()
+                .map_err(|_| PoseAuthorityError::SemanticPoseUnavailable)
+        })
+    }
+
+    fn commit_prepared_with_semantic_clone(
+        &self,
+        project: &mut ProjectState,
+        prepared: PreparedNativePose,
+        clone_semantic: impl FnOnce(&AppliedPoseV1) -> Result<AppliedPoseV1, PoseAuthorityError>,
+    ) -> Result<CurrentAppliedPoseCapability, PoseAuthorityError> {
         if !self.is_project_authority(project) || !Arc::ptr_eq(&self.0, &prepared.slot) {
             return Err(PoseAuthorityError::WrongAuthority);
         }
@@ -326,6 +347,10 @@ impl CurrentAppliedPoseAuthority {
         }
         if !binding_is_current(&prepared.binding, project) {
             return Err(PoseAuthorityError::StaleRequest);
+        }
+        let semantic_for_editor = clone_semantic(prepared.semantic_pose.as_ref())?;
+        if !semantic_pose_bits_equal(&semantic_for_editor, &prepared.semantic_pose) {
+            return Err(PoseAuthorityError::InternalInconsistency);
         }
 
         let mut slot = self.lock()?;
@@ -382,7 +407,6 @@ impl CurrentAppliedPoseAuthority {
         if !current_applied_pose_certificate_is_internally_consistent(&certificate) {
             return Err(PoseAuthorityError::InternalInconsistency);
         }
-        let semantic_for_editor = certificate.claims.semantic_pose.as_ref().clone();
         let capability_claims = certificate.claims.clone();
 
         project
@@ -1167,6 +1191,60 @@ mod tests {
         );
         assert_eq!(authority.test_snapshot().expect("snapshot"), before);
         assert!(project.editor.current_applied_pose().is_none());
+    }
+
+    #[test]
+    fn semantic_clone_failure_precedes_slot_lock_and_preserves_every_live_state() {
+        let mut project = no_hinge_project();
+        let (authority, current_capability) = adopt_no_hinge_pose(&mut project);
+        let prepared = authority
+            .capture_request(&project, request_for(&project))
+            .expect("capture replacement pose")
+            .prepare()
+            .expect("prepare replacement pose");
+        let document_before = project.document();
+        let revision_before = project.editor.revision();
+        let can_undo_before = project.editor.can_undo();
+        let can_redo_before = project.editor.can_redo();
+        let semantic_before = project
+            .editor
+            .current_applied_pose()
+            .expect("current semantic pose")
+            .try_clone()
+            .expect("test semantic snapshot");
+        let authority_before = authority.test_snapshot().expect("authority snapshot");
+
+        assert_eq!(
+            authority
+                .commit_prepared_with_semantic_clone(&mut project, prepared, |_| {
+                    assert!(
+                        authority.0.try_lock().is_ok(),
+                        "semantic duplication must run before the pose slot is locked"
+                    );
+                    Err(PoseAuthorityError::SemanticPoseUnavailable)
+                })
+                .err(),
+            Some(PoseAuthorityError::SemanticPoseUnavailable)
+        );
+
+        assert_eq!(project.document(), document_before);
+        assert_eq!(project.editor.revision(), revision_before);
+        assert_eq!(project.editor.can_undo(), can_undo_before);
+        assert_eq!(project.editor.can_redo(), can_redo_before);
+        assert_eq!(
+            project.editor.current_applied_pose(),
+            Some(&semantic_before)
+        );
+        assert_eq!(
+            authority.test_snapshot().expect("authority snapshot"),
+            authority_before
+        );
+        assert!(
+            authority
+                .revalidate_capability(&project, &current_capability)
+                .expect("revalidate current capability")
+                .is_some()
+        );
     }
 
     #[test]

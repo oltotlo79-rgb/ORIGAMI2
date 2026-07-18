@@ -5,7 +5,10 @@ use ori_kinematics::{
 };
 use thiserror::Error;
 
-use crate::TOPOLOGY_CONTACT_POLICY_V2;
+use crate::{
+    TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
+    zero_thickness::dispatch_material_pose_pair,
+};
 
 /// Initial paper-thickness interpretation used by native collision geometry.
 pub const CENTERED_MID_SURFACE_THICKNESS_MODEL_V1: &str = "centered_mid_surface_v1";
@@ -209,10 +212,34 @@ pub fn prove_static_collision_geometry(
         }
     }
 
-    if face_count != 1 || !pose.hinges().is_empty() {
+    if paper_thickness_mm > 0.0 && expected_unordered_face_pairs > 0 {
         return Err(StaticCollisionError::PairEvidenceUnavailable {
             expected_unordered_face_pairs,
         });
+    }
+
+    let mut pair_work = UnorderedFacePairs::new(face_count);
+    for (first_face_index, second_face_index) in pair_work.by_ref() {
+        let Some(dispatch) = dispatch_material_pose_pair(pose, first_face_index, second_face_index)
+        else {
+            return Err(StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            });
+        };
+        let _evidence = dispatch.evidence();
+        if !matches!(
+            dispatch.decision(),
+            TopologyContactDecision::Separated
+                | TopologyContactDecision::Touching
+                | TopologyContactDecision::AllowedSharedVertexContact
+        ) {
+            return Err(StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            });
+        }
+    }
+    if pair_work.enumerated() != expected_unordered_face_pairs {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
     }
 
     Ok(NativeStaticCollisionGeometryProof {
@@ -226,9 +253,50 @@ pub fn prove_static_collision_geometry(
             thickness_model_id: CENTERED_MID_SURFACE_THICKNESS_MODEL_V1,
             face_count,
             expected_unordered_face_pairs,
-            analyzed_unordered_face_pairs: 0,
+            analyzed_unordered_face_pairs: pair_work.enumerated(),
         }),
     })
+}
+
+#[derive(Debug, Clone)]
+struct UnorderedFacePairs {
+    face_count: usize,
+    first: usize,
+    second: usize,
+    enumerated: usize,
+}
+
+impl UnorderedFacePairs {
+    const fn new(face_count: usize) -> Self {
+        Self {
+            face_count,
+            first: 0,
+            second: 1,
+            enumerated: 0,
+        }
+    }
+
+    const fn enumerated(&self) -> usize {
+        self.enumerated
+    }
+}
+
+impl Iterator for UnorderedFacePairs {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.first >= self.face_count || self.second >= self.face_count {
+            return None;
+        }
+        let pair = (self.first, self.second);
+        self.enumerated = self.enumerated.checked_add(1)?;
+        self.second += 1;
+        if self.second == self.face_count {
+            self.first += 1;
+            self.second = self.first.saturating_add(1);
+        }
+        Some(pair)
+    }
 }
 
 fn checked_unordered_pair_count(face_count: usize) -> Result<usize, StaticCollisionError> {
@@ -247,7 +315,7 @@ fn checked_unordered_pair_count(face_count: usize) -> Result<usize, StaticCollis
 
 #[cfg(test)]
 mod tests {
-    use super::{StaticCollisionError, checked_unordered_pair_count};
+    use super::{StaticCollisionError, UnorderedFacePairs, checked_unordered_pair_count};
 
     #[test]
     fn unordered_pair_arithmetic_is_exact_and_overflow_safe() {
@@ -260,5 +328,26 @@ mod tests {
             checked_unordered_pair_count(usize::MAX),
             Err(StaticCollisionError::ResourceLimitExceeded)
         );
+    }
+
+    #[test]
+    fn unordered_pair_iterator_covers_every_pair_once_in_canonical_order() {
+        for face_count in 0..=8 {
+            let expected = checked_unordered_pair_count(face_count).expect("small pair count");
+            let mut pairs = UnorderedFacePairs::new(face_count);
+            let actual = pairs.by_ref().collect::<Vec<_>>();
+            assert_eq!(actual.len(), expected);
+            assert_eq!(pairs.enumerated(), expected);
+            for (position, &(first, second)) in actual.iter().enumerate() {
+                assert!(first < second);
+                assert!(second < face_count);
+                assert!(
+                    actual[..position]
+                        .iter()
+                        .all(|previous| *previous != (first, second))
+                );
+            }
+            assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
+        }
     }
 }

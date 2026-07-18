@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod static_collision;
+mod zero_thickness;
 
 pub use static_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,

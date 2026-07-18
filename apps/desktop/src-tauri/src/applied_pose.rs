@@ -12,6 +12,9 @@
 
 mod static_collision;
 
+// C is sealed for the following native collision stages before it has a
+// production command consumer.
+#[allow(unused_imports)]
 pub(super) use static_collision::{
     CurrentStaticCollisionCertificate, CurrentStaticCollisionError,
     CurrentStaticCollisionView, certify_current_static_collision,

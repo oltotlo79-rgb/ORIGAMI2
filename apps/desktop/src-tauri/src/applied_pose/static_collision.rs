@@ -4,7 +4,12 @@
 //! the complete zero-pair case supported by `ori-collision`; it grants neither
 //! project-mutation nor SIM-010 authority.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    sync::Arc,
+};
 
 use ori_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
@@ -179,6 +184,12 @@ pub(crate) fn certify_current_static_collision(
 
 /// Revalidates the embedded B capability and runs an observation-only action
 /// while the project and pose slot remain locked.
+///
+/// The action must not re-enter an operation that locks the project or pose
+/// authority because these mutexes are deliberately non-reentrant. A future
+/// consumer needing lock-free work must first capture an owned immutable
+/// snapshot, release these locks, and revalidate this certificate again before
+/// any authoritative commit.
 pub(crate) fn with_revalidated_current_static_collision_certificate<R>(
     app_state: &AppState,
     certificate: &CurrentStaticCollisionCertificate,
@@ -203,9 +214,19 @@ pub(crate) fn with_revalidated_current_static_collision_certificate<R>(
         return Ok(None);
     }
 
-    Ok(Some(action(CurrentStaticCollisionView {
-        certificate: data,
-    })))
+    // Keep both guards outside the unwind boundary. If an observation panics,
+    // catching it here lets us drop both mutex guards while the thread is not
+    // panicking, so neither project nor pose authority becomes poisoned. The
+    // original panic resumes only after both locks are healthy and released.
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        action(CurrentStaticCollisionView { certificate: data })
+    }));
+    drop(slot);
+    drop(project);
+    match outcome {
+        Ok(output) => Ok(Some(output)),
+        Err(payload) => resume_unwind(payload),
+    }
 }
 
 fn capture_current_pose_capability(
@@ -522,6 +543,39 @@ mod tests {
                 .expect("second certification")
                 .expect("second certificate");
         assert!(!certificate.same_certificate(&separately_minted));
+    }
+
+    #[test]
+    fn panicking_observation_releases_both_locks_without_poisoning_them() {
+        let (state, certificate) = certified_no_hinge_state(0.1);
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _ = with_revalidated_current_static_collision_certificate(
+                &state,
+                &certificate,
+                |_| -> () { panic!("observation panic fixture") },
+            );
+        }));
+        assert!(panic.is_err());
+
+        assert!(
+            state.0.try_lock().is_ok(),
+            "project lock must remain available after observation panic"
+        );
+        let authority = {
+            let project = state.0.lock().expect("healthy project lock");
+            project.applied_pose_authority.clone()
+        };
+        assert!(
+            authority.0.try_lock().is_ok(),
+            "pose lock must remain available after observation panic"
+        );
+        assert!(
+            with_revalidated_current_static_collision_certificate(&state, &certificate, |_| (),)
+                .expect("healthy revalidation after panic")
+                .is_some(),
+            "the same still-current certificate must remain usable"
+        );
     }
 
     #[test]

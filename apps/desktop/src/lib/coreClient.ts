@@ -23,6 +23,13 @@ import type {
   InstructionExportSaveResponse,
 } from './instructionExport.ts'
 import {
+  normalizeStaticMeshExportPreviewResponse,
+  normalizeStaticMeshExportSaveResponse,
+  type StaticMeshExportFormat,
+  type StaticMeshExportPreviewResponse,
+  type StaticMeshExportSaveResponse,
+} from './staticMeshExport.ts'
+import {
   normalizeGeometricConstraintPreflightResponse,
   type GeometricConstraintDocumentV1,
   type GeometricConstraintKindV1,
@@ -514,6 +521,58 @@ export function saveCreasePatternExport(
 
 export function cancelCreasePatternExport(exportId: string) {
   return invoke<void>('cancel_crease_pattern_export', { exportId })
+}
+
+export function previewStaticMeshExport(
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+  format: StaticMeshExportFormat,
+) {
+  return invoke<unknown>('preview_static_mesh_export', {
+    request: {
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+      format,
+    },
+  }).then((value): StaticMeshExportPreviewResponse => {
+    const response = normalizeStaticMeshExportPreviewResponse(value)
+    if (!response) throw new Error('invalid static-mesh export preview response')
+    return response
+  })
+}
+
+export function saveStaticMeshExport(
+  preview: Readonly<{
+    exportId: string
+    projectInstanceId: string
+    projectId: string
+    revision: number
+    sourceFingerprint: string
+    poseGeneration: string
+  }>,
+  warningsAcknowledged: boolean,
+) {
+  return invoke<unknown>('save_static_mesh_export', {
+    request: {
+      exportId: preview.exportId,
+      expectedProjectInstanceId: preview.projectInstanceId,
+      expectedProjectId: preview.projectId,
+      expectedRevision: preview.revision,
+      expectedSourceFingerprint: preview.sourceFingerprint,
+      expectedPoseGeneration: preview.poseGeneration,
+      warningsAcknowledged,
+    },
+  }).then((value): StaticMeshExportSaveResponse => {
+    const response = normalizeStaticMeshExportSaveResponse(value)
+    if (!response) throw new Error('invalid static-mesh export save response')
+    return response
+  })
+}
+
+export function cancelStaticMeshExport(exportId: string) {
+  return invoke<void>('cancel_static_mesh_export', { exportId })
 }
 
 export function beginInstructionExportGeneration() {

@@ -520,6 +520,18 @@ button { color: inherit; }
   font-size: 12px;
   line-height: 1.45;
 }
+.static-mesh-export-dialog { width: min(800px, calc(100vw - 48px)); }
+.static-mesh-export-mid-surface {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #cf8b55;
+  border-radius: 7px;
+  background: #fff1e7;
+  color: #7a3d18;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.55;
+}
 .fold-import-overview,
 .svg-import-overview {
   display: grid;
@@ -2136,6 +2148,11 @@ html[data-theme='dark'] .svg-import-cut-confirmation { background: #3f3024; colo
 html[data-theme='dark'] :is(.fold-import-warnings, .svg-import-warnings, .crease-export-warnings) { background: #3d351f; color: #f2d98d; }
 html[data-theme='dark'] :is(.fold-import-warnings ul, .svg-import-warnings ul) { color: #f2d98d; }
 html[data-theme='dark'] :is(.crease-export-warnings > ul, .crease-export-warnings > label) { color: #f2d98d; }
+html[data-theme='dark'] .static-mesh-export-mid-surface {
+  border-color: #a7683e;
+  background: #40291f;
+  color: #f3b988;
+}
 html[data-theme='dark'] .crease-canvas { filter: brightness(.82); }
 
 .global-flat-foldability-panel {

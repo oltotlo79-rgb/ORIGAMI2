@@ -36,6 +36,7 @@ import { ProjectLayerPanel } from './components/ProjectLayerPanel'
 import { RecoveryAutosaveStatusBanner } from './components/RecoveryAutosaveStatusBanner'
 import { RecoveryDialog } from './components/RecoveryDialog'
 import { RecoveryStartupOverlay } from './components/RecoveryStartupOverlay'
+import { StaticMeshExportDialog } from './components/StaticMeshExportDialog'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import { ThemeControl } from './components/ThemeControl'
 import { UpdateCheckPopover } from './components/UpdateCheckControl'
@@ -54,6 +55,7 @@ import {
   cancelCreasePatternExport,
   cancelFoldImport,
   cancelInstructionExport,
+  cancelStaticMeshExport,
   cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
@@ -71,6 +73,7 @@ import {
   previewCreasePatternExport,
   previewFoldImport,
   previewInstructionExport,
+  previewStaticMeshExport,
   previewSvgImport,
   redo,
   renameProjectLayer,
@@ -83,6 +86,7 @@ import {
   saveProjectAs,
   saveCreasePatternExport,
   saveInstructionExport,
+  saveStaticMeshExport,
   setLengthDisplayUnit,
   splitBoundaryEdge,
   splitEdge,
@@ -110,6 +114,10 @@ import {
   type InstructionExportPhase,
   type InstructionExportPreview,
 } from './lib/instructionExport'
+import {
+  type StaticMeshExportFormat,
+  type StaticMeshExportPreview,
+} from './lib/staticMeshExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
   SvgImportPreview,
@@ -147,7 +155,10 @@ import {
 } from './lib/historyLimitClient'
 import { useGeometricConstraintPreflight } from './lib/useGeometricConstraintPreflight'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
-import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
+import {
+  foldPreviewAppliedPoseKey,
+  type FoldPreviewAppliedPoseSnapshot,
+} from './lib/foldPreviewAppliedPose'
 import {
   createNativeStaticCollisionInspectionCoordinator,
   createNativeStaticCollisionNativeTransport,
@@ -485,6 +496,7 @@ function App() {
     | 'fold_import'
     | 'svg_import'
     | 'crease_export'
+    | 'mesh_export'
     | 'instruction_export'
     | null
   >(null)
@@ -509,6 +521,15 @@ function App() {
   const [creaseExportErrorMessage, setCreaseExportError] =
     useState<AppMessage | null>(null)
   const [creaseExportNoticeMessage, setCreaseExportNotice] =
+    useState<AppMessage | null>(null)
+  const [meshExportOpen, setMeshExportOpen] = useState(false)
+  const [meshExportFormat, setMeshExportFormat] =
+    useState<StaticMeshExportFormat>('obj')
+  const [meshExportPreview, setMeshExportPreview] =
+    useState<StaticMeshExportPreview | null>(null)
+  const [meshExportErrorMessage, setMeshExportError] =
+    useState<AppMessage | null>(null)
+  const [meshExportNoticeMessage, setMeshExportNotice] =
     useState<AppMessage | null>(null)
   const [instructionExportOpen, setInstructionExportOpen] = useState(false)
   const [instructionExportFormat, setInstructionExportFormat] =
@@ -545,6 +566,8 @@ function App() {
   const svgImportError = appMessageText(locale, svgImportErrorMessage)
   const creaseExportError = appMessageText(locale, creaseExportErrorMessage)
   const creaseExportNotice = appMessageText(locale, creaseExportNoticeMessage)
+  const meshExportError = appMessageText(locale, meshExportErrorMessage)
+  const meshExportNotice = appMessageText(locale, meshExportNoticeMessage)
   const instructionExportError = appMessageText(
     locale,
     instructionExportErrorState,
@@ -556,6 +579,9 @@ function App() {
   const recoveryBlocking = recoveryStartup.kind !== 'ready'
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
+  const appliedFoldPoseRef = useRef<FoldPreviewAppliedPoseSnapshot | null>(
+    appliedFoldPose,
+  )
   const initialProjectSnapshotRequestRef =
     useRef<Promise<ProjectSnapshot> | null>(null)
   const recoveryMountedRef = useRef(true)
@@ -577,11 +603,14 @@ function App() {
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
   const creaseExportButtonRef = useRef<HTMLButtonElement>(null)
   const creaseExportRequestIdRef = useRef(0)
+  const meshExportButtonRef = useRef<HTMLButtonElement>(null)
+  const meshExportRequestIdRef = useRef(0)
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
   recoveryStartupRef.current = recoveryStartup
   recoveryBlockingRef.current = recoveryBlocking
+  appliedFoldPoseRef.current = appliedFoldPose
   const getProjectSnapshot = useCallback(() => {
     const pending = initialProjectSnapshotRequestRef.current
     if (pending) return pending
@@ -658,6 +687,7 @@ function App() {
     || foldImportPreview !== null
     || svgImportPreview !== null
     || creaseExportOpen
+    || meshExportOpen
     || instructionExportOpen
     || recoveryBlocking
   const closeDiagnosticsDialog = useCallback(() => {
@@ -2998,6 +3028,198 @@ function App() {
     }
   }
 
+  async function prepareStaticMeshExport(format: StaticMeshExportFormat) {
+    const current = latestSnapshotRef.current
+    const pose = appliedFoldPoseRef.current
+    const sourcePoseKey = foldPreviewAppliedPoseKey(pose)
+    if (
+      !current
+      || !pose
+      || pose.state === 'running'
+      || !sourcePoseKey
+      || pose.projectId !== current.project_id
+      || pose.revision !== current.revision
+      || coreOperationRef.current
+    ) return
+
+    const requestId = ++meshExportRequestIdRef.current
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('mesh_export')
+    setMeshExportPreview(null)
+    setMeshExportError(null)
+    setMeshExportNotice(null)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const response = await previewStaticMeshExport(
+        current.project_instance_id,
+        current.project_id,
+        current.revision,
+        format,
+      )
+      if (requestId !== meshExportRequestIdRef.current) {
+        await cancelStaticMeshExport(response.preview.exportId).catch(() => undefined)
+        return
+      }
+      const latest = latestSnapshotRef.current
+      const latestPose = appliedFoldPoseRef.current
+      const preview = response.preview
+      if (
+        !latest
+        || preview.format !== format
+        || preview.projectInstanceId !== current.project_instance_id
+        || preview.projectId !== current.project_id
+        || preview.revision !== current.revision
+        || latest.project_instance_id !== current.project_instance_id
+        || latest.project_id !== current.project_id
+        || latest.revision !== current.revision
+        || foldPreviewAppliedPoseKey(latestPose) !== sourcePoseKey
+        || latestPose?.state === 'running'
+      ) {
+        await cancelStaticMeshExport(preview.exportId).catch(() => undefined)
+        throw new Error('stale static-mesh preview')
+      }
+      setMeshExportPreview(preview)
+      setCoreStatus(appMessage({
+        ja: '現在の3D姿勢の中央面メッシュと情報損失を確認してください',
+        en: 'Review the current-pose mid-surface mesh and information loss.',
+      }))
+    } catch {
+      if (requestId !== meshExportRequestIdRef.current) return
+      const safeError = appMessage({
+        ja: '現在表示中の認証済み3D姿勢からメッシュを生成できませんでした。3D表示の更新完了後に再試行してください。',
+        en: 'Could not generate a mesh from the authenticated pose currently displayed. Wait for the 3D view to finish updating, then retry.',
+      })
+      setMeshExportError(safeError)
+      setCoreStatus(safeError)
+    } finally {
+      if (requestId === meshExportRequestIdRef.current) {
+        setFileOperation(null)
+        coreOperationRef.current = false
+        setCoreBusy(false)
+      }
+    }
+  }
+
+  function beginStaticMeshExport() {
+    const current = latestSnapshotRef.current
+    const pose = appliedFoldPoseRef.current
+    if (
+      !current
+      || !pose
+      || pose.state === 'running'
+      || pose.projectId !== current.project_id
+      || pose.revision !== current.revision
+      || coreOperationRef.current
+    ) return
+    setMeshExportOpen(true)
+    setMeshExportFormat('obj')
+    setMeshExportPreview(null)
+    setMeshExportError(null)
+    setMeshExportNotice(null)
+    void prepareStaticMeshExport('obj')
+  }
+
+  function changeStaticMeshExportFormat(format: StaticMeshExportFormat) {
+    if (format === meshExportFormat || coreOperationRef.current) return
+    setMeshExportFormat(format)
+    void prepareStaticMeshExport(format)
+  }
+
+  async function closeStaticMeshExportDialog() {
+    if (coreOperationRef.current) return
+    const preview = meshExportPreview
+    meshExportRequestIdRef.current += 1
+    if (!preview) {
+      setMeshExportOpen(false)
+      setMeshExportError(null)
+      setMeshExportNotice(null)
+      requestAnimationFrame(() => meshExportButtonRef.current?.focus())
+      return
+    }
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    try {
+      await cancelStaticMeshExport(preview.exportId)
+      setMeshExportOpen(false)
+      setMeshExportPreview(null)
+      setMeshExportError(null)
+      setMeshExportNotice(null)
+      setCoreStatus(appMessage({
+        ja: '現在姿勢の3Dメッシュ書き出しをキャンセルしました',
+        en: 'Current-pose 3D mesh export cancelled.',
+      }))
+      requestAnimationFrame(() => meshExportButtonRef.current?.focus())
+    } catch {
+      const safeError = appMessage({
+        ja: '3Dメッシュの書き出しプレビューを破棄できませんでした。',
+        en: 'Could not discard the 3D mesh export preview.',
+      })
+      setMeshExportError(safeError)
+      setCoreStatus(safeError)
+    } finally {
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
+  async function saveCurrentStaticMeshExport(warningsAcknowledged: boolean) {
+    const current = latestSnapshotRef.current
+    const preview = meshExportPreview
+    if (!current || !preview || coreOperationRef.current) return
+    if (
+      current.project_instance_id !== preview.projectInstanceId
+      || current.project_id !== preview.projectId
+      || current.revision !== preview.revision
+    ) {
+      setMeshExportError(appMessage({
+        ja: '編集内容が変わったため、現在姿勢から書き出しデータを作り直してください。',
+        en: 'The project changed. Rebuild the export from the current pose.',
+      }))
+      return
+    }
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('mesh_export')
+    setMeshExportError(null)
+    setMeshExportNotice(null)
+    try {
+      const response = await saveStaticMeshExport(preview, warningsAcknowledged)
+      if (response.canceled) {
+        setMeshExportNotice(appMessage({
+          ja: '保存先の選択をキャンセルしました。同じ不変データで再試行できます。',
+          en: 'Save location selection was cancelled. You can retry with the same immutable data.',
+        }))
+        setCoreStatus(appMessage({
+          ja: '3Dメッシュの保存先選択をキャンセルしました',
+          en: '3D mesh save location selection cancelled.',
+        }))
+        return
+      }
+      setMeshExportOpen(false)
+      setMeshExportPreview(null)
+      setMeshExportNotice(null)
+      setCoreStatus(appMessage({
+        ja: '{fileName}を書き出しました',
+        en: 'Exported {fileName}',
+      }, { fileName: preview.suggestedFileName }))
+      requestAnimationFrame(() => meshExportButtonRef.current?.focus())
+    } catch {
+      const safeError = appMessage({
+        ja: '3D姿勢または編集内容が変わったか、ファイルを保存できませんでした。現在姿勢から作り直して再試行してください。',
+        en: 'The 3D pose or project changed, or the file could not be saved. Rebuild from the current pose and retry.',
+      })
+      setMeshExportError(safeError)
+      setCoreStatus(safeError)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function prepareInstructionExport(format: InstructionExportFormat) {
     const current = latestSnapshotRef.current
     if (!current || !foldPreviewModel || coreOperationRef.current) return
@@ -3481,6 +3703,30 @@ function App() {
             {fileOperation === 'crease_export'
               ? text({ ja: '生成中…', en: 'Generating…' })
               : text({ ja: '書出し', en: 'Export' })}
+          </button>
+          <button
+            ref={meshExportButtonRef}
+            type="button"
+            disabled={
+              coreBusy
+              || benchmarkLoading
+              || Boolean(benchmarkRun)
+              || !nativeSnapshot
+              || !appliedFoldPose
+              || appliedFoldPose.state === 'running'
+              || appliedFoldPose.projectId !== nativeSnapshot.project_id
+              || appliedFoldPose.revision !== nativeSnapshot.revision
+            }
+            title={text({
+              ja: '現在表示中の3D姿勢を中央面メッシュとして書き出します',
+              en: 'Export the currently displayed 3D pose as a mid-surface mesh',
+            })}
+            onClick={beginStaticMeshExport}
+            aria-haspopup="dialog"
+          >
+            {fileOperation === 'mesh_export'
+              ? text({ ja: '3D生成中…', en: 'Generating 3D…' })
+              : text({ ja: '3D書出し', en: 'Export 3D' })}
           </button>
           <button
             type="button"
@@ -5070,6 +5316,22 @@ function App() {
             void saveCurrentCreaseExport(warningsAcknowledged)
           }}
           onCancel={() => void closeCreaseExportDialog()}
+        />
+      )}
+
+      {meshExportOpen && (
+        <StaticMeshExportDialog
+          format={meshExportFormat}
+          preview={meshExportPreview}
+          busy={coreBusy}
+          error={meshExportError}
+          notice={meshExportNotice}
+          onFormatChange={changeStaticMeshExportFormat}
+          onRetry={() => void prepareStaticMeshExport(meshExportFormat)}
+          onSave={(warningsAcknowledged) => {
+            void saveCurrentStaticMeshExport(warningsAcknowledged)
+          }}
+          onCancel={() => void closeStaticMeshExportDialog()}
         />
       )}
 

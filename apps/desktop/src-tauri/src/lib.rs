@@ -4,6 +4,7 @@ mod diagnostics;
 mod global_flat_foldability;
 mod history_settings;
 mod instruction_export;
+mod mesh_export;
 mod numeric_expression;
 mod project_persistence;
 #[allow(dead_code)]
@@ -43,6 +44,10 @@ use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
     InstructionExportState, begin_instruction_export, cancel_instruction_export,
     get_instruction_export_progress, preview_instruction_export, save_instruction_export,
+};
+use mesh_export::{
+    StaticMeshExportState, cancel_static_mesh_export, preview_static_mesh_export,
+    save_static_mesh_export,
 };
 use numeric_expression::{
     PositiveMillimetrePairError, evaluate_numeric_expression, evaluate_positive_millimetre_pair,
@@ -5214,6 +5219,7 @@ pub fn run() {
         .manage(FoldImportState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
+        .manage(StaticMeshExportState::default())
         .manage(GlobalFlatFoldabilityState::default())
         .manage(InstructionExportState::default())
         .manage(ExitGuard::default())
@@ -5245,6 +5251,9 @@ pub fn run() {
             preview_crease_pattern_export,
             save_crease_pattern_export,
             cancel_crease_pattern_export,
+            preview_static_mesh_export,
+            save_static_mesh_export,
+            cancel_static_mesh_export,
             begin_instruction_export,
             preview_instruction_export,
             get_instruction_export_progress,

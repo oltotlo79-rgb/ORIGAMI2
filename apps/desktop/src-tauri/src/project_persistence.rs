@@ -367,13 +367,7 @@ fn rename_recovery_entry_no_replace(
     source: &Path,
     destination: &Path,
 ) -> Result<RecoveryRename, RecoveryPersistenceError> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
-    let source_file = match options.open(source) {
+    let source_file = match open_recovery_entry_for_exclusive_retirement(source) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(RecoveryRename::SourceMissing);
@@ -402,6 +396,21 @@ fn rename_recovery_entry_no_replace(
         }
         Err(_) => Err(RecoveryPersistenceError),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn open_recovery_entry_for_exclusive_retirement(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+        // Deliberately withhold FILE_SHARE_DELETE while this handle owns the
+        // name retirement. A concurrent path-based rename/replacement must
+        // fail rather than let us quarantine an old object and report success
+        // while a replacement remains in the active recovery slot.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+    options.open(path)
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
@@ -1045,6 +1054,34 @@ mod recovery_entry_tests {
             fs::symlink_metadata(&slot),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn exclusive_retirement_handle_blocks_path_replacement_until_it_is_released() {
+        let directory = TestDirectory::new("windows-exclusive-retirement");
+        let slot = directory.slot();
+        let retired = directory.0.join(RECOVERY_QUARANTINE_NAMES[0]);
+        fs::write(&slot, b"active").expect("write active recovery entry");
+        let handle = open_recovery_entry_for_exclusive_retirement(&slot)
+            .expect("open exclusive retirement handle");
+
+        assert!(
+            fs::rename(&slot, &retired).is_err(),
+            "another path handle must not rename the active slot"
+        );
+        assert!(
+            fs::remove_file(&slot).is_err(),
+            "another path handle must not delete the active slot"
+        );
+        assert_eq!(
+            fs::read(&slot).expect("read retained active slot"),
+            b"active"
+        );
+
+        drop(handle);
+        fs::rename(&slot, &retired).expect("rename succeeds after ownership is released");
+        assert_eq!(fs::read(&retired).expect("read retired entry"), b"active");
     }
 
     #[cfg(target_os = "windows")]

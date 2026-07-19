@@ -82,7 +82,7 @@ test('the first user-input slice connects both new-paper dimensions without trus
   )
   assert.match(
     nativeLib,
-    /validate_loaded_numeric_expression_bindings\(&document\)\?/u,
+    /let archive = load_project_archive_from_path\(&path\)\?;[\s\S]*?validate_loaded_numeric_expression_bindings\(&archive\.document\)\?;[\s\S]*?ProjectState::from_project_archive\(archive, path\)\?/u,
   )
   assert.match(
     nativeLib,

@@ -23,6 +23,7 @@ ori-kinematics = { path = "../../../crates/ori-kinematics" }
 ori-numeric = { path = "../../../crates/ori-numeric" }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

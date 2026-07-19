@@ -2,21 +2,23 @@ use std::{
     collections::VecDeque,
     error::Error,
     fmt,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
 use ori_domain::ProjectId;
-use ori_formats::ProjectDocument;
+use ori_formats::{Ori2ProjectArchive, ProjectDocument};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
 use super::{
     AppState, ProjectSnapshot, ProjectState, commit_project_replacement, ensure_expected_project,
     project_persistence::{
-        FRONTEND_MAX_SAFE_INTEGER_U64, RecoveryDocumentLoad, RecoveryPersistenceError,
-        clear_recovery_document, inspect_recovery_document, persist_recovery_document,
+        FRONTEND_MAX_SAFE_INTEGER_U64, RecoveryPersistenceError, RecoveryProjectLoad,
+        clear_recovery_document, inspect_recovery_project, persist_recovery_project,
     },
     snapshot, validate_loaded_numeric_expression_bindings,
 };
@@ -372,14 +374,14 @@ impl Error for RecoveryStorageError {}
 
 /// A validated startup candidate. Its source path is intentionally absent.
 pub(super) struct RecoveryStartupCandidate {
-    document: Box<ProjectDocument>,
+    project: Box<Ori2ProjectArchive>,
     updated_at_unix_ms: Option<u64>,
 }
 
 impl RecoveryStartupCandidate {
     #[must_use]
     pub(super) const fn document(&self) -> &ProjectDocument {
-        &self.document
+        &self.project.document
     }
 
     #[must_use]
@@ -388,10 +390,9 @@ impl RecoveryStartupCandidate {
     }
 
     /// Restores into a fresh unsaved instance. No original path, saved
-    /// baseline, history, or runtime pose exists in the recovery payload.
-    #[must_use]
-    pub(super) fn into_project_state(self) -> ProjectState {
-        ProjectState::from_recovery(*self.document)
+    /// baseline, or runtime pose exists in the recovery payload.
+    pub(super) fn into_project_state(self) -> Result<ProjectState, ()> {
+        ProjectState::from_recovery_project_archive(*self.project)
     }
 }
 
@@ -427,9 +428,45 @@ impl RecoveryProjectBinding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoredRecoveryIdentity {
+    binding: RecoveryProjectBinding,
+    history_digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DurableRecoveryAction {
-    Stored(RecoveryProjectBinding),
+    Stored(StoredRecoveryIdentity),
     Cleared(RecoveryProjectBinding),
+}
+
+struct Sha256Writer(Sha256);
+
+impl Sha256Writer {
+    fn new() -> Self {
+        Self(Sha256::new())
+    }
+
+    fn finish(self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+}
+
+impl Write for Sha256Writer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn editor_history_digest(project: &Ori2ProjectArchive) -> Result<[u8; 32], RecoveryStorageError> {
+    let mut writer = Sha256Writer::new();
+    serde_json::to_writer(&mut writer, &project.editor_history)
+        .map_err(|_| RecoveryStorageError::StorageUnavailable)?;
+    Ok(writer.finish())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,7 +484,7 @@ enum CachedRecoveryCandidate {
     },
     Available {
         recovery_id: RecoveryId,
-        document: Box<ProjectDocument>,
+        project: Box<Ori2ProjectArchive>,
         updated_at_unix_ms: Option<u64>,
         restored: bool,
     },
@@ -461,11 +498,13 @@ impl CachedRecoveryCandidate {
                 recovery_id: RecoveryId::new(),
             },
             RecoveryStartup::Available(candidate)
-                if validate_loaded_numeric_expression_bindings(&candidate.document).is_ok() =>
+                if validate_loaded_numeric_expression_bindings(&candidate.project.document)
+                    .is_ok()
+                    && crate::restore_archive_editor(&candidate.project).is_ok() =>
             {
                 Self::Available {
                     recovery_id: RecoveryId::new(),
-                    document: candidate.document,
+                    project: candidate.project,
                     updated_at_unix_ms: candidate.updated_at_unix_ms,
                     restored: false,
                 }
@@ -586,12 +625,13 @@ pub(super) struct RecoveryRuntime(Arc<RecoveryRuntimeInner>);
 struct PreparedRecoveryRestore {
     recovery_id: RecoveryId,
     epoch: u64,
-    document: Box<ProjectDocument>,
+    project: Box<Ori2ProjectArchive>,
+    replacement: ProjectState,
 }
 
 struct RecoveryAutosaveCapture {
     binding: RecoveryProjectBinding,
-    document: Option<ProjectDocument>,
+    project: Option<Ori2ProjectArchive>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -629,7 +669,7 @@ trait RecoveryIo: Send + Sync {
     fn store(
         &self,
         slot_path: &Path,
-        document: &ProjectDocument,
+        project: &Ori2ProjectArchive,
     ) -> Result<(), RecoveryPersistenceError>;
     fn clear(&self, slot_path: &Path) -> Result<(), RecoveryPersistenceError>;
 }
@@ -638,14 +678,14 @@ struct FileRecoveryIo;
 
 impl RecoveryIo for FileRecoveryIo {
     fn inspect(&self, slot_path: &Path) -> RecoveryStartup {
-        match inspect_recovery_document(slot_path) {
-            RecoveryDocumentLoad::Missing => RecoveryStartup::None,
-            RecoveryDocumentLoad::Invalid => RecoveryStartup::Invalid,
-            RecoveryDocumentLoad::Available {
-                document,
+        match inspect_recovery_project(slot_path) {
+            RecoveryProjectLoad::Missing => RecoveryStartup::None,
+            RecoveryProjectLoad::Invalid => RecoveryStartup::Invalid,
+            RecoveryProjectLoad::Available {
+                project,
                 updated_at_unix_ms,
             } => RecoveryStartup::Available(RecoveryStartupCandidate {
-                document,
+                project,
                 updated_at_unix_ms,
             }),
         }
@@ -654,9 +694,9 @@ impl RecoveryIo for FileRecoveryIo {
     fn store(
         &self,
         slot_path: &Path,
-        document: &ProjectDocument,
+        project: &Ori2ProjectArchive,
     ) -> Result<(), RecoveryPersistenceError> {
-        persist_recovery_document(slot_path, document)
+        persist_recovery_project(slot_path, project)
     }
 
     fn clear(&self, slot_path: &Path) -> Result<(), RecoveryPersistenceError> {
@@ -665,7 +705,7 @@ impl RecoveryIo for FileRecoveryIo {
 }
 
 enum RecoveryAction {
-    Store(Box<ProjectDocument>),
+    Store(Box<Ori2ProjectArchive>),
     Clear,
 }
 
@@ -740,8 +780,8 @@ struct RecoveryStorageInner {
 /// main window. Production startup establishes that process boundary before
 /// constructing this storage from the app-private data directory.
 ///
-/// `store` accepts an owned detached [`ProjectDocument`]. A caller can clone
-/// the document while holding the project mutex, release that mutex, and then
+/// `store` accepts an owned detached [`Ori2ProjectArchive`]. A caller can clone
+/// the project archive while holding the project mutex, release that mutex, and then
 /// call this API. Filesystem I/O never requires access to live `ProjectState`.
 #[derive(Clone)]
 pub(super) struct RecoveryStorage(Arc<RecoveryStorageInner>);
@@ -779,11 +819,19 @@ impl RecoveryStorage {
         self.0.io.inspect(&self.0.slot_path)
     }
 
+    pub(super) fn store_project(
+        &self,
+        project: Ori2ProjectArchive,
+    ) -> Result<RecoverySubmission, RecoveryStorageError> {
+        self.enqueue(RecoveryAction::Store(Box::new(project)))
+    }
+
+    #[cfg(test)]
     pub(super) fn store(
         &self,
         document: ProjectDocument,
     ) -> Result<RecoverySubmission, RecoveryStorageError> {
-        self.enqueue(RecoveryAction::Store(Box::new(document)))
+        self.store_project(Ori2ProjectArchive::document_only(document))
     }
 
     pub(super) fn clear(&self) -> Result<RecoverySubmission, RecoveryStorageError> {
@@ -1047,13 +1095,13 @@ impl RecoveryRuntime {
             }
             CachedRecoveryCandidate::Available {
                 recovery_id,
-                document,
+                project,
                 updated_at_unix_ms,
                 restored: false,
             } => GetRecoveryCandidateResponse::Available {
                 schema_version: RECOVERY_SCHEMA_VERSION,
                 recovery_id: *recovery_id,
-                project_id: document.project_id,
+                project_id: project.document.project_id,
                 updated_at_unix_ms: updated_at_unix_ms.and_then(FrontendSafeUnixMillis::new),
             },
         })
@@ -1098,15 +1146,15 @@ impl RecoveryRuntime {
         &self,
         recovery_id: RecoveryId,
     ) -> Result<PreparedRecoveryRestore, RecoveryStorageError> {
-        let (epoch, cached_document) = {
+        let (epoch, cached_project) = {
             let state = self.lock_state()?;
             match &state.candidate {
                 CachedRecoveryCandidate::Available {
                     recovery_id: current_id,
-                    document,
+                    project,
                     restored: false,
                     ..
-                } if *current_id == recovery_id => (state.epoch, document.clone()),
+                } if *current_id == recovery_id => (state.epoch, project.clone()),
                 _ => return Err(RecoveryStorageError::StateUnavailable),
             }
         };
@@ -1114,13 +1162,17 @@ impl RecoveryRuntime {
         let RecoveryStartup::Available(inspected) = self.0.storage.inspect_startup() else {
             return Err(RecoveryStorageError::StateUnavailable);
         };
-        if inspected.document.as_ref() != cached_document.as_ref() {
+        if inspected.project.as_ref() != cached_project.as_ref() {
             return Err(RecoveryStorageError::StateUnavailable);
         }
+        let replacement =
+            ProjectState::from_recovery_project_archive(inspected.project.as_ref().clone())
+                .map_err(|_| RecoveryStorageError::StateUnavailable)?;
         Ok(PreparedRecoveryRestore {
             recovery_id,
             epoch,
-            document: inspected.document,
+            project: inspected.project,
+            replacement,
         })
     }
 
@@ -1145,18 +1197,18 @@ impl RecoveryRuntime {
             &state.candidate,
             CachedRecoveryCandidate::Available {
                 recovery_id,
-                document,
+                project,
                 restored: false,
                 ..
             } if *recovery_id == prepared.recovery_id
                 && state.epoch == prepared.epoch
-                && document.as_ref() == prepared.document.as_ref()
+                && project.as_ref() == prepared.project.as_ref()
         );
         if !candidate_is_current {
             return Err(RecoveryStorageError::StateUnavailable);
         }
 
-        commit_project_replacement(project, ProjectState::from_recovery(*prepared.document))
+        commit_project_replacement(project, prepared.replacement)
             .map_err(|_| RecoveryStorageError::StateUnavailable)?;
         if let CachedRecoveryCandidate::Available { restored, .. } = &mut state.candidate {
             *restored = true;
@@ -1168,24 +1220,74 @@ impl RecoveryRuntime {
         Ok(snapshot(project))
     }
 
-    fn capture_autosave(project: &ProjectState) -> RecoveryAutosaveCapture {
-        RecoveryAutosaveCapture {
+    fn capture_autosave(
+        project: &ProjectState,
+    ) -> Result<RecoveryAutosaveCapture, RecoveryStorageError> {
+        Ok(RecoveryAutosaveCapture {
             binding: RecoveryProjectBinding::from_project(project),
-            document: project.is_dirty().then(|| project.document()),
-        }
+            project: if project.is_dirty() {
+                Some(
+                    project
+                        .project_archive()
+                        .map_err(|_| RecoveryStorageError::StorageUnavailable)?,
+                )
+            } else {
+                None
+            },
+        })
     }
 
     fn autosave(
         &self,
         capture: RecoveryAutosaveCapture,
     ) -> Result<RecoveryAutosaveOutcome, RecoveryStorageError> {
-        let desired_action = if capture.document.is_some() {
-            DurableRecoveryAction::Stored(capture.binding)
-        } else {
-            DurableRecoveryAction::Cleared(capture.binding)
+        {
+            let state = self.lock_state()?;
+            if state.automatic_writes_stopped {
+                return Ok(RecoveryAutosaveOutcome::AutomaticWritesStopped);
+            }
+            if state.candidate.blocks_automatic_writes() {
+                return Ok(RecoveryAutosaveOutcome::StartupDecisionPending);
+            }
+        }
+
+        // Hash the detached persisted-history representation without first
+        // allocating another history-sized JSON buffer. The project mutex was
+        // released by the caller before entering this method.
+        let desired_action = match &capture.project {
+            Some(project) => DurableRecoveryAction::Stored(StoredRecoveryIdentity {
+                binding: capture.binding,
+                history_digest: editor_history_digest(project)?,
+            }),
+            None => DurableRecoveryAction::Cleared(capture.binding),
         };
+        {
+            let state = self.lock_state()?;
+            if state.automatic_writes_stopped {
+                return Ok(RecoveryAutosaveOutcome::AutomaticWritesStopped);
+            }
+            if state.candidate.blocks_automatic_writes() {
+                return Ok(RecoveryAutosaveOutcome::StartupDecisionPending);
+            }
+            if state.last_durable_action == Some(desired_action) {
+                return Ok(RecoveryAutosaveOutcome::Duplicate);
+            }
+        }
+
+        if let Some(project) = &capture.project {
+            // Capture only clones the document and history while the live
+            // project lock is held. Rebuild and validate every reachable
+            // Undo/Redo instruction-pose endpoint here, after that lock has
+            // been released and only for a changed checkpoint identity.
+            crate::restore_archive_editor(project)
+                .map_err(|_| RecoveryStorageError::StorageUnavailable)?;
+        }
+
         let (epoch, operation_id) = {
             let mut state = self.lock_state()?;
+            // Recheck after the potentially expensive semantic validation.
+            // A concurrent discard/exit/restore may have changed the runtime
+            // epoch or duplicate identity while no state lock was held.
             if state.automatic_writes_stopped {
                 return Ok(RecoveryAutosaveOutcome::AutomaticWritesStopped);
             }
@@ -1200,8 +1302,8 @@ impl RecoveryRuntime {
             (epoch, operation_id)
         };
 
-        let submission = match capture.document {
-            Some(document) => self.0.storage.store(document),
+        let submission = match capture.project {
+            Some(project) => self.0.storage.store_project(project),
             None => self.0.storage.clear(),
         };
         let submission = match submission {
@@ -1540,7 +1642,7 @@ fn run_recovery_autosave_tick(
             .lock()
             .map_err(|_| RecoveryStorageError::StateUnavailable)?;
         let operation = recovery.lock_operation_gate()?;
-        let capture = RecoveryRuntime::capture_autosave(&project);
+        let capture = RecoveryRuntime::capture_autosave(&project)?;
         drop(project);
         let outcome = recovery.autosave(capture);
         drop(operation);
@@ -1665,13 +1767,16 @@ mod tests {
         thread,
     };
 
-    use ori_core::Command;
-    use ori_domain::{CreasePattern, Paper, Point2, VertexId};
+    use ori_core::{Command, create_rectangular_sheet};
+    use ori_domain::{
+        CreasePattern, FaceId, InstructionPose, InstructionPoseModel, InstructionStep,
+        InstructionStepId, Paper, Point2, VertexId,
+    };
     use ori_formats::{Ori2Limits, ProjectDocument};
     use serde_json::json;
 
     use super::*;
-    use crate::project_persistence::{frontend_safe_unix_millis, stage_recovery_document_for_test};
+    use crate::project_persistence::{frontend_safe_unix_millis, stage_recovery_project_for_test};
 
     static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1704,6 +1809,62 @@ mod tests {
         ProjectDocument::new(name, CreasePattern::empty())
     }
 
+    fn project(document: ProjectDocument) -> Ori2ProjectArchive {
+        Ori2ProjectArchive::document_only(document)
+    }
+
+    fn state_with_reachable_invalid_instruction_pose() -> ProjectState {
+        let sheet = create_rectangular_sheet(40.0, 40.0, false).expect("valid history test sheet");
+        let (pattern, paper) = sheet.into_parts();
+        let mut source = ProjectState::new_unsaved("unsafe recovery".to_owned(), pattern, paper);
+        let old_fingerprint = source.editor.fold_model_fingerprint_v1();
+        source
+            .editor
+            .execute(
+                0,
+                Command::AddInstructionStep {
+                    step: InstructionStep {
+                        id: InstructionStepId::new(),
+                        title: "invalid after Undo".to_owned(),
+                        description: String::new(),
+                        caution: String::new(),
+                        duration_ms: 1_000,
+                        pose: InstructionPose {
+                            model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                            source_model_fingerprint: old_fingerprint,
+                            fixed_face: Some(FaceId::new()),
+                            hinge_angles: Vec::new(),
+                        },
+                    },
+                },
+            )
+            .expect("add structurally valid instruction step");
+        source
+            .editor
+            .execute(
+                1,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(20.0, 20.0),
+                },
+            )
+            .expect("make the invalid pose stale at the current endpoint");
+        source
+    }
+
+    fn project_with_reachable_invalid_instruction_pose() -> Ori2ProjectArchive {
+        let source = state_with_reachable_invalid_instruction_pose();
+        Ori2ProjectArchive {
+            document: source.document(),
+            editor_history: Some(
+                source
+                    .editor
+                    .export_history_v1(source.project_id)
+                    .expect("export unsafe recovery fixture"),
+            ),
+        }
+    }
+
     fn prepare_close_request(
         project: &ProjectState,
         authorization: ExitRecoveryAuthorization,
@@ -1719,22 +1880,26 @@ mod tests {
 
     fn available_document(storage: &RecoveryStorage) -> ProjectDocument {
         match storage.inspect_startup() {
-            RecoveryStartup::Available(candidate) => *candidate.document,
+            RecoveryStartup::Available(candidate) => candidate.project.document,
             RecoveryStartup::None => panic!("expected an available recovery document"),
             RecoveryStartup::Invalid => panic!("expected a valid recovery document"),
         }
     }
 
     struct MemoryRecoveryIo {
-        document: Mutex<Option<ProjectDocument>>,
+        document: Mutex<Option<Ori2ProjectArchive>>,
         calls: Mutex<Vec<String>>,
         fail_next_clear: AtomicBool,
     }
 
     impl MemoryRecoveryIo {
         fn new(document: Option<ProjectDocument>) -> Self {
+            Self::new_project(document.map(project))
+        }
+
+        fn new_project(project: Option<Ori2ProjectArchive>) -> Self {
             Self {
-                document: Mutex::new(document),
+                document: Mutex::new(project),
                 calls: Mutex::new(Vec::new()),
                 fail_next_clear: AtomicBool::new(false),
             }
@@ -1745,6 +1910,14 @@ mod tests {
         }
 
         fn document(&self) -> Option<ProjectDocument> {
+            self.document
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|project| project.document.clone())
+        }
+
+        fn project(&self) -> Option<Ori2ProjectArchive> {
             self.document.lock().unwrap().clone()
         }
 
@@ -1755,9 +1928,9 @@ mod tests {
 
     impl RecoveryIo for MemoryRecoveryIo {
         fn inspect(&self, _slot_path: &Path) -> RecoveryStartup {
-            match self.document() {
-                Some(document) => RecoveryStartup::Available(RecoveryStartupCandidate {
-                    document: Box::new(document),
+            match self.project() {
+                Some(project) => RecoveryStartup::Available(RecoveryStartupCandidate {
+                    project: Box::new(project),
                     updated_at_unix_ms: Some(123),
                 }),
                 None => RecoveryStartup::None,
@@ -1767,13 +1940,13 @@ mod tests {
         fn store(
             &self,
             _slot_path: &Path,
-            document: &ProjectDocument,
+            project: &Ori2ProjectArchive,
         ) -> Result<(), RecoveryPersistenceError> {
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("store:{}", document.name));
-            *self.document.lock().unwrap() = Some(document.clone());
+                .push(format!("store:{}", project.document.name));
+            *self.document.lock().unwrap() = Some(project.clone());
             Ok(())
         }
 
@@ -2086,6 +2259,43 @@ mod tests {
     }
 
     #[test]
+    fn reachable_invalid_instruction_pose_history_is_a_startup_invalid_candidate() {
+        let directory = TestDirectory::new("invalid-history-endpoint");
+        let io = Arc::new(MemoryRecoveryIo::new_project(Some(
+            project_with_reachable_invalid_instruction_pose(),
+        )));
+        let storage = RecoveryStorage::with_io(directory.path(), Arc::clone(&io));
+        let startup = storage.inspect_startup();
+        assert!(matches!(startup, RecoveryStartup::Available(_)));
+
+        let runtime = RecoveryRuntime::with_storage(storage, startup);
+
+        assert!(matches!(
+            runtime.candidate_response().unwrap(),
+            GetRecoveryCandidateResponse::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn autosave_validates_detached_history_only_after_project_capture() {
+        let directory = TestDirectory::new("detached-history-validation");
+        let source = state_with_reachable_invalid_instruction_pose();
+        let capture = RecoveryRuntime::capture_autosave(&source)
+            .expect("capture only detaches document and history");
+        assert!(capture.project.is_some());
+
+        let io = Arc::new(MemoryRecoveryIo::new(None));
+        let storage = RecoveryStorage::with_io(directory.path(), Arc::clone(&io));
+        let runtime = RecoveryRuntime::with_storage(storage, RecoveryStartup::None);
+        assert_eq!(
+            runtime.autosave(capture),
+            Err(RecoveryStorageError::StorageUnavailable)
+        );
+        assert!(io.calls().is_empty());
+        assert!(io.project().is_none());
+    }
+
+    #[test]
     fn abandoning_a_verified_stage_preserves_the_previous_recovery() {
         let directory = TestDirectory::new("atomic-interruption");
         let storage = RecoveryStorage::new(directory.path());
@@ -2099,7 +2309,8 @@ mod tests {
             RecoverySettlement::Durable
         );
 
-        let staged = stage_recovery_document_for_test(storage.slot_path_for_test(), &new).unwrap();
+        let staged =
+            stage_recovery_project_for_test(storage.slot_path_for_test(), &project(new)).unwrap();
         let staged_path = staged.path.clone();
         assert!(staged_path.exists());
         drop(staged);
@@ -2119,10 +2330,11 @@ mod tests {
         let old_instance = opened.instance_id;
 
         let restored = RecoveryStartupCandidate {
-            document: Box::new(expected.clone()),
+            project: Box::new(project(expected.clone())),
             updated_at_unix_ms: Some(123),
         }
-        .into_project_state();
+        .into_project_state()
+        .expect("restore validated recovery archive");
 
         assert_eq!(restored.project_id, expected.project_id);
         assert_ne!(restored.instance_id, old_instance);
@@ -2152,7 +2364,7 @@ mod tests {
         let runtime = RecoveryRuntime::with_storage(
             storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(recovered.clone()),
+                project: Box::new(project(recovered.clone())),
                 updated_at_unix_ms: Some(123),
             }),
         );
@@ -2218,6 +2430,136 @@ mod tests {
     }
 
     #[test]
+    fn dirty_autosave_and_startup_restore_preserve_limit_and_both_history_stacks() {
+        let directory = TestDirectory::new("history-roundtrip");
+        let mut source = ProjectState::new_unsaved(
+            "history recovery".to_owned(),
+            CreasePattern::empty(),
+            Paper::default(),
+        );
+        source
+            .editor
+            .set_history_entry_limit(17)
+            .expect("configure persisted history limit");
+        let project_id = source.project_id;
+        let source_instance_id = source.instance_id;
+        let first = VertexId::new();
+        let second = VertexId::new();
+        source
+            .editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: first,
+                    position: Point2::new(12.0, 34.0),
+                },
+            )
+            .expect("first recovery history command");
+        source
+            .editor
+            .execute(
+                1,
+                Command::AddVertex {
+                    id: second,
+                    position: Point2::new(56.0, 78.0),
+                },
+            )
+            .expect("second recovery history command");
+        source
+            .editor
+            .undo(2)
+            .expect("populate the recovery Redo stack");
+        assert!(source.is_dirty());
+        assert!(source.editor.can_undo());
+        assert!(source.editor.can_redo());
+        let expected_document = source.document();
+        let expected_history = source
+            .editor
+            .export_history_v1(project_id)
+            .expect("export recovery history");
+
+        let app_state = AppState::new(source);
+        let io = Arc::new(MemoryRecoveryIo::new(None));
+        let storage = RecoveryStorage::with_io(directory.path(), Arc::clone(&io));
+        let runtime = RecoveryRuntime::with_storage(storage, RecoveryStartup::None);
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::Stored
+        );
+        let stored = io.project().expect("autosave persisted an archive");
+        assert_eq!(stored.document, expected_document);
+        assert_eq!(
+            stored.editor_history.as_ref(),
+            Some(&expected_history),
+            "the autosave checkpoint must include exact history"
+        );
+
+        let restarted_io = Arc::new(MemoryRecoveryIo::new_project(Some(stored)));
+        let restarted_storage =
+            RecoveryStorage::with_io(directory.path(), Arc::clone(&restarted_io));
+        let startup = restarted_storage.inspect_startup();
+        let restarted_runtime = RecoveryRuntime::with_storage(restarted_storage, startup);
+        let recovery_id = match restarted_runtime.candidate_response().unwrap() {
+            GetRecoveryCandidateResponse::Available { recovery_id, .. } => recovery_id,
+            _ => panic!("the persisted recovery must be offered at startup"),
+        };
+        let mut restored = crate::initial_project_state();
+        let replaced_instance_id = restored.instance_id;
+        let request = RestoreRecoveryRequest {
+            schema_version: RECOVERY_SCHEMA_VERSION,
+            recovery_id,
+            expected_project_id: restored.project_id,
+            expected_instance_id: restored.instance_id,
+            expected_revision: restored.editor.revision(),
+        };
+        let prepared = restarted_runtime.prepare_restore(recovery_id).unwrap();
+        restarted_runtime
+            .commit_restore(&mut restored, &request, prepared)
+            .expect("commit startup history recovery");
+
+        assert_eq!(restored.project_id, project_id);
+        assert_ne!(restored.instance_id, source_instance_id);
+        assert_ne!(restored.instance_id, replaced_instance_id);
+        assert_eq!(restored.document(), expected_document);
+        assert!(restored.current_path.is_none());
+        assert!(restored.saved_revision.is_none());
+        assert!(restored.saved_document.is_none());
+        assert!(restored.is_dirty());
+        assert_eq!(restored.editor.revision(), 0);
+        assert_eq!(restored.editor.history_entry_limit(), 17);
+        assert!(restored.editor.can_undo());
+        assert!(restored.editor.can_redo());
+        assert!(restored.editor.current_applied_pose().is_none());
+        let authority = restored.applied_pose_authority.test_snapshot().unwrap();
+        assert_eq!(authority.generation, 1);
+        assert!(!authority.has_current);
+        assert!(!authority.has_pending);
+        assert_eq!(
+            restored
+                .editor
+                .export_history_v1(project_id)
+                .expect("re-export restored recovery history"),
+            expected_history
+        );
+
+        restored.editor.redo(0).expect("redo second command");
+        assert_eq!(
+            restored
+                .editor
+                .pattern()
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        restored.editor.undo(1).expect("undo second command");
+        assert_eq!(restored.document(), expected_document);
+        restored.editor.undo(2).expect("undo first command");
+        assert!(restored.editor.pattern().vertices.is_empty());
+    }
+
+    #[test]
     fn startup_candidate_blocks_timer_but_normal_completion_clears_it() {
         let directory = TestDirectory::new("startup-gate");
         let recovered = document("pending");
@@ -2226,7 +2568,7 @@ mod tests {
         let runtime = RecoveryRuntime::with_storage(
             storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(recovered),
+                project: Box::new(project(recovered)),
                 updated_at_unix_ms: None,
             }),
         );
@@ -2268,7 +2610,7 @@ mod tests {
         let runtime = RecoveryRuntime::with_storage(
             storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(recovered),
+                project: Box::new(project(recovered)),
                 updated_at_unix_ms: None,
             }),
         );
@@ -2297,7 +2639,7 @@ mod tests {
         let runtime = RecoveryRuntime::with_storage(
             storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(cached),
+                project: Box::new(project(cached)),
                 updated_at_unix_ms: None,
             }),
         );
@@ -2305,7 +2647,7 @@ mod tests {
             GetRecoveryCandidateResponse::Available { recovery_id, .. } => recovery_id,
             _ => panic!("candidate must be available"),
         };
-        *io.document.lock().unwrap() = Some(document("externally changed"));
+        *io.document.lock().unwrap() = Some(project(document("externally changed")));
 
         assert!(runtime.prepare_restore(recovery_id).is_err());
         assert!(matches!(
@@ -2324,7 +2666,7 @@ mod tests {
         let runtime = RecoveryRuntime::with_storage(
             storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(stale),
+                project: Box::new(project(stale)),
                 updated_at_unix_ms: None,
             }),
         );
@@ -2394,6 +2736,81 @@ mod tests {
     }
 
     #[test]
+    fn same_revision_history_limit_change_updates_checkpoint_then_deduplicates() {
+        let directory = TestDirectory::new("history-digest-identity");
+        let mut source = ProjectState::new_unsaved(
+            "history digest".to_owned(),
+            CreasePattern::empty(),
+            Paper::default(),
+        );
+        source
+            .editor
+            .set_history_entry_limit(17)
+            .expect("set initial history limit");
+        for index in 0_u64..12 {
+            source
+                .editor
+                .execute(
+                    index,
+                    Command::AddVertex {
+                        id: VertexId::new(),
+                        position: Point2::new(index as f64, index as f64 + 0.5),
+                    },
+                )
+                .expect("populate bounded Undo history");
+        }
+        let unchanged_revision = source.editor.revision();
+        let app_state = AppState::new(source);
+        let io = Arc::new(MemoryRecoveryIo::new(None));
+        let storage = RecoveryStorage::with_io(directory.path(), Arc::clone(&io));
+        let runtime = RecoveryRuntime::with_storage(storage, RecoveryStartup::None);
+
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::Stored
+        );
+        let first_history = io
+            .project()
+            .and_then(|project| project.editor_history)
+            .expect("initial history checkpoint");
+        assert_eq!(first_history.history_entry_limit(), 17);
+
+        {
+            let mut project = app_state.0.lock().unwrap();
+            project
+                .editor
+                .set_history_entry_limit(9)
+                .expect("change and trim history without editing the document");
+            assert_eq!(project.editor.revision(), unchanged_revision);
+        }
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::Stored
+        );
+        let updated_history = io
+            .project()
+            .and_then(|project| project.editor_history)
+            .expect("updated history checkpoint");
+        assert_eq!(updated_history.history_entry_limit(), 9);
+        assert_eq!(
+            serde_json::to_value(&updated_history).unwrap()["undo_stack"]
+                .as_array()
+                .unwrap()
+                .len(),
+            9
+        );
+
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::Duplicate
+        );
+        assert_eq!(
+            io.calls(),
+            vec!["store:history digest", "store:history digest"]
+        );
+    }
+
+    #[test]
     fn exit_clears_settled_work_but_preserves_an_undecided_startup_candidate() {
         let directory = TestDirectory::new("exit-clear");
         let stale = document("stale");
@@ -2414,7 +2831,7 @@ mod tests {
         let preserve_runtime = RecoveryRuntime::with_storage(
             preserve_storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(stale),
+                project: Box::new(project(stale)),
                 updated_at_unix_ms: None,
             }),
         );
@@ -2729,7 +3146,7 @@ mod tests {
         let runtime = RecoveryRuntime::with_storage(
             storage,
             RecoveryStartup::Available(RecoveryStartupCandidate {
-                document: Box::new(recovered),
+                project: Box::new(project(recovered)),
                 updated_at_unix_ms: None,
             }),
         );
@@ -2765,7 +3182,7 @@ mod tests {
     }
 
     struct BlockingMemoryIo {
-        document: Mutex<Option<ProjectDocument>>,
+        document: Mutex<Option<Ori2ProjectArchive>>,
         calls: Mutex<Vec<String>>,
         block_first_store: AtomicBool,
         first_store_started: (Mutex<bool>, Condvar),
@@ -2834,8 +3251,8 @@ mod tests {
     impl RecoveryIo for BlockingMemoryIo {
         fn inspect(&self, _slot_path: &Path) -> RecoveryStartup {
             match self.document.lock().unwrap().clone() {
-                Some(document) => RecoveryStartup::Available(RecoveryStartupCandidate {
-                    document: Box::new(document),
+                Some(project) => RecoveryStartup::Available(RecoveryStartupCandidate {
+                    project: Box::new(project),
                     updated_at_unix_ms: None,
                 }),
                 None => RecoveryStartup::None,
@@ -2845,15 +3262,15 @@ mod tests {
         fn store(
             &self,
             _slot_path: &Path,
-            document: &ProjectDocument,
+            project: &Ori2ProjectArchive,
         ) -> Result<(), RecoveryPersistenceError> {
             self.enter();
             self.maybe_block_first_store();
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("store:{}", document.name));
-            *self.document.lock().unwrap() = Some(document.clone());
+                .push(format!("store:{}", project.document.name));
+            *self.document.lock().unwrap() = Some(project.clone());
             self.leave();
             Ok(())
         }
@@ -2893,7 +3310,7 @@ mod tests {
         fn store(
             &self,
             _slot_path: &Path,
-            _document: &ProjectDocument,
+            _project: &Ori2ProjectArchive,
         ) -> Result<(), RecoveryPersistenceError> {
             Ok(())
         }
@@ -3093,7 +3510,8 @@ mod tests {
         // any filesystem operation.
         let mut project = app_state.0.lock().unwrap();
         let operation = runtime.lock_operation_gate().unwrap();
-        let capture = RecoveryRuntime::capture_autosave(&project);
+        let capture =
+            RecoveryRuntime::capture_autosave(&project).expect("capture pre-submit recovery");
         let saved_document = project.document();
         project.saved_revision = Some(project.editor.revision());
         project.saved_document = Some(saved_document);

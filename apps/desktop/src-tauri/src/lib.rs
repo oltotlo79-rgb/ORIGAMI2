@@ -51,10 +51,11 @@ use numeric_expression::{
 use ori_core::{
     BoundaryEdgeRef, Command, ConstraintPreflightV1, DirectConstraintConflictV1, EditorState,
     EditorTopology, GeometricConstraintLimitsV1, GeometricConstraintUnknownReasonV1,
-    IntersectionEdgeTarget, JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue,
-    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
-    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
-    segment_midpoint_polygon_relation, validate_paper,
+    IntersectionEdgeTarget, JunctionVertexIntent, LocalFlatFoldabilityReport,
+    MAX_EDITOR_HISTORY_ENTRIES, PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput,
+    TopologyIssue, TopologySnapshot, ValidationIssue, analyze_local_flat_foldability,
+    create_rectangular_sheet, prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
+    validate_paper,
 };
 use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
@@ -65,20 +66,24 @@ use ori_domain::{
 };
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
-    FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, ProjectDocument,
-    ProjectNumericExpressions, RectangularPaperCreationExpressions, SvgBoundaryCandidateId,
-    SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern, SvgGroupMapping,
-    SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox,
-    SvgStyleGroupId, SvgWarningKind, read_fold_preview, read_svg_preview,
+    FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, Ori2ProjectArchive,
+    ProjectDocument, ProjectNumericExpressions, RectangularPaperCreationExpressions,
+    SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
+    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
+    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind, read_fold_preview,
+    read_svg_preview,
 };
 #[cfg(test)]
 use project_persistence::{
     PROJECT_FILE_INVALID_MESSAGE, PROJECT_FILE_OPEN_FAILED_MESSAGE, PROJECT_FILE_TOO_LARGE_MESSAGE,
     PROJECT_INSTRUCTIONS_INVALID_MESSAGE, PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE,
-    containing_directory, persist_document, verify_generated_ori2,
+    containing_directory, load_document_from_path, persist_document, persist_project_archive,
+    verify_generated_ori2,
 };
 use project_persistence::{
-    StagedFile, create_staged_file, load_document_from_path, persist_document_to_destination,
+    PROJECT_FILE_INVALID_MESSAGE as PROJECT_ARCHIVE_INVALID_MESSAGE,
+    PROJECT_SERIALIZATION_FAILED_MESSAGE, StagedFile, create_staged_file,
+    load_project_archive_from_path, persist_project_archive_to_destination,
 };
 #[cfg(all(test, not(target_os = "windows")))]
 use project_persistence::{commit_unix_staged_project_file, prepare_staged_file};
@@ -411,6 +416,7 @@ impl ProjectState {
         }
     }
 
+    #[cfg(test)]
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
         let saved_document = document.clone();
         let numeric_expressions = document.numeric_expressions;
@@ -433,32 +439,41 @@ impl ProjectState {
         }
     }
 
-    /// Restores a crash-recovery payload as a new unsaved project instance.
-    ///
-    /// A recovery slot contains only [`ProjectDocument`]. In particular it
-    /// carries no original path, saved baseline, editor history, or runtime
-    /// pose. Keeping the persisted project ID while issuing a fresh instance
-    /// ID lets delayed work distinguish this restored editor from the crashed
-    /// process without ever authorizing an overwrite of the original file.
-    fn from_recovery(document: ProjectDocument) -> Self {
-        let numeric_expressions = document.numeric_expressions;
-        let editor = EditorState::with_document_parts_and_constraints(
-            document.crease_pattern,
-            document.paper,
-            document.instruction_timeline,
-            document.geometric_constraints,
-        );
-        Self {
+    fn from_project_archive(
+        project: Ori2ProjectArchive,
+        current_path: PathBuf,
+    ) -> Result<Self, String> {
+        let editor = restore_archive_editor(&project)
+            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+        let document = project.document;
+        let saved_document = document.clone();
+        Ok(Self {
+            instance_id: ProjectId::new(),
+            project_id: document.project_id,
+            name: document.name,
+            current_path: Some(current_path),
+            saved_revision: Some(editor.revision()),
+            applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            numeric_expressions: document.numeric_expressions,
+            saved_document: Some(saved_document),
+            editor,
+        })
+    }
+
+    fn from_recovery_project_archive(project: Ori2ProjectArchive) -> Result<Self, ()> {
+        let editor = restore_archive_editor(&project)?;
+        let document = project.document;
+        Ok(Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
             name: document.name,
             current_path: None,
             saved_revision: None,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
-            numeric_expressions,
+            numeric_expressions: document.numeric_expressions,
             saved_document: None,
             editor,
-        }
+        })
     }
 
     fn document(&self) -> ProjectDocument {
@@ -474,6 +489,18 @@ impl ProjectState {
         }
     }
 
+    fn project_archive(&self) -> Result<Ori2ProjectArchive, String> {
+        let document = self.document();
+        let history = self
+            .editor
+            .export_history_v1(self.project_id)
+            .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
+        Ok(Ori2ProjectArchive {
+            document,
+            editor_history: (!history.is_default_empty()).then_some(history),
+        })
+    }
+
     fn is_dirty(&self) -> bool {
         let Some(saved) = &self.saved_document else {
             return true;
@@ -487,6 +514,74 @@ impl ProjectState {
             || saved.numeric_expressions != self.numeric_expressions
             || saved.geometric_constraints != *self.editor.geometric_constraints()
     }
+}
+
+fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, ()> {
+    let editor = match &project.editor_history {
+        Some(history) => {
+            if history.project_id() != project.document.project_id {
+                return Err(());
+            }
+            EditorState::with_document_parts_and_history_v1(
+                project.document.crease_pattern.clone(),
+                project.document.paper.clone(),
+                project.document.instruction_timeline.clone(),
+                project.document.geometric_constraints.clone(),
+                history.clone(),
+            )
+            .map_err(|_| ())
+        }
+        None => Ok(EditorState::with_document_parts_and_constraints(
+            project.document.crease_pattern.clone(),
+            project.document.paper.clone(),
+            project.document.instruction_timeline.clone(),
+            project.document.geometric_constraints.clone(),
+        )),
+    }?;
+    validate_reachable_history_instruction_poses(&project.document, &editor)?;
+    Ok(editor)
+}
+
+fn validate_reachable_history_instruction_poses(
+    document: &ProjectDocument,
+    editor: &EditorState,
+) -> Result<(), ()> {
+    fn validate_endpoint(document: &ProjectDocument, editor: &EditorState) -> Result<(), ()> {
+        let mut endpoint = document.clone();
+        endpoint.paper = editor.paper().clone();
+        endpoint.crease_pattern = editor.pattern().clone();
+        endpoint.instruction_timeline = editor.instruction_timeline().clone();
+        endpoint.geometric_constraints = editor.geometric_constraints().clone();
+        validate_document_instruction_poses(&endpoint).map_err(|_| ())
+    }
+
+    validate_endpoint(document, editor)?;
+
+    // Editor history is bounded to 128 entries per stack. Keep an explicit
+    // traversal fence here as defense in depth if an internal constructor is
+    // ever changed independently from the persisted-history validator.
+    let mut undo_cursor = editor.clone();
+    let mut undo_count = 0_usize;
+    while undo_cursor.can_undo() {
+        if undo_count == MAX_EDITOR_HISTORY_ENTRIES {
+            return Err(());
+        }
+        undo_cursor.undo(undo_cursor.revision()).map_err(|_| ())?;
+        validate_endpoint(document, &undo_cursor)?;
+        undo_count += 1;
+    }
+
+    let mut redo_cursor = editor.clone();
+    let mut redo_count = 0_usize;
+    while redo_cursor.can_redo() {
+        if redo_count == MAX_EDITOR_HISTORY_ENTRIES {
+            return Err(());
+        }
+        redo_cursor.redo(redo_cursor.revision()).map_err(|_| ())?;
+        validate_endpoint(document, &redo_cursor)?;
+        redo_count += 1;
+    }
+    Ok(())
 }
 
 fn initial_project_state() -> ProjectState {
@@ -732,10 +827,16 @@ enum SvgImportTargetRequest {
     Ignore,
 }
 
-#[derive(Debug)]
 struct LoadedProjectFile {
-    path: PathBuf,
-    document: ProjectDocument,
+    replacement: ProjectState,
+}
+
+impl std::fmt::Debug for LoadedProjectFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoadedProjectFile")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -3361,12 +3462,12 @@ fn save_project_to_destination(
     project: &mut ProjectState,
     destination: save_path::DialogSaveDestination,
 ) -> Result<ProjectFileResponse, String> {
-    let document = project.document();
-    persist_document_to_destination(&destination, &document)?;
+    let archive = project.project_archive()?;
+    persist_project_archive_to_destination(&destination, &archive)?;
     let path = destination.into_path();
     project.current_path = Some(path);
     project.saved_revision = Some(project.editor.revision());
-    project.saved_document = Some(document);
+    project.saved_document = Some(archive.document);
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),
@@ -3374,9 +3475,10 @@ fn save_project_to_destination(
 }
 
 fn load_project_file(path: PathBuf) -> Result<LoadedProjectFile, String> {
-    let document = load_document_from_path(&path)?;
-    validate_loaded_numeric_expression_bindings(&document)?;
-    Ok(LoadedProjectFile { path, document })
+    let archive = load_project_archive_from_path(&path)?;
+    validate_loaded_numeric_expression_bindings(&archive.document)?;
+    let replacement = ProjectState::from_project_archive(archive, path)?;
+    Ok(LoadedProjectFile { replacement })
 }
 
 fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Result<(), String> {
@@ -3417,11 +3519,7 @@ fn apply_loaded_project_file(
         expected_project_id,
         expected_revision,
     )?;
-    commit_project_replacement(
-        project,
-        ProjectState::from_document(loaded.document, loaded.path),
-    )
-    .map_err(|error| error.to_string())?;
+    commit_project_replacement(project, loaded.replacement).map_err(|error| error.to_string())?;
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),
@@ -5134,7 +5232,9 @@ mod tests {
     };
 
     use ori_domain::{Edge, Vertex};
-    use ori_formats::{Ori2Limits, read_project_ori2_with_limits, write_project_ori2};
+    use ori_formats::{
+        Ori2Limits, read_project_ori2_with_limits, write_project_archive_ori2, write_project_ori2,
+    };
     #[cfg(target_os = "windows")]
     use std::fs::OpenOptions;
 
@@ -6728,6 +6828,172 @@ mod tests {
         project.editor.undo(1).expect("create redo history");
         assert!(project.editor.can_redo());
         project
+    }
+
+    fn unsaved_project_with_undo_and_redo_history(
+        name: &str,
+    ) -> (ProjectState, VertexId, VertexId) {
+        let mut project =
+            ProjectState::new_unsaved(name.to_owned(), CreasePattern::empty(), Paper::default());
+        project
+            .editor
+            .set_history_entry_limit(17)
+            .expect("configure persisted history limit");
+        let project_id = project.project_id;
+        let first = VertexId::new();
+        let second = VertexId::new();
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddVertex {
+                id: first,
+                position: Point2::new(12.0, 34.0),
+            },
+        )
+        .expect("add first history fixture vertex");
+        execute_command(
+            &mut project,
+            project_id,
+            1,
+            Command::AddVertex {
+                id: second,
+                position: Point2::new(56.0, 78.0),
+            },
+        )
+        .expect("add second history fixture vertex");
+        project
+            .editor
+            .undo(2)
+            .expect("leave both Undo and Redo stacks populated");
+        assert!(project.editor.can_undo());
+        assert!(project.editor.can_redo());
+        (project, first, second)
+    }
+
+    fn project_with_reachable_invalid_instruction_pose(name: &str) -> ProjectState {
+        let sheet = create_rectangular_sheet(40.0, 40.0, false).expect("valid history test sheet");
+        let (pattern, paper) = sheet.into_parts();
+        let mut project = ProjectState::new_unsaved(name.to_owned(), pattern, paper);
+        let project_id = project.project_id;
+        let old_fingerprint = project.editor.fold_model_fingerprint_v1();
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddInstructionStep {
+                step: InstructionStep {
+                    id: InstructionStepId::new(),
+                    title: "invalid only after Undo".to_owned(),
+                    description: String::new(),
+                    caution: String::new(),
+                    duration_ms: 1_000,
+                    pose: InstructionPose {
+                        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                        source_model_fingerprint: old_fingerprint.clone(),
+                        fixed_face: Some(FaceId::new()),
+                        hinge_angles: Vec::new(),
+                    },
+                },
+            },
+        )
+        .expect("the editor accepts structurally valid pose metadata");
+        execute_command(
+            &mut project,
+            project_id,
+            1,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(20.0, 20.0),
+            },
+        )
+        .expect("make the invalid instruction pose stale in the current document");
+        assert_ne!(project.editor.fold_model_fingerprint_v1(), old_fingerprint);
+        assert!(
+            validate_document_instruction_poses(&project.document()).is_ok(),
+            "the final stale pose is intentionally accepted"
+        );
+        let mut undo_endpoint = project.editor.clone();
+        undo_endpoint.undo(2).expect("reach old model endpoint");
+        let mut endpoint_document = project.document();
+        endpoint_document.paper = undo_endpoint.paper().clone();
+        endpoint_document.crease_pattern = undo_endpoint.pattern().clone();
+        endpoint_document.instruction_timeline = undo_endpoint.instruction_timeline().clone();
+        endpoint_document.geometric_constraints = undo_endpoint.geometric_constraints().clone();
+        assert!(
+            validate_document_instruction_poses(&endpoint_document).is_err(),
+            "the same pose becomes current and invalid after Undo"
+        );
+        project
+    }
+
+    fn project_with_redo_reachable_invalid_instruction_pose(name: &str) -> ProjectState {
+        let sheet = create_rectangular_sheet(40.0, 40.0, false).expect("valid history test sheet");
+        let (pattern, paper) = sheet.into_parts();
+        let mut project = ProjectState::new_unsaved(name.to_owned(), pattern, paper);
+        let project_id = project.project_id;
+        let fingerprint = project.editor.fold_model_fingerprint_v1();
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddInstructionStep {
+                step: InstructionStep {
+                    id: InstructionStepId::new(),
+                    title: "invalid only after Redo".to_owned(),
+                    description: String::new(),
+                    caution: String::new(),
+                    duration_ms: 1_000,
+                    pose: InstructionPose {
+                        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                        source_model_fingerprint: fingerprint,
+                        fixed_face: Some(FaceId::new()),
+                        hinge_angles: Vec::new(),
+                    },
+                },
+            },
+        )
+        .expect("the editor accepts structurally valid pose metadata");
+        project
+            .editor
+            .undo(1)
+            .expect("leave the invalid step only on the Redo endpoint");
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        assert!(project.editor.can_redo());
+        assert!(validate_document_instruction_poses(&project.document()).is_ok());
+        project
+    }
+
+    fn corrupt_editor_history_payload(mut bytes: Vec<u8>) -> Vec<u8> {
+        const LOCAL_FILE_HEADER_SIZE: usize = 30;
+        const HISTORY_PATH: &[u8] = b"editor-history.json";
+        let name_start = bytes
+            .windows(HISTORY_PATH.len())
+            .position(|window| window == HISTORY_PATH)
+            .expect("history local-header name");
+        let header_start = name_start
+            .checked_sub(LOCAL_FILE_HEADER_SIZE)
+            .expect("history local-header offset");
+        assert_eq!(
+            &bytes[header_start..header_start + 4],
+            b"PK\x03\x04",
+            "the first history path must belong to its local ZIP header"
+        );
+        let compressed_size = u32::from_le_bytes(
+            bytes[header_start + 18..header_start + 22]
+                .try_into()
+                .expect("compressed-size field"),
+        ) as usize;
+        let extra_length = u16::from_le_bytes(
+            bytes[header_start + 28..header_start + 30]
+                .try_into()
+                .expect("extra-length field"),
+        ) as usize;
+        assert!(compressed_size > 0);
+        let payload_start = name_start + HISTORY_PATH.len() + extra_length;
+        let corrupt_at = payload_start + compressed_size / 2;
+        bytes[corrupt_at] ^= 0x01;
+        bytes
     }
 
     fn file_document(name: &str, x: f64) -> ProjectDocument {
@@ -9370,6 +9636,132 @@ mod tests {
     }
 
     #[test]
+    fn native_save_then_reopen_restores_limit_and_both_history_stacks_in_order() {
+        let directory = TestDirectory::new();
+        let path = directory.join("history-roundtrip.ori2");
+        let (mut source, first, second) =
+            unsaved_project_with_undo_and_redo_history("History roundtrip");
+        let source_project_id = source.project_id;
+        let saved_document = source.document();
+        let expected_history = source
+            .editor
+            .export_history_v1(source_project_id)
+            .expect("export source history");
+
+        save_project_to_path(&mut source, path.clone()).expect("save history archive");
+        assert_eq!(source.editor.history_entry_limit(), 17);
+        assert!(source.editor.can_undo());
+        assert!(source.editor.can_redo());
+        assert_eq!(
+            source
+                .editor
+                .export_history_v1(source_project_id)
+                .expect("history remains usable after save"),
+            expected_history
+        );
+
+        let mut reopened = ProjectState::new(CreasePattern::empty());
+        let replaced_instance_id = reopened.instance_id;
+        let replaced_project_id = reopened.project_id;
+        let loaded = load_project_file(path.clone()).expect("load saved history archive");
+        apply_loaded_project_file(
+            &mut reopened,
+            replaced_instance_id,
+            replaced_project_id,
+            0,
+            loaded,
+        )
+        .expect("apply saved history archive");
+
+        assert_eq!(reopened.project_id, source_project_id);
+        assert_ne!(reopened.instance_id, replaced_instance_id);
+        assert_eq!(reopened.current_path.as_deref(), Some(path.as_path()));
+        assert_eq!(reopened.saved_revision, Some(0));
+        assert_eq!(reopened.saved_document.as_ref(), Some(&saved_document));
+        assert!(!reopened.is_dirty());
+        assert_eq!(reopened.editor.revision(), 0);
+        assert_eq!(reopened.editor.history_entry_limit(), 17);
+        assert!(reopened.editor.can_undo());
+        assert!(reopened.editor.can_redo());
+        assert!(reopened.editor.current_applied_pose().is_none());
+        assert_eq!(
+            reopened
+                .editor
+                .export_history_v1(source_project_id)
+                .expect("re-export reopened history"),
+            expected_history
+        );
+
+        reopened.editor.redo(0).expect("redo second command first");
+        assert_eq!(
+            reopened
+                .editor
+                .pattern()
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        reopened.editor.undo(1).expect("undo second command");
+        assert_eq!(reopened.document(), saved_document);
+        reopened.editor.undo(2).expect("undo first command");
+        assert!(reopened.editor.pattern().vertices.is_empty());
+        reopened.editor.redo(3).expect("redo first command first");
+        assert_eq!(reopened.editor.pattern().vertices[0].id, first);
+        reopened.editor.redo(4).expect("redo second command second");
+        assert_eq!(
+            reopened
+                .editor
+                .pattern()
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+    }
+
+    #[test]
+    fn native_open_legacy_two_entry_archive_uses_default_empty_history() {
+        let directory = TestDirectory::new();
+        let path = directory.join("legacy-two-entry.ori2");
+        let document = file_document("Legacy project", 23.0);
+        fs::write(
+            &path,
+            write_project_ori2(&document).expect("write legacy two-entry archive"),
+        )
+        .expect("persist legacy archive");
+
+        let mut reopened = ProjectState::new(CreasePattern::empty());
+        let loaded = load_project_file(path.clone()).expect("load legacy archive");
+        let expected_instance_id = reopened.instance_id;
+        let expected_project_id = reopened.project_id;
+        apply_loaded_project_file(
+            &mut reopened,
+            expected_instance_id,
+            expected_project_id,
+            0,
+            loaded,
+        )
+        .expect("apply legacy archive");
+
+        assert_eq!(reopened.document(), document);
+        assert_eq!(reopened.editor.revision(), 0);
+        assert_eq!(reopened.editor.history_entry_limit(), 128);
+        assert!(!reopened.editor.can_undo());
+        assert!(!reopened.editor.can_redo());
+        assert_eq!(
+            reopened
+                .project_archive()
+                .expect("export canonical legacy state")
+                .editor_history,
+            None
+        );
+        assert!(!reopened.is_dirty());
+    }
+
+    #[test]
     fn native_save_overwrites_atomically_and_keeps_undo_redo_history() {
         let directory = TestDirectory::new();
         let path = directory.join("overwrite.ori2");
@@ -9451,10 +9843,11 @@ mod tests {
         let directory = TestDirectory::new();
         let path = directory.join("directory-sync.ori2");
         let document = file_document("Directory sync", 42.0);
+        let archive = Ori2ProjectArchive::document_only(document.clone());
         let bytes = write_project_ori2(&document).unwrap();
 
         fs::write(&path, b"keep before failed pre-publish sync").unwrap();
-        let mut staged = prepare_staged_file(&path, &document, &bytes).unwrap();
+        let mut staged = prepare_staged_file(&path, &archive, &bytes).unwrap();
         let error = commit_unix_staged_project_file(
             &mut staged,
             &path,
@@ -9470,7 +9863,7 @@ mod tests {
         );
         assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
 
-        let mut staged = prepare_staged_file(&path, &document, &bytes).unwrap();
+        let mut staged = prepare_staged_file(&path, &archive, &bytes).unwrap();
         let mut sync_calls = 0_u8;
         commit_unix_staged_project_file(
             &mut staged,
@@ -9543,6 +9936,110 @@ mod tests {
         assert!(!error.contains("SECRET_PROJECT_CONTENT"));
         assert!(!error.contains(&directory.path.to_string_lossy().into_owned()));
         assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn corrupt_native_history_open_preserves_every_existing_project_field() {
+        let directory = TestDirectory::new();
+        let secret_name = "private-client-history-corrupt.ori2";
+        let path = directory.join(secret_name);
+        let (source, _, _) =
+            unsaved_project_with_undo_and_redo_history("History corruption source");
+        persist_project_archive(
+            &path,
+            &source.project_archive().expect("export source archive"),
+        )
+        .expect("write valid archive before targeted corruption");
+        let corrupt_bytes =
+            corrupt_editor_history_payload(fs::read(&path).expect("read valid history archive"));
+        fs::write(&path, corrupt_bytes).expect("corrupt only the compressed history payload");
+
+        let (project, _, _) =
+            unsaved_project_with_undo_and_redo_history("Unaffected active project");
+        let before = project_state_signature(&project);
+        let error =
+            load_project_file(path).expect_err("corrupt editor history must reject the open");
+
+        assert_eq!(error, PROJECT_FILE_INVALID_MESSAGE);
+        assert!(!error.contains(secret_name));
+        assert!(!error.contains(&directory.path.to_string_lossy().into_owned()));
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn save_rejects_an_invalid_instruction_pose_at_a_reachable_history_endpoint() {
+        let directory = TestDirectory::new();
+        let path = directory.join("must-not-save-reachable-pose.ori2");
+        let mut project =
+            project_with_reachable_invalid_instruction_pose("Unsafe history endpoint");
+        let before = project_state_signature(&project);
+
+        let error = save_project_to_path(&mut project, path.clone())
+            .expect_err("save must validate every reachable history endpoint");
+
+        assert_eq!(error, PROJECT_SERIALIZATION_FAILED_MESSAGE);
+        assert_eq!(project_state_signature(&project), before);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn save_rejects_an_invalid_instruction_pose_at_a_redo_endpoint() {
+        let directory = TestDirectory::new();
+        let path = directory.join("must-not-save-redo-pose.ori2");
+        let mut project =
+            project_with_redo_reachable_invalid_instruction_pose("Unsafe Redo endpoint");
+        let before = project_state_signature(&project);
+
+        let error = save_project_to_path(&mut project, path.clone())
+            .expect_err("save must validate every reachable Redo endpoint");
+
+        assert_eq!(error, PROJECT_SERIALIZATION_FAILED_MESSAGE);
+        assert_eq!(project_state_signature(&project), before);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn native_open_rejects_reachable_invalid_pose_history_without_mutating_current_state() {
+        let directory = TestDirectory::new();
+        let secret_name = "private-reachable-pose-history.ori2";
+        let path = directory.join(secret_name);
+        let source =
+            project_with_reachable_invalid_instruction_pose("External unsafe history endpoint");
+        let external_archive = Ori2ProjectArchive {
+            document: source.document(),
+            editor_history: Some(
+                source
+                    .editor
+                    .export_history_v1(source.project_id)
+                    .expect("export external history fixture"),
+            ),
+        };
+        fs::write(
+            &path,
+            write_project_archive_ori2(&external_archive)
+                .expect("the format boundary accepts replay-consistent external history"),
+        )
+        .expect("write external history fixture");
+
+        let (active, _, _) =
+            unsaved_project_with_undo_and_redo_history("Unaffected active project");
+        let before = project_state_signature(&active);
+        let error =
+            load_project_file(path).expect_err("semantic history endpoint must reject open");
+
+        assert_eq!(error, PROJECT_FILE_INVALID_MESSAGE);
+        assert!(!error.contains(secret_name));
+        assert!(!error.contains("instruction"));
+        assert_eq!(project_state_signature(&active), before);
+    }
+
+    #[test]
+    fn internal_archive_restore_rejects_a_history_bound_to_another_project() {
+        let (source, _, _) = unsaved_project_with_undo_and_redo_history("Bound history");
+        let mut archive = source.project_archive().expect("export bound history");
+        archive.document.project_id = ProjectId::new();
+
+        assert!(restore_archive_editor(&archive).is_err());
     }
 
     #[test]
@@ -9914,12 +10411,25 @@ mod tests {
     #[test]
     fn generated_container_verification_is_pure_and_checks_identity() {
         let document = ProjectDocument::new("Bird", CreasePattern::empty());
+        let archive = Ori2ProjectArchive::document_only(document.clone());
         let bytes = write_project_ori2(&document).expect("generate .ori2");
-        verify_generated_ori2(&document, &bytes).expect("verify generated .ori2");
+        verify_generated_ori2(&archive, &bytes).expect("verify generated .ori2");
 
         let different_document = ProjectDocument::new("Different", CreasePattern::empty());
-        let error = verify_generated_ori2(&different_document, &bytes)
+        let different_archive = Ori2ProjectArchive::document_only(different_document);
+        let error = verify_generated_ori2(&different_archive, &bytes)
             .expect_err("a different project must not verify");
+        assert_eq!(error, "generated .ori2 data did not round-trip exactly");
+
+        let (history_project, _, _) =
+            unsaved_project_with_undo_and_redo_history("History must not disappear");
+        let history_archive = history_project
+            .project_archive()
+            .expect("export nonempty history");
+        let document_only_bytes = write_project_ori2(&history_archive.document)
+            .expect("write bytes that intentionally omit history");
+        let error = verify_generated_ori2(&history_archive, &document_only_bytes)
+            .expect_err("stage verification must reject silently dropped history");
         assert_eq!(error, "generated .ori2 data did not round-trip exactly");
     }
 

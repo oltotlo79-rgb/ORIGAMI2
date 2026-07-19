@@ -7,7 +7,12 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use ori_formats::{Ori2Limits, ProjectDocument, read_project_ori2_with_limits, write_project_ori2};
+#[cfg(test)]
+use ori_formats::ProjectDocument;
+use ori_formats::{
+    Ori2Limits, Ori2ProjectArchive, read_project_archive_ori2_with_limits,
+    write_project_archive_ori2,
+};
 #[cfg(unix)]
 use std::ffi::CString;
 #[cfg(unix)]
@@ -63,10 +68,10 @@ const RECOVERY_QUARANTINE_NAMES: [&str; 8] = [
 /// parser error. Recovery diagnostics must not accidentally expose app-data
 /// locations or raw operating-system details to the WebView.
 #[derive(Debug, PartialEq)]
-pub(super) enum RecoveryDocumentLoad {
+pub(super) enum RecoveryProjectLoad {
     Missing,
     Available {
-        document: Box<ProjectDocument>,
+        project: Box<Ori2ProjectArchive>,
         updated_at_unix_ms: Option<u64>,
     },
     Invalid,
@@ -80,7 +85,7 @@ pub(super) enum RecoveryDocumentLoad {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RecoveryPersistenceError;
 
-pub(super) fn load_document_from_path(path: &Path) -> Result<ProjectDocument, String> {
+pub(super) fn load_project_archive_from_path(path: &Path) -> Result<Ori2ProjectArchive, String> {
     let limits = Ori2Limits::default();
     let file = File::open(path).map_err(|_| PROJECT_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     let declared_size = file
@@ -103,40 +108,45 @@ pub(super) fn load_document_from_path(path: &Path) -> Result<ProjectDocument, St
         return Err(PROJECT_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
 
-    let document = read_project_ori2_with_limits(&bytes, limits)
+    let project = read_project_archive_ori2_with_limits(&bytes, limits)
         .map_err(|_| PROJECT_FILE_INVALID_MESSAGE.to_owned())?;
-    validate_document_instruction_poses(&document)
+    validate_document_instruction_poses(&project.document)
         .map_err(|_| PROJECT_INSTRUCTIONS_INVALID_MESSAGE.to_owned())?;
-    Ok(document)
+    Ok(project)
 }
 
-pub(super) fn inspect_recovery_document(path: &Path) -> RecoveryDocumentLoad {
+#[cfg(test)]
+pub(super) fn load_document_from_path(path: &Path) -> Result<ProjectDocument, String> {
+    load_project_archive_from_path(path).map(|project| project.document)
+}
+
+pub(super) fn inspect_recovery_project(path: &Path) -> RecoveryProjectLoad {
     let limits = Ori2Limits::default();
     let entry_metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata_is_plain_regular_file(&metadata) => metadata,
-        Ok(_) => return RecoveryDocumentLoad::Invalid,
+        Ok(_) => return RecoveryProjectLoad::Invalid,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return RecoveryDocumentLoad::Missing;
+            return RecoveryProjectLoad::Missing;
         }
-        Err(_) => return RecoveryDocumentLoad::Invalid,
+        Err(_) => return RecoveryProjectLoad::Invalid,
     };
     if entry_metadata.len() > limits.max_archive_size {
-        return RecoveryDocumentLoad::Invalid;
+        return RecoveryProjectLoad::Invalid;
     }
 
     let file = match open_recovery_regular_file_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return RecoveryDocumentLoad::Missing;
+            return RecoveryProjectLoad::Missing;
         }
-        Err(_) => return RecoveryDocumentLoad::Invalid,
+        Err(_) => return RecoveryProjectLoad::Invalid,
     };
     let metadata = match file.metadata() {
         Ok(metadata) if metadata_is_plain_regular_file(&metadata) => metadata,
-        Ok(_) | Err(_) => return RecoveryDocumentLoad::Invalid,
+        Ok(_) | Err(_) => return RecoveryProjectLoad::Invalid,
     };
     if metadata.len() > limits.max_archive_size {
-        return RecoveryDocumentLoad::Invalid;
+        return RecoveryProjectLoad::Invalid;
     }
     let updated_at_unix_ms = metadata
         .modified()
@@ -151,16 +161,16 @@ pub(super) fn inspect_recovery_document(path: &Path) -> RecoveryDocumentLoad {
     if bounded_reader.read_to_end(&mut bytes).is_err()
         || bytes.len() as u64 > limits.max_archive_size
     {
-        return RecoveryDocumentLoad::Invalid;
+        return RecoveryProjectLoad::Invalid;
     }
-    let Ok(document) = read_project_ori2_with_limits(&bytes, limits) else {
-        return RecoveryDocumentLoad::Invalid;
+    let Ok(project) = read_project_archive_ori2_with_limits(&bytes, limits) else {
+        return RecoveryProjectLoad::Invalid;
     };
-    if validate_document_instruction_poses(&document).is_err() {
-        return RecoveryDocumentLoad::Invalid;
+    if validate_document_instruction_poses(&project.document).is_err() {
+        return RecoveryProjectLoad::Invalid;
     }
-    RecoveryDocumentLoad::Available {
-        document: Box::new(document),
+    RecoveryProjectLoad::Available {
+        project: Box::new(project),
         updated_at_unix_ms,
     }
 }
@@ -210,14 +220,14 @@ pub(super) fn frontend_safe_unix_millis(duration: Duration) -> Option<u64> {
 
 /// Atomically replaces the private recovery slot with a verified `.ori2`.
 ///
-/// Callers pass a detached [`ProjectDocument`], so no live project mutex needs
+/// Callers pass a detached [`Ori2ProjectArchive`], so no live project mutex needs
 /// to remain held while serialization, synchronization, verification, and
 /// publication perform filesystem I/O.
-pub(super) fn persist_recovery_document(
+pub(super) fn persist_recovery_project(
     path: &Path,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
 ) -> Result<(), RecoveryPersistenceError> {
-    let mut staged = prepare_recovery_staged_file(path, document)?;
+    let mut staged = prepare_recovery_staged_file(path, project)?;
     publish_recovery_staged_file(&mut staged, path)
 }
 
@@ -450,24 +460,25 @@ fn sync_recovery_directory(_path: &Path) -> Result<(), RecoveryPersistenceError>
 
 fn prepare_recovery_staged_file(
     path: &Path,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
 ) -> Result<StagedFile, RecoveryPersistenceError> {
     if path.file_name().is_none() {
         return Err(RecoveryPersistenceError);
     }
     let parent = containing_directory(path).ok_or(RecoveryPersistenceError)?;
     std::fs::create_dir_all(parent).map_err(|_| RecoveryPersistenceError)?;
-    validate_document_instruction_poses(document).map_err(|_| RecoveryPersistenceError)?;
-    let bytes = write_project_ori2(document).map_err(|_| RecoveryPersistenceError)?;
-    prepare_staged_file(path, document, &bytes).map_err(|_| RecoveryPersistenceError)
+    validate_document_instruction_poses(&project.document).map_err(|_| RecoveryPersistenceError)?;
+    crate::restore_archive_editor(project).map_err(|_| RecoveryPersistenceError)?;
+    let bytes = write_project_archive_ori2(project).map_err(|_| RecoveryPersistenceError)?;
+    prepare_staged_file(path, project, &bytes).map_err(|_| RecoveryPersistenceError)
 }
 
 #[cfg(test)]
-pub(super) fn stage_recovery_document_for_test(
+pub(super) fn stage_recovery_project_for_test(
     path: &Path,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
 ) -> Result<StagedFile, RecoveryPersistenceError> {
-    prepare_recovery_staged_file(path, document)
+    prepare_recovery_staged_file(path, project)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -507,29 +518,39 @@ fn publish_recovery_staged_file(
 }
 
 #[cfg(test)]
-pub(super) fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), String> {
-    persist_document_to_destination(
+pub(super) fn persist_project_archive(
+    path: &Path,
+    project: &Ori2ProjectArchive,
+) -> Result<(), String> {
+    persist_project_archive_to_destination(
         &DialogSaveDestination::confirmed(path.to_path_buf()),
-        document,
+        project,
     )
 }
 
-pub(super) fn persist_document_to_destination(
+#[cfg(test)]
+pub(super) fn persist_document(path: &Path, document: &ProjectDocument) -> Result<(), String> {
+    persist_project_archive(path, &Ori2ProjectArchive::document_only(document.clone()))
+}
+
+pub(super) fn persist_project_archive_to_destination(
     destination: &DialogSaveDestination,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
 ) -> Result<(), String> {
     let path = destination.path();
     if path.file_name().is_none() {
         return Err("選択された保存先はファイルパスではありません。".to_owned());
     }
 
-    validate_document_instruction_poses(document)
+    validate_document_instruction_poses(&project.document)
         .map_err(|_| PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE.to_owned())?;
-    let bytes = write_project_ori2(document)
+    crate::restore_archive_editor(project)
+        .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
+    let bytes = write_project_archive_ori2(project)
         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
     let result = persist_document_atomically(
         path,
-        document,
+        project,
         &bytes,
         destination.existing_destination_policy(),
     );
@@ -546,11 +567,11 @@ pub(super) fn persist_document_to_destination(
 #[cfg(not(target_os = "windows"))]
 fn persist_document_atomically(
     path: &Path,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
     bytes: &[u8],
     existing_destination_policy: ExistingDestinationPolicy,
 ) -> Result<(), String> {
-    let mut staged = prepare_staged_file(path, document, bytes)?;
+    let mut staged = prepare_staged_file(path, project, bytes)?;
     let parent = containing_directory(path)
         .ok_or_else(|| format!("{} is not a file path", path.display()))?;
     let directory = File::open(parent).map_err(|error| {
@@ -574,11 +595,11 @@ fn persist_document_atomically(
 #[cfg(target_os = "windows")]
 fn persist_document_atomically(
     path: &Path,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
     bytes: &[u8],
     existing_destination_policy: ExistingDestinationPolicy,
 ) -> Result<(), String> {
-    let mut staged = prepare_staged_file(path, document, bytes)?;
+    let mut staged = prepare_staged_file(path, project, bytes)?;
     super::rename_windows_staged_file_with_policy(
         staged.file(),
         path,
@@ -671,7 +692,7 @@ impl Drop for StagedFile {
 
 pub(super) fn prepare_staged_file(
     path: &Path,
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
     bytes: &[u8],
 ) -> Result<StagedFile, String> {
     let mut staged = create_staged_file(path)?;
@@ -716,7 +737,7 @@ pub(super) fn prepare_staged_file(
             path.display()
         ));
     }
-    verify_generated_ori2(document, &staged_bytes)?;
+    verify_generated_ori2(project, &staged_bytes)?;
     Ok(staged)
 }
 
@@ -793,12 +814,12 @@ pub(super) fn containing_directory(path: &Path) -> Option<&Path> {
 }
 
 pub(super) fn verify_generated_ori2(
-    document: &ProjectDocument,
+    project: &Ori2ProjectArchive,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let verified = read_project_ori2_with_limits(bytes, Ori2Limits::default())
+    let verified = read_project_archive_ori2_with_limits(bytes, Ori2Limits::default())
         .map_err(|error| format!("generated .ori2 data did not pass validation: {error}"))?;
-    if verified != *document {
+    if verified != *project {
         return Err("generated .ori2 data did not round-trip exactly".to_owned());
     }
     Ok(())
@@ -861,7 +882,8 @@ mod recovery_entry_tests {
 
     fn write_valid_document(path: &Path) {
         let document = ProjectDocument::new("recovery test", CreasePattern::empty());
-        let bytes = write_project_ori2(&document).expect("serialize recovery test project");
+        let bytes = write_project_archive_ori2(&Ori2ProjectArchive::document_only(document))
+            .expect("serialize recovery test project");
         fs::write(path, bytes).expect("write recovery test project");
     }
 
@@ -871,8 +893,8 @@ mod recovery_entry_tests {
         let slot = directory.slot();
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Missing
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Missing
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert_eq!(clear_recovery_document(&slot), Ok(()));
@@ -885,8 +907,8 @@ mod recovery_entry_tests {
         fs::write(&slot, b"not an ori2 archive").expect("write corrupt recovery entry");
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert!(matches!(
@@ -908,8 +930,8 @@ mod recovery_entry_tests {
         fs::create_dir(&slot).expect("create empty recovery directory");
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert!(!slot.exists());
@@ -987,19 +1009,19 @@ mod recovery_entry_tests {
         let slot = directory.slot();
         write_valid_document(&target);
         assert!(matches!(
-            inspect_recovery_document(&target),
-            RecoveryDocumentLoad::Available { .. }
+            inspect_recovery_project(&target),
+            RecoveryProjectLoad::Available { .. }
         ));
         symlink(&target, &slot).expect("create recovery file symlink");
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert!(matches!(
-            inspect_recovery_document(&target),
-            RecoveryDocumentLoad::Available { .. }
+            inspect_recovery_project(&target),
+            RecoveryProjectLoad::Available { .. }
         ));
         assert!(matches!(
             fs::symlink_metadata(&slot),
@@ -1020,8 +1042,8 @@ mod recovery_entry_tests {
         symlink(&target, &slot).expect("create recovery directory symlink");
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert_eq!(
@@ -1046,8 +1068,8 @@ mod recovery_entry_tests {
         assert_eq!(created, 0, "create recovery FIFO");
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert!(matches!(
@@ -1100,13 +1122,13 @@ mod recovery_entry_tests {
         }
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert!(matches!(
-            inspect_recovery_document(&target),
-            RecoveryDocumentLoad::Available { .. }
+            inspect_recovery_project(&target),
+            RecoveryProjectLoad::Available { .. }
         ));
     }
 
@@ -1125,8 +1147,8 @@ mod recovery_entry_tests {
         }
 
         assert_eq!(
-            inspect_recovery_document(&slot),
-            RecoveryDocumentLoad::Invalid
+            inspect_recovery_project(&slot),
+            RecoveryProjectLoad::Invalid
         );
         assert_eq!(clear_recovery_document(&slot), Ok(()));
         assert_eq!(

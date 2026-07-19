@@ -164,8 +164,9 @@ pub(super) struct CapturedNativePoseRequest {
     complete_hinge_angles: Vec<(EdgeId, f64)>,
 }
 
-/// Clears only this request's pending marker if lock-free preparation fails
-/// or unwinds. A newer request is never removed.
+/// Clears only this request's pending marker if lock-free preparation fails,
+/// unwinds, or its prepared output is abandoned before commit begins. A newer
+/// request is never removed.
 struct PendingPreparationCleanup {
     slot: Arc<Mutex<CurrentAppliedPoseSlot>>,
     binding: Arc<PoseSourceBinding>,
@@ -207,6 +208,7 @@ impl Drop for PendingPreparationCleanup {
 pub(super) struct PreparedNativePose {
     slot: Arc<Mutex<CurrentAppliedPoseSlot>>,
     binding: Arc<PoseSourceBinding>,
+    pending_cleanup: PendingPreparationCleanup,
     topology: Arc<TopologySnapshot>,
     semantic_pose: Arc<AppliedPoseV1>,
     model: Arc<MaterialTreeKinematicsModel>,
@@ -422,9 +424,12 @@ impl CurrentAppliedPoseAuthority {
     fn commit_prepared_with_semantic_clone(
         &self,
         project: &mut ProjectState,
-        prepared: PreparedNativePose,
+        mut prepared: PreparedNativePose,
         clone_semantic: impl FnOnce(&AppliedPoseV1) -> Result<AppliedPoseV1, PoseAuthorityError>,
     ) -> Result<CurrentAppliedPoseCapability, PoseAuthorityError> {
+        // From this point onward every failure deliberately preserves the
+        // pending marker and all other live state exactly as it was on entry.
+        prepared.pending_cleanup.disarm();
         if !self.is_project_authority(project) || !Arc::ptr_eq(&self.0, &prepared.slot) {
             return Err(PoseAuthorityError::WrongAuthority);
         }
@@ -608,10 +613,11 @@ impl CurrentAppliedPoseAuthority {
 
 impl CapturedNativePoseRequest {
     /// Performs topology, material kinematics, and semantic preparation
-    /// without holding the live authority slot. Failure or unwind clears only
-    /// this request's still-current pending marker.
+    /// without holding the live authority slot. Failure, unwind, or abandoning
+    /// the prepared output before commit clears only this request's
+    /// still-current pending marker.
     pub(super) fn prepare(self) -> Result<PreparedNativePose, PoseAuthorityError> {
-        let mut pending_cleanup = PendingPreparationCleanup::new(&self.slot, &self.binding);
+        let pending_cleanup = PendingPreparationCleanup::new(&self.slot, &self.binding);
         let analysis = self.binding.topology_input.analyze();
         let topology = analysis
             .simulation_snapshot()
@@ -668,6 +674,7 @@ impl CapturedNativePoseRequest {
         let prepared = PreparedNativePose {
             slot: self.slot,
             binding: self.binding,
+            pending_cleanup,
             topology,
             semantic_pose,
             model,
@@ -676,7 +683,6 @@ impl CapturedNativePoseRequest {
         if !prepared_native_pose_is_internally_consistent(&prepared) {
             return Err(PoseAuthorityError::InternalInconsistency);
         }
-        pending_cleanup.disarm();
         Ok(prepared)
     }
 }
@@ -1284,6 +1290,130 @@ mod tests {
             CurrentAppliedPoseAuthoritySnapshot {
                 generation: 1,
                 has_current: true,
+                has_pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn dropping_prepared_pose_before_commit_clears_its_pending_marker() {
+        let project = no_hinge_project();
+        let authority = project.applied_pose_authority.clone();
+        let prepared = authority
+            .capture_request(&project, request_for(&project))
+            .expect("capture")
+            .prepare()
+            .expect("prepare");
+        assert_eq!(
+            authority.test_snapshot().expect("snapshot"),
+            CurrentAppliedPoseAuthoritySnapshot {
+                generation: 0,
+                has_current: false,
+                has_pending: true,
+            }
+        );
+
+        drop(prepared);
+
+        assert_eq!(
+            authority.test_snapshot().expect("snapshot"),
+            CurrentAppliedPoseAuthoritySnapshot {
+                generation: 0,
+                has_current: false,
+                has_pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn dropping_older_prepared_pose_does_not_clear_a_newer_pending_request() {
+        let project = no_hinge_project();
+        let authority = project.applied_pose_authority.clone();
+        let older_prepared = authority
+            .capture_request(&project, request_for(&project))
+            .expect("older capture")
+            .prepare()
+            .expect("older prepare");
+        let newer = authority
+            .capture_request(&project, request_for(&project))
+            .expect("newer capture");
+
+        drop(older_prepared);
+        assert_eq!(
+            authority.test_snapshot().expect("snapshot"),
+            CurrentAppliedPoseAuthoritySnapshot {
+                generation: 0,
+                has_current: false,
+                has_pending: true,
+            }
+        );
+
+        drop(newer.prepare().expect("newer prepare"));
+        assert_eq!(
+            authority.test_snapshot().expect("snapshot"),
+            CurrentAppliedPoseAuthoritySnapshot {
+                generation: 0,
+                has_current: false,
+                has_pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn cancelled_blocking_receiver_drops_prepared_pose_and_clears_pending_marker() {
+        use std::{
+            sync::{Barrier, mpsc},
+            time::Duration,
+        };
+
+        struct AbandonedWorkerOutput {
+            prepared: Option<Result<PreparedNativePose, PoseAuthorityError>>,
+            dropped: Option<mpsc::Sender<()>>,
+        }
+
+        impl Drop for AbandonedWorkerOutput {
+            fn drop(&mut self) {
+                drop(self.prepared.take());
+                if let Some(dropped) = self.dropped.take() {
+                    let _ = dropped.send(());
+                }
+            }
+        }
+
+        let project = no_hinge_project();
+        let authority = project.applied_pose_authority.clone();
+        let captured = authority
+            .capture_request(&project, request_for(&project))
+            .expect("capture");
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let worker_started = Arc::clone(&started);
+        let worker_release = Arc::clone(&release);
+        let (dropped_sender, dropped_receiver) = mpsc::channel();
+
+        tauri::async_runtime::block_on(async move {
+            let handle = tauri::async_runtime::spawn_blocking(move || {
+                worker_started.wait();
+                worker_release.wait();
+                AbandonedWorkerOutput {
+                    prepared: Some(captured.prepare()),
+                    dropped: Some(dropped_sender),
+                }
+            });
+            started.wait();
+            handle.abort();
+            drop(handle);
+            release.wait();
+            dropped_receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("abandoned worker output must be dropped");
+        });
+
+        assert_eq!(
+            authority.test_snapshot().expect("snapshot"),
+            CurrentAppliedPoseAuthoritySnapshot {
+                generation: 0,
+                has_current: false,
                 has_pending: false,
             }
         );

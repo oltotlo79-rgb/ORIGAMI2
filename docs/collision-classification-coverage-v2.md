@@ -44,7 +44,7 @@ v2実装済みと数えない。証拠不足またはversion不一致は`indeter
 
 `no_shared_feature`で共有要素専用証拠が来るセル、共有identityと`separated`が同時成立するセル、`same_face`の全セルなどは、幾何生成の成功fixtureを作る対象ではない。これらは矛盾または走査前除外を表すため、純粋表とruntime fail-closed回帰で固定する。
 
-本表の「厚さ0で実装」は、private幾何生成器が証拠種別を生成できることだけを表す。6.6.6ではexact tree `E`、測定元`E`へpointer identityで束縛したmeasured envelope、同じissuer-bound poseのbinary64 affine像をactual-mm有理数へ直接liftした実在triangle、および認証済みmodelから内部導出したtopologyを結ぶprivate actual-mm scanまで到達した。ただし対象はwhole material boundaryが3頂点のfaceに限定され、desktop current-pose certificate、公開静的診断またはproduction UIへ接続していない。measured envelopeはauthorityとdirect-lift点の包含再検証だけに使い、そのboxを貫通幾何として使わない。したがって、表のproduction残作業、public safe proofの成功集合またはSIM-010の利用者経路を完成させない。
+本表の「厚さ0で実装」は、private幾何生成器が証拠種別を生成できることを表す。6.6.6ではexact tree `E`、測定元`E`へpointer identityで束縛したmeasured envelope、同じissuer-bound poseのbinary64 affine像をactual-mm有理数へ直接liftした実在triangle、および認証済みmodelから内部導出したtopologyを結ぶprivate actual-mm scanまで到達し、その肯定結果をnative公開静的衝突入口へblocking専用で接続した。ただし対象はwhole material boundaryが3頂点のfaceとbit-exactな厚さ`+0.0`に限定され、desktop current-pose certificateまたはproduction UIへは未接続である。measured envelopeはauthorityとdirect-lift点の包含再検証だけに使い、そのboxを貫通幾何として使わない。したがって、表のproduction残作業、public safe proofの成功集合またはSIM-010の利用者経路を完成させない。
 
 2026-07-19 checkpointでは、厚さ0幾何のbinary64入力をexact有理数へ持ち上げる処理から、三角形分割、面・線・区間演算、比較、全canonical unordered face pairの証拠集約までを、一つの単調な有限資源meterへ統合した。入力・保持clone・演算・中間bit・GCD fallback・出力に加え、exact kernelが明示的に生成するlogical BigInt payloadの件数・個別bit・累積bitをchecked加算し、資源超過時は保存済みpair表を発行しない。全pairのdispatchは準備時にcanonical順で事前計算し、後続の参照順によって作業量や結果が変わらない。
 
@@ -60,14 +60,14 @@ v2実装済みと数えない。証拠不足またはversion不一致は`indeter
 | 辺中点の山山V: 厚さ`0 / 0.1 / 3 mm`×`90 / 91 / 135 / 179度` | 90/91度は`indeterminate`、135/179度は`penetrating`で全12姿勢を回帰 | 現行binary64 exact経路は共有点不一致により`indeterminate`。private actual-mm scanは通常・逆source collection、全3 rootで90/91/180度を`Unresolved`、135/179度だけを外側1 pairの`ProvenPenetrating`へ固定 | 未実装 |
 | 共有点外の横断: 厚さ`0 / 0.1 / 1 mm` | 全9姿勢を`penetrating`で回帰 | 厚さ0 exact横断を回帰 | 未実装 |
 
-従来のbinary64 exact経路で山山V 135/179度が`indeterminate`であることは、安全側の一時退避である。private scanはissuer-bound exact tree `E`のzero-width triangleと、同じissuer-bound poseの保存binary64 affine係数・rest頂点をactual-mm `BigRational`へ直接liftしたzero-width triangleの両方が横断を肯定できる場合だけ、この偽陰性をblocking-onlyな`ProvenPenetrating`へ回復する。measured envelopeは両者のauthority結合とdirect-lift各点のradius内包含を再検証するだけで、box自体の肯定をdual gateへ数えない。ただしproduction診断へ未接続なので、このprivate結果だけで利用者経路を完了扱いにしない。
+従来のbinary64 exact経路で山山V 135/179度が`indeterminate`であることは、安全側の一時退避である。private scanはissuer-bound exact tree `E`のzero-width triangleと、同じissuer-bound poseの保存binary64 affine係数・rest頂点をactual-mm `BigRational`へ直接liftしたzero-width triangleの両方が横断を肯定できる場合だけ、この偽陰性をblocking-onlyな`ProvenPenetrating`へ回復する。measured envelopeは両者のauthority結合とdirect-lift各点のradius内包含を再検証するだけで、box自体の肯定をdual gateへ数えない。この結果はnative公開静的衝突入口へblocking専用で接続済みだが、desktop current-pose診断・production UI・public safe proofへは接続しないため、これだけで利用者経路を完了扱いにしない。
 
 ## 5. 折り重ね前ゲート
 
 純粋な4×11表と44セルcorpus照合は完了済みである。依存工程は次の順番を崩さない。
 
 1. actual-mm閉有理区間のprivate blocking-only横断primitiveを、`ProvenPenetrating` / `Unresolved`だけのsealed結果、共有関係、strict境界、全資源上限で固定する。このprivate synthetic段階は完了済みだが、production decisionまたはpublic safe proofを発行しない。
-2. exact tree `E`、同じissuer-bound poseのbinary64 affine係数・rest頂点のdirect lift、`E`を測定したenvelope、内部導出topology、canonical face pairだけからactual-mm入力を作るprivate scanと、角起点V・辺中点山山Vの三角material face実姿勢回帰は完了した。次にH64、renderer有限包含およびexact tree `E`から厚さ0production診断への接続を完了する。canonical exact `E`側とdirect-lift実在triangle側の両方が同一pairを肯定した場合だけblocking経路へ接続し、envelope boxを肯定幾何として使わず、multi-face safe setも広げない。
+2. exact tree `E`、同じissuer-bound poseのbinary64 affine係数・rest頂点のdirect lift、`E`を測定したenvelope、内部導出topology、canonical face pairだけからactual-mm入力を作るprivate scanと、角起点V・辺中点山山Vの三角material face実姿勢回帰、およびnative公開静的衝突入口へのblocking専用接続は完了した。canonical exact `E`側とdirect-lift実在triangle側の両方が同一pairを肯定した場合だけblocking errorへ接続し、envelope boxを肯定幾何として使わず、multi-face safe setも広げない。H64既定上限内の完全成功、renderer有限包含、desktop current-pose診断とproduction UIは後続である。
 3. その後に正厚`boundary_area_contact` / `shared_feature_thickness_overlap` / `positive_volume_overlap`、有限ヒンジ`shared_feature_flat_stack` / corridorをnativeで実装する。
 4. current-pose certificateとcontinuous collisionへ結合し、`indeterminate`を貫通同等のblocking表示・停止へ流す。
 5. 全pair coverageと有限workを維持したままcell-order transportを結合し、atomic `ApplyStackedFold` command、最後に折り重ねUIを接続する。
@@ -292,7 +292,7 @@ private認証scanと、その後の本番接続は次を全て満たす。
 
 共有頂点pairには、反対edgeの通常piercingに加え、bit-exactに一致するzero-width共有点から両面のrelative interiorが同じ向きへ正長segmentとして重なることをstrictな有理算術で証明する経路を追加した。nonzeroまたは独立boxにはこのspecial caseを適用しない。これにより400 mm角起点山谷Vは通常・逆source collection、全root、指定全角度で肯定0件を維持し、辺中点山山Vは同じ変形軸で135/179度だけ1 pairを肯定、90/91/180度を`Unresolved`へ保つ。pairのforward/reverse参照も同じcanonical recordへ一致する。
 
-このscanが受け入れる紙厚はbit-exactな`+0.0`だけである。`-0.0`、`0.1 / 1 / 3 mm`、非有限値、共有ヒンジ、非三角material faceは`Unresolved`またはscan拒否へ閉じる。正厚証拠、有限ヒンジ、polygonの区間横断、public geometry proof、desktop current-pose certificate、production診断またはUIへの接続は未実装であり、本節をproduction到達済みとは数えない。
+このscanが受け入れる紙厚はbit-exactな`+0.0`だけである。`-0.0`、`0.1 / 1 / 3 mm`、非有限値、共有ヒンジ、非三角material faceは`Unresolved`またはscan拒否へ閉じる。scanの肯定結果はnative公開静的衝突入口へblocking専用で接続済みである。一方、正厚証拠、有限ヒンジ、polygonの区間横断、public geometry proof、desktop current-pose certificateまたはproduction UIへの接続は未実装であり、本節だけで利用者向けproduction経路へ到達済みとは数えない。
 
 ### 6.7 resourceとfail-closed
 

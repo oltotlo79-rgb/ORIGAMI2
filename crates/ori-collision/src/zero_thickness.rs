@@ -1394,17 +1394,32 @@ struct AuthenticatedFace {
     material_normal: ExactVector3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ZeroThicknessAnalysisWork {
+    pub(super) total_triangles: usize,
+    pub(super) registry_authentication_work: usize,
+    pub(super) total_triangle_pairs: usize,
+    pub(super) total_boundary_relation_work: usize,
+    pub(super) total_rational_input_storage_bits: usize,
+    pub(super) total_rational_retained_clone_bits: usize,
+    pub(super) rational_operations: usize,
+    pub(super) rational_gcd_fallback_calls: usize,
+    pub(super) rational_gcd_fallback_input_bits: usize,
+    pub(super) rational_allocations: usize,
+    pub(super) total_rational_allocation_bits: usize,
+    pub(super) total_rational_output_bits: usize,
+}
+
 #[derive(Debug)]
 pub(super) struct AuthenticatedZeroThicknessPose<'a> {
     _pose: &'a MaterialTreePose,
     faces: Vec<AuthenticatedFace>,
     pair_dispatches: Vec<Result<PairDispatch, ZeroThicknessAnalysisError>>,
-    #[allow(
-        dead_code,
-        reason = "retained for exact-limit auditing and future exact-tree admission diagnostics"
-    )]
     rational_work: RationalWork,
+    total_triangles: usize,
+    registry_authentication_work: usize,
     total_triangle_pairs: usize,
+    total_boundary_relation_work: usize,
 }
 
 impl AuthenticatedZeroThicknessPose<'_> {
@@ -1426,6 +1441,23 @@ impl AuthenticatedZeroThicknessPose<'_> {
 
     pub(super) const fn total_triangle_pairs(&self) -> usize {
         self.total_triangle_pairs
+    }
+
+    pub(super) const fn work(&self) -> ZeroThicknessAnalysisWork {
+        ZeroThicknessAnalysisWork {
+            total_triangles: self.total_triangles,
+            registry_authentication_work: self.registry_authentication_work,
+            total_triangle_pairs: self.total_triangle_pairs,
+            total_boundary_relation_work: self.total_boundary_relation_work,
+            total_rational_input_storage_bits: self.rational_work.total_input_storage_bits,
+            total_rational_retained_clone_bits: self.rational_work.total_retained_clone_bits,
+            rational_operations: self.rational_work.operations,
+            rational_gcd_fallback_calls: self.rational_work.gcd_fallback_calls,
+            rational_gcd_fallback_input_bits: self.rational_work.gcd_fallback_input_bits,
+            rational_allocations: self.rational_work.rational_allocations,
+            total_rational_allocation_bits: self.rational_work.total_rational_allocation_bits,
+            total_rational_output_bits: self.rational_work.total_output_bits,
+        }
     }
 
     #[cfg(test)]
@@ -1664,7 +1696,10 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
         faces,
         pair_dispatches,
         rational_work,
+        total_triangles,
+        registry_authentication_work,
         total_triangle_pairs,
+        total_boundary_relation_work,
     })
 }
 
@@ -4693,25 +4728,48 @@ mod tests {
         let midpoint_model = midpoint_mountain_model();
         let midpoint_pose = solve_two_hinge_pose(&midpoint_model, [135.0, 135.0]);
 
-        for (label, model, pose) in [
-            ("corner-v", &corner_model, &corner_pose),
-            ("midpoint-mountain", &midpoint_model, &midpoint_pose),
-        ] {
-            for thickness in [0.0, 0.1, 1.0, 3.0] {
-                assert_eq!(
-                    prove_static_collision_geometry(
-                        model,
-                        pose,
-                        thickness,
-                        StaticCollisionLimits::default(),
-                    )
-                    .expect_err("three-face proof must remain blocking"),
-                    StaticCollisionError::PairEvidenceUnavailable {
-                        expected_unordered_face_pairs: 3,
-                    },
-                    "{label}:{thickness}"
-                );
-            }
+        for thickness in [0.0, 0.1, 1.0, 3.0] {
+            assert_eq!(
+                prove_static_collision_geometry(
+                    &corner_model,
+                    &corner_pose,
+                    thickness,
+                    StaticCollisionLimits::default(),
+                )
+                .expect_err("corner pose must remain blocking"),
+                StaticCollisionError::PairEvidenceUnavailable {
+                    expected_unordered_face_pairs: 3,
+                },
+                "corner-v:{thickness}"
+            );
+        }
+        assert_eq!(
+            prove_static_collision_geometry(
+                &midpoint_model,
+                &midpoint_pose,
+                0.0,
+                StaticCollisionLimits::default(),
+            )
+            .expect_err("midpoint crossing must remain blocking"),
+            StaticCollisionError::ProvenTransversalPenetration {
+                expected_unordered_face_pairs: 3,
+                proven_transversal_pairs: 1,
+            },
+        );
+        for thickness in [0.1, 1.0, 3.0] {
+            assert_eq!(
+                prove_static_collision_geometry(
+                    &midpoint_model,
+                    &midpoint_pose,
+                    thickness,
+                    StaticCollisionLimits::default(),
+                )
+                .expect_err("positive-thickness midpoint pose must remain blocking"),
+                StaticCollisionError::PairEvidenceUnavailable {
+                    expected_unordered_face_pairs: 3,
+                },
+                "midpoint-mountain:{thickness}"
+            );
         }
     }
 

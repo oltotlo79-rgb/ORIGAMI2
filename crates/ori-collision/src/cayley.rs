@@ -3939,6 +3939,11 @@ fn try_array3<T>(
 
 mod containment;
 
+pub(crate) use containment::{
+    ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
+    scan_bound_pose_for_proven_transversal_penetration,
+};
+
 #[cfg(test)]
 mod stress_tests;
 

@@ -19,6 +19,11 @@ struct Fixture {
     hinge: Option<EdgeId>,
 }
 
+struct TwoHingeFixture {
+    model: MaterialTreeKinematicsModel,
+    hinges: [EdgeId; 2],
+}
+
 fn vertex_id(index: u64) -> VertexId {
     serde_json::from_str(&format!("\"00000000-0000-4000-8000-{index:012x}\""))
         .expect("fixed vertex id")
@@ -92,6 +97,108 @@ fn fixture(with_hinge: bool) -> Fixture {
         topology: report.snapshot.expect("fixture topology"),
         hinge,
     }
+}
+
+fn two_hinge_fixture(
+    source_revision: u64,
+    coordinates: &[(f64, f64)],
+    folds: &[(usize, usize, EdgeKind); 2],
+    reverse_source_collections: bool,
+) -> TwoHingeFixture {
+    let mut vertices = coordinates
+        .iter()
+        .enumerate()
+        .map(|(index, &(x, y))| vertex(index as u64 + 1, x, y))
+        .collect::<Vec<_>>();
+    let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+    let mut edges = (0..boundary.len())
+        .map(|index| {
+            edge(
+                index as u64 + 1,
+                boundary[index],
+                boundary[(index + 1) % boundary.len()],
+                EdgeKind::Boundary,
+            )
+        })
+        .collect::<Vec<_>>();
+    let hinges: [Edge; 2] = std::array::from_fn(|index| {
+        let (start, end, kind) = folds[index];
+        edge(
+            boundary.len() as u64 + index as u64 + 1,
+            boundary[start],
+            boundary[end],
+            kind,
+        )
+    });
+    edges.extend(hinges.iter().cloned());
+    if reverse_source_collections {
+        vertices.reverse();
+        edges.reverse();
+    }
+    let pattern = CreasePattern { vertices, edges };
+    let paper = Paper {
+        boundary_vertices: boundary,
+        ..Paper::default()
+    };
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace: project_id(),
+        source_revision,
+        paper: &paper,
+        pattern: &pattern,
+    });
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    let topology = report.snapshot.expect("two-hinge topology");
+    let model = MaterialTreeKinematicsModel::prepare(
+        &pattern,
+        &paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("two-hinge material model");
+    assert_eq!(model.face_ids().len(), 3);
+    assert_eq!(
+        model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>(),
+        hinges.iter().map(|hinge| hinge.id).collect::<Vec<_>>()
+    );
+    TwoHingeFixture {
+        model,
+        hinges: [hinges[0].id, hinges[1].id],
+    }
+}
+
+fn midpoint_mountain_400mm_fixture(reverse_source_collections: bool) -> TwoHingeFixture {
+    two_hinge_fixture(
+        8,
+        &[
+            (0.0, 0.0),
+            (200.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 400.0),
+            (0.0, 400.0),
+        ],
+        &[(1, 4, EdgeKind::Mountain), (1, 3, EdgeKind::Mountain)],
+        reverse_source_collections,
+    )
+}
+
+fn corner_mountain_valley_400mm_fixture(reverse_source_collections: bool) -> TwoHingeFixture {
+    two_hinge_fixture(
+        9,
+        &[
+            (0.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 200.0),
+            (400.0, 400.0),
+            (200.0, 400.0),
+            (0.0, 400.0),
+        ],
+        &[(0, 2, EdgeKind::Mountain), (0, 4, EdgeKind::Valley)],
+        reverse_source_collections,
+    )
 }
 
 fn model(fixture: &Fixture) -> MaterialTreeKinematicsModel {
@@ -315,5 +422,180 @@ fn multi_face_pose_is_blocking_until_every_pair_has_native_evidence() {
             },
         ),
         StaticCollisionError::ResourceLimitExceeded,
+    );
+}
+
+#[test]
+fn public_entry_reports_midpoint_transversal_matrix_without_collection_or_root_bias() {
+    for reverse_source_collections in [false, true] {
+        let fixture = midpoint_mountain_400mm_fixture(reverse_source_collections);
+        for (angle, proven_transversal_pairs) in
+            [(90.0, 0), (91.0, 0), (135.0, 1), (179.0, 1), (180.0, 0)]
+        {
+            let angles = CanonicalHingeAngles::new(
+                fixture
+                    .hinges
+                    .iter()
+                    .copied()
+                    .map(|hinge| HingeAngle::new(hinge, angle).expect("valid midpoint angle"))
+                    .collect(),
+            )
+            .expect("canonical midpoint angles");
+            for root in fixture.model.face_ids().iter().copied() {
+                let pose = fixture
+                    .model
+                    .solve(Some(root), &angles)
+                    .expect("folded midpoint pose");
+                let actual = prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    0.0,
+                    StaticCollisionLimits::default(),
+                )
+                .expect_err("multi-face midpoint pose must remain blocking");
+                let expected = if proven_transversal_pairs > 0 {
+                    StaticCollisionError::ProvenTransversalPenetration {
+                        expected_unordered_face_pairs: 3,
+                        proven_transversal_pairs,
+                    }
+                } else {
+                    StaticCollisionError::PairEvidenceUnavailable {
+                        expected_unordered_face_pairs: 3,
+                    }
+                };
+                assert_eq!(
+                    actual, expected,
+                    "angle {angle}, root {root:?}, reversed {reverse_source_collections}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn public_entry_never_promotes_corner_shared_vertex_contact_to_transversal_penetration() {
+    const CASES: [[f64; 2]; 8] = [
+        [10.0, 0.0],
+        [0.0, 10.0],
+        [45.0, 45.0],
+        [90.0, 90.0],
+        [91.0, 91.0],
+        [135.0, 135.0],
+        [179.0, 179.0],
+        [180.0, 180.0],
+    ];
+
+    for reverse_source_collections in [false, true] {
+        let fixture = corner_mountain_valley_400mm_fixture(reverse_source_collections);
+        for angle_pair in CASES {
+            let angles = CanonicalHingeAngles::new(
+                fixture
+                    .hinges
+                    .iter()
+                    .copied()
+                    .zip(angle_pair)
+                    .map(|(hinge, angle)| {
+                        HingeAngle::new(hinge, angle).expect("valid corner angle")
+                    })
+                    .collect(),
+            )
+            .expect("canonical corner angles");
+            for root in fixture.model.face_ids().iter().copied() {
+                let pose = fixture
+                    .model
+                    .solve(Some(root), &angles)
+                    .expect("folded corner pose");
+                assert_error(
+                    prove_static_collision_geometry(
+                        &fixture.model,
+                        &pose,
+                        0.0,
+                        StaticCollisionLimits::default(),
+                    ),
+                    StaticCollisionError::PairEvidenceUnavailable {
+                        expected_unordered_face_pairs: 3,
+                    },
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn transversal_affirmative_result_is_gated_to_bit_exact_positive_zero() {
+    let fixture = midpoint_mountain_400mm_fixture(false);
+    let angles = CanonicalHingeAngles::new(
+        fixture
+            .hinges
+            .iter()
+            .copied()
+            .map(|hinge| HingeAngle::new(hinge, 135.0).expect("valid midpoint angle"))
+            .collect(),
+    )
+    .expect("canonical midpoint angles");
+    let pose = fixture
+        .model
+        .solve(Some(fixture.model.face_ids()[0]), &angles)
+        .expect("folded midpoint pose");
+
+    // The affirmative facade accepts bit-exact +0.0 only. Signed
+    // negative zero and positive thickness retain the previous fail-closed
+    // result and cannot inherit the zero-thickness affirmative result.
+    for thickness in [-0.0, 0.1] {
+        assert_error(
+            prove_static_collision_geometry(
+                &fixture.model,
+                &pose,
+                thickness,
+                StaticCollisionLimits::default(),
+            ),
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs: 3,
+            },
+        );
+    }
+
+    // The three legacy triangle-pair classifications consume the complete
+    // caller budget before the three-pair Cayley bridge starts. Reusing that
+    // budget as a fresh allowance would silently double the configured work.
+    assert_error(
+        prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.0,
+            StaticCollisionLimits {
+                max_total_triangle_pairs: 3,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        StaticCollisionError::ResourceLimitExceeded,
+    );
+    assert_error(
+        prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.0,
+            StaticCollisionLimits {
+                max_total_triangles: 3,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        StaticCollisionError::ResourceLimitExceeded,
+    );
+    assert_error(
+        prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.0,
+            StaticCollisionLimits {
+                max_total_triangles: 6,
+                max_total_triangle_pairs: 6,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        StaticCollisionError::ProvenTransversalPenetration {
+            expected_unordered_face_pairs: 3,
+            proven_transversal_pairs: 1,
+        },
     );
 }

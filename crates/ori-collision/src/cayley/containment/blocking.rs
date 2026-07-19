@@ -26,10 +26,12 @@ use ori_kinematics::BoundMaterialTreePose;
 use super::{
     super::{
         CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactRigidTransform,
-        ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1, RationalCayleyTreePose, TotalTermLimits,
-        WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64, exact_point, point3_array,
+        ExactTreePoseLimits, ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1, RationalCayleyTreePose,
+        TotalTermLimits, WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64,
+        exact_point, point3_array, prepare_rational_cayley_tree_pose_v1,
     },
-    MeasuredBinary64AffineEnvelope, MeasuredFaceEnvelope,
+    MeasuredBinary64AffineEnvelope, MeasuredEnvelopeError, MeasuredEnvelopeLimits,
+    MeasuredFaceEnvelope, measure_binary64_affine_envelope,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +252,713 @@ impl AuthenticatedTriangleBlockingScan<'_, '_, '_> {
             && self.bound.model() == bound.model()
             && self.bound.pose().same_instance(bound.pose())
             && self.paper_thickness_bits == paper_thickness_mm.to_bits()
+    }
+}
+
+/// Owned, crate-private result of the zero-thickness transversal blocking scan.
+///
+/// No exact pose, measured envelope, pair decision record, or borrowed
+/// authority token crosses this boundary. A positive count therefore only
+/// reports the blocking-only dual-gate result; it cannot be reused as a
+/// collision-free proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProvenTransversalScanSummary {
+    pub(crate) enumerated_pairs: usize,
+    pub(crate) proven_transversal_pairs: usize,
+    pub(crate) first_proven_transversal_pair: Option<(FaceId, FaceId)>,
+}
+
+/// Coarse failure classes for the sealed zero-thickness transversal scan.
+///
+/// Keeping this enum fieldless prevents exact-predicate internals and
+/// resource-accounting details from becoming a caller-controlled proof API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProvenTransversalScanError {
+    EvidenceUnavailable,
+    ResourceLimitExceeded,
+    InconsistentPose,
+}
+
+/// Caller budget shared by the public static scan and this private bridge.
+///
+/// These fields intentionally mirror only resource classes common to both
+/// kernels. The bridge projects them onto every exact-tree, containment and
+/// blocking counter, while retaining each stage's private hard default as an
+/// unexpandable ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProvenTransversalScanLimits {
+    pub(crate) max_faces: usize,
+    pub(crate) max_unordered_face_pairs: usize,
+    pub(crate) max_boundary_vertices_per_face: usize,
+    pub(crate) max_total_boundary_vertices: usize,
+    pub(crate) max_total_triangles: usize,
+    pub(crate) max_total_triangle_pairs: usize,
+    pub(crate) max_registry_authentication_work: usize,
+    pub(crate) max_total_boundary_relation_work: usize,
+    pub(crate) max_rational_input_bits: usize,
+    pub(crate) max_total_rational_input_storage_bits: usize,
+    pub(crate) max_total_rational_retained_clone_bits: usize,
+    pub(crate) max_rational_operations: usize,
+    pub(crate) max_rational_intermediate_bits: usize,
+    pub(crate) max_rational_gcd_fallback_calls: usize,
+    pub(crate) max_rational_gcd_fallback_input_bits: usize,
+    pub(crate) max_rational_allocations: usize,
+    pub(crate) max_rational_allocation_bits: usize,
+    pub(crate) max_total_rational_allocation_bits: usize,
+    pub(crate) max_rational_output_bits: usize,
+    pub(crate) max_total_rational_output_bits: usize,
+}
+
+impl Default for ProvenTransversalScanLimits {
+    fn default() -> Self {
+        Self {
+            max_faces: 10_001,
+            max_unordered_face_pairs: 1_000_000,
+            max_boundary_vertices_per_face: 1_000_000,
+            max_total_boundary_vertices: 1_000_000,
+            max_total_triangles: 50_000,
+            max_total_triangle_pairs: 1_000_000,
+            max_registry_authentication_work: 50_005_000,
+            max_total_boundary_relation_work: 9_000_000,
+            max_rational_input_bits: 16_384,
+            max_total_rational_input_storage_bits: 256_000_000,
+            max_total_rational_retained_clone_bits: 2_500_000_000,
+            max_rational_operations: 80_000_000,
+            max_rational_intermediate_bits: 32_768,
+            max_rational_gcd_fallback_calls: 1_000_000,
+            max_rational_gcd_fallback_input_bits: 2_147_483_648,
+            max_rational_allocations: 3_000_000,
+            max_rational_allocation_bits: 65_536,
+            max_total_rational_allocation_bits: 2_500_000_000,
+            max_rational_output_bits: 16_384,
+            max_total_rational_output_bits: 512_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectedProvenTransversalScanLimits {
+    shared: ProvenTransversalScanLimits,
+    exact: ExactTreePoseLimits,
+    measured: MeasuredEnvelopeLimits,
+    blocking: AuthenticatedTriangleBlockingLimits,
+    max_boundary_vertices_per_face: usize,
+}
+
+/// Runs the complete authenticated zero-thickness transversal bridge.
+///
+/// The exact Cayley pose, its pointer-bound binary64 envelope, and the
+/// authenticated dual-gate scan coexist only in this borrow scope. The paper
+/// thickness is the bit-exact positive zero literal. Caller limits may shrink
+/// every shared resource class, but private hard defaults remain unexpandable.
+pub(crate) fn scan_bound_pose_for_proven_transversal_penetration(
+    bound: BoundMaterialTreePose<'_>,
+    limits: ProvenTransversalScanLimits,
+) -> Result<ProvenTransversalScanSummary, ProvenTransversalScanError> {
+    let limits = project_proven_transversal_scan_limits(limits)?;
+    preflight_proven_transversal_shape(
+        bound,
+        limits.exact.max_faces,
+        limits.blocking.max_hinges,
+        limits.blocking.max_unordered_face_pairs,
+        limits.max_boundary_vertices_per_face,
+        limits.exact.max_boundary_occurrences,
+        limits.blocking.max_triangular_faces,
+        limits.blocking.max_triangular_face_pairs,
+        limits.shared.max_registry_authentication_work,
+        limits.shared.max_total_boundary_relation_work,
+    )?;
+    let exact =
+        prepare_rational_cayley_tree_pose_v1(bound, limits.exact).map_err(map_cayley_scan_error)?;
+    let measured_limits = measured_limits_after_exact(limits.measured, &limits.shared, &exact)?;
+    let measured = measure_binary64_affine_envelope(&exact, bound, measured_limits)
+        .map_err(map_measured_scan_error)?;
+    let scan = scan_authenticated_triangle_pairs_blocking_only(
+        &exact,
+        &measured,
+        bound,
+        0.0_f64,
+        limits.blocking,
+    )
+    .map_err(map_authenticated_scan_error)?;
+
+    let first_proven_transversal_pair = scan
+        .pairs
+        .iter()
+        .find(|pair| pair.decision == BlockingOnlyDecision::ProvenPenetrating)
+        .map(|pair| (pair.first, pair.second));
+    Ok(ProvenTransversalScanSummary {
+        enumerated_pairs: scan.pairs.len(),
+        proven_transversal_pairs: scan.proven_penetrating_pairs(),
+        first_proven_transversal_pair,
+    })
+}
+
+fn project_proven_transversal_scan_limits(
+    requested: ProvenTransversalScanLimits,
+) -> Result<ProjectedProvenTransversalScanLimits, ProvenTransversalScanError> {
+    let hard_shared = ProvenTransversalScanLimits::default();
+    let capped_input_storage_bits = requested
+        .max_total_rational_input_storage_bits
+        .min(hard_shared.max_total_rational_input_storage_bits);
+    let capped_retained_clone_bits = requested
+        .max_total_rational_retained_clone_bits
+        .min(hard_shared.max_total_rational_retained_clone_bits);
+    let capped_allocation_bits = requested
+        .max_total_rational_allocation_bits
+        .min(hard_shared.max_total_rational_allocation_bits);
+    let capped_output_bits = requested
+        .max_total_rational_output_bits
+        .min(hard_shared.max_total_rational_output_bits);
+    let requested_payload_bits = capped_input_storage_bits
+        .min(capped_retained_clone_bits)
+        .min(capped_allocation_bits)
+        .min(capped_output_bits);
+    let shared = ProvenTransversalScanLimits {
+        max_faces: requested.max_faces.min(hard_shared.max_faces),
+        max_unordered_face_pairs: requested
+            .max_unordered_face_pairs
+            .min(hard_shared.max_unordered_face_pairs),
+        max_boundary_vertices_per_face: requested
+            .max_boundary_vertices_per_face
+            .min(hard_shared.max_boundary_vertices_per_face),
+        max_total_boundary_vertices: requested
+            .max_total_boundary_vertices
+            .min(hard_shared.max_total_boundary_vertices),
+        max_total_triangles: requested
+            .max_total_triangles
+            .min(hard_shared.max_total_triangles),
+        max_total_triangle_pairs: requested
+            .max_total_triangle_pairs
+            .min(hard_shared.max_total_triangle_pairs),
+        max_registry_authentication_work: requested
+            .max_registry_authentication_work
+            .min(hard_shared.max_registry_authentication_work),
+        max_total_boundary_relation_work: requested
+            .max_total_boundary_relation_work
+            .min(hard_shared.max_total_boundary_relation_work),
+        max_rational_input_bits: requested
+            .max_rational_input_bits
+            .min(hard_shared.max_rational_input_bits),
+        max_total_rational_input_storage_bits: capped_input_storage_bits
+            .min(requested_payload_bits),
+        max_total_rational_retained_clone_bits: capped_retained_clone_bits
+            .min(requested_payload_bits),
+        max_rational_operations: requested
+            .max_rational_operations
+            .min(hard_shared.max_rational_operations),
+        max_rational_intermediate_bits: requested
+            .max_rational_intermediate_bits
+            .min(hard_shared.max_rational_intermediate_bits),
+        max_rational_gcd_fallback_calls: requested
+            .max_rational_gcd_fallback_calls
+            .min(hard_shared.max_rational_gcd_fallback_calls),
+        max_rational_gcd_fallback_input_bits: requested
+            .max_rational_gcd_fallback_input_bits
+            .min(hard_shared.max_rational_gcd_fallback_input_bits),
+        max_rational_allocations: requested
+            .max_rational_allocations
+            .min(hard_shared.max_rational_allocations),
+        max_rational_allocation_bits: requested
+            .max_rational_allocation_bits
+            .min(hard_shared.max_rational_allocation_bits),
+        max_total_rational_allocation_bits: capped_allocation_bits.min(requested_payload_bits),
+        max_rational_output_bits: requested
+            .max_rational_output_bits
+            .min(hard_shared.max_rational_output_bits),
+        max_total_rational_output_bits: capped_output_bits.min(requested_payload_bits),
+    };
+    let hard_exact = ExactTreePoseLimits::default();
+    let hard_measured = MeasuredEnvelopeLimits::default();
+    let hard_blocking = AUTHENTICATED_TRIANGLE_BLOCKING_HARD_LIMITS;
+    let max_hinges = shared
+        .max_faces
+        .saturating_sub(1)
+        .min(hard_exact.max_hinges)
+        .min(hard_measured.max_hinges)
+        .min(hard_blocking.max_hinges);
+    let doubled_hinges = projected_product(max_hinges, 2)?;
+    let transform_scalars = projected_product(shared.max_faces, 12)?;
+    let point_components = projected_product(shared.max_total_boundary_vertices, 3)?;
+    let hinge_feature_points = projected_product(max_hinges, 3)?;
+    let hinge_path_checks = projected_product(hinge_feature_points, 3)?;
+    let hinge_component_checks = projected_product(hinge_path_checks, 3)?;
+    let boundary_point_transforms = projected_product(shared.max_total_boundary_vertices, 2)?;
+    let hinge_point_transforms = projected_product(hinge_feature_points, 5)?;
+    let exact_point_transforms = projected_sum(boundary_point_transforms, hinge_point_transforms)?;
+    let source_scalars = projected_product(shared.max_total_boundary_vertices, 3)?;
+    let input_scalars = projected_sum(
+        projected_sum(transform_scalars, source_scalars)?,
+        max_hinges,
+    )?;
+    let total_depth = projected_product(shared.max_faces, shared.max_faces.saturating_sub(1))? / 2;
+    let topology_vertex_checks = projected_product(shared.max_total_triangle_pairs, 9)?;
+    let predicate_calls = projected_product(shared.max_total_triangle_pairs, 2)?;
+    let exact = ExactTreePoseLimits {
+        max_faces: shared.max_faces.min(hard_exact.max_faces),
+        max_hinges,
+        max_adjacency_entries: doubled_hinges
+            .min(shared.max_registry_authentication_work)
+            .min(hard_exact.max_adjacency_entries),
+        max_boundary_occurrences: shared
+            .max_total_boundary_vertices
+            .min(hard_exact.max_boundary_occurrences),
+        max_boundary_edge_index_entries: shared
+            .max_total_boundary_vertices
+            .min(shared.max_registry_authentication_work)
+            .min(hard_exact.max_boundary_edge_index_entries),
+        max_boundary_edge_index_operations: shared
+            .max_registry_authentication_work
+            .min(hard_exact.max_boundary_edge_index_operations),
+        max_unique_vertices: shared
+            .max_total_boundary_vertices
+            .min(hard_exact.max_unique_vertices),
+        max_total_machin_terms: shared
+            .max_rational_operations
+            .min(hard_exact.max_total_machin_terms),
+        max_total_trig_terms: shared
+            .max_rational_operations
+            .min(hard_exact.max_total_trig_terms),
+        max_total_sqrt_refinements: shared
+            .max_rational_operations
+            .min(hard_exact.max_total_sqrt_refinements),
+        max_total_output_bits: shared
+            .max_total_rational_output_bits
+            .min(hard_exact.max_total_output_bits),
+        cayley: project_cayley_limits(hard_exact.cayley, &shared),
+    };
+    let measured = MeasuredEnvelopeLimits {
+        max_faces: shared.max_faces.min(hard_measured.max_faces),
+        max_hinges,
+        max_adjacency_entries: max_hinges
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_adjacency_entries),
+        max_depth: max_hinges.min(hard_measured.max_depth),
+        max_total_depth: total_depth
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_total_depth),
+        max_transform_scalars: transform_scalars
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_transform_scalars),
+        max_boundary_occurrences: shared
+            .max_total_boundary_vertices
+            .min(hard_measured.max_boundary_occurrences),
+        max_point_components: point_components
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_point_components),
+        max_unique_vertices: shared
+            .max_total_boundary_vertices
+            .min(hard_measured.max_unique_vertices),
+        max_shared_occurrence_checks: shared
+            .max_total_boundary_vertices
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_shared_occurrence_checks),
+        max_hinge_feature_points: hinge_feature_points
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_hinge_feature_points),
+        max_exact_hinge_path_checks: hinge_path_checks
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_exact_hinge_path_checks),
+        max_binary64_hinge_path_checks: hinge_path_checks
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_binary64_hinge_path_checks),
+        max_hinge_component_checks: hinge_component_checks
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_hinge_component_checks),
+        max_hinge_transform_checks: max_hinges
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_hinge_transform_checks),
+        max_certificate_reads: max_hinges
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_certificate_reads),
+        max_exact_point_transforms: exact_point_transforms
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_exact_point_transforms),
+        max_input_scalars: input_scalars
+            .min(shared.max_registry_authentication_work)
+            .min(hard_measured.max_input_scalars),
+        max_input_bits: shared
+            .max_rational_input_bits
+            .min(hard_measured.max_input_bits),
+        max_total_input_bits: shared
+            .max_total_rational_input_storage_bits
+            .min(shared.max_total_rational_retained_clone_bits)
+            .min(hard_measured.max_total_input_bits),
+        max_output_bits: shared
+            .max_rational_output_bits
+            .min(hard_measured.max_output_bits),
+        max_total_output_bits: shared
+            .max_total_rational_output_bits
+            .min(shared.max_total_rational_retained_clone_bits)
+            .min(hard_measured.max_total_output_bits),
+        exact: project_cayley_limits(hard_measured.exact, &shared),
+    };
+    let blocking = AuthenticatedTriangleBlockingLimits {
+        max_faces: shared.max_faces.min(hard_blocking.max_faces),
+        max_hinges,
+        max_boundary_occurrences: shared
+            .max_total_boundary_vertices
+            .min(hard_blocking.max_boundary_occurrences),
+        max_triangular_faces: shared
+            .max_total_triangles
+            .min(hard_blocking.max_triangular_faces),
+        max_unordered_face_pairs: shared
+            .max_unordered_face_pairs
+            .min(hard_blocking.max_unordered_face_pairs),
+        max_triangular_face_pairs: shared
+            .max_total_triangle_pairs
+            .min(hard_blocking.max_triangular_face_pairs),
+        max_topology_vertex_checks: topology_vertex_checks
+            .min(shared.max_total_boundary_relation_work)
+            .min(hard_blocking.max_topology_vertex_checks),
+        max_hinge_boundary_index_entries: shared
+            .max_total_boundary_vertices
+            .min(shared.max_registry_authentication_work)
+            .min(hard_blocking.max_hinge_boundary_index_entries),
+        max_hinge_face_lookups: doubled_hinges
+            .min(shared.max_registry_authentication_work)
+            .min(hard_blocking.max_hinge_face_lookups),
+        max_hinge_vertex_lookups: projected_product(max_hinges, 4)?
+            .min(shared.max_registry_authentication_work)
+            .min(hard_blocking.max_hinge_vertex_lookups),
+        max_predicate_calls: predicate_calls
+            .min(shared.max_rational_operations)
+            .min(hard_blocking.max_predicate_calls),
+        max_result_records: shared
+            .max_unordered_face_pairs
+            .min(hard_blocking.max_result_records),
+        max_total_machin_terms: shared
+            .max_rational_operations
+            .min(hard_blocking.max_total_machin_terms),
+        max_total_trig_terms: shared
+            .max_rational_operations
+            .min(hard_blocking.max_total_trig_terms),
+        max_total_sqrt_refinements: shared
+            .max_rational_operations
+            .min(hard_blocking.max_total_sqrt_refinements),
+        exact: project_cayley_resume_limits(hard_blocking.exact, &shared),
+    };
+    let max_boundary_vertices_per_face = shared.max_boundary_vertices_per_face;
+    Ok(ProjectedProvenTransversalScanLimits {
+        shared,
+        exact,
+        measured,
+        blocking,
+        max_boundary_vertices_per_face,
+    })
+}
+
+fn measured_limits_after_exact(
+    mut measured: MeasuredEnvelopeLimits,
+    shared: &ProvenTransversalScanLimits,
+    exact: &RationalCayleyTreePose<'_>,
+) -> Result<MeasuredEnvelopeLimits, ProvenTransversalScanError> {
+    let exact_work = &exact.work.exact;
+    measured.exact.max_interval_operations =
+        measured
+            .exact
+            .max_interval_operations
+            .min(checked_remaining(
+                shared.max_rational_operations,
+                exact_work.interval_operations,
+            )?);
+    measured.exact.max_gcd_fallback_calls =
+        measured.exact.max_gcd_fallback_calls.min(checked_remaining(
+            shared.max_rational_gcd_fallback_calls,
+            exact_work.gcd_fallback_calls,
+        )?);
+    measured.exact.max_gcd_fallback_input_bits =
+        measured
+            .exact
+            .max_gcd_fallback_input_bits
+            .min(checked_remaining(
+                shared.max_rational_gcd_fallback_input_bits,
+                exact_work.gcd_fallback_input_bits,
+            )?);
+    measured.exact.max_rational_allocations =
+        measured
+            .exact
+            .max_rational_allocations
+            .min(checked_remaining(
+                shared.max_rational_allocations,
+                exact_work.rational_allocations,
+            )?);
+    measured.exact.max_total_rational_allocation_bits = measured
+        .exact
+        .max_total_rational_allocation_bits
+        .min(checked_remaining(
+            shared.max_total_rational_allocation_bits,
+            exact_work.total_rational_allocation_bits,
+        )?);
+    let remaining_payload_bits = checked_remaining(
+        shared.max_total_rational_allocation_bits,
+        exact_work.total_rational_allocation_bits,
+    )?;
+    measured.max_total_input_bits = measured.max_total_input_bits.min(remaining_payload_bits);
+    measured.max_total_output_bits = measured
+        .max_total_output_bits
+        .min(remaining_payload_bits)
+        .min(checked_remaining(
+            shared.max_total_rational_output_bits,
+            exact.work.total_output_bits,
+        )?);
+    Ok(measured)
+}
+
+fn checked_remaining(
+    available: usize,
+    consumed: usize,
+) -> Result<usize, ProvenTransversalScanError> {
+    available
+        .checked_sub(consumed)
+        .ok_or(ProvenTransversalScanError::ResourceLimitExceeded)
+}
+
+fn project_cayley_limits(hard: CayleyLimits, shared: &ProvenTransversalScanLimits) -> CayleyLimits {
+    CayleyLimits {
+        max_precision_rounds: hard
+            .max_precision_rounds
+            .min(shared.max_rational_operations),
+        max_guard_bits: hard
+            .max_guard_bits
+            .min(shared.max_rational_intermediate_bits),
+        max_candidate_bits: hard
+            .max_candidate_bits
+            .min(shared.max_rational_intermediate_bits),
+        max_machin_terms_per_series: hard
+            .max_machin_terms_per_series
+            .min(shared.max_rational_operations),
+        max_trig_terms_per_series: hard
+            .max_trig_terms_per_series
+            .min(shared.max_rational_operations),
+        max_sqrt_refinements: hard
+            .max_sqrt_refinements
+            .min(shared.max_rational_operations),
+        max_interval_operations: hard
+            .max_interval_operations
+            .min(shared.max_rational_operations),
+        max_shift_bits: hard
+            .max_shift_bits
+            .min(shared.max_rational_intermediate_bits),
+        max_intermediate_bits: hard
+            .max_intermediate_bits
+            .min(shared.max_rational_intermediate_bits),
+        max_gcd_fallback_calls: hard
+            .max_gcd_fallback_calls
+            .min(shared.max_rational_gcd_fallback_calls),
+        max_gcd_fallback_input_bits: hard
+            .max_gcd_fallback_input_bits
+            .min(shared.max_rational_gcd_fallback_input_bits),
+        max_rational_allocations: hard
+            .max_rational_allocations
+            .min(shared.max_rational_allocations),
+        max_rational_allocation_bits: hard
+            .max_rational_allocation_bits
+            .min(shared.max_rational_allocation_bits),
+        max_total_rational_allocation_bits: hard
+            .max_total_rational_allocation_bits
+            .min(shared.max_total_rational_allocation_bits)
+            .min(shared.max_total_rational_retained_clone_bits),
+        max_output_bits: hard.max_output_bits.min(shared.max_rational_output_bits),
+    }
+}
+
+fn project_cayley_resume_limits(
+    hard: CayleyResumeLimits,
+    shared: &ProvenTransversalScanLimits,
+) -> CayleyResumeLimits {
+    CayleyResumeLimits {
+        max_machin_terms_per_series: hard
+            .max_machin_terms_per_series
+            .min(shared.max_rational_operations),
+        max_trig_terms_per_series: hard
+            .max_trig_terms_per_series
+            .min(shared.max_rational_operations),
+        max_sqrt_refinements: hard
+            .max_sqrt_refinements
+            .min(shared.max_rational_operations),
+        max_interval_operations: hard
+            .max_interval_operations
+            .min(shared.max_rational_operations),
+        max_shift_bits: hard
+            .max_shift_bits
+            .min(shared.max_rational_intermediate_bits),
+        max_intermediate_bits: hard
+            .max_intermediate_bits
+            .min(shared.max_rational_intermediate_bits),
+        max_gcd_fallback_calls: hard
+            .max_gcd_fallback_calls
+            .min(shared.max_rational_gcd_fallback_calls),
+        max_gcd_fallback_input_bits: hard
+            .max_gcd_fallback_input_bits
+            .min(shared.max_rational_gcd_fallback_input_bits),
+        max_rational_allocations: hard
+            .max_rational_allocations
+            .min(shared.max_rational_allocations),
+        max_rational_allocation_bits: hard
+            .max_rational_allocation_bits
+            .min(shared.max_rational_allocation_bits),
+        max_total_rational_allocation_bits: hard
+            .max_total_rational_allocation_bits
+            .min(shared.max_total_rational_allocation_bits)
+            .min(shared.max_total_rational_retained_clone_bits),
+        max_output_bits: hard.max_output_bits.min(shared.max_rational_output_bits),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preflight_proven_transversal_shape(
+    bound: BoundMaterialTreePose<'_>,
+    max_faces: usize,
+    max_hinges: usize,
+    max_unordered_face_pairs: usize,
+    max_boundary_vertices_per_face: usize,
+    max_total_boundary_vertices: usize,
+    max_triangular_faces: usize,
+    max_triangular_face_pairs: usize,
+    max_registry_authentication_work: usize,
+    max_total_boundary_relation_work: usize,
+) -> Result<(), ProvenTransversalScanError> {
+    let faces = bound.model().face_ids();
+    let face_count = faces.len();
+    let hinge_count = bound.model().hinges().len();
+    if faces.is_empty() || face_count > max_faces || hinge_count > max_hinges {
+        return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+    }
+    let unordered_face_pairs = projected_unordered_pair_count(face_count)?;
+    if unordered_face_pairs > max_unordered_face_pairs {
+        return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+    }
+    // Reserve all face/hinge/depth work before the first boundary registry
+    // read. Boundary-dependent work is then reserved monotonically below.
+    let registry_base_work = projected_registry_reservation(face_count, hinge_count, 0)?;
+    if registry_base_work > max_registry_authentication_work
+        || unordered_face_pairs > max_total_boundary_relation_work
+    {
+        return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+    }
+    let mut total_boundary_vertices = 0_usize;
+    let mut triangular_faces = 0_usize;
+    for face in faces {
+        let boundary = bound
+            .face_boundary(*face)
+            .filter(|boundary| bound.model().owns_face_boundary(*boundary))
+            .ok_or(ProvenTransversalScanError::InconsistentPose)?;
+        let boundary_vertices = boundary.vertices().len();
+        if boundary_vertices > max_boundary_vertices_per_face {
+            return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+        }
+        total_boundary_vertices = projected_sum(total_boundary_vertices, boundary_vertices)?;
+        if total_boundary_vertices > max_total_boundary_vertices {
+            return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+        }
+        let registry_work =
+            projected_registry_reservation(face_count, hinge_count, total_boundary_vertices)?;
+        if registry_work > max_registry_authentication_work {
+            return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+        }
+        if boundary_vertices == 3 {
+            triangular_faces = projected_sum(triangular_faces, 1)?;
+            let triangular_face_pairs = projected_unordered_pair_count(triangular_faces)?;
+            let boundary_relation_work = projected_boundary_relation_reservation(
+                unordered_face_pairs,
+                triangular_face_pairs,
+            )?;
+            if boundary_relation_work > max_total_boundary_relation_work {
+                return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+            }
+        }
+    }
+    if triangular_faces > max_triangular_faces
+        || projected_unordered_pair_count(triangular_faces)? > max_triangular_face_pairs
+    {
+        return Err(ProvenTransversalScanError::ResourceLimitExceeded);
+    }
+    Ok(())
+}
+
+fn projected_registry_reservation(
+    face_count: usize,
+    hinge_count: usize,
+    boundary_occurrences: usize,
+) -> Result<usize, ProvenTransversalScanError> {
+    let maximum_total_depth = projected_product(face_count, face_count.saturating_sub(1))? / 2;
+    projected_sum(
+        projected_sum(
+            projected_product(face_count, 24)?,
+            projected_product(boundary_occurrences, 16)?,
+        )?,
+        projected_sum(projected_product(hinge_count, 76)?, maximum_total_depth)?,
+    )
+}
+
+fn projected_boundary_relation_reservation(
+    unordered_face_pairs: usize,
+    triangular_face_pairs: usize,
+) -> Result<usize, ProvenTransversalScanError> {
+    projected_sum(
+        projected_product(triangular_face_pairs, 11)?,
+        unordered_face_pairs,
+    )
+}
+
+fn projected_unordered_pair_count(count: usize) -> Result<usize, ProvenTransversalScanError> {
+    Ok(projected_product(count, count.saturating_sub(1))? / 2)
+}
+
+fn projected_product(first: usize, second: usize) -> Result<usize, ProvenTransversalScanError> {
+    first
+        .checked_mul(second)
+        .ok_or(ProvenTransversalScanError::ResourceLimitExceeded)
+}
+
+fn projected_sum(first: usize, second: usize) -> Result<usize, ProvenTransversalScanError> {
+    first
+        .checked_add(second)
+        .ok_or(ProvenTransversalScanError::ResourceLimitExceeded)
+}
+
+fn map_cayley_scan_error(error: CayleyError) -> ProvenTransversalScanError {
+    match error {
+        CayleyError::ResourceLimitExceeded { .. } => {
+            ProvenTransversalScanError::ResourceLimitExceeded
+        }
+        CayleyError::CertificateUnavailable { .. } => {
+            ProvenTransversalScanError::EvidenceUnavailable
+        }
+        CayleyError::NonFiniteInput { .. }
+        | CayleyError::AngleOutOfRange { .. }
+        | CayleyError::InvalidRotationSign { .. }
+        | CayleyError::DegenerateAxis { .. }
+        | CayleyError::InvariantFailure { .. }
+        | CayleyError::BoundTreeInconsistent { .. } => ProvenTransversalScanError::InconsistentPose,
+    }
+}
+
+fn map_measured_scan_error(error: MeasuredEnvelopeError) -> ProvenTransversalScanError {
+    match error {
+        MeasuredEnvelopeError::ResourceLimitExceeded { .. } => {
+            ProvenTransversalScanError::ResourceLimitExceeded
+        }
+        MeasuredEnvelopeError::AuthorityMismatch | MeasuredEnvelopeError::InconsistentPose => {
+            ProvenTransversalScanError::InconsistentPose
+        }
+    }
+}
+
+fn map_authenticated_scan_error(
+    error: AuthenticatedTriangleBlockingError,
+) -> ProvenTransversalScanError {
+    match error {
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded { .. } => {
+            ProvenTransversalScanError::ResourceLimitExceeded
+        }
+        AuthenticatedTriangleBlockingError::Exact(error) => map_cayley_scan_error(error),
+        AuthenticatedTriangleBlockingError::UnsupportedPaperThickness
+        | AuthenticatedTriangleBlockingError::AuthorityMismatch
+        | AuthenticatedTriangleBlockingError::InconsistentPose => {
+            ProvenTransversalScanError::InconsistentPose
+        }
     }
 }
 
@@ -2538,6 +3247,400 @@ mod tests {
             midpoint_reversed, midpoint_baseline,
             "source collection order must preserve every canonical pair decision"
         );
+    }
+
+    #[test]
+    fn bound_pose_facade_returns_only_an_owned_canonical_summary() {
+        let fixture = midpoint_mountain_400mm_fixture();
+        let root = fixture.model.face_ids()[1];
+        let pose = solve_fixture(&fixture, root, &[135.0, 135.0]);
+        let bound = fixture
+            .model
+            .bind_pose(&pose)
+            .expect("issuer-bound facade pose");
+
+        let summary = scan_bound_pose_for_proven_transversal_penetration(
+            bound,
+            ProvenTransversalScanLimits::default(),
+        )
+        .expect("sealed zero-thickness transversal scan");
+        assert_eq!(
+            summary,
+            ProvenTransversalScanSummary {
+                enumerated_pairs: 3,
+                proven_transversal_pairs: 1,
+                first_proven_transversal_pair: summary.first_proven_transversal_pair,
+            }
+        );
+        let (first, second) = summary
+            .first_proven_transversal_pair
+            .expect("fixture has one proven transversal pair");
+        assert!(first.canonical_bytes() < second.canonical_bytes());
+    }
+
+    #[test]
+    fn bound_pose_facade_collapses_internal_errors_to_three_atomic_classes() {
+        assert_eq!(
+            map_cayley_scan_error(CayleyError::CertificateUnavailable {
+                stage: CayleyStage::Candidate,
+            }),
+            ProvenTransversalScanError::EvidenceUnavailable
+        );
+        assert_eq!(
+            map_cayley_scan_error(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "faces",
+            }),
+            ProvenTransversalScanError::ResourceLimitExceeded
+        );
+        assert_eq!(
+            map_cayley_scan_error(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            }),
+            ProvenTransversalScanError::InconsistentPose
+        );
+        assert_eq!(
+            map_measured_scan_error(MeasuredEnvelopeError::ResourceLimitExceeded {
+                resource: "point_components",
+            }),
+            ProvenTransversalScanError::ResourceLimitExceeded
+        );
+        assert_eq!(
+            map_measured_scan_error(MeasuredEnvelopeError::AuthorityMismatch),
+            ProvenTransversalScanError::InconsistentPose
+        );
+        assert_eq!(
+            map_authenticated_scan_error(AuthenticatedTriangleBlockingError::Exact(
+                CayleyError::CertificateUnavailable {
+                    stage: CayleyStage::Containment,
+                },
+            )),
+            ProvenTransversalScanError::EvidenceUnavailable
+        );
+        assert_eq!(
+            map_authenticated_scan_error(
+                AuthenticatedTriangleBlockingError::UnsupportedPaperThickness,
+            ),
+            ProvenTransversalScanError::InconsistentPose
+        );
+    }
+
+    #[test]
+    fn facade_hard_defaults_cannot_be_expanded_by_oversized_caller_caps() {
+        let hard = ProvenTransversalScanLimits::default();
+        let expected =
+            project_proven_transversal_scan_limits(hard).expect("hard default projection");
+
+        macro_rules! assert_clamped {
+            ($field:ident) => {{
+                let mut oversized = hard;
+                oversized.$field = usize::MAX;
+                assert_eq!(
+                    project_proven_transversal_scan_limits(oversized)
+                        .expect("oversized cap must clamp"),
+                    expected,
+                    "{} expanded a private hard ceiling",
+                    stringify!($field)
+                );
+            }};
+        }
+
+        assert_clamped!(max_faces);
+        assert_clamped!(max_unordered_face_pairs);
+        assert_clamped!(max_boundary_vertices_per_face);
+        assert_clamped!(max_total_boundary_vertices);
+        assert_clamped!(max_total_triangles);
+        assert_clamped!(max_total_triangle_pairs);
+        assert_clamped!(max_registry_authentication_work);
+        assert_clamped!(max_total_boundary_relation_work);
+        assert_clamped!(max_rational_input_bits);
+        assert_clamped!(max_total_rational_input_storage_bits);
+        assert_clamped!(max_total_rational_retained_clone_bits);
+        assert_clamped!(max_rational_operations);
+        assert_clamped!(max_rational_intermediate_bits);
+        assert_clamped!(max_rational_gcd_fallback_calls);
+        assert_clamped!(max_rational_gcd_fallback_input_bits);
+        assert_clamped!(max_rational_allocations);
+        assert_clamped!(max_rational_allocation_bits);
+        assert_clamped!(max_total_rational_allocation_bits);
+        assert_clamped!(max_rational_output_bits);
+        assert_clamped!(max_total_rational_output_bits);
+    }
+
+    #[test]
+    fn facade_rational_budget_is_sequential_and_every_one_short_is_atomic() {
+        let fixture = midpoint_mountain_400mm_fixture();
+        let root = fixture.model.face_ids()[1];
+        let pose = solve_fixture(&fixture, root, &[135.0, 135.0]);
+        let bound = fixture
+            .model
+            .bind_pose(&pose)
+            .expect("issuer-bound sequential-budget pose");
+        let hard = ProvenTransversalScanLimits::default();
+        let projected = project_proven_transversal_scan_limits(hard).expect("hard projection");
+        let exact =
+            prepare_rational_cayley_tree_pose_v1(bound, projected.exact).expect("exact prefix");
+        let measured_limits =
+            measured_limits_after_exact(projected.measured, &projected.shared, &exact)
+                .expect("measured remaining budget");
+        assert_eq!(
+            measured_limits.exact.max_rational_allocations,
+            projected
+                .measured
+                .exact
+                .max_rational_allocations
+                .min(hard.max_rational_allocations - exact.work.exact.rational_allocations)
+        );
+        let measured = measure_binary64_affine_envelope(&exact, bound, measured_limits)
+            .expect("measured prefix");
+        let scan = scan_authenticated_triangle_pairs_blocking_only(
+            &exact,
+            &measured,
+            bound,
+            0.0,
+            projected.blocking,
+        )
+        .expect("complete baseline scan");
+        let exact_allocations = exact.work.exact.rational_allocations;
+        let measured_allocations = measured.work.exact.rational_allocations;
+        let prefix_allocations = exact_allocations
+            .checked_add(measured_allocations)
+            .expect("small fixture allocation sum");
+        let total_allocations = scan.work.exact.rational_allocations;
+        assert!(exact_allocations > 0);
+        assert!(measured_allocations > 0);
+        assert!(total_allocations > prefix_allocations);
+
+        let mut zero = hard;
+        zero.max_rational_allocations = 0;
+        assert_eq!(
+            scan_bound_pose_for_proven_transversal_penetration(bound, zero),
+            Err(ProvenTransversalScanError::ResourceLimitExceeded)
+        );
+
+        let mut measured_one_short = hard;
+        measured_one_short.max_rational_allocations = prefix_allocations - 1;
+        assert_eq!(
+            scan_bound_pose_for_proven_transversal_penetration(bound, measured_one_short),
+            Err(ProvenTransversalScanError::ResourceLimitExceeded)
+        );
+
+        let mut blocking_one_short = hard;
+        blocking_one_short.max_rational_allocations = total_allocations - 1;
+        assert_eq!(
+            scan_bound_pose_for_proven_transversal_penetration(bound, blocking_one_short),
+            Err(ProvenTransversalScanError::ResourceLimitExceeded)
+        );
+
+        let mut underflow = projected.shared;
+        underflow.max_rational_allocations = exact_allocations - 1;
+        assert_eq!(
+            measured_limits_after_exact(projected.measured, &underflow, &exact),
+            Err(ProvenTransversalScanError::ResourceLimitExceeded)
+        );
+    }
+
+    fn observed_three_stage_registry_work(
+        exact: &RationalCayleyTreePose<'_>,
+        measured: &MeasuredBinary64AffineEnvelope<'_, '_>,
+        scan: &AuthenticatedTriangleBlockingScan<'_, '_, '_>,
+    ) -> usize {
+        [
+            exact.work.adjacency_entries,
+            exact.work.boundary_occurrences,
+            exact.work.boundary_edge_index_entries,
+            exact.work.boundary_edge_index_operations,
+            exact.work.unique_vertices,
+            measured.work.adjacency_entries,
+            measured.work.total_depth,
+            measured.work.transform_scalars,
+            measured.work.boundary_occurrences,
+            measured.work.point_components,
+            measured.work.unique_vertices,
+            measured.work.shared_occurrence_checks,
+            measured.work.hinge_feature_points,
+            measured.work.exact_hinge_path_checks,
+            measured.work.binary64_hinge_path_checks,
+            measured.work.hinge_component_checks,
+            measured.work.hinge_transform_checks,
+            measured.work.certificate_reads,
+            measured.work.exact_point_transforms,
+            measured.work.input_scalars,
+            scan.work.boundary_occurrences,
+            scan.work.hinge_boundary_index_entries,
+            scan.work.hinge_relation_records,
+            scan.work.hinge_face_lookups,
+            scan.work.hinge_vertex_lookups,
+        ]
+        .into_iter()
+        .try_fold(0_usize, usize::checked_add)
+        .expect("small fixture registry work")
+    }
+
+    fn observed_three_stage_boundary_relation_work(
+        scan: &AuthenticatedTriangleBlockingScan<'_, '_, '_>,
+    ) -> usize {
+        [
+            scan.work.topology_vertex_checks,
+            scan.work.exact_predicate_calls,
+            scan.work.observed_predicate_calls,
+            scan.work.result_records,
+        ]
+        .into_iter()
+        .try_fold(0_usize, usize::checked_add)
+        .expect("small fixture boundary relation work")
+    }
+
+    fn preflight_with_projected_limits(
+        bound: BoundMaterialTreePose<'_>,
+        limits: &ProjectedProvenTransversalScanLimits,
+    ) -> Result<(), ProvenTransversalScanError> {
+        preflight_proven_transversal_shape(
+            bound,
+            limits.exact.max_faces,
+            limits.blocking.max_hinges,
+            limits.blocking.max_unordered_face_pairs,
+            limits.max_boundary_vertices_per_face,
+            limits.exact.max_boundary_occurrences,
+            limits.blocking.max_triangular_faces,
+            limits.blocking.max_triangular_face_pairs,
+            limits.shared.max_registry_authentication_work,
+            limits.shared.max_total_boundary_relation_work,
+        )
+    }
+
+    #[test]
+    fn structural_reservation_bounds_every_three_stage_counter_and_one_short_is_preflight_atomic() {
+        let cases = [
+            (
+                corner_mountain_valley_400mm_fixture(0.0),
+                vec![135.0, 135.0],
+            ),
+            (midpoint_mountain_400mm_fixture(), vec![179.0, 179.0]),
+            (triangle_and_quadrilateral_fixture(), vec![37.0]),
+        ];
+        for (fixture, angles) in cases {
+            let root = fixture.model.face_ids()[0];
+            let pose = solve_fixture(&fixture, root, &angles);
+            let bound = fixture
+                .model
+                .bind_pose(&pose)
+                .expect("issuer-bound structural fixture");
+            let hard = ProvenTransversalScanLimits::default();
+            let projected = project_proven_transversal_scan_limits(hard).expect("hard projection");
+            let exact = prepare_rational_cayley_tree_pose_v1(bound, projected.exact)
+                .expect("structural exact prefix");
+            let measured_limits =
+                measured_limits_after_exact(projected.measured, &projected.shared, &exact)
+                    .expect("structural measured remaining");
+            let measured = measure_binary64_affine_envelope(&exact, bound, measured_limits)
+                .expect("structural measured prefix");
+            let scan = scan_authenticated_triangle_pairs_blocking_only(
+                &exact,
+                &measured,
+                bound,
+                0.0,
+                projected.blocking,
+            )
+            .expect("structural blocking scan");
+
+            let registry_reservation = projected_registry_reservation(
+                exact.work.faces,
+                exact.work.hinges,
+                exact.work.boundary_occurrences,
+            )
+            .expect("registry reservation");
+            let relation_reservation = projected_boundary_relation_reservation(
+                scan.work.unordered_face_pairs,
+                scan.work.expected_triangular_face_pairs,
+            )
+            .expect("boundary relation reservation");
+            assert!(
+                observed_three_stage_registry_work(&exact, &measured, &scan)
+                    <= registry_reservation
+            );
+            assert!(observed_three_stage_boundary_relation_work(&scan) <= relation_reservation);
+
+            let exact_caps = ProvenTransversalScanLimits {
+                max_registry_authentication_work: registry_reservation,
+                max_total_boundary_relation_work: relation_reservation,
+                ..hard
+            };
+            let exact_projection =
+                project_proven_transversal_scan_limits(exact_caps).expect("exact structural caps");
+            assert_eq!(
+                preflight_with_projected_limits(bound, &exact_projection),
+                Ok(())
+            );
+            assert!(scan_bound_pose_for_proven_transversal_penetration(bound, exact_caps).is_ok());
+
+            let registry_one_short = ProvenTransversalScanLimits {
+                max_registry_authentication_work: registry_reservation - 1,
+                ..exact_caps
+            };
+            let registry_one_short_projection =
+                project_proven_transversal_scan_limits(registry_one_short)
+                    .expect("registry one-short projection");
+            assert_eq!(
+                preflight_with_projected_limits(bound, &registry_one_short_projection),
+                Err(ProvenTransversalScanError::ResourceLimitExceeded)
+            );
+            assert_eq!(
+                scan_bound_pose_for_proven_transversal_penetration(bound, registry_one_short),
+                Err(ProvenTransversalScanError::ResourceLimitExceeded)
+            );
+
+            let relation_one_short = ProvenTransversalScanLimits {
+                max_total_boundary_relation_work: relation_reservation - 1,
+                ..exact_caps
+            };
+            let relation_one_short_projection =
+                project_proven_transversal_scan_limits(relation_one_short)
+                    .expect("relation one-short projection");
+            assert_eq!(
+                preflight_with_projected_limits(bound, &relation_one_short_projection),
+                Err(ProvenTransversalScanError::ResourceLimitExceeded)
+            );
+            assert_eq!(
+                scan_bound_pose_for_proven_transversal_penetration(bound, relation_one_short),
+                Err(ProvenTransversalScanError::ResourceLimitExceeded)
+            );
+        }
+    }
+
+    #[test]
+    fn facade_structural_aggregate_caps_fail_before_returning_a_partial_summary() {
+        let fixture = midpoint_mountain_400mm_fixture();
+        let root = fixture.model.face_ids()[1];
+        let pose = solve_fixture(&fixture, root, &[135.0, 135.0]);
+        let bound = fixture
+            .model
+            .bind_pose(&pose)
+            .expect("issuer-bound structural-budget pose");
+
+        for limited in [
+            ProvenTransversalScanLimits {
+                max_registry_authentication_work: 0,
+                ..ProvenTransversalScanLimits::default()
+            },
+            ProvenTransversalScanLimits {
+                max_total_boundary_relation_work: 0,
+                ..ProvenTransversalScanLimits::default()
+            },
+            ProvenTransversalScanLimits {
+                max_unordered_face_pairs: 2,
+                ..ProvenTransversalScanLimits::default()
+            },
+            ProvenTransversalScanLimits {
+                max_total_boundary_vertices: 8,
+                ..ProvenTransversalScanLimits::default()
+            },
+        ] {
+            assert_eq!(
+                scan_bound_pose_for_proven_transversal_penetration(bound, limited),
+                Err(ProvenTransversalScanError::ResourceLimitExceeded)
+            );
+        }
     }
 
     #[test]

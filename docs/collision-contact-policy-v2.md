@@ -60,3 +60,22 @@ penetrating > indeterminate > touching > separated
 ```
 
 `indeterminate`は安全ではなくblockingであり、UIでは「交差の可能性・判定保留」として貫通と同等に目立たせる。
+
+## 5. 現在のnative実姿勢接続
+
+2026-07-19時点で、三角形material faceとbit-exactな紙厚`+0.0`に限定した
+blocking専用の横断証明を、公開静的衝突入口へ接続している。肯定には、同じ
+issuer/poseへ束縛したcanonical exact Cayley姿勢と、保存binary64 affine係数を
+actual mmの有理数へ直接liftした姿勢の双方で、両面relative interiorの横断を
+厳密に証明する必要がある。共有頂点・共有辺上だけの点接触または線接触、
+共面接触、非三角形、正厚、証拠不足、資源上限は、この横断肯定へ入らない。
+
+公開入口は旧zero-thickness解析の全pairとtriangle-pairを先に照合し、その結果の
+`Penetrating`表示を新しい肯定証拠へ流用しない。新旧二段およびCayley内部三段の
+累積workは一つの呼出側上限へ合算し、one-shortでは部分的な肯定結果を返さない。
+証明済み横断はblocking errorにだけ変換し、collision-free proofの発行条件を
+広げない。
+
+これは4×11表の一部の実geometry issuerであり、表そのものを置き換えない。
+正厚の`boundary_area_contact`証拠、有限共有ヒンジcorridor、共面正面積の正式な
+実姿勢issuer、連続経路certificateおよび場所別層順transportは後続段階である。

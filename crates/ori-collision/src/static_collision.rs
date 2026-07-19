@@ -7,9 +7,13 @@ use thiserror::Error;
 
 use crate::{
     TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
+    cayley::{
+        ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
+        scan_bound_pose_for_proven_transversal_penetration,
+    },
     zero_thickness::{
-        AuthenticatedZeroThicknessPose, ZeroThicknessAnalysisError, ZeroThicknessGeometryLimits,
-        prepare_authenticated_zero_thickness_pose,
+        AuthenticatedZeroThicknessPose, ZeroThicknessAnalysisError, ZeroThicknessAnalysisWork,
+        ZeroThicknessGeometryLimits, prepare_authenticated_zero_thickness_pose,
     },
 };
 
@@ -122,6 +126,13 @@ pub enum StaticCollisionError {
     )]
     PairEvidenceUnavailable {
         expected_unordered_face_pairs: usize,
+    },
+    #[error(
+        "static collision proved {proven_transversal_pairs} transversal penetrating face pairs among {expected_unordered_face_pairs} unordered face pairs"
+    )]
+    ProvenTransversalPenetration {
+        expected_unordered_face_pairs: usize,
+        proven_transversal_pairs: usize,
     },
 }
 
@@ -255,7 +266,7 @@ pub fn prove_static_collision_geometry(
     paper_thickness_mm: f64,
     limits: StaticCollisionLimits,
 ) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
-    model
+    let bound = model
         .bind_pose(pose)
         .map_err(|_| StaticCollisionError::PoseIssuerMismatch)?;
     if !paper_thickness_mm.is_finite() || paper_thickness_mm < 0.0 {
@@ -375,6 +386,108 @@ pub fn prove_static_collision_geometry(
     if scan.blocking_unordered_face_pairs > scan.enumerated_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
+    let transversal_limits = (paper_thickness_mm.to_bits() == 0.0_f64.to_bits())
+        .then(|| remaining_proven_transversal_scan_limits(limits, analysis.work()))
+        .transpose()?;
+    // The legacy diagnostic owns its complete exact face geometry. Release it
+    // after all count checks and before the Cayley bridge builds a second
+    // authenticated exact representation, so the two full snapshots never
+    // contribute to peak retained memory at the same time.
+    drop(analysis);
+    if let Some(transversal_limits) = transversal_limits {
+        let transversal =
+            scan_bound_pose_for_proven_transversal_penetration(bound, transversal_limits).map_err(
+                |error| map_proven_transversal_scan_error(error, expected_unordered_face_pairs),
+            )?;
+        return finish_proven_transversal_scan(transversal, expected_unordered_face_pairs);
+    }
+    Err(StaticCollisionError::PairEvidenceUnavailable {
+        expected_unordered_face_pairs,
+    })
+}
+
+fn remaining_proven_transversal_scan_limits(
+    limits: StaticCollisionLimits,
+    spent: ZeroThicknessAnalysisWork,
+) -> Result<ProvenTransversalScanLimits, StaticCollisionError> {
+    let remaining = |limit: usize, used: usize| {
+        limit
+            .checked_sub(used)
+            .ok_or(StaticCollisionError::ResourceLimitExceeded)
+    };
+    Ok(ProvenTransversalScanLimits {
+        max_faces: limits.max_faces,
+        max_unordered_face_pairs: limits.max_unordered_face_pairs,
+        max_boundary_vertices_per_face: limits.max_boundary_vertices_per_face,
+        max_total_boundary_vertices: limits.max_total_boundary_vertices,
+        max_total_triangles: remaining(limits.max_total_triangles, spent.total_triangles)?,
+        max_total_triangle_pairs: remaining(
+            limits.max_total_triangle_pairs,
+            spent.total_triangle_pairs,
+        )?,
+        max_registry_authentication_work: remaining(
+            limits.max_registry_authentication_work,
+            spent.registry_authentication_work,
+        )?,
+        max_total_boundary_relation_work: remaining(
+            limits.max_total_boundary_relation_work,
+            spent.total_boundary_relation_work,
+        )?,
+        max_rational_input_bits: limits.max_rational_input_bits,
+        max_total_rational_input_storage_bits: remaining(
+            limits.max_total_rational_input_storage_bits,
+            spent.total_rational_input_storage_bits,
+        )?,
+        max_total_rational_retained_clone_bits: remaining(
+            limits.max_total_rational_retained_clone_bits,
+            spent.total_rational_retained_clone_bits,
+        )?,
+        max_rational_operations: remaining(
+            limits.max_rational_operations,
+            spent.rational_operations,
+        )?,
+        max_rational_intermediate_bits: limits.max_rational_intermediate_bits,
+        max_rational_gcd_fallback_calls: remaining(
+            limits.max_rational_gcd_fallback_calls,
+            spent.rational_gcd_fallback_calls,
+        )?,
+        max_rational_gcd_fallback_input_bits: remaining(
+            limits.max_rational_gcd_fallback_input_bits,
+            spent.rational_gcd_fallback_input_bits,
+        )?,
+        max_rational_allocations: remaining(
+            limits.max_rational_allocations,
+            spent.rational_allocations,
+        )?,
+        max_rational_allocation_bits: limits.max_rational_allocation_bits,
+        max_total_rational_allocation_bits: remaining(
+            limits.max_total_rational_allocation_bits,
+            spent.total_rational_allocation_bits,
+        )?,
+        max_rational_output_bits: limits.max_rational_output_bits,
+        max_total_rational_output_bits: remaining(
+            limits.max_total_rational_output_bits,
+            spent.total_rational_output_bits,
+        )?,
+    })
+}
+
+fn finish_proven_transversal_scan(
+    scan: ProvenTransversalScanSummary,
+    expected_unordered_face_pairs: usize,
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    if scan.enumerated_pairs != expected_unordered_face_pairs
+        || scan.proven_transversal_pairs > scan.enumerated_pairs
+        || (scan.proven_transversal_pairs == 0) != scan.first_proven_transversal_pair.is_none()
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    if scan.proven_transversal_pairs > 0 {
+        return Err(StaticCollisionError::ProvenTransversalPenetration {
+            expected_unordered_face_pairs,
+            proven_transversal_pairs: scan.proven_transversal_pairs,
+        });
+    }
     Err(StaticCollisionError::PairEvidenceUnavailable {
         expected_unordered_face_pairs,
     })
@@ -481,6 +594,25 @@ fn map_zero_thickness_error(
     }
 }
 
+fn map_proven_transversal_scan_error(
+    error: ProvenTransversalScanError,
+    expected_unordered_face_pairs: usize,
+) -> StaticCollisionError {
+    match error {
+        ProvenTransversalScanError::EvidenceUnavailable => {
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            }
+        }
+        ProvenTransversalScanError::ResourceLimitExceeded => {
+            StaticCollisionError::ResourceLimitExceeded
+        }
+        ProvenTransversalScanError::InconsistentPose => {
+            StaticCollisionError::InconsistentMaterialPose
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct UnorderedFacePairs {
     face_count: usize,
@@ -539,8 +671,11 @@ fn checked_unordered_pair_count(face_count: usize) -> Result<usize, StaticCollis
 #[cfg(test)]
 mod tests {
     use super::{
-        StaticCollisionError, StaticCollisionLimits, UnorderedFacePairs, ZeroThicknessPairRecord,
-        checked_unordered_pair_count, scan_zero_thickness_pair_records,
+        ProvenTransversalScanError, ProvenTransversalScanSummary, StaticCollisionError,
+        StaticCollisionLimits, UnorderedFacePairs, ZeroThicknessAnalysisWork,
+        ZeroThicknessPairRecord, checked_unordered_pair_count, finish_proven_transversal_scan,
+        map_proven_transversal_scan_error, remaining_proven_transversal_scan_limits,
+        scan_zero_thickness_pair_records,
     };
 
     #[test]
@@ -671,5 +806,145 @@ mod tests {
             Err(StaticCollisionError::ResourceLimitExceeded)
         );
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn transversal_summary_and_error_mapping_fail_closed() {
+        assert_eq!(
+            finish_proven_transversal_scan(
+                ProvenTransversalScanSummary {
+                    enumerated_pairs: 3,
+                    proven_transversal_pairs: 0,
+                    first_proven_transversal_pair: None,
+                },
+                3,
+            )
+            .expect_err("zero affirmative pairs retain unavailable evidence"),
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs: 3,
+            }
+        );
+        for summary in [
+            ProvenTransversalScanSummary {
+                enumerated_pairs: 2,
+                proven_transversal_pairs: 0,
+                first_proven_transversal_pair: None,
+            },
+            ProvenTransversalScanSummary {
+                enumerated_pairs: 3,
+                proven_transversal_pairs: 4,
+                first_proven_transversal_pair: None,
+            },
+            ProvenTransversalScanSummary {
+                enumerated_pairs: 3,
+                proven_transversal_pairs: 1,
+                first_proven_transversal_pair: None,
+            },
+        ] {
+            assert_eq!(
+                finish_proven_transversal_scan(summary, 3)
+                    .expect_err("inconsistent affirmative summary"),
+                StaticCollisionError::InconsistentMaterialPose
+            );
+        }
+        assert_eq!(
+            map_proven_transversal_scan_error(ProvenTransversalScanError::EvidenceUnavailable, 3),
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs: 3,
+            }
+        );
+        assert_eq!(
+            map_proven_transversal_scan_error(ProvenTransversalScanError::ResourceLimitExceeded, 3,),
+            StaticCollisionError::ResourceLimitExceeded
+        );
+        assert_eq!(
+            map_proven_transversal_scan_error(ProvenTransversalScanError::InconsistentPose, 3),
+            StaticCollisionError::InconsistentMaterialPose
+        );
+    }
+
+    #[test]
+    fn transversal_budget_subtracts_legacy_additive_work_and_preserves_shape_caps() {
+        let limits = StaticCollisionLimits::default();
+        let spent = ZeroThicknessAnalysisWork {
+            total_triangles: 11,
+            registry_authentication_work: 12,
+            total_triangle_pairs: 13,
+            total_boundary_relation_work: 14,
+            total_rational_input_storage_bits: 21,
+            total_rational_retained_clone_bits: 22,
+            rational_operations: 15,
+            rational_gcd_fallback_calls: 16,
+            rational_gcd_fallback_input_bits: 17,
+            rational_allocations: 18,
+            total_rational_allocation_bits: 19,
+            total_rational_output_bits: 20,
+        };
+        let remaining = remaining_proven_transversal_scan_limits(limits, spent)
+            .expect("legacy work fits the public budget");
+        assert_eq!(
+            remaining.max_total_triangles,
+            limits.max_total_triangles - spent.total_triangles
+        );
+        assert_eq!(
+            remaining.max_registry_authentication_work,
+            limits.max_registry_authentication_work - spent.registry_authentication_work
+        );
+        assert_eq!(
+            remaining.max_total_triangle_pairs,
+            limits.max_total_triangle_pairs - spent.total_triangle_pairs
+        );
+        assert_eq!(
+            remaining.max_total_boundary_relation_work,
+            limits.max_total_boundary_relation_work - spent.total_boundary_relation_work
+        );
+        assert_eq!(
+            remaining.max_rational_operations,
+            limits.max_rational_operations - spent.rational_operations
+        );
+        assert_eq!(
+            remaining.max_rational_gcd_fallback_calls,
+            limits.max_rational_gcd_fallback_calls - spent.rational_gcd_fallback_calls
+        );
+        assert_eq!(
+            remaining.max_rational_gcd_fallback_input_bits,
+            limits.max_rational_gcd_fallback_input_bits - spent.rational_gcd_fallback_input_bits
+        );
+        assert_eq!(
+            remaining.max_rational_allocations,
+            limits.max_rational_allocations - spent.rational_allocations
+        );
+        assert_eq!(
+            remaining.max_total_rational_allocation_bits,
+            limits.max_total_rational_allocation_bits - spent.total_rational_allocation_bits
+        );
+        assert_eq!(
+            remaining.max_total_rational_output_bits,
+            limits.max_total_rational_output_bits - spent.total_rational_output_bits
+        );
+        assert_eq!(
+            remaining.max_total_boundary_vertices,
+            limits.max_total_boundary_vertices
+        );
+        assert_eq!(
+            remaining.max_total_rational_input_storage_bits,
+            limits.max_total_rational_input_storage_bits - spent.total_rational_input_storage_bits
+        );
+        assert_eq!(
+            remaining.max_total_rational_retained_clone_bits,
+            limits.max_total_rational_retained_clone_bits
+                - spent.total_rational_retained_clone_bits
+        );
+
+        assert_eq!(
+            remaining_proven_transversal_scan_limits(
+                limits,
+                ZeroThicknessAnalysisWork {
+                    rational_allocations: limits.max_rational_allocations + 1,
+                    ..spent
+                },
+            ),
+            Err(StaticCollisionError::ResourceLimitExceeded)
+        );
     }
 }

@@ -1009,6 +1009,11 @@ const fn resource(resource: &'static str) -> MeasuredEnvelopeError {
 
 mod blocking;
 
+pub(crate) use blocking::{
+    ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
+    scan_bound_pose_for_proven_transversal_penetration,
+};
+
 #[cfg(test)]
 mod tests {
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};

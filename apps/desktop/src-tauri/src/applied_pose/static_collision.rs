@@ -249,13 +249,16 @@ fn prepare_static_collision(
     }
     let pose_claims = &capability.claims;
     let paper_thickness_mm = f64::from_bits(pose_claims.paper_thickness_bits);
+    // Every native geometry error remains blocking here. In particular, a
+    // proven transversal penetration exits before Prepared B or certificate C
+    // can be constructed.
     let geometry_proof = prove_static_collision_geometry(
         pose_claims.model.as_ref(),
         pose_claims.pose.as_ref(),
         paper_thickness_mm,
         limits,
     )
-    .map_err(CurrentStaticCollisionError::GeometryBlocking)?;
+    .map_err(map_static_collision_error)?;
     let claims = CurrentStaticCollisionClaims {
         project_instance_id: pose_claims.project_instance_id,
         project_id: pose_claims.project_id,
@@ -278,6 +281,10 @@ fn prepare_static_collision(
         return Err(CurrentStaticCollisionError::InternalInconsistency);
     }
     Ok(prepared)
+}
+
+fn map_static_collision_error(error: StaticCollisionError) -> CurrentStaticCollisionError {
+    CurrentStaticCollisionError::GeometryBlocking(error)
 }
 
 fn mint_current_static_collision(
@@ -780,6 +787,42 @@ mod tests {
         assert!(matches!(
             mint_current_static_collision(&state, zero_sign_mismatch),
             Err(CurrentStaticCollisionError::InternalInconsistency)
+        ));
+    }
+
+    #[test]
+    fn proven_transversal_penetration_remains_blocking_before_certificate_mint() {
+        let geometry_error = StaticCollisionError::ProvenTransversalPenetration {
+            expected_unordered_face_pairs: 3,
+            proven_transversal_pairs: 1,
+        };
+        let mapped = map_static_collision_error(geometry_error.clone());
+
+        assert_eq!(
+            mapped,
+            CurrentStaticCollisionError::GeometryBlocking(geometry_error.clone())
+        );
+        assert_eq!(
+            std::error::Error::source(&mapped)
+                .and_then(|source| source.downcast_ref::<StaticCollisionError>()),
+            Some(&geometry_error)
+        );
+
+        let mut mint_reached = false;
+        let certification: Result<Option<CurrentStaticCollisionCertificate>, _> =
+            Err::<NativeStaticCollisionGeometryProof, _>(mapped).map(|_| {
+                mint_reached = true;
+                None
+            });
+        assert!(!mint_reached, "blocking geometry must stop before C mint");
+        assert!(matches!(
+            certification,
+            Err(CurrentStaticCollisionError::GeometryBlocking(
+                StaticCollisionError::ProvenTransversalPenetration {
+                    expected_unordered_face_pairs: 3,
+                    proven_transversal_pairs: 1,
+                },
+            ))
         ));
     }
 

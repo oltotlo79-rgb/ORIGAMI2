@@ -39,6 +39,7 @@ use super::{
 };
 
 mod ef_boundary;
+mod exact_prism;
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;

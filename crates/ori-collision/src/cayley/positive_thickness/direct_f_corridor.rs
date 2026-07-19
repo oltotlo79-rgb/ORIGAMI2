@@ -287,6 +287,18 @@ struct DirectFCorridorGeometry {
     right_normal: ExactVector3,
 }
 
+/// Borrowed literal-`F` closed-corridor boundary for the private composition
+/// gate. This view is not independently constructible authority.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DirectFFiniteHingeCorridorBoundaryV1<'a> {
+    pub(super) axis_start: &'a ExactPoint3,
+    pub(super) axis: &'a ExactVector3,
+    pub(super) length_squared: &'a BigRational,
+    pub(super) half_thickness: &'a BigRational,
+    pub(super) cosine_half_squared: &'a BigRational,
+    pub(super) radial_limit_product: &'a BigRational,
+}
+
 #[derive(Debug)]
 pub(super) struct DirectFFiniteHingeCorridorCapabilityV1<
     'prerequisite,
@@ -334,6 +346,21 @@ impl DirectFFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_, '_> {
         self.sealed_work.as_ref()
     }
 
+    pub(super) fn corridor_boundary(&self) -> DirectFFiniteHingeCorridorBoundaryV1<'_> {
+        DirectFFiniteHingeCorridorBoundaryV1 {
+            axis_start: &self.geometry.axis_start,
+            axis: &self.geometry.axis,
+            length_squared: &self.geometry.length_squared,
+            half_thickness: &self.geometry.half_thickness,
+            cosine_half_squared: &self.geometry.cosine_half_squared,
+            radial_limit_product: &self.geometry.radial_limit_product,
+        }
+    }
+
+    pub(super) fn hinge_parent_transform_bits(&self) -> BoundBinary64FaceTransformBits {
+        self.hinge_parent_transform
+    }
+
     #[cfg(test)]
     pub(super) fn axis_start(&self) -> &ExactPoint3 {
         &self.geometry.axis_start
@@ -342,6 +369,24 @@ impl DirectFFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_, '_> {
     #[cfg(test)]
     pub(super) fn axis(&self) -> &ExactVector3 {
         &self.geometry.axis
+    }
+
+    #[cfg(test)]
+    pub(super) fn adjust_corridor_boundary_component_for_test(
+        &mut self,
+        component_index: usize,
+        delta: i64,
+    ) {
+        let delta = BigRational::from_integer(delta.into());
+        match component_index {
+            0..=2 => self.geometry.axis_start.coordinates[component_index] += &delta,
+            3..=5 => self.geometry.axis.coordinates[component_index - 3] += &delta,
+            6 => self.geometry.length_squared += &delta,
+            7 => self.geometry.half_thickness += &delta,
+            8 => self.geometry.cosine_half_squared += &delta,
+            9 => self.geometry.radial_limit_product += &delta,
+            _ => panic!("test boundary component index must be below ten"),
+        }
     }
 }
 

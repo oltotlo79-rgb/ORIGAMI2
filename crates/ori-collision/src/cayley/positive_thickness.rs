@@ -51,6 +51,7 @@ mod direct_f_corridor;
 mod ef_boundary;
 mod exact_e_corridor;
 mod exact_prism;
+mod shared_hinge_corridor_admission;
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
@@ -1401,6 +1402,11 @@ mod tests {
         revalidate_exact_e_finite_hinge_corridor_v1,
     };
     use super::exact_prism::ExactPrismLimits;
+    use super::shared_hinge_corridor_admission::{
+        SharedHingeCorridorAdmissionErrorV1, SharedHingeCorridorAdmissionLimitsV1,
+        SharedHingeCorridorAdmissionResultV1, SharedHingeCorridorAdmissionWorkV1,
+        analyze_shared_hinge_corridor_admission_v1, revalidate_shared_hinge_corridor_admission_v1,
+    };
     use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6570,6 +6576,924 @@ mod tests {
             analyze_axis_aligned_ef_boundary_v1(prerequisite, &exact, bound, 0.1, oversized)
                 .unwrap();
         assert!(projected.capability.is_some());
+        assert_eq!(projected.work, baseline.work);
+    }
+
+    #[test]
+    fn shared_hinge_admission_400mm_matrix_requires_one_identical_corridor() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let models = [
+            (
+                "mountain/source",
+                two_triangle_model_with_options(EdgeKind::Mountain, false, square, 701),
+            ),
+            (
+                "mountain/reordered",
+                two_triangle_model_with_options(EdgeKind::Mountain, true, square, 702),
+            ),
+            (
+                "valley/source",
+                two_triangle_model_with_options(EdgeKind::Valley, false, square, 703),
+            ),
+            (
+                "valley/reordered",
+                two_triangle_model_with_options(EdgeKind::Valley, true, square, 704),
+            ),
+        ];
+        let mut cases = 0_usize;
+        let mut admitted_by_angle = [0_usize; 5];
+        let mut boundary_mismatch_by_angle = [0_usize; 5];
+        let mut unresolved_by_angle = [0_usize; 5];
+        for (fixture, model) in &models {
+            for root in model.face_ids() {
+                for thickness in [0.1, 1.0, 3.0] {
+                    for (angle_index, angle) in
+                        [0.0, 10.0, 90.0, 135.0, 179.0].into_iter().enumerate()
+                    {
+                        cases += 1;
+                        let pose = triangular_pose_with_root(model, angle, *root);
+                        let bound = model.bind_pose(&pose).unwrap();
+                        let exact = triangular_exact_pose(model, &pose);
+                        let prerequisite_analysis =
+                            authenticated_ef_prerequisite(&exact, thickness);
+                        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+                            &prerequisite_analysis.result
+                        else {
+                            panic!(
+                                "{fixture}, root {root:?}, {thickness} mm at {angle}: prerequisite"
+                            );
+                        };
+                        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                            prerequisite,
+                            &exact,
+                            bound,
+                            thickness,
+                            AxisAlignedEfBoundaryLimits::default(),
+                        )
+                        .unwrap();
+                        let ef = ef_capability(&ef_analysis);
+                        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact,
+                            bound,
+                            thickness,
+                            ExactEFiniteHingeCorridorLimits::default(),
+                        )
+                        .unwrap();
+                        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact_e_analysis,
+                            &exact,
+                            bound,
+                            thickness,
+                            DirectFFiniteHingeCorridorLimits::default(),
+                        )
+                        .unwrap();
+                        let analysis = analyze_shared_hinge_corridor_admission_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact_e_analysis,
+                            &direct_f_analysis,
+                            &exact,
+                            bound,
+                            thickness,
+                            SharedHingeCorridorAdmissionLimitsV1::default(),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("{fixture}, root {root:?}, {thickness} mm at {angle}: {error:?}")
+                        });
+                        match &analysis.result {
+                            SharedHingeCorridorAdmissionResultV1::Admitted(capability) => {
+                                admitted_by_angle[angle_index] += 1;
+                                assert_eq!(
+                                    angle, 0.0,
+                                    "only bit-identical E/F corridor boundaries are admitted"
+                                );
+                                assert_eq!(analysis.work.boundary_scalar_comparisons, 10);
+                                let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+                                let direct_f = direct_f_corridor_capability(&direct_f_analysis);
+                                let rebound = revalidate_shared_hinge_corridor_admission_v1(
+                                    capability,
+                                    prerequisite,
+                                    ef,
+                                    exact_e,
+                                    direct_f,
+                                    &exact,
+                                    bound,
+                                    thickness,
+                                )
+                                .expect("the same complete authority stack must revalidate");
+                                assert!(std::ptr::eq(rebound.capability, capability.as_ref()));
+                            }
+                            SharedHingeCorridorAdmissionResultV1::BoundaryMismatch(mismatch) => {
+                                boundary_mismatch_by_angle[angle_index] += 1;
+                                assert!(
+                                    matches!(angle, 10.0 | 135.0 | 179.0),
+                                    "{fixture}, root {root:?}, {thickness} mm at {angle}: {mismatch:?}"
+                                );
+                                assert!(mismatch.mismatch_count > 0);
+                                assert_eq!(analysis.work.boundary_scalar_comparisons, 10);
+                            }
+                            SharedHingeCorridorAdmissionResultV1::Unresolved => {
+                                unresolved_by_angle[angle_index] += 1;
+                                assert_eq!(
+                                    angle, 90.0,
+                                    "literal F is strictly outside its baseline corridor only at 90 degrees"
+                                );
+                                assert_eq!(
+                                    analysis.work,
+                                    SharedHingeCorridorAdmissionWorkV1::default(),
+                                    "an unavailable input capability must not begin admission work"
+                                );
+                            }
+                            SharedHingeCorridorAdmissionResultV1::LayerOffsetUnmodeled => {
+                                panic!(
+                                    "{fixture}, root {root:?}, {thickness} mm at {angle}: unexpected layer offset"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 120);
+        assert_eq!(admitted_by_angle, [24, 0, 0, 0, 0]);
+        assert_eq!(boundary_mismatch_by_angle, [0, 24, 0, 24, 24]);
+        assert_eq!(unresolved_by_angle, [0, 0, 24, 0, 0]);
+    }
+
+    #[test]
+    fn shared_hinge_admission_propagates_all_24_flat_fold_layer_offsets() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let models = [
+            two_triangle_model_with_options(EdgeKind::Mountain, false, square, 705),
+            two_triangle_model_with_options(EdgeKind::Mountain, true, square, 706),
+            two_triangle_model_with_options(EdgeKind::Valley, false, square, 707),
+            two_triangle_model_with_options(EdgeKind::Valley, true, square, 708),
+        ];
+        let mut cases = 0_usize;
+        for model in &models {
+            for root in model.face_ids() {
+                let pose = triangular_pose_with_root(model, 180.0, *root);
+                let bound = model.bind_pose(&pose).unwrap();
+                let exact = triangular_exact_pose(model, &pose);
+                for thickness in [0.1, 1.0, 3.0] {
+                    cases += 1;
+                    let prerequisite_analysis = authenticated_ef_prerequisite(&exact, thickness);
+                    let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                        &prerequisite_analysis,
+                        None,
+                        &exact,
+                        bound,
+                        thickness,
+                        ExactEFiniteHingeCorridorLimits::default(),
+                    )
+                    .unwrap();
+                    let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                        &prerequisite_analysis,
+                        None,
+                        &exact_e_analysis,
+                        &exact,
+                        bound,
+                        thickness,
+                        DirectFFiniteHingeCorridorLimits::default(),
+                    )
+                    .unwrap();
+                    let analysis = analyze_shared_hinge_corridor_admission_v1(
+                        &prerequisite_analysis,
+                        None,
+                        &exact_e_analysis,
+                        &direct_f_analysis,
+                        &exact,
+                        bound,
+                        thickness,
+                        SharedHingeCorridorAdmissionLimitsV1::default(),
+                    )
+                    .unwrap();
+                    assert!(matches!(
+                        analysis.result,
+                        SharedHingeCorridorAdmissionResultV1::LayerOffsetUnmodeled
+                    ));
+                    assert_eq!(analysis.work, SharedHingeCorridorAdmissionWorkV1::default());
+                }
+            }
+        }
+        assert_eq!(cases, 24);
+    }
+
+    #[test]
+    fn shared_hinge_admission_rejects_each_changed_corridor_boundary_scalar() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 0.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let mut direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+
+        for component_index in 0..10 {
+            let DirectFFiniteHingeCorridorResult::Contained(capability) =
+                &mut direct_f_analysis.result
+            else {
+                panic!("direct-F corridor");
+            };
+            capability.adjust_corridor_boundary_component_for_test(component_index, 1);
+            let rejected = analyze_shared_hinge_corridor_admission_v1(
+                &prerequisite_analysis,
+                Some(ef),
+                &exact_e_analysis,
+                &direct_f_analysis,
+                &exact,
+                bound,
+                0.1,
+                SharedHingeCorridorAdmissionLimitsV1::default(),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    rejected.result,
+                    SharedHingeCorridorAdmissionResultV1::BoundaryMismatch(_)
+                ),
+                "boundary component {component_index}"
+            );
+            drop(rejected);
+            let DirectFFiniteHingeCorridorResult::Contained(capability) =
+                &mut direct_f_analysis.result
+            else {
+                panic!("direct-F corridor");
+            };
+            capability.adjust_corridor_boundary_component_for_test(component_index, -1);
+        }
+        assert!(
+            analyze_shared_hinge_corridor_admission_v1(
+                &prerequisite_analysis,
+                Some(ef),
+                &exact_e_analysis,
+                &direct_f_analysis,
+                &exact,
+                bound,
+                0.1,
+                SharedHingeCorridorAdmissionLimitsV1::default(),
+            )
+            .unwrap()
+            .authenticated_admission_capability_and_work()
+            .is_some(),
+            "all boundary mutations must be restored"
+        );
+    }
+
+    #[test]
+    fn shared_hinge_admission_revalidation_rejects_every_authority_swap_and_f_bit() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 0.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let independent_exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let duplicate_prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let SingleTriangularHingePrerequisiteResult::Authenticated(duplicate_prerequisite) =
+            &duplicate_prerequisite_analysis.result
+        else {
+            panic!("duplicate prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let duplicate_ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let duplicate_ef = ef_capability(&duplicate_ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let duplicate_exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+        let duplicate_exact_e = exact_e_corridor_capability(&duplicate_exact_e_analysis);
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let duplicate_direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f = direct_f_corridor_capability(&direct_f_analysis);
+        let duplicate_direct_f = direct_f_corridor_capability(&duplicate_direct_f_analysis);
+        let mut admission = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let duplicate_admission = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let capability = admission
+            .authenticated_admission_capability_and_work()
+            .expect("admission capability")
+            .0;
+        let duplicate_capability = duplicate_admission
+            .authenticated_admission_capability_and_work()
+            .expect("independently issued admission capability")
+            .0;
+        assert!(
+            !std::ptr::eq(capability, duplicate_capability),
+            "independent issuance must never alias the original token"
+        );
+        assert!(
+            revalidate_shared_hinge_corridor_admission_v1(
+                capability,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+        for (name, rejected) in [
+            (
+                "independently issued phase-1 token",
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    duplicate_prerequisite,
+                    ef,
+                    exact_e,
+                    direct_f,
+                    &exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+            (
+                "independently issued E/F token",
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    prerequisite,
+                    duplicate_ef,
+                    exact_e,
+                    direct_f,
+                    &exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+            (
+                "independently issued exact-E corridor token",
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    duplicate_exact_e,
+                    direct_f,
+                    &exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+            (
+                "independently issued direct-F corridor token",
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    duplicate_direct_f,
+                    &exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+            (
+                "independently regenerated exact pose",
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    direct_f,
+                    &independent_exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+        ] {
+            assert!(rejected.is_none(), "{name}");
+        }
+
+        let aba_pose = triangular_pose(&model, 0.0);
+        let aba_bound = model.bind_pose(&aba_pose).unwrap();
+        let rerooted_pose = triangular_pose_with_root(&model, 0.0, model.face_ids()[1]);
+        let rerooted_bound = model.bind_pose(&rerooted_pose).unwrap();
+        let one_ulp_pose = triangular_pose(&model, f64::from_bits(1));
+        let one_ulp_bound = model.bind_pose(&one_ulp_pose).unwrap();
+        for (name, mismatched_bound) in [
+            ("same-angle ABA", aba_bound),
+            ("different fixed root", rerooted_bound),
+            ("one-ULP angle", one_ulp_bound),
+        ] {
+            assert!(
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    direct_f,
+                    &exact,
+                    mismatched_bound,
+                    0.1,
+                )
+                .is_none(),
+                "{name}"
+            );
+        }
+        assert!(
+            revalidate_shared_hinge_corridor_admission_v1(
+                capability,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                &exact,
+                bound,
+                next_up(0.1),
+            )
+            .is_none(),
+            "paper thickness is bit-bound"
+        );
+        let foreign = two_triangle_model_with_options(
+            EdgeKind::Mountain,
+            false,
+            [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)],
+            709,
+        );
+        let foreign_pose = triangular_pose(&foreign, 0.0);
+        let foreign_bound = foreign.bind_pose(&foreign_pose).unwrap();
+        assert!(
+            revalidate_shared_hinge_corridor_admission_v1(
+                capability,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                &exact,
+                foreign_bound,
+                0.1,
+            )
+            .is_none(),
+            "foreign model and pose issuer"
+        );
+
+        // Release the immutable capability borrow before modifying only the
+        // admission token's sealed copies. The upstream direct-F token stays
+        // untouched throughout this exhaustive bit-binding check.
+        let _ = capability;
+        let mut changed_coefficients = 0_usize;
+        for face in 0..2 {
+            for row in 0..3 {
+                for column in 0..3 {
+                    let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                        &mut admission.result
+                    else {
+                        panic!("admission capability");
+                    };
+                    capability.binary64_face_transforms[face].rotation[row][column] ^= 1;
+                    let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                        &admission.result
+                    else {
+                        panic!("admission capability");
+                    };
+                    assert!(
+                        revalidate_shared_hinge_corridor_admission_v1(
+                            capability,
+                            prerequisite,
+                            ef,
+                            exact_e,
+                            direct_f,
+                            &exact,
+                            bound,
+                            0.1,
+                        )
+                        .is_none(),
+                        "face {face} rotation[{row}][{column}]"
+                    );
+                    let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                        &mut admission.result
+                    else {
+                        panic!("admission capability");
+                    };
+                    capability.binary64_face_transforms[face].rotation[row][column] ^= 1;
+                    changed_coefficients += 1;
+                }
+            }
+            for axis in 0..3 {
+                let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                    &mut admission.result
+                else {
+                    panic!("admission capability");
+                };
+                capability.binary64_face_transforms[face].translation[axis] ^= 1;
+                let SharedHingeCorridorAdmissionResultV1::Admitted(capability) = &admission.result
+                else {
+                    panic!("admission capability");
+                };
+                assert!(
+                    revalidate_shared_hinge_corridor_admission_v1(
+                        capability,
+                        prerequisite,
+                        ef,
+                        exact_e,
+                        direct_f,
+                        &exact,
+                        bound,
+                        0.1,
+                    )
+                    .is_none(),
+                    "face {face} translation[{axis}]"
+                );
+                let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                    &mut admission.result
+                else {
+                    panic!("admission capability");
+                };
+                capability.binary64_face_transforms[face].translation[axis] ^= 1;
+                changed_coefficients += 1;
+            }
+        }
+        for row in 0..3 {
+            for column in 0..3 {
+                let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                    &mut admission.result
+                else {
+                    panic!("admission capability");
+                };
+                capability.hinge_parent_transform.rotation[row][column] ^= 1;
+                let SharedHingeCorridorAdmissionResultV1::Admitted(capability) = &admission.result
+                else {
+                    panic!("admission capability");
+                };
+                assert!(
+                    revalidate_shared_hinge_corridor_admission_v1(
+                        capability,
+                        prerequisite,
+                        ef,
+                        exact_e,
+                        direct_f,
+                        &exact,
+                        bound,
+                        0.1,
+                    )
+                    .is_none(),
+                    "hinge-parent rotation[{row}][{column}]"
+                );
+                let SharedHingeCorridorAdmissionResultV1::Admitted(capability) =
+                    &mut admission.result
+                else {
+                    panic!("admission capability");
+                };
+                capability.hinge_parent_transform.rotation[row][column] ^= 1;
+                changed_coefficients += 1;
+            }
+        }
+        for axis in 0..3 {
+            let SharedHingeCorridorAdmissionResultV1::Admitted(capability) = &mut admission.result
+            else {
+                panic!("admission capability");
+            };
+            capability.hinge_parent_transform.translation[axis] ^= 1;
+            let SharedHingeCorridorAdmissionResultV1::Admitted(capability) = &admission.result
+            else {
+                panic!("admission capability");
+            };
+            assert!(
+                revalidate_shared_hinge_corridor_admission_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    direct_f,
+                    &exact,
+                    bound,
+                    0.1,
+                )
+                .is_none(),
+                "hinge-parent translation[{axis}]"
+            );
+            let SharedHingeCorridorAdmissionResultV1::Admitted(capability) = &mut admission.result
+            else {
+                panic!("admission capability");
+            };
+            capability.hinge_parent_transform.translation[axis] ^= 1;
+            changed_coefficients += 1;
+        }
+        assert_eq!(changed_coefficients, 36);
+        let SharedHingeCorridorAdmissionResultV1::Admitted(capability) = &admission.result else {
+            panic!("admission capability");
+        };
+        assert!(
+            revalidate_shared_hinge_corridor_admission_v1(
+                capability,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some(),
+            "all transform-bit mutations must be restored"
+        );
+        let original = admission.work.boundary_scalar_comparisons;
+        admission.work.boundary_scalar_comparisons = original + 1;
+        assert!(
+            admission
+                .authenticated_admission_capability_and_work()
+                .is_none(),
+            "analysis work must equal the capability's sealed work"
+        );
+        admission.work.boundary_scalar_comparisons = original;
+        assert!(
+            admission
+                .authenticated_admission_capability_and_work()
+                .is_some()
+        );
+    }
+
+    fn shared_hinge_admission_limits_from_work(
+        work: &SharedHingeCorridorAdmissionWorkV1,
+    ) -> SharedHingeCorridorAdmissionLimitsV1 {
+        SharedHingeCorridorAdmissionLimitsV1 {
+            max_authenticated_faces: work.authenticated_faces,
+            max_authenticated_hinges: work.authenticated_hinges,
+            max_corridor_capability_revalidations: work.corridor_capability_revalidations,
+            max_sealed_prior_work_bindings: work.sealed_prior_work_bindings,
+            max_root_bindings: work.root_bindings,
+            max_angle_bindings: work.angle_bindings,
+            max_face_identity_bindings: work.face_identity_bindings,
+            max_hinge_identity_bindings: work.hinge_identity_bindings,
+            max_interaction_kind_bindings: work.interaction_kind_bindings,
+            max_face_transform_bit_bindings: work.face_transform_bit_bindings,
+            max_hinge_parent_transform_bit_bindings: work.hinge_parent_transform_bit_bindings,
+            max_boundary_scalar_comparisons: work.boundary_scalar_comparisons,
+            exact: cayley_limits_from_observed_work(&work.exact),
+        }
+    }
+
+    #[test]
+    fn shared_hinge_admission_all_structural_and_exact_limits_are_exact_and_one_short() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 0.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let baseline = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(
+            baseline
+                .authenticated_admission_capability_and_work()
+                .is_some()
+        );
+        let exact_limits = shared_hinge_admission_limits_from_work(&baseline.work);
+        let exact_analysis = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            exact_limits,
+        )
+        .unwrap();
+        assert!(
+            exact_analysis
+                .authenticated_admission_capability_and_work()
+                .is_some()
+        );
+        assert_eq!(exact_analysis.work, baseline.work);
+
+        let assert_one_short = |resource: &str, limits: SharedHingeCorridorAdmissionLimitsV1| {
+            assert!(
+                matches!(
+                    analyze_shared_hinge_corridor_admission_v1(
+                        &prerequisite_analysis,
+                        Some(ef),
+                        &exact_e_analysis,
+                        &direct_f_analysis,
+                        &exact,
+                        bound,
+                        0.1,
+                        limits,
+                    ),
+                    Err(SharedHingeCorridorAdmissionErrorV1::ResourceLimitExceeded)
+                ),
+                "{resource}"
+            );
+        };
+        macro_rules! structural_one_short {
+            ($field:ident) => {
+                if exact_limits.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.$field -= 1;
+                    assert_one_short(stringify!($field), limits);
+                }
+            };
+        }
+        structural_one_short!(max_authenticated_faces);
+        structural_one_short!(max_authenticated_hinges);
+        structural_one_short!(max_corridor_capability_revalidations);
+        structural_one_short!(max_sealed_prior_work_bindings);
+        structural_one_short!(max_root_bindings);
+        structural_one_short!(max_angle_bindings);
+        structural_one_short!(max_face_identity_bindings);
+        structural_one_short!(max_hinge_identity_bindings);
+        structural_one_short!(max_interaction_kind_bindings);
+        structural_one_short!(max_face_transform_bit_bindings);
+        structural_one_short!(max_hinge_parent_transform_bit_bindings);
+        structural_one_short!(max_boundary_scalar_comparisons);
+
+        macro_rules! exact_one_short {
+            ($field:ident) => {
+                if exact_limits.exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.exact.$field -= 1;
+                    assert_one_short(concat!("exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        exact_one_short!(max_interval_operations);
+        exact_one_short!(max_shift_bits);
+        exact_one_short!(max_intermediate_bits);
+        exact_one_short!(max_gcd_fallback_calls);
+        exact_one_short!(max_gcd_fallback_input_bits);
+        exact_one_short!(max_rational_allocations);
+        exact_one_short!(max_rational_allocation_bits);
+        exact_one_short!(max_total_rational_allocation_bits);
+
+        let oversized = SharedHingeCorridorAdmissionLimitsV1 {
+            max_authenticated_faces: usize::MAX,
+            max_authenticated_hinges: usize::MAX,
+            max_corridor_capability_revalidations: usize::MAX,
+            max_sealed_prior_work_bindings: usize::MAX,
+            max_root_bindings: usize::MAX,
+            max_angle_bindings: usize::MAX,
+            max_face_identity_bindings: usize::MAX,
+            max_hinge_identity_bindings: usize::MAX,
+            max_interaction_kind_bindings: usize::MAX,
+            max_face_transform_bit_bindings: usize::MAX,
+            max_hinge_parent_transform_bit_bindings: usize::MAX,
+            max_boundary_scalar_comparisons: usize::MAX,
+            exact: oversized_cayley_limits(),
+        };
+        let projected = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            oversized,
+        )
+        .unwrap();
+        assert!(
+            projected
+                .authenticated_admission_capability_and_work()
+                .is_some()
+        );
         assert_eq!(projected.work, baseline.work);
     }
 }

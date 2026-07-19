@@ -217,6 +217,22 @@ struct ExactEFiniteHingeCorridorGeometry {
     right_normal: ExactVector3,
 }
 
+/// Borrowed closed-corridor boundary used only by the later private
+/// shared-hinge composition gate.
+///
+/// Keeping this as a view prevents a caller from rebuilding authority from
+/// equal scalar values. The issuing capability and exact pose remain the
+/// provenance-bearing owners.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ExactEFiniteHingeCorridorBoundaryV1<'a> {
+    pub(super) axis_start: &'a ExactPoint3,
+    pub(super) axis: &'a ExactVector3,
+    pub(super) length_squared: &'a BigRational,
+    pub(super) half_thickness: &'a BigRational,
+    pub(super) cosine_half_squared: &'a BigRational,
+    pub(super) radial_limit_product: &'a BigRational,
+}
+
 /// Borrow-bound, non-persistent proof for exact E only.
 ///
 /// It deliberately implements neither `Clone`, `Copy`, nor serialization.
@@ -254,6 +270,18 @@ impl ExactEFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_> {
 
     pub(super) fn sealed_work(&self) -> Option<&ExactEFiniteHingeCorridorWork> {
         self.sealed_work.as_ref()
+    }
+
+    pub(super) fn corridor_boundary(&self) -> Option<ExactEFiniteHingeCorridorBoundaryV1<'_>> {
+        let hinge = self.exact.hinges.get(self.hinge_index)?;
+        Some(ExactEFiniteHingeCorridorBoundaryV1 {
+            axis_start: &hinge.world_endpoints[0],
+            axis: &self.geometry.axis,
+            length_squared: &self.geometry.length_squared,
+            half_thickness: &self.geometry.half_thickness,
+            cosine_half_squared: &self.geometry.cosine_half_squared,
+            radial_limit_product: &self.geometry.radial_limit_product,
+        })
     }
 }
 

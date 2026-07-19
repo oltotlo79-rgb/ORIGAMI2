@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 mod constraints;
+mod layers;
 
 pub use constraints::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,
@@ -11,6 +12,13 @@ pub use constraints::{
     GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
     GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
     GeometricConstraintRecordV1, validate_geometric_constraint_document_v1,
+};
+pub use layers::{
+    DEFAULT_PROJECT_LAYER_ID, DEFAULT_PROJECT_LAYER_NAME, EdgeLayerAssignmentV1,
+    LayerContentKindV1, LayerRecordV1, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_LAYER_NAME_CHARS,
+    MAX_PROJECT_LAYER_INDEX_EDGES, MAX_PROJECT_LAYERS, PROJECT_LAYER_SCHEMA_VERSION_V1,
+    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1,
+    validate_project_layer_document_against_pattern_v1, validate_project_layer_document_v1,
 };
 
 macro_rules! entity_id {
@@ -49,6 +57,7 @@ entity_id!(EdgeId);
 entity_id!(FaceId);
 entity_id!(AssetId);
 entity_id!(InstructionStepId);
+entity_id!(LayerId);
 
 impl FaceId {
     /// Derives a stable face ID from a project namespace and canonical name.

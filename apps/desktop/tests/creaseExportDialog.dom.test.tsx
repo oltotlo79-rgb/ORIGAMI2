@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -11,6 +12,7 @@ import type {
   CreasePatternExportFormat,
   CreasePatternExportPreview,
 } from '../src/lib/creaseExport'
+import { localeStore } from '../src/lib/i18n.ts'
 
 const PREVIEW: CreasePatternExportPreview = {
   export_id: '018f47d1-5ca0-75b1-a53a-c579f39f9661',
@@ -38,6 +40,7 @@ const PREVIEW: CreasePatternExportPreview = {
 
 afterEach(() => {
   cleanup()
+  localeStore.dispose()
   document.body.replaceChildren()
 })
 
@@ -72,6 +75,39 @@ describe('CreaseExportDialog DOM interactions', () => {
     expect(screen.queryByRole('checkbox')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '保存先を選んで書き出す…' }))
     expect(onSave).toHaveBeenCalledWith(true)
+  })
+
+  it('translates the complete static export review and numeric labels live', () => {
+    localeStore.initialize()
+    localeStore.setLocale('en')
+    renderDialog({ preview: { ...PREVIEW, warnings: [] } })
+
+    expect(screen.getByRole('dialog', {
+      name: 'Review format and information loss',
+    })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Export format' })).toBeTruthy()
+    expect(screen.getByText(
+      'JSON for exchanging data with other origami software',
+      { exact: false },
+    )).toBeTruthy()
+    expect(screen.getByText('8 vertices · 12 edges')).toBeTruthy()
+    expect(screen.getByText('1 line')).toBeTruthy()
+    expect(screen.getByText(
+      'FOLD 1.2 · 2D creasePattern · coordinates in mm',
+    )).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Choose destination and export…',
+    })).toBeTruthy()
+
+    act(() => {
+      localeStore.setLocale('ja')
+    })
+
+    expect(screen.getByRole('dialog', {
+      name: '形式と情報損失を確認',
+    })).toBeTruthy()
+    expect(screen.getByText('8頂点・12辺')).toBeTruthy()
+    expect(screen.getByText('1本')).toBeTruthy()
   })
 
   it('changes to every supported format, rejects unknown values, and keeps native data out of the UI', () => {

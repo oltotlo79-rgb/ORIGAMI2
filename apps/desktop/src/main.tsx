@@ -3,8 +3,10 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
+import { initializeLocaleStore, localeStore } from './lib/i18n'
 import { initializeTheme, themeStore } from './lib/theme'
 
+initializeLocaleStore()
 initializeTheme()
 
 const reportUnhandledError = () => {
@@ -21,6 +23,7 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     window.removeEventListener('error', reportUnhandledError)
     window.removeEventListener('unhandledrejection', reportUnhandledRejection)
+    localeStore.dispose()
     themeStore.dispose()
   })
 }

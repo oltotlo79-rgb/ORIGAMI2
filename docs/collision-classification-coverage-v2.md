@@ -18,6 +18,14 @@ native unit testとfrontend testは、4共有関係と11証拠の直積を正規
 
 結論: **純粋な4×11表は完成している。幾何証拠生成は未完成である。**
 
+ここでいうfrontend完成は純粋decision表と正規corpusの一致に限る。現行の
+`foldPreviewNarrowCollision` production dispatcherと、そのprivateな共有頂点・
+共有ヒンジcertificateは、凍結済み`topology_contact_policy_v1`へ束縛されたままで
+ある。v1 certificateのversion文字列や呼出関数だけをv2へ差し替えてはならない。
+正厚の正面積・正体積0を肯定証明する`boundary_area_contact`生成器、v2専用issuer、
+別厚さ・別姿勢・別solveへの再結合拒否が完成するまでは、frontend production経路を
+v2実装済みと数えない。証拠不足またはversion不一致は`indeterminate`へ閉じる。
+
 ## 3. native幾何証拠の到達性
 
 | 交差証拠 | 純粋表4セル | native現在姿勢からの生成 | 現在の回帰 | 残作業 |
@@ -102,7 +110,7 @@ rotation_sign   = assignment_sign × direction_sign
 7. 同じ入力の再実行はexact transform、angle certificate、workおよびcanonical traversalがbit-for-bit同じになる。
 8. sourceのface/edge/vertex格納順、境界cycle開始、edge方向、topology incidence/adjacency格納順を変えても、issuer identityは別のまま、観測可能なexact geometryとcollision decisionは同じになる。
 9. fixed faceを別faceへ変更したposeは同一authorityではないが、基準root姿勢から一つのexact global rigid transform`G`を取り、全faceについて`T_base(face) = G ∘ T_reroot(face)`となる。全pairの交差証拠とdecisionも同じになる。
-10. binary64 renderer snapshotはexact poseからだけ導出し、全face頂点の各成分について外向き丸めの誤差区間がexact点を含む。誤差上限は局所形状、tree深さ、各angle certificateおよびbinary64演算回数からversion固定で導出し、任意に大きな包含を許可しない。巨大座標で上限内を証明できない場合は安全集合を広げない。
+10. nativeの`MaterialTreePose` binary64 snapshotは、同じissuerとpose instanceへ束縛したexact poseに対し、全face境界の各成分についてversion固定の有限誤差包含を持つ。誤差上限は局所形状、tree深さ、各angle certificateおよびbinary64演算回数から導出し、任意に大きな包含を許可しない。巨大座標で上限内を証明できない場合は安全集合を広げない。現在のThree.js rendererは別経路で姿勢を再計算するため、このnative包含だけをrenderer完了証明とみなしてはならない。
 
 ### 6.3 既存fixtureの再利用
 
@@ -169,13 +177,99 @@ rotation_sign   = assignment_sign × direction_sign
 
 巨大平行移動の不変比較には、加算後も差分がbinary64で正確に保存されるdyadic座標を使う。入力保存時点で既に頂点が潰れるケースは平行移動不変fixtureへ混ぜず、`precision-collapse rejection`として分離する。
 
-### 6.6 resourceとfail-closed
+### 6.6 native binary64 exact-affine包含とrenderer境界（次工程設計）
+
+本節は監査結果を固定する次工程設計であり、実装済みカバレッジには数えない。未承認の先行実装はprivateな`MeasuredBinary64AffineEnvelope`として直接差分だけを観測し、証明model ID、admission判定およびsafe判定能力を持たせない。演算数表、三角関数の厳密誤差上限およびhard ceilingの承認後に限り、正式model ID候補`material_tree_binary64_affine_containment_v1`を`rational_cayley_tree_pose_v1`、`material_tree_kinematics_mm_v1`および同一の`BoundMaterialTreePose` issuer/pose instanceへprivateに結合する。proofとbuilderは公開constructorを持たず、`Serialize`、caller提供matrix、公開IDの照合だけから再構成できてはならない。
+
+#### 6.6.1 面境界全域の成分別包含
+
+各faceについて、native `MaterialTreePose`の`RigidTransform`を構成する全binary64係数をIEEE 754 bit列からdyadic有理数へ完全変換し、その係数を無丸めの有理算術で評価する理想affine mapを`F`とする。同じsource boundary vertex `v`をexact tree map `E`と`F`へ適用し、各成分`k ∈ {x,y,z}`について次を有理算術で直接求める。ここで証明するのは保存済みmatrix係数が表す理想affine mapであり、JavaScriptやGPUでmatrixを点へ適用する際の追加丸めは6.6.4の別gateで扱う。
+
+```text
+delta(face, v, k) = abs(F(v)[k] - E(v)[k])
+radius(face, k)    = max(delta(face, v, k) for every boundary occurrence v)
+```
+
+`F - E`はaffine mapであり、単純多角形の全点は境界頂点のconvex hull内にある。したがって、成分絶対値の凸性から、凹faceを含む材料面の全点`p`で`abs(F(p)[k] - E(p)[k]) <= radius(face, k)`が成立する。三角形分割頂点だけ、AABB cornerだけ、または代表点だけの検査で代用してはならない。
+
+同じ`VertexId`の全face occurrenceは一つのexact点に対して個別に包含を検査する。共有hingeのstart、endおよびmidpointも親face、子face、hinge transformの全経路で検査し、一件でも欠落・重複・不一致があればface単位の部分proofを残さず全体を失敗させる。正厚へ拡張する際は位置radiusだけでは足りず、材料法線列の差も包含し、少なくとも`point_error + (thickness / 2) * normal_error`を別のversion付き正厚gateで証明する。
+
+#### 6.6.2 version固定admission budgetとhard ceiling
+
+上記の直接差分は包含そのものを証明するが、極端に広い対応を認可しないため、独立したadmission budgetを設ける。v1候補は次とし、実装前に演算数表、定数のbinary表現およびhard ceilingを同じpolicy versionへ固定する。
+
+```text
+u       = 2^-53
+eta     = 2^-1074
+S       = max(1, source point/pivot L1 norms in mm)
+M_d     = S * (2*d + 1)
+N_d     = N_axis + d*(N_local + N_compose) + N_affine
+gamma_d = (N_d*u) / (1 - N_d*u), requiring N_d*u < 1/2
+
+B_angle(d) = 2*M_d*sum(path angle_certificate.max_error_radians)
+B_fp(d)    = gamma_d*M_d + N_d*eta
+             + 2*M_d*d*TRIG_ABS_ALLOWANCE_V1
+B_raw(d)   = B_angle(d) + B_fp(d)
+require      B_raw(d) <= 2^-20 mm
+B_admit(d) = B_raw(d)
+```
+
+各boundary occurrence・各成分の直接`delta`は、そのface深さに対応する`B_admit(d)`以下でなければならない。`2^-20 mm`はv1 hard ceiling候補であり、owner承認とversion固定前には実装済み仕様と扱わない。caller設定、紙厚、表示倍率または座標scaleによって拡張できず、budgetはcollisionの安全集合を膨らませる幾何許容値にも流用しない。`N_d*u >= 1/2`、checked算術overflow、budget導出不能またはhard ceiling超過は全てblockingとする。
+
+version bindingには少なくとも次を含める。
+
+- `rational_cayley_tree_pose_v1`、`material_tree_kinematics_mm_v1`および本proof model ID
+- binary64から有理数へのbit-exact変換、round-to-nearest-ties-to-even規約、`DEGREES_TO_RADIANS`のbit列、pinned `libm 0.2.16`
+- canonical traversal/order、座標系、`N_axis / N_local / N_compose / N_affine`の演算数表
+- `TRIG_ABS_ALLOWANCE_V1`、`2^-20 mm`候補を含むbudget定数と全resource limit
+
+いずれかを変更する場合はmodel versionを上げ、旧proofを新versionへ再利用しない。
+
+#### 6.6.3 authority、fail-closedおよびwork accounting
+
+admissionはexact tree authorityと同じnative solveの`MaterialTreePose`だけを受理する。cloneは元のprivate bindingを保持する場合だけ許可し、同角度の再solve ABA、foreign model/issuer、別fixed face、角度1 ULP差、generationまたはversion差を拒否する。missing/duplicate/noncanonicalなface、hinge、boundary occurrence、transform、非finite係数、cycle、共有点またはhinge端点検査の欠落も拒否する。
+
+少なくともface数`F`、hinge数`H`、最大深さと深さ合計、transform scalar `12F`、boundary occurrence数`O`、point component数`3O`、共有occurrence照合、hinge endpoint照合、angle certificate読取、budget演算、exact rational演算、入力・中間・出力の最大/合計bit数をaggregateなchecked counterへ課金する。各上限はexact-limit成功とone-short失敗を対にし、hingeまたはfaceごとにcounterをresetしてはならない。
+
+一件でも失敗した場合はproof全体を破棄し、部分radius、部分matrix、legacy binary64の安全結果へfallbackしない。分類はblockingな`indeterminate`に留める。
+
+#### 6.6.4 Three.jsへの最終DTO橋渡し
+
+native包含が直接証明する対象はnative `MaterialTreePose`である。現行UIは`Math.PI`とThree.js `Matrix4`を用いて別に姿勢を計算するため、native proofだけでは画面に表示されたmatrixの包含を証明できない。renderer checkpointの最終工程では、認証済みnative face/hinge matrixをcanonical ID順のdetachedかつversion付きDTOとして発行し、committed poseでの独立した三角関数・tree再計算を停止する。
+
+Three.js列優先4×4のface matrixは次の順を固定する。この配列は`Matrix4.elements`または`Matrix4.fromArray`へ渡すlayoutであり、row-major引数を取る`Matrix4.set(...dto)`へそのまま渡してはならない。
+
+```text
+[r00,r10,r20,0, r01,r11,r21,0, r02,r12,r22,0, tx,ty,tz,1]
+```
+
+DTOはproject instance、revision、pose generation、fixed face、全angle bits、model/proof versionおよびgeometry digestへ結合する。ただしDTO自体とclient ACKはauthorityではなく、native capabilityを生成できない。native proofの直接範囲は発行したDTO payloadのbinary64 bit列までとする。UIは全IDとmatrixを一時領域で検証し、`fromArray`後の`Matrix4.elements`がDTO bit列と一致することをclient-side bridge testで確認してから原子的に交換する。このclient検証をnative authorityへ逆輸入しない。欠落、重複、順序違反、stale digest、NaN/Infまたはcopy途中失敗では旧表示を維持する。GPU f32変換、camera、rasterizationおよびpixel errorは別の表示品質問題として区別する。local drag previewを残す場合は非認証previewと明示し、安全certificateやcommit authorityへ使用しない。
+
+matrix bit列の一致だけでは、`Vector3.applyMatrix4`等が行うbinary64乗算・加算後のworld点まで包含したことにならない。CPUでface頂点を変換する経路を残す場合は、version固定の演算順で実際のbinary64結果をbit-exact有理数へ戻し、理想`F(v)`との差`radius_cpu_apply`を全境界頂点で証明して`radius + radius_cpu_apply`を表示対応の上限とする。より単純な最終経路として、nativeが計算済みworld頂点DTOも発行し、UIがそのbit列を再計算せず使用してよい。どちらも未実装の間はrenderer containmentを完成扱いにしない。GPU側だけでmatrixを適用する経路はcollision authorityへ使わず、f32変換以降を表示品質検証として分離する。
+
+#### 6.6.5 必須test matrix
+
+次の軸をpairwise省略ではなく、記載した境界値とadversaryを含む形で固定する。
+
+| 軸 | 必須case |
+| --- | --- |
+| tree | 単一face、1 hinge、非可換2 hinge `41/63`、角起点V、山山V、chain depth `1/2/32/max`、shared-vertex fan、全faceへのreroot |
+| hinge | X/Z軸、3-4斜め軸、非平方軸、subnormal軸成分、山/谷、left/right反転 |
+| angle | `0`、最小正値、`90度±1 ULP`、`90/135/179度`、`180度-1 ULP`、`180度` |
+| coordinate | 400 mm、共通平行移動`0/±10^12/±3×10^12/±10^15 mm`、巨大pivotと短いhinge、入力precision collapse |
+| authority | valid clone、同角度ABA、foreign issuer/model、別root、角度1 ULP差、stale version/generation |
+| resource | 全counterのexact-limit/one-short、最大/合計bit上限、checked overflow、`N_d*u = 1/2`境界、hard ceiling直下/一致/直上 |
+| DTO | row/column layout、ID欠落/重複/並べ替え、NaN/Inf、stale generation/digest、copy失敗時rollback、committed poseでの独立再計算禁止、CPU `applyMatrix4`丸め包含またはnative world頂点bit照合 |
+
+肯定caseでは全boundary vertexと凹face内部のbarycentric sampleが成分radius内、root radiusが0、全共有occurrenceとhinge endpointが同じexact hull内、同じ入力のradius/DTOがbit-for-bit決定論的であることを検査する。各matrix scalarを`±1 ULP`改変したadversary、storage順変更、cardinal angleのexact branchも含める。巨大座標でhard ceilingを超えるcaseは成功期待へ緩和せず、明示的blockingを期待する。
+
+### 6.7 resourceとfail-closed
 
 tree checkpointでは局所Cayley上限に加え、少なくともface数、hinge数、vertex occurrence数、認証済み境界辺索引entry/単一走査operation数、local rotation数、exact composition数、point transform数、共有関係照合数、renderer containment数、合算interval/rational work、中間bit数および出力bit数を事前に上限検査する。境界辺をヒンジごとに線形再走査してはならず、全boundary occurrenceを一度だけ索引化して参照する。個別出力bit上限は分子・分母の大きい側へ適用し、総storage上限は両方のbit数をchecked加算する。一時的なlocal出力も最大個別bitの観測から除外しない。加算・乗算の`usize` overflowも`ResourceLimitExceeded`とする。
 
 各実測上限は「exact値で成功、one-shortで失敗」を固定する。どの段階で失敗しても、部分face transform、部分certificate、共有頂点許容または135/179度の貫通証拠を返さない。より粗いbinary64結果へfallbackして安全集合を広げず、既存の`indeterminate`へ戻す。
 
-### 6.7 checkpoint完了条件
+### 6.8 checkpoint完了条件
 
 次を全て満たした時点だけ、watertight exact tree poseを完成扱いにする。
 
@@ -186,3 +280,5 @@ tree checkpointでは局所Cayley上限に加え、少なくともface数、hing
 5. 巨大平行移動、subnormal、deep chain/fan、resource one-short、renderer containment、ABAを全てfail-closedで回帰する。
 6. exact authorityなしの従来経路と、偽造・期限切れ・resource不足の経路は安全結果へ昇格しない。
 7. このcheckpointでは正厚、有限hinge許容、連続衝突、SIM-010用の任意3D姿勢に対するcell-order transport、または折り重ねUIを完成扱いにしない。VAL-003で既に発行するcurrent layer-order capabilityとは区別する。
+
+本節の設計追記時点では実装完成度を加算せず、全体完成度は36.9%のままとする。折り重ねUIは本checkpoint、層順序transport、atomic commandの後に実装する。

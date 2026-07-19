@@ -10,6 +10,7 @@ use std::{
 };
 
 use num_bigint::{BigInt, BigUint, Sign};
+use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 use ori_domain::{EdgeId, FaceId, VertexId};
@@ -35,6 +36,8 @@ struct CayleyLimits {
     max_interval_operations: usize,
     max_shift_bits: usize,
     max_intermediate_bits: usize,
+    max_gcd_fallback_calls: usize,
+    max_gcd_fallback_input_bits: usize,
     max_output_bits: usize,
 }
 
@@ -50,6 +53,8 @@ impl Default for CayleyLimits {
             max_interval_operations: 100_000,
             max_shift_bits: 8_192,
             max_intermediate_bits: 32_768,
+            max_gcd_fallback_calls: 4_096,
+            max_gcd_fallback_input_bits: 67_108_864,
             max_output_bits: 16_384,
         }
     }
@@ -109,6 +114,9 @@ struct CayleyWork {
     max_shift_bits: usize,
     max_preflight_bits: usize,
     max_observed_bits: usize,
+    gcd_fallback_calls: usize,
+    gcd_fallback_input_bits: usize,
+    max_gcd_fallback_call_input_bits: usize,
     max_output_bits: usize,
 }
 
@@ -316,6 +324,76 @@ impl<'a> WorkMeter<'a> {
         self.preflight_value_bits(stage, shifted_bits)
     }
 
+    fn gcd_fallback(
+        &mut self,
+        left: &BigInt,
+        right: &BigInt,
+        stage: CayleyStage,
+    ) -> Result<BigInt, CayleyError> {
+        let left_bits = bigint_bits(left);
+        let right_bits = bigint_bits(right);
+        self.preflight_value_bits(stage, left_bits.max(right_bits))?;
+        let call_input_bits =
+            left_bits
+                .checked_add(right_bits)
+                .ok_or(CayleyError::ResourceLimitExceeded {
+                    stage,
+                    resource: "gcd_fallback_input_bits",
+                })?;
+        let next_calls = self.work.gcd_fallback_calls.checked_add(1).ok_or(
+            CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "gcd_fallback_calls",
+            },
+        )?;
+        let next_input_bits = self
+            .work
+            .gcd_fallback_input_bits
+            .checked_add(call_input_bits)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "gcd_fallback_input_bits",
+            })?;
+        if next_calls > self.limits.max_gcd_fallback_calls {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "gcd_fallback_calls",
+            });
+        }
+        if next_input_bits > self.limits.max_gcd_fallback_input_bits {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "gcd_fallback_input_bits",
+            });
+        }
+        self.work.gcd_fallback_calls = next_calls;
+        self.work.gcd_fallback_input_bits = next_input_bits;
+        self.work.max_gcd_fallback_call_input_bits = self
+            .work
+            .max_gcd_fallback_call_input_bits
+            .max(call_input_bits);
+        Ok(left.gcd(right))
+    }
+
+    fn normalize_refined_rational(
+        &mut self,
+        numerator: BigInt,
+        denominator: BigInt,
+        stage: CayleyStage,
+    ) -> Result<BigRational, CayleyError> {
+        if denominator.is_zero() {
+            return Err(CayleyError::InvariantFailure { stage });
+        }
+        let gcd = self.gcd_fallback(&numerator, &denominator, stage)?;
+        let mut numerator = numerator / &gcd;
+        let mut denominator = denominator / gcd;
+        if denominator.is_negative() {
+            numerator = -numerator;
+            denominator = -denominator;
+        }
+        Ok(BigRational::new_raw(numerator, denominator))
+    }
+
     fn add_rational(
         &mut self,
         left: &BigRational,
@@ -323,27 +401,64 @@ impl<'a> WorkMeter<'a> {
         stage: CayleyStage,
     ) -> Result<BigRational, CayleyError> {
         self.operation(stage)?;
-        let left_product = bigint_bits(left.numer())
+        let raw_left_product = bigint_bits(left.numer())
             .checked_add(bigint_bits(right.denom()))
             .ok_or(CayleyError::ResourceLimitExceeded {
                 stage,
                 resource: "intermediate_bits",
             })?;
-        let right_product = bigint_bits(right.numer())
+        let raw_right_product = bigint_bits(right.numer())
             .checked_add(bigint_bits(left.denom()))
             .ok_or(CayleyError::ResourceLimitExceeded {
                 stage,
                 resource: "intermediate_bits",
             })?;
-        let denominator = bigint_bits(left.denom())
+        let raw_denominator = bigint_bits(left.denom())
             .checked_add(bigint_bits(right.denom()))
             .ok_or(CayleyError::ResourceLimitExceeded {
                 stage,
                 resource: "intermediate_bits",
             })?;
-        self.preflight_value_bits(stage, left_product.max(right_product).saturating_add(1))?;
+        let raw_numerator = raw_left_product
+            .max(raw_right_product)
+            .checked_add(1)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            })?;
+        if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
+            self.preflight_value_bits(stage, raw_numerator)?;
+            self.preflight_value_bits(stage, raw_denominator)?;
+            let result = left + right;
+            self.observe_rational(stage, &result)?;
+            return Ok(result);
+        }
+
+        // `num-rational` adds over the LCM rather than over the raw product.
+        // Only enter this more expensive path when the conservative fast-path
+        // bound would reject an operation.
+        let (left_multiplier, right_multiplier) = if left.denom() == right.denom() {
+            (BigInt::one(), BigInt::one())
+        } else {
+            let gcd = self.gcd_fallback(left.denom(), right.denom(), stage)?;
+            (right.denom() / &gcd, left.denom() / gcd)
+        };
+        let left_product = refined_product_bits(left.numer(), &left_multiplier, stage)?;
+        let right_product = refined_product_bits(right.numer(), &right_multiplier, stage)?;
+        let denominator = refined_product_bits(left.denom(), &left_multiplier, stage)?;
+        let numerator = left_product.max(right_product).checked_add(1).ok_or(
+            CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            },
+        )?;
+        self.preflight_value_bits(stage, numerator)?;
         self.preflight_value_bits(stage, denominator)?;
-        let result = left + right;
+        let left_numerator = left.numer() * &left_multiplier;
+        let right_numerator = right.numer() * &right_multiplier;
+        let denominator = left.denom() * left_multiplier;
+        let result =
+            self.normalize_refined_rational(left_numerator + right_numerator, denominator, stage)?;
         self.observe_rational(stage, &result)?;
         Ok(result)
     }
@@ -364,9 +479,47 @@ impl<'a> WorkMeter<'a> {
         stage: CayleyStage,
     ) -> Result<BigRational, CayleyError> {
         self.operation(stage)?;
-        self.preflight_product_bits(stage, bigint_bits(left.numer()), bigint_bits(right.numer()))?;
-        self.preflight_product_bits(stage, bigint_bits(left.denom()), bigint_bits(right.denom()))?;
-        let result = left * right;
+        let raw_numerator = bigint_bits(left.numer())
+            .checked_add(bigint_bits(right.numer()))
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            })?;
+        let raw_denominator = bigint_bits(left.denom())
+            .checked_add(bigint_bits(right.denom()))
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            })?;
+        if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
+            self.preflight_value_bits(stage, raw_numerator)?;
+            self.preflight_value_bits(stage, raw_denominator)?;
+            let result = left * right;
+            self.observe_rational(stage, &result)?;
+            return Ok(result);
+        }
+
+        // Mirror `num-rational`'s cross-cancellation before either product is
+        // constructed. The result is already canonical because both inputs
+        // are canonical and all cross factors have been removed.
+        let numerator_gcd = self.gcd_fallback(left.numer(), right.denom(), stage)?;
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.numer(), stage)?;
+        let left_numerator = left.numer() / &numerator_gcd;
+        let right_denominator = right.denom() / numerator_gcd;
+        let right_numerator = right.numer() / &denominator_gcd;
+        let left_denominator = left.denom() / denominator_gcd;
+        self.preflight_value_bits(
+            stage,
+            refined_product_bits(&left_numerator, &right_numerator, stage)?,
+        )?;
+        self.preflight_value_bits(
+            stage,
+            refined_product_bits(&left_denominator, &right_denominator, stage)?,
+        )?;
+        let result = BigRational::new_raw(
+            left_numerator * right_numerator,
+            left_denominator * right_denominator,
+        );
         self.observe_rational(stage, &result)?;
         Ok(result)
     }
@@ -381,9 +534,47 @@ impl<'a> WorkMeter<'a> {
             return Err(CayleyError::CertificateUnavailable { stage });
         }
         self.operation(stage)?;
-        self.preflight_product_bits(stage, bigint_bits(left.numer()), bigint_bits(right.denom()))?;
-        self.preflight_product_bits(stage, bigint_bits(left.denom()), bigint_bits(right.numer()))?;
-        let result = left / right;
+        let raw_numerator = bigint_bits(left.numer())
+            .checked_add(bigint_bits(right.denom()))
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            })?;
+        let raw_denominator = bigint_bits(left.denom())
+            .checked_add(bigint_bits(right.numer()))
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            })?;
+        if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
+            self.preflight_value_bits(stage, raw_numerator)?;
+            self.preflight_value_bits(stage, raw_denominator)?;
+            let result = left / right;
+            self.observe_rational(stage, &result)?;
+            return Ok(result);
+        }
+
+        let numerator_gcd = self.gcd_fallback(left.numer(), right.numer(), stage)?;
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.denom(), stage)?;
+        let left_numerator = left.numer() / &numerator_gcd;
+        let right_numerator = right.numer() / numerator_gcd;
+        let right_denominator = right.denom() / &denominator_gcd;
+        let left_denominator = left.denom() / denominator_gcd;
+        self.preflight_value_bits(
+            stage,
+            refined_product_bits(&left_numerator, &right_denominator, stage)?,
+        )?;
+        self.preflight_value_bits(
+            stage,
+            refined_product_bits(&left_denominator, &right_numerator, stage)?,
+        )?;
+        let mut numerator = left_numerator * right_denominator;
+        let mut denominator = left_denominator * right_numerator;
+        if denominator.is_negative() {
+            numerator = -numerator;
+            denominator = -denominator;
+        }
+        let result = BigRational::new_raw(numerator, denominator);
         self.observe_rational(stage, &result)?;
         Ok(result)
     }
@@ -469,6 +660,10 @@ impl Default for ExactTreePoseLimits {
             max_total_output_bits: 128_000_000,
             cayley: CayleyLimits {
                 max_interval_operations: 10_000_000,
+                // A tree reuses one meter for every hinge. Keep the fallback
+                // finite while allowing the per-kernel budget to aggregate.
+                max_gcd_fallback_calls: 262_144,
+                max_gcd_fallback_input_bits: 1_073_741_824,
                 ..CayleyLimits::default()
             },
         }
@@ -2909,6 +3104,30 @@ fn bigint_bits(value: &BigInt) -> usize {
     value.bits() as usize
 }
 
+fn refined_product_bits(
+    left: &BigInt,
+    right: &BigInt,
+    stage: CayleyStage,
+) -> Result<usize, CayleyError> {
+    let left_bits = bigint_bits(left);
+    let right_bits = bigint_bits(right);
+    if left_bits == 0 || right_bits == 0 {
+        return Ok(0);
+    }
+    if left_bits == 1 {
+        return Ok(right_bits);
+    }
+    if right_bits == 1 {
+        return Ok(left_bits);
+    }
+    left_bits
+        .checked_add(right_bits)
+        .ok_or(CayleyError::ResourceLimitExceeded {
+            stage,
+            resource: "intermediate_bits",
+        })
+}
+
 fn rational_bits(value: &BigRational) -> usize {
     bigint_bits(value.numer()).max(bigint_bits(value.denom()))
 }
@@ -2918,6 +3137,9 @@ fn try_array3<T>(
 ) -> Result<[T; 3], CayleyError> {
     Ok([element(0)?, element(1)?, element(2)?])
 }
+
+#[cfg(test)]
+mod stress_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3771,13 +3993,20 @@ mod tests {
         exact.max_intermediate_bits = baseline.work.max_preflight_bits;
         assert!(local_rotation_v1(pivot, end, 179.0, 1, exact).is_ok());
         exact.max_intermediate_bits -= 1;
-        assert!(matches!(
-            local_rotation_v1(pivot, end, 179.0, 1, exact),
+        match local_rotation_v1(pivot, end, 179.0, 1, exact) {
             Err(CayleyError::ResourceLimitExceeded {
                 resource: "intermediate_bits",
                 ..
-            })
-        ));
+            }) => {}
+            Ok(refined) => {
+                // The baseline records the cheap raw bound. Lowering that
+                // bound can legitimately activate the GCD-aware proof and
+                // expose a smaller, still-safe exact requirement.
+                assert!(refined.work.gcd_fallback_calls > 0);
+                assert!(refined.work.max_preflight_bits <= exact.max_intermediate_bits);
+            }
+            Err(error) => panic!("unexpected refined-preflight error: {error:?}"),
+        }
 
         let mut exact = limits();
         exact.max_shift_bits = baseline.work.max_shift_bits;
@@ -4028,6 +4257,224 @@ mod tests {
         let mut meter = WorkMeter::new(&exact);
         assert!(meter.observe_output(&rational(128)).is_ok());
         assert!(meter.observe_output(&rational(256)).is_err());
+    }
+
+    #[test]
+    fn rational_preflight_fast_path_avoids_fallback_gcd_accounting() {
+        let mut exact = limits();
+        exact.max_intermediate_bits = 5;
+        let mut meter = WorkMeter::new(&exact);
+        let left = BigRational::new(1.into(), 3.into());
+        let right = BigRational::new(1.into(), 5.into());
+
+        assert_eq!(
+            meter
+                .add_rational(&left, &right, CayleyStage::Matrix)
+                .unwrap(),
+            &left + &right
+        );
+        assert_eq!(meter.work.max_preflight_bits, 5);
+        assert_eq!(meter.work.gcd_fallback_calls, 0);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 0);
+    }
+
+    #[test]
+    fn gcd_refined_add_sub_accept_equal_and_lcm_denominators() {
+        let mut equal_limits = limits();
+        equal_limits.max_intermediate_bits = 4;
+        equal_limits.max_gcd_fallback_calls = 8;
+        equal_limits.max_gcd_fallback_input_bits = 128;
+
+        let equal_left = BigRational::new(5.into(), 7.into());
+        let equal_right = BigRational::new(6.into(), 7.into());
+        let mut meter = WorkMeter::new(&equal_limits);
+        let sum = meter
+            .add_rational(&equal_left, &equal_right, CayleyStage::Tree)
+            .unwrap();
+        assert_eq!(sum, &equal_left + &equal_right);
+        assert!(sum.denom().is_positive());
+        assert_eq!(sum.numer().gcd(sum.denom()), BigInt::one());
+        assert_eq!(meter.work.gcd_fallback_calls, 1);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 7);
+
+        let mut meter = WorkMeter::new(&equal_limits);
+        let difference = meter
+            .subtract_rational(&equal_left, &equal_right, CayleyStage::Tree)
+            .unwrap();
+        assert_eq!(difference, &equal_left - &equal_right);
+        assert!(difference.denom().is_positive());
+        assert_eq!(difference.numer().gcd(difference.denom()), BigInt::one());
+
+        let lcm_left = BigRational::new(1.into(), 126.into());
+        let lcm_right = BigRational::new(1.into(), 63.into());
+        let mut lcm_limits = equal_limits;
+        lcm_limits.max_intermediate_bits = 8;
+        let mut meter = WorkMeter::new(&lcm_limits);
+        let sum = meter
+            .add_rational(&lcm_left, &lcm_right, CayleyStage::Tree)
+            .unwrap();
+        assert_eq!(sum, &lcm_left + &lcm_right);
+        assert!(sum.denom().is_positive());
+        assert_eq!(sum.numer().gcd(sum.denom()), BigInt::one());
+        assert_eq!(meter.work.gcd_fallback_calls, 2);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 22);
+    }
+
+    #[test]
+    fn gcd_refined_mul_div_cross_cancel_and_preserve_canonical_sign() {
+        let mut exact = limits();
+        exact.max_intermediate_bits = 8;
+        exact.max_gcd_fallback_calls = 2;
+        exact.max_gcd_fallback_input_bits = 28;
+
+        let left = BigRational::new(127.into(), 126.into());
+        let positive_reciprocal = BigRational::new(126.into(), 127.into());
+        let negative_reciprocal = BigRational::new((-126).into(), 127.into());
+        for right in [&positive_reciprocal, &negative_reciprocal] {
+            let mut meter = WorkMeter::new(&exact);
+            let product = meter
+                .multiply_rational(&left, right, CayleyStage::Tree)
+                .unwrap();
+            assert_eq!(product, &left * right);
+            assert!(product.denom().is_positive());
+            assert_eq!(product.numer().gcd(product.denom()), BigInt::one());
+            assert_eq!(meter.work.gcd_fallback_calls, 2);
+            assert_eq!(meter.work.gcd_fallback_input_bits, 28);
+            assert_eq!(meter.work.max_gcd_fallback_call_input_bits, 14);
+        }
+
+        for right in [&left, &-left.clone()] {
+            let mut meter = WorkMeter::new(&exact);
+            let quotient = meter
+                .divide_rational(&left, right, CayleyStage::Tree)
+                .unwrap();
+            assert_eq!(quotient, &left / right);
+            assert!(quotient.denom().is_positive());
+            assert_eq!(quotient.numer().gcd(quotient.denom()), BigInt::one());
+            assert_eq!(meter.work.gcd_fallback_calls, 2);
+            assert_eq!(meter.work.gcd_fallback_input_bits, 28);
+        }
+    }
+
+    #[test]
+    fn gcd_refined_limits_accept_exact_and_fail_closed_one_short() {
+        let left = BigRational::new(5.into(), 7.into());
+        let right = BigRational::new(6.into(), 7.into());
+        let mut exact = limits();
+        exact.max_intermediate_bits = 4;
+        exact.max_gcd_fallback_calls = 1;
+        exact.max_gcd_fallback_input_bits = 7;
+
+        let mut meter = WorkMeter::new(&exact);
+        assert_eq!(
+            meter
+                .add_rational(&left, &right, CayleyStage::Tree)
+                .unwrap(),
+            &left + &right
+        );
+        assert_eq!(meter.work.max_preflight_bits, 4);
+        assert_eq!(meter.work.gcd_fallback_calls, 1);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 7);
+
+        let mut one_short = exact;
+        one_short.max_intermediate_bits -= 1;
+        assert!(matches!(
+            WorkMeter::new(&one_short).add_rational(&left, &right, CayleyStage::Tree),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "intermediate_bits",
+                ..
+            })
+        ));
+
+        let mut one_short = exact;
+        one_short.max_gcd_fallback_calls -= 1;
+        let mut meter = WorkMeter::new(&one_short);
+        assert!(matches!(
+            meter.add_rational(&left, &right, CayleyStage::Tree),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "gcd_fallback_calls",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.gcd_fallback_calls, 0);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 0);
+
+        let mut one_short = exact;
+        one_short.max_gcd_fallback_input_bits -= 1;
+        let mut meter = WorkMeter::new(&one_short);
+        assert!(matches!(
+            meter.add_rational(&left, &right, CayleyStage::Tree),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "gcd_fallback_input_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.gcd_fallback_calls, 0);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 0);
+    }
+
+    #[test]
+    fn gcd_fallback_accounting_overflow_fails_before_running_gcd() {
+        let mut exact = limits();
+        exact.max_intermediate_bits = 8;
+        exact.max_gcd_fallback_calls = usize::MAX;
+        exact.max_gcd_fallback_input_bits = usize::MAX;
+
+        let mut meter = WorkMeter::new(&exact);
+        meter.work.gcd_fallback_calls = usize::MAX;
+        assert!(matches!(
+            meter.gcd_fallback(&5.into(), &7.into(), CayleyStage::Tree),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "gcd_fallback_calls",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.gcd_fallback_calls, usize::MAX);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 0);
+
+        let mut meter = WorkMeter::new(&exact);
+        meter.work.gcd_fallback_input_bits = usize::MAX;
+        assert!(matches!(
+            meter.gcd_fallback(&5.into(), &7.into(), CayleyStage::Tree),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "gcd_fallback_input_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.gcd_fallback_calls, 0);
+        assert_eq!(meter.work.gcd_fallback_input_bits, usize::MAX);
+    }
+
+    #[test]
+    fn gcd_refined_preflight_rejects_true_coprime_growth() {
+        let mut exact = limits();
+        exact.max_intermediate_bits = 8;
+        exact.max_gcd_fallback_calls = 2;
+        exact.max_gcd_fallback_input_bits = 28;
+        let left = BigRational::new(127.into(), 125.into());
+        let right = BigRational::new(123.into(), 121.into());
+        let mut meter = WorkMeter::new(&exact);
+
+        assert!(matches!(
+            meter.multiply_rational(&left, &right, CayleyStage::Tree),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "intermediate_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.gcd_fallback_calls, 2);
+        assert_eq!(meter.work.gcd_fallback_input_bits, 28);
+    }
+
+    #[test]
+    fn tree_gcd_fallback_budget_is_finite_and_bounded_by_operation_budget() {
+        let local = CayleyLimits::default();
+        let tree = ExactTreePoseLimits::default().cayley;
+        assert!(tree.max_gcd_fallback_calls > local.max_gcd_fallback_calls);
+        assert!(tree.max_gcd_fallback_input_bits > local.max_gcd_fallback_input_bits);
+        assert!(tree.max_gcd_fallback_calls <= tree.max_interval_operations);
+        assert_ne!(tree.max_gcd_fallback_calls, usize::MAX);
+        assert_ne!(tree.max_gcd_fallback_input_bits, usize::MAX);
     }
 
     #[test]

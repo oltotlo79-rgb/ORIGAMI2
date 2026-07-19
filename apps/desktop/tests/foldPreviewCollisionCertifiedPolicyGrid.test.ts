@@ -35,7 +35,7 @@ const TINY_ANGLE_DEGREES = 1e-6
 const cornerMountainValley = createCornerMountainValleyFixture()
 const midpointMountainMountain = createMidpointMountainMountainFixture()
 
-test('certified corner mountain-valley grid never promotes its shared apex to penetration', () => {
+test('production frontend v1: certified corner mountain-valley grid never promotes its shared apex to penetration', () => {
   const analyzer = prepareFixture(cornerMountainValley)
   const poses = [
     { label: 'flat', left: 0, right: 0 },
@@ -76,6 +76,24 @@ test('certified corner mountain-valley grid never promotes its shared apex to pe
         thickness > 0
         && angles.left === 180
         && angles.right === 180
+      const coordinatePinnedCornerFullFold =
+        angles.left === 180
+        && angles.right === 180
+
+      if (coordinatePinnedCornerFullFold) {
+        assert.equal(
+          outer.geometryClass,
+          'touching',
+          `400 mm corner apex=(400,400), ends=(300,0)/(0,300): ${diagnostic}`,
+        )
+        assert.equal(outer.topologyContact, undefined, diagnostic)
+        assert.equal(presentation.nonAdjacentContacts, 1, diagnostic)
+        assert.equal(
+          presentation.nonAdjacentAllowedSharedVertexContacts,
+          0,
+          diagnostic,
+        )
+      }
 
       if (outer.geometryClass === 'touching') {
         const topologyAllowed =

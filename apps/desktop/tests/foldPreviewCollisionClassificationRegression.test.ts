@@ -869,7 +869,7 @@ test('reported A/B remain correct through the UI summary on a non-origin 400 mm 
   assert.equal(collisionBadgeClass(reportedB.summary), 'has-penetrations')
 })
 
-test('the faithful 400 mm V-fold outer pair has an explicit same-angle 3 by 4 table', () => {
+test('production frontend v1: the faithful 400 mm V-fold outer pair has an explicit same-angle 4 by 4 table', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     reported400MillimetreSheetFaces,
     reported400MillimetreSheetAdjacencies,
@@ -889,13 +889,17 @@ test('the faithful 400 mm V-fold outer pair has an explicit same-angle 3 by 4 ta
     ['0.1:90', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['0.1:179', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['0.1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 3 }],
+    ['1:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['1:90', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['1:179', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 3 }],
     ['3:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['3:90', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['3:179', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['3:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 3 }],
   ])
 
-  for (const thickness of [0, 0.1, 3]) {
+  for (const thickness of [0, 0.1, 1, 3]) {
     for (const degrees of [10, 90, 179, 180]) {
       const result = analyzer.analyze(new Map([
         [
@@ -946,7 +950,7 @@ test('the faithful 400 mm V-fold outer pair has an explicit same-angle 3 by 4 ta
   }
 })
 
-test('the faithful 400 mm V-fold outer pair has a left-only 3 by 4 table', () => {
+test('production frontend v1: the faithful 400 mm V-fold outer pair has a left-only 4 by 4 table', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     reported400MillimetreSheetFaces,
     reported400MillimetreSheetAdjacencies,
@@ -966,12 +970,16 @@ test('the faithful 400 mm V-fold outer pair has a left-only 3 by 4 table', () =>
     ['0.1:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['0.1:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['0.1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
+    ['1:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['1:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['1:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
     ['3:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
     ['3:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['3:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
     ['3:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
   ])
-  for (const thickness of [0, 0.1, 3]) {
+  for (const thickness of [0, 0.1, 1, 3]) {
     for (const leftDegrees of [10, 90, 179, 180]) {
       const result = analyzer.analyze(new Map([
         [
@@ -1018,7 +1026,87 @@ test('the faithful 400 mm V-fold outer pair has a left-only 3 by 4 table', () =>
   }
 })
 
-test('both faithful 400 mm V-fold hinges have an explicit 3 by 4 policy table', () => {
+test('production frontend v1: the faithful 400 mm V-fold outer pair has a right-only 4 by 4 table', () => {
+  const analyzer = prepareFoldPreviewNarrowPhase(
+    reported400MillimetreSheetFaces,
+    reported400MillimetreSheetAdjacencies,
+    reported400MillimetreSheetConstraints,
+  )
+  assert.ok(analyzer)
+  const expected = new Map<string, Readonly<{
+    geometryClass: 'touching' | 'indeterminate'
+    status:
+      | 'topology-model'
+      | 'contact'
+      | 'indeterminate'
+      | 'hinge-unresolved'
+    indeterminateInteractions: number
+  }>>([
+    ['0:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['0:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['0:180', { geometryClass: 'touching', status: 'contact', indeterminateInteractions: 0 }],
+    ['0.1:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['0.1:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['0.1:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['0.1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
+    ['1:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['1:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['1:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['1:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
+    ['3:10', { geometryClass: 'touching', status: 'topology-model', indeterminateInteractions: 0 }],
+    ['3:90', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['3:179', { geometryClass: 'indeterminate', status: 'indeterminate', indeterminateInteractions: 1 }],
+    ['3:180', { geometryClass: 'indeterminate', status: 'hinge-unresolved', indeterminateInteractions: 2 }],
+  ])
+  for (const thickness of [0, 0.1, 1, 3]) {
+    for (const rightDegrees of [10, 90, 179, 180]) {
+      const result = analyzer.analyze(new Map([
+        ['square-left', new Matrix4()],
+        ['square-middle', new Matrix4()],
+        [
+          'square-right',
+          hingeRotationAround(
+            squareApex,
+            squareRightHingeEnd,
+            rightDegrees,
+          ),
+        ],
+      ]), thickness)
+      assert.ok(result)
+      const outerFaces = result.interactions.find((interaction) =>
+        interaction.firstFaceId === 'square-left'
+        && interaction.secondFaceId === 'square-right')
+      assert.ok(
+        outerFaces,
+        `missing outer pair for ${thickness}:0:${rightDegrees}`,
+      )
+      const wanted = expected.get(`${thickness}:${rightDegrees}`)
+      assert.ok(wanted)
+      assert.equal(
+        outerFaces.geometryClass,
+        wanted.geometryClass,
+        `${thickness} mm with left=0, right=${rightDegrees} degrees`,
+      )
+      const presentation = summarizeFoldPreviewCollision(result)
+      assert.equal(
+        presentation.indeterminateInteractions,
+        wanted.indeterminateInteractions,
+      )
+      assert.equal(
+        presentation.nonAdjacentAllowedSharedVertexContacts,
+        rightDegrees < 90 ? 1 : 0,
+      )
+      assert.equal(collisionDataStatus({
+        kind: 'ready',
+        requestKey: `${thickness}:0:${rightDegrees}`,
+        ...presentation,
+      }), wanted.status)
+    }
+  }
+})
+
+test('production frontend v1: both faithful 400 mm V-fold hinges have an explicit 4 by 4 policy table', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     reported400MillimetreSheetFaces,
     reported400MillimetreSheetAdjacencies,
@@ -1038,13 +1126,17 @@ test('both faithful 400 mm V-fold hinges have an explicit 3 by 4 policy table', 
     ['0.1:90', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
     ['0.1:179', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
     ['0.1:180', { geometryClass: 'indeterminate', indeterminateReason: 'layer_offset_unmodeled' }],
+    ['1:10', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
+    ['1:90', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
+    ['1:179', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
+    ['1:180', { geometryClass: 'indeterminate', indeterminateReason: 'layer_offset_unmodeled' }],
     ['3:10', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
     ['3:90', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
     ['3:179', { geometryClass: 'penetrating', decisionGeometry: 'corridor_overlap' }],
     ['3:180', { geometryClass: 'indeterminate', indeterminateReason: 'layer_offset_unmodeled' }],
   ])
 
-  for (const thickness of [0, 0.1, 3]) {
+  for (const thickness of [0, 0.1, 1, 3]) {
     for (const degrees of [10, 90, 179, 180]) {
       const result = analyzer.analyze(
         new Map([

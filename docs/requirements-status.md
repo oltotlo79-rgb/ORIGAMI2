@@ -10,6 +10,21 @@
 
 現在の行単位集計は **実装済み32 / 部分実装27 / 未着手28**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
 
+2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
+H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
+GCD fallback exact/one-short、400 mm V、巨大平行移動、共有頂点fan、
+precision collapseは実装・実行済みである。角起点・辺中点Vのfail-closed baselineも
+加え、`ori-collision --lib`は74件全件成功。
+未完了なのはH64を既定上限内で完全成功させる性能checkpoint、renderer有限包含、
+厚さ0classifier接続以降である。これらが完了するまでSIM-010は未着手を維持し、
+折り重ねUIへ進まない。
+
+同じくSIM-010行の「frontend/native共通のv2純粋decision表完成」は、全44セルの
+表とcorpus照合だけを指す。現行frontend production dispatcherと既存certificateは
+凍結済みv1へ束縛されたままで、正厚`boundary_area_contact`生成器、v2 issuer、
+pose/thickness再結合拒否は未実装である。単純なversion差し替えは行わず、証拠不足を
+blockingな`indeterminate`へ閉じる。
+
 ## プロジェクトと紙
 
 | ID | 状態 | 現在の根拠・不足 |

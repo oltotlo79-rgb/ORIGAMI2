@@ -287,7 +287,7 @@ test('shared-vertex capabilities reject cloned or mismatched provenance', () => 
   }
 })
 
-test('a disconnected shared vertex is blocking outside the broad phase', () => {
+test('production frontend v1 keeps a disconnected shared vertex blocking outside the broad phase', () => {
   const shared = { vertexId: 'disconnected-shared', x: 0, z: 0 } as const
   const faces: readonly FoldPreviewCollisionPoseFace[] = [
     {
@@ -316,7 +316,7 @@ test('a disconnected shared vertex is blocking outside the broad phase', () => {
     const orderedFaces = reverseFaces ? [...faces].reverse() : faces
     const analyzer = prepareFoldPreviewNarrowPhase(orderedFaces, [])
     assert.ok(analyzer)
-    for (const thickness of [0, 0.1, 3]) {
+    for (const thickness of [0, 0.1, 1, 3]) {
       const result = analyzer.analyze(transforms, thickness)
       assert.ok(result)
       assert.equal(result.broadPhaseCandidates, 0)
@@ -361,7 +361,7 @@ test('a disconnected shared vertex is blocking outside the broad phase', () => {
   }
 })
 
-test('a disconnected shared hinge is blocking outside the broad phase', () => {
+test('production frontend v1 keeps a disconnected shared hinge blocking outside the broad phase', () => {
   const start = {
     vertexId: 'disconnected-hinge-start',
     x: 0,
@@ -418,7 +418,7 @@ test('a disconnected shared hinge is blocking outside the broad phase', () => {
       constraints,
     )
     assert.ok(analyzer)
-    for (const thickness of [0, 0.1, 3]) {
+    for (const thickness of [0, 0.1, 1, 3]) {
       const result = analyzer.analyze(transforms, thickness)
       assert.ok(result)
       assert.equal(result.broadPhaseCandidates, 0)
@@ -457,7 +457,7 @@ test('a disconnected shared hinge is blocking outside the broad phase', () => {
   }
 })
 
-test('an adjacency without shared vertex IDs is blocking outside the broad phase', () => {
+test('production frontend v1 keeps an adjacency without shared vertex IDs blocking outside the broad phase', () => {
   const faces: readonly FoldPreviewCollisionPoseFace[] = [
     {
       id: 'untrusted-adjacency-left',
@@ -493,7 +493,7 @@ test('an adjacency without shared vertex IDs is blocking outside the broad phase
     const orderedFaces = reverseFaces ? [...faces].reverse() : faces
     const analyzer = prepareFoldPreviewNarrowPhase(orderedFaces, adjacencies)
     assert.ok(analyzer)
-    for (const thickness of [0, 0.1, 3]) {
+    for (const thickness of [0, 0.1, 1, 3]) {
       const result = analyzer.analyze(transforms, thickness)
       assert.ok(result)
       assert.equal(result.broadPhaseCandidates, 0)
@@ -535,7 +535,7 @@ test('an adjacency without shared vertex IDs is blocking outside the broad phase
   }
 })
 
-test('a separated hinge candidate remains blocking', () => {
+test('production frontend v1 keeps a separated hinge candidate blocking', () => {
   const faces: readonly FoldPreviewCollisionPoseFace[] = [
     {
       id: 'separated-candidate-left',
@@ -568,7 +568,7 @@ test('a separated hinge candidate remains blocking', () => {
     const orderedFaces = reverseFaces ? [...faces].reverse() : faces
     const analyzer = prepareFoldPreviewNarrowPhase(orderedFaces, adjacencies)
     assert.ok(analyzer)
-    for (const thickness of [0, 0.1, 3]) {
+    for (const thickness of [0, 0.1, 1, 3]) {
       const result = analyzer.analyze(transforms, thickness)
       assert.ok(result)
       assert.equal(result.broadPhaseCandidates, 1)
@@ -604,7 +604,7 @@ test('a separated hinge candidate remains blocking', () => {
   }
 })
 
-test('shared-hinge contact without a hinge constraint fails closed', () => {
+test('production frontend v1 fails closed for shared-hinge contact without a hinge constraint', () => {
   const start = {
     vertexId: 'missing-constraint-start',
     x: 0,
@@ -647,7 +647,7 @@ test('shared-hinge contact without a hinge constraint fails closed', () => {
     const orderedFaces = reverseFaces ? [...faces].reverse() : faces
     const analyzer = prepareFoldPreviewNarrowPhase(orderedFaces, adjacencies)
     assert.ok(analyzer)
-    for (const thickness of [0, 0.1, 3]) {
+    for (const thickness of [0, 0.1, 1, 3]) {
       const result = analyzer.analyze(transforms, thickness)
       assert.ok(result)
       assert.equal(result.broadPhaseCandidates, 1)

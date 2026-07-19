@@ -2086,6 +2086,7 @@ name = "ori-collision"
 version = "0.1.0"
 dependencies = [
  "num-bigint",
+ "num-integer",
  "num-rational",
  "num-traits",
  "ori-domain",

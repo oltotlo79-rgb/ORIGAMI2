@@ -2422,6 +2422,8 @@ mod tests {
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
+    use crate::{StaticCollisionError, StaticCollisionLimits, prove_static_collision_geometry};
+
     use super::*;
 
     const TRIANGLE_PERMUTATIONS: [[usize; 3]; 6] = [
@@ -2596,6 +2598,68 @@ mod tests {
             TreeKinematicsLimits::default(),
         )
         .expect("midpoint mountain model")
+    }
+
+    fn solve_two_hinge_pose(
+        model: &MaterialTreeKinematicsModel,
+        angle_degrees: [f64; 2],
+    ) -> MaterialTreePose {
+        assert_eq!(model.hinges().len(), angle_degrees.len());
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .zip(angle_degrees)
+                .map(|(hinge, angle)| {
+                    HingeAngle::new(hinge.edge(), angle).expect("two-hinge fixture angle")
+                })
+                .collect(),
+        )
+        .expect("canonical two-hinge fixture angles");
+        model
+            .solve(Some(model.face_ids()[0]), &angles)
+            .expect("two-hinge fixture pose")
+    }
+
+    fn only_vertex_shared_outer_pair(
+        pose: &MaterialTreePose,
+        analysis: &AuthenticatedZeroThicknessPose,
+    ) -> (AuthenticatedTopology, PairDispatch) {
+        let mut found = None;
+        for first in 0..analysis.faces.len() {
+            for second in (first + 1)..analysis.faces.len() {
+                let first_face = &analysis.faces[first];
+                let second_face = &analysis.faces[second];
+                let shared_vertices = first_face
+                    .boundary
+                    .iter()
+                    .filter(|vertex| {
+                        second_face
+                            .boundary
+                            .iter()
+                            .any(|candidate| candidate.id == vertex.id)
+                    })
+                    .count();
+                let shared_edges = first_face
+                    .edges
+                    .iter()
+                    .filter(|edge| second_face.edges.contains(edge))
+                    .count();
+                if shared_vertices != 1 || shared_edges != 0 {
+                    continue;
+                }
+                let topology = authenticate_face_pair_topology(pose, first_face, second_face)
+                    .expect("authenticated outer-pair topology");
+                let dispatch = analysis
+                    .dispatch_pair(first, second)
+                    .expect("complete authenticated outer pair");
+                assert!(
+                    found.replace((topology, dispatch)).is_none(),
+                    "fixture must have exactly one vertex-only outer pair"
+                );
+            }
+        }
+        found.expect("fixture vertex-only outer pair")
     }
 
     fn rest_boundary(points: &[[f64; 2]]) -> Vec<RestBoundaryVertex> {
@@ -2840,63 +2904,51 @@ mod tests {
     #[test]
     fn authenticated_corner_v_shared_vertex_stays_nonpenetrating_across_reported_angles() {
         let (model, _planar_pose) = corner_v_model_and_pose();
-        let hinges = model
-            .hinges()
-            .iter()
-            .map(|hinge| hinge.edge())
-            .collect::<Vec<_>>();
-        assert_eq!(hinges.len(), 2);
-        for [first_angle, second_angle] in [[10.0, 0.0], [45.0, 45.0], [91.0, 91.0], [135.0, 135.0]]
-        {
-            let angles = CanonicalHingeAngles::new(vec![
-                HingeAngle::new(hinges[0], first_angle).expect("first V angle"),
-                HingeAngle::new(hinges[1], second_angle).expect("second V angle"),
-            ])
-            .expect("canonical V angles");
-            let pose = model
-                .solve(Some(model.face_ids()[0]), &angles)
-                .expect("folded V pose");
+        for angle_degrees in [
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [45.0, 45.0],
+            [90.0, 90.0],
+            [91.0, 91.0],
+            [135.0, 135.0],
+            [179.0, 179.0],
+        ] {
+            let pose = solve_two_hinge_pose(&model, angle_degrees);
             let analysis =
                 prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
                     .expect("authenticated folded V geometry");
-            let results = (0..analysis.faces.len())
-                .flat_map(|first| {
-                    ((first + 1)..analysis.faces.len()).map(move |second| (first, second))
-                })
-                .map(|(first, second)| (first, second, analysis.dispatch_pair(first, second)))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                results
-                    .iter()
-                    .filter(|(_, _, dispatch)| {
-                        dispatch.as_ref().is_ok_and(|dispatch| {
-                            dispatch.decision()
-                                == TopologyContactDecision::AllowedSharedVertexContact
-                        })
-                    })
-                    .count(),
-                1,
-                "{first_angle}/{second_angle}: {results:?}"
-            );
+            let (topology, dispatch) = only_vertex_shared_outer_pair(&pose, &analysis);
             assert!(
-                results.iter().all(|(_, _, dispatch)| {
-                    dispatch.as_ref().map_or(true, |dispatch| {
-                        dispatch.decision() != TopologyContactDecision::Penetrating
-                    })
-                }),
-                "{first_angle}/{second_angle}: {results:?}"
+                matches!(topology, AuthenticatedTopology::SharedVertex(_)),
+                "{angle_degrees:?}: {topology:?}"
             );
-            assert!(results.iter().all(|(_, _, dispatch)| {
-                matches!(
-                    dispatch,
-                    Ok(PairDispatch {
-                        decision: TopologyContactDecision::AllowedSharedVertexContact
-                            | TopologyContactDecision::RequiresHingeModel
-                            | TopologyContactDecision::Indeterminate,
-                        ..
-                    })
-                )
-            }));
+            assert!(dispatch.has_complete_coverage(), "{angle_degrees:?}");
+            assert_eq!(
+                dispatch.evidence(),
+                IntersectionEvidenceV2::SharedFeatureContact,
+                "{angle_degrees:?}: {dispatch:?}"
+            );
+            assert_eq!(
+                dispatch.decision(),
+                TopologyContactDecision::AllowedSharedVertexContact,
+                "{angle_degrees:?}: {dispatch:?}"
+            );
+            for first in 0..analysis.faces.len() {
+                for second in (first + 1)..analysis.faces.len() {
+                    let pair = analysis
+                        .dispatch_pair(first, second)
+                        .expect("complete corner V pair");
+                    assert!(
+                        matches!(
+                            pair.decision(),
+                            TopologyContactDecision::AllowedSharedVertexContact
+                                | TopologyContactDecision::RequiresHingeModel
+                                | TopologyContactDecision::Indeterminate
+                        ),
+                        "{angle_degrees:?}: {pair:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -3073,66 +3125,66 @@ mod tests {
     }
 
     #[test]
-    fn midpoint_mountain_pair_is_explicitly_indeterminate_until_watertight_pose() {
+    fn midpoint_mountain_pair_baseline_holds_deep_angles_until_exact_tree_connection() {
         let model = midpoint_mountain_model();
-        for angle in [90.0, 91.0, 135.0, 179.0] {
-            let angles = CanonicalHingeAngles::new(
-                model
-                    .hinges()
-                    .iter()
-                    .map(|hinge| HingeAngle::new(hinge.edge(), angle).expect("mountain angle"))
-                    .collect(),
-            )
-            .expect("canonical mountain angles");
-            let pose = model
-                .solve(Some(model.face_ids()[0]), &angles)
-                .expect("folded midpoint pose");
+        for angle in [10.0, 45.0, 90.0, 91.0, 135.0, 179.0, 180.0] {
+            let pose = solve_two_hinge_pose(&model, [angle, angle]);
             let analysis =
                 prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
                     .expect("authenticated midpoint faces");
-            let mut outer_pairs = 0;
-            for first in 0..analysis.faces.len() {
-                for second in (first + 1)..analysis.faces.len() {
-                    let first_face = &analysis.faces[first];
-                    let second_face = &analysis.faces[second];
-                    let shared_vertices = first_face
-                        .boundary
-                        .iter()
-                        .filter(|vertex| {
-                            second_face
-                                .boundary
-                                .iter()
-                                .any(|candidate| candidate.id == vertex.id)
-                        })
-                        .count();
-                    let shared_edges = first_face
-                        .edges
-                        .iter()
-                        .filter(|edge| second_face.edges.contains(edge))
-                        .count();
-                    if shared_vertices != 1 || shared_edges != 0 {
-                        continue;
-                    }
-                    outer_pairs += 1;
-                    let dispatch = analysis
-                        .dispatch_pair(first, second)
-                        .unwrap_or_else(|error| {
-                            panic!("{angle}: unexpected authenticated pair failure: {error:?}")
-                        });
-                    assert!(dispatch.has_complete_coverage(), "{angle}: {dispatch:?}");
-                    assert_eq!(
-                        dispatch.evidence(),
-                        IntersectionEvidenceV2::Indeterminate,
-                        "{angle}: {dispatch:?}"
-                    );
-                    assert_eq!(
-                        dispatch.decision(),
-                        TopologyContactDecision::Indeterminate,
-                        "{angle}: {dispatch:?}"
-                    );
-                }
+            let (topology, dispatch) = only_vertex_shared_outer_pair(&pose, &analysis);
+            assert!(dispatch.has_complete_coverage(), "{angle}: {dispatch:?}");
+
+            // This is a fail-closed baseline for the independently rounded
+            // binary64 tree pose, not the final geometric classification.
+            // The exact tree must recover shared-vertex contact at 10/45,
+            // keep 90/91 blocking without a pose-mismatch reason, prove
+            // TransversalCrossing/Penetrating at 135/179, and prove the
+            // full-fold CoplanarAreaOverlap/Penetrating at 180 degrees.
+            assert_eq!(
+                topology,
+                AuthenticatedTopology::SharedVertexPoseMismatch,
+                "{angle}: {topology:?}"
+            );
+            assert_eq!(
+                dispatch.evidence(),
+                IntersectionEvidenceV2::Indeterminate,
+                "{angle}: {dispatch:?}"
+            );
+            assert_eq!(
+                dispatch.decision(),
+                TopologyContactDecision::Indeterminate,
+                "{angle}: {dispatch:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reported_three_face_poses_remain_blocking_in_public_proof_at_all_baseline_thicknesses() {
+        let (corner_model, _planar_corner) = corner_v_model_and_pose();
+        let corner_pose = solve_two_hinge_pose(&corner_model, [10.0, 0.0]);
+        let midpoint_model = midpoint_mountain_model();
+        let midpoint_pose = solve_two_hinge_pose(&midpoint_model, [135.0, 135.0]);
+
+        for (label, model, pose) in [
+            ("corner-v", &corner_model, &corner_pose),
+            ("midpoint-mountain", &midpoint_model, &midpoint_pose),
+        ] {
+            for thickness in [0.0, 0.1, 1.0, 3.0] {
+                assert_eq!(
+                    prove_static_collision_geometry(
+                        model,
+                        pose,
+                        thickness,
+                        StaticCollisionLimits::default(),
+                    )
+                    .expect_err("three-face proof must remain blocking"),
+                    StaticCollisionError::PairEvidenceUnavailable {
+                        expected_unordered_face_pairs: 3,
+                    },
+                    "{label}:{thickness}"
+                );
             }
-            assert_eq!(outer_pairs, 1, "{angle}");
         }
     }
 

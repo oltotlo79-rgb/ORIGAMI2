@@ -21,9 +21,12 @@
 //! returns `RequiresHingeModel`; no finite hinge exception is granted here.
 //! The exact affine lift preserves each face plane but deliberately does not
 //! weld independently solved face transforms. A noncardinal shared endpoint
-//! that is not bit-exact under both affine images is blocking
-//! `EvidenceUnavailable`; canonical watertight hinge geometry is a later
-//! prerequisite for the finite hinge model.
+//! that is not bit-exact under both affine images is authenticated as a
+//! private pose mismatch. The complete raw pair is still scanned, but its
+//! result is forced to `Indeterminate`: an arbitrarily small endpoint mismatch
+//! can create a false relative-interior crossing or coplanar-area overlap.
+//! Canonical watertight hinge geometry is a later prerequisite for admitting
+//! those raw diagnostics as collision evidence.
 
 use std::cmp::Ordering;
 
@@ -998,7 +1001,7 @@ fn authenticate_face_pair_topology(
             let first_point = first.boundary[*first_index].current.clone();
             let second_point = second.boundary[*second_index].current.clone();
             if first_point != second_point {
-                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+                return Ok(AuthenticatedTopology::SharedVertexPoseMismatch);
             }
             Ok(AuthenticatedTopology::SharedVertex(first_point))
         }
@@ -1026,13 +1029,18 @@ fn authenticate_face_pair_topology(
                 .all(|(first_id, second_id)| first_id == second_id)
                 || first_start.id != second_end.id
                 || first_end.id != second_start.id
-                || first_start.current != second_end.current
+            {
+                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+            }
+            if first_start.current != second_end.current
                 || first_end.current != second_start.current
             {
                 // Never epsilon-weld independently rounded hinge transforms.
-                // Until one canonical watertight shared-feature source exists,
-                // disagreement is blocking rather than an allowance.
-                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+                // The source feature is authenticated, so the pair can still
+                // complete its raw diagnostic scan. Its final evidence is
+                // forced to Indeterminate until one canonical watertight
+                // geometry source exists.
+                return Ok(AuthenticatedTopology::SharedHingePoseMismatch);
             }
             Ok(AuthenticatedTopology::SharedHingeEdge {
                 start: first_start.current.clone(),
@@ -1064,10 +1072,12 @@ fn unordered_face_pair_eq(
 enum AuthenticatedTopology {
     NoSharedFeature,
     SharedVertex(ExactPoint3),
+    SharedVertexPoseMismatch,
     SharedHingeEdge {
         start: ExactPoint3,
         end: ExactPoint3,
     },
+    SharedHingePoseMismatch,
     SameFace,
 }
 
@@ -1075,10 +1085,21 @@ impl AuthenticatedTopology {
     const fn relation(&self) -> TopologyRelation {
         match self {
             Self::NoSharedFeature => TopologyRelation::NoSharedFeature,
-            Self::SharedVertex(_) => TopologyRelation::SharedVertex,
-            Self::SharedHingeEdge { .. } => TopologyRelation::SharedHingeEdge,
+            Self::SharedVertex(_) | Self::SharedVertexPoseMismatch => {
+                TopologyRelation::SharedVertex
+            }
+            Self::SharedHingeEdge { .. } | Self::SharedHingePoseMismatch => {
+                TopologyRelation::SharedHingeEdge
+            }
             Self::SameFace => TopologyRelation::SameFace,
         }
+    }
+
+    const fn is_pose_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::SharedVertexPoseMismatch | Self::SharedHingePoseMismatch
+        )
     }
 }
 
@@ -1491,6 +1512,10 @@ fn aggregate_authenticated_face_pair(
                                 all_contacts_match_shared_feature = false;
                             }
                         }
+                        AuthenticatedTopology::SharedVertexPoseMismatch
+                        | AuthenticatedTopology::SharedHingePoseMismatch => {
+                            all_contacts_match_shared_feature = false;
+                        }
                         AuthenticatedTopology::NoSharedFeature
                         | AuthenticatedTopology::SameFace => {}
                     }
@@ -1533,6 +1558,10 @@ fn aggregate_authenticated_face_pair(
                                 _ => all_contacts_match_shared_feature = false,
                             }
                         }
+                        AuthenticatedTopology::SharedVertexPoseMismatch
+                        | AuthenticatedTopology::SharedHingePoseMismatch => {
+                            all_contacts_match_shared_feature = false;
+                        }
                         AuthenticatedTopology::NoSharedFeature
                         | AuthenticatedTopology::SameFace => {}
                     }
@@ -1568,7 +1597,14 @@ fn aggregate_authenticated_face_pair(
     }
     let has_indeterminate = has_exact_indeterminate || unresolved_artificial_boundary_artifact;
 
-    let evidence = if has_transversal {
+    let evidence = if topology.is_pose_mismatch() {
+        // Raw affine images are useful diagnostics, but even an arbitrarily
+        // small shared-feature disagreement can manufacture a positive-length
+        // relative-interior crossing or a positive-area coplanar overlap.
+        // Preserve complete pair coverage while refusing both false-safe and
+        // false-penetrating conclusions.
+        IntersectionEvidenceV2::Indeterminate
+    } else if has_transversal {
         IntersectionEvidenceV2::TransversalCrossing
     } else if has_coplanar_area {
         IntersectionEvidenceV2::CoplanarAreaOverlap
@@ -1609,6 +1645,10 @@ fn aggregate_authenticated_face_pair(
                 } else {
                     generic_contact_evidence(point_contacts, line_contacts)
                 }
+            }
+            AuthenticatedTopology::SharedVertexPoseMismatch
+            | AuthenticatedTopology::SharedHingePoseMismatch => {
+                IntersectionEvidenceV2::Indeterminate
             }
             AuthenticatedTopology::SameFace => IntersectionEvidenceV2::Indeterminate,
         }
@@ -2851,9 +2891,10 @@ mod tests {
                     dispatch,
                     Ok(PairDispatch {
                         decision: TopologyContactDecision::AllowedSharedVertexContact
-                            | TopologyContactDecision::RequiresHingeModel,
+                            | TopologyContactDecision::RequiresHingeModel
+                            | TopologyContactDecision::Indeterminate,
                         ..
-                    }) | Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+                    })
                 )
             }));
         }
@@ -2920,7 +2961,7 @@ mod tests {
     }
 
     #[test]
-    fn noncardinal_slanted_hinge_disagreement_is_explicitly_blocking() {
+    fn noncardinal_slanted_hinge_disagreement_is_explicitly_indeterminate() {
         let (model, _planar_pose) = corner_v_model_and_pose();
         let angles = CanonicalHingeAngles::new(
             model
@@ -2956,9 +2997,20 @@ mod tests {
         );
         assert!(
             results.iter().any(|result| {
-                matches!(result, Err(ZeroThicknessAnalysisError::EvidenceUnavailable))
+                matches!(
+                    result,
+                    Ok(PairDispatch {
+                        evidence: IntersectionEvidenceV2::Indeterminate,
+                        decision: TopologyContactDecision::Indeterminate,
+                        ..
+                    })
+                )
             }),
-            "non-watertight slanted hinge must not receive an epsilon allowance: {results:?}"
+            "non-watertight slanted hinge must remain explicitly indeterminate: {results:?}"
+        );
+        assert!(
+            results.iter().all(Result::is_ok),
+            "authenticated source pairs must retain complete diagnostic coverage: {results:?}"
         );
     }
 
@@ -3021,14 +3073,9 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_midpoint_mountain_pair_matches_the_normative_angle_matrix() {
+    fn midpoint_mountain_pair_is_explicitly_indeterminate_until_watertight_pose() {
         let model = midpoint_mountain_model();
-        for (angle, expected) in [
-            (90.0, TopologyContactDecision::Indeterminate),
-            (91.0, TopologyContactDecision::Indeterminate),
-            (135.0, TopologyContactDecision::Penetrating),
-            (179.0, TopologyContactDecision::Penetrating),
-        ] {
+        for angle in [90.0, 91.0, 135.0, 179.0] {
             let angles = CanonicalHingeAngles::new(
                 model
                     .hinges()
@@ -3067,13 +3114,22 @@ mod tests {
                         continue;
                     }
                     outer_pairs += 1;
-                    match analysis.dispatch_pair(first, second) {
-                        Ok(dispatch) => {
-                            assert_eq!(dispatch.decision(), expected, "{angle}: {dispatch:?}");
-                        }
-                        Err(ZeroThicknessAnalysisError::EvidenceUnavailable) => {}
-                        Err(error) => panic!("{angle}: unexpected resource failure: {error:?}"),
-                    }
+                    let dispatch = analysis
+                        .dispatch_pair(first, second)
+                        .unwrap_or_else(|error| {
+                            panic!("{angle}: unexpected authenticated pair failure: {error:?}")
+                        });
+                    assert!(dispatch.has_complete_coverage(), "{angle}: {dispatch:?}");
+                    assert_eq!(
+                        dispatch.evidence(),
+                        IntersectionEvidenceV2::Indeterminate,
+                        "{angle}: {dispatch:?}"
+                    );
+                    assert_eq!(
+                        dispatch.decision(),
+                        TopologyContactDecision::Indeterminate,
+                        "{angle}: {dispatch:?}"
+                    );
                 }
             }
             assert_eq!(outer_pairs, 1, "{angle}");
@@ -3216,6 +3272,104 @@ mod tests {
     }
 
     #[test]
+    fn arbitrarily_small_pose_mismatch_never_authorizes_false_transversal_or_coplanar_overlap() {
+        let horizontal = synthetic_untrusted_face(
+            face_id(41),
+            &[
+                [0.0, 0.0, -1.0],
+                [1.0, 0.0, -1.0],
+                [1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+
+        for exponent in [10, 20, 40, 50] {
+            let epsilon = 2.0_f64.powi(-exponent);
+            let false_transversal = synthetic_untrusted_face(
+                face_id(42),
+                &[
+                    [epsilon, -epsilon, -1.0],
+                    [epsilon, 1.0 - epsilon, -1.0],
+                    [epsilon, 1.0 - epsilon, 1.0],
+                    [epsilon, -epsilon, 1.0],
+                ],
+                &[[0, 1, 2], [0, 2, 3]],
+            );
+            let false_coplanar_overlap = synthetic_untrusted_face(
+                face_id(43),
+                &[
+                    [-1.0 + epsilon, 0.0, -1.0],
+                    [epsilon, 0.0, -1.0],
+                    [epsilon, 0.0, 1.0],
+                    [-1.0 + epsilon, 0.0, 1.0],
+                ],
+                &[[0, 1, 2], [0, 2, 3]],
+            );
+
+            for (candidate, raw_evidence) in [
+                (
+                    &false_transversal,
+                    IntersectionEvidenceV2::TransversalCrossing,
+                ),
+                (
+                    &false_coplanar_overlap,
+                    IntersectionEvidenceV2::CoplanarAreaOverlap,
+                ),
+            ] {
+                let raw = aggregate_authenticated_face_pair(
+                    &horizontal,
+                    candidate,
+                    &AuthenticatedTopology::NoSharedFeature,
+                    4,
+                    usize::MAX,
+                    1,
+                )
+                .expect("complete raw diagnostic");
+                assert_eq!(raw.evidence(), raw_evidence, "2^-{exponent}: {raw:?}");
+                assert_eq!(
+                    raw.decision(),
+                    TopologyContactDecision::Penetrating,
+                    "2^-{exponent}: {raw:?}"
+                );
+                assert!(raw.has_complete_coverage());
+
+                for topology in [
+                    AuthenticatedTopology::SharedVertexPoseMismatch,
+                    AuthenticatedTopology::SharedHingePoseMismatch,
+                ] {
+                    let expected = PairDispatch {
+                        evidence: IntersectionEvidenceV2::Indeterminate,
+                        decision: TopologyContactDecision::Indeterminate,
+                        expected_triangle_pairs: 4,
+                        analyzed_triangle_pairs: 4,
+                    };
+                    let forward = aggregate_authenticated_face_pair(
+                        &horizontal,
+                        candidate,
+                        &topology,
+                        4,
+                        usize::MAX,
+                        1,
+                    )
+                    .expect("complete forward pose-mismatch diagnostic");
+                    let reverse = aggregate_authenticated_face_pair(
+                        candidate,
+                        &horizontal,
+                        &topology,
+                        4,
+                        usize::MAX,
+                        1,
+                    )
+                    .expect("complete reverse pose-mismatch diagnostic");
+                    assert_eq!(forward, expected, "forward 2^-{exponent}: {raw_evidence:?}");
+                    assert_eq!(reverse, expected, "reverse 2^-{exponent}: {raw_evidence:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn face_pair_aggregation_preserves_all_exact_diagnostics_and_order() {
         let first = synthetic_untrusted_face(
             face_id(1),
@@ -3346,6 +3500,78 @@ mod tests {
             partial_hinge.decision(),
             TopologyContactDecision::Indeterminate
         );
+    }
+
+    #[test]
+    fn private_aggregate_reaches_remaining_shared_topology_policy_cells() {
+        let first = synthetic_untrusted_face(
+            face_id(51),
+            &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let shared_vertex =
+            AuthenticatedTopology::SharedVertex(ExactPoint3::from_point(point(0.0, 0.0, 0.0)));
+        let shared_hinge = AuthenticatedTopology::SharedHingeEdge {
+            start: ExactPoint3::from_point(point(0.0, 0.0, 0.0)),
+            end: ExactPoint3::from_point(point(2.0, 0.0, 0.0)),
+        };
+        let shared_vertex_line = synthetic_untrusted_face(
+            face_id(52),
+            &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, -1.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let shared_vertex_transversal = synthetic_untrusted_face(
+            face_id(53),
+            &[[0.0, 0.0, 0.0], [0.5, 0.25, -1.0], [0.5, 0.25, 1.0]],
+            &[[0, 1, 2]],
+        );
+        let shared_hinge_area = synthetic_untrusted_face(
+            face_id(54),
+            &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.5, 0.5, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let shared_hinge_without_contact = synthetic_untrusted_face(
+            face_id(55),
+            &[[3.0, 3.0, 0.0], [4.0, 3.0, 0.0], [3.0, 4.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+
+        for (second, topology, evidence, decision) in [
+            (
+                &shared_vertex_line,
+                &shared_vertex,
+                IntersectionEvidenceV2::BoundaryLineContact,
+                TopologyContactDecision::Touching,
+            ),
+            (
+                &shared_vertex_transversal,
+                &shared_vertex,
+                IntersectionEvidenceV2::TransversalCrossing,
+                TopologyContactDecision::Penetrating,
+            ),
+            (
+                &shared_hinge_area,
+                &shared_hinge,
+                IntersectionEvidenceV2::CoplanarAreaOverlap,
+                TopologyContactDecision::Penetrating,
+            ),
+            (
+                &shared_hinge_without_contact,
+                &shared_hinge,
+                IntersectionEvidenceV2::Indeterminate,
+                TopologyContactDecision::Indeterminate,
+            ),
+        ] {
+            let expected = single_dispatch(evidence, decision);
+            let forward =
+                aggregate_authenticated_face_pair(&first, second, topology, 1, usize::MAX, 1)
+                    .expect("complete forward shared-topology witness");
+            let reverse =
+                aggregate_authenticated_face_pair(second, &first, topology, 1, usize::MAX, 1)
+                    .expect("complete reverse shared-topology witness");
+            assert_eq!(forward, expected);
+            assert_eq!(reverse, expected);
+        }
     }
 
     #[test]

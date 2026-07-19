@@ -266,6 +266,7 @@
 - 共有なし・真正な一頂点・真正な一ヒンジ辺・same-face不整合をsource IDとrest/current geometryから認証し、偽の共有点、部分ヒンジ、人工分割対角線上の低次元交差、未完了coverageを安全側の判定保留へ閉じるprivate dispatcher
 - 非平行な二material faceについて、交線上のtriangle coverageと実外周区間をexactに正規化し、両面relative interiorが共通する正長event cellだけを`transversal_crossing`へ肯定する面全体証明。片側または両側の人工分割対角線、材料境界だけの接触、凹形状の空隙と境界→内部遷移、面/triangle順、作業上限を回帰
 - 共有頂点だけの許容を、exact singletonに加えて検証済みface transformのlocal `+Y`材料法線内積がbinary64境界`1e-10`より厳密に大きい場合へ限定し、境界未満・一致・超過、全頂点順、面交換を回帰
+- source共有関係が正しくcurrent座標だけが不一致のpairをprivate pose mismatchへ分離し、全triangle coverageを保持した明示的`indeterminate`へ閉じる経路。任意小のraw残差で生じる偽横断・偽共面重なりを`2^-10`～`2^-50`、両共有関係、面順両方向で回帰し、厚さ0で到達可能な共有関係×証拠の不足4セルにもdirect witnessを追加
 - 0・±90・±180度の回転を診断・単一折り描画・木構造姿勢で同じcanonical Matrix4へ統一し、近傍角はsnapしない。400×400 mm、非原点の斜めV実寸fixtureそのものへA/Bと厚さ3種×角度4種×3表を固定し、Aは非隣接接触1・許容ヒンジ境界2・不確定0としてUIまで回帰
 - sub-marginの正面積・正長交差、近平行面間隔、点併合、巨大座標は接触へ格下げせず判定不能へ退避し、同じrest座標の共有点・共有辺がworld位置でも一致して内部横断しない場合だけtopological contactを証明
 - 3D診断を非隣接とヒンジ外の貫通・接触、モデル許容境界接触・領域内重なり、ヒンジ未解決、数値・方針不確定へ分離し、単一折りでは連続経路結果を別表示し、複数ヒンジでは連続運動未検証を明示
@@ -387,7 +388,7 @@
 ## 進行中
 
 - [native current applied pose設計](native-applied-pose-design.md)に従い、表示・投影から独立したnative kinematics、current pose capability、native静的・連続衝突、場所別cell-order transport、原子的commitを順に実装する作業。4×11分類表と実geometry証拠の対応を先に完成させ、任意の現在3D状態で局所的に重なる層を安全に扱えるまで折り重ねUIへ着手しない
-- 非cardinalな斜め共有ヒンジで面ごとのbinary64変換像に微小な端点差が生じる問題を、任意epsilonではなくexact rigidなwatertight canonical poseまたは検証可能な全face誤差包含で解決する作業。raw姿勢の横断・共面正面積を端点不一致より優先する暫定案は、任意小の残差だけで偽貫通を作れる反例があるため不採用
+- 非cardinalな斜め共有ヒンジで面ごとのbinary64変換像に微小な端点差が生じる問題を、任意epsilonではなくexact rigidなwatertight canonical poseまたは検証可能な全face誤差包含で解決する作業。raw姿勢の横断・共面正面積を端点不一致より優先する暫定案は不採用とし、現在は完全coverage付き判定保留へ閉じる
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認

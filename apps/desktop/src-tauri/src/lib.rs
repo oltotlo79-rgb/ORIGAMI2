@@ -3,6 +3,7 @@ mod crease_export;
 mod diagnostics;
 mod global_flat_foldability;
 mod instruction_export;
+mod numeric_expression;
 mod project_persistence;
 mod save_path;
 
@@ -39,6 +40,7 @@ use instruction_export::{
     InstructionExportState, begin_instruction_export, cancel_instruction_export,
     get_instruction_export_progress, preview_instruction_export, save_instruction_export,
 };
+use numeric_expression::evaluate_numeric_expression;
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, EditorTopology, IntersectionEdgeTarget,
     JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue, PointPolygonRelation,
@@ -4336,6 +4338,7 @@ pub fn run() {
             validate_project,
             apply_current_native_pose,
             inspect_current_static_collision,
+            evaluate_numeric_expression,
             analyze_project_topology,
             begin_global_flat_foldability,
             get_global_flat_foldability_progress,

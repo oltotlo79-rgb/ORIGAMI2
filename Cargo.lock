@@ -2220,6 +2220,7 @@ dependencies = [
  "ori-foldability",
  "ori-formats",
  "ori-kinematics",
+ "ori-numeric",
  "serde",
  "serde_json",
  "tauri",

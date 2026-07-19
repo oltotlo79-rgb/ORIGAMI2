@@ -7,7 +7,7 @@
 
 use num_bigint::{BigInt, BigUint, Sign};
 use num_rational::BigRational;
-use num_traits::{One, Signed, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -115,6 +115,36 @@ pub enum ExpressionError {
     NegativeSquareRoot,
     #[error("expression state is inconsistent")]
     InconsistentState,
+}
+
+/// A finite binary64 enclosure of a certified high-precision interval.
+///
+/// Each endpoint is rounded outwards after comparing the candidate binary64
+/// value with the exact rational endpoint.  This type is therefore suitable
+/// for bounded IPC and geometry previews; a nearest binary64 conversion alone
+/// must not be presented as a certified enclosure.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CertifiedF64Interval {
+    lower: f64,
+    upper: f64,
+}
+
+impl CertifiedF64Interval {
+    #[must_use]
+    pub fn lower(self) -> f64 {
+        self.lower
+    }
+
+    #[must_use]
+    pub fn upper(self) -> f64 {
+        self.upper
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum F64IntervalError {
+    #[error("certified interval cannot be represented by finite binary64 endpoints")]
+    NonFinite,
 }
 
 #[derive(Clone, Debug)]
@@ -297,6 +327,72 @@ impl HighPrecisionValue {
     pub fn operations(&self) -> usize {
         self.operations
     }
+
+    /// Converts the exact rational endpoints to finite binary64 values while
+    /// preserving enclosure by directed one-ULP correction where required.
+    pub fn certified_f64_interval(&self) -> Result<CertifiedF64Interval, F64IntervalError> {
+        let lower = rational_to_f64_outward(&self.lower, F64Direction::Down)?;
+        let upper = rational_to_f64_outward(&self.upper, F64Direction::Up)?;
+        if !lower.is_finite() || !upper.is_finite() || lower > upper {
+            return Err(F64IntervalError::NonFinite);
+        }
+        Ok(CertifiedF64Interval {
+            lower: normalize_f64_zero(lower),
+            upper: normalize_f64_zero(upper),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum F64Direction {
+    Down,
+    Up,
+}
+
+fn rational_to_f64_outward(
+    value: &BigRational,
+    direction: F64Direction,
+) -> Result<f64, F64IntervalError> {
+    let candidate = value.to_f64().ok_or(F64IntervalError::NonFinite)?;
+    if !candidate.is_finite() {
+        return Err(F64IntervalError::NonFinite);
+    }
+    let candidate_exact = BigRational::from_float(candidate).ok_or(F64IntervalError::NonFinite)?;
+    let rounded = match direction {
+        F64Direction::Down if candidate_exact > *value => next_f64_down(candidate),
+        F64Direction::Up if candidate_exact < *value => next_f64_up(candidate),
+        _ => candidate,
+    };
+    rounded
+        .is_finite()
+        .then_some(rounded)
+        .ok_or(F64IntervalError::NonFinite)
+}
+
+fn next_f64_down(value: f64) -> f64 {
+    if value == f64::NEG_INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return -f64::from_bits(1);
+    }
+    let bits = value.to_bits();
+    f64::from_bits(if value > 0.0 { bits - 1 } else { bits + 1 })
+}
+
+fn next_f64_up(value: f64) -> f64 {
+    if value == f64::INFINITY {
+        return value;
+    }
+    if value == 0.0 {
+        return f64::from_bits(1);
+    }
+    let bits = value.to_bits();
+    f64::from_bits(if value > 0.0 { bits + 1 } else { bits - 1 })
+}
+
+fn normalize_f64_zero(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
 }
 
 type NodeId = usize;
@@ -1872,5 +1968,118 @@ mod tests {
         let value = worker.join().unwrap().unwrap();
         assert_eq!(value.lower(), &expected);
         assert_eq!(value.upper(), &expected);
+    }
+
+    #[test]
+    fn binary64_conversion_is_exact_for_representable_values() {
+        for (source, expected) in [("0", 0.0), ("-0", 0.0), ("3 / 2", 1.5), ("-3 / 2", -1.5)] {
+            let expression = ScalarExpression::parse_default(source).unwrap();
+            let value = expression.evaluate_default().unwrap();
+            let interval = value.certified_f64_interval().unwrap();
+
+            assert_eq!(interval.lower(), expected, "{source}");
+            assert_eq!(interval.upper(), expected, "{source}");
+            assert!(!interval.lower().is_sign_negative() || interval.lower() != 0.0);
+            assert!(!interval.upper().is_sign_negative() || interval.upper() != 0.0);
+        }
+    }
+
+    #[test]
+    fn binary64_conversion_rounds_each_rational_endpoint_outwards() {
+        for source in [
+            "1 / 10", "-1 / 10", "sqrt(2)", "-sqrt(2)", "1e-400", "-1e-400",
+        ] {
+            let expression = ScalarExpression::parse_default(source).unwrap();
+            let value = expression.evaluate_default().unwrap();
+            let interval = value.certified_f64_interval().unwrap();
+            let lower = BigRational::from_float(interval.lower()).unwrap();
+            let upper = BigRational::from_float(interval.upper()).unwrap();
+
+            assert!(lower <= *value.lower(), "{source}");
+            assert!(*value.upper() <= upper, "{source}");
+            assert!(interval.lower() <= interval.upper(), "{source}");
+            assert!(interval.lower().is_finite(), "{source}");
+            assert!(interval.upper().is_finite(), "{source}");
+            assert!(!interval.lower().is_sign_negative() || interval.lower() != 0.0);
+            assert!(!interval.upper().is_sign_negative() || interval.upper() != 0.0);
+        }
+    }
+
+    #[test]
+    fn binary64_conversion_rejects_an_endpoint_outside_the_finite_range() {
+        let expression = ScalarExpression::parse_default("1e400").unwrap();
+        let value = expression.evaluate_default().unwrap();
+
+        assert_eq!(
+            value.certified_f64_interval(),
+            Err(F64IntervalError::NonFinite),
+        );
+    }
+
+    #[test]
+    fn binary64_conversion_covers_maximum_finite_boundaries_in_both_signs() {
+        let maximum = BigRational::from_float(f64::MAX).unwrap();
+        for value in [
+            maximum.clone(),
+            &maximum - BigInt::one(),
+            -maximum.clone(),
+            -maximum.clone() + BigInt::one(),
+        ] {
+            assert_exact_rational_has_f64_enclosure(value);
+        }
+        for outside in [&maximum + BigInt::one(), -maximum - BigInt::one()] {
+            let value = exact_high_precision_value(outside);
+            assert_eq!(
+                value.certified_f64_interval(),
+                Err(F64IntervalError::NonFinite)
+            );
+        }
+    }
+
+    #[test]
+    fn binary64_conversion_covers_subnormal_and_signed_underflow_boundaries() {
+        let minimum_subnormal = BigRational::from_float(f64::from_bits(1)).unwrap();
+        for value in [
+            minimum_subnormal.clone(),
+            &minimum_subnormal / BigInt::from(2_u8),
+            &minimum_subnormal * BigInt::from(3_u8) / BigInt::from(2_u8),
+            -minimum_subnormal.clone(),
+            -minimum_subnormal.clone() / BigInt::from(2_u8),
+            -minimum_subnormal * BigInt::from(3_u8) / BigInt::from(2_u8),
+        ] {
+            assert_exact_rational_has_f64_enclosure(value);
+        }
+    }
+
+    #[test]
+    fn binary64_conversion_handles_high_bit_rationals_without_decimal_fallback() {
+        let denominator = BigInt::one() << 32_700_usize;
+        let positive = BigRational::new(&denominator + BigInt::one(), denominator);
+        assert!(bit_length_bigint(positive.numer()) > 32_000);
+        assert!(bit_length_bigint(positive.denom()) > 32_000);
+
+        assert_exact_rational_has_f64_enclosure(positive.clone());
+        assert_exact_rational_has_f64_enclosure(-positive);
+    }
+
+    fn exact_high_precision_value(value: BigRational) -> HighPrecisionValue {
+        HighPrecisionValue {
+            lower: value.clone(),
+            upper: value,
+            precision_bits: 192,
+            operations: 0,
+        }
+    }
+
+    fn assert_exact_rational_has_f64_enclosure(value: BigRational) {
+        let high_precision = exact_high_precision_value(value.clone());
+        let interval = high_precision.certified_f64_interval().unwrap();
+        let lower = BigRational::from_float(interval.lower()).unwrap();
+        let upper = BigRational::from_float(interval.upper()).unwrap();
+        assert!(lower <= value);
+        assert!(value <= upper);
+        assert!(interval.lower().is_finite());
+        assert!(interval.upper().is_finite());
+        assert!(interval.lower() <= interval.upper());
     }
 }

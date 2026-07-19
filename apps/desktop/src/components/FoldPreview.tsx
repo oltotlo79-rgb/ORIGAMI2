@@ -4323,7 +4323,7 @@ export function FoldPreview({
           <span className="fold-preview-empty" aria-hidden="true">{unavailableMessage}</span>
         ) : null}
         {previewAvailable ? (
-          <div className="fold-preview-status-stack" aria-hidden="true">
+          <div className="fold-preview-status-stack">
             <FoldPreviewCollisionBadge
               summary={currentCollisionSummary}
               description={collisionDescription}
@@ -4331,6 +4331,7 @@ export function FoldPreview({
             {motionView ? (
               <span
                 className={`fold-preview-motion ${motionBadgeClass}`}
+                aria-hidden="true"
                 title={angleDragPresentation.state === 'idle'
                   ? motionView.accessibleText
                   : motionBadgeText}
@@ -4341,6 +4342,7 @@ export function FoldPreview({
             {treeCorrectionAnalysisAvailable ? (
               <span
                 className={`fold-preview-correction ${correctionAnalysisView.badgeClass}`}
+                aria-hidden="true"
                 title={correctionAnalysisView.accessibleText}
               >
                 補正解析｜{correctionAnalysisView.badgeText}

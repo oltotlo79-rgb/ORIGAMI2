@@ -89,7 +89,9 @@ export function describeCollisionSummary(
 ) {
   if (!summary) return accessible ? '現在姿勢の衝突候補を判定中' : '衝突判定中'
   if (summary.kind === 'unavailable') {
-    return accessible ? '現在姿勢の衝突判定は利用できません' : '衝突判定不能'
+    return accessible
+      ? '現在姿勢の衝突判定は利用できません。安全確認が必要です'
+      : '衝突判定不能・安全確認が必要'
   }
   if (summary.totalCandidates === 0) {
     if (pathDisclosure === 'separately_reported') {
@@ -111,8 +113,14 @@ export function describeCollisionSummary(
   const limitation = pathDisclosure === 'separately_reported'
     ? 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖と層ずれは未検証です。単一ヒンジの連続経路判定は別に表示しています'
     : 'これは現在姿勢に対する中央面基準の近似判定で、実際の折り癖、層ずれ、連続運動中の衝突は未検証です'
+  const safetyReview = summary.hingeLayerOffsetUnmodeled
+      + summary.hingeUnresolvedInteractions
+      + summary.indeterminateInteractions
+    > 0
+    ? '判定保留は安全確認が必要です。'
+    : ''
   return accessible
-    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有頂点のみと証明した許容接触${topologyModelCount}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、交差の可能性・判定保留${summary.indeterminateInteractions}件。判定保留は安全確認が必要です。${limitation}`
+    ? `現在姿勢の広域候補は${summary.totalCandidates}件、狭域相互作用は${summary.narrowInteractions}件、非隣接貫通${summary.nonAdjacentPenetrations}件、中央面基準の共有ヒンジモデル外貫通${summary.hingeOutsidePenetrations}件、非隣接接触${summary.nonAdjacentContacts}件、共有頂点のみと証明した許容接触${topologyModelCount}件、共有ヒンジモデル外接触${summary.hingeOutsideContacts}件、モデルで許容した折り目境界接触${summary.hingeModelAllowedContacts}件、折り目領域内重なり${summary.hingeModelCorridorOverlaps}件、厚さ0の許容平坦積層${summary.hingeModelFlatSurfaceStacks}件、層ずらし未再現${summary.hingeLayerOffsetUnmodeled}件、ヒンジ未解決${summary.hingeUnresolvedInteractions}件、交差の可能性・判定保留${summary.indeterminateInteractions}件。${safetyReview}${limitation}`
     : `現在姿勢: 貫通 ${penetrationCount}・接触 ${contactCount}・共有頂点モデル許容 ${topologyModelCount}・ヒンジモデル許容 ${hingeModelCount}・未解決 ${summary.hingeUnresolvedInteractions}・交差の可能性・判定保留 ${summary.indeterminateInteractions}（広域 ${summary.totalCandidates}→狭域 ${summary.narrowInteractions}）`
 }
 
@@ -124,8 +132,8 @@ export function collisionDataStatus(summary: CollisionSummary | null) {
   }
   if (summary.hingeLayerOffsetUnmodeled > 0) return 'hinge-unresolved'
   if (summary.indeterminateInteractions > 0) return 'indeterminate'
-  if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'contact'
   if (summary.hingeUnresolvedInteractions > 0) return 'hinge-unresolved'
+  if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'contact'
   if (summary.nonAdjacentAllowedSharedVertexContacts > 0) {
     return 'topology-model'
   }
@@ -141,51 +149,32 @@ export function collisionDataStatus(summary: CollisionSummary | null) {
 }
 
 export function collisionBadgeClass(summary: CollisionSummary | null) {
-  if (!summary || summary.kind === 'unavailable') return 'is-unavailable'
-  if (summary.nonAdjacentPenetrations + summary.hingeOutsidePenetrations > 0) {
-    return 'has-penetrations'
+  const status = collisionDataStatus(summary)
+  if (status === 'pending') return 'is-pending'
+  if (status === 'unavailable') return 'is-unavailable'
+  if (status === 'penetrating') return 'has-penetrations'
+  if (status === 'indeterminate' || status === 'hinge-unresolved') {
+    return 'has-indeterminate'
   }
-  if (summary.hingeLayerOffsetUnmodeled > 0) return 'has-indeterminate'
-  if (summary.indeterminateInteractions > 0) return 'has-indeterminate'
-  if (summary.nonAdjacentContacts + summary.hingeOutsideContacts > 0) return 'has-contact'
-  if (summary.hingeUnresolvedInteractions > 0) {
-    return 'has-hinge-candidates'
-  }
-  if (summary.nonAdjacentAllowedSharedVertexContacts > 0) {
-    return 'has-topology-allowance'
-  }
-  if (
-    summary.hingeModelAllowedContacts
-      + summary.hingeModelCorridorOverlaps
-      + summary.hingeModelFlatSurfaceStacks
-      > 0
-  ) return 'has-hinge-candidates'
+  if (status === 'contact') return 'has-contact'
+  if (status === 'topology-model') return 'has-topology-allowance'
+  if (status === 'hinge-model') return 'has-hinge-candidates'
   return 'is-clear'
 }
 
 export function collisionBadgeText(summary: CollisionSummary | null) {
   if (!summary) return '衝突判定中'
-  if (summary.kind === 'unavailable') return '衝突判定不能'
+  if (summary.kind === 'unavailable') return '衝突判定不能・安全確認が必要'
   const penetrationCount = summary.nonAdjacentPenetrations
     + summary.hingeOutsidePenetrations
   const contactCount = summary.nonAdjacentContacts + summary.hingeOutsideContacts
+  const holdText = collisionHoldText(summary)
   if (penetrationCount > 0) {
-    const indeterminateWarning = summary.indeterminateInteractions > 0
-      ? `・交差の可能性・判定保留 ${summary.indeterminateInteractions}・安全確認が必要`
-      : ''
-    return `貫通 ${penetrationCount}（ヒンジ外 ${summary.hingeOutsidePenetrations}）・接触 ${contactCount}${indeterminateWarning}`
+    return `貫通 ${penetrationCount}（ヒンジ外 ${summary.hingeOutsidePenetrations}）・接触 ${contactCount}${holdText ? `・${holdText}` : ''}`
   }
-  if (summary.hingeLayerOffsetUnmodeled > 0) {
-    return `層ずらし未再現のため判定不能 ${summary.hingeLayerOffsetUnmodeled}・貫通許可なし`
-  }
-  if (summary.indeterminateInteractions > 0) {
-    return `交差の可能性・判定保留 ${summary.indeterminateInteractions}・安全確認が必要`
-  }
+  if (holdText) return `${holdText}${contactCount > 0 ? `・接触 ${contactCount}` : ''}`
   if (contactCount > 0) {
     return `接触 ${contactCount}（ヒンジ外 ${summary.hingeOutsideContacts}）・貫通 0`
-  }
-  if (summary.hingeUnresolvedInteractions > 0) {
-    return `ヒンジ未解決 ${summary.hingeUnresolvedInteractions}・貫通 0`
   }
   if (summary.nonAdjacentAllowedSharedVertexContacts > 0) {
     return `共有頂点の許容接触 ${summary.nonAdjacentAllowedSharedVertexContacts}・貫通 0`
@@ -202,6 +191,24 @@ export function collisionBadgeText(summary: CollisionSummary | null) {
   return summary.totalCandidates === 0
     ? '現在姿勢: 衝突候補 0'
     : `広域 ${summary.totalCandidates} → 狭域相互作用 0`
+}
+
+function collisionHoldText(
+  summary: Extract<CollisionSummary, { kind: 'ready' }>,
+) {
+  if (summary.hingeLayerOffsetUnmodeled > 0) {
+    return `層ずらし未再現のため判定不能 ${summary.hingeLayerOffsetUnmodeled}・安全確認が必要・貫通許可なし`
+  }
+  if (summary.indeterminateInteractions > 0) {
+    const hingeDetail = summary.hingeUnresolvedInteractions > 0
+      ? `（ヒンジ未解決 ${summary.hingeUnresolvedInteractions}）`
+      : ''
+    return `交差の可能性・判定保留 ${summary.indeterminateInteractions}${hingeDetail}・安全確認が必要`
+  }
+  if (summary.hingeUnresolvedInteractions > 0) {
+    return `交差の可能性・判定保留（ヒンジ未解決 ${summary.hingeUnresolvedInteractions}）・安全確認が必要`
+  }
+  return ''
 }
 
 function compareText(first: string, second: string) {

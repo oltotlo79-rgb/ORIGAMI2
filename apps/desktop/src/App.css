@@ -765,8 +765,7 @@ button { color: inherit; }
 .fold-preview-collision.has-hinge-candidates,
 .fold-preview-collision.has-topology-allowance { border-color: rgb(22 113 184 / 45%); color: #165f99; }
 .fold-preview-collision.has-contact { border-color: rgb(190 101 40 / 55%); background: rgb(255 247 238 / 92%); color: #9a4b1f; }
-.fold-preview-collision.has-indeterminate,
-.fold-preview-collision.has-penetrations { border-color: rgb(179 65 65 / 72%); background: rgb(255 239 239 / 96%); color: #9f3030; font-weight: 700; box-shadow: 0 0 0 1px rgb(179 65 65 / 16%); }
+.fold-preview-collision[data-collision-risk="blocking"] { border-color: rgb(179 65 65 / 72%); background: rgb(255 239 239 / 96%); color: #9f3030; font-weight: 700; box-shadow: 0 0 0 1px rgb(179 65 65 / 16%); }
 .fold-preview-motion-detail {
   position: absolute;
   bottom: 34px;

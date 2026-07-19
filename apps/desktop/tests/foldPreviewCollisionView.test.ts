@@ -73,11 +73,11 @@ test('exact shared-vertex-only contacts have a distinct informational state', ()
   assert.equal(collisionDataStatus(withUnresolvedHinge), 'hinge-unresolved')
   assert.equal(
     collisionBadgeClass(withUnresolvedHinge),
-    'has-hinge-candidates',
+    'has-indeterminate',
   )
   assert.equal(
     collisionBadgeText(withUnresolvedHinge),
-    'ヒンジ未解決 1・貫通 0',
+    '交差の可能性・判定保留（ヒンジ未解決 1）・安全確認が必要',
   )
 })
 
@@ -108,7 +108,7 @@ test('flat stacks and unmodeled layer offsets have dedicated user-facing labels'
   assert.equal(collisionBadgeClass(layerOffset), 'has-indeterminate')
   assert.equal(
     collisionBadgeText(layerOffset),
-    '層ずらし未再現のため判定不能 1・貫通許可なし',
+    '層ずらし未再現のため判定不能 1・安全確認が必要・貫通許可なし',
   )
   assert.match(
     describeCollisionSummary(layerOffset, true),
@@ -127,7 +127,7 @@ test('flat stacks and unmodeled layer offsets have dedicated user-facing labels'
   )
   assert.equal(
     collisionBadgeText(layerOffsetWithContact),
-    '層ずらし未再現のため判定不能 1・貫通許可なし',
+    '層ずらし未再現のため判定不能 1・安全確認が必要・貫通許可なし・接触 1',
   )
 })
 
@@ -178,7 +178,7 @@ test('penetration outranks indeterminate, which outranks contact', () => {
   assert.equal(collisionBadgeClass(indeterminate), 'has-indeterminate')
   assert.equal(
     collisionBadgeText(indeterminate),
-    '交差の可能性・判定保留 1・安全確認が必要',
+    '交差の可能性・判定保留 1・安全確認が必要・接触 1',
   )
   assert.match(
     describeCollisionSummary(indeterminate, true),
@@ -189,6 +189,28 @@ test('penetration outranks indeterminate, which outranks contact', () => {
   assert.equal(
     collisionBadgeText(penetration),
     '貫通 1（ヒンジ外 0）・接触 1・交差の可能性・判定保留 1・安全確認が必要',
+  )
+})
+
+test('every unresolved hinge state outranks nonblocking contact and allowance', () => {
+  const unresolved = ready({
+    totalCandidates: 3,
+    narrowInteractions: 3,
+    nonAdjacentContacts: 1,
+    nonAdjacentAllowedSharedVertexContacts: 1,
+    hingeInteractions: 1,
+    hingeUnresolvedInteractions: 1,
+  })
+
+  assert.equal(collisionDataStatus(unresolved), 'hinge-unresolved')
+  assert.equal(collisionBadgeClass(unresolved), 'has-indeterminate')
+  assert.equal(
+    collisionBadgeText(unresolved),
+    '交差の可能性・判定保留（ヒンジ未解決 1）・安全確認が必要・接触 1',
+  )
+  assert.match(
+    describeCollisionSummary(unresolved, true),
+    /ヒンジ未解決1件.*安全確認が必要/u,
   )
 })
 
@@ -255,10 +277,13 @@ test('pending, unavailable, clear, and detailed descriptions retain safety wordi
   assert.equal(describeCollisionSummary(null), '衝突判定中')
   assert.equal(describeCollisionSummary(null, true), '現在姿勢の衝突候補を判定中')
   const unavailable: CollisionSummary = { kind: 'unavailable', requestKey: 'pose' }
-  assert.equal(describeCollisionSummary(unavailable), '衝突判定不能')
+  assert.equal(
+    describeCollisionSummary(unavailable),
+    '衝突判定不能・安全確認が必要',
+  )
   assert.equal(
     describeCollisionSummary(unavailable, true),
-    '現在姿勢の衝突判定は利用できません',
+    '現在姿勢の衝突判定は利用できません。安全確認が必要です',
   )
   assert.match(describeCollisionSummary(ready(), true), /連続運動中の衝突は未検証/)
   assert.equal(

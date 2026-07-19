@@ -668,7 +668,7 @@ test('reported B: fully overlapping zero-thickness faces at 180 degrees remain p
   assert.equal(outerFaces.geometryClass, 'penetrating')
 })
 
-test('reported midpoint mountain-mountain V has an explicit 3 by 3 diagnostic snapshot', () => {
+test('reported midpoint mountain-mountain V has an explicit 3 by 4 diagnostic snapshot', () => {
   const analyzer = prepareFoldPreviewNarrowPhase(
     reportedMidpointVFaces,
     reportedMidpointVAdjacencies,
@@ -677,7 +677,7 @@ test('reported midpoint mountain-mountain V has an explicit 3 by 3 diagnostic sn
   assert.ok(analyzer)
 
   for (const thickness of [0, 0.1, 3]) {
-    for (const degrees of [90, 135, 179]) {
+    for (const degrees of [90, 91, 135, 179]) {
       const pose = calculateFoldTreePoseWithAngles(
         reportedMidpointMountainTree,
         {
@@ -706,17 +706,17 @@ test('reported midpoint mountain-mountain V has an explicit 3 by 3 diagnostic sn
       )
       assert.equal(
         outerFaces.geometryClass,
-        degrees === 90 ? 'indeterminate' : 'penetrating',
+        degrees <= 91 ? 'indeterminate' : 'penetrating',
         `${thickness} mm at ${degrees} degrees`,
       )
       const presentation = summarizeFoldPreviewCollision(result)
       assert.equal(
         presentation.indeterminateInteractions,
-        degrees === 90 ? 1 : 0,
+        degrees <= 91 ? 1 : 0,
       )
       assert.equal(
         presentation.nonAdjacentPenetrations,
-        degrees === 90 ? 0 : 1,
+        degrees <= 91 ? 0 : 1,
       )
       assert.equal(
         presentation.nonAdjacentContacts,

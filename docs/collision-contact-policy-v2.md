@@ -5,6 +5,7 @@
 `topology_contact_policy_v2`は、正厚材料どうしの境界面接触を欠落なく表すための正式な分類表である。初版の[`topology_contact_policy_v1`](collision-contact-policy.md)が定めた40セルの意味は変更せず、`boundary_line_contact`の直後へ`boundary_area_contact`を追加する。
 
 - 正規corpus: [`collision-contact-policy-v2.json`](collision-contact-policy-v2.json)
+- 実装カバレッジ台帳: [`collision-classification-coverage-v2.md`](collision-classification-coverage-v2.md)
 - 正厚モデル: `centered_mid_surface_v1`
 - 共有関係: v1と同じ4種類
 - 交差証拠: 11種類

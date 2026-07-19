@@ -19,6 +19,8 @@
 
 #![forbid(unsafe_code)]
 
+#[allow(dead_code)]
+mod cayley;
 mod static_collision;
 mod zero_thickness;
 

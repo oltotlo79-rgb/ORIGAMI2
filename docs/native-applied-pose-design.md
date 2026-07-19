@@ -455,6 +455,12 @@ triangle-localでは人工分割対角線上の境界接触に見える場合、
 
 全pairの厚さ0診断集約はここまで実装したが、watertightなexact rigid pose、厚さ0の有限ヒンジ許容および正厚証拠が未完成なため、productionの複数面geometry proofは引き続きblockingとする。source ID・edge・hinge registryが正しくcurrent座標だけが不一致の場合はprivateなpose mismatchとして分離し、全triangleと必要な面区間を走査して完全coverageを保った`indeterminate`を返す。rawの横断または共面正面積をそのまま肯定貫通へ優先する暫定案は採用しない。任意に小さい端点残差でも、本来は共有ヒンジだけで接する二面に偽のrelative-interior横断または薄い共面重なりを作れるためである。`2^-10`から`2^-50`までの反例を面順両方向で回帰した。watertight canonical pose、またはrawからcanonicalへの全face誤差包含と共有featureからの分離下限が証明されるまではこの明示的判定保留を維持する。
 
+watertight姿勢の第一checkpointは、`ori-collision`内部だけで使用する非公開の`rational_cayley_local_rotation_v1`とする。入力の軸端点と角度はfinite binary64の保存値から有理数へbit-exactに変換し、山谷および親子向きから得る回転符号は角度とのbinary64乗算を介さず独立した`+1 / -1`として適用する。0度は恒等変換、180度は`R = -I + 2ddᵀ/(d·d)`のexact half-turn、その他は有理Cayley parameterによる回転と`p - Rp`の平行移動を構成する。発行前に`RᵀR = I`、`det R = 1`、`Rd = d`および両軸端点の不動を有理算術で再検証する。
+
+一般角の超越値をexact値と偽らない。Machin公式によるπ、有理整数平方根区間、単調区間上のsin/cos Taylor包含から`tan(θ/2)`を上下界で囲み、指数追従のdyadic Cayley parameterを選ぶ。実現角と要求角の差は有理数の上界として証明し、その上界が入力角度の隣接binary64間隔の4分の1より**厳密に**小さい場合だけ局所回転を発行する。これにより、最小subnormal角を0度へ潰さず、180度直前をhalf-turnへ丸めず、同じbinary64角度へ丸め戻せる余裕をcertificateに保持する。pinned `libm`値は表示用候補に利用できても証明根拠にはしない。
+
+区間精度、Machin項数、三角関数項数、整数平方根反復、区間演算数、shift量、中間整数bit数および出力分子・分母bit数にはversion固定の上限を設ける。各演算は割当て前に上限を検査し、上限到達、包含不能または不変条件不成立では部分matrixやfallback姿勢を発行せずblocking errorとする。この第一checkpointは局所回転核の証明だけであり、既存のbinary64 face transformを置き換えず、複数面geometry proofの成功集合も広げない。次checkpointで同じissuer-bound tree traversalへ全局所回転を合成し、全共有頂点・共有ヒンジのexact一致とraw renderer姿勢への誤差包含を証明できた時点でのみ、pose mismatchの判定保留を再分類する。
+
 先行テスト:
 
 - 共有なし、頂点共有、辺共有、同一面

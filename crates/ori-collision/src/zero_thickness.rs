@@ -534,6 +534,8 @@ impl AuthenticatedZeroThicknessPose<'_> {
             second,
             &topology,
             self.limits.max_triangle_pairs_per_face_pair,
+            self.limits.max_boundary_relation_work_per_face_pair,
+            self.pose.hinges().len(),
         )
     }
 
@@ -702,6 +704,8 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
             }
             let boundary_relation_work = estimated_boundary_relation_work(
                 pair_count,
+                faces[first].triangles.len(),
+                faces[second].triangles.len(),
                 faces[first].boundary.len(),
                 faces[second].boundary.len(),
                 pose.hinges().len(),
@@ -728,6 +732,8 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
 
 fn estimated_boundary_relation_work(
     triangle_pairs: usize,
+    first_triangles: usize,
+    second_triangles: usize,
     first_boundary_vertices: usize,
     second_boundary_vertices: usize,
     hinges: usize,
@@ -745,11 +751,57 @@ fn estimated_boundary_relation_work(
         .checked_mul(second_boundary_vertices)
         .and_then(|shared_vertices| shared_vertices.checked_mul(2))
         .and_then(|shared_features| shared_features.checked_add(hinges));
+    let face_line_work = estimated_face_line_intersection_work(
+        first_triangles,
+        second_triangles,
+        first_boundary_vertices,
+        second_boundary_vertices,
+    )?;
     classification_work
         .and_then(|classification| {
             topology_work.and_then(|topology| classification.checked_add(topology))
         })
+        .and_then(|work| work.checked_add(face_line_work))
         .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+fn estimated_face_line_intersection_work(
+    first_triangles: usize,
+    second_triangles: usize,
+    first_boundary_vertices: usize,
+    second_boundary_vertices: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    fn sort_work(values: usize) -> Option<usize> {
+        let log_factor = usize::BITS.checked_sub(values.max(1).leading_zeros())? as usize;
+        values
+            .checked_mul(log_factor.checked_add(1)?)
+            .and_then(|work| work.checked_mul(4))
+    }
+
+    let interval_count = first_triangles
+        .checked_add(second_triangles)
+        .and_then(|triangles| triangles.checked_add(first_boundary_vertices))
+        .and_then(|work| work.checked_add(second_boundary_vertices))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let event_count = interval_count
+        .checked_mul(2)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let linear_work = interval_count
+        .checked_mul(64)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    [
+        first_triangles,
+        second_triangles,
+        first_boundary_vertices,
+        second_boundary_vertices,
+        event_count,
+    ]
+    .into_iter()
+    .try_fold(linear_work, |work, values| {
+        sort_work(values)
+            .and_then(|sort| work.checked_add(sort))
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+    })
 }
 
 fn estimated_registry_authentication_work(
@@ -1068,11 +1120,305 @@ impl PairDispatch {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactInterval {
+    start: BigRational,
+    end: BigRational,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FaceLevelLineEvidence {
+    NotApplicable,
+    NoPositiveLine,
+    BoundaryOnly,
+    Transversal,
+    Indeterminate,
+}
+
+#[derive(Debug)]
+struct FaceLineSlice {
+    coverage: Vec<ExactInterval>,
+    material_boundary: Vec<ExactInterval>,
+}
+
+fn classify_face_level_line_intersection(
+    first: &AuthenticatedFace,
+    second: &AuthenticatedFace,
+) -> Result<FaceLevelLineEvidence, ZeroThicknessAnalysisError> {
+    let Some(first_plane) = authenticated_face_support_plane(first) else {
+        return Ok(FaceLevelLineEvidence::Indeterminate);
+    };
+    let Some(second_plane) = authenticated_face_support_plane(second) else {
+        return Ok(FaceLevelLineEvidence::Indeterminate);
+    };
+    let line_direction = first_plane.normal.cross(&second_plane.normal);
+    let Some(axis) = line_direction
+        .coordinates
+        .iter()
+        .position(|coordinate| !coordinate.is_zero())
+    else {
+        return Ok(FaceLevelLineEvidence::NotApplicable);
+    };
+
+    let interval_bound = first
+        .triangles
+        .len()
+        .checked_add(second.triangles.len())
+        .and_then(|count| count.checked_add(first.boundary.len()))
+        .and_then(|count| count.checked_add(second.boundary.len()))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let event_bound = interval_bound
+        .checked_mul(2)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let mut events = Vec::new();
+    events
+        .try_reserve_exact(event_bound)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+
+    let Some(first_slice) = build_face_line_slice(first, &second_plane, axis, &mut events)? else {
+        return Ok(FaceLevelLineEvidence::Indeterminate);
+    };
+    let Some(second_slice) = build_face_line_slice(second, &first_plane, axis, &mut events)? else {
+        return Ok(FaceLevelLineEvidence::Indeterminate);
+    };
+    if events.len() > event_bound
+        || !material_boundary_is_covered(&first_slice)
+        || !material_boundary_is_covered(&second_slice)
+    {
+        return Ok(FaceLevelLineEvidence::Indeterminate);
+    }
+
+    events.sort_unstable();
+    events.dedup();
+    if events.len() < 2 {
+        return Ok(FaceLevelLineEvidence::NoPositiveLine);
+    }
+
+    let mut first_coverage_cursor = 0;
+    let mut second_coverage_cursor = 0;
+    let mut first_boundary_cursor = 0;
+    let mut second_boundary_cursor = 0;
+    let mut has_common_positive_cell = false;
+    for event_pair in events.windows(2) {
+        let [start, end] = event_pair else {
+            return Ok(FaceLevelLineEvidence::Indeterminate);
+        };
+        if start >= end {
+            return Ok(FaceLevelLineEvidence::Indeterminate);
+        }
+        let midpoint = (start + end) / BigRational::from_integer(BigInt::from(2));
+        if !exact_interval_union_contains(
+            &first_slice.coverage,
+            &midpoint,
+            &mut first_coverage_cursor,
+        ) || !exact_interval_union_contains(
+            &second_slice.coverage,
+            &midpoint,
+            &mut second_coverage_cursor,
+        ) {
+            continue;
+        }
+        has_common_positive_cell = true;
+        let first_is_boundary = exact_interval_union_contains(
+            &first_slice.material_boundary,
+            &midpoint,
+            &mut first_boundary_cursor,
+        );
+        let second_is_boundary = exact_interval_union_contains(
+            &second_slice.material_boundary,
+            &midpoint,
+            &mut second_boundary_cursor,
+        );
+        if !first_is_boundary && !second_is_boundary {
+            return Ok(FaceLevelLineEvidence::Transversal);
+        }
+    }
+
+    Ok(if has_common_positive_cell {
+        FaceLevelLineEvidence::BoundaryOnly
+    } else {
+        FaceLevelLineEvidence::NoPositiveLine
+    })
+}
+
+fn authenticated_face_support_plane(face: &AuthenticatedFace) -> Option<ExactTriangle> {
+    let plane = ExactTriangle::from_exact_points(face.triangles.first()?.clone());
+    if plane.normal.is_zero()
+        || face
+            .boundary
+            .iter()
+            .any(|vertex| !plane.signed_plane_distance(&vertex.current).is_zero())
+        || face.triangles.iter().any(|points| {
+            let triangle = ExactTriangle::from_exact_points(points.clone());
+            triangle.normal.is_zero()
+                || triangle
+                    .points
+                    .iter()
+                    .any(|point| !plane.signed_plane_distance(point).is_zero())
+        })
+    {
+        None
+    } else {
+        Some(plane)
+    }
+}
+
+fn build_face_line_slice(
+    face: &AuthenticatedFace,
+    other_plane: &ExactTriangle,
+    axis: usize,
+    events: &mut Vec<BigRational>,
+) -> Result<Option<FaceLineSlice>, ZeroThicknessAnalysisError> {
+    let mut coverage = Vec::new();
+    coverage
+        .try_reserve_exact(face.triangles.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for triangle in &face.triangles {
+        let triangle = ExactTriangle::from_exact_points(triangle.clone());
+        let distances = triangle
+            .points
+            .each_ref()
+            .map(|point| other_plane.signed_plane_distance(point));
+        if distances.iter().all(Zero::is_zero) {
+            return Ok(None);
+        }
+        let Some(cut) = triangle_plane_cut(&triangle, &distances) else {
+            return Ok(None);
+        };
+        for point in &cut.points {
+            events.push(point.coordinate(axis).clone());
+        }
+        if cut.points.len() == 2 {
+            let Some(interval) =
+                exact_interval_from_coordinates(&cut.points[0], &cut.points[1], axis)
+            else {
+                return Ok(None);
+            };
+            coverage.push(interval);
+        }
+    }
+
+    let mut material_boundary = Vec::new();
+    material_boundary
+        .try_reserve_exact(face.boundary.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for index in 0..face.boundary.len() {
+        let start = &face.boundary[index].current;
+        let end = &face.boundary[(index + 1) % face.boundary.len()].current;
+        let start_distance = other_plane.signed_plane_distance(start);
+        let end_distance = other_plane.signed_plane_distance(end);
+        if start_distance.is_zero() && end_distance.is_zero() {
+            let Some(interval) = exact_interval_from_coordinates(start, end, axis) else {
+                return Ok(None);
+            };
+            events.push(interval.start.clone());
+            events.push(interval.end.clone());
+            material_boundary.push(interval);
+        } else if start_distance.is_zero() {
+            events.push(start.coordinate(axis).clone());
+        } else if end_distance.is_zero() {
+            events.push(end.coordinate(axis).clone());
+        } else if start_distance.signum() != end_distance.signum() {
+            let denominator = start_distance.clone() - end_distance;
+            if denominator.is_zero() {
+                return Ok(None);
+            }
+            let parameter = start_distance / denominator;
+            events.push(start.interpolate(end, &parameter).coordinate(axis).clone());
+        }
+    }
+
+    normalize_exact_intervals(&mut coverage);
+    normalize_exact_intervals(&mut material_boundary);
+    Ok(Some(FaceLineSlice {
+        coverage,
+        material_boundary,
+    }))
+}
+
+fn exact_interval_from_coordinates(
+    start: &ExactPoint3,
+    end: &ExactPoint3,
+    axis: usize,
+) -> Option<ExactInterval> {
+    let first = start.coordinate(axis).clone();
+    let second = end.coordinate(axis).clone();
+    match first.cmp(&second) {
+        Ordering::Less => Some(ExactInterval {
+            start: first,
+            end: second,
+        }),
+        Ordering::Greater => Some(ExactInterval {
+            start: second,
+            end: first,
+        }),
+        Ordering::Equal => None,
+    }
+}
+
+fn normalize_exact_intervals(intervals: &mut Vec<ExactInterval>) {
+    intervals.sort_unstable_by(|first, second| {
+        first
+            .start
+            .cmp(&second.start)
+            .then_with(|| first.end.cmp(&second.end))
+    });
+    if intervals.is_empty() {
+        return;
+    }
+    let mut write = 0;
+    for read in 1..intervals.len() {
+        let candidate = intervals[read].clone();
+        if candidate.start <= intervals[write].end {
+            if candidate.end > intervals[write].end {
+                intervals[write].end = candidate.end;
+            }
+        } else {
+            write += 1;
+            intervals[write] = candidate;
+        }
+    }
+    intervals.truncate(write + 1);
+}
+
+fn material_boundary_is_covered(slice: &FaceLineSlice) -> bool {
+    let mut coverage_index = 0;
+    for boundary in &slice.material_boundary {
+        while coverage_index < slice.coverage.len()
+            && slice.coverage[coverage_index].end < boundary.start
+        {
+            coverage_index += 1;
+        }
+        let Some(coverage) = slice.coverage.get(coverage_index) else {
+            return false;
+        };
+        if coverage.start > boundary.start || coverage.end < boundary.end {
+            return false;
+        }
+    }
+    true
+}
+
+fn exact_interval_union_contains(
+    intervals: &[ExactInterval],
+    coordinate: &BigRational,
+    cursor: &mut usize,
+) -> bool {
+    while *cursor < intervals.len() && intervals[*cursor].end < *coordinate {
+        *cursor += 1;
+    }
+    intervals
+        .get(*cursor)
+        .is_some_and(|interval| interval.start <= *coordinate && *coordinate <= interval.end)
+}
+
 fn aggregate_authenticated_face_pair(
     first: &AuthenticatedFace,
     second: &AuthenticatedFace,
     topology: &AuthenticatedTopology,
     max_triangle_pairs: usize,
+    max_boundary_relation_work: usize,
+    hinges: usize,
 ) -> Result<PairDispatch, ZeroThicknessAnalysisError> {
     if first.triangles.is_empty()
         || second.triangles.is_empty()
@@ -1088,11 +1434,23 @@ fn aggregate_authenticated_face_pair(
     if expected > max_triangle_pairs {
         return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
     }
+    let boundary_relation_work = estimated_boundary_relation_work(
+        expected,
+        first.triangles.len(),
+        second.triangles.len(),
+        first.boundary.len(),
+        second.boundary.len(),
+        hinges,
+    )?;
+    if boundary_relation_work > max_boundary_relation_work {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    }
 
     let mut analyzed = 0_usize;
     let mut has_transversal = false;
     let mut has_coplanar_area = false;
-    let mut has_indeterminate = false;
+    let mut has_exact_indeterminate = false;
+    let mut has_artificial_boundary_artifact = false;
     let mut point_contacts = 0_usize;
     let mut line_contacts = 0_usize;
     let mut all_contacts_match_shared_feature = true;
@@ -1116,7 +1474,7 @@ fn aggregate_authenticated_face_pair(
                     if !exact_point_on_material_boundary(&point, first)
                         && !exact_point_on_material_boundary(&point, second)
                     {
-                        has_indeterminate = true;
+                        has_artificial_boundary_artifact = true;
                         continue;
                     }
                     point_contacts = point_contacts
@@ -1143,12 +1501,11 @@ fn aggregate_authenticated_face_pair(
                     let second_material_boundary =
                         exact_segment_on_material_boundary(&start, &end, second)?;
                     if !first_material_boundary && !second_material_boundary {
-                        // Safe interim classification for an ear-diagonal
-                        // artifact. A future positive Transversal proof must
-                        // build the exact relative-interior interval union for
-                        // both whole faces and prove a strict positive-length
-                        // overlap; "not wholly boundary" alone is insufficient.
-                        has_indeterminate = true;
+                        // A triangle-local boundary can be an ear-clipping
+                        // diagonal. Defer it to the exact whole-face interval
+                        // union below: only a strict positive-length overlap
+                        // of both relative interiors proves Transversal.
+                        has_artificial_boundary_artifact = true;
                         continue;
                     }
                     line_contacts = line_contacts
@@ -1182,13 +1539,34 @@ fn aggregate_authenticated_face_pair(
                 }
                 ExactIntersection::CoplanarArea => has_coplanar_area = true,
                 ExactIntersection::Transversal => has_transversal = true,
-                ExactIntersection::Indeterminate => has_indeterminate = true,
+                ExactIntersection::Indeterminate => has_exact_indeterminate = true,
             }
         }
     }
     if analyzed != expected {
         return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
     }
+
+    let mut unresolved_artificial_boundary_artifact = has_artificial_boundary_artifact;
+    if has_artificial_boundary_artifact && !has_transversal && !has_coplanar_area {
+        match classify_face_level_line_intersection(first, second)? {
+            FaceLevelLineEvidence::Transversal => {
+                has_transversal = true;
+                unresolved_artificial_boundary_artifact = false;
+            }
+            FaceLevelLineEvidence::BoundaryOnly => {
+                line_contacts = line_contacts
+                    .checked_add(1)
+                    .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+                all_contacts_match_shared_feature = false;
+                unresolved_artificial_boundary_artifact = false;
+            }
+            FaceLevelLineEvidence::NotApplicable
+            | FaceLevelLineEvidence::NoPositiveLine
+            | FaceLevelLineEvidence::Indeterminate => {}
+        }
+    }
+    let has_indeterminate = has_exact_indeterminate || unresolved_artificial_boundary_artifact;
 
     let evidence = if has_transversal {
         IntersectionEvidenceV2::TransversalCrossing
@@ -2347,7 +2725,14 @@ mod tests {
             Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
         );
         assert_eq!(
-            estimated_boundary_relation_work(usize::MAX, usize::MAX, usize::MAX, usize::MAX),
+            estimated_boundary_relation_work(
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+            ),
             Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
         );
         assert_eq!(
@@ -2742,6 +3127,8 @@ mod tests {
                     baseline.faces[first].triangles.len() * baseline.faces[second].triangles.len();
                 let boundary_work = estimated_boundary_relation_work(
                     triangle_pairs,
+                    baseline.faces[first].triangles.len(),
+                    baseline.faces[second].triangles.len(),
                     baseline.faces[first].boundary.len(),
                     baseline.faces[second].boundary.len(),
                     pose.hinges().len(),
@@ -2888,6 +3275,8 @@ mod tests {
                 &second,
                 &AuthenticatedTopology::NoSharedFeature,
                 1,
+                usize::MAX,
+                0,
             )
             .expect("forward aggregate");
             let reverse = aggregate_authenticated_face_pair(
@@ -2895,6 +3284,8 @@ mod tests {
                 &first,
                 &AuthenticatedTopology::NoSharedFeature,
                 1,
+                usize::MAX,
+                0,
             )
             .expect("reverse aggregate");
             assert_eq!(forward, single_dispatch(evidence, decision));
@@ -2920,6 +3311,8 @@ mod tests {
             &point_second,
             &AuthenticatedTopology::SharedVertex(ExactPoint3::from_point(point(0.0, 2.0, 0.0))),
             1,
+            usize::MAX,
+            0,
         )
         .expect("complete wrong-vertex aggregate");
         assert_eq!(
@@ -2941,6 +3334,8 @@ mod tests {
                 end: ExactPoint3::from_point(point(2.0, 0.0, 0.0)),
             },
             1,
+            usize::MAX,
+            0,
         )
         .expect("complete partial-hinge aggregate");
         assert_eq!(
@@ -2999,6 +3394,8 @@ mod tests {
                             &second,
                             &AuthenticatedTopology::SharedVertex(shared.clone()),
                             1,
+                            usize::MAX,
+                            0,
                         )
                         .expect("forward shared-vertex aggregate"),
                         expected,
@@ -3010,6 +3407,8 @@ mod tests {
                             &first,
                             &AuthenticatedTopology::SharedVertex(shared.clone()),
                             1,
+                            usize::MAX,
+                            0,
                         )
                         .expect("reverse shared-vertex aggregate"),
                         expected,
@@ -3021,7 +3420,7 @@ mod tests {
     }
 
     #[test]
-    fn triangulation_diagonal_contact_never_becomes_false_safe_touching() {
+    fn face_level_interval_union_proves_crossing_through_triangulation_diagonals() {
         let square = synthetic_untrusted_face(
             face_id(1),
             &[
@@ -3042,10 +3441,15 @@ mod tests {
             &crossing,
             &AuthenticatedTopology::NoSharedFeature,
             2,
+            usize::MAX,
+            0,
         )
         .expect("complete internal-diagonal aggregate");
-        assert_eq!(dispatch.evidence(), IntersectionEvidenceV2::Indeterminate);
-        assert_eq!(dispatch.decision(), TopologyContactDecision::Indeterminate);
+        assert_eq!(
+            dispatch.evidence(),
+            IntersectionEvidenceV2::TransversalCrossing
+        );
+        assert_eq!(dispatch.decision(), TopologyContactDecision::Penetrating);
         assert_eq!(dispatch.expected_triangle_pairs(), 2);
         assert_eq!(dispatch.analyzed_triangle_pairs(), 2);
 
@@ -3056,6 +3460,8 @@ mod tests {
             &reversed_square,
             &AuthenticatedTopology::NoSharedFeature,
             2,
+            usize::MAX,
+            0,
         )
         .expect("reordered internal-diagonal aggregate");
         assert_eq!(reverse, dispatch);
@@ -3085,12 +3491,245 @@ mod tests {
             &audited_vertical_square,
             &AuthenticatedTopology::NoSharedFeature,
             4,
+            usize::MAX,
+            0,
         )
         .expect("complete four-pair diagonal aggregate");
-        assert_eq!(audited.evidence(), IntersectionEvidenceV2::Indeterminate);
-        assert_eq!(audited.decision(), TopologyContactDecision::Indeterminate);
+        assert_eq!(
+            audited.evidence(),
+            IntersectionEvidenceV2::TransversalCrossing
+        );
+        assert_eq!(audited.decision(), TopologyContactDecision::Penetrating);
         assert_eq!(audited.expected_triangle_pairs(), 4);
         assert_eq!(audited.analyzed_triangle_pairs(), 4);
+    }
+
+    #[test]
+    fn face_level_interval_union_distinguishes_material_edge_from_two_artificial_diagonals() {
+        let material_edge_face = synthetic_untrusted_face(
+            face_id(21),
+            &[[0.0, 0.0, 0.0], [2.0, 2.0, 0.0], [0.0, 2.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let edge_against_interior = synthetic_untrusted_face(
+            face_id(22),
+            &[[0.0, 0.0, -1.0], [2.0, 2.0, -1.0], [1.0, 1.0, 1.0]],
+            &[[0, 1, 2]],
+        );
+        assert_eq!(
+            classify_face_level_line_intersection(&material_edge_face, &edge_against_interior)
+                .expect("bounded material-edge classifier"),
+            FaceLevelLineEvidence::BoundaryOnly
+        );
+        let material_edge_dispatch = aggregate_authenticated_face_pair(
+            &material_edge_face,
+            &edge_against_interior,
+            &AuthenticatedTopology::NoSharedFeature,
+            1,
+            usize::MAX,
+            0,
+        )
+        .expect("material edge against other-face interior");
+        assert_eq!(
+            material_edge_dispatch.evidence(),
+            IntersectionEvidenceV2::BoundaryLineContact
+        );
+        assert_eq!(
+            material_edge_dispatch.decision(),
+            TopologyContactDecision::Touching
+        );
+
+        let horizontal_square = synthetic_untrusted_face(
+            face_id(23),
+            &[
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        let vertical_diamond = synthetic_untrusted_face(
+            face_id(24),
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [2.0, 2.0, 0.0],
+                [1.0, 1.0, -1.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        assert_eq!(
+            classify_face_level_line_intersection(&horizontal_square, &vertical_diamond)
+                .expect("bounded artificial-diagonal classifier"),
+            FaceLevelLineEvidence::Transversal
+        );
+        let required_work =
+            estimated_boundary_relation_work(4, 2, 2, 4, 4, 0).expect("small exact line work");
+        assert_eq!(
+            aggregate_authenticated_face_pair(
+                &horizontal_square,
+                &vertical_diamond,
+                &AuthenticatedTopology::NoSharedFeature,
+                4,
+                required_work - 1,
+                0,
+            ),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+
+        let expected = PairDispatch {
+            evidence: IntersectionEvidenceV2::TransversalCrossing,
+            decision: TopologyContactDecision::Penetrating,
+            expected_triangle_pairs: 4,
+            analyzed_triangle_pairs: 4,
+        };
+        for reverse_horizontal in [false, true] {
+            for reverse_vertical in [false, true] {
+                let mut horizontal = horizontal_square.clone();
+                let mut vertical = vertical_diamond.clone();
+                if reverse_horizontal {
+                    horizontal.triangles.reverse();
+                }
+                if reverse_vertical {
+                    vertical.triangles.reverse();
+                }
+                assert_eq!(
+                    aggregate_authenticated_face_pair(
+                        &horizontal,
+                        &vertical,
+                        &AuthenticatedTopology::NoSharedFeature,
+                        4,
+                        required_work,
+                        0,
+                    )
+                    .expect("forward complete artificial-diagonal coverage"),
+                    expected
+                );
+                assert_eq!(
+                    aggregate_authenticated_face_pair(
+                        &vertical,
+                        &horizontal,
+                        &AuthenticatedTopology::NoSharedFeature,
+                        4,
+                        required_work,
+                        0,
+                    )
+                    .expect("reverse complete artificial-diagonal coverage"),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn face_level_interval_events_preserve_concave_gaps_and_boundary_to_interior_transitions() {
+        let disconnected_points = [
+            [0.0, -1.0],
+            [1.0, -1.0],
+            [1.0, 0.5],
+            [2.0, 0.5],
+            [2.0, -1.0],
+            [3.0, -1.0],
+            [3.0, 1.0],
+            [0.0, 1.0],
+        ];
+        let disconnected_boundary = rest_boundary(&disconnected_points);
+        let disconnected_triangles =
+            triangulate_rest_boundary(&disconnected_boundary, 8, 6, usize::MAX)
+                .expect("concave face triangulation");
+        let disconnected_points = disconnected_points.map(|[x, z]| [x, 0.0, z]).to_vec();
+        let disconnected_face =
+            synthetic_untrusted_face(face_id(31), &disconnected_points, &disconnected_triangles);
+        let face_inside_gap = synthetic_untrusted_face(
+            face_id(32),
+            &[
+                [1.25, -1.0, 0.0],
+                [1.75, -1.0, 0.0],
+                [1.75, 1.0, 0.0],
+                [1.25, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        assert_eq!(
+            classify_face_level_line_intersection(&disconnected_face, &face_inside_gap)
+                .expect("bounded concave-gap classifier"),
+            FaceLevelLineEvidence::NoPositiveLine
+        );
+
+        let transition_points = [[0.0, 0.0], [1.0, 0.0], [2.0, -1.0], [2.0, 1.0], [0.0, 1.0]];
+        let transition_boundary = rest_boundary(&transition_points);
+        let transition_triangles =
+            triangulate_rest_boundary(&transition_boundary, 5, 3, usize::MAX)
+                .expect("boundary-to-interior face triangulation");
+        let transition_points = transition_points.map(|[x, z]| [x, 0.0, z]).to_vec();
+        let transition_face =
+            synthetic_untrusted_face(face_id(33), &transition_points, &transition_triangles);
+        let boundary_cell = synthetic_untrusted_face(
+            face_id(34),
+            &[
+                [0.25, -1.0, 0.0],
+                [0.75, -1.0, 0.0],
+                [0.75, 1.0, 0.0],
+                [0.25, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        let interior_cell = synthetic_untrusted_face(
+            face_id(35),
+            &[
+                [1.25, -1.0, 0.0],
+                [1.75, -1.0, 0.0],
+                [1.75, 1.0, 0.0],
+                [1.25, 1.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        assert_eq!(
+            classify_face_level_line_intersection(&transition_face, &boundary_cell)
+                .expect("bounded material-boundary cell classifier"),
+            FaceLevelLineEvidence::BoundaryOnly
+        );
+        assert_eq!(
+            classify_face_level_line_intersection(&transition_face, &interior_cell)
+                .expect("bounded relative-interior cell classifier"),
+            FaceLevelLineEvidence::Transversal
+        );
+
+        let boundary_dispatch = aggregate_authenticated_face_pair(
+            &transition_face,
+            &boundary_cell,
+            &AuthenticatedTopology::NoSharedFeature,
+            6,
+            usize::MAX,
+            0,
+        )
+        .expect("complete boundary-cell aggregate");
+        assert_eq!(
+            boundary_dispatch.evidence(),
+            IntersectionEvidenceV2::BoundaryLineContact
+        );
+        assert_eq!(
+            boundary_dispatch.decision(),
+            TopologyContactDecision::Touching
+        );
+        let interior_dispatch = aggregate_authenticated_face_pair(
+            &transition_face,
+            &interior_cell,
+            &AuthenticatedTopology::NoSharedFeature,
+            6,
+            usize::MAX,
+            0,
+        )
+        .expect("complete interior-cell aggregate");
+        assert_eq!(
+            interior_dispatch.evidence(),
+            IntersectionEvidenceV2::TransversalCrossing
+        );
+        assert_eq!(
+            interior_dispatch.decision(),
+            TopologyContactDecision::Penetrating
+        );
     }
 
     fn permute(points: [[f64; 3]; 3], permutation: [usize; 3]) -> [[f64; 3]; 3] {

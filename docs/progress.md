@@ -261,6 +261,11 @@
 - 共有辺に接する左右三角形が展開時の支持線を挟むことを検証し、有限軸区間と`R=(t/2)/cos(θ/2)`の中央面基準モデルにより、0度の境界接触と60・90度を含む通常角の厚さ由来重なりを許容分類。`R`が有限ヒンジ長を超える深角と正厚180度は無制限corridorへ広げず`layer_offset_unmodeled`で停止
 - 全triangle-pair走査、候補単位の走査件数照合、現在姿勢と実紙厚からの三角柱6頂点再構成により、早期終了・重複・偽造witnessを許容認定へ流さない接触ポリシー
 - 厚さ0を独立した面交差次元で分類し、一点・共有辺を接触、共面正面積と両面内部を横断する正長線分を貫通とする。通常の共有ヒンジ境界接触と厚さ0の180度平坦積層だけを明示許容し、非隣接面の平坦重なりは貫通を維持
+- native kinematicsが発行する全material face境界について、自己交差、重複頂点、同一点異ID、逆走・重複辺をbinary64のexact値と有界作業量で拒否する単純多角形証明
+- 凸・凹・同方向collinear頂点を含む認証済み面を決定論的なexact ear clippingで分割し、面積、外周辺1回・内部辺2回、全triangle-pair件数を再照合する厚さ0の全面集約基盤。各面は同一exact affine像から構成し、個別world丸めで共面性を壊さない
+- 共有なし・真正な一頂点・真正な一ヒンジ辺・same-face不整合をsource IDとrest/current geometryから認証し、偽の共有点、部分ヒンジ、人工分割対角線上の低次元交差、未完了coverageを安全側の判定保留へ閉じるprivate dispatcher
+- 非平行な二material faceについて、交線上のtriangle coverageと実外周区間をexactに正規化し、両面relative interiorが共通する正長event cellだけを`transversal_crossing`へ肯定する面全体証明。片側または両側の人工分割対角線、材料境界だけの接触、凹形状の空隙と境界→内部遷移、面/triangle順、作業上限を回帰
+- 共有頂点だけの許容を、exact singletonに加えて検証済みface transformのlocal `+Y`材料法線内積がbinary64境界`1e-10`より厳密に大きい場合へ限定し、境界未満・一致・超過、全頂点順、面交換を回帰
 - 0・±90・±180度の回転を診断・単一折り描画・木構造姿勢で同じcanonical Matrix4へ統一し、近傍角はsnapしない。400×400 mm、非原点の斜めV実寸fixtureそのものへA/Bと厚さ3種×角度4種×3表を固定し、Aは非隣接接触1・許容ヒンジ境界2・不確定0としてUIまで回帰
 - sub-marginの正面積・正長交差、近平行面間隔、点併合、巨大座標は接触へ格下げせず判定不能へ退避し、同じrest座標の共有点・共有辺がworld位置でも一致して内部横断しない場合だけtopological contactを証明
 - 3D診断を非隣接とヒンジ外の貫通・接触、モデル許容境界接触・領域内重なり、ヒンジ未解決、数値・方針不確定へ分離し、単一折りでは連続経路結果を別表示し、複数ヒンジでは連続運動未検証を明示
@@ -381,7 +386,8 @@
 
 ## 進行中
 
-- [native current applied pose設計](native-applied-pose-design.md)に従い、表示・投影から独立したnative kinematics、current pose capability、native静的・連続衝突、場所別cell-order transport、原子的commitを順に実装する作業。任意の現在3D状態で局所的に重なる層を安全に扱えるまで折り重ねUIへ着手しない
+- [native current applied pose設計](native-applied-pose-design.md)に従い、表示・投影から独立したnative kinematics、current pose capability、native静的・連続衝突、場所別cell-order transport、原子的commitを順に実装する作業。4×11分類表と実geometry証拠の対応を先に完成させ、任意の現在3D状態で局所的に重なる層を安全に扱えるまで折り重ねUIへ着手しない
+- 非cardinalな斜め共有ヒンジで面ごとのbinary64変換像に微小な端点差が生じる問題を、任意epsilonではなくexact rigidなwatertight canonical poseまたは検証可能な全face誤差包含で解決する作業。raw姿勢の横断・共面正面積を端点不一致より優先する暫定案は、任意小の残差だけで偽貫通を作れる反例があるため不採用
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
 - Windows実機での`.ori2`ダイアログ、キャンセル、上書き、破損入力、保存失敗時復旧のE2E確認
@@ -396,8 +402,8 @@
 
 ## 次の作業
 
-1. 全material face境界の単純多角形性を資源上限つきexact検証で保証し、認証済みsourceから凹多角形にも対応する決定論的三角形分割を作り、全face・全triangle pair coverageを証明する
-2. nativeの衝突分類v2 4×11純粋表へ、上記の認証済み共有関係と厚さ0幾何学的交差証拠、正厚証拠、有限ヒンジcorridorを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
+1. exact rational Cayley回転によるwatertight rigid poseをversion付きで構成し、全共有ヒンジ線の一致、面内距離、直交性、角度包含および表示姿勢との差を証明する。完成までは斜め共有featureのraw姿勢不一致を判定保留へ閉じる
+2. nativeの衝突分類v2 4×11純粋表へ、正厚証拠と有限ヒンジcorridorを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
 3. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
 4. MUST 87件のstatus表を各checkpointで維持し、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する

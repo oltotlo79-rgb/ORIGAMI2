@@ -315,6 +315,8 @@ struct SharedHingeNativeExactTopologyMarginGeometryV1 {
     direct_frame_determinants: [BigRational; FACE_COUNT],
     exact_face_normals: [ExactVector3; FACE_COUNT],
     direct_face_normals: [ExactVector3; FACE_COUNT],
+    exact_solid_vertices: [[ExactPoint3; SOLID_VERTICES_PER_FACE]; FACE_COUNT],
+    direct_solid_vertices: [[ExactPoint3; SOLID_VERTICES_PER_FACE]; FACE_COUNT],
     exact_solid_bounds: [[ExactPoint3; 2]; FACE_COUNT],
     direct_solid_bounds: [[ExactPoint3; 2]; FACE_COUNT],
     exact_axis_start: ExactPoint3,
@@ -333,6 +335,8 @@ struct SharedHingeNativeExactTopologyMarginGeometryV1 {
     observed_point_component_error_mm: [BigRational; 3],
     observed_normal_component_error: [BigRational; 3],
     observed_solid_component_error_mm: [BigRational; 3],
+    exact_corridor_components: [BigRational; CORRIDOR_COMPONENT_COUNT],
+    direct_corridor_components: [BigRational; CORRIDOR_COMPONENT_COUNT],
     corridor_component_error: [BigRational; CORRIDOR_COMPONENT_COUNT],
     corridor_component_margin: [BigRational; CORRIDOR_COMPONENT_COUNT],
     source_axially_bounded: [bool; FACE_COUNT],
@@ -389,6 +393,34 @@ impl SharedHingeNativeExactTopologyMarginCapabilityV1<'_, '_, '_, '_> {
 
     pub(super) fn point_margin_mm(&self) -> &BigRational {
         &self.geometry.point_margin_mm
+    }
+
+    pub(super) fn exact_solid_vertices(
+        &self,
+    ) -> &[[ExactPoint3; SOLID_VERTICES_PER_FACE]; FACE_COUNT] {
+        &self.geometry.exact_solid_vertices
+    }
+
+    pub(super) fn direct_solid_vertices(
+        &self,
+    ) -> &[[ExactPoint3; SOLID_VERTICES_PER_FACE]; FACE_COUNT] {
+        &self.geometry.direct_solid_vertices
+    }
+
+    pub(super) fn exact_corridor_components(&self) -> &[BigRational; CORRIDOR_COMPONENT_COUNT] {
+        &self.geometry.exact_corridor_components
+    }
+
+    pub(super) fn direct_corridor_components(&self) -> &[BigRational; CORRIDOR_COMPONENT_COUNT] {
+        &self.geometry.direct_corridor_components
+    }
+
+    pub(super) fn binary64_face_transforms(&self) -> [BoundBinary64FaceTransformBits; FACE_COUNT] {
+        self.binary64_face_transforms
+    }
+
+    pub(super) fn hinge_parent_transform_bits(&self) -> BoundBinary64FaceTransformBits {
+        self.hinge_parent_transform
     }
 
     #[cfg(test)]
@@ -885,7 +917,12 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
     {
         return Ok(SharedHingeNativeExactTopologyMarginResultV1::Unresolved);
     }
-    let (corridor_component_error, corridor_component_margin) = scan_corridor_component_errors(
+    let ScannedCorridorComponentsV1 {
+        exact: exact_corridor_components,
+        direct: direct_corridor_components,
+        error: corridor_component_error,
+        margin: corridor_component_margin,
+    } = scan_corridor_component_errors(
         &exact_axis_start,
         &exact_axis,
         &exact_length_squared,
@@ -924,6 +961,14 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
         point_bounds(&faces[0].direct_solid, meter)?,
         point_bounds(&faces[1].direct_solid, meter)?,
     ];
+    let exact_solid_vertices = [
+        clone_point_array(&faces[0].exact_solid, meter)?,
+        clone_point_array(&faces[1].exact_solid, meter)?,
+    ];
+    let direct_solid_vertices = [
+        clone_point_array(&faces[0].direct_solid, meter)?,
+        clone_point_array(&faces[1].direct_solid, meter)?,
+    ];
     let geometry = SharedHingeNativeExactTopologyMarginGeometryV1 {
         source_endpoints,
         exact_endpoints,
@@ -948,6 +993,8 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
             clone_vector(&faces[0].direct_normal, meter)?,
             clone_vector(&faces[1].direct_normal, meter)?,
         ],
+        exact_solid_vertices,
+        direct_solid_vertices,
         exact_solid_bounds,
         direct_solid_bounds,
         exact_axis_start,
@@ -966,6 +1013,8 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
         observed_point_component_error_mm: observed_point_error,
         observed_normal_component_error: observed_normal_error,
         observed_solid_component_error_mm: observed_solid_error,
+        exact_corridor_components,
+        direct_corridor_components,
         corridor_component_error,
         corridor_component_margin,
         source_axially_bounded,
@@ -1849,6 +1898,13 @@ fn scan_shared_endpoint_errors(
     Ok((occurrences, maximum))
 }
 
+struct ScannedCorridorComponentsV1 {
+    exact: [BigRational; CORRIDOR_COMPONENT_COUNT],
+    direct: [BigRational; CORRIDOR_COMPONENT_COUNT],
+    error: [BigRational; CORRIDOR_COMPONENT_COUNT],
+    margin: [BigRational; CORRIDOR_COMPONENT_COUNT],
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan_corridor_component_errors(
     exact_axis_start: &ExactPoint3,
@@ -1866,13 +1922,7 @@ fn scan_corridor_component_errors(
     work: &mut SharedHingeNativeExactTopologyMarginWorkV1,
     meter: &mut WorkMeter<'_>,
     violations: &mut ViolationAccumulator,
-) -> Result<
-    (
-        [BigRational; CORRIDOR_COMPONENT_COUNT],
-        [BigRational; CORRIDOR_COMPONENT_COUNT],
-    ),
-    CayleyError,
-> {
+) -> Result<ScannedCorridorComponentsV1, CayleyError> {
     let exact_left = &faces[prerequisite.left_face_index].exact_normal;
     let exact_right = &faces[prerequisite.right_face_index].exact_normal;
     let direct_left = &faces[prerequisite.left_face_index].direct_normal;
@@ -1961,7 +2011,12 @@ fn scan_corridor_component_errors(
     if work.corridor_component_scans != CORRIDOR_COMPONENT_SCANS {
         return Err(CayleyError::InvariantFailure { stage: STAGE });
     }
-    Ok((component_error, component_margin))
+    Ok(ScannedCorridorComponentsV1 {
+        exact: exact_values,
+        direct: direct_values,
+        error: component_error,
+        margin: component_margin,
+    })
 }
 
 fn squared_length_delta_margin(
@@ -2057,6 +2112,14 @@ fn clone_topology_geometry(
         )?,
         exact_face_normals: clone_vector_array(&geometry.exact_face_normals, meter)?,
         direct_face_normals: clone_vector_array(&geometry.direct_face_normals, meter)?,
+        exact_solid_vertices: [
+            clone_point_array(&geometry.exact_solid_vertices[0], meter)?,
+            clone_point_array(&geometry.exact_solid_vertices[1], meter)?,
+        ],
+        direct_solid_vertices: [
+            clone_point_array(&geometry.direct_solid_vertices[0], meter)?,
+            clone_point_array(&geometry.direct_solid_vertices[1], meter)?,
+        ],
         exact_solid_bounds: [
             clone_point_array(&geometry.exact_solid_bounds[0], meter)?,
             clone_point_array(&geometry.exact_solid_bounds[1], meter)?,
@@ -2091,6 +2154,14 @@ fn clone_topology_geometry(
         )?,
         observed_solid_component_error_mm: clone_rational_array(
             &geometry.observed_solid_component_error_mm,
+            meter,
+        )?,
+        exact_corridor_components: clone_rational_array(
+            &geometry.exact_corridor_components,
+            meter,
+        )?,
+        direct_corridor_components: clone_rational_array(
+            &geometry.direct_corridor_components,
             meter,
         )?,
         corridor_component_error: clone_rational_array(&geometry.corridor_component_error, meter)?,
@@ -2546,6 +2617,16 @@ fn visit_geometry_scalars_mut(
     for normal in &mut geometry.direct_face_normals {
         visit_vector_scalars_mut(normal, visit);
     }
+    for face in &mut geometry.exact_solid_vertices {
+        for point in face {
+            visit_point_scalars_mut(point, visit);
+        }
+    }
+    for face in &mut geometry.direct_solid_vertices {
+        for point in face {
+            visit_point_scalars_mut(point, visit);
+        }
+    }
     for face in &mut geometry.exact_solid_bounds {
         for point in face {
             visit_point_scalars_mut(point, visit);
@@ -2586,6 +2667,12 @@ fn visit_geometry_scalars_mut(
         visit(value);
     }
     for value in &mut geometry.corridor_component_margin {
+        visit(value);
+    }
+    for value in &mut geometry.exact_corridor_components {
+        visit(value);
+    }
+    for value in &mut geometry.direct_corridor_components {
         visit(value);
     }
 }

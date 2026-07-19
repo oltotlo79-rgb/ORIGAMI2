@@ -52,6 +52,7 @@ mod ef_boundary;
 mod exact_e_corridor;
 mod exact_prism;
 mod shared_hinge_corridor_admission;
+mod shared_hinge_solid_classification;
 mod shared_hinge_topology_margin;
 
 const STAGE: CayleyStage = CayleyStage::Containment;
@@ -1402,11 +1403,19 @@ mod tests {
         ExactEFiniteHingeInteractionKind, analyze_exact_e_finite_hinge_corridor_v1,
         revalidate_exact_e_finite_hinge_corridor_v1,
     };
-    use super::exact_prism::ExactPrismLimits;
+    use super::exact_prism::{ExactPrismLimits, ExactPrismWork};
     use super::shared_hinge_corridor_admission::{
         SharedHingeCorridorAdmissionErrorV1, SharedHingeCorridorAdmissionLimitsV1,
         SharedHingeCorridorAdmissionResultV1, SharedHingeCorridorAdmissionWorkV1,
         analyze_shared_hinge_corridor_admission_v1, revalidate_shared_hinge_corridor_admission_v1,
+    };
+    use super::shared_hinge_solid_classification::{
+        SharedHingeCorridorReconciliationV1, SharedHingeEvidenceUnavailableReasonV1,
+        SharedHingePositiveThicknessPairClassV1, SharedHingeSolidClassificationErrorV1,
+        SharedHingeSolidClassificationLimitsV1, SharedHingeSolidClassificationResultV1,
+        SharedHingeSolidClassificationWorkV1, SharedHingeSolidIntersectionDimensionV1,
+        analyze_shared_hinge_solid_classification_v1, classify_independent_exact_fixture_for_test,
+        policy_contract_for_test, revalidate_shared_hinge_solid_classification_v1,
     };
     use super::shared_hinge_topology_margin::{
         SharedHingeNativeExactTopologyMarginAnalysisV1,
@@ -8227,5 +8236,1588 @@ mod tests {
         .unwrap();
         assert!(projected.authenticated_capability_and_work().is_some());
         assert_eq!(projected.work, baseline.work);
+    }
+
+    fn exact_limits_for_two_works(first: &CayleyWork, second: &CayleyWork) -> CayleyLimits {
+        CayleyLimits {
+            max_precision_rounds: 0,
+            max_guard_bits: 0,
+            max_candidate_bits: 0,
+            max_machin_terms_per_series: 0,
+            max_trig_terms_per_series: 0,
+            max_sqrt_refinements: 0,
+            max_interval_operations: first.interval_operations.max(second.interval_operations),
+            max_shift_bits: first.max_shift_bits.max(second.max_shift_bits),
+            max_intermediate_bits: first
+                .max_preflight_bits
+                .max(first.max_observed_bits)
+                .max(second.max_preflight_bits)
+                .max(second.max_observed_bits),
+            max_gcd_fallback_calls: first.gcd_fallback_calls.max(second.gcd_fallback_calls),
+            max_gcd_fallback_input_bits: first
+                .gcd_fallback_input_bits
+                .max(second.gcd_fallback_input_bits),
+            max_rational_allocations: first.rational_allocations.max(second.rational_allocations),
+            max_rational_allocation_bits: first
+                .max_rational_allocation_bits
+                .max(second.max_rational_allocation_bits),
+            max_total_rational_allocation_bits: first
+                .total_rational_allocation_bits
+                .max(second.total_rational_allocation_bits),
+            max_output_bits: 0,
+        }
+    }
+
+    fn prism_limits_for_two_works(
+        first: &ExactPrismWork,
+        second: &ExactPrismWork,
+    ) -> ExactPrismLimits {
+        ExactPrismLimits {
+            max_prisms: first.prisms.max(second.prisms),
+            max_solid_vertices: first.solid_vertices.max(second.solid_vertices),
+            max_facets: first.facets.max(second.facets),
+            max_halfspaces: first.halfspaces.max(second.halfspaces),
+            max_prism_volume_tests: first.prism_volume_tests.max(second.prism_volume_tests),
+            max_facet_vertex_checks: first.facet_vertex_checks.max(second.facet_vertex_checks),
+            max_plane_triples: first.plane_triples.max(second.plane_triples),
+            max_singular_plane_triples: first
+                .singular_plane_triples
+                .max(second.singular_plane_triples),
+            max_nonsingular_solves: first.nonsingular_solves.max(second.nonsingular_solves),
+            max_membership_tests: first.membership_tests.max(second.membership_tests),
+            max_candidate_vertices: first.candidate_vertices.max(second.candidate_vertices),
+            max_dedup_comparisons: first.dedup_comparisons.max(second.dedup_comparisons),
+            max_affine_rank_tests: first.affine_rank_tests.max(second.affine_rank_tests),
+            max_support_plane_vertex_tests: first
+                .support_plane_vertex_tests
+                .max(second.support_plane_vertex_tests),
+            max_support_pair_tests: first.support_pair_tests.max(second.support_pair_tests),
+            max_input_rationals: first.input_rationals.max(second.input_rationals),
+            max_input_rational_storage_bits: first
+                .max_input_rational_storage_bits
+                .max(second.max_input_rational_storage_bits),
+            max_total_input_storage_bits: first
+                .total_input_storage_bits
+                .max(second.total_input_storage_bits),
+            exact: exact_limits_for_two_works(&first.exact, &second.exact),
+        }
+    }
+
+    fn solid_classification_limits_from_work(
+        work: &SharedHingeSolidClassificationWorkV1,
+    ) -> SharedHingeSolidClassificationLimitsV1 {
+        SharedHingeSolidClassificationLimitsV1 {
+            max_authenticated_faces: work.authenticated_faces,
+            max_authenticated_hinges: work.authenticated_hinges,
+            max_unordered_face_pair_count_calculations: work.unordered_face_pair_count_calculations,
+            max_unordered_face_pairs: work.unordered_face_pairs,
+            max_triangle_pairs: work.triangle_pairs,
+            max_prism_complete_scan_checks: work.prism_complete_scan_checks,
+            max_upstream_capability_revalidations: work.upstream_capability_revalidations,
+            max_sealed_prior_work_bindings: work.sealed_prior_work_bindings,
+            max_root_bindings: work.root_bindings,
+            max_angle_bindings: work.angle_bindings,
+            max_face_identity_bindings: work.face_identity_bindings,
+            max_hinge_identity_bindings: work.hinge_identity_bindings,
+            max_endpoint_identity_bindings: work.endpoint_identity_bindings,
+            max_face_transform_bit_bindings: work.face_transform_bit_bindings,
+            max_hinge_parent_transform_bit_bindings: work.hinge_parent_transform_bit_bindings,
+            max_interaction_kind_bindings: work.interaction_kind_bindings,
+            max_policy_cell_bindings: work.policy_cell_bindings,
+            max_classification_seal_bindings: work.classification_seal_bindings,
+            max_margin_component_checks: work.margin_component_checks,
+            max_independent_corridor_vertex_checks: work.independent_corridor_vertex_checks,
+            prism: prism_limits_for_two_works(
+                &work.independent_exact_prism,
+                &work.independent_direct_prism,
+            ),
+            corridor_exact: exact_limits_for_two_works(
+                &work.independent_exact_corridor,
+                &work.independent_direct_corridor,
+            ),
+        }
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_contract_matches_all_eleven_v2_cells() {
+        use crate::{
+            IntersectionEvidenceV2, TopologyContactDecision, TopologyRelation,
+            classify_runtime_topology_contact_v2,
+        };
+
+        let expected_shared_hinge_row = [
+            TopologyContactDecision::Indeterminate,
+            TopologyContactDecision::Indeterminate,
+            TopologyContactDecision::Indeterminate,
+            TopologyContactDecision::RequiresHingeModel,
+            TopologyContactDecision::RequiresHingeModel,
+            TopologyContactDecision::RequiresHingeModel,
+            TopologyContactDecision::RequiresHingeModel,
+            TopologyContactDecision::Penetrating,
+            TopologyContactDecision::Penetrating,
+            TopologyContactDecision::Penetrating,
+            TopologyContactDecision::Indeterminate,
+        ];
+        for (evidence, expected) in IntersectionEvidenceV2::ALL
+            .into_iter()
+            .zip(expected_shared_hinge_row)
+        {
+            assert_eq!(
+                classify_runtime_topology_contact_v2(TopologyRelation::SharedHingeEdge, evidence,),
+                expected,
+                "{}",
+                evidence.identifier()
+            );
+        }
+
+        for (class, evidence, decision) in [
+            (
+                SharedHingePositiveThicknessPairClassV1::SharedFeatureOnlyContact,
+                IntersectionEvidenceV2::SharedFeatureContact,
+                TopologyContactDecision::RequiresHingeModel,
+            ),
+            (
+                SharedHingePositiveThicknessPairClassV1::AllowedFiniteCorridorOverlap,
+                IntersectionEvidenceV2::SharedFeatureThicknessOverlap,
+                TopologyContactDecision::RequiresHingeModel,
+            ),
+            (
+                SharedHingePositiveThicknessPairClassV1::AllowedBoundaryContact,
+                IntersectionEvidenceV2::BoundaryAreaContact,
+                TopologyContactDecision::RequiresHingeModel,
+            ),
+            (
+                SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection,
+                IntersectionEvidenceV2::PositiveVolumeOverlap,
+                TopologyContactDecision::Penetrating,
+            ),
+            (
+                SharedHingePositiveThicknessPairClassV1::EvidenceUnavailable,
+                IntersectionEvidenceV2::Indeterminate,
+                TopologyContactDecision::Indeterminate,
+            ),
+        ] {
+            assert_eq!(policy_contract_for_test(class), (evidence, decision));
+        }
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_both_rank3_outside_corridors_reaches_positive_volume_intersection()
+     {
+        let prism = [
+            point(integer(0), integer(0), integer(1)),
+            point(integer(4), integer(0), integer(1)),
+            point(integer(0), integer(4), integer(1)),
+            point(integer(0), integer(0), integer(-1)),
+            point(integer(4), integer(0), integer(-1)),
+            point(integer(0), integer(4), integer(-1)),
+        ];
+        let solids = [prism.clone(), prism];
+        let corridor = |half_thickness: i64| {
+            [
+                integer(0),
+                integer(0),
+                integer(0),
+                integer(4),
+                integer(0),
+                integer(0),
+                integer(16),
+                integer(half_thickness),
+                integer(1),
+                integer(half_thickness * half_thickness * 16),
+            ]
+        };
+
+        let wide = corridor(10);
+        let (wide_class, wide_exact_outside, wide_direct_outside, wide_work) =
+            classify_independent_exact_fixture_for_test(&solids, &solids, &wide, &wide).unwrap();
+        assert_eq!(wide_class, None);
+        assert_eq!((wide_exact_outside, wide_direct_outside), (0, 0));
+        assert_eq!(wide_work.independent_exact_prism.plane_triples, 120);
+        assert_eq!(wide_work.independent_direct_prism.plane_triples, 120);
+
+        let narrow = corridor(1);
+        let (narrow_class, narrow_exact_outside, narrow_direct_outside, narrow_work) =
+            classify_independent_exact_fixture_for_test(&solids, &solids, &narrow, &narrow)
+                .unwrap();
+        assert_eq!(
+            narrow_class,
+            Some(SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection)
+        );
+        assert!(narrow_exact_outside > 0);
+        assert!(narrow_direct_outside > 0);
+        assert_eq!(
+            narrow_work.independent_corridor_vertex_checks,
+            wide_work.independent_corridor_vertex_checks
+        );
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_full_400mm_matrix_is_order_and_root_invariant() {
+        use crate::{IntersectionEvidenceV2, TopologyContactDecision};
+
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let models = [
+            (
+                "mountain/source",
+                two_triangle_model_with_all_options(EdgeKind::Mountain, false, false, square, 901),
+            ),
+            (
+                "mountain/reordered",
+                two_triangle_model_with_all_options(EdgeKind::Mountain, true, false, square, 902),
+            ),
+            (
+                "valley/source",
+                two_triangle_model_with_all_options(EdgeKind::Valley, false, false, square, 903),
+            ),
+            (
+                "valley/reordered",
+                two_triangle_model_with_all_options(EdgeKind::Valley, true, false, square, 904),
+            ),
+            (
+                "mountain/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Mountain, false, true, square, 905),
+            ),
+            (
+                "mountain/reordered/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Mountain, true, true, square, 906),
+            ),
+            (
+                "valley/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Valley, false, true, square, 907),
+            ),
+            (
+                "valley/reordered/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Valley, true, true, square, 908),
+            ),
+        ];
+        let mut boundary = 0_usize;
+        let mut finite_corridor_volume = 0_usize;
+        let mut direct_unavailable = 0_usize;
+        let mut layer_offset = 0_usize;
+        for (fixture, model) in &models {
+            for root in model.face_ids() {
+                for thickness in [0.1, 1.0, 3.0] {
+                    for angle in [0.0, 10.0, 90.0, 135.0, 179.0, 180.0] {
+                        let pose = triangular_pose_with_root(model, angle, *root);
+                        let bound_pose = model.bind_pose(&pose).unwrap();
+                        let exact = triangular_exact_pose(model, &pose);
+                        let prerequisite_analysis =
+                            authenticated_ef_prerequisite(&exact, thickness);
+
+                        if angle == 180.0 {
+                            let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                                &prerequisite_analysis,
+                                None,
+                                &exact,
+                                bound_pose,
+                                thickness,
+                                ExactEFiniteHingeCorridorLimits::default(),
+                            )
+                            .unwrap();
+                            let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                                &prerequisite_analysis,
+                                None,
+                                &exact_e_analysis,
+                                &exact,
+                                bound_pose,
+                                thickness,
+                                DirectFFiniteHingeCorridorLimits::default(),
+                            )
+                            .unwrap();
+                            let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+                                &prerequisite_analysis,
+                                None,
+                                &exact_e_analysis,
+                                &direct_f_analysis,
+                                &exact,
+                                bound_pose,
+                                thickness,
+                                SharedHingeCorridorAdmissionLimitsV1::default(),
+                            )
+                            .unwrap();
+                            let margin_analysis =
+                                analyze_shared_hinge_native_exact_topology_margin_v1(
+                                    &prerequisite_analysis,
+                                    None,
+                                    &exact,
+                                    bound_pose,
+                                    thickness,
+                                    SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+                                )
+                                .unwrap();
+                            let analysis = analyze_shared_hinge_solid_classification_v1(
+                                &prerequisite_analysis,
+                                None,
+                                &exact_e_analysis,
+                                &direct_f_analysis,
+                                &admission_analysis,
+                                &margin_analysis,
+                                &exact,
+                                bound_pose,
+                                thickness,
+                                SharedHingeSolidClassificationLimitsV1::default(),
+                            )
+                            .unwrap();
+                            assert!(
+                                matches!(
+                                    analysis.result,
+                                    SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+                                        SharedHingeEvidenceUnavailableReasonV1::LayerOffsetUnmodeled
+                                    )
+                                ),
+                                "{fixture}, {root:?}, {thickness}, {angle}"
+                            );
+                            assert_eq!(
+                                analysis.work,
+                                SharedHingeSolidClassificationWorkV1::default()
+                            );
+                            layer_offset += 1;
+                            continue;
+                        }
+
+                        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+                            &prerequisite_analysis.result
+                        else {
+                            panic!("{fixture}, {root:?}, {thickness}, {angle}: prerequisite");
+                        };
+                        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                            prerequisite,
+                            &exact,
+                            bound_pose,
+                            thickness,
+                            AxisAlignedEfBoundaryLimits::default(),
+                        )
+                        .unwrap();
+                        let ef = ef_capability(&ef_analysis);
+                        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact,
+                            bound_pose,
+                            thickness,
+                            ExactEFiniteHingeCorridorLimits::default(),
+                        )
+                        .unwrap();
+                        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact_e_analysis,
+                            &exact,
+                            bound_pose,
+                            thickness,
+                            DirectFFiniteHingeCorridorLimits::default(),
+                        )
+                        .unwrap();
+                        let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact_e_analysis,
+                            &direct_f_analysis,
+                            &exact,
+                            bound_pose,
+                            thickness,
+                            SharedHingeCorridorAdmissionLimitsV1::default(),
+                        )
+                        .unwrap();
+                        let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact,
+                            bound_pose,
+                            thickness,
+                            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+                        )
+                        .unwrap();
+                        let analysis = analyze_shared_hinge_solid_classification_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact_e_analysis,
+                            &direct_f_analysis,
+                            &admission_analysis,
+                            &margin_analysis,
+                            &exact,
+                            bound_pose,
+                            thickness,
+                            SharedHingeSolidClassificationLimitsV1::default(),
+                        )
+                        .unwrap();
+
+                        if angle == 90.0 {
+                            assert!(
+                                matches!(
+                                    analysis.result,
+                                    SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+                                        SharedHingeEvidenceUnavailableReasonV1::
+                                            DirectIntersectionUnavailable
+                                    )
+                                ),
+                                "{fixture}, {root:?}, {thickness}, {angle}: {:?}",
+                                analysis.result
+                            );
+                            assert_eq!(analysis.work.independent_exact_prism.prisms, 2);
+                            assert_eq!(analysis.work.independent_direct_prism.prisms, 2);
+                            assert!(analysis.work.independent_corridor_vertex_checks > 0);
+                            direct_unavailable += 1;
+                            continue;
+                        }
+
+                        let (record, _) = analysis
+                            .sealed_non_authoritative_record_and_work()
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "{fixture}, {root:?}, {thickness}, {angle}: {:?}",
+                                    analysis.result
+                                )
+                            });
+                        assert_eq!(record.coverage_for_test(), (1, 1, 1, 1));
+                        let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+                        let direct_f = direct_f_corridor_capability(&direct_f_analysis);
+                        if angle == 0.0 {
+                            assert_eq!(
+                                record.class_for_test(),
+                                SharedHingePositiveThicknessPairClassV1::AllowedBoundaryContact
+                            );
+                            assert_eq!(
+                                record.intersection_for_test(),
+                                (
+                                    SharedHingeSolidIntersectionDimensionV1::BoundaryArea,
+                                    SharedHingeSolidIntersectionDimensionV1::BoundaryArea,
+                                )
+                            );
+                            assert_eq!(
+                                record.policy_for_test(),
+                                (
+                                    IntersectionEvidenceV2::BoundaryAreaContact,
+                                    IntersectionEvidenceV2::BoundaryAreaContact,
+                                    TopologyContactDecision::RequiresHingeModel,
+                                )
+                            );
+                            assert_eq!(
+                                record.reconciliation_for_test(),
+                                SharedHingeCorridorReconciliationV1::BitExactIdenticalCorridor
+                            );
+                            assert_eq!(analysis.work.margin_component_checks, 0);
+                            let admission = admission_analysis
+                                .authenticated_admission_capability_and_work()
+                                .unwrap()
+                                .0;
+                            assert!(
+                                revalidate_shared_hinge_solid_classification_v1(
+                                    record,
+                                    prerequisite,
+                                    ef,
+                                    exact_e,
+                                    direct_f,
+                                    Some(admission),
+                                    None,
+                                    &exact,
+                                    bound_pose,
+                                    thickness,
+                                )
+                                .is_some()
+                            );
+                            boundary += 1;
+                        } else {
+                            assert!(matches!(angle, 10.0 | 135.0 | 179.0));
+                            assert_eq!(
+                                record.class_for_test(),
+                                SharedHingePositiveThicknessPairClassV1::
+                                    AllowedFiniteCorridorOverlap
+                            );
+                            assert_eq!(
+                                record.intersection_for_test(),
+                                (
+                                    SharedHingeSolidIntersectionDimensionV1::PositiveVolume,
+                                    SharedHingeSolidIntersectionDimensionV1::PositiveVolume,
+                                )
+                            );
+                            assert_eq!(
+                                record.policy_for_test(),
+                                (
+                                    IntersectionEvidenceV2::PositiveVolumeOverlap,
+                                    IntersectionEvidenceV2::SharedFeatureThicknessOverlap,
+                                    TopologyContactDecision::RequiresHingeModel,
+                                )
+                            );
+                            assert_eq!(
+                                record.reconciliation_for_test(),
+                                SharedHingeCorridorReconciliationV1::NativeExactTopologyMargin
+                            );
+                            assert_eq!(analysis.work.margin_component_checks, 10);
+                            let margin = topology_margin_capability(&margin_analysis);
+                            assert!(
+                                revalidate_shared_hinge_solid_classification_v1(
+                                    record,
+                                    prerequisite,
+                                    ef,
+                                    exact_e,
+                                    direct_f,
+                                    None,
+                                    Some(margin),
+                                    &exact,
+                                    bound_pose,
+                                    thickness,
+                                )
+                                .is_some()
+                            );
+                            finite_corridor_volume += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(boundary, 48);
+        assert_eq!(finite_corridor_volume, 144);
+        assert_eq!(direct_unavailable, 48);
+        assert_eq!(layer_offset, 48);
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_rejects_authority_swaps_aba_ulp_and_all_seals() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let independently_regenerated_exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let duplicate_prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let SingleTriangularHingePrerequisiteResult::Authenticated(duplicate_prerequisite) =
+            &duplicate_prerequisite_analysis.result
+        else {
+            panic!("duplicate prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let duplicate_ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let duplicate_ef = ef_capability(&duplicate_ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let duplicate_exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+        let duplicate_exact_e = exact_e_corridor_capability(&duplicate_exact_e_analysis);
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let duplicate_direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f = direct_f_corridor_capability(&direct_f_analysis);
+        let duplicate_direct_f = direct_f_corridor_capability(&duplicate_direct_f_analysis);
+        let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let duplicate_margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let margin = topology_margin_capability(&margin_analysis);
+        let duplicate_margin = topology_margin_capability(&duplicate_margin_analysis);
+        let mut analysis = analyze_shared_hinge_solid_classification_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &admission_analysis,
+            &margin_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeSolidClassificationLimitsV1::default(),
+        )
+        .unwrap();
+
+        macro_rules! current_record {
+            () => {{
+                let SharedHingeSolidClassificationResultV1::Classified(record) = &analysis.result
+                else {
+                    panic!("classification record");
+                };
+                record.as_ref()
+            }};
+        }
+        macro_rules! assert_same_stack_rejected {
+            ($reason:expr) => {
+                assert!(
+                    revalidate_shared_hinge_solid_classification_v1(
+                        current_record!(),
+                        prerequisite,
+                        ef,
+                        exact_e,
+                        direct_f,
+                        None,
+                        Some(margin),
+                        &exact,
+                        bound,
+                        0.1,
+                    )
+                    .is_none(),
+                    "{}",
+                    $reason
+                );
+            };
+        }
+
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                duplicate_prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued prerequisite"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                duplicate_ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued E/F boundary"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                duplicate_exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued exact-E prism/corridor"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                exact_e,
+                duplicate_direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued direct-F prism/corridor"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(duplicate_margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued topology margin"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &independently_regenerated_exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently regenerated exact pose"
+        );
+
+        let aba_pose = triangular_pose(&model, 135.0);
+        let aba_bound = model.bind_pose(&aba_pose).unwrap();
+        let rerooted_pose = triangular_pose_with_root(&model, 135.0, model.face_ids()[1]);
+        let rerooted_bound = model.bind_pose(&rerooted_pose).unwrap();
+        let one_ulp_pose = triangular_pose(&model, next_up(135.0));
+        let one_ulp_bound = model.bind_pose(&one_ulp_pose).unwrap();
+        for (name, mismatched_bound) in [
+            ("same-angle ABA", aba_bound),
+            ("reroot", rerooted_bound),
+            ("one-ULP angle", one_ulp_bound),
+        ] {
+            assert!(
+                revalidate_shared_hinge_solid_classification_v1(
+                    current_record!(),
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    direct_f,
+                    None,
+                    Some(margin),
+                    &exact,
+                    mismatched_bound,
+                    0.1,
+                )
+                .is_none(),
+                "{name}"
+            );
+        }
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                next_up(0.1),
+            )
+            .is_none(),
+            "one-ULP thickness"
+        );
+
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.toggle_class_for_test();
+        }
+        assert!(
+            analysis
+                .sealed_non_authoritative_record_and_work()
+                .is_none()
+        );
+        assert_same_stack_rejected!("classification seal");
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.toggle_class_for_test();
+        }
+
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.increment_coverage_for_test();
+        }
+        assert_same_stack_rejected!("pair-coverage seal");
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.decrement_coverage_for_test();
+        }
+
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.increment_prior_work_for_test();
+        }
+        assert_same_stack_rejected!("prior-work seal");
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.decrement_prior_work_for_test();
+        }
+
+        for (name, mutate, restore) in [
+            ("face identities", 0_u8, 0_u8),
+            ("endpoint identities", 1_u8, 1_u8),
+        ] {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            match mutate {
+                0 => record.swap_face_identities_for_test(),
+                1 => record.swap_endpoint_identities_for_test(),
+                _ => unreachable!(),
+            }
+            let _ = record;
+            assert_same_stack_rejected!(name);
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            match restore {
+                0 => record.swap_face_identities_for_test(),
+                1 => record.swap_endpoint_identities_for_test(),
+                _ => unreachable!(),
+            }
+        }
+
+        let original_analysis_faces = analysis.work.authenticated_faces;
+        analysis.work.authenticated_faces += 1;
+        assert!(
+            analysis
+                .sealed_non_authoritative_record_and_work()
+                .is_none()
+        );
+        analysis.work.authenticated_faces = original_analysis_faces;
+
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.increment_record_work_for_test();
+        }
+        assert_same_stack_rejected!("record-work seal");
+        {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.decrement_record_work_for_test();
+        }
+
+        let mut transformed_coefficients = 0_usize;
+        for face in 0..2 {
+            for coefficient in 0..12 {
+                let SharedHingeSolidClassificationResultV1::Classified(record) =
+                    &mut analysis.result
+                else {
+                    panic!("record");
+                };
+                record.flip_face_transform_bit_for_test(face, coefficient);
+                let _ = record;
+                assert_same_stack_rejected!("face-transform seal");
+                let SharedHingeSolidClassificationResultV1::Classified(record) =
+                    &mut analysis.result
+                else {
+                    panic!("record");
+                };
+                record.flip_face_transform_bit_for_test(face, coefficient);
+                transformed_coefficients += 1;
+            }
+        }
+        for coefficient in 0..12 {
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.flip_hinge_parent_transform_bit_for_test(coefficient);
+            let _ = record;
+            assert_same_stack_rejected!("hinge-parent transform seal");
+            let SharedHingeSolidClassificationResultV1::Classified(record) = &mut analysis.result
+            else {
+                panic!("record");
+            };
+            record.flip_hinge_parent_transform_bit_for_test(coefficient);
+            transformed_coefficients += 1;
+        }
+        assert_eq!(transformed_coefficients, 36);
+        assert!(
+            analysis
+                .sealed_non_authoritative_record_and_work()
+                .is_some()
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                current_record!(),
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_bit_exact_route_rejects_reconciliation_substitution() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 0.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f = direct_f_corridor_capability(&direct_f_analysis);
+        let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let duplicate_admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let admission = admission_analysis
+            .authenticated_admission_capability_and_work()
+            .unwrap()
+            .0;
+        let duplicate_admission = duplicate_admission_analysis
+            .authenticated_admission_capability_and_work()
+            .unwrap()
+            .0;
+        let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let margin = topology_margin_capability(&margin_analysis);
+        let analysis = analyze_shared_hinge_solid_classification_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &admission_analysis,
+            &margin_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeSolidClassificationLimitsV1::default(),
+        )
+        .unwrap();
+        let record = analysis
+            .sealed_non_authoritative_record_and_work()
+            .unwrap()
+            .0;
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                record,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                Some(admission),
+                None,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                record,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                Some(duplicate_admission),
+                None,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "equal independently issued admission is not authority"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                record,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                None,
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "a margin token cannot substitute for a bit-exact admission"
+        );
+        assert!(
+            revalidate_shared_hinge_solid_classification_v1(
+                record,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                Some(admission),
+                Some(margin),
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "ambiguous dual reconciliation input is rejected"
+        );
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_all_structural_limits_are_exact_and_one_short() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let baseline = analyze_shared_hinge_solid_classification_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &admission_analysis,
+            &margin_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeSolidClassificationLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(
+            baseline
+                .sealed_non_authoritative_record_and_work()
+                .is_some()
+        );
+        let exact_limits = solid_classification_limits_from_work(&baseline.work);
+        let exact_analysis = analyze_shared_hinge_solid_classification_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &admission_analysis,
+            &margin_analysis,
+            &exact,
+            bound,
+            0.1,
+            exact_limits,
+        )
+        .unwrap();
+        assert!(
+            exact_analysis
+                .sealed_non_authoritative_record_and_work()
+                .is_some()
+        );
+        assert_eq!(exact_analysis.work, baseline.work);
+
+        let assert_one_short = |resource: &str, limits: SharedHingeSolidClassificationLimitsV1| {
+            assert!(
+                matches!(
+                    analyze_shared_hinge_solid_classification_v1(
+                        &prerequisite_analysis,
+                        Some(ef),
+                        &exact_e_analysis,
+                        &direct_f_analysis,
+                        &admission_analysis,
+                        &margin_analysis,
+                        &exact,
+                        bound,
+                        0.1,
+                        limits,
+                    ),
+                    Err(SharedHingeSolidClassificationErrorV1::ResourceLimitExceeded)
+                ),
+                "{resource}"
+            );
+        };
+        macro_rules! one_short {
+            ($field:ident) => {
+                if exact_limits.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.$field -= 1;
+                    assert_one_short(stringify!($field), limits);
+                }
+            };
+        }
+        one_short!(max_authenticated_faces);
+        one_short!(max_authenticated_hinges);
+        one_short!(max_unordered_face_pair_count_calculations);
+        one_short!(max_unordered_face_pairs);
+        one_short!(max_triangle_pairs);
+        one_short!(max_prism_complete_scan_checks);
+        one_short!(max_upstream_capability_revalidations);
+        one_short!(max_sealed_prior_work_bindings);
+        one_short!(max_root_bindings);
+        one_short!(max_angle_bindings);
+        one_short!(max_face_identity_bindings);
+        one_short!(max_hinge_identity_bindings);
+        one_short!(max_endpoint_identity_bindings);
+        one_short!(max_face_transform_bit_bindings);
+        one_short!(max_hinge_parent_transform_bit_bindings);
+        one_short!(max_interaction_kind_bindings);
+        one_short!(max_policy_cell_bindings);
+        one_short!(max_classification_seal_bindings);
+        one_short!(max_margin_component_checks);
+
+        let oversized = SharedHingeSolidClassificationLimitsV1 {
+            max_authenticated_faces: usize::MAX,
+            max_authenticated_hinges: usize::MAX,
+            max_unordered_face_pair_count_calculations: usize::MAX,
+            max_unordered_face_pairs: usize::MAX,
+            max_triangle_pairs: usize::MAX,
+            max_prism_complete_scan_checks: usize::MAX,
+            max_upstream_capability_revalidations: usize::MAX,
+            max_sealed_prior_work_bindings: usize::MAX,
+            max_root_bindings: usize::MAX,
+            max_angle_bindings: usize::MAX,
+            max_face_identity_bindings: usize::MAX,
+            max_hinge_identity_bindings: usize::MAX,
+            max_endpoint_identity_bindings: usize::MAX,
+            max_face_transform_bit_bindings: usize::MAX,
+            max_hinge_parent_transform_bit_bindings: usize::MAX,
+            max_interaction_kind_bindings: usize::MAX,
+            max_policy_cell_bindings: usize::MAX,
+            max_classification_seal_bindings: usize::MAX,
+            max_margin_component_checks: usize::MAX,
+            max_independent_corridor_vertex_checks: usize::MAX,
+            prism: ExactPrismLimits {
+                max_prisms: usize::MAX,
+                max_solid_vertices: usize::MAX,
+                max_facets: usize::MAX,
+                max_halfspaces: usize::MAX,
+                max_prism_volume_tests: usize::MAX,
+                max_facet_vertex_checks: usize::MAX,
+                max_plane_triples: usize::MAX,
+                max_singular_plane_triples: usize::MAX,
+                max_nonsingular_solves: usize::MAX,
+                max_membership_tests: usize::MAX,
+                max_candidate_vertices: usize::MAX,
+                max_dedup_comparisons: usize::MAX,
+                max_affine_rank_tests: usize::MAX,
+                max_support_plane_vertex_tests: usize::MAX,
+                max_support_pair_tests: usize::MAX,
+                max_input_rationals: usize::MAX,
+                max_input_rational_storage_bits: usize::MAX,
+                max_total_input_storage_bits: usize::MAX,
+                exact: oversized_cayley_limits(),
+            },
+            corridor_exact: oversized_cayley_limits(),
+        };
+        let projected = analyze_shared_hinge_solid_classification_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &admission_analysis,
+            &margin_analysis,
+            &exact,
+            bound,
+            0.1,
+            oversized,
+        )
+        .unwrap();
+        assert!(
+            projected
+                .sealed_non_authoritative_record_and_work()
+                .is_some()
+        );
+        assert_eq!(projected.work, baseline.work);
+    }
+
+    #[test]
+    fn shared_hinge_solid_classification_independent_fallback_limits_are_exact_and_one_short() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 90.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &direct_f_analysis,
+            &exact,
+            bound,
+            0.1,
+            SharedHingeCorridorAdmissionLimitsV1::default(),
+        )
+        .unwrap();
+        let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let analyze = |limits| {
+            analyze_shared_hinge_solid_classification_v1(
+                &prerequisite_analysis,
+                Some(ef),
+                &exact_e_analysis,
+                &direct_f_analysis,
+                &admission_analysis,
+                &margin_analysis,
+                &exact,
+                bound,
+                0.1,
+                limits,
+            )
+        };
+        let baseline = analyze(SharedHingeSolidClassificationLimitsV1::default()).unwrap();
+        assert!(matches!(
+            baseline.result,
+            SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+                SharedHingeEvidenceUnavailableReasonV1::DirectIntersectionUnavailable
+            )
+        ));
+        assert!(baseline.work.independent_corridor_vertex_checks > 0);
+
+        let exact_limits = solid_classification_limits_from_work(&baseline.work);
+        let exact_analysis = analyze(exact_limits).unwrap();
+        assert!(matches!(
+            exact_analysis.result,
+            SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+                SharedHingeEvidenceUnavailableReasonV1::DirectIntersectionUnavailable
+            )
+        ));
+        assert_eq!(exact_analysis.work, baseline.work);
+
+        let assert_one_short = |resource: &str, limits: SharedHingeSolidClassificationLimitsV1| {
+            assert!(
+                matches!(
+                    analyze(limits),
+                    Err(SharedHingeSolidClassificationErrorV1::ResourceLimitExceeded)
+                ),
+                "{resource}"
+            );
+        };
+        macro_rules! one_short {
+            ($field:ident) => {
+                if exact_limits.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.$field -= 1;
+                    assert_one_short(stringify!($field), limits);
+                }
+            };
+        }
+        one_short!(max_authenticated_faces);
+        one_short!(max_authenticated_hinges);
+        one_short!(max_unordered_face_pair_count_calculations);
+        one_short!(max_unordered_face_pairs);
+        one_short!(max_triangle_pairs);
+        one_short!(max_prism_complete_scan_checks);
+        one_short!(max_upstream_capability_revalidations);
+        one_short!(max_sealed_prior_work_bindings);
+        one_short!(max_root_bindings);
+        one_short!(max_angle_bindings);
+        one_short!(max_face_identity_bindings);
+        one_short!(max_hinge_identity_bindings);
+        one_short!(max_endpoint_identity_bindings);
+        one_short!(max_face_transform_bit_bindings);
+        one_short!(max_hinge_parent_transform_bit_bindings);
+        one_short!(max_interaction_kind_bindings);
+        one_short!(max_policy_cell_bindings);
+        one_short!(max_classification_seal_bindings);
+        one_short!(max_margin_component_checks);
+        one_short!(max_independent_corridor_vertex_checks);
+
+        macro_rules! prism_one_short {
+            ($field:ident) => {
+                if exact_limits.prism.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.prism.$field -= 1;
+                    assert_one_short(concat!("prism.", stringify!($field)), limits);
+                }
+            };
+        }
+        prism_one_short!(max_prisms);
+        prism_one_short!(max_solid_vertices);
+        prism_one_short!(max_facets);
+        prism_one_short!(max_halfspaces);
+        prism_one_short!(max_prism_volume_tests);
+        prism_one_short!(max_facet_vertex_checks);
+        prism_one_short!(max_plane_triples);
+        prism_one_short!(max_singular_plane_triples);
+        prism_one_short!(max_nonsingular_solves);
+        prism_one_short!(max_membership_tests);
+        prism_one_short!(max_candidate_vertices);
+        prism_one_short!(max_dedup_comparisons);
+        prism_one_short!(max_affine_rank_tests);
+        prism_one_short!(max_support_plane_vertex_tests);
+        prism_one_short!(max_support_pair_tests);
+        prism_one_short!(max_input_rationals);
+        prism_one_short!(max_input_rational_storage_bits);
+        prism_one_short!(max_total_input_storage_bits);
+
+        macro_rules! prism_exact_one_short {
+            ($field:ident) => {
+                if exact_limits.prism.exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.prism.exact.$field -= 1;
+                    assert_one_short(concat!("prism.exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        prism_exact_one_short!(max_interval_operations);
+        prism_exact_one_short!(max_shift_bits);
+        prism_exact_one_short!(max_intermediate_bits);
+        prism_exact_one_short!(max_gcd_fallback_calls);
+        prism_exact_one_short!(max_gcd_fallback_input_bits);
+        prism_exact_one_short!(max_rational_allocations);
+        prism_exact_one_short!(max_rational_allocation_bits);
+        prism_exact_one_short!(max_total_rational_allocation_bits);
+
+        macro_rules! corridor_exact_one_short {
+            ($field:ident) => {
+                if exact_limits.corridor_exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.corridor_exact.$field -= 1;
+                    assert_one_short(concat!("corridor_exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        corridor_exact_one_short!(max_interval_operations);
+        corridor_exact_one_short!(max_shift_bits);
+        corridor_exact_one_short!(max_intermediate_bits);
+        corridor_exact_one_short!(max_gcd_fallback_calls);
+        corridor_exact_one_short!(max_gcd_fallback_input_bits);
+        corridor_exact_one_short!(max_rational_allocations);
+        corridor_exact_one_short!(max_rational_allocation_bits);
+        corridor_exact_one_short!(max_total_rational_allocation_bits);
     }
 }

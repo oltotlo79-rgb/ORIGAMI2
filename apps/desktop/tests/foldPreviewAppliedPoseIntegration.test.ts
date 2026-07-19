@@ -68,11 +68,15 @@ test('playback discloses endpoint-only semantics and cancels unsafe lifecycles',
   )
   assert.match(
     timelineSource,
-    /className="instruction-notice"[\s\S]*?\{notice\}/u,
+    /className="instruction-notice"[\s\S]*?\{noticeText\}/u,
   )
   assert.match(
     timelineSource,
-    /className="visually-hidden" aria-live="polite"[\s\S]*?\{notice\}/u,
+    /className="visually-hidden" aria-live="polite"[\s\S]*?\{noticeText\}/u,
+  )
+  assert.match(
+    timelineSource,
+    /instructionTimelineNoticeText\(notice, locale\)/u,
   )
   for (const reason of [
     'project_changed',

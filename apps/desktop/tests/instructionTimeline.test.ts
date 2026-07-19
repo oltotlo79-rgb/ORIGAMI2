@@ -12,10 +12,17 @@ import {
   createInstructionPlaybackState,
   createInstructionPoseDraft,
   createInstructionTimelinePresentation,
+  formatInstructionDuration,
+  instructionCaptureStatusText,
+  instructionEditorErrorText,
+  instructionPlaybackStatusText,
   instructionPoseMatchesApplied,
+  instructionTimelineNoticeText,
   reduceInstructionPlayback,
   resolveInstructionPoseApplicationObservation,
   validateInstructionMetadata,
+  type InstructionPlaybackState,
+  type InstructionPlaybackStopReason,
 } from '../src/lib/instructionTimeline.ts'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose.ts'
 
@@ -403,6 +410,100 @@ test('stops at stale steps, failed application, and explicit invalidation', () =
     reason: 'manual_pose',
   })
   assert.equal(state.status === 'stopped' ? state.reason : null, 'manual_pose')
+})
+
+test('localizes playback states and every stop reason without changing authored titles', () => {
+  const first = step('step-1', CURRENT_FINGERPRINT, [], 1_500)
+  first.title = 'Crane wing'
+  const presentation = createInstructionTimelinePresentation({
+    steps: [first],
+  }, CURRENT_FINGERPRINT)
+  const plan = createInstructionPlaybackPlan('project', 0, presentation)
+  assert.ok(plan)
+
+  const applying = reduceInstructionPlayback(createInstructionPlaybackState(), {
+    kind: 'start',
+    plan,
+    startIndex: 0,
+  })
+  assert.equal(
+    instructionPlaybackStatusText(applying),
+    '手順 1「Crane wing」を表示しています',
+  )
+  assert.equal(
+    instructionPlaybackStatusText(applying, 'en'),
+    'Applying step 1, “Crane wing”',
+  )
+
+  const holding = reduceInstructionPlayback(applying, {
+    kind: 'pose_applied',
+    stepId: 'step-1',
+    now: 10,
+  })
+  assert.equal(
+    instructionPlaybackStatusText(holding, 'en'),
+    'Showing step 1, “Crane wing”',
+  )
+  const complete = reduceInstructionPlayback(holding, {
+    kind: 'tick',
+    now: 1_510,
+  })
+  assert.equal(
+    instructionPlaybackStatusText(complete, 'en'),
+    'Finished playing all folding steps',
+  )
+
+  const englishStops: Readonly<Record<InstructionPlaybackStopReason, string>> = {
+    stale_step: 'Playback stopped because the crease pattern changed for this step',
+    project_changed: 'Playback stopped because the project changed',
+    revision_changed: 'Playback stopped because the edited content changed',
+    model_changed: 'Playback stopped because the 3D model changed',
+    manual_pose: 'Playback stopped because the 3D pose was changed manually',
+    benchmark: 'Playback stopped because a performance test started',
+    file_operation: 'Playback stopped because a file operation started',
+    apply_failed: 'Playback stopped because the 3D pose could not be applied',
+    hidden: 'Playback stopped because the window became hidden',
+    disposed: 'Playback stopped because the view was closed',
+    canceled: 'Folding-step playback stopped',
+  }
+  for (const [reason, expected] of Object.entries(englishStops) as Array<
+    [InstructionPlaybackStopReason, string]
+  >) {
+    const stopped: InstructionPlaybackState = {
+      status: 'stopped',
+      sequence: 2,
+      reason,
+      stepId: null,
+    }
+    assert.equal(instructionPlaybackStatusText(stopped, 'en'), expected)
+    assert.ok(instructionPlaybackStatusText(stopped, 'ja').length > 0)
+  }
+})
+
+test('localizes timeline notices, capture guidance, validation, and durations live', () => {
+  assert.equal(
+    instructionTimelineNoticeText({ kind: 'added', title: '鶴' }, 'en'),
+    'Added “鶴”',
+  )
+  assert.equal(
+    instructionTimelineNoticeText({ kind: 'pose_update_failed' }, 'ja'),
+    '手順の姿勢を更新できませんでした',
+  )
+  assert.equal(
+    instructionCaptureStatusText('pose_blocked', 'en'),
+    'Records the displayed pose that stopped safely at a collision boundary.',
+  )
+  assert.match(
+    instructionEditorErrorText('invalid_metadata', 'en'),
+    /120 characters.*100–600000 ms/u,
+  )
+  assert.equal(
+    instructionEditorErrorText('update_failed', 'en'),
+    'Could not update the step details',
+  )
+  assert.equal(formatInstructionDuration(1_500), '1.5秒')
+  assert.equal(formatInstructionDuration(1_500, 'en'), '1.5 seconds')
+  assert.equal(formatInstructionDuration(90_000, 'en'), '1:30')
 })
 
 function step(

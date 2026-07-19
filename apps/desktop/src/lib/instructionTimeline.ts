@@ -5,6 +5,12 @@ import type {
   InstructionTimeline,
 } from './coreClient'
 import type { FoldPreviewAppliedPoseSnapshot } from './foldPreviewAppliedPose'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type Locale,
+  type LocalizedText,
+} from './i18n.ts'
 
 export const INSTRUCTION_POSE_MODEL = 'absolute_hinge_angles_v1' as const
 export const MAX_INSTRUCTION_STEPS = 512
@@ -133,6 +139,37 @@ export type InstructionPlaybackEvent =
   | Readonly<{
       kind: 'reset'
     }>
+
+export type InstructionTimelineNotice =
+  | Readonly<{ kind: 'playback'; state: InstructionPlaybackState }>
+  | Readonly<{ kind: 'add_failed' }>
+  | Readonly<{ kind: 'added'; title: string }>
+  | Readonly<{ kind: 'updated'; title: string }>
+  | Readonly<{ kind: 'update_failed' }>
+  | Readonly<{ kind: 'pose_updated'; title: string }>
+  | Readonly<{ kind: 'pose_update_failed' }>
+  | Readonly<{ kind: 'delete_failed' }>
+  | Readonly<{ kind: 'deleted'; title: string }>
+  | Readonly<{ kind: 'moved' }>
+  | Readonly<{ kind: 'move_failed' }>
+  | Readonly<{ kind: 'stale_pose' }>
+  | Readonly<{ kind: 'pose_apply_failed' }>
+  | Readonly<{ kind: 'pose_applying'; title: string }>
+  | Readonly<{ kind: 'model_required' }>
+  | Readonly<{ kind: 'no_steps' }>
+
+export type InstructionCaptureStatus =
+  | 'project_required'
+  | 'pose_required'
+  | 'pose_running'
+  | 'pose_invalid'
+  | 'pose_blocked'
+  | 'pose_indeterminate'
+  | 'pose_ready'
+
+export type InstructionEditorError =
+  | 'invalid_metadata'
+  | 'update_failed'
 
 export function createInstructionTimelinePresentation(
   value: unknown,
@@ -372,20 +409,222 @@ function appliedPoseEndpointsMatch(
 
 export function instructionPlaybackStatusText(
   state: InstructionPlaybackState,
+  locale: Locale = 'ja',
 ): string {
   switch (state.status) {
     case 'idle':
-      return '再生停止中'
+      return selectLocalizedText(locale, PLAYBACK_IDLE_TEXT)
     case 'applying':
-      return `手順 ${state.cursor + 1}「${state.target.title}」を表示しています`
+      return formatLocalizedText(locale, PLAYBACK_APPLYING_TEXT, {
+        step: state.cursor + 1,
+        title: state.target.title,
+      })
     case 'holding':
-      return `手順 ${state.cursor + 1}「${state.target.title}」を表示中です`
+      return formatLocalizedText(locale, PLAYBACK_HOLDING_TEXT, {
+        step: state.cursor + 1,
+        title: state.target.title,
+      })
     case 'complete':
-      return '折り手順の段階再生が完了しました'
+      return selectLocalizedText(locale, PLAYBACK_COMPLETE_TEXT)
     case 'stopped':
-      return playbackStopText(state.reason)
+      return playbackStopText(state.reason, locale)
   }
 }
+
+export function instructionTimelineNoticeText(
+  notice: InstructionTimelineNotice,
+  locale: Locale = 'ja',
+): string {
+  switch (notice.kind) {
+    case 'playback':
+      return instructionPlaybackStatusText(notice.state, locale)
+    case 'add_failed':
+      return selectLocalizedText(locale, NOTICE_ADD_FAILED)
+    case 'added':
+      return formatLocalizedText(locale, NOTICE_ADDED, { title: notice.title })
+    case 'updated':
+      return formatLocalizedText(locale, NOTICE_UPDATED, { title: notice.title })
+    case 'update_failed':
+      return selectLocalizedText(locale, NOTICE_UPDATE_FAILED)
+    case 'pose_updated':
+      return formatLocalizedText(locale, NOTICE_POSE_UPDATED, {
+        title: notice.title,
+      })
+    case 'pose_update_failed':
+      return selectLocalizedText(locale, NOTICE_POSE_UPDATE_FAILED)
+    case 'delete_failed':
+      return selectLocalizedText(locale, NOTICE_DELETE_FAILED)
+    case 'deleted':
+      return formatLocalizedText(locale, NOTICE_DELETED, { title: notice.title })
+    case 'moved':
+      return selectLocalizedText(locale, NOTICE_MOVED)
+    case 'move_failed':
+      return selectLocalizedText(locale, NOTICE_MOVE_FAILED)
+    case 'stale_pose':
+      return selectLocalizedText(locale, NOTICE_STALE_POSE)
+    case 'pose_apply_failed':
+      return selectLocalizedText(locale, NOTICE_POSE_APPLY_FAILED)
+    case 'pose_applying':
+      return formatLocalizedText(locale, NOTICE_POSE_APPLYING, {
+        title: notice.title,
+      })
+    case 'model_required':
+      return selectLocalizedText(locale, NOTICE_MODEL_REQUIRED)
+    case 'no_steps':
+      return selectLocalizedText(locale, NOTICE_NO_STEPS)
+  }
+}
+
+export function instructionCaptureStatusText(
+  status: InstructionCaptureStatus,
+  locale: Locale = 'ja',
+): string {
+  return selectLocalizedText(locale, CAPTURE_STATUS_TEXT[status])
+}
+
+export function instructionEditorErrorText(
+  error: InstructionEditorError,
+  locale: Locale = 'ja',
+): string {
+  if (error === 'update_failed') {
+    return selectLocalizedText(locale, EDITOR_UPDATE_FAILED)
+  }
+  return formatLocalizedText(locale, EDITOR_INVALID_METADATA, {
+    titleMaximum: MAX_INSTRUCTION_TITLE_CHARACTERS,
+    durationMinimum: MIN_INSTRUCTION_DURATION_MS,
+    durationMaximum: MAX_INSTRUCTION_DURATION_MS,
+  })
+}
+
+export function formatInstructionDuration(
+  durationMs: number,
+  locale: Locale = 'ja',
+): string {
+  const totalSeconds = Math.max(0, durationMs) / 1_000
+  if (totalSeconds < 60) {
+    const formatted = totalSeconds.toLocaleString(
+      locale === 'en' ? 'en-US' : 'ja-JP',
+      { maximumFractionDigits: 1 },
+    )
+    return formatLocalizedText(locale, DURATION_SECONDS, { seconds: formatted })
+  }
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = Math.floor(totalSeconds % 60)
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+const PLAYBACK_IDLE_TEXT = localized('再生停止中', 'Playback stopped')
+const PLAYBACK_APPLYING_TEXT = localized(
+  '手順 {step}「{title}」を表示しています',
+  'Applying step {step}, “{title}”',
+)
+const PLAYBACK_HOLDING_TEXT = localized(
+  '手順 {step}「{title}」を表示中です',
+  'Showing step {step}, “{title}”',
+)
+const PLAYBACK_COMPLETE_TEXT = localized(
+  '折り手順の段階再生が完了しました',
+  'Finished playing all folding steps',
+)
+const NOTICE_ADD_FAILED = localized(
+  '現在の3D姿勢を手順へ追加できませんでした',
+  'Could not add the current 3D pose as a step',
+)
+const NOTICE_ADDED = localized(
+  '「{title}」を追加しました',
+  'Added “{title}”',
+)
+const NOTICE_UPDATED = localized(
+  '「{title}」を更新しました',
+  'Updated “{title}”',
+)
+const NOTICE_UPDATE_FAILED = localized(
+  '手順を更新できませんでした',
+  'Could not update the step',
+)
+const NOTICE_POSE_UPDATED = localized(
+  '「{title}」の姿勢を現在の3D表示で更新しました',
+  'Updated the pose for “{title}” from the current 3D view',
+)
+const NOTICE_POSE_UPDATE_FAILED = localized(
+  '手順の姿勢を更新できませんでした',
+  'Could not update the step pose',
+)
+const NOTICE_DELETE_FAILED = localized(
+  '手順を削除できませんでした',
+  'Could not delete the step',
+)
+const NOTICE_DELETED = localized(
+  '「{title}」を削除しました',
+  'Deleted “{title}”',
+)
+const NOTICE_MOVED = localized(
+  '手順の順番を変更しました',
+  'Changed the step order',
+)
+const NOTICE_MOVE_FAILED = localized(
+  '手順を移動できませんでした',
+  'Could not move the step',
+)
+const NOTICE_STALE_POSE = localized(
+  '展開図が変更された手順です。「現在の3D姿勢で更新」してから表示してください',
+  'The crease pattern changed for this step. Update it with the current 3D pose before showing it.',
+)
+const NOTICE_POSE_APPLY_FAILED = localized(
+  'この手順の姿勢は現在の3Dモデルへ適用できません',
+  'This step pose cannot be applied to the current 3D model',
+)
+const NOTICE_POSE_APPLYING = localized(
+  '「{title}」の保存姿勢を3Dへ適用しています',
+  'Applying the saved pose for “{title}” to the 3D view',
+)
+const NOTICE_MODEL_REQUIRED = localized(
+  '再生できる3Dモデルを準備してください',
+  'Prepare a 3D model that can be played',
+)
+const NOTICE_NO_STEPS = localized(
+  '再生する手順がありません',
+  'There are no steps to play',
+)
+const EDITOR_INVALID_METADATA = localized(
+  'タイトルは必須・改行なし{titleMaximum}文字以内、表示時間は{durationMinimum}〜{durationMaximum}msです。',
+  'The title is required, must be one line, and must be at most {titleMaximum} characters. Display time must be {durationMinimum}–{durationMaximum} ms.',
+)
+const EDITOR_UPDATE_FAILED = localized(
+  '手順の説明を更新できませんでした',
+  'Could not update the step details',
+)
+const CAPTURE_STATUS_TEXT = Object.freeze({
+  project_required: localized(
+    'プロジェクトを読み込んでください。',
+    'Open a project first.',
+  ),
+  pose_required: localized(
+    '現在のrevisionの3D表示を準備しています。',
+    'Preparing the 3D view for the current revision.',
+  ),
+  pose_running: localized(
+    '3Dの動作が止まってから記録できます。',
+    'Wait for the 3D motion to stop before recording.',
+  ),
+  pose_invalid: localized(
+    '現在の3D姿勢は手順として安全に読み取れません。',
+    'The current 3D pose cannot be read safely as a step.',
+  ),
+  pose_blocked: localized(
+    '衝突境界で安全に停止している表示姿勢を記録します。',
+    'Records the displayed pose that stopped safely at a collision boundary.',
+  ),
+  pose_indeterminate: localized(
+    '経路判定不能で停止した現在の表示姿勢だけを記録します。',
+    'Records only the current displayed pose that stopped because the path was indeterminate.',
+  ),
+  pose_ready: localized(
+    '現在3Dに安全に表示されている姿勢を記録します。',
+    'Records the pose currently shown safely in 3D.',
+  ),
+}) satisfies Readonly<Record<InstructionCaptureStatus, LocalizedText>>
+const DURATION_SECONDS = localized('{seconds}秒', '{seconds} seconds')
 
 function parseTimeline(
   value: unknown,
@@ -535,32 +774,80 @@ function stopped(
   })
 }
 
-function playbackStopText(reason: InstructionPlaybackStopReason) {
+function playbackStopText(
+  reason: InstructionPlaybackStopReason,
+  locale: Locale,
+) {
   switch (reason) {
     case 'stale_step':
-      return '展開図が変わった手順のため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_STALE_STEP)
     case 'project_changed':
-      return 'プロジェクトが変わったため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_PROJECT_CHANGED)
     case 'revision_changed':
-      return '編集中の内容が変わったため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_REVISION_CHANGED)
     case 'model_changed':
-      return '3Dモデルが変わったため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_MODEL_CHANGED)
     case 'manual_pose':
-      return '3D姿勢を手動変更したため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_MANUAL_POSE)
     case 'benchmark':
-      return '性能テストを開始したため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_BENCHMARK)
     case 'file_operation':
-      return 'ファイル操作を開始したため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_FILE_OPERATION)
     case 'apply_failed':
-      return '3D姿勢を適用できなかったため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_APPLY_FAILED)
     case 'hidden':
-      return '画面が非表示になったため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_HIDDEN)
     case 'disposed':
-      return '画面を閉じたため再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_DISPOSED)
     case 'canceled':
-      return '折り手順の再生を停止しました'
+      return selectLocalizedText(locale, PLAYBACK_STOP_CANCELED)
   }
 }
+
+const PLAYBACK_STOP_STALE_STEP = localized(
+  '展開図が変わった手順のため再生を停止しました',
+  'Playback stopped because the crease pattern changed for this step',
+)
+const PLAYBACK_STOP_PROJECT_CHANGED = localized(
+  'プロジェクトが変わったため再生を停止しました',
+  'Playback stopped because the project changed',
+)
+const PLAYBACK_STOP_REVISION_CHANGED = localized(
+  '編集中の内容が変わったため再生を停止しました',
+  'Playback stopped because the edited content changed',
+)
+const PLAYBACK_STOP_MODEL_CHANGED = localized(
+  '3Dモデルが変わったため再生を停止しました',
+  'Playback stopped because the 3D model changed',
+)
+const PLAYBACK_STOP_MANUAL_POSE = localized(
+  '3D姿勢を手動変更したため再生を停止しました',
+  'Playback stopped because the 3D pose was changed manually',
+)
+const PLAYBACK_STOP_BENCHMARK = localized(
+  '性能テストを開始したため再生を停止しました',
+  'Playback stopped because a performance test started',
+)
+const PLAYBACK_STOP_FILE_OPERATION = localized(
+  'ファイル操作を開始したため再生を停止しました',
+  'Playback stopped because a file operation started',
+)
+const PLAYBACK_STOP_APPLY_FAILED = localized(
+  '3D姿勢を適用できなかったため再生を停止しました',
+  'Playback stopped because the 3D pose could not be applied',
+)
+const PLAYBACK_STOP_HIDDEN = localized(
+  '画面が非表示になったため再生を停止しました',
+  'Playback stopped because the window became hidden',
+)
+const PLAYBACK_STOP_DISPOSED = localized(
+  '画面を閉じたため再生を停止しました',
+  'Playback stopped because the view was closed',
+)
+const PLAYBACK_STOP_CANCELED = localized(
+  '折り手順の再生を停止しました',
+  'Folding-step playback stopped',
+)
 
 function validTitle(value: unknown): value is string {
   return typeof value === 'string'
@@ -652,6 +939,10 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   const keys = Object.keys(value)
   return keys.length === expected.length
     && expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function localized(ja: string, en: string): LocalizedText {
+  return Object.freeze({ ja, en })
 }
 
 // Compile-time checks that the raw DTOs retain the exact persisted structure

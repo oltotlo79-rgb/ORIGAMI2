@@ -28,14 +28,27 @@ import {
   createInstructionPlaybackState,
   createInstructionPoseDraft,
   createInstructionTimelinePresentation,
-  instructionPlaybackStatusText,
+  formatInstructionDuration,
+  instructionCaptureStatusText,
+  instructionEditorErrorText,
   instructionPoseMatchesApplied,
+  instructionTimelineNoticeText,
   reduceInstructionPlayback,
   resolveInstructionPoseApplicationObservation,
   validateInstructionMetadata,
+  type InstructionCaptureStatus,
+  type InstructionEditorError,
   type InstructionPlaybackStopReason,
   type InstructionStepPresentation,
+  type InstructionTimelineNotice,
 } from '../lib/instructionTimeline'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  useLocale,
+  type Locale,
+  type LocalizedText,
+} from '../lib/i18n'
 
 type InstructionEditorState = {
   stepId: string
@@ -82,6 +95,7 @@ export function InstructionTimelinePanel({
   applyStepPose,
   onExport,
 }: InstructionTimelinePanelProps) {
+  const locale = useLocale()
   const presentation = useMemo(
     () => createInstructionTimelinePresentation(
       snapshot?.instruction_timeline,
@@ -91,8 +105,8 @@ export function InstructionTimelinePanel({
   )
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [editor, setEditor] = useState<InstructionEditorState | null>(null)
-  const [editorError, setEditorError] = useState<string | null>(null)
-  const [notice, setNotice] = useState('')
+  const [editorError, setEditorError] = useState<InstructionEditorError | null>(null)
+  const [notice, setNotice] = useState<InstructionTimelineNotice | null>(null)
   const [playback, setPlayback] = useState(createInstructionPlaybackState)
   const playbackRef = useRef(playback)
   playbackRef.current = playback
@@ -131,6 +145,9 @@ export function InstructionTimelinePanel({
     || playback.status === 'holding'
   const timelineAvailable = presentation.kind === 'ready'
   const editingDisabled = coreBusy || benchmarkActive || !snapshot || !timelineAvailable
+  const noticeText = notice
+    ? instructionTimelineNoticeText(notice, locale)
+    : ''
 
   const cancelPlayback = useCallback((reason: InstructionPlaybackStopReason) => {
     setPlayback((current) => reduceInstructionPlayback(current, {
@@ -308,7 +325,7 @@ export function InstructionTimelinePanel({
   }, [playback])
 
   useEffect(() => {
-    setNotice(instructionPlaybackStatusText(playback))
+    setNotice({ kind: 'playback', state: playback })
   }, [playback])
 
   async function addCurrentPose() {
@@ -322,7 +339,9 @@ export function InstructionTimelinePanel({
     cancelPlayback('revision_changed')
     const previousIds = new Set(presentation.steps.map(({ id }) => id))
     let addedStepId: string | null = null
-    const title = `手順 ${presentation.steps.length + 1}`
+    const title = formatLocalizedText(locale, TEXT.defaultStepTitle, {
+      step: presentation.steps.length + 1,
+    })
     const succeeded = await runNativeEdit(async (projectId, revision, projectInstanceId) => {
       const response = await addInstructionStep(
         projectId,
@@ -346,11 +365,11 @@ export function InstructionTimelinePanel({
       return response
     })
     if (!succeeded) {
-      setNotice('現在の3D姿勢を手順へ追加できませんでした')
+      setNotice({ kind: 'add_failed' })
       return
     }
     if (addedStepId) setSelectedStepId(addedStepId)
-    setNotice(`「${title}」を追加しました`)
+    setNotice({ kind: 'added', title })
   }
 
   async function saveMetadata(event: React.FormEvent<HTMLFormElement>) {
@@ -368,10 +387,7 @@ export function InstructionTimelinePanel({
       durationMs: Number(editor.durationMs),
     })
     if (!metadata) {
-      setEditorError(
-        `タイトルは必須・改行なし${MAX_INSTRUCTION_TITLE_CHARACTERS}文字以内、`
-        + `表示時間は${MIN_INSTRUCTION_DURATION_MS}〜${MAX_INSTRUCTION_DURATION_MS}msです。`,
-      )
+      setEditorError('invalid_metadata')
       return
     }
     cancelPlayback('revision_changed')
@@ -386,8 +402,10 @@ export function InstructionTimelinePanel({
         metadata.caution,
         metadata.durationMs,
       ))
-    setEditorError(succeeded ? null : '手順の説明を更新できませんでした')
-    setNotice(succeeded ? `「${metadata.title}」を更新しました` : '手順を更新できませんでした')
+    setEditorError(succeeded ? null : 'update_failed')
+    setNotice(succeeded
+      ? { kind: 'updated', title: metadata.title }
+      : { kind: 'update_failed' })
   }
 
   async function replaceSelectedPose() {
@@ -403,23 +421,25 @@ export function InstructionTimelinePanel({
         captureDraft.hingeAngles,
       ))
     setNotice(succeeded
-      ? `「${selectedStep.title}」の姿勢を現在の3D表示で更新しました`
-      : '手順の姿勢を更新できませんでした')
+      ? { kind: 'pose_updated', title: selectedStep.title }
+      : { kind: 'pose_update_failed' })
   }
 
   async function deleteSelectedStep() {
     if (editingDisabled || !selectedStep) return
-    if (!window.confirm(`「${selectedStep.title}」を削除しますか？`)) return
+    if (!window.confirm(formatLocalizedText(locale, TEXT.deleteConfirmation, {
+      title: selectedStep.title,
+    }))) return
     cancelPlayback('revision_changed')
     const deletedId = selectedStep.id
     const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       removeInstructionStep(projectId, revision, projectInstanceId, deletedId))
     if (!succeeded) {
-      setNotice('手順を削除できませんでした')
+      setNotice({ kind: 'delete_failed' })
       return
     }
     setSelectedStepId(null)
-    setNotice(`「${selectedStep.title}」を削除しました`)
+    setNotice({ kind: 'deleted', title: selectedStep.title })
   }
 
   async function moveSelectedStep(targetIndex: number) {
@@ -439,13 +459,13 @@ export function InstructionTimelinePanel({
         selectedStep.id,
         targetIndex,
       ))
-    setNotice(succeeded ? '手順の順番を変更しました' : '手順を移動できませんでした')
+    setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
   }
 
   function showStepPose(step: InstructionStepPresentation) {
     cancelPlayback('manual_pose')
     if (step.stale) {
-      setNotice('展開図が変更された手順です。「現在の3D姿勢で更新」してから表示してください')
+      setNotice({ kind: 'stale_pose' })
       return
     }
     let applied = false
@@ -455,11 +475,11 @@ export function InstructionTimelinePanel({
       applied = false
     }
     if (!applied) {
-      setNotice('この手順の姿勢は現在の3Dモデルへ適用できません')
+      setNotice({ kind: 'pose_apply_failed' })
       return
     }
     setSelectedStepId(step.id)
-    setNotice(`「${step.title}」の保存姿勢を3Dへ適用しています`)
+    setNotice({ kind: 'pose_applying', title: step.title })
   }
 
   function startOrStopPlayback() {
@@ -468,7 +488,7 @@ export function InstructionTimelinePanel({
       return
     }
     if (!snapshot || !poseModelKey) {
-      setNotice('再生できる3Dモデルを準備してください')
+      setNotice({ kind: 'model_required' })
       return
     }
     const plan = createInstructionPlaybackPlan(
@@ -477,7 +497,7 @@ export function InstructionTimelinePanel({
       presentation,
     )
     if (!plan) {
-      setNotice('再生する手順がありません')
+      setNotice({ kind: 'no_steps' })
       return
     }
     const selectedIndex = selectedStep && !selectedStep.stale
@@ -492,10 +512,9 @@ export function InstructionTimelinePanel({
     }))
   }
 
-  const captureStatus = describeCaptureStatus(
-    snapshot,
-    appliedPose,
-    captureDraft !== null,
+  const captureStatus = instructionCaptureStatusText(
+    describeCaptureStatus(snapshot, appliedPose, captureDraft !== null),
+    locale,
   )
 
   return (
@@ -507,7 +526,7 @@ export function InstructionTimelinePanel({
       <div className="timeline-controls">
         <button
           type="button"
-          aria-label="先頭の手順を3Dに表示"
+          aria-label={selectLocalizedText(locale, TEXT.showFirstStep)}
           disabled={coreBusy || steps.length === 0 || steps[0]?.stale}
           onClick={() => {
             const first = steps[0]
@@ -518,22 +537,30 @@ export function InstructionTimelinePanel({
         </button>
         <button
           type="button"
-          aria-label={playbackActive ? '再生を停止' : '選択手順から再生'}
+          aria-label={selectLocalizedText(
+            locale,
+            playbackActive ? TEXT.stopPlayback : TEXT.playFromSelection,
+          )}
           aria-pressed={playbackActive}
           disabled={coreBusy || benchmarkActive || steps.length === 0}
           onClick={startOrStopPlayback}
         >
           {playbackActive ? '■' : '▶'}
         </button>
-        <strong>折り手順</strong>
+        <strong>{selectLocalizedText(locale, TEXT.heading)}</strong>
         <span>
-          {steps.length.toLocaleString()}手順
+          {formatInstructionStepCount(steps.length, locale)}
           {presentation.kind === 'ready'
-            ? `・合計 ${formatDuration(presentation.totalDurationMs)}`
+            ? formatLocalizedText(locale, TEXT.totalDuration, {
+                duration: formatInstructionDuration(
+                  presentation.totalDurationMs,
+                  locale,
+                ),
+              })
             : ''}
         </span>
         <small>
-          保存した姿勢を段階表示します。姿勢間の連続した折り経路の安全性は保証しません。
+          {selectLocalizedText(locale, TEXT.endpointSafety)}
         </small>
         <button
           ref={exportButtonRef}
@@ -549,22 +576,25 @@ export function InstructionTimelinePanel({
           }
           title={
             steps.some((step) => step.stale)
-              ? '展開図が変わったため、要更新の手順を作り直してください。'
-              : '現在の折り手順をPDFまたはSVG画像一式へ書き出します。'
+              ? selectLocalizedText(locale, TEXT.exportStaleTitle)
+              : selectLocalizedText(locale, TEXT.exportTitle)
           }
           onClick={onExport}
         >
-          折り図を書き出す
+          {selectLocalizedText(locale, TEXT.exportAction)}
         </button>
       </div>
       <div className="instruction-timeline-body">
         {presentation.kind === 'invalid' ? (
           <p className="instruction-timeline-error" role="alert">
-            折り手順データを安全に読み取れないため、編集と再生を停止しました。
+            {selectLocalizedText(locale, TEXT.invalidTimeline)}
           </p>
         ) : (
           <>
-            <div className="timeline-track" aria-label="折り手順一覧">
+            <div
+              className="timeline-track"
+              aria-label={selectLocalizedText(locale, TEXT.timelineList)}
+            >
               {steps.map((step) => {
                 const selected = step.id === selectedStepId
                 const displayed = !step.stale
@@ -585,7 +615,11 @@ export function InstructionTimelinePanel({
                   >
                     <span>{step.index + 1}. {step.title}</span>
                     <small>
-                      {step.stale ? '要更新' : displayed ? '3D表示中' : formatDuration(step.durationMs)}
+                      {step.stale
+                        ? selectLocalizedText(locale, TEXT.needsUpdate)
+                        : displayed
+                          ? selectLocalizedText(locale, TEXT.shownIn3d)
+                          : formatInstructionDuration(step.durationMs, locale)}
                     </small>
                   </button>
                 )
@@ -601,19 +635,19 @@ export function InstructionTimelinePanel({
                 title={captureStatus}
                 onClick={() => void addCurrentPose()}
               >
-                ＋ 現在の3D姿勢を追加
+                {selectLocalizedText(locale, TEXT.addCurrentPose)}
               </button>
             </div>
             <div className="instruction-editor-region">
-              {notice && (
+              {noticeText && (
                 <p className="instruction-notice" aria-hidden="true">
-                  {notice}
+                  {noticeText}
                 </p>
               )}
               {selectedStep && editor ? (
                 <form className="instruction-editor" onSubmit={(event) => void saveMetadata(event)}>
                   <label>
-                    <span>タイトル</span>
+                    <span>{selectLocalizedText(locale, TEXT.titleLabel)}</span>
                     <input
                       value={editor.title}
                       maxLength={MAX_INSTRUCTION_TITLE_CHARACTERS}
@@ -625,7 +659,7 @@ export function InstructionTimelinePanel({
                     />
                   </label>
                   <label>
-                    <span>説明</span>
+                    <span>{selectLocalizedText(locale, TEXT.descriptionLabel)}</span>
                     <textarea
                       value={editor.description}
                       maxLength={MAX_INSTRUCTION_DESCRIPTION_CHARACTERS}
@@ -638,7 +672,7 @@ export function InstructionTimelinePanel({
                     />
                   </label>
                   <label>
-                    <span>注意</span>
+                    <span>{selectLocalizedText(locale, TEXT.cautionLabel)}</span>
                     <textarea
                       value={editor.caution}
                       maxLength={MAX_INSTRUCTION_CAUTION_CHARACTERS}
@@ -651,7 +685,7 @@ export function InstructionTimelinePanel({
                     />
                   </label>
                   <label className="instruction-duration-field">
-                    <span>表示時間</span>
+                    <span>{selectLocalizedText(locale, TEXT.durationLabel)}</span>
                     <span>
                       <input
                         type="number"
@@ -669,13 +703,15 @@ export function InstructionTimelinePanel({
                     </span>
                   </label>
                   <div className="instruction-editor-actions">
-                    <button type="submit" disabled={editingDisabled}>説明を保存</button>
+                    <button type="submit" disabled={editingDisabled}>
+                      {selectLocalizedText(locale, TEXT.saveMetadata)}
+                    </button>
                     <button
                       type="button"
                       disabled={editingDisabled || selectedStep.stale || !poseModelKey}
                       onClick={() => showStepPose(selectedStep)}
                     >
-                      3Dに表示
+                      {selectLocalizedText(locale, TEXT.showIn3d)}
                     </button>
                     <button
                       type="button"
@@ -683,21 +719,21 @@ export function InstructionTimelinePanel({
                       title={captureStatus}
                       onClick={() => void replaceSelectedPose()}
                     >
-                      現在の3D姿勢で更新
+                      {selectLocalizedText(locale, TEXT.updateCurrentPose)}
                     </button>
                     <button
                       type="button"
                       disabled={editingDisabled || selectedStep.index === 0}
                       onClick={() => void moveSelectedStep(selectedStep.index - 1)}
                     >
-                      ← 前へ
+                      {selectLocalizedText(locale, TEXT.moveEarlier)}
                     </button>
                     <button
                       type="button"
                       disabled={editingDisabled || selectedStep.index === steps.length - 1}
                       onClick={() => void moveSelectedStep(selectedStep.index + 1)}
                     >
-                      次へ →
+                      {selectLocalizedText(locale, TEXT.moveLater)}
                     </button>
                     <button
                       type="button"
@@ -705,31 +741,39 @@ export function InstructionTimelinePanel({
                       disabled={editingDisabled}
                       onClick={() => void deleteSelectedStep()}
                     >
-                      削除
+                      {selectLocalizedText(locale, TEXT.deleteAction)}
                     </button>
                   </div>
                   {selectedStep.stale && (
                     <p className="instruction-stale-guidance">
-                      展開図が記録時から変わりました。内容を確認し、現在の3D姿勢で更新すると再生できます。
+                      {selectLocalizedText(locale, TEXT.staleGuidance)}
                     </p>
                   )}
                   {selectedPoseIsDisplayed && (
-                    <p className="instruction-current-pose">この保存姿勢を3Dに表示中です。</p>
+                    <p className="instruction-current-pose">
+                      {selectLocalizedText(locale, TEXT.currentPose)}
+                    </p>
                   )}
-                  {editorError && <p className="instruction-editor-error" role="alert">{editorError}</p>}
+                  {editorError && (
+                    <p className="instruction-editor-error" role="alert">
+                      {instructionEditorErrorText(editorError, locale)}
+                    </p>
+                  )}
                 </form>
               ) : (
                 <p className="instruction-empty-editor">
                   {steps.length === 0
-                    ? `現在の3D姿勢を最初の手順として追加できます。${captureStatus}`
-                    : '手順を選択すると説明・姿勢・順番を編集できます。'}
+                    ? formatLocalizedText(locale, TEXT.emptyTimeline, {
+                        captureStatus,
+                      })
+                    : selectLocalizedText(locale, TEXT.selectStep)}
                 </p>
               )}
             </div>
           </>
         )}
         <p className="visually-hidden" aria-live="polite" aria-atomic="true">
-          {notice}
+          {noticeText}
         </p>
       </div>
     </section>
@@ -740,30 +784,103 @@ function describeCaptureStatus(
   snapshot: ProjectSnapshot | null,
   appliedPose: FoldPreviewAppliedPoseSnapshot | null,
   canCapture: boolean,
-) {
-  if (!snapshot) return 'プロジェクトを読み込んでください。'
+): InstructionCaptureStatus {
+  if (!snapshot) return 'project_required'
   if (
     !appliedPose
     || appliedPose.projectId !== snapshot.project_id
     || appliedPose.revision !== snapshot.revision
-  ) return '現在のrevisionの3D表示を準備しています。'
-  if (appliedPose.state === 'running') return '3Dの動作が止まってから記録できます。'
-  if (!canCapture) return '現在の3D姿勢は手順として安全に読み取れません。'
-  if (appliedPose.state === 'blocked') {
-    return '衝突境界で実際に停止している表示姿勢を記録します。'
-  }
-  if (appliedPose.state === 'indeterminate') {
-    return '経路判定不能で停止した現在の表示姿勢だけを記録します。'
-  }
-  return '現在3Dに実際に表示されている姿勢を記録します。'
+  ) return 'pose_required'
+  if (appliedPose.state === 'running') return 'pose_running'
+  if (!canCapture) return 'pose_invalid'
+  if (appliedPose.state === 'blocked') return 'pose_blocked'
+  if (appliedPose.state === 'indeterminate') return 'pose_indeterminate'
+  return 'pose_ready'
 }
 
-function formatDuration(durationMs: number) {
-  const totalSeconds = Math.max(0, durationMs) / 1_000
-  if (totalSeconds < 60) {
-    return `${totalSeconds.toLocaleString('ja-JP', { maximumFractionDigits: 1 })}秒`
-  }
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = Math.floor(totalSeconds % 60)
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
+function formatInstructionStepCount(count: number, locale: Locale) {
+  const formatted = count.toLocaleString(locale === 'en' ? 'en-US' : 'ja-JP')
+  return formatLocalizedText(
+    locale,
+    locale === 'en' && count === 1 ? TEXT.stepCountOne : TEXT.stepCount,
+    { count: formatted },
+  )
 }
+
+function localized(ja: string, en: string): LocalizedText {
+  return Object.freeze({ ja, en })
+}
+
+const TEXT = Object.freeze({
+  defaultStepTitle: localized('手順 {step}', 'Step {step}'),
+  deleteConfirmation: localized(
+    '「{title}」を削除しますか？',
+    'Delete “{title}”?',
+  ),
+  showFirstStep: localized(
+    '先頭の手順を3Dに表示',
+    'Show the first step in 3D',
+  ),
+  stopPlayback: localized('再生を停止', 'Stop playback'),
+  playFromSelection: localized(
+    '選択手順から再生',
+    'Play from the selected step',
+  ),
+  heading: localized('折り手順', 'Folding instructions'),
+  stepCount: localized('{count}手順', '{count} steps'),
+  stepCountOne: localized('{count}手順', '{count} step'),
+  totalDuration: localized('・合計 {duration}', ' · Total {duration}'),
+  endpointSafety: localized(
+    '保存した姿勢を段階表示します。姿勢間の連続した折り経路の安全性は保証しません。',
+    'Shows saved poses step by step. It does not guarantee a safe continuous folding path between poses.',
+  ),
+  exportStaleTitle: localized(
+    '展開図が変わったため、要更新の手順を作り直してください。',
+    'The crease pattern changed. Recreate every step that needs updating.',
+  ),
+  exportTitle: localized(
+    '現在の折り手順をPDFまたはSVG画像一式へ書き出します。',
+    'Exports the current folding instructions as a PDF or a set of SVG images.',
+  ),
+  exportAction: localized('折り図を書き出す', 'Export diagrams'),
+  invalidTimeline: localized(
+    '折り手順データを安全に読み取れないため、編集と再生を停止しました。',
+    'Editing and playback were stopped because the folding-step data could not be read safely.',
+  ),
+  timelineList: localized('折り手順一覧', 'Folding-step list'),
+  needsUpdate: localized('要更新', 'Needs update'),
+  shownIn3d: localized('3D表示中', 'Shown in 3D'),
+  addCurrentPose: localized(
+    '＋ 現在の3D姿勢を追加',
+    '＋ Add current 3D pose',
+  ),
+  titleLabel: localized('タイトル', 'Title'),
+  descriptionLabel: localized('説明', 'Description'),
+  cautionLabel: localized('注意', 'Caution'),
+  durationLabel: localized('表示時間', 'Display time'),
+  saveMetadata: localized('説明を保存', 'Save details'),
+  showIn3d: localized('3Dに表示', 'Show in 3D'),
+  updateCurrentPose: localized(
+    '現在の3D姿勢で更新',
+    'Update with current 3D pose',
+  ),
+  moveEarlier: localized('← 前へ', '← Earlier'),
+  moveLater: localized('次へ →', 'Later →'),
+  deleteAction: localized('削除', 'Delete'),
+  staleGuidance: localized(
+    '展開図が記録時から変わりました。内容を確認し、現在の3D姿勢で更新すると再生できます。',
+    'The crease pattern changed after this step was recorded. Review it and update it with the current 3D pose before playback.',
+  ),
+  currentPose: localized(
+    'この保存姿勢を3Dに表示中です。',
+    'This saved pose is currently shown in 3D.',
+  ),
+  emptyTimeline: localized(
+    '現在の3D姿勢を最初の手順として追加できます。{captureStatus}',
+    'Add the current 3D pose as the first step. {captureStatus}',
+  ),
+  selectStep: localized(
+    '手順を選択すると説明・姿勢・順番を編集できます。',
+    'Select a step to edit its details, pose, and order.',
+  ),
+})

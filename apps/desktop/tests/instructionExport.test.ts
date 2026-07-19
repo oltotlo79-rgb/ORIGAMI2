@@ -10,6 +10,7 @@ import {
   instructionExportErrorMessage,
   instructionExportFormatLabel,
   instructionExportPhaseLabel,
+  instructionExportWarningMessage,
   isInstructionExportFormat,
   type InstructionExportPreviewResponse,
   type InstructionExportSaveResponse,
@@ -31,6 +32,11 @@ test('instruction export formats are a closed PDF/SVG ZIP set with stable labels
   assert.equal(instructionExportPhaseLabel('analyzing_topology'), '面構造を解析しています')
   assert.equal(instructionExportPhaseLabel('building_document'), 'ページとファイルを生成しています')
   assert.equal(instructionExportPhaseLabel('ready'), '生成が完了しました')
+  assert.equal(instructionExportFormatLabel('svg_zip', 'en'), 'SVG images ZIP')
+  assert.equal(
+    instructionExportPhaseLabel('analyzing_topology', 'en'),
+    'Analyzing face topology',
+  )
 })
 
 test('preview and save responses retain the native boundary metadata', () => {
@@ -70,6 +76,7 @@ test('instruction export byte formatting rejects unsafe metadata and uses decima
   assert.equal(formatInstructionExportBytes(2_500_000), '2.5 MB')
   assert.equal(formatInstructionExportBytes(-1), '不明')
   assert.equal(formatInstructionExportBytes(Number.MAX_VALUE), '不明')
+  assert.equal(formatInstructionExportBytes(Number.MAX_VALUE, 'en'), 'Unknown')
 })
 
 test('instruction export errors use a closed category and never expose raw values', () => {
@@ -79,17 +86,47 @@ test('instruction export errors use a closed category and never expose raw value
     message_ja: '生成を開始した後に編集内容が変わりました。現在の編集内容から作り直してください。',
   })
   assert.equal(instructionExportErrorMessage(changed), changed.message_ja)
+  assert.equal(
+    instructionExportErrorMessage(changed, 'en'),
+    'The project changed after generation started. Rebuild from the current edits.',
+  )
 
   const privateValue = 'C:\\Users\\alice\\秘密の作品.ori'
   const fallback = instructionExportErrorMessage(privateValue)
   assert.equal(fallback, '折り図書き出しを完了できませんでした。')
   assert.doesNotMatch(fallback, /alice|秘密の作品/iu)
   assert.equal(
+    instructionExportErrorMessage(privateValue, 'en'),
+    'Instruction export could not be completed.',
+  )
+  assert.equal(
     instructionExportErrorMessage({
       category: 'not_in_the_allowlist',
       message_ja: privateValue,
     }),
     fallback,
+  )
+})
+
+test('instruction export warning categories select trusted Japanese and English text', () => {
+  const warning = {
+    category: 'discrete_step_endpoints_only',
+    message_ja: 'C:\\private\\untrusted.ori2',
+  } as const
+  assert.equal(
+    instructionExportWarningMessage(warning),
+    '各手順は保存済みの終端姿勢のみを表し、手順間の連続動作は出力されません。',
+  )
+  assert.equal(
+    instructionExportWarningMessage(warning, 'en'),
+    'Each step shows only its saved endpoint pose; continuous motion between steps is not exported.',
+  )
+  assert.equal(
+    instructionExportWarningMessage({
+      category: 'unknown',
+      message_ja: 'C:\\private\\untrusted.ori2',
+    }, 'en'),
+    'An instruction export limitation could not be identified.',
   )
 })
 

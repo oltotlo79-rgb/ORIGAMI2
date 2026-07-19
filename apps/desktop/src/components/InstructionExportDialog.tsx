@@ -10,11 +10,13 @@ import {
   INSTRUCTION_EXPORT_FORMATS,
   instructionExportFormatLabel,
   instructionExportPhaseLabel,
+  instructionExportWarningMessage,
   isInstructionExportFormat,
   type InstructionExportFormat,
   type InstructionExportPhase,
   type InstructionExportPreview,
 } from '../lib/instructionExport.ts'
+import { useLocale } from '../lib/i18n.ts'
 
 type InstructionExportDialogProps = Readonly<{
   format: InstructionExportFormat
@@ -38,6 +40,89 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+const INSTRUCTION_EXPORT_COPY = {
+  ja: {
+    eyebrow: '折り図の書き出し',
+    title: '形式と出力内容を確認',
+    close: '閉じる',
+    description:
+      '現在の編集リビジョンから折り図を生成します。書き出してもプロジェクトの保存状態や履歴は変わりません。',
+    format: '出力形式',
+    optionDetails: {
+      pdf: '固定アイソメトリック視点の折り図を、複数ページのPDFにまとめます',
+      svg_zip: '手順ごとのベクターSVG画像を、1つのZIPにまとめます',
+    },
+    rebuild: '現在の編集内容から作り直す',
+    retry: '同じ形式で再試行',
+    metadata: {
+      format: '形式',
+      specification: '出力仕様',
+      profile: '出力プロファイル',
+      projection: '投影プロファイル',
+      suggestedName: '保存名候補',
+      size: 'サイズ',
+      steps: '折り手順',
+      pages: 'ページ',
+      cautions: '注意事項',
+      revision: '固定元',
+    },
+    stepUnit: '手順',
+    pageUnit: 'ページ',
+    cautionUnit: '件',
+    warningTitle: '出力前の確認事項',
+    acknowledge: '上記の注意事項を確認しました',
+    warningFree: 'この折り図について追加確認が必要な注意事項はありません。',
+    stop: '生成を中止',
+    cancel: 'キャンセル',
+    processing: '処理中…',
+    save: '保存先を選んで書き出す…',
+    summaries: {
+      pdf: 'PDF 1.7・A4縦・固定アイソメトリック投影・複数ページ',
+      svg_zip: 'SVGページ画像・固定アイソメトリック投影・ZIPアーカイブ',
+    },
+  },
+  en: {
+    eyebrow: 'Export instructions',
+    title: 'Review format and output',
+    close: 'Close',
+    description:
+      'Generate instructions from the current edit revision. Exporting does not change the project save state or history.',
+    format: 'Export format',
+    optionDetails: {
+      pdf: 'Combine fixed-isometric instruction diagrams into a multi-page PDF',
+      svg_zip: 'Package one vector SVG image per instruction page into a ZIP',
+    },
+    rebuild: 'Rebuild from the current edits',
+    retry: 'Retry the same format',
+    metadata: {
+      format: 'Format',
+      specification: 'Specification',
+      profile: 'Export profile',
+      projection: 'Projection profile',
+      suggestedName: 'Suggested file name',
+      size: 'Size',
+      steps: 'Instruction steps',
+      pages: 'Pages',
+      cautions: 'Notices',
+      revision: 'Source',
+    },
+    stepUnit: 'steps',
+    pageUnit: 'pages',
+    cautionUnit: 'notices',
+    warningTitle: 'Review before export',
+    acknowledge: 'I have reviewed the notices above',
+    warningFree: 'No additional notices require review for these instructions.',
+    stop: 'Stop generation',
+    cancel: 'Cancel',
+    processing: 'Processing…',
+    save: 'Choose destination and export…',
+    summaries: {
+      pdf: 'PDF 1.7 · A4 portrait · fixed isometric projection · multiple pages',
+      svg_zip: 'SVG page images · fixed isometric projection · ZIP archive',
+    },
+  },
+} as const
+
 export function InstructionExportDialog({
   format,
   preview,
@@ -51,6 +136,9 @@ export function InstructionExportDialog({
   onSave,
   onCancel,
 }: InstructionExportDialogProps) {
+  const locale = useLocale()
+  const copy = INSTRUCTION_EXPORT_COPY[locale]
+  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const formatRef = useRef<HTMLSelectElement>(null)
@@ -156,8 +244,8 @@ export function InstructionExportDialog({
       >
         <header>
           <div>
-            <span className="dialog-eyebrow">折り図の書き出し</span>
-            <h2 id="instruction-export-title">形式と出力内容を確認</h2>
+            <span className="dialog-eyebrow">{copy.eyebrow}</span>
+            <h2 id="instruction-export-title">{copy.title}</h2>
           </div>
           <button
             ref={closeRef}
@@ -165,7 +253,7 @@ export function InstructionExportDialog({
             className="dialog-close"
             disabled={busy && !generationActive}
             onClick={onCancel}
-            aria-label="閉じる"
+            aria-label={copy.close}
           >
             ×
           </button>
@@ -173,11 +261,11 @@ export function InstructionExportDialog({
 
         <div className="crease-export-dialog-body">
           <p id="instruction-export-description" className="dialog-note">
-            現在の編集リビジョンから折り図を生成します。書き出してもプロジェクトの保存状態や履歴は変わりません。
+            {copy.description}
           </p>
 
           <label className="crease-export-format">
-            <span>出力形式</span>
+            <span>{copy.format}</span>
             <select
               ref={formatRef}
               value={format}
@@ -189,7 +277,9 @@ export function InstructionExportDialog({
             >
               {INSTRUCTION_EXPORT_FORMATS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label} — {option.detail}
+                  {instructionExportFormatLabel(option.value, locale)}
+                  {' — '}
+                  {copy.optionDetails[option.value]}
                 </option>
               ))}
             </select>
@@ -197,7 +287,8 @@ export function InstructionExportDialog({
 
           {busy && !preview && (
             <p className="crease-export-loading" role="status">
-              {instructionExportFormatLabel(format)}: {instructionExportPhaseLabel(phase)}…
+              {instructionExportFormatLabel(format, locale)}:{' '}
+              {instructionExportPhaseLabel(phase, locale)}…
             </p>
           )}
 
@@ -206,7 +297,7 @@ export function InstructionExportDialog({
               <p className="dialog-error" role="alert">{error}</p>
               {!busy && (
                 <button type="button" onClick={onRetry}>
-                  {preview ? '現在の編集内容から作り直す' : '同じ形式で再試行'}
+                  {preview ? copy.rebuild : copy.retry}
                 </button>
               )}
             </div>
@@ -216,44 +307,60 @@ export function InstructionExportDialog({
             <>
               <dl className="crease-export-metadata">
                 <div>
-                  <dt>形式</dt>
-                  <dd>{instructionExportFormatLabel(preview.format)}</dd>
+                  <dt>{copy.metadata.format}</dt>
+                  <dd>{instructionExportFormatLabel(preview.format, locale)}</dd>
                 </div>
                 <div>
-                  <dt>出力仕様</dt>
-                  <dd>{preview.format_summary}</dd>
+                  <dt>{copy.metadata.specification}</dt>
+                  <dd>{locale === 'ja'
+                    ? preview.format_summary
+                    : copy.summaries[preview.format]}</dd>
                 </div>
                 <div>
-                  <dt>出力プロファイル</dt>
+                  <dt>{copy.metadata.profile}</dt>
                   <dd>{preview.profile}</dd>
                 </div>
                 <div>
-                  <dt>投影プロファイル</dt>
+                  <dt>{copy.metadata.projection}</dt>
                   <dd>{preview.projection_profile}</dd>
                 </div>
                 <div>
-                  <dt>保存名候補</dt>
+                  <dt>{copy.metadata.suggestedName}</dt>
                   <dd>{preview.suggested_file_name}</dd>
                 </div>
                 <div>
-                  <dt>サイズ</dt>
-                  <dd>{formatInstructionExportBytes(preview.byte_count)}</dd>
+                  <dt>{copy.metadata.size}</dt>
+                  <dd>{formatInstructionExportBytes(preview.byte_count, locale)}</dd>
                 </div>
                 <div>
-                  <dt>折り手順</dt>
-                  <dd>{preview.step_count.toLocaleString('ja-JP')}手順</dd>
+                  <dt>{copy.metadata.steps}</dt>
+                  <dd>
+                    {preview.step_count.toLocaleString(numberLocale)}
+                    {localizedCountUnit(locale, preview.step_count, copy.stepUnit, 'step')}
+                  </dd>
                 </div>
                 <div>
-                  <dt>ページ</dt>
-                  <dd>{preview.page_count.toLocaleString('ja-JP')}ページ</dd>
+                  <dt>{copy.metadata.pages}</dt>
+                  <dd>
+                    {preview.page_count.toLocaleString(numberLocale)}
+                    {localizedCountUnit(locale, preview.page_count, copy.pageUnit, 'page')}
+                  </dd>
                 </div>
                 <div>
-                  <dt>注意事項</dt>
-                  <dd>{preview.caution_count.toLocaleString('ja-JP')}件</dd>
+                  <dt>{copy.metadata.cautions}</dt>
+                  <dd>
+                    {preview.caution_count.toLocaleString(numberLocale)}
+                    {localizedCountUnit(
+                      locale,
+                      preview.caution_count,
+                      copy.cautionUnit,
+                      'notice',
+                    )}
+                  </dd>
                 </div>
                 <div>
-                  <dt>固定元</dt>
-                  <dd>revision {preview.expected_revision.toLocaleString('ja-JP')}</dd>
+                  <dt>{copy.metadata.revision}</dt>
+                  <dd>revision {preview.expected_revision.toLocaleString(numberLocale)}</dd>
                 </div>
               </dl>
 
@@ -261,12 +368,14 @@ export function InstructionExportDialog({
                 className="crease-export-warnings"
                 aria-labelledby="instruction-export-warnings-title"
               >
-                <h3 id="instruction-export-warnings-title">出力前の確認事項</h3>
+                <h3 id="instruction-export-warnings-title">{copy.warningTitle}</h3>
                 {preview.warnings.length > 0 ? (
                   <>
                     <ul>
                       {preview.warnings.map((warning) => (
-                        <li key={warning.category}>{warning.message_ja}</li>
+                        <li key={warning.category}>
+                          {instructionExportWarningMessage(warning, locale)}
+                        </li>
                       ))}
                     </ul>
                     <label>
@@ -276,11 +385,11 @@ export function InstructionExportDialog({
                         disabled={busy}
                         onChange={(event) => setWarningsAcknowledged(event.currentTarget.checked)}
                       />
-                      上記の注意事項を確認しました
+                      {copy.acknowledge}
                     </label>
                   </>
                 ) : (
-                  <p>この折り図について追加確認が必要な注意事項はありません。</p>
+                  <p>{copy.warningFree}</p>
                 )}
               </section>
             </>
@@ -301,7 +410,7 @@ export function InstructionExportDialog({
             disabled={busy && !generationActive}
             onClick={onCancel}
           >
-            {generationActive ? '生成を中止' : 'キャンセル'}
+            {generationActive ? copy.stop : copy.cancel}
           </button>
           <button
             type="button"
@@ -309,10 +418,20 @@ export function InstructionExportDialog({
             disabled={!canSave}
             onClick={() => onSave(warningsAcknowledged)}
           >
-            {busy ? '処理中…' : '保存先を選んで書き出す…'}
+            {busy ? copy.processing : copy.save}
           </button>
         </footer>
       </section>
     </div>
   )
+}
+
+function localizedCountUnit(
+  locale: 'ja' | 'en',
+  count: number,
+  japaneseOrPlural: string,
+  englishSingular: string,
+) {
+  if (locale === 'ja') return japaneseOrPlural
+  return count === 1 ? ` ${englishSingular}` : ` ${japaneseOrPlural}`
 }

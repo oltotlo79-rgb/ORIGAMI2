@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -13,6 +14,7 @@ import {
   type InstructionExportFormat,
   type InstructionExportPreview,
 } from '../src/lib/instructionExport'
+import { localeStore } from '../src/lib/i18n.ts'
 
 const PREVIEW: InstructionExportPreview = {
   export_id: '018f47d1-5ca0-75b1-a53a-c579f39f9661',
@@ -41,6 +43,7 @@ const PREVIEW: InstructionExportPreview = {
 
 afterEach(() => {
   cleanup()
+  localeStore.dispose()
   document.body.replaceChildren()
 })
 
@@ -81,6 +84,48 @@ describe('InstructionExportDialog DOM interactions', () => {
       .toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '保存先を選んで書き出す…' }))
     expect(onSave).toHaveBeenCalledWith(true)
+  })
+
+  it('translates metadata, trusted warnings, progress, and controls live', () => {
+    localeStore.initialize()
+    localeStore.setLocale('en')
+    const { rerender } = renderDialog()
+
+    expect(screen.getByRole('dialog', {
+      name: 'Review format and output',
+    })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Export format' })).toBeTruthy()
+    expect(screen.getByText('18 steps')).toBeTruthy()
+    expect(screen.getByText('6 pages')).toBeTruthy()
+    expect(screen.getByText('2 notices')).toBeTruthy()
+    expect(screen.getByText(
+      'PDF 1.7 · A4 portrait · fixed isometric projection · multiple pages',
+    )).toBeTruthy()
+    expect(screen.getByText(/A fixed automatic camera is used/u)).toBeTruthy()
+    expect(document.body.textContent).not.toContain(
+      '手順8は紙が重なるため',
+    )
+    expect(screen.getByLabelText(
+      'I have reviewed the notices above',
+    )).toBeTruthy()
+
+    rerender(dialogElement({
+      preview: null,
+      busy: true,
+      generationActive: true,
+      phase: 'analyzing_topology',
+    }))
+    expect(screen.getByText(/Analyzing face topology/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Stop generation' })).toBeTruthy()
+
+    act(() => {
+      localeStore.setLocale('ja')
+    })
+    expect(screen.getByRole('dialog', {
+      name: '形式と出力内容を確認',
+    })).toBeTruthy()
+    expect(screen.getByText(/面構造を解析しています/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '生成を中止' })).toBeTruthy()
   })
 
   it('changes to every supported format and rejects unknown values', () => {

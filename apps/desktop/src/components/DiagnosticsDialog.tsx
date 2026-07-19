@@ -11,6 +11,13 @@ import {
   saveDiagnosticsSharePreview,
   type DiagnosticsSharePreview,
 } from '../lib/diagnosticsShare.ts'
+import { useLocale } from '../lib/i18n.ts'
+
+type DiagnosticsNotice =
+  | 'selected'
+  | 'save_canceled'
+  | 'saved'
+  | 'save_failed'
 
 type DiagnosticsDialogState =
   | Readonly<{ kind: 'loading'; requestId: number }>
@@ -20,8 +27,7 @@ type DiagnosticsDialogState =
       requestId: number
       preview: DiagnosticsSharePreview
       saving: boolean
-      notice: string | null
-      saveError: boolean
+      notice: DiagnosticsNotice | null
     }>
 
 type DiagnosticsDialogProps = Readonly<{
@@ -38,10 +44,65 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+const DIAGNOSTICS_COPY = {
+  ja: {
+    eyebrow: '問題報告の準備',
+    title: '診断情報を確認',
+    close: '閉じる',
+    disclosure: [
+      '作品名、作品形状、ファイル内容、ローカルパス、ID、座標、時刻、アプリ版、OS、CPU、GPU情報は含みません。',
+      'この情報は自動送信されません。下に表示されたJSONと保存されるJSONは同一です。',
+      '保存後、内容を確認したうえで利用者自身がGitHub Issuesへ添付してください。',
+    ],
+    loading: '診断情報を準備しています…',
+    loadError:
+      '診断情報を準備できませんでした。アプリを再起動して、もう一度お試しください。',
+    retry: '再試行',
+    jsonLabel: '共有前に確認する診断JSON',
+    selectAll: '内容をすべて選択',
+    saving: '保存中…',
+    save: 'JSONファイルとして保存…',
+    notices: {
+      selected: '内容をすべて選択しました。Ctrl/Cmd+Cでコピーできます。',
+      save_canceled: '保存をキャンセルしました。',
+      saved: '診断JSONを保存しました。',
+      save_failed:
+        '診断JSONを保存できませんでした。保存先を確認して、もう一度お試しください。',
+    },
+  },
+  en: {
+    eyebrow: 'Prepare a problem report',
+    title: 'Review diagnostics',
+    close: 'Close',
+    disclosure: [
+      'The report does not include the work name, work geometry, file contents, local paths, IDs, coordinates, timestamps, app version, OS, CPU, or GPU information.',
+      'This information is never sent automatically. The JSON shown below is identical to the JSON that will be saved.',
+      'After saving and reviewing it, attach the file to GitHub Issues yourself.',
+    ],
+    loading: 'Preparing diagnostics…',
+    loadError:
+      'Diagnostics could not be prepared. Restart the app and try again.',
+    retry: 'Retry',
+    jsonLabel: 'Diagnostics JSON to review before sharing',
+    selectAll: 'Select all contents',
+    saving: 'Saving…',
+    save: 'Save as JSON file…',
+    notices: {
+      selected: 'All contents are selected. Press Ctrl/Cmd+C to copy.',
+      save_canceled: 'Save was canceled.',
+      saved: 'Diagnostics JSON was saved.',
+      save_failed:
+        'Diagnostics JSON could not be saved. Check the destination and try again.',
+    },
+  },
+} as const
+
 export function DiagnosticsDialog({
   open,
   onClose,
 }: DiagnosticsDialogProps) {
+  const locale = useLocale()
+  const copy = DIAGNOSTICS_COPY[locale]
   const [state, setState] = useState<DiagnosticsDialogState>({
     kind: 'loading',
     requestId: 0,
@@ -65,7 +126,6 @@ export function DiagnosticsDialog({
         preview,
         saving: false,
         notice: null,
-        saveError: false,
       })
     }).catch(() => {
       if (requestId !== requestSequenceRef.current) return
@@ -133,8 +193,7 @@ export function DiagnosticsDialog({
     jsonRef.current?.select()
     setState({
       ...state,
-      notice: '内容をすべて選択しました。Ctrl/Cmd+Cでコピーできます。',
-      saveError: false,
+      notice: 'selected',
     })
   }
 
@@ -145,7 +204,6 @@ export function DiagnosticsDialog({
       ...state,
       saving: true,
       notice: null,
-      saveError: false,
     })
     try {
       const result = await saveDiagnosticsSharePreview(preview)
@@ -156,9 +214,8 @@ export function DiagnosticsDialog({
         preview,
         saving: false,
         notice: result.canceled
-          ? '保存をキャンセルしました。'
-          : '診断JSONを保存しました。',
-        saveError: false,
+          ? 'save_canceled'
+          : 'saved',
       })
     } catch {
       if (requestId !== requestSequenceRef.current) return
@@ -167,8 +224,7 @@ export function DiagnosticsDialog({
         requestId,
         preview,
         saving: false,
-        notice: '診断JSONを保存できませんでした。保存先を確認して、もう一度お試しください。',
-        saveError: true,
+        notice: 'save_failed',
       })
     }
   }
@@ -190,8 +246,8 @@ export function DiagnosticsDialog({
       >
         <header>
           <div>
-            <span className="dialog-eyebrow">問題報告の準備</span>
-            <h2 id="diagnostics-dialog-title">診断情報を確認</h2>
+            <span className="dialog-eyebrow">{copy.eyebrow}</span>
+            <h2 id="diagnostics-dialog-title">{copy.title}</h2>
           </div>
           <button
             ref={closeButtonRef}
@@ -199,7 +255,7 @@ export function DiagnosticsDialog({
             className="dialog-close"
             disabled={saving}
             onClick={closeDialog}
-            aria-label="閉じる"
+            aria-label={copy.close}
           >
             ×
           </button>
@@ -210,32 +266,25 @@ export function DiagnosticsDialog({
             id="diagnostics-dialog-description"
             className="diagnostics-disclosure"
           >
-            <p>
-              作品名、作品形状、ファイル内容、ローカルパス、ID、座標、時刻、
-              アプリ版、OS、CPU、GPU情報は含みません。
-            </p>
-            <p>
-              この情報は自動送信されません。下に表示されたJSONと保存されるJSONは同一です。
-            </p>
-            <p>
-              保存後、内容を確認したうえで利用者自身がGitHub Issuesへ添付してください。
-            </p>
+            {copy.disclosure.map((paragraph) => (
+              <p key={paragraph}>{paragraph}</p>
+            ))}
           </div>
 
           {state.kind === 'loading' && (
             <p className="diagnostics-loading" role="status">
-              診断情報を準備しています…
+              {copy.loading}
             </p>
           )}
 
           {state.kind === 'load_error' && (
             <>
               <p className="dialog-error" role="alert">
-                診断情報を準備できませんでした。アプリを再起動して、もう一度お試しください。
+                {copy.loadError}
               </p>
               <footer>
-                <button type="button" onClick={loadPreview}>再試行</button>
-                <button type="button" onClick={closeDialog}>閉じる</button>
+                <button type="button" onClick={loadPreview}>{copy.retry}</button>
+                <button type="button" onClick={closeDialog}>{copy.close}</button>
               </footer>
             </>
           )}
@@ -244,28 +293,32 @@ export function DiagnosticsDialog({
             <>
               <label className="diagnostics-json-label">
                 <span>
-                  共有前に確認する診断JSON（{formatBytes(state.preview.byte_length)}）
+                  {copy.jsonLabel} ({formatBytes(state.preview.byte_length)})
                 </span>
                 <textarea
                   ref={jsonRef}
                   className="diagnostics-json"
                   readOnly
                   value={state.preview.json}
-                  aria-label="共有前に確認する診断JSON"
+                  aria-label={copy.jsonLabel}
                   wrap="off"
                   spellCheck={false}
                 />
               </label>
               <p
-                className={state.saveError ? 'dialog-error' : 'diagnostics-notice'}
-                role={state.saveError ? 'alert' : 'status'}
-                aria-live={state.saveError ? 'assertive' : 'polite'}
+                className={state.notice === 'save_failed'
+                  ? 'dialog-error'
+                  : 'diagnostics-notice'}
+                role={state.notice === 'save_failed' ? 'alert' : 'status'}
+                aria-live={state.notice === 'save_failed' ? 'assertive' : 'polite'}
               >
-                {state.notice ?? '\u00a0'}
+                {state.notice === null
+                  ? '\u00a0'
+                  : copy.notices[state.notice]}
               </p>
               <footer>
                 <button type="button" disabled={state.saving} onClick={selectAll}>
-                  内容をすべて選択
+                  {copy.selectAll}
                 </button>
                 <button
                   type="button"
@@ -273,10 +326,10 @@ export function DiagnosticsDialog({
                   disabled={state.saving}
                   onClick={() => void savePreview()}
                 >
-                  {state.saving ? '保存中…' : 'JSONファイルとして保存…'}
+                  {state.saving ? copy.saving : copy.save}
                 </button>
                 <button type="button" disabled={state.saving} onClick={closeDialog}>
-                  閉じる
+                  {copy.close}
                 </button>
               </footer>
             </>

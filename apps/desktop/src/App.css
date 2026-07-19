@@ -1419,11 +1419,140 @@ html[data-theme='dark'] .svg-import-loss-badge {
   font-size: 11px;
   line-height: 1.5;
 }
-.statusbar { display: flex; align-items: center; gap: 22px; padding: 0 10px; border-top: 1px solid var(--border-dark); background: #f5f7f8; font-size: 11px; color: var(--muted); }
+.statusbar { display: flex; align-items: center; gap: clamp(6px, 1vw, 14px); padding: 0 10px; border-top: 1px solid var(--border-dark); background: #f5f7f8; font-size: 11px; color: var(--muted); }
 .status-spacer { flex: 1; }
 .benchmark-button, .diagnostics-button { border: 1px solid var(--border); background: transparent; border-radius: 4px; padding: 2px 7px; font-size: 11px; }
 .benchmark-button:disabled, .diagnostics-button:disabled { opacity: .5; cursor: wait; }
 .benchmark-status { min-width: 0; max-width: min(58vw, 760px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.keyboard-shortcut-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+.keyboard-shortcut-control > summary {
+  min-height: 23px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+.keyboard-shortcut-control > summary::-webkit-details-marker { display: none; }
+.keyboard-shortcut-control > summary::after {
+  content: "\25B4";
+  margin-left: 5px;
+  color: var(--muted);
+  font-size: 8px;
+}
+.keyboard-shortcut-control[open] > summary::after { content: "\25BE"; }
+.keyboard-shortcut-control > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.keyboard-shortcut-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 12;
+  width: min(570px, calc(100vw - 20px));
+  max-height: min(70vh, 560px);
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-dark);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgb(20 29 36 / .22);
+  color: var(--text);
+}
+.keyboard-shortcut-menu > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.keyboard-shortcut-list {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.keyboard-shortcut-list fieldset {
+  min-width: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto minmax(72px, .7fr) auto auto minmax(108px, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-strong);
+}
+.keyboard-shortcut-list legend {
+  max-width: 100%;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.keyboard-shortcut-primary {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.keyboard-shortcut-list label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.keyboard-shortcut-list select {
+  width: 100%;
+  min-width: 64px;
+  padding: 4px 22px 4px 6px;
+  border: 1px solid var(--border-dark);
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.keyboard-shortcut-list input { accent-color: var(--accent-action); }
+.keyboard-shortcut-list output {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font: 10px/1.35 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.keyboard-shortcut-menu > button {
+  justify-self: start;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.keyboard-shortcut-menu > button:hover { background: var(--accent-soft); }
+.keyboard-shortcut-list select:focus-visible,
+.keyboard-shortcut-list input:focus-visible,
+.keyboard-shortcut-menu > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.keyboard-shortcut-error {
+  margin: 0;
+  padding: 7px 9px;
+  border-left: 4px solid #b13e47;
+  border-radius: 4px;
+  background: #f9e2e2;
+  color: #8b2b33 !important;
+}
 .workspace-layout-control {
   position: relative;
   flex: 0 0 auto;
@@ -1503,6 +1632,17 @@ html[data-theme='dark'] .svg-import-loss-badge {
   .crease-export-metadata { grid-template-columns: minmax(0, 1fr); }
   .crease-export-assignments ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .svg-import-mapping-list > label { grid-template-columns: minmax(0, 1fr); }
+  .keyboard-shortcut-menu {
+    width: min(430px, calc(100vw - 16px));
+    max-height: min(72vh, 520px);
+  }
+  .keyboard-shortcut-list fieldset {
+    grid-template-columns: auto minmax(72px, 1fr) auto auto;
+  }
+  .keyboard-shortcut-list output {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
 }
 
 html[data-theme='dark'] {
@@ -1533,6 +1673,11 @@ html[data-theme='dark'] :is(.chip.active, .chip[aria-pressed="true"]) { color: #
 html[data-theme='dark'] .field-error { color: #ffb4ab; }
 html[data-theme='dark'] .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }
 html[data-theme='dark'] .dialog-error { background: #4a2929; color: #f1b7b7; }
+html[data-theme='dark'] .keyboard-shortcut-error {
+  border-left-color: #ff8a93;
+  background: #4a292d;
+  color: #ffc0c5 !important;
+}
 html[data-theme='dark'] .svg-import-cut-confirmation { background: #3f3024; color: #f2cfad; }
 html[data-theme='dark'] :is(.fold-import-warnings, .svg-import-warnings, .crease-export-warnings) { background: #3d351f; color: #f2d98d; }
 html[data-theme='dark'] :is(.fold-import-warnings ul, .svg-import-warnings ul) { color: #f2d98d; }
@@ -1762,6 +1907,12 @@ html[data-theme='dark'] .global-flat-foldability-caution {
 
 @media (forced-colors: active) {
   .workspace-separator,
+  .keyboard-shortcut-control,
+  .keyboard-shortcut-menu,
+  .keyboard-shortcut-list fieldset,
+  .keyboard-shortcut-list select,
+  .keyboard-shortcut-menu > button,
+  .keyboard-shortcut-error,
   .workspace-layout-control,
   .workspace-layout-menu,
   .workspace-layout-menu button,

@@ -7,34 +7,87 @@ const appSource = readFileSync(
   'utf8',
 )
 
-test('App routes the strict cross-platform file shortcut resolver', () => {
+test('App subscribes to persisted shortcuts and routes the configured resolver', () => {
   assert.match(
     appSource,
-    /const fileShortcut = resolveFileKeyboardShortcut\(event\)/u,
+    /const keyboardShortcuts = useSyncExternalStore\(\s*keyboardShortcutStore\.subscribe,\s*keyboardShortcutStore\.getSnapshot,\s*keyboardShortcutStore\.getServerSnapshot,\s*\)/u,
   )
   assert.match(
     appSource,
-    /if \(fileShortcut === 'new'\)[\s\S]*setNewProjectOpen\(true\)[\s\S]*runShortcutFileOperation\(fileShortcut\)/u,
+    /const configuredShortcut = resolveConfiguredKeyboardShortcut\(\s*event,\s*keyboardShortcuts,\s*\)/u,
   )
   assert.match(
     appSource,
-    /if \(fileShortcut\) \{[\s\S]*event\.preventDefault\(\)[\s\S]*if \(coreBusy \|\| !nativeSnapshot\) return/u,
+    /if \(configuredShortcut\) \{\s*event\.preventDefault\(\)\s*if \(coreBusy \|\| !nativeSnapshot\) return/u,
   )
 })
 
-test('file action buttons expose Windows and macOS mappings to assistive technology', () => {
-  for (const shortcut of [
-    'Control+N Meta+N',
-    'Control+O Meta+O',
-    'Control+S Meta+S',
-    'Control+Shift+S Meta+Shift+S',
+test('new-project Escape ignores repeat and IME composition before closing', () => {
+  assert.match(
+    appSource,
+    /const key = event\.key\.toLowerCase\(\)\s*if \(key === 'escape' && newProjectOpen\) \{\s*if \(event\.repeat \|\| event\.isComposing\) return\s*event\.preventDefault\(\)/u,
+  )
+})
+
+test('configured commands reach every supported file and history action', () => {
+  assert.match(
+    appSource,
+    /configuredShortcut === 'new'[\s\S]*setNewProjectOpen\(true\)/u,
+  )
+  assert.match(
+    appSource,
+    /configuredShortcut === 'open'\s*\|\|\s*configuredShortcut === 'save'\s*\|\|\s*configuredShortcut === 'save_as'[\s\S]*runShortcutFileOperation\(configuredShortcut\)/u,
+  )
+  assert.match(
+    appSource,
+    /configuredShortcut === 'undo'\s*&&\s*nativeSnapshot\.can_undo[\s\S]*runNativeEdit\(undo\)/u,
+  )
+  assert.match(
+    appSource,
+    /configuredShortcut === 'redo'\s*&&\s*nativeSnapshot\.can_redo[\s\S]*runNativeEdit\(redo\)/u,
+  )
+})
+
+test('all configured action buttons expose dynamic title and ARIA mappings', () => {
+  for (const command of [
+    'new',
+    'open',
+    'save',
+    'save_as',
+    'undo',
+    'redo',
   ]) {
     assert.equal(
-      count(appSource, `aria-keyshortcuts="${shortcut}"`),
+      count(
+        appSource,
+        `aria-keyshortcuts={keyboardShortcutAriaValue('${command}', keyboardShortcuts)}`,
+      ),
       1,
-      shortcut,
+      `${command} aria-keyshortcuts`,
+    )
+    assert.equal(
+      count(
+        appSource,
+        `\${keyboardShortcutDisplayValue('${command}', keyboardShortcuts)}`,
+      ),
+      1,
+      `${command} title`,
     )
   }
+})
+
+test('shortcut settings remain inside the modal-inert statusbar', () => {
+  const statusbarStart = appSource.indexOf(
+    '<footer className="statusbar" inert={modalOpen}>',
+  )
+  const statusbarEnd = appSource.indexOf('</footer>', statusbarStart)
+
+  assert.ok(statusbarStart >= 0)
+  assert.ok(statusbarEnd > statusbarStart)
+  assert.match(
+    appSource.slice(statusbarStart, statusbarEnd),
+    /<KeyboardShortcutControl \/>/u,
+  )
 })
 
 function count(source: string, needle: string) {

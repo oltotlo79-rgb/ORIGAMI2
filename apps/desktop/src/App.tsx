@@ -24,6 +24,7 @@ import { FoldPreview } from './components/FoldPreview'
 import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
+import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { SvgImportDialog } from './components/SvgImportDialog'
@@ -160,7 +161,12 @@ import {
 import { createGlobalFlatFoldabilityNativeTransport } from './lib/globalFlatFoldabilityNative'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
 import { isDiagnosticsShareAvailable } from './lib/diagnosticsShare'
-import { resolveFileKeyboardShortcut } from './lib/fileKeyboardShortcut'
+import {
+  keyboardShortcutAriaValue,
+  keyboardShortcutDisplayValue,
+  keyboardShortcutStore,
+  resolveConfiguredKeyboardShortcut,
+} from './lib/keyboardShortcutSettings'
 import { workspaceLayoutStore } from './lib/workspaceLayout'
 import './App.css'
 
@@ -213,6 +219,11 @@ type WorkspaceLayoutStyle = CSSProperties & {
 }
 
 function App() {
+  const keyboardShortcuts = useSyncExternalStore(
+    keyboardShortcutStore.subscribe,
+    keyboardShortcutStore.getSnapshot,
+    keyboardShortcutStore.getServerSnapshot,
+  )
   const workspaceLayout = useSyncExternalStore(
     workspaceLayoutStore.subscribe,
     workspaceLayoutStore.getSnapshot,
@@ -1127,7 +1138,9 @@ function App() {
 
   useEffect(() => {
     function handleKeyboardShortcut(event: KeyboardEvent) {
-      if (event.key.toLowerCase() === 'escape' && newProjectOpen) {
+      const key = event.key.toLowerCase()
+      if (key === 'escape' && newProjectOpen) {
+        if (event.repeat || event.isComposing) return
         event.preventDefault()
         if (coreBusy) return
         setNewProjectOpen(false)
@@ -1137,33 +1150,33 @@ function App() {
       if (modalOpen) return
       if (isEditingText(event.target)) return
 
-      const key = event.key.toLowerCase()
-      const primaryModifier = event.ctrlKey || event.metaKey
-      const fileShortcut = resolveFileKeyboardShortcut(event)
-      if (fileShortcut) {
+      const configuredShortcut = resolveConfiguredKeyboardShortcut(
+        event,
+        keyboardShortcuts,
+      )
+      if (configuredShortcut) {
         event.preventDefault()
         if (coreBusy || !nativeSnapshot) return
-        if (fileShortcut === 'new') {
+        if (configuredShortcut === 'new') {
           setNewProjectError(null)
           setNewProjectOpen(true)
-        } else {
-          runShortcutFileOperation(fileShortcut)
-        }
-        return
-      }
-      if (primaryModifier && key === 'z') {
-        event.preventDefault()
-        if (event.repeat) return
-        if (event.shiftKey) {
-          if (nativeSnapshot?.can_redo) void runNativeEdit(redo)
-        } else if (nativeSnapshot?.can_undo) {
+        } else if (
+          configuredShortcut === 'open'
+          || configuredShortcut === 'save'
+          || configuredShortcut === 'save_as'
+        ) {
+          runShortcutFileOperation(configuredShortcut)
+        } else if (
+          configuredShortcut === 'undo'
+          && nativeSnapshot.can_undo
+        ) {
           void runNativeEdit(undo)
+        } else if (
+          configuredShortcut === 'redo'
+          && nativeSnapshot.can_redo
+        ) {
+          void runNativeEdit(redo)
         }
-        return
-      }
-      if (primaryModifier && key === 'y') {
-        event.preventDefault()
-        if (!event.repeat && nativeSnapshot?.can_redo) void runNativeEdit(redo)
         return
       }
       if (key === 'delete' || key === 'backspace') {
@@ -1182,7 +1195,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyboardShortcut)
     return () => window.removeEventListener('keydown', handleKeyboardShortcut)
-  }, [coreBusy, deleteSelection, modalOpen, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
+  }, [coreBusy, deleteSelection, keyboardShortcuts, modalOpen, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
     if (
@@ -2169,8 +2182,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title="新規 (Ctrl/Cmd+N)"
-            aria-keyshortcuts="Control+N Meta+N"
+            title={`新規 (${keyboardShortcutDisplayValue('new', keyboardShortcuts)})`}
+            aria-keyshortcuts={keyboardShortcutAriaValue('new', keyboardShortcuts)}
             onClick={() => {
               setNewProjectError(null)
               setNewProjectOpen(true)
@@ -2182,8 +2195,8 @@ function App() {
             type="button"
             disabled={coreBusy || !nativeSnapshot?.can_undo}
             onClick={() => runNativeEdit(undo)}
-            title="元に戻す (Ctrl/Cmd+Z)"
-            aria-keyshortcuts="Control+Z Meta+Z"
+            title={`元に戻す (${keyboardShortcutDisplayValue('undo', keyboardShortcuts)})`}
+            aria-keyshortcuts={keyboardShortcutAriaValue('undo', keyboardShortcuts)}
           >
             元に戻す
           </button>
@@ -2191,8 +2204,8 @@ function App() {
             type="button"
             disabled={coreBusy || !nativeSnapshot?.can_redo}
             onClick={() => runNativeEdit(redo)}
-            title="やり直す (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
-            aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"
+            title={`やり直す (${keyboardShortcutDisplayValue('redo', keyboardShortcuts)})`}
+            aria-keyshortcuts={keyboardShortcutAriaValue('redo', keyboardShortcuts)}
           >
             やり直す
           </button>
@@ -2210,8 +2223,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title="開く (Ctrl/Cmd+O)"
-            aria-keyshortcuts="Control+O Meta+O"
+            title={`開く (${keyboardShortcutDisplayValue('open', keyboardShortcuts)})`}
+            aria-keyshortcuts={keyboardShortcutAriaValue('open', keyboardShortcuts)}
             onClick={() => void runFileOperation('open')}
           >
             {fileOperation === 'open' ? '開いています…' : '開く'}
@@ -2246,8 +2259,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title="保存 (Ctrl/Cmd+S)"
-            aria-keyshortcuts="Control+S Meta+S"
+            title={`保存 (${keyboardShortcutDisplayValue('save', keyboardShortcuts)})`}
+            aria-keyshortcuts={keyboardShortcutAriaValue('save', keyboardShortcuts)}
             onClick={() => void runFileOperation('save')}
           >
             {fileOperation === 'save' ? '保存中…' : '保存'}
@@ -2255,8 +2268,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title="別名保存 (Ctrl/Cmd+Shift+S)"
-            aria-keyshortcuts="Control+Shift+S Meta+Shift+S"
+            title={`別名保存 (${keyboardShortcutDisplayValue('save_as', keyboardShortcuts)})`}
+            aria-keyshortcuts={keyboardShortcutAriaValue('save_as', keyboardShortcuts)}
             onClick={() => void runFileOperation('save_as')}
           >
             {fileOperation === 'save_as' ? '保存中…' : '別名保存'}
@@ -3404,6 +3417,7 @@ function App() {
         <span>{coreStatus}</span>
         <span>スナップ: {snapStatusLabel}</span>
         <span className="status-spacer" />
+        <KeyboardShortcutControl />
         <WorkspaceLayoutControl />
         <ThemeControl />
         {isDiagnosticsShareAvailable() && (

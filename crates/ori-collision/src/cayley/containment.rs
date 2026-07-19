@@ -106,15 +106,20 @@ struct MeasuredFaceEnvelope {
 }
 
 #[derive(Debug)]
-struct MeasuredBinary64AffineEnvelope<'a> {
-    bound: BoundMaterialTreePose<'a>,
+struct MeasuredBinary64AffineEnvelope<'exact, 'pose> {
+    // Retain the measured exact object itself: matching model/pose authority
+    // alone cannot distinguish two independently regenerated exact poses.
+    exact: &'exact RationalCayleyTreePose<'pose>,
+    bound: BoundMaterialTreePose<'pose>,
     faces: Vec<MeasuredFaceEnvelope>,
     work: MeasuredEnvelopeWork,
 }
 
-impl MeasuredBinary64AffineEnvelope<'_> {
-    fn is_for(&self, bound: BoundMaterialTreePose<'_>) -> bool {
-        self.bound.model() == bound.model() && self.bound.pose().same_instance(bound.pose())
+impl MeasuredBinary64AffineEnvelope<'_, '_> {
+    fn is_for(&self, exact: &RationalCayleyTreePose<'_>, bound: BoundMaterialTreePose<'_>) -> bool {
+        std::ptr::eq(self.exact, exact)
+            && self.bound.model() == bound.model()
+            && self.bound.pose().same_instance(bound.pose())
     }
 }
 
@@ -301,11 +306,11 @@ impl<'a> EnvelopeMeter<'a> {
     }
 }
 
-fn measure_binary64_affine_envelope<'a>(
-    exact: &RationalCayleyTreePose<'_>,
-    observed: BoundMaterialTreePose<'a>,
+fn measure_binary64_affine_envelope<'exact, 'pose>(
+    exact: &'exact RationalCayleyTreePose<'pose>,
+    observed: BoundMaterialTreePose<'pose>,
     limits: MeasuredEnvelopeLimits,
-) -> Result<MeasuredBinary64AffineEnvelope<'a>, MeasuredEnvelopeError> {
+) -> Result<MeasuredBinary64AffineEnvelope<'exact, 'pose>, MeasuredEnvelopeError> {
     if !exact.is_for(observed) {
         return Err(MeasuredEnvelopeError::AuthorityMismatch);
     }
@@ -594,6 +599,7 @@ fn measure_binary64_affine_envelope<'a>(
 
     meter.work.exact = meter.exact.work.clone();
     Ok(MeasuredBinary64AffineEnvelope {
+        exact,
         bound: observed,
         faces: measured_faces,
         work: meter.work,
@@ -1001,6 +1007,8 @@ const fn resource(resource: &'static str) -> MeasuredEnvelopeError {
     MeasuredEnvelopeError::ResourceLimitExceeded { resource }
 }
 
+mod blocking;
+
 #[cfg(test)]
 mod tests {
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
@@ -1241,7 +1249,7 @@ mod tests {
     }
 
     fn measured_face<'a>(
-        measured: &'a MeasuredBinary64AffineEnvelope<'_>,
+        measured: &'a MeasuredBinary64AffineEnvelope<'_, '_>,
         face: FaceId,
     ) -> &'a MeasuredFaceEnvelope {
         measured
@@ -1274,7 +1282,7 @@ mod tests {
             measure_binary64_affine_envelope(&exact, bound, MeasuredEnvelopeLimits::default())
                 .expect("identity measurement");
 
-        assert!(measured.is_for(bound));
+        assert!(measured.is_for(&exact, bound));
         assert_eq!(measured.faces.len(), 1);
         assert_eq!(measured.faces[0].depth, 0);
         assert_eq!(
@@ -1468,8 +1476,8 @@ mod tests {
             MeasuredEnvelopeLimits::default(),
         )
         .expect("clone must preserve authority");
-        assert!(measured.is_for(bound));
-        assert!(measured.is_for(clone_bound));
+        assert!(measured.is_for(&exact, bound));
+        assert!(measured.is_for(&exact, clone_bound));
 
         let aba_pose = one_hinge_pose(&model, root, 37.0);
         let aba_bound = model.bind_pose(&aba_pose).expect("ABA bound");
@@ -1478,7 +1486,7 @@ mod tests {
                 .unwrap_err(),
             MeasuredEnvelopeError::AuthorityMismatch
         );
-        assert!(!measured.is_for(aba_bound));
+        assert!(!measured.is_for(&exact, aba_bound));
 
         let foreign_model = one_hinge_model();
         let foreign_pose = one_hinge_pose(&foreign_model, root, 37.0);
@@ -1494,6 +1502,7 @@ mod tests {
             .unwrap_err(),
             MeasuredEnvelopeError::AuthorityMismatch
         );
+        assert!(!measured.is_for(&exact, foreign_bound));
 
         let rerooted_pose = one_hinge_pose(&model, other_root, 37.0);
         let rerooted_bound = model.bind_pose(&rerooted_pose).expect("rerooted bound");
@@ -1506,6 +1515,7 @@ mod tests {
             .unwrap_err(),
             MeasuredEnvelopeError::AuthorityMismatch
         );
+        assert!(!measured.is_for(&exact, rerooted_bound));
         let rerooted_exact = exact_pose(&model, &rerooted_pose);
         let rerooted_measured = measure_binary64_affine_envelope(
             &rerooted_exact,
@@ -1513,7 +1523,7 @@ mod tests {
             MeasuredEnvelopeLimits::default(),
         )
         .expect("rerooted self-authority");
-        assert!(rerooted_measured.is_for(rerooted_bound));
+        assert!(rerooted_measured.is_for(&rerooted_exact, rerooted_bound));
 
         let next_angle = f64::from_bits(37.0_f64.to_bits() + 1);
         let next_pose = one_hinge_pose(&model, root, next_angle);
@@ -1523,6 +1533,7 @@ mod tests {
                 .unwrap_err(),
             MeasuredEnvelopeError::AuthorityMismatch
         );
+        assert!(!measured.is_for(&exact, next_bound));
         let next_exact = exact_pose(&model, &next_pose);
         let next_measured = measure_binary64_affine_envelope(
             &next_exact,
@@ -1530,7 +1541,35 @@ mod tests {
             MeasuredEnvelopeLimits::default(),
         )
         .expect("one-ULP self-authority");
-        assert!(next_measured.is_for(next_bound));
+        assert!(next_measured.is_for(&next_exact, next_bound));
+    }
+
+    #[test]
+    fn measured_envelope_rejects_an_independently_regenerated_exact_pose() {
+        let model = one_hinge_model();
+        let root = model.hinges()[0].left_face();
+        let pose = one_hinge_pose(&model, root, 37.0);
+        let bound = model.bind_pose(&pose).expect("bound one-hinge pose");
+        let first_exact = exact_pose(&model, &pose);
+        let second_exact = exact_pose(&model, &pose);
+
+        let first_measured = measure_binary64_affine_envelope(
+            &first_exact,
+            bound,
+            MeasuredEnvelopeLimits::default(),
+        )
+        .expect("first exact measurement");
+        let second_measured = measure_binary64_affine_envelope(
+            &second_exact,
+            bound,
+            MeasuredEnvelopeLimits::default(),
+        )
+        .expect("second exact measurement");
+
+        assert!(first_measured.is_for(&first_exact, bound));
+        assert!(!first_measured.is_for(&second_exact, bound));
+        assert!(second_measured.is_for(&second_exact, bound));
+        assert!(!second_measured.is_for(&first_exact, bound));
     }
 
     fn limits_tight_to(work: &MeasuredEnvelopeWork) -> MeasuredEnvelopeLimits {
@@ -1562,7 +1601,7 @@ mod tests {
     }
 
     fn assert_resource_error(
-        result: Result<MeasuredBinary64AffineEnvelope<'_>, MeasuredEnvelopeError>,
+        result: Result<MeasuredBinary64AffineEnvelope<'_, '_>, MeasuredEnvelopeError>,
         expected: &'static str,
     ) {
         assert_eq!(

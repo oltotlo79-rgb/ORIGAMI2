@@ -581,6 +581,18 @@ impl<'a> WorkMeter<'a> {
         Ok(-value)
     }
 
+    fn absolute_rational(
+        &mut self,
+        value: &BigRational,
+        stage: CayleyStage,
+    ) -> Result<BigRational, CayleyError> {
+        if rational_is_negative(value) {
+            self.negate_rational(value, stage)
+        } else {
+            self.clone_rational(value, stage)
+        }
+    }
+
     fn compare_rational(
         &mut self,
         left: &BigRational,
@@ -638,6 +650,110 @@ impl<'a> WorkMeter<'a> {
         debug_assert!(bigint_bits(&left_cross) <= left_cross_bits);
         debug_assert!(bigint_bits(&right_cross) <= right_cross_bits);
         Ok(left_cross.cmp(&right_cross))
+    }
+
+    fn left_shift_biguint(
+        &mut self,
+        value: &BigUint,
+        shift: usize,
+        stage: CayleyStage,
+    ) -> Result<BigUint, CayleyError> {
+        self.operation(stage)?;
+        let value_bits = value.bits() as usize;
+        self.preflight_shifted_value(stage, value_bits, shift)?;
+        let result_bits =
+            value_bits
+                .checked_add(shift)
+                .ok_or(CayleyError::ResourceLimitExceeded {
+                    stage,
+                    resource: "intermediate_bits",
+                })?;
+        self.charge_rational_allocations(&[result_bits], stage)?;
+        Ok(value << shift)
+    }
+
+    fn right_shift_biguint(
+        &mut self,
+        value: &BigUint,
+        shift: usize,
+        stage: CayleyStage,
+    ) -> Result<BigUint, CayleyError> {
+        self.operation(stage)?;
+        self.shift(stage, shift)?;
+        let value_bits = value.bits() as usize;
+        self.preflight_value_bits(stage, value_bits)?;
+        let result_bits = value_bits.saturating_sub(shift);
+        self.charge_rational_allocations(&[result_bits], stage)?;
+        Ok(value >> shift)
+    }
+
+    fn add_biguint(
+        &mut self,
+        left: &BigUint,
+        right: &BigUint,
+        stage: CayleyStage,
+    ) -> Result<BigUint, CayleyError> {
+        self.operation(stage)?;
+        let result_bits = (left.bits() as usize)
+            .max(right.bits() as usize)
+            .checked_add(1)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "intermediate_bits",
+            })?;
+        self.preflight_value_bits(stage, result_bits)?;
+        self.charge_rational_allocations(&[result_bits], stage)?;
+        Ok(left + right)
+    }
+
+    fn increment_biguint(
+        &mut self,
+        value: &BigUint,
+        stage: CayleyStage,
+    ) -> Result<BigUint, CayleyError> {
+        self.operation(stage)?;
+        let result_bits =
+            (value.bits() as usize)
+                .checked_add(1)
+                .ok_or(CayleyError::ResourceLimitExceeded {
+                    stage,
+                    resource: "intermediate_bits",
+                })?;
+        self.preflight_value_bits(stage, result_bits)?;
+        self.charge_rational_allocations(&[result_bits], stage)?;
+        Ok(value + BigUint::one())
+    }
+
+    fn multiply_biguint(
+        &mut self,
+        left: &BigUint,
+        right: &BigUint,
+        stage: CayleyStage,
+    ) -> Result<BigUint, CayleyError> {
+        self.operation(stage)?;
+        let left_bits = left.bits() as usize;
+        let right_bits = right.bits() as usize;
+        self.preflight_product_bits(stage, left_bits, right_bits)?;
+        let result_bits = product_bits_upper_bound(left_bits, right_bits, stage)?;
+        self.charge_rational_allocations(&[result_bits], stage)?;
+        Ok(left * right)
+    }
+
+    fn divide_biguint(
+        &mut self,
+        dividend: &BigUint,
+        divisor: &BigUint,
+        stage: CayleyStage,
+    ) -> Result<BigUint, CayleyError> {
+        if divisor.is_zero() {
+            return Err(CayleyError::InvariantFailure { stage });
+        }
+        self.operation(stage)?;
+        let dividend_bits = dividend.bits() as usize;
+        self.preflight_value_bits(stage, dividend_bits)?;
+        self.preflight_value_bits(stage, divisor.bits() as usize)?;
+        self.charge_rational_allocations(&[dividend_bits], stage)?;
+        Ok(dividend / divisor)
     }
 
     fn charge_rational_allocations(
@@ -908,7 +1024,7 @@ impl<'a> WorkMeter<'a> {
         right: &BigRational,
         stage: CayleyStage,
     ) -> Result<BigRational, CayleyError> {
-        if right.is_zero() {
+        if rational_is_zero(right) {
             return Err(CayleyError::CertificateUnavailable { stage });
         }
         self.operation(stage)?;
@@ -995,6 +1111,43 @@ struct ExactPoint3 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExactVector3 {
     coordinates: [BigRational; 3],
+}
+
+fn canonical_rational_eq(left: &BigRational, right: &BigRational) -> bool {
+    left.numer() == right.numer() && left.denom() == right.denom()
+}
+
+fn rational_is_zero(value: &BigRational) -> bool {
+    value.numer().is_zero()
+}
+
+fn rational_is_negative(value: &BigRational) -> bool {
+    value.numer().is_negative()
+}
+
+fn rational_is_positive(value: &BigRational) -> bool {
+    value.numer().is_positive()
+}
+
+fn canonical_point_eq(left: &ExactPoint3, right: &ExactPoint3) -> bool {
+    left.coordinates
+        .iter()
+        .zip(&right.coordinates)
+        .all(|(left, right)| canonical_rational_eq(left, right))
+}
+
+fn canonical_vector_eq(left: &ExactVector3, right: &ExactVector3) -> bool {
+    left.coordinates
+        .iter()
+        .zip(&right.coordinates)
+        .all(|(left, right)| canonical_rational_eq(left, right))
+}
+
+fn canonical_matrix_eq(left: &[[BigRational; 3]; 3], right: &[[BigRational; 3]; 3]) -> bool {
+    left.iter()
+        .flatten()
+        .zip(right.iter().flatten())
+        .all(|(left, right)| canonical_rational_eq(left, right))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1129,20 +1282,27 @@ struct RationalInterval {
 }
 
 impl RationalInterval {
-    fn new(lower: BigRational, upper: BigRational) -> Result<Self, CayleyError> {
-        if lower > upper {
-            return Err(CayleyError::CertificateUnavailable {
-                stage: CayleyStage::Candidate,
-            });
+    fn new(
+        lower: BigRational,
+        upper: BigRational,
+        meter: &mut WorkMeter<'_>,
+        stage: CayleyStage,
+    ) -> Result<Self, CayleyError> {
+        if meter.compare_rational(&lower, &upper, stage)? == Ordering::Greater {
+            return Err(CayleyError::CertificateUnavailable { stage });
         }
         Ok(Self { lower, upper })
     }
 
-    fn point(value: BigRational) -> Self {
-        Self {
-            lower: value.clone(),
+    fn point(
+        value: BigRational,
+        meter: &mut WorkMeter<'_>,
+        stage: CayleyStage,
+    ) -> Result<Self, CayleyError> {
+        Ok(Self {
+            lower: meter.clone_rational(&value, stage)?,
             upper: value,
-        }
+        })
     }
 }
 
@@ -1303,11 +1463,9 @@ impl DyadicInterval {
         meter: &mut WorkMeter<'_>,
         stage: CayleyStage,
     ) -> Result<RationalInterval, CayleyError> {
-        meter.preflight_shifted_value(stage, 1, self.precision)?;
-        let denominator = BigInt::one() << self.precision;
         Ok(RationalInterval {
-            lower: BigRational::new(self.lower.clone(), denominator.clone()),
-            upper: BigRational::new(self.upper.clone(), denominator),
+            lower: dyadic_rational_from_bigint(&self.lower, self.precision, meter, stage)?,
+            upper: dyadic_rational_from_bigint(&self.upper, self.precision, meter, stage)?,
         })
     }
 
@@ -1317,6 +1475,105 @@ impl DyadicInterval {
         }
         Ok(())
     }
+}
+
+fn dyadic_rational_from_bigint(
+    value: &BigInt,
+    precision: usize,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<BigRational, CayleyError> {
+    meter.operation(stage)?;
+    meter.preflight_value_bits(stage, bigint_bits(value))?;
+    meter.shift(stage, precision)?;
+    let removable = value
+        .trailing_zeros()
+        .and_then(|bits| usize::try_from(bits).ok())
+        .unwrap_or(precision)
+        .min(precision);
+    let denominator_shift = precision - removable;
+    meter.preflight_shifted_value(stage, 1, denominator_shift)?;
+    let numerator_bits = bigint_bits(value).saturating_sub(removable);
+    let denominator_bits = denominator_shift.saturating_add(1);
+    meter.preflight_value_bits(stage, numerator_bits)?;
+    let storage_bits =
+        numerator_bits
+            .checked_add(denominator_bits)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "rational_allocation_bits",
+            })?;
+    meter.charge_rational_allocations(&[storage_bits], stage)?;
+    let numerator = value >> removable;
+    let denominator = BigInt::one() << denominator_shift;
+    let result = BigRational::new_raw(numerator, denominator);
+    meter.observe_rational(stage, &result)?;
+    Ok(result)
+}
+
+fn dyadic_rational_from_biguint(
+    value: &BigUint,
+    precision: usize,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<BigRational, CayleyError> {
+    meter.operation(stage)?;
+    let value_bits = value.bits() as usize;
+    meter.preflight_value_bits(stage, value_bits)?;
+    meter.shift(stage, precision)?;
+    let removable = value
+        .trailing_zeros()
+        .and_then(|bits| usize::try_from(bits).ok())
+        .unwrap_or(precision)
+        .min(precision);
+    let denominator_shift = precision - removable;
+    meter.preflight_shifted_value(stage, 1, denominator_shift)?;
+    let numerator_bits = value_bits.saturating_sub(removable);
+    let denominator_bits = denominator_shift.saturating_add(1);
+    let storage_bits =
+        numerator_bits
+            .checked_add(denominator_bits)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "rational_allocation_bits",
+            })?;
+    meter.preflight_value_bits(stage, numerator_bits)?;
+    meter.charge_rational_allocations(&[storage_bits], stage)?;
+    let numerator = BigInt::from_biguint(Sign::Plus, value >> removable);
+    let denominator = BigInt::one() << denominator_shift;
+    let result = BigRational::new_raw(numerator, denominator);
+    meter.observe_rational(stage, &result)?;
+    Ok(result)
+}
+
+fn coprime_rational_from_biguints(
+    numerator: BigUint,
+    denominator: BigUint,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<BigRational, CayleyError> {
+    if denominator.is_zero() {
+        return Err(CayleyError::InvariantFailure { stage });
+    }
+    meter.operation(stage)?;
+    let numerator_bits = numerator.bits() as usize;
+    let denominator_bits = denominator.bits() as usize;
+    meter.preflight_value_bits(stage, numerator_bits)?;
+    meter.preflight_value_bits(stage, denominator_bits)?;
+    let storage_bits =
+        numerator_bits
+            .checked_add(denominator_bits)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "rational_allocation_bits",
+            })?;
+    meter.charge_rational_allocations(&[storage_bits], stage)?;
+    let result = BigRational::new_raw(
+        BigInt::from_biguint(Sign::Plus, numerator),
+        BigInt::from_biguint(Sign::Plus, denominator),
+    );
+    meter.observe_rational(stage, &result)?;
+    Ok(result)
 }
 
 fn local_rotation_v1(
@@ -1365,21 +1622,24 @@ fn local_rotation_v1_with_meter(
     let end = exact_point(end, meter)?;
     let absolute_degrees = exact_f64(angle_magnitude_degrees, meter, CayleyStage::Input)?;
     let maximum = BigRational::from_integer(BigInt::from(DEGREE_180));
-    if absolute_degrees.is_negative() || absolute_degrees > maximum {
+    if rational_is_negative(&absolute_degrees)
+        || meter.compare_rational(&absolute_degrees, &maximum, CayleyStage::Input)?
+            == Ordering::Greater
+    {
         return Err(CayleyError::AngleOutOfRange {
             stage: CayleyStage::Input,
         });
     }
     let target_degrees = if rotation_sign < 0 {
-        -absolute_degrees.clone()
+        meter.negate_rational(&absolute_degrees, CayleyStage::Input)?
     } else {
-        absolute_degrees.clone()
+        meter.clone_rational(&absolute_degrees, CayleyStage::Input)?
     };
 
     let raw_direction = exact_between(&pivot, &end, meter)?;
     let (direction, delta) = normalize_direction(&raw_direction, meter)?;
 
-    if absolute_degrees.is_zero() {
+    if rational_is_zero(&absolute_degrees) {
         let rotation = identity_matrix();
         let translation = zero_vector();
         verify_invariants(&rotation, &translation, &pivot, &end, &direction, meter)?;
@@ -1393,7 +1653,7 @@ fn local_rotation_v1_with_meter(
         });
     }
 
-    if absolute_degrees == maximum {
+    if canonical_rational_eq(&absolute_degrees, &maximum) {
         let rotation = half_turn(&direction, &delta, meter)?;
         let translation = fixed_point_translation(&rotation, &pivot, meter)?;
         verify_invariants(&rotation, &translation, &pivot, &end, &direction, meter)?;
@@ -1409,8 +1669,10 @@ fn local_rotation_v1_with_meter(
 
     let acceptance = adjacent_angle_acceptance(angle_magnitude_degrees, meter)?;
 
-    if absolute_degrees == BigRational::from_integer(BigInt::from(90_u8))
-        && let Some(root) = exact_rational_square_root(&delta, meter)?
+    if canonical_rational_eq(
+        &absolute_degrees,
+        &BigRational::from_integer(BigInt::from(90_u8)),
+    ) && let Some(root) = exact_rational_square_root(&delta, meter)?
     {
         let sign = if rotation_sign < 0 {
             -BigRational::one()
@@ -1688,7 +1950,7 @@ fn prepare_rational_cayley_tree_pose_v1<'a>(
             limits.cayley.max_output_bits,
             limits.max_total_output_bits,
         )?;
-        let parent = parent.clone();
+        let parent = clone_exact_transform(parent, &mut meter, CayleyStage::Tree)?;
         let neighbors = adjacency
             .get(&parent_face)
             .ok_or(CayleyError::BoundTreeInconsistent {
@@ -1736,7 +1998,9 @@ fn prepare_rational_cayley_tree_pose_v1<'a>(
             let parent_end = apply_exact_transform(&parent, &rest_end, &mut meter)?;
             let child_start = apply_exact_transform(&child, &rest_start, &mut meter)?;
             let child_end = apply_exact_transform(&child, &rest_end, &mut meter)?;
-            if parent_start != child_start || parent_end != child_end {
+            if !canonical_point_eq(&parent_start, &child_start)
+                || !canonical_point_eq(&parent_end, &child_end)
+            {
                 return Err(CayleyError::InvariantFailure {
                     stage: CayleyStage::Tree,
                 });
@@ -1870,9 +2134,10 @@ fn prepare_rational_cayley_tree_pose_v1<'a>(
             }
             match vertex_registry.entry(*vertex) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(current.clone());
+                    entry.insert(clone_exact_point(&current, &mut meter, CayleyStage::Tree)?);
                 }
-                std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &current => {}
+                std::collections::hash_map::Entry::Occupied(entry)
+                    if canonical_point_eq(entry.get(), &current) => {}
                 std::collections::hash_map::Entry::Occupied(_) => {
                     return Err(CayleyError::InvariantFailure {
                         stage: CayleyStage::Tree,
@@ -1900,7 +2165,10 @@ fn prepare_rational_cayley_tree_pose_v1<'a>(
             stage: CayleyStage::Tree,
         })?;
         for (vertex, endpoint) in hinge.endpoint_vertices.iter().zip(&hinge.world_endpoints) {
-            if vertex_registry.get(vertex) != Some(endpoint) {
+            if vertex_registry
+                .get(vertex)
+                .is_none_or(|registered| !canonical_point_eq(registered, endpoint))
+            {
                 return Err(CayleyError::InvariantFailure {
                     stage: CayleyStage::Tree,
                 });
@@ -1955,6 +2223,45 @@ fn exact_identity_transform() -> ExactRigidTransform {
     }
 }
 
+fn clone_exact_matrix(
+    matrix: &[[BigRational; 3]; 3],
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<[[BigRational; 3]; 3], CayleyError> {
+    try_array3(|row| try_array3(|column| meter.clone_rational(&matrix[row][column], stage)))
+}
+
+fn clone_exact_vector(
+    vector: &ExactVector3,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<ExactVector3, CayleyError> {
+    Ok(ExactVector3 {
+        coordinates: try_array3(|index| meter.clone_rational(&vector.coordinates[index], stage))?,
+    })
+}
+
+fn clone_exact_point(
+    point: &ExactPoint3,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<ExactPoint3, CayleyError> {
+    Ok(ExactPoint3 {
+        coordinates: try_array3(|index| meter.clone_rational(&point.coordinates[index], stage))?,
+    })
+}
+
+fn clone_exact_transform(
+    transform: &ExactRigidTransform,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<ExactRigidTransform, CayleyError> {
+    Ok(ExactRigidTransform {
+        rotation: clone_exact_matrix(&transform.rotation, meter, stage)?,
+        translation: clone_exact_vector(&transform.translation, meter, stage)?,
+    })
+}
+
 fn compose_exact_transform(
     parent: &ExactRigidTransform,
     local: &ExactRigidTransform,
@@ -1976,7 +2283,8 @@ fn compose_exact_transform(
     })?;
     let translation = ExactVector3 {
         coordinates: try_array3(|row| {
-            let mut value = parent.translation.coordinates[row].clone();
+            let mut value =
+                meter.clone_rational(&parent.translation.coordinates[row], CayleyStage::Tree)?;
             for column in 0..3 {
                 let product = meter.multiply_rational(
                     &parent.rotation[row][column],
@@ -2006,35 +2314,36 @@ fn verify_exact_rotation(
     rotation: &[[BigRational; 3]; 3],
     meter: &mut WorkMeter<'_>,
 ) -> Result<(), CayleyError> {
-    for row in 0..3 {
-        for column in 0..3 {
-            let mut value = BigRational::zero();
-            for rotation_row in rotation {
-                let product = meter.multiply_rational(
-                    &rotation_row[row],
-                    &rotation_row[column],
-                    CayleyStage::Tree,
-                )?;
-                value = meter.add_rational(&value, &product, CayleyStage::Tree)?;
-            }
-            let expected = if row == column {
-                BigRational::one()
-            } else {
-                BigRational::zero()
-            };
-            if value != expected {
-                return Err(CayleyError::InvariantFailure {
-                    stage: CayleyStage::Tree,
-                });
-            }
-        }
+    let gram = exact_column_gram(rotation, meter, CayleyStage::Tree)?;
+    if !canonical_matrix_eq(&gram, &identity_matrix()) {
+        return Err(CayleyError::InvariantFailure {
+            stage: CayleyStage::Tree,
+        });
     }
-    if determinant(rotation, meter)? != BigRational::one() {
+    if !canonical_rational_eq(&determinant(rotation, meter)?, &BigRational::one()) {
         return Err(CayleyError::InvariantFailure {
             stage: CayleyStage::Tree,
         });
     }
     Ok(())
+}
+
+fn exact_column_gram(
+    rotation: &[[BigRational; 3]; 3],
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<[[BigRational; 3]; 3], CayleyError> {
+    try_array3(|row| {
+        try_array3(|column| {
+            let mut value = BigRational::zero();
+            for rotation_row in rotation {
+                let product =
+                    meter.multiply_rational(&rotation_row[row], &rotation_row[column], stage)?;
+                value = meter.add_rational(&value, &product, stage)?;
+            }
+            Ok(value)
+        })
+    })
 }
 
 fn build_authenticated_boundary_edge_index(
@@ -2179,9 +2488,9 @@ fn authenticated_hinge_endpoint_vertices(
             })?;
     let first = exact_point(point3_array(first), meter)?;
     let second = exact_point(point3_array(second), meter)?;
-    if first == *rest_start && second == *rest_end {
+    if canonical_point_eq(&first, rest_start) && canonical_point_eq(&second, rest_end) {
         Ok(left_pair)
-    } else if first == *rest_end && second == *rest_start {
+    } else if canonical_point_eq(&first, rest_end) && canonical_point_eq(&second, rest_start) {
         Ok([left_pair[1], left_pair[0]])
     } else {
         Err(CayleyError::BoundTreeInconsistent {
@@ -2347,20 +2656,22 @@ fn approximate_angle(
         &BigRational::from_integer(BigInt::from(2_u8)),
         CayleyStage::Trigonometry,
     )?;
-    if twice_half_upper >= pi.lower {
+    if meter.compare_rational(&twice_half_upper, &pi.lower, CayleyStage::Trigonometry)?
+        != Ordering::Less
+    {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Trigonometry,
         });
     }
 
     let half_tangent = tangent_interval(&half_angle, precision, meter)?;
-    if half_tangent.lower.is_negative() || half_tangent.upper <= BigRational::zero() {
+    if rational_is_negative(&half_tangent.lower) || !rational_is_positive(&half_tangent.upper) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Trigonometry,
         });
     }
     let sqrt_delta = square_root_interval(delta, precision, meter)?;
-    if sqrt_delta.lower <= BigRational::zero() {
+    if !rational_is_positive(&sqrt_delta.lower) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::SquareRoot,
         });
@@ -2376,10 +2687,12 @@ fn approximate_angle(
             &sqrt_delta.lower,
             CayleyStage::Candidate,
         )?,
+        meter,
+        CayleyStage::Candidate,
     )?;
     let unsigned_parameter =
         round_interval_midpoint_to_dyadic(&parameter_interval, DEFAULT_CANDIDATE_BITS, meter)?;
-    if unsigned_parameter <= BigRational::zero() {
+    if !rational_is_positive(&unsigned_parameter) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Candidate,
         });
@@ -2395,32 +2708,54 @@ fn approximate_angle(
             &sqrt_delta.upper,
             CayleyStage::Candidate,
         )?,
+        meter,
+        CayleyStage::Candidate,
     )?;
-    if realized_half_tangent.lower <= BigRational::zero() {
+    if !rational_is_positive(&realized_half_tangent.lower) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Candidate,
         });
     }
 
-    let first_gap = meter
-        .subtract_rational(
-            &half_tangent.upper,
-            &realized_half_tangent.lower,
-            CayleyStage::Candidate,
-        )?
-        .max(BigRational::zero());
-    let second_gap = meter
-        .subtract_rational(
-            &realized_half_tangent.upper,
-            &half_tangent.lower,
-            CayleyStage::Candidate,
-        )?
-        .max(BigRational::zero());
-    let endpoint_error = first_gap.max(second_gap);
-    let minimum = half_tangent
-        .lower
-        .clone()
-        .min(realized_half_tangent.lower.clone());
+    let first_gap = meter.subtract_rational(
+        &half_tangent.upper,
+        &realized_half_tangent.lower,
+        CayleyStage::Candidate,
+    )?;
+    let first_gap = if rational_is_negative(&first_gap) {
+        BigRational::zero()
+    } else {
+        first_gap
+    };
+    let second_gap = meter.subtract_rational(
+        &realized_half_tangent.upper,
+        &half_tangent.lower,
+        CayleyStage::Candidate,
+    )?;
+    let second_gap = if rational_is_negative(&second_gap) {
+        BigRational::zero()
+    } else {
+        second_gap
+    };
+    let endpoint_error =
+        if meter.compare_rational(&first_gap, &second_gap, CayleyStage::Candidate)?
+            == Ordering::Less
+        {
+            second_gap
+        } else {
+            first_gap
+        };
+    let minimum_source = if meter.compare_rational(
+        &half_tangent.lower,
+        &realized_half_tangent.lower,
+        CayleyStage::Candidate,
+    )? == Ordering::Greater
+    {
+        &realized_half_tangent.lower
+    } else {
+        &half_tangent.lower
+    };
+    let minimum = meter.clone_rational(minimum_source, CayleyStage::Candidate)?;
     let minimum_squared = meter.multiply_rational(&minimum, &minimum, CayleyStage::Candidate)?;
     let denominator = meter.add_rational(
         &BigRational::one(),
@@ -2441,20 +2776,27 @@ fn approximate_angle(
     )?;
     let max_error_degrees =
         meter.divide_rational(&degree_numerator, &pi.lower, CayleyStage::Candidate)?;
-    if max_error_degrees >= *acceptance {
+    if meter.compare_rational(&max_error_degrees, acceptance, CayleyStage::Candidate)?
+        != Ordering::Less
+    {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Candidate,
         });
     }
 
     let parameter = if negative {
-        -unsigned_parameter
+        meter.negate_rational(&unsigned_parameter, CayleyStage::Candidate)?
     } else {
         unsigned_parameter
     };
     let rotation = cayley_matrix(direction, delta, &parameter, meter)?;
     let magnitude = exact_f64(original_angle, meter, CayleyStage::Input)?;
-    let target_degrees = if negative { -magnitude } else { magnitude };
+    let target_degrees = if negative {
+        meter.negate_rational(&magnitude, CayleyStage::Input)?
+    } else {
+        magnitude
+    };
+    let acceptance_degrees = meter.clone_rational(acceptance, CayleyStage::Candidate)?;
     let certificate = ExactAngleCertificate::Bounded(Box::new(BoundedAngleCertificate {
         target_degrees,
         precision_bits: precision,
@@ -2463,7 +2805,7 @@ fn approximate_angle(
         realized_half_tangent,
         max_error_radians,
         max_error_degrees,
-        acceptance_degrees: acceptance.clone(),
+        acceptance_degrees,
         pi,
     }));
     Ok((rotation, certificate))
@@ -2492,6 +2834,7 @@ fn exact_f64(
     let exponent = ((bits >> 52) & 0x7ff) as i32;
     let fraction = bits & ((1_u64 << 52) - 1);
     if exponent == 0 && fraction == 0 {
+        meter.preflight_value_bits(stage, 1)?;
         return Ok(BigRational::zero());
     }
     let (significand, binary_exponent) = if exponent == 0 {
@@ -2545,13 +2888,14 @@ fn normalize_direction(
     raw: &ExactVector3,
     meter: &mut WorkMeter<'_>,
 ) -> Result<(ExactVector3, BigRational), CayleyError> {
-    let scale = raw
-        .coordinates
-        .iter()
-        .map(Signed::abs)
-        .max()
-        .expect("three coordinates");
-    if scale.is_zero() {
+    let mut scale = meter.absolute_rational(&raw.coordinates[0], CayleyStage::Axis)?;
+    for coordinate in &raw.coordinates[1..] {
+        let candidate = meter.absolute_rational(coordinate, CayleyStage::Axis)?;
+        if meter.compare_rational(&scale, &candidate, CayleyStage::Axis)? == Ordering::Less {
+            scale = candidate;
+        }
+    }
+    if rational_is_zero(&scale) {
         return Err(CayleyError::DegenerateAxis {
             stage: CayleyStage::Axis,
         });
@@ -2586,7 +2930,13 @@ fn adjacent_angle_acceptance(
     let next = exact_f64(next, meter, CayleyStage::Candidate)?;
     let previous_gap = meter.subtract_rational(&exact, &previous, CayleyStage::Candidate)?;
     let next_gap = meter.subtract_rational(&next, &exact, CayleyStage::Candidate)?;
-    let gap = previous_gap.min(next_gap);
+    let gap = if meter.compare_rational(&previous_gap, &next_gap, CayleyStage::Candidate)?
+        == Ordering::Greater
+    {
+        next_gap
+    } else {
+        previous_gap
+    };
     meter.divide_rational(
         &gap,
         &BigRational::from_integer(BigInt::from(4_u8)),
@@ -2643,7 +2993,7 @@ fn machin_pi_interval(
         CayleyStage::Pi,
     )?;
     let upper = meter.subtract_rational(&first_upper, &second_lower, CayleyStage::Pi)?;
-    let exact = RationalInterval::new(lower, upper)?;
+    let exact = RationalInterval::new(lower, upper, meter, CayleyStage::Pi)?;
     DyadicInterval::from_rational_outward(&exact, work_precision, meter, CayleyStage::Pi)?
         .to_rational(meter, CayleyStage::Pi)
 }
@@ -2702,14 +3052,18 @@ fn atan_inverse_interval(
             CayleyStage::Pi,
         )?;
         term = meter.divide_rational(&term_numerator, &term_denominator, CayleyStage::Pi)?;
-        if term <= *tolerance {
+        if meter.compare_rational(&term, tolerance, CayleyStage::Pi)? != Ordering::Greater {
             return if index.is_multiple_of(2) {
-                RationalInterval::new(meter.subtract_rational(&sum, &term, CayleyStage::Pi)?, sum)
-            } else {
                 RationalInterval::new(
-                    sum.clone(),
-                    meter.add_rational(&sum, &term, CayleyStage::Pi)?,
+                    meter.subtract_rational(&sum, &term, CayleyStage::Pi)?,
+                    sum,
+                    meter,
+                    CayleyStage::Pi,
                 )
+            } else {
+                let lower = meter.clone_rational(&sum, CayleyStage::Pi)?;
+                let upper = meter.add_rational(&sum, &term, CayleyStage::Pi)?;
+                RationalInterval::new(lower, upper, meter, CayleyStage::Pi)
             };
         }
         index = index
@@ -2732,6 +3086,8 @@ fn half_angle_interval(
     RationalInterval::new(
         meter.divide_rational(&lower_numerator, &denominator, CayleyStage::Trigonometry)?,
         meter.divide_rational(&upper_numerator, &denominator, CayleyStage::Trigonometry)?,
+        meter,
+        CayleyStage::Trigonometry,
     )
 }
 
@@ -2741,7 +3097,7 @@ fn tangent_interval(
     meter: &mut WorkMeter<'_>,
 ) -> Result<RationalInterval, CayleyError> {
     let (sin, cos) = sine_cosine_interval(half_angle, precision, meter)?;
-    if sin.lower.is_negative() || cos.lower <= BigRational::zero() {
+    if rational_is_negative(&sin.lower) || !rational_is_positive(&cos.lower) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Trigonometry,
         });
@@ -2749,6 +3105,8 @@ fn tangent_interval(
     RationalInterval::new(
         meter.divide_rational(&sin.lower, &cos.upper, CayleyStage::Trigonometry)?,
         meter.divide_rational(&sin.upper, &cos.lower, CayleyStage::Trigonometry)?,
+        meter,
+        CayleyStage::Trigonometry,
     )
 }
 
@@ -2757,16 +3115,17 @@ fn sine_cosine_interval(
     precision: usize,
     meter: &mut WorkMeter<'_>,
 ) -> Result<(RationalInterval, RationalInterval), CayleyError> {
-    if angle.lower.is_zero() && angle.upper.is_zero() {
+    if rational_is_zero(&angle.lower) && rational_is_zero(&angle.upper) {
         return Ok((
-            RationalInterval::point(BigRational::zero()),
-            RationalInterval::point(BigRational::one()),
+            RationalInterval::point(BigRational::zero(), meter, CayleyStage::Trigonometry)?,
+            RationalInterval::point(BigRational::one(), meter, CayleyStage::Trigonometry)?,
         ));
     }
-    let exponent =
-        binary_exponent_floor(&angle.upper).ok_or(CayleyError::CertificateUnavailable {
+    let exponent = binary_exponent_floor(&angle.upper, meter, CayleyStage::Trigonometry)?.ok_or(
+        CayleyError::CertificateUnavailable {
             stage: CayleyStage::Trigonometry,
-        })?;
+        },
+    )?;
     let extra = if exponent < 0 {
         usize::try_from(-exponent).map_err(|_| CayleyError::ResourceLimitExceeded {
             stage: CayleyStage::Trigonometry,
@@ -2784,14 +3143,24 @@ fn sine_cosine_interval(
         })?;
     meter.shift(CayleyStage::Trigonometry, work_precision)?;
 
+    let lower_angle = RationalInterval::point(
+        meter.clone_rational(&angle.lower, CayleyStage::Trigonometry)?,
+        meter,
+        CayleyStage::Trigonometry,
+    )?;
+    let upper_angle = RationalInterval::point(
+        meter.clone_rational(&angle.upper, CayleyStage::Trigonometry)?,
+        meter,
+        CayleyStage::Trigonometry,
+    )?;
     let lower_x = DyadicInterval::from_rational_outward(
-        &RationalInterval::point(angle.lower.clone()),
+        &lower_angle,
         work_precision,
         meter,
         CayleyStage::Trigonometry,
     )?;
     let upper_x = DyadicInterval::from_rational_outward(
-        &RationalInterval::point(angle.upper.clone()),
+        &upper_angle,
         work_precision,
         meter,
         CayleyStage::Trigonometry,
@@ -2808,8 +3177,18 @@ fn sine_cosine_interval(
     let sin_upper = sin_upper.to_rational(meter, CayleyStage::Trigonometry)?;
     let cos_lower = cos_lower.to_rational(meter, CayleyStage::Trigonometry)?;
     let cos_upper = cos_upper.to_rational(meter, CayleyStage::Trigonometry)?;
-    let sin = RationalInterval::new(sin_lower.lower, sin_upper.upper)?;
-    let cos = RationalInterval::new(cos_lower.lower, cos_upper.upper)?;
+    let sin = RationalInterval::new(
+        sin_lower.lower,
+        sin_upper.upper,
+        meter,
+        CayleyStage::Trigonometry,
+    )?;
+    let cos = RationalInterval::new(
+        cos_lower.lower,
+        cos_upper.upper,
+        meter,
+        CayleyStage::Trigonometry,
+    )?;
     Ok((sin, cos))
 }
 
@@ -2916,7 +3295,7 @@ fn square_root_interval(
     precision: usize,
     meter: &mut WorkMeter<'_>,
 ) -> Result<RationalInterval, CayleyError> {
-    if value <= &BigRational::zero() {
+    if !rational_is_positive(value) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::SquareRoot,
         });
@@ -2939,38 +3318,22 @@ fn square_root_interval(
             resource: "intermediate_bits",
         });
     }
-    meter.preflight_shifted_value(CayleyStage::SquareRoot, numerator.bits() as usize, shift)?;
-    let scaled_numerator = numerator << shift;
-    let quotient = &scaled_numerator / &denominator;
+    let scaled_numerator = meter.left_shift_biguint(numerator, shift, CayleyStage::SquareRoot)?;
+    let quotient = meter.divide_biguint(&scaled_numerator, denominator, CayleyStage::SquareRoot)?;
     let root = integer_sqrt_floor(&quotient, meter)?;
-    let lower = BigRational::new(
-        BigInt::from_biguint(Sign::Plus, root.clone()),
-        BigInt::one() << precision,
-    );
-    meter.preflight_product_bits(
-        CayleyStage::SquareRoot,
-        root.bits() as usize,
-        root.bits() as usize,
-    )?;
-    let root_square = &root * &root;
-    meter.preflight_product_bits(
-        CayleyStage::SquareRoot,
-        root_square.bits() as usize,
-        denominator.bits() as usize,
-    )?;
-    let exact = root_square * &denominator == scaled_numerator;
-    if !exact {
-        meter.preflight_value_bits(
-            CayleyStage::SquareRoot,
-            (root.bits() as usize).saturating_add(1),
-        )?;
-    }
-    let upper_root = if exact { root } else { root + BigUint::one() };
-    let upper = BigRational::new(
-        BigInt::from_biguint(Sign::Plus, upper_root),
-        BigInt::one() << precision,
-    );
-    RationalInterval::new(lower, upper)
+    let lower = dyadic_rational_from_biguint(&root, precision, meter, CayleyStage::SquareRoot)?;
+    let root_square = meter.multiply_biguint(&root, &root, CayleyStage::SquareRoot)?;
+    let exact_product =
+        meter.multiply_biguint(&root_square, denominator, CayleyStage::SquareRoot)?;
+    let exact = exact_product == scaled_numerator;
+    let upper_root = if exact {
+        root
+    } else {
+        meter.increment_biguint(&root, CayleyStage::SquareRoot)?
+    };
+    let upper =
+        dyadic_rational_from_biguint(&upper_root, precision, meter, CayleyStage::SquareRoot)?;
+    RationalInterval::new(lower, upper, meter, CayleyStage::SquareRoot)
 }
 
 fn exact_rational_square_root(
@@ -2979,32 +3342,34 @@ fn exact_rational_square_root(
 ) -> Result<Option<BigRational>, CayleyError> {
     let numerator = positive_biguint(value.numer(), CayleyStage::SquareRoot)?;
     let denominator = positive_biguint(value.denom(), CayleyStage::SquareRoot)?;
-    let numerator_root = integer_sqrt_floor(&numerator, meter)?;
-    meter.preflight_product_bits(
-        CayleyStage::SquareRoot,
-        numerator_root.bits() as usize,
-        numerator_root.bits() as usize,
-    )?;
-    if &numerator_root * &numerator_root != numerator {
+    let numerator_root = integer_sqrt_floor(numerator, meter)?;
+    let numerator_square =
+        meter.multiply_biguint(&numerator_root, &numerator_root, CayleyStage::SquareRoot)?;
+    if numerator_square != *numerator {
         return Ok(None);
     }
-    let denominator_root = integer_sqrt_floor(&denominator, meter)?;
-    meter.preflight_product_bits(
+    let denominator_root = integer_sqrt_floor(denominator, meter)?;
+    let denominator_square = meter.multiply_biguint(
+        &denominator_root,
+        &denominator_root,
         CayleyStage::SquareRoot,
-        denominator_root.bits() as usize,
-        denominator_root.bits() as usize,
     )?;
-    if &denominator_root * &denominator_root != denominator {
+    if denominator_square != *denominator {
         return Ok(None);
     }
-    Ok(Some(BigRational::new(
-        BigInt::from_biguint(Sign::Plus, numerator_root),
-        BigInt::from_biguint(Sign::Plus, denominator_root),
-    )))
+    Ok(Some(coprime_rational_from_biguints(
+        numerator_root,
+        denominator_root,
+        meter,
+        CayleyStage::SquareRoot,
+    )?))
 }
 
 fn integer_sqrt_floor(value: &BigUint, meter: &mut WorkMeter<'_>) -> Result<BigUint, CayleyError> {
     if value.is_zero() {
+        meter.operation(CayleyStage::SquareRoot)?;
+        meter.preflight_value_bits(CayleyStage::SquareRoot, 0)?;
+        meter.charge_rational_allocations(&[0], CayleyStage::SquareRoot)?;
         return Ok(BigUint::zero());
     }
     let bit_length = value.bits() as usize;
@@ -3022,8 +3387,8 @@ fn integer_sqrt_floor(value: &BigUint, meter: &mut WorkMeter<'_>) -> Result<BigU
         });
     }
     let initial_shift = bit_length.div_ceil(2);
-    meter.preflight_shifted_value(CayleyStage::SquareRoot, 1, initial_shift)?;
-    let mut root = BigUint::one() << initial_shift;
+    let mut root =
+        meter.left_shift_biguint(&BigUint::one(), initial_shift, CayleyStage::SquareRoot)?;
     let mut local_refinements = 0_usize;
     loop {
         local_refinements =
@@ -3034,31 +3399,14 @@ fn integer_sqrt_floor(value: &BigUint, meter: &mut WorkMeter<'_>) -> Result<BigU
                     resource: "sqrt_refinements",
                 })?;
         meter.sqrt_refinement(CayleyStage::SquareRoot, local_refinements)?;
-        meter.preflight_value_bits(
-            CayleyStage::SquareRoot,
-            (root.bits() as usize)
-                .max(value.bits() as usize)
-                .saturating_add(1),
-        )?;
-        let next = (&root + value / &root) >> 1_usize;
+        let quotient = meter.divide_biguint(value, &root, CayleyStage::SquareRoot)?;
+        let sum = meter.add_biguint(&root, &quotient, CayleyStage::SquareRoot)?;
+        let next = meter.right_shift_biguint(&sum, 1, CayleyStage::SquareRoot)?;
         if next >= root {
-            meter.preflight_product_bits(
-                CayleyStage::SquareRoot,
-                root.bits() as usize,
-                root.bits() as usize,
-            )?;
-            let square = &root * &root;
-            meter.preflight_value_bits(
-                CayleyStage::SquareRoot,
-                (root.bits() as usize).saturating_add(1),
-            )?;
-            let successor = &root + BigUint::one();
-            meter.preflight_product_bits(
-                CayleyStage::SquareRoot,
-                successor.bits() as usize,
-                successor.bits() as usize,
-            )?;
-            let successor_square = &successor * &successor;
+            let square = meter.multiply_biguint(&root, &root, CayleyStage::SquareRoot)?;
+            let successor = meter.increment_biguint(&root, CayleyStage::SquareRoot)?;
+            let successor_square =
+                meter.multiply_biguint(&successor, &successor, CayleyStage::SquareRoot)?;
             if square > *value || successor_square <= *value {
                 return Err(CayleyError::InvariantFailure {
                     stage: CayleyStage::SquareRoot,
@@ -3089,14 +3437,16 @@ fn round_interval_midpoint_to_dyadic(
         &BigRational::from_integer(BigInt::from(2_u8)),
         CayleyStage::Candidate,
     )?;
-    if midpoint <= BigRational::zero() {
+    if !rational_is_positive(&midpoint) {
         return Err(CayleyError::CertificateUnavailable {
             stage: CayleyStage::Candidate,
         });
     }
-    let exponent = binary_exponent_floor(&midpoint).ok_or(CayleyError::CertificateUnavailable {
-        stage: CayleyStage::Candidate,
-    })?;
+    let exponent = binary_exponent_floor(&midpoint, meter, CayleyStage::Candidate)?.ok_or(
+        CayleyError::CertificateUnavailable {
+            stage: CayleyStage::Candidate,
+        },
+    )?;
     let significant_bits_i64 =
         i64::try_from(significant_bits).map_err(|_| CayleyError::ResourceLimitExceeded {
             stage: CayleyStage::Candidate,
@@ -3159,7 +3509,7 @@ fn round_rational_nearest_even(
     value: &BigRational,
     meter: &mut WorkMeter<'_>,
 ) -> Result<BigInt, CayleyError> {
-    debug_assert!(!value.is_negative());
+    debug_assert!(!rational_is_negative(value));
     meter.operation(CayleyStage::Candidate)?;
     let quotient = value.numer() / value.denom();
     let remainder = value.numer() % value.denom();
@@ -3224,7 +3574,7 @@ fn cayley_matrix(
     let a = meter.multiply_rational(&parameter_squared, delta, CayleyStage::Matrix)?;
     let denominator = meter.add_rational(&BigRational::one(), &a, CayleyStage::Matrix)?;
     let two = BigRational::from_integer(BigInt::from(2_u8));
-    let cross = cross_matrix(direction);
+    let cross = cross_matrix(direction, meter)?;
     try_array3(|row| {
         try_array3(|column| {
             let diagonal = if row == column {
@@ -3258,13 +3608,28 @@ fn cayley_matrix(
     })
 }
 
-fn cross_matrix(direction: &ExactVector3) -> [[BigRational; 3]; 3] {
+fn cross_matrix(
+    direction: &ExactVector3,
+    meter: &mut WorkMeter<'_>,
+) -> Result<[[BigRational; 3]; 3], CayleyError> {
     let [x, y, z] = &direction.coordinates;
-    [
-        [BigRational::zero(), -z, y.clone()],
-        [z.clone(), BigRational::zero(), -x],
-        [-y, x.clone(), BigRational::zero()],
-    ]
+    Ok([
+        [
+            BigRational::zero(),
+            meter.negate_rational(z, CayleyStage::Matrix)?,
+            meter.clone_rational(y, CayleyStage::Matrix)?,
+        ],
+        [
+            meter.clone_rational(z, CayleyStage::Matrix)?,
+            BigRational::zero(),
+            meter.negate_rational(x, CayleyStage::Matrix)?,
+        ],
+        [
+            meter.negate_rational(y, CayleyStage::Matrix)?,
+            meter.clone_rational(x, CayleyStage::Matrix)?,
+            BigRational::zero(),
+        ],
+    ])
 }
 
 fn fixed_point_translation(
@@ -3291,42 +3656,25 @@ fn verify_invariants(
     direction: &ExactVector3,
     meter: &mut WorkMeter<'_>,
 ) -> Result<(), CayleyError> {
-    for row in 0..3 {
-        for column in 0..3 {
-            let mut value = BigRational::zero();
-            for rotation_row in rotation {
-                let product = meter.multiply_rational(
-                    &rotation_row[row],
-                    &rotation_row[column],
-                    CayleyStage::Matrix,
-                )?;
-                value = meter.add_rational(&value, &product, CayleyStage::Matrix)?;
-            }
-            let expected = if row == column {
-                BigRational::one()
-            } else {
-                BigRational::zero()
-            };
-            if value != expected {
-                return Err(CayleyError::InvariantFailure {
-                    stage: CayleyStage::Matrix,
-                });
-            }
-        }
+    let gram = exact_column_gram(rotation, meter, CayleyStage::Matrix)?;
+    if !canonical_matrix_eq(&gram, &identity_matrix()) {
+        return Err(CayleyError::InvariantFailure {
+            stage: CayleyStage::Matrix,
+        });
     }
-    if determinant(rotation, meter)? != BigRational::one() {
+    if !canonical_rational_eq(&determinant(rotation, meter)?, &BigRational::one()) {
         return Err(CayleyError::InvariantFailure {
             stage: CayleyStage::Matrix,
         });
     }
     let rotated_direction = apply_vector(rotation, direction, meter)?;
-    if rotated_direction != *direction {
+    if !canonical_vector_eq(&rotated_direction, direction) {
         return Err(CayleyError::InvariantFailure {
             stage: CayleyStage::Matrix,
         });
     }
-    if apply_point(rotation, translation, pivot, meter)? != *pivot
-        || apply_point(rotation, translation, end, meter)? != *end
+    if !canonical_point_eq(&apply_point(rotation, translation, pivot, meter)?, pivot)
+        || !canonical_point_eq(&apply_point(rotation, translation, end, meter)?, end)
     {
         return Err(CayleyError::InvariantFailure {
             stage: CayleyStage::Matrix,
@@ -3383,7 +3731,7 @@ fn apply_point_at_stage(
     stage: CayleyStage,
 ) -> Result<ExactPoint3, CayleyError> {
     let coordinates = try_array3(|row| {
-        let mut result = translation.coordinates[row].clone();
+        let mut result = meter.clone_rational(&translation.coordinates[row], stage)?;
         for (coefficient, coordinate) in rotation[row].iter().zip(&point.coordinates) {
             let product = meter.multiply_rational(coefficient, coordinate, stage)?;
             result = meter.add_rational(&result, &product, stage)?;
@@ -3440,30 +3788,48 @@ fn zero_vector() -> ExactVector3 {
     }
 }
 
-fn binary_exponent_floor(value: &BigRational) -> Option<i64> {
-    if value <= &BigRational::zero() {
-        return None;
+fn binary_exponent_floor(
+    value: &BigRational,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<Option<i64>, CayleyError> {
+    if !rational_is_positive(value) {
+        return Ok(None);
     }
     let numerator = value.numer().magnitude();
     let denominator = value.denom().magnitude();
-    let mut exponent =
-        i64::try_from(numerator.bits()).ok()? - i64::try_from(denominator.bits()).ok()?;
+    let Some(numerator_bits) = i64::try_from(numerator.bits()).ok() else {
+        return Ok(None);
+    };
+    let Some(denominator_bits) = i64::try_from(denominator.bits()).ok() else {
+        return Ok(None);
+    };
+    let mut exponent = numerator_bits - denominator_bits;
     let below = if exponent >= 0 {
-        numerator < &(denominator << usize::try_from(exponent).ok()?)
+        let Some(shift) = usize::try_from(exponent).ok() else {
+            return Ok(None);
+        };
+        let shifted = meter.left_shift_biguint(denominator, shift, stage)?;
+        numerator < &shifted
     } else {
-        &(numerator << usize::try_from(-exponent).ok()?) < denominator
+        let Some(shift) = usize::try_from(-exponent).ok() else {
+            return Ok(None);
+        };
+        let shifted = meter.left_shift_biguint(numerator, shift, stage)?;
+        &shifted < denominator
     };
     if below {
         exponent -= 1;
     }
-    Some(exponent)
+    Ok(Some(exponent))
 }
 
-fn positive_biguint(value: &BigInt, stage: CayleyStage) -> Result<BigUint, CayleyError> {
-    value
-        .to_biguint()
-        .filter(|value| !value.is_zero())
-        .ok_or(CayleyError::CertificateUnavailable { stage })
+fn positive_biguint(value: &BigInt, stage: CayleyStage) -> Result<&BigUint, CayleyError> {
+    if value.sign() == Sign::Plus && !value.magnitude().is_zero() {
+        Ok(value.magnitude())
+    } else {
+        Err(CayleyError::CertificateUnavailable { stage })
+    }
 }
 
 fn div_floor(numerator: &BigInt, denominator: &BigInt) -> BigInt {
@@ -3599,6 +3965,356 @@ mod tests {
 
     fn rational(integer: i64) -> BigRational {
         BigRational::from_integer(BigInt::from(integer))
+    }
+
+    #[test]
+    fn canonical_structural_equality_rejects_noncanonical_aliases() {
+        let half = BigRational::new(BigInt::one(), BigInt::from(2_u8));
+        let noncanonical_half = BigRational::new_raw(BigInt::from(2_u8), BigInt::from(4_u8));
+        assert_eq!(half, noncanonical_half);
+        assert!(canonical_rational_eq(&half, &half));
+        assert!(!canonical_rational_eq(&half, &noncanonical_half));
+
+        let point = ExactPoint3 {
+            coordinates: [half.clone(), BigRational::zero(), BigRational::one()],
+        };
+        let mut noncanonical_point = point.clone();
+        noncanonical_point.coordinates[0] = noncanonical_half.clone();
+        assert_eq!(point, noncanonical_point);
+        assert!(canonical_point_eq(&point, &point));
+        assert!(!canonical_point_eq(&point, &noncanonical_point));
+
+        let vector = ExactVector3 {
+            coordinates: [BigRational::one(), half.clone(), BigRational::zero()],
+        };
+        let mut noncanonical_vector = vector.clone();
+        noncanonical_vector.coordinates[1] = noncanonical_half.clone();
+        assert_eq!(vector, noncanonical_vector);
+        assert!(canonical_vector_eq(&vector, &vector));
+        assert!(!canonical_vector_eq(&vector, &noncanonical_vector));
+
+        let matrix = identity_matrix();
+        let mut noncanonical_matrix = matrix.clone();
+        noncanonical_matrix[0][0] = BigRational::new_raw(BigInt::from(2_u8), BigInt::from(2_u8));
+        assert_eq!(matrix, noncanonical_matrix);
+        assert!(canonical_matrix_eq(&matrix, &matrix));
+        assert!(!canonical_matrix_eq(&matrix, &noncanonical_matrix));
+    }
+
+    #[test]
+    fn local_rotation_proof_values_preserve_the_canonical_representation() {
+        fn assert_canonical(value: &BigRational) {
+            assert!(value.denom().is_positive());
+            assert!(value.numer().gcd(value.denom()).is_one());
+        }
+
+        for rotation in [
+            local_rotation_v1([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.0, 1, limits()).unwrap(),
+            local_rotation_v1(
+                [0.125, -7.0, f64::from_bits(1)],
+                [3.0, 4.0, 5.0],
+                37.0,
+                -1,
+                limits(),
+            )
+            .unwrap(),
+            local_rotation_v1([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 90.0, 1, limits()).unwrap(),
+            local_rotation_v1([0.0, 0.0, 0.0], [1.0, 1.0, 0.0], 180.0, 1, limits()).unwrap(),
+        ] {
+            for value in rotation
+                .rotation
+                .iter()
+                .flatten()
+                .chain(&rotation.translation.coordinates)
+            {
+                assert_canonical(value);
+            }
+            match &rotation.certificate {
+                ExactAngleCertificate::Exact { target_degrees } => {
+                    assert_canonical(target_degrees);
+                }
+                ExactAngleCertificate::Bounded(certificate) => {
+                    for value in [
+                        &certificate.target_degrees,
+                        &certificate.parameter,
+                        &certificate.target_half_tangent.lower,
+                        &certificate.target_half_tangent.upper,
+                        &certificate.realized_half_tangent.lower,
+                        &certificate.realized_half_tangent.upper,
+                        &certificate.max_error_radians,
+                        &certificate.max_error_degrees,
+                        &certificate.acceptance_degrees,
+                        &certificate.pi.lower,
+                        &certificate.pi.upper,
+                    ] {
+                        assert_canonical(value);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rational_interval_ordering_has_exact_resource_limits() {
+        let lower = BigRational::new(BigInt::one(), BigInt::from(3_u8));
+        let upper = BigRational::new(BigInt::from(2_u8), BigInt::from(5_u8));
+        let generous = limits();
+        let mut baseline = WorkMeter::new(&generous);
+        RationalInterval::new(
+            lower.clone(),
+            upper.clone(),
+            &mut baseline,
+            CayleyStage::Candidate,
+        )
+        .unwrap();
+        assert_eq!(baseline.work.interval_operations, 1);
+        assert_eq!(baseline.work.gcd_fallback_calls, 1);
+        assert_eq!(baseline.work.rational_allocations, 4);
+
+        let mut exact = limits();
+        exact.max_interval_operations = baseline.work.interval_operations;
+        exact.max_gcd_fallback_calls = baseline.work.gcd_fallback_calls;
+        exact.max_gcd_fallback_input_bits = baseline.work.gcd_fallback_input_bits;
+        exact.max_rational_allocations = baseline.work.rational_allocations;
+        exact.max_rational_allocation_bits = baseline.work.max_rational_allocation_bits;
+        exact.max_total_rational_allocation_bits = baseline.work.total_rational_allocation_bits;
+        let mut exact_meter = WorkMeter::new(&exact);
+        RationalInterval::new(
+            lower.clone(),
+            upper.clone(),
+            &mut exact_meter,
+            CayleyStage::Candidate,
+        )
+        .unwrap();
+        assert_eq!(exact_meter.work, baseline.work);
+
+        let mut one_short = exact;
+        one_short.max_interval_operations -= 1;
+        assert!(matches!(
+            RationalInterval::new(
+                lower.clone(),
+                upper.clone(),
+                &mut WorkMeter::new(&one_short),
+                CayleyStage::Candidate,
+            ),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "interval_operations",
+                ..
+            })
+        ));
+
+        let mut one_short = exact;
+        one_short.max_rational_allocations -= 1;
+        assert!(matches!(
+            RationalInterval::new(
+                lower,
+                upper,
+                &mut WorkMeter::new(&one_short),
+                CayleyStage::Candidate,
+            ),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn local_rotation_clone_work_has_an_exact_allocation_limit() {
+        let pivot = [0.0, 0.0, 0.0];
+        let end = [1.0, 0.0, 0.0];
+        let baseline = local_rotation_v1(pivot, end, 0.0, 1, limits()).unwrap();
+        assert!(baseline.work.rational_allocations > 0);
+
+        let mut exact = limits();
+        exact.max_rational_allocations = baseline.work.rational_allocations;
+        exact.max_rational_allocation_bits = baseline.work.max_rational_allocation_bits;
+        exact.max_total_rational_allocation_bits = baseline.work.total_rational_allocation_bits;
+        let repeated = local_rotation_v1(pivot, end, 0.0, 1, exact).unwrap();
+        assert_eq!(repeated.work, baseline.work);
+
+        exact.max_rational_allocations -= 1;
+        assert!(matches!(
+            local_rotation_v1(pivot, end, 0.0, 1, exact),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn dyadic_and_square_root_conversions_charge_exact_allocations() {
+        let generous = limits();
+        let mut dyadic_meter = WorkMeter::new(&generous);
+        let dyadic = DyadicInterval {
+            lower: BigInt::from(3_u8),
+            upper: BigInt::from(5_u8),
+            precision: 128,
+        };
+        dyadic
+            .to_rational(&mut dyadic_meter, CayleyStage::Trigonometry)
+            .unwrap();
+        assert!(dyadic_meter.work.interval_operations > 0);
+        assert!(dyadic_meter.work.rational_allocations > 0);
+
+        let mut dyadic_exact = limits();
+        dyadic_exact.max_interval_operations = dyadic_meter.work.interval_operations;
+        dyadic_exact.max_shift_bits = dyadic_meter.work.max_shift_bits;
+        dyadic_exact.max_intermediate_bits = dyadic_meter.work.max_preflight_bits;
+        dyadic_exact.max_rational_allocations = dyadic_meter.work.rational_allocations;
+        dyadic_exact.max_rational_allocation_bits = dyadic_meter.work.max_rational_allocation_bits;
+        dyadic_exact.max_total_rational_allocation_bits =
+            dyadic_meter.work.total_rational_allocation_bits;
+        let mut exact_meter = WorkMeter::new(&dyadic_exact);
+        dyadic
+            .to_rational(&mut exact_meter, CayleyStage::Trigonometry)
+            .unwrap();
+        assert_eq!(exact_meter.work, dyadic_meter.work);
+
+        let mut one_short = dyadic_exact;
+        one_short.max_interval_operations -= 1;
+        assert!(matches!(
+            dyadic.to_rational(&mut WorkMeter::new(&one_short), CayleyStage::Trigonometry,),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "interval_operations",
+                ..
+            })
+        ));
+        let mut one_short = dyadic_exact;
+        one_short.max_rational_allocations -= 1;
+        assert!(matches!(
+            dyadic.to_rational(&mut WorkMeter::new(&one_short), CayleyStage::Trigonometry,),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+
+        let mut interval_meter = WorkMeter::new(&generous);
+        square_root_interval(&rational(4), 128, &mut interval_meter).unwrap();
+        assert!(interval_meter.work.rational_allocations > 0);
+
+        let mut interval_exact = limits();
+        interval_exact.max_interval_operations = interval_meter.work.interval_operations;
+        interval_exact.max_sqrt_refinements = interval_meter.work.max_sqrt_call_refinements;
+        interval_exact.max_shift_bits = interval_meter.work.max_shift_bits;
+        interval_exact.max_intermediate_bits = interval_meter.work.max_preflight_bits;
+        interval_exact.max_rational_allocations = interval_meter.work.rational_allocations;
+        interval_exact.max_rational_allocation_bits =
+            interval_meter.work.max_rational_allocation_bits;
+        interval_exact.max_total_rational_allocation_bits =
+            interval_meter.work.total_rational_allocation_bits;
+        let mut repeated_interval_meter = WorkMeter::new(&interval_exact);
+        square_root_interval(&rational(4), 128, &mut repeated_interval_meter).unwrap();
+        assert_eq!(repeated_interval_meter.work, interval_meter.work);
+        let mut one_short = interval_exact;
+        one_short.max_rational_allocations -= 1;
+        assert!(matches!(
+            square_root_interval(&rational(4), 128, &mut WorkMeter::new(&one_short),),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+
+        let mut exact_meter = WorkMeter::new(&generous);
+        assert!(
+            exact_rational_square_root(&rational(4), &mut exact_meter)
+                .unwrap()
+                .is_some()
+        );
+        assert!(exact_meter.work.rational_allocations > 0);
+        let mut exact_limits = limits();
+        exact_limits.max_interval_operations = exact_meter.work.interval_operations;
+        exact_limits.max_sqrt_refinements = exact_meter.work.max_sqrt_call_refinements;
+        exact_limits.max_shift_bits = exact_meter.work.max_shift_bits;
+        exact_limits.max_intermediate_bits = exact_meter.work.max_preflight_bits;
+        exact_limits.max_rational_allocations = exact_meter.work.rational_allocations;
+        exact_limits.max_rational_allocation_bits = exact_meter.work.max_rational_allocation_bits;
+        exact_limits.max_total_rational_allocation_bits =
+            exact_meter.work.total_rational_allocation_bits;
+        let mut repeated_exact_meter = WorkMeter::new(&exact_limits);
+        exact_rational_square_root(&rational(4), &mut repeated_exact_meter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated_exact_meter.work, exact_meter.work);
+        exact_limits.max_rational_allocations -= 1;
+        assert!(matches!(
+            exact_rational_square_root(&rational(4), &mut WorkMeter::new(&exact_limits),),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn binary_exponent_shift_is_precharged_and_has_exact_limits() {
+        let value = BigRational::new(BigInt::one(), BigInt::one() << 128_usize);
+        let generous = limits();
+        let mut baseline = WorkMeter::new(&generous);
+        assert_eq!(
+            binary_exponent_floor(&value, &mut baseline, CayleyStage::Candidate).unwrap(),
+            Some(-128)
+        );
+        assert_eq!(baseline.work.interval_operations, 1);
+        assert_eq!(baseline.work.rational_allocations, 1);
+        assert_eq!(baseline.work.max_shift_bits, 128);
+
+        let mut exact = limits();
+        exact.max_interval_operations = baseline.work.interval_operations;
+        exact.max_shift_bits = baseline.work.max_shift_bits;
+        exact.max_intermediate_bits = baseline.work.max_preflight_bits;
+        exact.max_rational_allocations = baseline.work.rational_allocations;
+        exact.max_rational_allocation_bits = baseline.work.max_rational_allocation_bits;
+        exact.max_total_rational_allocation_bits = baseline.work.total_rational_allocation_bits;
+        let mut exact_meter = WorkMeter::new(&exact);
+        assert_eq!(
+            binary_exponent_floor(&value, &mut exact_meter, CayleyStage::Candidate).unwrap(),
+            Some(-128)
+        );
+        assert_eq!(exact_meter.work, baseline.work);
+
+        let mut one_short = exact;
+        one_short.max_shift_bits -= 1;
+        assert!(matches!(
+            binary_exponent_floor(
+                &value,
+                &mut WorkMeter::new(&one_short),
+                CayleyStage::Candidate,
+            ),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "shift_bits",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_rational_allocations -= 1;
+        assert!(matches!(
+            binary_exponent_floor(
+                &value,
+                &mut WorkMeter::new(&one_short),
+                CayleyStage::Candidate,
+            ),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn exact_zero_input_obeys_the_intermediate_bit_limit() {
+        let mut strict = limits();
+        strict.max_intermediate_bits = 0;
+        assert!(matches!(
+            exact_f64(0.0, &mut WorkMeter::new(&strict), CayleyStage::Input),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Input,
+                resource: "intermediate_bits",
+            })
+        ));
     }
 
     fn transpose(matrix: &[[BigRational; 3]; 3]) -> [[BigRational; 3]; 3] {
@@ -3981,13 +4697,25 @@ mod tests {
         exact.max_total_output_bits = baseline.work.total_output_bits;
         exact.cayley.max_output_bits = baseline.work.max_output_bits;
         exact.cayley.max_interval_operations = baseline.work.exact.interval_operations;
+        exact.cayley.max_gcd_fallback_calls = baseline.work.exact.gcd_fallback_calls;
+        exact.cayley.max_gcd_fallback_input_bits = baseline.work.exact.gcd_fallback_input_bits;
+        exact.cayley.max_rational_allocations = baseline.work.exact.rational_allocations;
+        exact.cayley.max_rational_allocation_bits =
+            baseline.work.exact.max_rational_allocation_bits;
+        exact.cayley.max_total_rational_allocation_bits =
+            baseline.work.exact.total_rational_allocation_bits;
         assert!(baseline.work.exact.machin_terms > 0);
         assert!(baseline.work.exact.trig_terms > 0);
         assert!(baseline.work.exact.sqrt_refinements > 0);
+        assert!(baseline.work.exact.gcd_fallback_calls > 0);
+        assert!(baseline.work.exact.gcd_fallback_input_bits > 0);
+        assert!(baseline.work.exact.rational_allocations > 0);
+        assert!(baseline.work.exact.max_rational_allocation_bits > 0);
+        assert!(baseline.work.exact.total_rational_allocation_bits > 0);
         assert!(baseline.work.max_output_bits > 0);
-        assert!(
-            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), exact).is_ok()
-        );
+        let exact_boundary =
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), exact).unwrap();
+        assert_eq!(exact_boundary.work, baseline.work);
 
         let mut one_short = exact;
         one_short.max_faces -= 1;
@@ -4106,6 +4834,56 @@ mod tests {
                 ..
             })
         ));
+        for (one_short, resource) in [
+            (
+                {
+                    let mut value = exact;
+                    value.cayley.max_gcd_fallback_calls -= 1;
+                    value
+                },
+                "gcd_fallback_calls",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.cayley.max_gcd_fallback_input_bits -= 1;
+                    value
+                },
+                "gcd_fallback_input_bits",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.cayley.max_rational_allocations -= 1;
+                    value
+                },
+                "rational_allocations",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.cayley.max_rational_allocation_bits -= 1;
+                    value
+                },
+                "rational_allocation_bits",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.cayley.max_total_rational_allocation_bits -= 1;
+                    value
+                },
+                "total_rational_allocation_bits",
+            ),
+        ] {
+            assert!(matches!(
+                prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+                Err(CayleyError::ResourceLimitExceeded {
+                    resource: actual,
+                    ..
+                }) if actual == resource
+            ));
+        }
     }
 
     #[test]
@@ -4317,8 +5095,13 @@ mod tests {
         assert!(&sqrt.lower * &sqrt.lower <= rational(2));
         assert!(&sqrt.upper * &sqrt.upper >= rational(2));
 
-        let half_angle =
-            RationalInterval::new(&pi.lower / rational(4), &pi.upper / rational(4)).unwrap();
+        let half_angle = RationalInterval::new(
+            &pi.lower / rational(4),
+            &pi.upper / rational(4),
+            &mut meter,
+            CayleyStage::Trigonometry,
+        )
+        .unwrap();
         let tangent = tangent_interval(&half_angle, 128, &mut meter).unwrap();
         assert!(tangent.lower <= BigRational::one());
         assert!(tangent.upper >= BigRational::one());
@@ -4375,6 +5158,75 @@ mod tests {
         let pivot = [0.125, -7.0, f64::from_bits(1)];
         let end = [3.0, 4.0, 5.0];
         let baseline = local_rotation_v1(pivot, end, 179.0, 1, limits()).unwrap();
+
+        assert!(baseline.work.gcd_fallback_calls > 0);
+        assert!(baseline.work.gcd_fallback_input_bits > 0);
+        assert!(baseline.work.rational_allocations > 0);
+        assert!(baseline.work.max_rational_allocation_bits > 0);
+        assert!(baseline.work.total_rational_allocation_bits > 0);
+        let mut exact_resources = limits();
+        exact_resources.max_gcd_fallback_calls = baseline.work.gcd_fallback_calls;
+        exact_resources.max_gcd_fallback_input_bits = baseline.work.gcd_fallback_input_bits;
+        exact_resources.max_rational_allocations = baseline.work.rational_allocations;
+        exact_resources.max_rational_allocation_bits = baseline.work.max_rational_allocation_bits;
+        exact_resources.max_total_rational_allocation_bits =
+            baseline.work.total_rational_allocation_bits;
+        assert_eq!(
+            local_rotation_v1(pivot, end, 179.0, 1, exact_resources)
+                .unwrap()
+                .work,
+            baseline.work
+        );
+        for (one_short, resource) in [
+            (
+                {
+                    let mut value = exact_resources;
+                    value.max_gcd_fallback_calls -= 1;
+                    value
+                },
+                "gcd_fallback_calls",
+            ),
+            (
+                {
+                    let mut value = exact_resources;
+                    value.max_gcd_fallback_input_bits -= 1;
+                    value
+                },
+                "gcd_fallback_input_bits",
+            ),
+            (
+                {
+                    let mut value = exact_resources;
+                    value.max_rational_allocations -= 1;
+                    value
+                },
+                "rational_allocations",
+            ),
+            (
+                {
+                    let mut value = exact_resources;
+                    value.max_rational_allocation_bits -= 1;
+                    value
+                },
+                "rational_allocation_bits",
+            ),
+            (
+                {
+                    let mut value = exact_resources;
+                    value.max_total_rational_allocation_bits -= 1;
+                    value
+                },
+                "total_rational_allocation_bits",
+            ),
+        ] {
+            assert!(matches!(
+                local_rotation_v1(pivot, end, 179.0, 1, one_short),
+                Err(CayleyError::ResourceLimitExceeded {
+                    resource: actual,
+                    ..
+                }) if actual == resource
+            ));
+        }
 
         let mut exact = limits();
         exact.max_interval_operations = baseline.work.interval_operations;
@@ -4580,20 +5432,52 @@ mod tests {
         assert!(&sqrt_2_256.upper - &sqrt_2_256.lower <= &sqrt_2_128.upper - &sqrt_2_128.lower);
 
         let perfect = square_root_interval(&rational(4), 128, &mut meter_128).unwrap();
-        assert_eq!(perfect, RationalInterval::point(rational(2)));
+        assert_eq!(
+            perfect,
+            RationalInterval::point(rational(2), &mut meter_128, CayleyStage::SquareRoot).unwrap()
+        );
         assert_ne!(sqrt_2_128.lower, sqrt_2_128.upper);
 
-        let zero = RationalInterval::point(BigRational::zero());
+        let zero = RationalInterval::point(
+            BigRational::zero(),
+            &mut meter_128,
+            CayleyStage::Trigonometry,
+        )
+        .unwrap();
         let (sin_zero, cos_zero) = sine_cosine_interval(&zero, 128, &mut meter_128).unwrap();
-        assert_eq!(sin_zero, RationalInterval::point(BigRational::zero()));
-        assert_eq!(cos_zero, RationalInterval::point(BigRational::one()));
+        assert_eq!(
+            sin_zero,
+            RationalInterval::point(
+                BigRational::zero(),
+                &mut meter_128,
+                CayleyStage::Trigonometry,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            cos_zero,
+            RationalInterval::point(
+                BigRational::one(),
+                &mut meter_128,
+                CayleyStage::Trigonometry,
+            )
+            .unwrap()
+        );
 
-        let angle_sixth_128 =
-            RationalInterval::new(&pi_128.lower / rational(6), &pi_128.upper / rational(6))
-                .unwrap();
-        let angle_sixth_256 =
-            RationalInterval::new(&pi_256.lower / rational(6), &pi_256.upper / rational(6))
-                .unwrap();
+        let angle_sixth_128 = RationalInterval::new(
+            &pi_128.lower / rational(6),
+            &pi_128.upper / rational(6),
+            &mut meter_128,
+            CayleyStage::Trigonometry,
+        )
+        .unwrap();
+        let angle_sixth_256 = RationalInterval::new(
+            &pi_256.lower / rational(6),
+            &pi_256.upper / rational(6),
+            &mut meter_256,
+            CayleyStage::Trigonometry,
+        )
+        .unwrap();
         let (sin_sixth_128, cos_sixth_128) =
             sine_cosine_interval(&angle_sixth_128, 128, &mut meter_128).unwrap();
         let (sin_sixth_256, cos_sixth_256) =
@@ -4608,9 +5492,13 @@ mod tests {
         assert!(cos_sixth_128.lower <= cos_sixth_256.lower);
         assert!(cos_sixth_256.upper <= cos_sixth_128.upper);
 
-        let angle_quarter =
-            RationalInterval::new(&pi_256.lower / rational(4), &pi_256.upper / rational(4))
-                .unwrap();
+        let angle_quarter = RationalInterval::new(
+            &pi_256.lower / rational(4),
+            &pi_256.upper / rational(4),
+            &mut meter_256,
+            CayleyStage::Trigonometry,
+        )
+        .unwrap();
         let (sin_quarter, cos_quarter) =
             sine_cosine_interval(&angle_quarter, 256, &mut meter_256).unwrap();
         let one_half = BigRational::new(1.into(), 2.into());
@@ -4629,8 +5517,13 @@ mod tests {
         assert!(&sqrt_2.lower * &sqrt_2.lower <= rational(2));
         assert!(&sqrt_2.upper * &sqrt_2.upper >= rational(2));
 
-        let quarter =
-            RationalInterval::new(&pi.lower / rational(4), &pi.upper / rational(4)).unwrap();
+        let quarter = RationalInterval::new(
+            &pi.lower / rational(4),
+            &pi.upper / rational(4),
+            &mut meter,
+            CayleyStage::Trigonometry,
+        )
+        .unwrap();
         let tangent = tangent_interval(&quarter, 4_096, &mut meter).unwrap();
         assert!(tangent.lower <= BigRational::one());
         assert!(tangent.upper >= BigRational::one());

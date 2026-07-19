@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 import type { ProjectSnapshot } from './coreClient.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
+import { normalizeProjectLayerDocument } from './projectLayers.ts'
 
 export const RECOVERY_SCHEMA_VERSION = 1 as const
 
@@ -128,6 +129,7 @@ const PROJECT_SNAPSHOT_KEYS = [
   'instruction_timeline',
   'numeric_expressions',
   'geometric_constraints',
+  'project_layers',
   'fold_model_fingerprint',
   'can_undo',
   'can_redo',
@@ -581,12 +583,17 @@ export function parseRestoredRecoverySnapshot(
     const geometricConstraints = normalizeGeometricConstraintDocument(
       record.geometric_constraints,
     )
+    const projectLayers = normalizeProjectLayerDocument(
+      record.project_layers,
+      creasePattern?.edges ?? [],
+    )
     if (
       !paper
       || !creasePattern
       || !instructionTimeline
       || !numericExpressions
       || !geometricConstraints
+      || !projectLayers
       || paper.cutting_allowed !== record.cutting_allowed
     ) return null
 
@@ -603,6 +610,7 @@ export function parseRestoredRecoverySnapshot(
       instruction_timeline: instructionTimeline,
       numeric_expressions: numericExpressions,
       geometric_constraints: geometricConstraints,
+      project_layers: projectLayers,
       fold_model_fingerprint: record.fold_model_fingerprint,
       can_undo: false,
       can_redo: false,

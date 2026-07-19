@@ -61,8 +61,8 @@ use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
-    LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId, RgbaColor,
-    VertexId,
+    LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId,
+    ProjectLayerDocumentV1, RgbaColor, VertexId,
 };
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
@@ -420,11 +420,12 @@ impl ProjectState {
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
         let saved_document = document.clone();
         let numeric_expressions = document.numeric_expressions;
-        let editor = EditorState::with_document_parts_and_constraints(
+        let editor = EditorState::with_document_parts_constraints_and_layers(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
             document.geometric_constraints,
+            document.layers,
         );
         Self {
             instance_id: ProjectId::new(),
@@ -486,6 +487,7 @@ impl ProjectState {
             instruction_timeline: self.editor.instruction_timeline().clone(),
             numeric_expressions: self.numeric_expressions.clone(),
             geometric_constraints: self.editor.geometric_constraints().clone(),
+            layers: self.editor.project_layers().clone(),
         }
     }
 
@@ -513,6 +515,7 @@ impl ProjectState {
             || saved.instruction_timeline != *self.editor.instruction_timeline()
             || saved.numeric_expressions != self.numeric_expressions
             || saved.geometric_constraints != *self.editor.geometric_constraints()
+            || saved.layers != *self.editor.project_layers()
     }
 }
 
@@ -522,20 +525,22 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             if history.project_id() != project.document.project_id {
                 return Err(());
             }
-            EditorState::with_document_parts_and_history_v1(
+            EditorState::with_document_parts_layers_and_history_v1(
                 project.document.crease_pattern.clone(),
                 project.document.paper.clone(),
                 project.document.instruction_timeline.clone(),
                 project.document.geometric_constraints.clone(),
+                project.document.layers.clone(),
                 history.clone(),
             )
             .map_err(|_| ())
         }
-        None => Ok(EditorState::with_document_parts_and_constraints(
+        None => Ok(EditorState::with_document_parts_constraints_and_layers(
             project.document.crease_pattern.clone(),
             project.document.paper.clone(),
             project.document.instruction_timeline.clone(),
             project.document.geometric_constraints.clone(),
+            project.document.layers.clone(),
         )),
     }?;
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
@@ -552,6 +557,7 @@ fn validate_reachable_history_instruction_poses(
         endpoint.crease_pattern = editor.pattern().clone();
         endpoint.instruction_timeline = editor.instruction_timeline().clone();
         endpoint.geometric_constraints = editor.geometric_constraints().clone();
+        endpoint.layers = editor.project_layers().clone();
         validate_document_instruction_poses(&endpoint).map_err(|_| ())
     }
 
@@ -628,6 +634,7 @@ struct ProjectSnapshot {
     instruction_timeline: InstructionTimeline,
     numeric_expressions: ProjectNumericExpressions,
     geometric_constraints: GeometricConstraintDocumentV1,
+    project_layers: ProjectLayerDocumentV1,
     fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
@@ -3364,6 +3371,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         instruction_timeline: project.editor.instruction_timeline().clone(),
         numeric_expressions: project.numeric_expressions.clone(),
         geometric_constraints: project.editor.geometric_constraints().clone(),
+        project_layers: project.editor.project_layers().clone(),
         fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -5231,7 +5239,7 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use ori_domain::{Edge, Vertex};
+    use ori_domain::{Edge, LayerContentKindV1, LayerRecordV1, Vertex};
     use ori_formats::{
         Ori2Limits, read_project_ori2_with_limits, write_project_archive_ori2, write_project_ori2,
     };
@@ -5678,6 +5686,99 @@ mod tests {
         assert!(!loaded.is_dirty());
         assert!(!loaded.editor.can_undo());
         assert!(!loaded.editor.can_redo());
+    }
+
+    #[test]
+    fn project_layers_are_snapshotted_dirty_tracked_saved_and_reopened_with_history() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let edge = project.editor.pattern().edges[0].id;
+        let layer = LayerRecordV1 {
+            id: ori_domain::LayerId::new(),
+            name: "Details".to_owned(),
+            content_kind: LayerContentKindV1::CreasePattern,
+        };
+
+        let created = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::CreateLayer {
+                layer: layer.clone(),
+                target_index: 1,
+            },
+        )
+        .expect("create layer through native project bridge");
+        assert_eq!(created.project_layers.layers[1], layer);
+        assert!(created.project_layers.edge_assignments.is_empty());
+        assert!(created.is_dirty);
+
+        let assigned = execute_command(
+            &mut project,
+            project_id,
+            1,
+            Command::AssignEdgeToLayer {
+                edge,
+                layer: layer.id,
+            },
+        )
+        .expect("assign edge through native project bridge");
+        assert_eq!(assigned.project_layers.layer_for_edge(edge), layer.id);
+        assert_eq!(project.document().layers, assigned.project_layers);
+        assert!(project.is_dirty());
+
+        let document = project.document();
+        let loaded_without_history =
+            ProjectState::from_document(document.clone(), PathBuf::from("layers.ori2"));
+        assert_eq!(
+            loaded_without_history.editor.project_layers(),
+            &document.layers
+        );
+        assert!(!loaded_without_history.is_dirty());
+
+        let directory = TestDirectory::new();
+        let path = directory.join("layer-history.ori2");
+        save_project_to_path(&mut project, path.clone()).expect("save layered archive");
+        assert!(!project.is_dirty());
+
+        let mut reopened = ProjectState::new(CreasePattern::empty());
+        let replaced_instance_id = reopened.instance_id;
+        let replaced_project_id = reopened.project_id;
+        let loaded = load_project_file(path.clone()).expect("load layered archive");
+        apply_loaded_project_file(
+            &mut reopened,
+            replaced_instance_id,
+            replaced_project_id,
+            0,
+            loaded,
+        )
+        .expect("apply layered archive");
+        assert_eq!(reopened.document(), document);
+        assert_eq!(reopened.editor.project_layers(), &document.layers);
+        assert_eq!(snapshot(&reopened).project_layers, document.layers);
+        assert!(!reopened.is_dirty());
+
+        reopened.editor.undo(0).expect("undo reopened assignment");
+        assert_eq!(
+            reopened.editor.project_layers().layer_for_edge(edge),
+            ori_domain::DEFAULT_PROJECT_LAYER_ID
+        );
+        assert!(reopened.is_dirty());
+        reopened
+            .editor
+            .undo(1)
+            .expect("undo reopened layer creation");
+        assert_eq!(
+            reopened.editor.project_layers(),
+            &ProjectLayerDocumentV1::default()
+        );
+        reopened
+            .editor
+            .redo(2)
+            .expect("redo reopened layer creation");
+        reopened.editor.redo(3).expect("redo reopened assignment");
+        assert_eq!(reopened.document(), document);
+        assert!(!reopened.is_dirty());
     }
 
     #[test]
@@ -6920,6 +7021,7 @@ mod tests {
         endpoint_document.crease_pattern = undo_endpoint.pattern().clone();
         endpoint_document.instruction_timeline = undo_endpoint.instruction_timeline().clone();
         endpoint_document.geometric_constraints = undo_endpoint.geometric_constraints().clone();
+        endpoint_document.layers = undo_endpoint.project_layers().clone();
         assert!(
             validate_document_instruction_poses(&endpoint_document).is_err(),
             "the same pose becomes current and invalid after Undo"

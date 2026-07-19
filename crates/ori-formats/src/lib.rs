@@ -9,8 +9,9 @@ mod svg;
 use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, GeometricConstraintDocumentV1,
     GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1, InstructionTimeline,
-    InstructionTimelineValidationError, Paper, ProjectId, VertexId,
-    validate_geometric_constraint_document_v1, validate_instruction_timeline,
+    InstructionTimelineValidationError, Paper, ProjectId, ProjectLayerDocumentV1,
+    ProjectLayerDocumentValidationErrorV1, VertexId, validate_geometric_constraint_document_v1,
+    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -46,10 +47,10 @@ pub use ori2::{
     CURRENT_ORI2_CONTAINER_VERSION, MAX_EDITOR_HISTORY_JSON_BYTES, ORI2_CONTAINER_IDENTIFIER,
     ORI2_EDITOR_HISTORY_PATH, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
-    Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
-    read_project_archive_ori2, read_project_archive_ori2_with_limits, read_project_ori2,
-    read_project_ori2_with_limits, write_project_archive_ori2,
+    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH,
+    ORI2_PROJECT_PATH, Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive,
+    Ori2ProjectEntry, read_project_archive_ori2, read_project_archive_ori2_with_limits,
+    read_project_ori2, read_project_ori2_with_limits, write_project_archive_ori2,
     write_project_archive_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use svg::{
@@ -144,6 +145,11 @@ pub struct ProjectDocument {
         skip_serializing_if = "GeometricConstraintDocumentV1::is_empty"
     )]
     pub geometric_constraints: GeometricConstraintDocumentV1,
+    /// Ordered project layers and explicit non-default edge assignments.
+    ///
+    /// The exact default is omitted so legacy V1 JSON remains byte-stable.
+    #[serde(default, skip_serializing_if = "ProjectLayerDocumentV1::is_default")]
+    pub layers: ProjectLayerDocumentV1,
 }
 
 impl ProjectDocument {
@@ -158,6 +164,7 @@ impl ProjectDocument {
             instruction_timeline: InstructionTimeline::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             geometric_constraints: GeometricConstraintDocumentV1::default(),
+            layers: ProjectLayerDocumentV1::default(),
         }
     }
 }
@@ -272,6 +279,8 @@ pub enum FormatError {
     InvalidNumericExpressions,
     #[error("project geometric-constraint metadata is invalid: {0}")]
     InvalidGeometricConstraints(#[from] GeometricConstraintDocumentValidationErrorV1),
+    #[error("project layer metadata is invalid: {0}")]
+    InvalidProjectLayers(#[from] ProjectLayerDocumentValidationErrorV1),
     #[error(
         "cannot validate geometric constraints against {actual} crease-pattern vertices; the hard maximum is {maximum}"
     )]
@@ -308,6 +317,7 @@ fn write_project_json_with_size_limit(
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
     validate_project_geometric_constraints(document)?;
+    validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     let bytes = serde_json::to_vec_pretty(document)?;
     ensure_project_json_size(bytes.len(), requested_limit)?;
     Ok(bytes)
@@ -331,6 +341,7 @@ pub fn read_project_json_with_limits(
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
     validate_project_geometric_constraints(&document)?;
+    validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     Ok(document)
 }
 
@@ -567,9 +578,10 @@ fn valid_numeric_expression_source(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        AssetId, Edge, EdgeId, EdgeKind, FaceId, GeometricConstraintRecordV1,
-        InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
-        InstructionStepId, LengthDisplayUnit, PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
+        AssetId, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1, FaceId,
+        GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
+        InstructionStep, InstructionStepId, LayerContentKindV1, LayerId, LayerRecordV1,
+        LengthDisplayUnit, PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
     };
 
     use super::*;
@@ -1585,6 +1597,81 @@ mod tests {
                 found: 2,
                 latest: 1
             }
+        ));
+    }
+
+    #[test]
+    fn legacy_json_migrates_to_the_fixed_default_layer_without_rewriting_empty_json() {
+        let document = sample_document();
+        let bytes = write_project_json(&document).expect("write default-layer project");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("project JSON");
+        assert!(
+            value.get("layers").is_none(),
+            "the semantic default must preserve legacy canonical JSON"
+        );
+
+        let restored = read_project_json(&bytes).expect("read legacy-compatible project");
+        assert_eq!(restored.layers, ProjectLayerDocumentV1::default());
+
+        let mut legacy = value;
+        legacy
+            .as_object_mut()
+            .expect("project object")
+            .remove("layers");
+        let migrated = read_project_json(&serde_json::to_vec(&legacy).expect("legacy bytes"))
+            .expect("migrate");
+        assert_eq!(migrated.layers, ProjectLayerDocumentV1::default());
+        assert_eq!(
+            write_project_json(&migrated).expect("rewrite migrated project"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn authored_layers_round_trip_and_nested_unknown_or_dangling_data_fail_closed() {
+        let mut document = sample_document();
+        let edge = document.crease_pattern.edges[0].id;
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Details".to_owned(),
+            content_kind: LayerContentKindV1::CreasePattern,
+        };
+        document.layers.layers.push(layer.clone());
+        document
+            .layers
+            .edge_assignments
+            .push(EdgeLayerAssignmentV1 {
+                edge,
+                layer: layer.id,
+            });
+
+        let bytes = write_project_json(&document).expect("write authored layers");
+        assert_eq!(
+            read_project_json(&bytes).expect("read authored layers"),
+            document
+        );
+
+        let mut unknown: serde_json::Value = serde_json::from_slice(&bytes).expect("project JSON");
+        unknown["layers"]["unexpected"] = serde_json::json!(true);
+        assert!(matches!(
+            read_project_json(&serde_json::to_vec(&unknown).expect("unknown-field bytes")),
+            Err(FormatError::InvalidJson(_))
+        ));
+
+        let mut dangling = document.clone();
+        dangling.layers.edge_assignments[0].edge = EdgeId::new();
+        assert!(matches!(
+            write_project_json(&dangling),
+            Err(FormatError::InvalidProjectLayers(
+                ProjectLayerDocumentValidationErrorV1::MissingAssignedEdge { .. }
+            ))
+        ));
+        let dangling_bytes = serde_json::to_vec(&dangling).expect("raw dangling JSON");
+        assert!(matches!(
+            read_project_json(&dangling_bytes),
+            Err(FormatError::InvalidProjectLayers(
+                ProjectLayerDocumentValidationErrorV1::MissingAssignedEdge { .. }
+            ))
         ));
     }
 }

@@ -30,6 +30,14 @@ import {
   type GeometricConstraintPreflightResultV1,
   type GeometricConstraintRecordV1,
 } from './geometricConstraints.ts'
+import type { ProjectLayerDocumentV1 } from './projectLayers.ts'
+
+export type {
+  EdgeLayerAssignmentV1,
+  LayerContentKindV1,
+  LayerRecordV1,
+  ProjectLayerDocumentV1,
+} from './projectLayers.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -95,6 +103,7 @@ export type ProjectSnapshot = {
   cutting_allowed: boolean
   instruction_timeline: InstructionTimeline
   geometric_constraints?: GeometricConstraintDocument
+  project_layers: ProjectLayerDocumentV1
   numeric_expressions?: {
     rectangular_paper_creation?: {
       schema_version: 1

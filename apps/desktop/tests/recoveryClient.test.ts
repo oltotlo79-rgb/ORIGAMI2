@@ -249,6 +249,29 @@ test('restore rejects identity, fresh-editor, envelope, and nested DTO drift', (
         future: true,
       },
     }),
+    validSnapshot({
+      project_layers: {
+        ...validSnapshot().project_layers,
+        future: true,
+      },
+    }),
+    validSnapshot({
+      project_layers: {
+        schema_version: 1,
+        layers: [
+          ...validSnapshot().project_layers.layers,
+          {
+            id: '10000000-0000-4000-8000-000000000001',
+            name: 'Details',
+            content_kind: 'crease_pattern',
+          },
+        ],
+        edge_assignments: [{
+          edge: RECOVERY_ID,
+          layer: '10000000-0000-4000-8000-000000000001',
+        }],
+      },
+    }),
   ]) {
     assert.equal(
       parseRestoredRecoverySnapshot(invalid, AVAILABLE, EXPECTED),
@@ -1027,6 +1050,15 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
     geometric_constraints: {
       schema_version: 1,
       constraints: [],
+    },
+    project_layers: {
+      schema_version: 1,
+      layers: [{
+        id: '00000000-0000-4000-8000-000000000001',
+        name: 'Crease Pattern',
+        content_kind: 'crease_pattern',
+      }],
+      edge_assignments: [],
     },
     fold_model_fingerprint: 'a'.repeat(64),
     can_undo: false,

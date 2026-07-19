@@ -6,12 +6,15 @@ use crate::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 use ori_domain::{
-    ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
-    GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
-    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionPose, InstructionStep,
-    InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, LengthDisplayUnit,
-    Paper, Point2, RgbaColor, Vertex, VertexId, validate_geometric_constraint_document_v1,
-    validate_instruction_timeline,
+    ConstraintId, CreasePattern, DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind,
+    EdgeLayerAssignmentV1, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
+    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
+    GeometricConstraintRecordV1, InstructionPose, InstructionStep, InstructionStepId,
+    InstructionTimeline, InstructionTimelineValidationError, LayerId, LayerRecordV1,
+    LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2,
+    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, RgbaColor, Vertex, VertexId,
+    validate_geometric_constraint_document_v1, validate_instruction_timeline,
+    validate_project_layer_document_against_pattern_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -156,6 +159,25 @@ pub enum Command {
     MoveInstructionStep {
         step_id: InstructionStepId,
         target_index: usize,
+    },
+    CreateLayer {
+        layer: LayerRecordV1,
+        target_index: usize,
+    },
+    RenameLayer {
+        layer: LayerId,
+        name: String,
+    },
+    MoveLayer {
+        layer: LayerId,
+        target_index: usize,
+    },
+    DeleteLayer {
+        layer: LayerId,
+    },
+    AssignEdgeToLayer {
+        edge: EdgeId,
+        layer: LayerId,
     },
 }
 
@@ -436,6 +458,31 @@ pub enum CommandError {
     GeometricConstraintAlreadyExists(ConstraintId),
     #[error("geometric constraint {0:?} was not found")]
     GeometricConstraintNotFound(ConstraintId),
+    #[error("invalid project-layer document: {0}")]
+    ProjectLayerDocumentInvalid(#[from] ProjectLayerDocumentValidationErrorV1),
+    #[error("project layer {0:?} already exists")]
+    LayerAlreadyExists(LayerId),
+    #[error("project layer {0:?} was not found")]
+    LayerNotFound(LayerId),
+    #[error("the reserved default project layer cannot be deleted")]
+    DefaultLayerDeletionForbidden,
+    #[error("layer target index {target_index} is out of bounds for {layer_count} layers")]
+    LayerTargetIndexOutOfBounds {
+        target_index: usize,
+        layer_count: usize,
+    },
+    #[error("edge {edge:?} has more than one record and cannot be assigned unambiguously")]
+    LayerAssignmentEdgeIdAmbiguous { edge: EdgeId },
+    #[error(
+        "edge-layer assignment count would exceed the hard maximum {maximum}; current {current}, added {added}"
+    )]
+    TooManyLayerEdgeAssignments {
+        current: usize,
+        added: usize,
+        maximum: usize,
+    },
+    #[error("edge {edge:?} does not have the exact layer assignment required by history")]
+    LayerHistoryAssignmentMismatch { edge: EdgeId },
     #[error(
         "geometric constraint {constraint:?} must be removed before changing referenced geometry"
     )]
@@ -530,6 +577,7 @@ enum Inverse {
     RestoreEdge {
         index: usize,
         edge: Edge,
+        layer_assignment: Option<(usize, EdgeLayerAssignmentV1)>,
     },
     RestorePaperProperties {
         thickness_mm: f64,
@@ -551,6 +599,7 @@ enum Inverse {
         new_vertex: Vertex,
         new_edge_index: usize,
         new_edge: Edge,
+        new_edge_assignment: Option<EdgeLayerAssignmentV1>,
     },
     RestoreEdgeSplit {
         original_edge_index: usize,
@@ -559,12 +608,14 @@ enum Inverse {
         new_vertex: Vertex,
         new_edge_index: usize,
         new_edge: Edge,
+        new_edge_assignment: Option<EdgeLayerAssignmentV1>,
     },
     RestoreEdgeIntersection {
         original_edges: [(usize, Edge); 2],
         new_edges: [(usize, Edge); 2],
         new_vertex_index: usize,
         new_vertex: Vertex,
+        new_edge_assignments: Vec<EdgeLayerAssignmentV1>,
     },
     RestoreTJunction {
         original_edge_index: usize,
@@ -574,6 +625,7 @@ enum Inverse {
         boundary_vertices: Option<Vec<VertexId>>,
         changed_vertices: [VertexId; 4],
         changed_edges: [EdgeId; 3],
+        new_edge_assignment: Option<EdgeLayerAssignmentV1>,
     },
     RestoreIntersectionCluster {
         original_boundary_vertices: Option<Vec<VertexId>>,
@@ -583,6 +635,7 @@ enum Inverse {
         junction_vertex: VertexId,
         changed_vertices: Vec<VertexId>,
         changed_edges: Vec<EdgeId>,
+        new_edge_assignments: Vec<EdgeLayerAssignmentV1>,
     },
     RestoreBoundaryVertexRemoval {
         boundary_index: usize,
@@ -594,6 +647,7 @@ enum Inverse {
         removed_edge: Edge,
         previous_vertex: VertexId,
         next_vertex: VertexId,
+        removed_edge_assignment: Option<(usize, EdgeLayerAssignmentV1)>,
     },
     RemoveAddedGeometricConstraint {
         id: ConstraintId,
@@ -623,6 +677,11 @@ enum Inverse {
     RestoreInstructionStepOrder {
         step_id: InstructionStepId,
         previous_index: usize,
+    },
+    RestoreDeletedLayer {
+        index: usize,
+        layer: LayerRecordV1,
+        assignments: Vec<(usize, EdgeLayerAssignmentV1)>,
     },
 }
 
@@ -1387,6 +1446,7 @@ pub struct EditorState {
     paper: Paper,
     geometric_constraints: GeometricConstraintDocumentV1,
     instruction_timeline: InstructionTimeline,
+    project_layers: ProjectLayerDocumentV1,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
     revision: Revision,
@@ -1407,7 +1467,7 @@ impl EditorState {
     /// histories. Loading persisted paper data therefore cannot be undone as an
     /// editing operation.
     #[must_use]
-    pub const fn with_paper(pattern: CreasePattern, paper: Paper) -> Self {
+    pub fn with_paper(pattern: CreasePattern, paper: Paper) -> Self {
         Self::with_document_parts(pattern, paper, InstructionTimeline { steps: Vec::new() })
     }
 
@@ -1417,7 +1477,7 @@ impl EditorState {
     /// histories. Validation remains an explicit admission step so callers can
     /// inspect or repair documents created by an older version.
     #[must_use]
-    pub const fn with_document_parts(
+    pub fn with_document_parts(
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
@@ -1440,17 +1500,39 @@ impl EditorState {
     /// zero and empty history. Admission remains explicit at the persistence
     /// boundary so repairable legacy geometry is not silently rewritten here.
     #[must_use]
-    pub const fn with_document_parts_and_constraints(
+    pub fn with_document_parts_and_constraints(
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         geometric_constraints: GeometricConstraintDocumentV1,
+    ) -> Self {
+        Self::with_document_parts_constraints_and_layers(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            ProjectLayerDocumentV1::default(),
+        )
+    }
+
+    /// Restores every persisted document part managed by the editor.
+    ///
+    /// As with the compatibility constructors, loading starts at revision zero
+    /// with empty history and does not silently rewrite unchecked data.
+    #[must_use]
+    pub const fn with_document_parts_constraints_and_layers(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
     ) -> Self {
         Self {
             pattern,
             paper,
             geometric_constraints,
             instruction_timeline,
+            project_layers,
             current_applied_pose: None,
             revision: 0,
             undo_stack: Vec::new(),
@@ -1482,6 +1564,11 @@ impl EditorState {
     #[must_use]
     pub const fn geometric_constraints(&self) -> &GeometricConstraintDocumentV1 {
         &self.geometric_constraints
+    }
+
+    #[must_use]
+    pub const fn project_layers(&self) -> &ProjectLayerDocumentV1 {
+        &self.project_layers
     }
 
     /// Returns the non-persisted semantic pose currently shown as applied.
@@ -1637,6 +1724,7 @@ impl EditorState {
 
     fn apply(&mut self, command: &Command) -> Result<Inverse, CommandError> {
         self.ensure_geometric_constraint_resource_admission(command)?;
+        self.ensure_project_layer_resource_admission(command)?;
         self.ensure_geometric_constraints_allow(command)?;
         match *command {
             Command::AddVertex { id, position } => {
@@ -1714,7 +1802,12 @@ impl EditorState {
                     return Err(CommandError::BoundaryEdgeRequiresSheetOperation(id));
                 }
                 let edge = self.pattern.edges.remove(index);
-                Ok(Inverse::RestoreEdge { index, edge })
+                let layer_assignment = self.remove_explicit_layer_assignment(id);
+                Ok(Inverse::RestoreEdge {
+                    index,
+                    edge,
+                    layer_assignment,
+                })
             }
             Command::SetCuttingAllowed { allowed } => {
                 self.ensure_cutting_can_be_set(allowed)?;
@@ -1918,6 +2011,142 @@ impl EditorState {
                     previous_index: index,
                 })
             }
+            Command::CreateLayer {
+                ref layer,
+                target_index,
+            } => {
+                if self
+                    .project_layers
+                    .layers
+                    .iter()
+                    .any(|candidate| candidate.id == layer.id)
+                {
+                    return Err(CommandError::LayerAlreadyExists(layer.id));
+                }
+                if target_index > self.project_layers.layers.len() {
+                    return Err(CommandError::LayerTargetIndexOutOfBounds {
+                        target_index,
+                        layer_count: self.project_layers.layers.len(),
+                    });
+                }
+                let mut candidate = self.project_layers.clone();
+                candidate.layers.insert(target_index, layer.clone());
+                self.commit_project_layers(candidate)?;
+                Ok(Inverse::Command(Command::DeleteLayer { layer: layer.id }))
+            }
+            Command::RenameLayer { layer, ref name } => {
+                let mut candidate = self.project_layers.clone();
+                let record = candidate
+                    .layers
+                    .iter_mut()
+                    .find(|record| record.id == layer)
+                    .ok_or(CommandError::LayerNotFound(layer))?;
+                let previous = std::mem::replace(&mut record.name, name.clone());
+                self.commit_project_layers(candidate)?;
+                Ok(Inverse::Command(Command::RenameLayer {
+                    layer,
+                    name: previous,
+                }))
+            }
+            Command::MoveLayer {
+                layer,
+                target_index,
+            } => {
+                let mut candidate = self.project_layers.clone();
+                let previous_index = candidate
+                    .layers
+                    .iter()
+                    .position(|record| record.id == layer)
+                    .ok_or(CommandError::LayerNotFound(layer))?;
+                if target_index >= candidate.layers.len() {
+                    return Err(CommandError::LayerTargetIndexOutOfBounds {
+                        target_index,
+                        layer_count: candidate.layers.len(),
+                    });
+                }
+                let record = candidate.layers.remove(previous_index);
+                candidate.layers.insert(target_index, record);
+                self.commit_project_layers(candidate)?;
+                Ok(Inverse::Command(Command::MoveLayer {
+                    layer,
+                    target_index: previous_index,
+                }))
+            }
+            Command::DeleteLayer { layer } => {
+                if layer == DEFAULT_PROJECT_LAYER_ID {
+                    return Err(CommandError::DefaultLayerDeletionForbidden);
+                }
+                let mut candidate = self.project_layers.clone();
+                let index = candidate
+                    .layers
+                    .iter()
+                    .position(|record| record.id == layer)
+                    .ok_or(CommandError::LayerNotFound(layer))?;
+                let record = candidate.layers.remove(index);
+                let assignments = candidate
+                    .edge_assignments
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(_, assignment)| assignment.layer == layer)
+                    .collect::<Vec<_>>();
+                candidate
+                    .edge_assignments
+                    .retain(|assignment| assignment.layer != layer);
+                self.commit_project_layers(candidate)?;
+                Ok(Inverse::RestoreDeletedLayer {
+                    index,
+                    layer: record,
+                    assignments,
+                })
+            }
+            Command::AssignEdgeToLayer { edge, layer } => {
+                let mut edge_records = self.pattern.edges.iter().filter(|record| record.id == edge);
+                if edge_records.next().is_none() {
+                    return Err(CommandError::EdgeNotFound(edge));
+                }
+                if edge_records.next().is_some() {
+                    return Err(CommandError::LayerAssignmentEdgeIdAmbiguous { edge });
+                }
+                if !self
+                    .project_layers
+                    .layers
+                    .iter()
+                    .any(|record| record.id == layer)
+                {
+                    return Err(CommandError::LayerNotFound(layer));
+                }
+
+                let mut candidate = self.project_layers.clone();
+                let key = edge.canonical_bytes();
+                let assignment_index = candidate
+                    .edge_assignments
+                    .binary_search_by_key(&key, |assignment| assignment.edge.canonical_bytes());
+                let previous_layer = match assignment_index {
+                    Ok(index) => candidate.edge_assignments[index].layer,
+                    Err(_) => DEFAULT_PROJECT_LAYER_ID,
+                };
+                match (assignment_index, layer == DEFAULT_PROJECT_LAYER_ID) {
+                    (Ok(index), true) => {
+                        candidate.edge_assignments.remove(index);
+                    }
+                    (Ok(index), false) => {
+                        candidate.edge_assignments[index].layer = layer;
+                    }
+                    (Err(_), true) => {}
+                    (Err(index), false) => {
+                        self.ensure_layer_assignment_capacity(1)?;
+                        candidate
+                            .edge_assignments
+                            .insert(index, EdgeLayerAssignmentV1 { edge, layer });
+                    }
+                }
+                self.commit_project_layers(candidate)?;
+                Ok(Inverse::Command(Command::AssignEdgeToLayer {
+                    edge,
+                    layer: previous_layer,
+                }))
+            }
         }
     }
 
@@ -1927,6 +2156,120 @@ impl EditorState {
     ) -> Result<(), CommandError> {
         validate_instruction_timeline(&candidate)?;
         self.instruction_timeline = candidate;
+        Ok(())
+    }
+
+    fn commit_project_layers(
+        &mut self,
+        candidate: ProjectLayerDocumentV1,
+    ) -> Result<(), CommandError> {
+        validate_project_layer_document_against_pattern_v1(&candidate, &self.pattern)?;
+        self.project_layers = candidate;
+        Ok(())
+    }
+
+    fn ensure_layer_assignment_capacity(&self, added: usize) -> Result<(), CommandError> {
+        let current = self.project_layers.edge_assignments.len();
+        if current
+            .checked_add(added)
+            .is_none_or(|total| total > MAX_LAYER_EDGE_ASSIGNMENTS)
+        {
+            Err(CommandError::TooManyLayerEdgeAssignments {
+                current,
+                added,
+                maximum: MAX_LAYER_EDGE_ASSIGNMENTS,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_project_layer_resource_admission(
+        &self,
+        command: &Command,
+    ) -> Result<(), CommandError> {
+        if self.project_layers.edge_assignments.is_empty() {
+            return Ok(());
+        }
+        let added_edges = command
+            .geometric_resource_growth()?
+            .map_or(0, |(_, added_edges)| added_edges);
+        if added_edges == 0 {
+            return Ok(());
+        }
+        let actual = self.pattern.edges.len().saturating_add(added_edges);
+        if actual > MAX_PROJECT_LAYER_INDEX_EDGES {
+            Err(CommandError::ProjectLayerDocumentInvalid(
+                ProjectLayerDocumentValidationErrorV1::TooManyPatternEdges {
+                    actual,
+                    maximum: MAX_PROJECT_LAYER_INDEX_EDGES,
+                },
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn explicit_layer_assignment(&self, edge: EdgeId) -> Option<(usize, EdgeLayerAssignmentV1)> {
+        let key = edge.canonical_bytes();
+        self.project_layers
+            .edge_assignments
+            .binary_search_by_key(&key, |assignment| assignment.edge.canonical_bytes())
+            .ok()
+            .map(|index| (index, self.project_layers.edge_assignments[index]))
+    }
+
+    fn inherited_layer_assignment(
+        &self,
+        source_edge: EdgeId,
+        new_edge: EdgeId,
+    ) -> Option<EdgeLayerAssignmentV1> {
+        self.explicit_layer_assignment(source_edge)
+            .map(|(_, assignment)| EdgeLayerAssignmentV1 {
+                edge: new_edge,
+                layer: assignment.layer,
+            })
+    }
+
+    fn insert_explicit_layer_assignment(&mut self, assignment: EdgeLayerAssignmentV1) {
+        let key = assignment.edge.canonical_bytes();
+        let index = self
+            .project_layers
+            .edge_assignments
+            .binary_search_by_key(&key, |candidate| candidate.edge.canonical_bytes())
+            .expect_err("a generated edge cannot already have a layer assignment");
+        self.project_layers
+            .edge_assignments
+            .insert(index, assignment);
+    }
+
+    fn remove_explicit_layer_assignment(
+        &mut self,
+        edge: EdgeId,
+    ) -> Option<(usize, EdgeLayerAssignmentV1)> {
+        let (index, assignment) = self.explicit_layer_assignment(edge)?;
+        self.project_layers.edge_assignments.remove(index);
+        Some((index, assignment))
+    }
+
+    fn remove_expected_layer_assignment(
+        &mut self,
+        expected: Option<EdgeLayerAssignmentV1>,
+    ) -> Result<(), CommandError> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let Some((index, actual)) = self.explicit_layer_assignment(expected.edge) else {
+            return Err(CommandError::LayerHistoryAssignmentMismatch {
+                edge: expected.edge,
+            });
+        };
+        if actual != expected {
+            return Err(CommandError::LayerHistoryAssignmentMismatch {
+                edge: expected.edge,
+            });
+        }
+        self.project_layers.edge_assignments.remove(index);
         Ok(())
     }
 
@@ -2084,7 +2427,12 @@ impl EditorState {
             | Command::UpdateInstructionStepMetadata { .. }
             | Command::ReplaceInstructionStepPose { .. }
             | Command::RemoveInstructionStep { .. }
-            | Command::MoveInstructionStep { .. } => {}
+            | Command::MoveInstructionStep { .. }
+            | Command::CreateLayer { .. }
+            | Command::RenameLayer { .. }
+            | Command::MoveLayer { .. }
+            | Command::DeleteLayer { .. }
+            | Command::AssignEdgeToLayer { .. } => {}
         }
         Ok(targets)
     }
@@ -2237,6 +2585,7 @@ impl EditorState {
             }
         }
 
+        let removed_edge_assignment = self.explicit_layer_assignment(removed_edge.id);
         apply_boundary_vertex_removal(
             &mut self.pattern,
             &mut self.paper,
@@ -2246,6 +2595,11 @@ impl EditorState {
             removed_edge_index,
             &merged_edge,
         );
+        if let Some((assignment_index, _)) = removed_edge_assignment {
+            self.project_layers
+                .edge_assignments
+                .remove(assignment_index);
+        }
 
         Ok(Inverse::RestoreBoundaryVertexRemoval {
             boundary_index,
@@ -2257,6 +2611,7 @@ impl EditorState {
             removed_edge,
             previous_vertex,
             next_vertex,
+            removed_edge_assignment,
         })
     }
 
@@ -2384,10 +2739,15 @@ impl EditorState {
             end: original_edge.end,
             kind: original_edge.kind,
         };
+        let new_edge_assignment = self.inherited_layer_assignment(original_edge.id, new_edge_id);
+        self.ensure_layer_assignment_capacity(usize::from(new_edge_assignment.is_some()))?;
 
         self.pattern.vertices.push(new_vertex.clone());
         self.pattern.edges[original_edge_index].end = new_vertex_id;
         self.pattern.edges.insert(new_edge_index, new_edge.clone());
+        if let Some(assignment) = new_edge_assignment {
+            self.insert_explicit_layer_assignment(assignment);
+        }
 
         Ok(Inverse::RestoreEdgeSplit {
             original_edge_index,
@@ -2396,6 +2756,7 @@ impl EditorState {
             new_vertex,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
         })
     }
 
@@ -2543,6 +2904,15 @@ impl EditorState {
                 kind: splits[1].1.kind,
             },
         ];
+        let mut new_edge_assignments = [
+            self.inherited_layer_assignment(first_edge_id, first_new_edge_id),
+            self.inherited_layer_assignment(second_edge_id, second_new_edge_id),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        new_edge_assignments.sort_unstable_by_key(|assignment| assignment.edge.canonical_bytes());
+        self.ensure_layer_assignment_capacity(new_edge_assignments.len())?;
 
         self.pattern.vertices.push(new_vertex.clone());
         self.pattern.edges[splits[0].0].end = new_vertex_id;
@@ -2553,6 +2923,9 @@ impl EditorState {
         self.pattern
             .edges
             .insert(splits[0].0 + 1, created_edges[0].clone());
+        for assignment in &new_edge_assignments {
+            self.insert_explicit_layer_assignment(*assignment);
+        }
 
         Ok(Inverse::RestoreEdgeIntersection {
             original_edges,
@@ -2562,6 +2935,7 @@ impl EditorState {
             ],
             new_vertex_index,
             new_vertex,
+            new_edge_assignments,
         })
     }
 
@@ -2775,6 +3149,8 @@ impl EditorState {
             end: original_edge.end,
             kind: original_edge.kind,
         };
+        let new_edge_assignment = self.inherited_layer_assignment(original_edge.id, new_edge_id);
+        self.ensure_layer_assignment_capacity(usize::from(new_edge_assignment.is_some()))?;
 
         if let Some((boundary_index, _)) = &boundary_change {
             self.paper
@@ -2783,6 +3159,9 @@ impl EditorState {
         }
         self.pattern.edges[original_edge_index].end = *junction_vertex;
         self.pattern.edges.insert(new_edge_index, new_edge.clone());
+        if let Some(assignment) = new_edge_assignment {
+            self.insert_explicit_layer_assignment(assignment);
+        }
 
         Ok(Inverse::RestoreTJunction {
             original_edge_index,
@@ -2792,6 +3171,7 @@ impl EditorState {
             boundary_vertices: boundary_change.map(|(_, boundary_vertices)| boundary_vertices),
             changed_vertices,
             changed_edges,
+            new_edge_assignment,
         })
     }
 
@@ -2828,6 +3208,14 @@ impl EditorState {
                 (*original_index + lower_split_count + 1, edge.clone())
             })
             .collect::<Vec<_>>();
+        let mut new_edge_assignments = split_edges
+            .iter()
+            .filter_map(|(_, source, new_edge)| {
+                self.inherited_layer_assignment(source.id, new_edge.id)
+            })
+            .collect::<Vec<_>>();
+        new_edge_assignments.sort_unstable_by_key(|assignment| assignment.edge.canonical_bytes());
+        self.ensure_layer_assignment_capacity(new_edge_assignments.len())?;
         let created_vertex = if plan.create_vertex {
             Some((self.pattern.vertices.len(), plan.junction_vertex.clone()))
         } else {
@@ -2843,6 +3231,9 @@ impl EditorState {
                 .edges
                 .insert(*original_index + 1, new_edge.clone());
         }
+        for assignment in &new_edge_assignments {
+            self.insert_explicit_layer_assignment(*assignment);
+        }
 
         Ok(Inverse::RestoreIntersectionCluster {
             original_boundary_vertices: None,
@@ -2852,6 +3243,7 @@ impl EditorState {
             junction_vertex: junction_id,
             changed_vertices: plan.changed_vertices,
             changed_edges: plan.changed_edges,
+            new_edge_assignments,
         })
     }
 
@@ -2974,6 +3366,8 @@ impl EditorState {
             end: original_edge.end,
             kind: EdgeKind::Boundary,
         };
+        let new_edge_assignment = self.inherited_layer_assignment(original_edge.id, new_edge_id);
+        self.ensure_layer_assignment_capacity(usize::from(new_edge_assignment.is_some()))?;
 
         self.paper
             .boundary_vertices
@@ -2981,6 +3375,9 @@ impl EditorState {
         self.pattern.vertices.push(new_vertex.clone());
         self.pattern.edges[original_edge_index].end = new_vertex_id;
         self.pattern.edges.insert(new_edge_index, new_edge.clone());
+        if let Some(assignment) = new_edge_assignment {
+            self.insert_explicit_layer_assignment(assignment);
+        }
 
         Ok(Inverse::RestoreBoundarySplit {
             boundary_vertices,
@@ -2990,6 +3387,7 @@ impl EditorState {
             new_vertex,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
         })
     }
 
@@ -3440,10 +3838,20 @@ impl EditorState {
                 debug_assert!(*index <= self.pattern.vertices.len());
                 self.pattern.vertices.insert(*index, vertex.clone());
             }
-            Inverse::RestoreEdge { index, edge } => {
+            Inverse::RestoreEdge {
+                index,
+                edge,
+                layer_assignment,
+            } => {
                 debug_assert!(self.edge_index(edge.id).is_none());
                 debug_assert!(*index <= self.pattern.edges.len());
                 self.pattern.edges.insert(*index, edge.clone());
+                if let Some((assignment_index, assignment)) = layer_assignment {
+                    debug_assert!(*assignment_index <= self.project_layers.edge_assignments.len());
+                    self.project_layers
+                        .edge_assignments
+                        .insert(*assignment_index, *assignment);
+                }
             }
             Inverse::RestorePaperProperties {
                 thickness_mm,
@@ -3476,7 +3884,9 @@ impl EditorState {
                 new_vertex,
                 new_edge_index,
                 new_edge,
+                new_edge_assignment,
             } => {
+                self.remove_expected_layer_assignment(*new_edge_assignment)?;
                 debug_assert_eq!(
                     self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
                     Some(new_edge.id)
@@ -3507,7 +3917,9 @@ impl EditorState {
                 new_vertex,
                 new_edge_index,
                 new_edge,
+                new_edge_assignment,
             } => {
+                self.remove_expected_layer_assignment(*new_edge_assignment)?;
                 debug_assert_eq!(
                     self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
                     Some(new_edge.id)
@@ -3535,7 +3947,11 @@ impl EditorState {
                 new_edges,
                 new_vertex_index,
                 new_vertex,
+                new_edge_assignments,
             } => {
+                for assignment in new_edge_assignments {
+                    self.remove_expected_layer_assignment(Some(*assignment))?;
+                }
                 for (new_edge_index, new_edge) in new_edges.iter().rev() {
                     debug_assert_eq!(
                         self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
@@ -3568,8 +3984,10 @@ impl EditorState {
                 new_edge_index,
                 new_edge,
                 boundary_vertices,
+                new_edge_assignment,
                 ..
             } => {
+                self.remove_expected_layer_assignment(*new_edge_assignment)?;
                 debug_assert_eq!(
                     self.pattern.edges.get(*new_edge_index).map(|edge| edge.id),
                     Some(new_edge.id)
@@ -3593,8 +4011,12 @@ impl EditorState {
                 inserted_edges,
                 created_vertex,
                 junction_vertex,
+                new_edge_assignments,
                 ..
             } => {
+                for assignment in new_edge_assignments {
+                    self.remove_expected_layer_assignment(Some(*assignment))?;
+                }
                 debug_assert!(
                     self.pattern
                         .vertices
@@ -3637,6 +4059,7 @@ impl EditorState {
                 kept_edge,
                 removed_edge_index,
                 removed_edge,
+                removed_edge_assignment,
                 ..
             } => {
                 let current_kept_index = if removed_edge_index < kept_edge_index {
@@ -3659,6 +4082,12 @@ impl EditorState {
                 self.paper
                     .boundary_vertices
                     .insert(*boundary_index, vertex.id);
+                if let Some((assignment_index, assignment)) = removed_edge_assignment {
+                    debug_assert!(*assignment_index <= self.project_layers.edge_assignments.len());
+                    self.project_layers
+                        .edge_assignments
+                        .insert(*assignment_index, *assignment);
+                }
             }
             Inverse::RemoveAddedGeometricConstraint { id } => {
                 let index = self
@@ -3761,6 +4190,34 @@ impl EditorState {
                 candidate.steps.insert(*previous_index, step);
                 self.commit_instruction_timeline(candidate)?;
             }
+            Inverse::RestoreDeletedLayer {
+                index,
+                layer,
+                assignments,
+            } => {
+                let mut candidate = self.project_layers.clone();
+                if *index > candidate.layers.len() {
+                    return Err(CommandError::LayerTargetIndexOutOfBounds {
+                        target_index: *index,
+                        layer_count: candidate.layers.len().saturating_add(1),
+                    });
+                }
+                if candidate.layers.iter().any(|record| record.id == layer.id) {
+                    return Err(CommandError::LayerAlreadyExists(layer.id));
+                }
+                candidate.layers.insert(*index, layer.clone());
+                for (assignment_index, assignment) in assignments {
+                    if *assignment_index > candidate.edge_assignments.len() {
+                        return Err(CommandError::LayerHistoryAssignmentMismatch {
+                            edge: assignment.edge,
+                        });
+                    }
+                    candidate
+                        .edge_assignments
+                        .insert(*assignment_index, *assignment);
+                }
+                self.commit_project_layers(candidate)?;
+            }
         }
         Ok(())
     }
@@ -3856,7 +4313,12 @@ impl Command {
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
-            | Self::MoveInstructionStep { .. } => return Ok(None),
+            | Self::MoveInstructionStep { .. }
+            | Self::CreateLayer { .. }
+            | Self::RenameLayer { .. }
+            | Self::MoveLayer { .. }
+            | Self::DeleteLayer { .. }
+            | Self::AssignEdgeToLayer { .. } => return Ok(None),
         };
         Ok(Some(growth))
     }
@@ -3890,7 +4352,12 @@ impl Command {
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
-            | Self::MoveInstructionStep { .. } => false,
+            | Self::MoveInstructionStep { .. }
+            | Self::CreateLayer { .. }
+            | Self::RenameLayer { .. }
+            | Self::MoveLayer { .. }
+            | Self::DeleteLayer { .. }
+            | Self::AssignEdgeToLayer { .. } => false,
         }
     }
 
@@ -4109,6 +4576,18 @@ impl Command {
                 instructions: true,
                 constraints: false,
             },
+            Self::CreateLayer { .. }
+            | Self::RenameLayer { .. }
+            | Self::MoveLayer { .. }
+            | Self::DeleteLayer { .. } => Changes {
+                settings: true,
+                ..Changes::default()
+            },
+            Self::AssignEdgeToLayer { edge, .. } => Changes {
+                edges: vec![edge],
+                settings: true,
+                ..Changes::default()
+            },
         }
     }
 }
@@ -4254,6 +4733,14 @@ impl Inverse {
                 instructions: true,
                 constraints: false,
             },
+            Self::RestoreDeletedLayer { assignments, .. } => Changes {
+                edges: assignments
+                    .iter()
+                    .map(|(_, assignment)| assignment.edge)
+                    .collect(),
+                settings: true,
+                ..Changes::default()
+            },
         }
     }
 }
@@ -4268,6 +4755,7 @@ mod tests {
         paper: Paper,
         geometric_constraints: GeometricConstraintDocumentV1,
         instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
         current_applied_pose: Option<crate::AppliedPoseV1>,
         revision: Revision,
         history_entry_limit: usize,
@@ -4281,6 +4769,7 @@ mod tests {
             paper: editor.paper.clone(),
             geometric_constraints: editor.geometric_constraints.clone(),
             instruction_timeline: editor.instruction_timeline.clone(),
+            project_layers: editor.project_layers.clone(),
             current_applied_pose: editor.current_applied_pose.clone(),
             revision: editor.revision,
             history_entry_limit: editor.history_entry_limit(),
@@ -14158,5 +14647,718 @@ mod tests {
             edge_visits + constraint_visits,
             DEFAULT_MAX_CONSTRAINT_EDGES + ori_domain::DEFAULT_MAX_CONSTRAINT_RECORDS
         );
+    }
+
+    fn test_layer(name: &str) -> LayerRecordV1 {
+        LayerRecordV1 {
+            id: LayerId::new(),
+            name: name.to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+        }
+    }
+
+    fn editor_with_test_layers(
+        pattern: CreasePattern,
+        paper: Paper,
+        layers: Vec<LayerRecordV1>,
+        assignments: Vec<(EdgeId, LayerId)>,
+    ) -> EditorState {
+        let mut project_layers = ProjectLayerDocumentV1::default();
+        project_layers.layers.extend(layers);
+        project_layers.edge_assignments = assignments
+            .into_iter()
+            .map(|(edge, layer)| EdgeLayerAssignmentV1 { edge, layer })
+            .collect();
+        project_layers
+            .edge_assignments
+            .sort_unstable_by_key(|assignment| assignment.edge.canonical_bytes());
+        validate_project_layer_document_against_pattern_v1(&project_layers, &pattern)
+            .expect("valid test layer document");
+        EditorState::with_document_parts_constraints_and_layers(
+            pattern,
+            paper,
+            InstructionTimeline::default(),
+            GeometricConstraintDocumentV1::default(),
+            project_layers,
+        )
+    }
+
+    #[test]
+    fn layer_crud_assignment_and_complete_history_are_atomic_and_fingerprint_neutral() {
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: second,
+                    position: Point2::new(10.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: edge,
+                start: first,
+                end: second,
+                kind: EdgeKind::Mountain,
+            }],
+        };
+        let mut editor = EditorState::new(pattern);
+        let initial_layers = editor.project_layers().clone();
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let crease = test_layer("Details");
+        let annotation = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Notes".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::Annotation,
+        };
+
+        editor
+            .execute(
+                0,
+                Command::CreateLayer {
+                    layer: crease.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create crease layer");
+        editor
+            .execute(
+                1,
+                Command::RenameLayer {
+                    layer: crease.id,
+                    name: "Fine details".to_owned(),
+                },
+            )
+            .expect("rename layer");
+        editor
+            .execute(
+                2,
+                Command::CreateLayer {
+                    layer: annotation.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create annotation layer");
+        editor
+            .execute(
+                3,
+                Command::MoveLayer {
+                    layer: crease.id,
+                    target_index: 0,
+                },
+            )
+            .expect("reorder layer");
+        editor
+            .execute(
+                4,
+                Command::AssignEdgeToLayer {
+                    edge,
+                    layer: crease.id,
+                },
+            )
+            .expect("assign edge");
+        assert_eq!(editor.project_layers().layer_for_edge(edge), crease.id);
+        assert_eq!(editor.fold_model_fingerprint_v1(), fingerprint);
+
+        let before_failure = editor_state_snapshot(&editor);
+        assert!(matches!(
+            editor.execute(
+                5,
+                Command::AssignEdgeToLayer {
+                    edge,
+                    layer: annotation.id,
+                },
+            ),
+            Err(CommandError::ProjectLayerDocumentInvalid(
+                ProjectLayerDocumentValidationErrorV1::AssignmentLayerWrongContentKind { .. }
+            ))
+        ));
+        assert_eq!(editor_state_snapshot(&editor), before_failure);
+        assert_eq!(
+            editor.execute(
+                5,
+                Command::DeleteLayer {
+                    layer: DEFAULT_PROJECT_LAYER_ID,
+                },
+            ),
+            Err(CommandError::DefaultLayerDeletionForbidden)
+        );
+        assert_eq!(editor_state_snapshot(&editor), before_failure);
+
+        editor
+            .execute(5, Command::DeleteLayer { layer: crease.id })
+            .expect("delete assigned layer");
+        assert_eq!(
+            editor.project_layers().layer_for_edge(edge),
+            DEFAULT_PROJECT_LAYER_ID
+        );
+        let final_layers = editor.project_layers().clone();
+
+        for revision in 6..12 {
+            editor.undo(revision).expect("undo complete layer history");
+        }
+        assert_eq!(editor.project_layers(), &initial_layers);
+        assert_eq!(editor.fold_model_fingerprint_v1(), fingerprint);
+
+        for revision in 12..18 {
+            editor.redo(revision).expect("redo complete layer history");
+        }
+        assert_eq!(editor.project_layers(), &final_layers);
+        assert_eq!(editor.fold_model_fingerprint_v1(), fingerprint);
+    }
+
+    #[test]
+    fn remove_and_split_edge_preserve_explicit_layer_assignments_exactly() {
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let source = Edge {
+            id: EdgeId::new(),
+            start: first,
+            end: second,
+            kind: EdgeKind::Valley,
+        };
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: second,
+                    position: Point2::new(10.0, 0.0),
+                },
+            ],
+            edges: vec![source.clone()],
+        };
+        let layer = test_layer("Fold");
+
+        let mut remove_editor = editor_with_test_layers(
+            pattern.clone(),
+            Paper::default(),
+            vec![layer.clone()],
+            vec![(source.id, layer.id)],
+        );
+        let original_layers = remove_editor.project_layers().clone();
+        remove_editor
+            .execute(0, Command::RemoveEdge { id: source.id })
+            .expect("remove assigned edge");
+        assert!(remove_editor.project_layers().edge_assignments.is_empty());
+        remove_editor.undo(1).expect("undo assigned removal");
+        assert_eq!(remove_editor.project_layers(), &original_layers);
+        remove_editor.redo(2).expect("redo assigned removal");
+        assert!(remove_editor.project_layers().edge_assignments.is_empty());
+
+        let mut split_editor = editor_with_test_layers(
+            pattern,
+            Paper::default(),
+            vec![layer.clone()],
+            vec![(source.id, layer.id)],
+        );
+        let new_vertex = VertexId::new();
+        let new_edge = EdgeId::new();
+        let original_layers = split_editor.project_layers().clone();
+        split_editor
+            .execute(
+                0,
+                Command::SplitEdge {
+                    edge: source.id,
+                    new_vertex,
+                    new_edge,
+                    fraction: 0.5,
+                },
+            )
+            .expect("split assigned edge");
+        assert_eq!(
+            split_editor.project_layers().layer_for_edge(source.id),
+            layer.id
+        );
+        assert_eq!(
+            split_editor.project_layers().layer_for_edge(new_edge),
+            layer.id
+        );
+        split_editor.undo(1).expect("undo assigned split");
+        assert_eq!(split_editor.project_layers(), &original_layers);
+        split_editor.redo(2).expect("redo assigned split");
+        assert_eq!(
+            split_editor.project_layers().layer_for_edge(new_edge),
+            layer.id
+        );
+
+        let third = VertexId::new();
+        let fourth = VertexId::new();
+        let added_edge = EdgeId::new();
+        let add_pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: first,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: second,
+                    position: Point2::new(10.0, 0.0),
+                },
+                Vertex {
+                    id: third,
+                    position: Point2::new(0.0, 10.0),
+                },
+                Vertex {
+                    id: fourth,
+                    position: Point2::new(10.0, 10.0),
+                },
+            ],
+            edges: vec![source.clone()],
+        };
+        let mut add_editor = editor_with_test_layers(
+            add_pattern,
+            Paper::default(),
+            vec![layer.clone()],
+            vec![(source.id, layer.id)],
+        );
+        let original_layers = add_editor.project_layers().clone();
+        add_editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: added_edge,
+                    start: third,
+                    end: fourth,
+                    kind: EdgeKind::Mountain,
+                },
+            )
+            .expect("add an independently authored edge");
+        assert_eq!(
+            add_editor.project_layers().layer_for_edge(added_edge),
+            DEFAULT_PROJECT_LAYER_ID
+        );
+        assert_eq!(add_editor.project_layers(), &original_layers);
+        add_editor.undo(1).expect("undo default-layer edge");
+        assert_eq!(add_editor.project_layers(), &original_layers);
+        add_editor.redo(2).expect("redo default-layer edge");
+        assert_eq!(
+            add_editor.project_layers().layer_for_edge(added_edge),
+            DEFAULT_PROJECT_LAYER_ID
+        );
+    }
+
+    #[test]
+    fn boundary_split_and_vertex_removal_preserve_source_layer_lineage() {
+        let (_, pattern, paper) = simple_rectangular_editor();
+        let boundary = pattern.edges[0].clone();
+        let layer = test_layer("Boundary details");
+        let mut split_editor = editor_with_test_layers(
+            pattern.clone(),
+            paper.clone(),
+            vec![layer.clone()],
+            vec![(boundary.id, layer.id)],
+        );
+        let original_layers = split_editor.project_layers().clone();
+        let new_vertex = VertexId::new();
+        let new_edge = EdgeId::new();
+        split_editor
+            .execute(
+                0,
+                Command::SplitBoundaryEdge {
+                    edge: boundary.id,
+                    new_vertex,
+                    new_edge,
+                    fraction: 0.5,
+                },
+            )
+            .expect("split assigned boundary");
+        assert_eq!(
+            split_editor.project_layers().layer_for_edge(new_edge),
+            layer.id
+        );
+        split_editor.undo(1).expect("undo assigned boundary split");
+        assert_eq!(split_editor.project_layers(), &original_layers);
+        split_editor.redo(2).expect("redo assigned boundary split");
+        assert_eq!(
+            split_editor.project_layers().layer_for_edge(new_edge),
+            layer.id
+        );
+
+        let removed_vertex = paper.boundary_vertices[1];
+        let previous = paper.boundary_vertices[0];
+        let next = paper.boundary_vertices[2];
+        let preceding = pattern
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.kind == EdgeKind::Boundary
+                    && undirected_endpoints_match(edge.start, edge.end, previous, removed_vertex)
+            })
+            .expect("preceding boundary")
+            .clone();
+        let following = pattern
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.kind == EdgeKind::Boundary
+                    && undirected_endpoints_match(edge.start, edge.end, removed_vertex, next)
+            })
+            .expect("following boundary")
+            .clone();
+        let other_layer = test_layer("Other boundary");
+        let mut removal_editor = editor_with_test_layers(
+            pattern,
+            paper,
+            vec![layer.clone(), other_layer.clone()],
+            vec![(preceding.id, layer.id), (following.id, other_layer.id)],
+        );
+        let original_layers = removal_editor.project_layers().clone();
+        removal_editor
+            .execute(
+                0,
+                Command::RemoveBoundaryVertex {
+                    vertex: removed_vertex,
+                },
+            )
+            .expect("remove layered boundary vertex");
+        assert_eq!(
+            removal_editor.project_layers().layer_for_edge(preceding.id),
+            layer.id
+        );
+        assert!(
+            removal_editor
+                .project_layers()
+                .edge_assignments
+                .iter()
+                .all(|assignment| assignment.edge != following.id)
+        );
+        removal_editor
+            .undo(1)
+            .expect("undo layered boundary vertex removal");
+        assert_eq!(removal_editor.project_layers(), &original_layers);
+        removal_editor
+            .redo(2)
+            .expect("redo layered boundary vertex removal");
+        assert_eq!(
+            removal_editor.project_layers().layer_for_edge(preceding.id),
+            layer.id
+        );
+        assert!(
+            removal_editor
+                .project_layers()
+                .edge_assignments
+                .iter()
+                .all(|assignment| assignment.edge != following.id)
+        );
+    }
+
+    #[test]
+    fn intersection_t_junction_and_cluster_inherit_each_actual_source_layer() {
+        let (_, pattern, paper, first, second) = crossing_edges_editor();
+        let first_layer = test_layer("First");
+        let second_layer = test_layer("Second");
+        let mut crossing = editor_with_test_layers(
+            pattern,
+            paper,
+            vec![first_layer.clone(), second_layer.clone()],
+            vec![(first.id, first_layer.id), (second.id, second_layer.id)],
+        );
+        let crossing_layers = crossing.project_layers().clone();
+        let first_new = EdgeId::new();
+        let second_new = EdgeId::new();
+        crossing
+            .execute(
+                0,
+                Command::ConnectEdgeIntersection {
+                    first_edge: first.id,
+                    second_edge: second.id,
+                    new_vertex: VertexId::new(),
+                    first_new_edge: first_new,
+                    second_new_edge: second_new,
+                },
+            )
+            .expect("connect layered crossing");
+        assert_eq!(
+            crossing.project_layers().layer_for_edge(first_new),
+            first_layer.id
+        );
+        assert_eq!(
+            crossing.project_layers().layer_for_edge(second_new),
+            second_layer.id
+        );
+        crossing.undo(1).expect("undo layered crossing");
+        assert_eq!(crossing.project_layers(), &crossing_layers);
+        crossing.redo(2).expect("redo layered crossing");
+        assert_eq!(
+            crossing.project_layers().layer_for_edge(first_new),
+            first_layer.id
+        );
+        assert_eq!(
+            crossing.project_layers().layer_for_edge(second_new),
+            second_layer.id
+        );
+
+        let (_, pattern, paper, interior, stem, _) = t_junction_editor();
+        let mut junction = editor_with_test_layers(
+            pattern,
+            paper,
+            vec![first_layer.clone()],
+            vec![(interior.id, first_layer.id)],
+        );
+        let junction_layers = junction.project_layers().clone();
+        let junction_new = EdgeId::new();
+        junction
+            .execute(
+                0,
+                Command::ConnectTJunction {
+                    first_edge: stem.id,
+                    second_edge: interior.id,
+                    new_edge: junction_new,
+                },
+            )
+            .expect("connect reversed layered T junction");
+        assert_eq!(
+            junction.project_layers().layer_for_edge(junction_new),
+            first_layer.id
+        );
+        junction.undo(1).expect("undo layered T junction");
+        assert_eq!(junction.project_layers(), &junction_layers);
+        junction.redo(2).expect("redo layered T junction");
+        assert_eq!(
+            junction.project_layers().layer_for_edge(junction_new),
+            first_layer.id
+        );
+
+        let center_edges = [
+            (
+                Point2::new(-10.0, 0.0),
+                Point2::new(10.0, 0.0),
+                EdgeKind::Mountain,
+            ),
+            (
+                Point2::new(0.0, -10.0),
+                Point2::new(0.0, 10.0),
+                EdgeKind::Valley,
+            ),
+            (
+                Point2::new(-10.0, -10.0),
+                Point2::new(10.0, 10.0),
+                EdgeKind::Auxiliary,
+            ),
+        ];
+        let mut vertices = Vec::new();
+        let mut edges = Vec::new();
+        for (start, end, kind) in center_edges {
+            let start_id = VertexId::new();
+            let end_id = VertexId::new();
+            vertices.push(Vertex {
+                id: start_id,
+                position: start,
+            });
+            vertices.push(Vertex {
+                id: end_id,
+                position: end,
+            });
+            edges.push(Edge {
+                id: EdgeId::new(),
+                start: start_id,
+                end: end_id,
+                kind,
+            });
+        }
+        let generated = [EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        let mut cluster = editor_with_test_layers(
+            CreasePattern {
+                vertices,
+                edges: edges.clone(),
+            },
+            Paper::default(),
+            vec![first_layer.clone(), second_layer.clone()],
+            vec![
+                (edges[0].id, first_layer.id),
+                (edges[2].id, second_layer.id),
+            ],
+        );
+        let cluster_layers = cluster.project_layers().clone();
+        cluster
+            .execute(
+                0,
+                Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create {
+                        id: VertexId::new(),
+                    },
+                    targets: edges
+                        .iter()
+                        .zip(generated)
+                        .map(|(edge, new_edge)| IntersectionEdgeTarget {
+                            edge: edge.id,
+                            new_edge: Some(new_edge),
+                        })
+                        .collect(),
+                },
+            )
+            .expect("connect layered intersection cluster");
+        assert_eq!(
+            cluster.project_layers().layer_for_edge(generated[0]),
+            first_layer.id
+        );
+        assert_eq!(
+            cluster.project_layers().layer_for_edge(generated[1]),
+            DEFAULT_PROJECT_LAYER_ID
+        );
+        assert_eq!(
+            cluster.project_layers().layer_for_edge(generated[2]),
+            second_layer.id
+        );
+        cluster.undo(1).expect("undo layered cluster");
+        assert_eq!(cluster.project_layers(), &cluster_layers);
+        cluster.redo(2).expect("redo layered cluster");
+        assert_eq!(
+            cluster.project_layers().layer_for_edge(generated[0]),
+            first_layer.id
+        );
+        assert_eq!(
+            cluster.project_layers().layer_for_edge(generated[1]),
+            DEFAULT_PROJECT_LAYER_ID
+        );
+        assert_eq!(
+            cluster.project_layers().layer_for_edge(generated[2]),
+            second_layer.id
+        );
+    }
+
+    #[test]
+    fn layer_index_edge_limit_rejects_growth_atomically_when_assignments_are_active() {
+        let pattern = crate::benchmark_pattern(MAX_PROJECT_LAYER_INDEX_EDGES);
+        let source = pattern.edges[0].clone();
+        let layer = test_layer("Indexed");
+        let mut editor = editor_with_test_layers(
+            pattern,
+            Paper::default(),
+            vec![layer.clone()],
+            vec![(source.id, layer.id)],
+        );
+        let before = editor_state_snapshot(&editor);
+
+        assert_eq!(
+            editor.execute(
+                0,
+                Command::AddEdge {
+                    id: EdgeId::new(),
+                    start: source.start,
+                    end: source.end,
+                    kind: EdgeKind::Mountain,
+                },
+            ),
+            Err(CommandError::ProjectLayerDocumentInvalid(
+                ProjectLayerDocumentValidationErrorV1::TooManyPatternEdges {
+                    actual: MAX_PROJECT_LAYER_INDEX_EDGES + 1,
+                    maximum: MAX_PROJECT_LAYER_INDEX_EDGES,
+                },
+            ))
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+
+        // Unchecked constructors intentionally admit repairable legacy data.
+        // Once such a document is already oversized, non-growing layer
+        // commands must remain available so the explicit index can be removed.
+        editor.pattern.edges.push(Edge {
+            id: EdgeId::new(),
+            start: source.start,
+            end: source.end,
+            kind: EdgeKind::Auxiliary,
+        });
+        editor
+            .execute(0, Command::DeleteLayer { layer: layer.id })
+            .expect("a non-growing command can repair an oversized loaded layer index");
+        assert!(editor.project_layers().edge_assignments.is_empty());
+    }
+
+    #[test]
+    fn deterministic_layer_command_sequences_round_trip_as_a_property() {
+        let pattern = crate::benchmark_pattern(16);
+        let initial_fingerprint = EditorState::new(pattern.clone()).fold_model_fingerprint_v1();
+
+        for seed in 1_u64..=32 {
+            let mut editor = EditorState::new(pattern.clone());
+            let initial_layers = editor.project_layers().clone();
+            let layers = (0..4)
+                .map(|index| test_layer(&format!("Layer {index}")))
+                .collect::<Vec<_>>();
+            let mut revision = 0;
+            for (index, layer) in layers.iter().enumerate() {
+                editor
+                    .execute(
+                        revision,
+                        Command::CreateLayer {
+                            layer: layer.clone(),
+                            target_index: index + 1,
+                        },
+                    )
+                    .expect("create property-test layer");
+                revision += 1;
+            }
+
+            let mut state = seed;
+            for step in 0..64 {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let layer_index = (state as usize) % layers.len();
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let command = match state % 3 {
+                    0 => {
+                        let edge = pattern.edges[(state as usize) % pattern.edges.len()].id;
+                        let assigned_layer = if (state >> 8).is_multiple_of(5) {
+                            DEFAULT_PROJECT_LAYER_ID
+                        } else {
+                            layers[layer_index].id
+                        };
+                        Command::AssignEdgeToLayer {
+                            edge,
+                            layer: assigned_layer,
+                        }
+                    }
+                    1 => Command::RenameLayer {
+                        layer: layers[layer_index].id,
+                        name: format!("Layer {layer_index} seed {seed} step {step}"),
+                    },
+                    _ => Command::MoveLayer {
+                        layer: layers[layer_index].id,
+                        target_index: ((state >> 16) as usize)
+                            % editor.project_layers().layers.len(),
+                    },
+                };
+                editor
+                    .execute(revision, command)
+                    .expect("execute deterministic property command");
+                validate_project_layer_document_against_pattern_v1(
+                    editor.project_layers(),
+                    editor.pattern(),
+                )
+                .expect("every generated state must remain valid");
+                assert_eq!(editor.fold_model_fingerprint_v1(), initial_fingerprint);
+                revision += 1;
+            }
+
+            let final_layers = editor.project_layers().clone();
+            let operation_count = revision;
+            for _ in 0..operation_count {
+                editor
+                    .undo(revision)
+                    .expect("undo deterministic property sequence");
+                revision += 1;
+            }
+            assert_eq!(editor.project_layers(), &initial_layers);
+            assert_eq!(editor.fold_model_fingerprint_v1(), initial_fingerprint);
+
+            for _ in 0..operation_count {
+                editor
+                    .redo(revision)
+                    .expect("redo deterministic property sequence");
+                revision += 1;
+            }
+            assert_eq!(editor.project_layers(), &final_layers);
+            assert_eq!(editor.fold_model_fingerprint_v1(), initial_fingerprint);
+        }
     }
 }

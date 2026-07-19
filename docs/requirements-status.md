@@ -8,7 +8,7 @@
 - 部分実装: 有用な一部が動作するが、要件に明記された範囲を満たさない
 - 未着手: 要件固有の利用経路が存在しない
 
-現在の行単位集計は **実装済み43 / 部分実装28 / 未着手16**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。2026-07-20に11種幾何制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因と判定保留表示を利用者経路へ接続し、EDT-008/009を未着手から部分実装へ更新した。同日にproject/session単位の履歴件数上限UIと、30秒周期の端末内自動保存、起動時の必須復元・破棄workflow、正常完了時の復旧slot整理を接続し、HIS-003/004/005/006を実装済みへ更新した。さらに通常`.ori2`と復旧checkpointへ認証済みUndo/Redo両stack・履歴件数上限を保存し、再読込後も利用できる利用者経路を接続してHIS-002を実装済みへ更新した。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
+現在の行単位集計は **実装済み43 / 部分実装29 / 未着手15**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。2026-07-20に11種幾何制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因と判定保留表示を利用者経路へ接続し、EDT-008/009を未着手から部分実装へ更新した。同日にproject/session単位の履歴件数上限UIと、30秒周期の端末内自動保存、起動時の必須復元・破棄workflow、正常完了時の復旧slot整理を接続し、HIS-003/004/005/006を実装済みへ更新した。さらに通常`.ori2`と復旧checkpointへ認証済みUndo/Redo両stack・履歴件数上限を保存し、再読込後も利用できる利用者経路を接続してHIS-002を実装済みへ更新した。LIN-004はversion固定のproject layer文書、折り線edge assignment、編集command、履歴、通常保存・復旧・strict IPC snapshotまでを接続したため部分実装へ更新した。注釈・下絵objectの編集とlayer管理UIは未実装のため実装済みにはしない。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
 
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
@@ -190,7 +190,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | LIN-001 | 実装済み | 5線種の作図・選択・削除 |
 | LIN-002 | 実装済み | 初版対象を直線で保持 |
 | LIN-003 | 実装済み | Boundary実線、Mountain一点鎖線、Valley破線、Auxiliary丸端点線、Cut二点鎖線をCanvas・取込見本・SVG書出へ共通適用し、白黒識別、紙面コントラスト、`stroke-linecap`取込cascadeと安全なwire伝搬を自動回帰・実画面検証 |
-| LIN-004 | 未着手 | project layer modelと管理UIなし |
+| LIN-004 | 部分実装 | version固定のordered layer文書、implicit default layer、折り線edge assignment、作成・改名・並べ替え・削除・割当command、全geometry分割時の継承、Undo/Redo、`.ori2` required feature、通常open・復旧・strict IPC snapshotを実装。注釈・下絵objectの編集とlayer管理UIを残す |
 | LIN-005 | 未着手 | 表示・lock・透明度を持つlayer未実装 |
 
 ## 2D編集
@@ -273,7 +273,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | ID | 状態 | 現在の根拠・不足 |
 |---|---|---|
 | HIS-001 | 実装済み | command単位Undo/Redoとdirty連動 |
-| HIS-002 | 実装済み | 通常`.ori2`へproject ID・`project.json` SHA-256に束縛したUndo/Redo両stackと1〜128件の履歴上限を保存し、全22 command・19 inverseの安全な巻戻し・再生、生成inverseと現在文書のbit-exact照合、currentと全Undo/Redo到達endpointのinstruction pose検証後にrevision 0で復元する。既定128件の空履歴はentryを省略してlegacy 2-entry bytesを維持し、旧archiveは既定空履歴として開く。不正・付替え履歴は既存project不変で拒否し、dirty復旧checkpointにも同じ履歴と上限を保存する |
+| HIS-002 | 実装済み | 通常`.ori2`へproject ID・`project.json` SHA-256に束縛したUndo/Redo両stackと1〜128件の履歴上限を保存し、全27 command・20 inverseの安全な巻戻し・再生、生成inverseと現在文書のbit-exact照合、currentと全Undo/Redo到達endpointのinstruction pose検証後にrevision 0で復元する。既定128件の空履歴はentryを省略してlegacy 2-entry bytesを維持し、旧archiveは既定空履歴として開く。不正・付替え履歴は既存project不変で拒否し、dirty復旧checkpointにも同じ履歴と上限を保存する |
 | HIS-003 | 実装済み | 現在のproject/sessionについて1〜128件の履歴上限を、project instance・project ID・revisionへ厳密に束縛したUIから明示適用できる。縮小時はUndo/Redo両stackの最古を即時trimし、revision・document・dirty・3D poseを変えない。増加しても破棄済み履歴は復元しない |
 | HIS-004 | 実装済み | native timerが30秒周期でdirty documentとcheckpoint時点のUndo/Redo・履歴上限を同じsnapshotへ取得し、project lock解放後にcurrent 1状態とUndo/Redo到達先合計最大256状態（総検証最大257状態）を検証して、通常`.ori2`と同じstrict archive reader・履歴意味再認証・hard limitsでアプリ専用の固定1 slotへ自動保存する。history-only変更はdocument dirtyを変えず、明示保存またはdocument dirty時のcheckpointで永続化する。dirty中のrevision不変な履歴差分もUndo/Redo・履歴上限全体のSHA-256 digestで検出して次のcheckpointへ反映し、digestまで同一の場合だけ重複I/Oを省略する。verified atomic publish、latest-one generation fence、single writerにより古い世代を公開しない。保存healthは匿名の3状態DTOだけを5秒single-flight監視し、失敗・監視不能をassertive警告、再開をpolite通知する |
 | HIS-005 | 実装済み | 単一instanceを先に確立し、起動時に復旧slotを`none / available / invalid`へ分類する。履歴のhash、project binding、意味再認証または全到達endpointのinstruction pose topology検証の失敗も`invalid`とし、候補がある間は自動上書きを止め、利用者が復元または破棄を完了するまで編集画面を解放しない。復元はcheckpoint時点のUndo/Redo・履歴上限も維持し、runtime poseだけは復元しない |

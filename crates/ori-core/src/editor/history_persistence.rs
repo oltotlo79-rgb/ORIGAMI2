@@ -214,6 +214,25 @@ enum CommandV1 {
         step_id: InstructionStepId,
         target_index: u32,
     },
+    CreateLayer {
+        layer: LayerRecordV1,
+        target_index: u32,
+    },
+    RenameLayer {
+        layer: LayerId,
+        name: String,
+    },
+    MoveLayer {
+        layer: LayerId,
+        target_index: u32,
+    },
+    DeleteLayer {
+        layer: LayerId,
+    },
+    AssignEdgeToLayer {
+        edge: EdgeId,
+        layer: LayerId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +247,13 @@ struct IndexedVertexV1 {
 struct IndexedEdgeV1 {
     index: u32,
     edge: Edge,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IndexedEdgeLayerAssignmentV1 {
+    index: u32,
+    assignment: EdgeLayerAssignmentV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,6 +276,8 @@ enum InverseV1 {
     RestoreEdge {
         index: u32,
         edge: Edge,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layer_assignment: Option<IndexedEdgeLayerAssignmentV1>,
     },
     RestorePaperProperties {
         thickness_mm: f64,
@@ -268,16 +296,22 @@ enum InverseV1 {
         original_edge: IndexedEdgeV1,
         new_vertex: IndexedVertexV1,
         new_edge: IndexedEdgeV1,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_edge_assignment: Option<EdgeLayerAssignmentV1>,
     },
     RestoreEdgeSplit {
         original_edge: IndexedEdgeV1,
         new_vertex: IndexedVertexV1,
         new_edge: IndexedEdgeV1,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_edge_assignment: Option<EdgeLayerAssignmentV1>,
     },
     RestoreEdgeIntersection {
         original_edges: [IndexedEdgeV1; 2],
         new_edges: [IndexedEdgeV1; 2],
         new_vertex: IndexedVertexV1,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        new_edge_assignments: Vec<EdgeLayerAssignmentV1>,
     },
     RestoreTJunction {
         original_edge: IndexedEdgeV1,
@@ -285,6 +319,8 @@ enum InverseV1 {
         boundary_vertices: Option<Vec<VertexId>>,
         changed_vertices: [VertexId; 4],
         changed_edges: [EdgeId; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_edge_assignment: Option<EdgeLayerAssignmentV1>,
     },
     RestoreIntersectionCluster {
         original_boundary_vertices: Option<Vec<VertexId>>,
@@ -294,6 +330,8 @@ enum InverseV1 {
         junction_vertex: VertexId,
         changed_vertices: Vec<VertexId>,
         changed_edges: Vec<EdgeId>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        new_edge_assignments: Vec<EdgeLayerAssignmentV1>,
     },
     RestoreBoundaryVertexRemoval {
         boundary_index: u32,
@@ -302,6 +340,8 @@ enum InverseV1 {
         removed_edge: IndexedEdgeV1,
         previous_vertex: VertexId,
         next_vertex: VertexId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        removed_edge_assignment: Option<IndexedEdgeLayerAssignmentV1>,
     },
     RemoveAddedGeometricConstraint {
         id: ConstraintId,
@@ -331,6 +371,11 @@ enum InverseV1 {
     RestoreInstructionStepOrder {
         step_id: InstructionStepId,
         previous_index: u32,
+    },
+    RestoreDeletedLayer {
+        index: u32,
+        layer: LayerRecordV1,
+        assignments: Vec<IndexedEdgeLayerAssignmentV1>,
     },
 }
 
@@ -506,6 +551,29 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             step_id: *step_id,
             target_index: index_to_wire(*target_index)?,
         },
+        Command::CreateLayer {
+            layer,
+            target_index,
+        } => CommandV1::CreateLayer {
+            layer: layer.clone(),
+            target_index: index_to_wire(*target_index)?,
+        },
+        Command::RenameLayer { layer, name } => CommandV1::RenameLayer {
+            layer: *layer,
+            name: name.clone(),
+        },
+        Command::MoveLayer {
+            layer,
+            target_index,
+        } => CommandV1::MoveLayer {
+            layer: *layer,
+            target_index: index_to_wire(*target_index)?,
+        },
+        Command::DeleteLayer { layer } => CommandV1::DeleteLayer { layer: *layer },
+        Command::AssignEdgeToLayer { edge, layer } => CommandV1::AssignEdgeToLayer {
+            edge: *edge,
+            layer: *layer,
+        },
     })
 }
 
@@ -624,6 +692,23 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             step_id,
             target_index: index_from_wire(target_index)?,
         },
+        CommandV1::CreateLayer {
+            layer,
+            target_index,
+        } => Command::CreateLayer {
+            layer,
+            target_index: index_from_wire(target_index)?,
+        },
+        CommandV1::RenameLayer { layer, name } => Command::RenameLayer { layer, name },
+        CommandV1::MoveLayer {
+            layer,
+            target_index,
+        } => Command::MoveLayer {
+            layer,
+            target_index: index_from_wire(target_index)?,
+        },
+        CommandV1::DeleteLayer { layer } => Command::DeleteLayer { layer },
+        CommandV1::AssignEdgeToLayer { edge, layer } => Command::AssignEdgeToLayer { edge, layer },
     })
 }
 
@@ -644,6 +729,16 @@ fn indexed_edge_to_wire(index: usize, edge: &Edge) -> Result<IndexedEdgeV1, Edit
     })
 }
 
+fn indexed_layer_assignment_to_wire(
+    index: usize,
+    assignment: EdgeLayerAssignmentV1,
+) -> Result<IndexedEdgeLayerAssignmentV1, EditorHistoryErrorV1> {
+    Ok(IndexedEdgeLayerAssignmentV1 {
+        index: index_to_wire(index)?,
+        assignment,
+    })
+}
+
 fn indexed_vertex_from_wire(
     value: IndexedVertexV1,
 ) -> Result<(usize, Vertex), EditorHistoryErrorV1> {
@@ -652,6 +747,12 @@ fn indexed_vertex_from_wire(
 
 fn indexed_edge_from_wire(value: IndexedEdgeV1) -> Result<(usize, Edge), EditorHistoryErrorV1> {
     Ok((index_from_wire(value.index)?, value.edge))
+}
+
+fn indexed_layer_assignment_from_wire(
+    value: IndexedEdgeLayerAssignmentV1,
+) -> Result<(usize, EdgeLayerAssignmentV1), EditorHistoryErrorV1> {
+    Ok((index_from_wire(value.index)?, value.assignment))
 }
 
 fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1> {
@@ -663,9 +764,16 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             index: index_to_wire(*index)?,
             vertex: vertex.clone(),
         },
-        Inverse::RestoreEdge { index, edge } => InverseV1::RestoreEdge {
+        Inverse::RestoreEdge {
+            index,
+            edge,
+            layer_assignment,
+        } => InverseV1::RestoreEdge {
             index: index_to_wire(*index)?,
             edge: edge.clone(),
+            layer_assignment: layer_assignment
+                .map(|(index, assignment)| indexed_layer_assignment_to_wire(index, assignment))
+                .transpose()?,
         },
         Inverse::RestorePaperProperties {
             thickness_mm,
@@ -698,11 +806,13 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             new_vertex,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
         } => InverseV1::RestoreBoundarySplit {
             boundary_vertices: boundary_vertices.clone(),
             original_edge: indexed_edge_to_wire(*original_edge_index, original_edge)?,
             new_vertex: indexed_vertex_to_wire(*new_vertex_index, new_vertex)?,
             new_edge: indexed_edge_to_wire(*new_edge_index, new_edge)?,
+            new_edge_assignment: *new_edge_assignment,
         },
         Inverse::RestoreEdgeSplit {
             original_edge_index,
@@ -711,16 +821,19 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             new_vertex,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
         } => InverseV1::RestoreEdgeSplit {
             original_edge: indexed_edge_to_wire(*original_edge_index, original_edge)?,
             new_vertex: indexed_vertex_to_wire(*new_vertex_index, new_vertex)?,
             new_edge: indexed_edge_to_wire(*new_edge_index, new_edge)?,
+            new_edge_assignment: *new_edge_assignment,
         },
         Inverse::RestoreEdgeIntersection {
             original_edges,
             new_edges,
             new_vertex_index,
             new_vertex,
+            new_edge_assignments,
         } => InverseV1::RestoreEdgeIntersection {
             original_edges: [
                 indexed_edge_to_wire(original_edges[0].0, &original_edges[0].1)?,
@@ -731,6 +844,7 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
                 indexed_edge_to_wire(new_edges[1].0, &new_edges[1].1)?,
             ],
             new_vertex: indexed_vertex_to_wire(*new_vertex_index, new_vertex)?,
+            new_edge_assignments: new_edge_assignments.clone(),
         },
         Inverse::RestoreTJunction {
             original_edge_index,
@@ -740,12 +854,14 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             boundary_vertices,
             changed_vertices,
             changed_edges,
+            new_edge_assignment,
         } => InverseV1::RestoreTJunction {
             original_edge: indexed_edge_to_wire(*original_edge_index, original_edge)?,
             new_edge: indexed_edge_to_wire(*new_edge_index, new_edge)?,
             boundary_vertices: boundary_vertices.clone(),
             changed_vertices: *changed_vertices,
             changed_edges: *changed_edges,
+            new_edge_assignment: *new_edge_assignment,
         },
         Inverse::RestoreIntersectionCluster {
             original_boundary_vertices,
@@ -755,6 +871,7 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             junction_vertex,
             changed_vertices,
             changed_edges,
+            new_edge_assignments,
         } => InverseV1::RestoreIntersectionCluster {
             original_boundary_vertices: original_boundary_vertices.clone(),
             original_edges: original_edges
@@ -772,6 +889,7 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             junction_vertex: *junction_vertex,
             changed_vertices: changed_vertices.clone(),
             changed_edges: changed_edges.clone(),
+            new_edge_assignments: new_edge_assignments.clone(),
         },
         Inverse::RestoreBoundaryVertexRemoval {
             boundary_index,
@@ -783,6 +901,7 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             removed_edge,
             previous_vertex,
             next_vertex,
+            removed_edge_assignment,
         } => InverseV1::RestoreBoundaryVertexRemoval {
             boundary_index: index_to_wire(*boundary_index)?,
             vertex: indexed_vertex_to_wire(*vertex_index, vertex)?,
@@ -790,6 +909,9 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             removed_edge: indexed_edge_to_wire(*removed_edge_index, removed_edge)?,
             previous_vertex: *previous_vertex,
             next_vertex: *next_vertex,
+            removed_edge_assignment: removed_edge_assignment
+                .map(|(index, assignment)| indexed_layer_assignment_to_wire(index, assignment))
+                .transpose()?,
         },
         Inverse::RemoveAddedGeometricConstraint { id } => {
             InverseV1::RemoveAddedGeometricConstraint { id: *id }
@@ -835,6 +957,18 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             step_id: *step_id,
             previous_index: index_to_wire(*previous_index)?,
         },
+        Inverse::RestoreDeletedLayer {
+            index,
+            layer,
+            assignments,
+        } => InverseV1::RestoreDeletedLayer {
+            index: index_to_wire(*index)?,
+            layer: layer.clone(),
+            assignments: assignments
+                .iter()
+                .map(|(index, assignment)| indexed_layer_assignment_to_wire(*index, *assignment))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
     })
 }
 
@@ -845,9 +979,16 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             index: index_from_wire(index)?,
             vertex,
         },
-        InverseV1::RestoreEdge { index, edge } => Inverse::RestoreEdge {
+        InverseV1::RestoreEdge {
+            index,
+            edge,
+            layer_assignment,
+        } => Inverse::RestoreEdge {
             index: index_from_wire(index)?,
             edge,
+            layer_assignment: layer_assignment
+                .map(indexed_layer_assignment_from_wire)
+                .transpose()?,
         },
         InverseV1::RestorePaperProperties {
             thickness_mm,
@@ -872,6 +1013,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             original_edge,
             new_vertex,
             new_edge,
+            new_edge_assignment,
         } => {
             let (original_edge_index, original_edge) = indexed_edge_from_wire(original_edge)?;
             let (new_vertex_index, new_vertex) = indexed_vertex_from_wire(new_vertex)?;
@@ -884,12 +1026,14 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
                 new_vertex,
                 new_edge_index,
                 new_edge,
+                new_edge_assignment,
             }
         }
         InverseV1::RestoreEdgeSplit {
             original_edge,
             new_vertex,
             new_edge,
+            new_edge_assignment,
         } => {
             let (original_edge_index, original_edge) = indexed_edge_from_wire(original_edge)?;
             let (new_vertex_index, new_vertex) = indexed_vertex_from_wire(new_vertex)?;
@@ -901,12 +1045,14 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
                 new_vertex,
                 new_edge_index,
                 new_edge,
+                new_edge_assignment,
             }
         }
         InverseV1::RestoreEdgeIntersection {
             original_edges,
             new_edges,
             new_vertex,
+            new_edge_assignments,
         } => Inverse::RestoreEdgeIntersection {
             original_edges: [
                 indexed_edge_from_wire(original_edges[0].clone())?,
@@ -918,6 +1064,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             ],
             new_vertex_index: index_from_wire(new_vertex.index)?,
             new_vertex: new_vertex.vertex,
+            new_edge_assignments,
         },
         InverseV1::RestoreTJunction {
             original_edge,
@@ -925,6 +1072,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             boundary_vertices,
             changed_vertices,
             changed_edges,
+            new_edge_assignment,
         } => {
             let (original_edge_index, original_edge) = indexed_edge_from_wire(original_edge)?;
             let (new_edge_index, new_edge) = indexed_edge_from_wire(new_edge)?;
@@ -936,6 +1084,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
                 boundary_vertices,
                 changed_vertices,
                 changed_edges,
+                new_edge_assignment,
             }
         }
         InverseV1::RestoreIntersectionCluster {
@@ -946,6 +1095,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             junction_vertex,
             changed_vertices,
             changed_edges,
+            new_edge_assignments,
         } => Inverse::RestoreIntersectionCluster {
             original_boundary_vertices,
             original_edges: original_edges
@@ -960,6 +1110,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             junction_vertex,
             changed_vertices,
             changed_edges,
+            new_edge_assignments,
         },
         InverseV1::RestoreBoundaryVertexRemoval {
             boundary_index,
@@ -968,6 +1119,7 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             removed_edge,
             previous_vertex,
             next_vertex,
+            removed_edge_assignment,
         } => {
             let (vertex_index, vertex) = indexed_vertex_from_wire(vertex)?;
             let (kept_edge_index, kept_edge) = indexed_edge_from_wire(kept_edge)?;
@@ -982,6 +1134,9 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
                 removed_edge,
                 previous_vertex,
                 next_vertex,
+                removed_edge_assignment: removed_edge_assignment
+                    .map(indexed_layer_assignment_from_wire)
+                    .transpose()?,
             }
         }
         InverseV1::RemoveAddedGeometricConstraint { id } => {
@@ -1024,6 +1179,18 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
         } => Inverse::RestoreInstructionStepOrder {
             step_id,
             previous_index: index_from_wire(previous_index)?,
+        },
+        InverseV1::RestoreDeletedLayer {
+            index,
+            layer,
+            assignments,
+        } => Inverse::RestoreDeletedLayer {
+            index: index_from_wire(index)?,
+            layer,
+            assignments: assignments
+                .into_iter()
+                .map(indexed_layer_assignment_from_wire)
+                .collect::<Result<Vec<_>, _>>()?,
         },
     })
 }
@@ -1132,7 +1299,12 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         | Command::RemoveGeometricConstraint { .. }
         | Command::UpdateInstructionStepMetadata { .. }
         | Command::RemoveInstructionStep { .. }
-        | Command::MoveInstructionStep { .. } => {}
+        | Command::MoveInstructionStep { .. }
+        | Command::CreateLayer { .. }
+        | Command::RenameLayer { .. }
+        | Command::MoveLayer { .. }
+        | Command::DeleteLayer { .. }
+        | Command::AssignEdgeToLayer { .. } => {}
     }
     Ok(())
 }
@@ -1185,6 +1357,7 @@ fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1
         Inverse::RestoreRemovedInstructionStep { step, .. } => {
             validate_instruction_step_finite(step)?;
         }
+        Inverse::RestoreDeletedLayer { .. } => {}
     }
     Ok(())
 }
@@ -1205,6 +1378,8 @@ fn validate_editor_finite(editor: &EditorState) -> Result<(), EditorHistoryError
     for step in &editor.instruction_timeline.steps {
         validate_instruction_step_finite(step)?;
     }
+    validate_project_layer_document_against_pattern_v1(&editor.project_layers, &editor.pattern)
+        .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
     Ok(())
 }
 
@@ -1214,6 +1389,7 @@ struct EditorDocumentPartsRef<'a> {
     paper: &'a Paper,
     geometric_constraints: &'a GeometricConstraintDocumentV1,
     instruction_timeline: &'a InstructionTimeline,
+    project_layers: &'a ProjectLayerDocumentV1,
 }
 
 fn editor_document_parts_bytes(editor: &EditorState) -> Result<Vec<u8>, EditorHistoryErrorV1> {
@@ -1223,6 +1399,7 @@ fn editor_document_parts_bytes(editor: &EditorState) -> Result<Vec<u8>, EditorHi
         paper: &editor.paper,
         geometric_constraints: &editor.geometric_constraints,
         instruction_timeline: &editor.instruction_timeline,
+        project_layers: &editor.project_layers,
     })
     .map_err(|_| EditorHistoryErrorV1::EncodingFailed)
 }
@@ -1234,6 +1411,37 @@ fn inverse_bytes(inverse: &Inverse) -> Result<Vec<u8>, EditorHistoryErrorV1> {
 
 fn vertex_bits_equal(first: &Vertex, second: &Vertex) -> bool {
     first.id == second.id && point_bits_equal(first.position, second.position)
+}
+
+fn layer_assignment_matches(
+    editor: &EditorState,
+    edge: EdgeId,
+    expected: Option<EdgeLayerAssignmentV1>,
+) -> bool {
+    editor
+        .explicit_layer_assignment(edge)
+        .map(|(_, assignment)| assignment)
+        == expected
+}
+
+fn layer_assignments_match_edges(
+    editor: &EditorState,
+    edges: &[EdgeId],
+    expected: &[EdgeLayerAssignmentV1],
+) -> bool {
+    expected
+        .iter()
+        .all(|assignment| edges.contains(&assignment.edge))
+        && edges.iter().all(|edge| {
+            layer_assignment_matches(
+                editor,
+                *edge,
+                expected
+                    .iter()
+                    .find(|assignment| assignment.edge == *edge)
+                    .copied(),
+            )
+        })
 }
 
 fn validate_inverse_application(
@@ -1254,13 +1462,24 @@ fn validate_inverse_application(
                 return Err(invalid());
             }
         }
-        Inverse::RestoreEdge { index, edge } => {
+        Inverse::RestoreEdge {
+            index,
+            edge,
+            layer_assignment,
+        } => {
             if *index > editor.pattern.edges.len()
                 || editor
                     .pattern
                     .edges
                     .iter()
                     .any(|candidate| candidate.id == edge.id)
+                || editor.explicit_layer_assignment(edge.id).is_some()
+                || layer_assignment
+                    .as_ref()
+                    .is_some_and(|(assignment_index, assignment)| {
+                        *assignment_index > editor.project_layers.edge_assignments.len()
+                            || assignment.edge != edge.id
+                    })
             {
                 return Err(invalid());
             }
@@ -1285,6 +1504,7 @@ fn validate_inverse_application(
             new_vertex,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
             ..
         }
         | Inverse::RestoreEdgeSplit {
@@ -1294,6 +1514,7 @@ fn validate_inverse_application(
             new_vertex,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
         } => {
             let mut edges = editor.pattern.edges.clone();
             if edges.get(*new_edge_index) != Some(new_edge) {
@@ -1314,12 +1535,16 @@ fn validate_inverse_application(
                 return Err(invalid());
             }
             vertices.remove(*new_vertex_index);
+            if !layer_assignment_matches(editor, new_edge.id, *new_edge_assignment) {
+                return Err(invalid());
+            }
         }
         Inverse::RestoreEdgeIntersection {
             original_edges,
             new_edges,
             new_vertex_index,
             new_vertex,
+            new_edge_assignments,
         } => {
             let mut edges = editor.pattern.edges.clone();
             for (index, expected) in new_edges.iter().rev() {
@@ -1342,12 +1567,17 @@ fn validate_inverse_application(
             {
                 return Err(invalid());
             }
+            let generated = [new_edges[0].1.id, new_edges[1].1.id];
+            if !layer_assignments_match_edges(editor, &generated, new_edge_assignments) {
+                return Err(invalid());
+            }
         }
         Inverse::RestoreTJunction {
             original_edge_index,
             original_edge,
             new_edge_index,
             new_edge,
+            new_edge_assignment,
             ..
         } => {
             let mut edges = editor.pattern.edges.clone();
@@ -1361,12 +1591,16 @@ fn validate_inverse_application(
             {
                 return Err(invalid());
             }
+            if !layer_assignment_matches(editor, new_edge.id, *new_edge_assignment) {
+                return Err(invalid());
+            }
         }
         Inverse::RestoreIntersectionCluster {
             original_edges,
             inserted_edges,
             created_vertex,
             junction_vertex,
+            new_edge_assignments,
             ..
         } => {
             if !editor
@@ -1399,6 +1633,13 @@ fn validate_inverse_application(
             {
                 return Err(invalid());
             }
+            let generated = inserted_edges
+                .iter()
+                .map(|(_, edge)| edge.id)
+                .collect::<Vec<_>>();
+            if !layer_assignments_match_edges(editor, &generated, new_edge_assignments) {
+                return Err(invalid());
+            }
         }
         Inverse::RestoreBoundaryVertexRemoval {
             boundary_index,
@@ -1407,6 +1648,7 @@ fn validate_inverse_application(
             kept_edge,
             removed_edge_index,
             removed_edge,
+            removed_edge_assignment,
             ..
         } => {
             let current_kept_index = if removed_edge_index < kept_edge_index {
@@ -1422,6 +1664,13 @@ fn validate_inverse_application(
                 || *removed_edge_index > editor.pattern.edges.len()
                 || *vertex_index > editor.pattern.vertices.len()
                 || *boundary_index > editor.paper.boundary_vertices.len()
+                || editor.explicit_layer_assignment(removed_edge.id).is_some()
+                || removed_edge_assignment
+                    .as_ref()
+                    .is_some_and(|(assignment_index, assignment)| {
+                        *assignment_index > editor.project_layers.edge_assignments.len()
+                            || assignment.edge != removed_edge.id
+                    })
             {
                 return Err(invalid());
             }
@@ -1484,6 +1733,38 @@ fn validate_inverse_application(
                 return Err(invalid());
             }
         }
+        Inverse::RestoreDeletedLayer {
+            index,
+            layer,
+            assignments,
+        } => {
+            let mut candidate = editor.project_layers.clone();
+            if assignments.len() > MAX_LAYER_EDGE_ASSIGNMENTS
+                || *index > candidate.layers.len()
+                || candidate.layers.iter().any(|record| record.id == layer.id)
+            {
+                return Err(invalid());
+            }
+            candidate.layers.insert(*index, layer.clone());
+            for (assignment_index, assignment) in assignments {
+                if *assignment_index > candidate.edge_assignments.len()
+                    || candidate
+                        .edge_assignments
+                        .iter()
+                        .any(|current| current.edge == assignment.edge)
+                {
+                    return Err(invalid());
+                }
+                candidate
+                    .edge_assignments
+                    .insert(*assignment_index, *assignment);
+            }
+            if validate_project_layer_document_against_pattern_v1(&candidate, &editor.pattern)
+                .is_err()
+            {
+                return Err(invalid());
+            }
+        }
     }
     Ok(())
 }
@@ -1496,6 +1777,8 @@ fn apply_persisted_inverse(
     validate_inverse_application(editor, inverse)?;
     editor
         .apply_inverse(inverse)
+        .map_err(|_| EditorHistoryErrorV1::InvalidInverse)?;
+    validate_project_layer_document_against_pattern_v1(&editor.project_layers, &editor.pattern)
         .map_err(|_| EditorHistoryErrorV1::InvalidInverse)
 }
 
@@ -1509,6 +1792,8 @@ fn replay_forward(
         .then(|| editor.fold_model_fingerprint_v1());
     let inverse = editor
         .apply(&forward)
+        .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
+    validate_project_layer_document_against_pattern_v1(&editor.project_layers, &editor.pattern)
         .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
     let applied_pose =
         if geometry_before.is_some_and(|before| before != editor.fold_model_fingerprint_v1()) {
@@ -1570,12 +1855,33 @@ impl EditorState {
         geometric_constraints: GeometricConstraintDocumentV1,
         history: EditorHistoryV1,
     ) -> Result<Self, EditorHistoryErrorV1> {
-        let limit = history.validate_shape()?;
-        let mut current = Self::with_document_parts_and_constraints(
+        Self::with_document_parts_layers_and_history_v1(
             pattern,
             paper,
             instruction_timeline,
             geometric_constraints,
+            ProjectLayerDocumentV1::default(),
+            history,
+        )
+    }
+
+    /// Restores history bound to every persisted editor-owned document part,
+    /// including the strict LIN-004 layer document.
+    pub fn with_document_parts_layers_and_history_v1(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        history: EditorHistoryV1,
+    ) -> Result<Self, EditorHistoryErrorV1> {
+        let limit = history.validate_shape()?;
+        let mut current = Self::with_document_parts_constraints_and_layers(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
         );
         validate_editor_finite(&current)?;
         let expected_current = editor_document_parts_bytes(&current)?;
@@ -1678,6 +1984,12 @@ mod tests {
         let other_edge = EdgeId::new();
         let generated_edge = EdgeId::new();
         let step = instruction_step();
+        let layer = LayerId::new();
+        let layer_record = LayerRecordV1 {
+            id: layer,
+            name: "Details".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+        };
         vec![
             Command::AddVertex {
                 id: vertex,
@@ -1776,6 +2088,20 @@ mod tests {
                 step_id: step.id,
                 target_index: 7,
             },
+            Command::CreateLayer {
+                layer: layer_record,
+                target_index: 1,
+            },
+            Command::RenameLayer {
+                layer,
+                name: "Renamed".to_owned(),
+            },
+            Command::MoveLayer {
+                layer,
+                target_index: 0,
+            },
+            Command::DeleteLayer { layer },
+            Command::AssignEdgeToLayer { edge, layer },
         ]
     }
 
@@ -1814,6 +2140,11 @@ mod tests {
             "replace_instruction_step_pose",
             "remove_instruction_step",
             "move_instruction_step",
+            "create_layer",
+            "rename_layer",
+            "move_layer",
+            "delete_layer",
+            "assign_edge_to_layer",
         ];
         assert_eq!(commands.len(), expected_tags.len());
 
@@ -1860,6 +2191,9 @@ mod tests {
         let edge = EdgeId::new();
         let other_edge = EdgeId::new();
         let third_edge = EdgeId::new();
+        let fourth_edge = EdgeId::new();
+        let layer = LayerId::new();
+        let assignment = |edge| EdgeLayerAssignmentV1 { edge, layer };
         let step = instruction_step();
         vec![
             Inverse::Command(Command::RemoveVertex { id: vertex }),
@@ -1870,6 +2204,7 @@ mod tests {
             Inverse::RestoreEdge {
                 index: 2,
                 edge: indexed_edge(2, edge, vertex, other_vertex).1,
+                layer_assignment: Some((1, assignment(edge))),
             },
             Inverse::RestorePaperProperties {
                 thickness_mm: 0.1,
@@ -1894,6 +2229,7 @@ mod tests {
                 new_vertex: indexed_vertex(3, fourth_vertex, 4.0).1,
                 new_edge_index: 1,
                 new_edge: indexed_edge(1, other_edge, fourth_vertex, other_vertex).1,
+                new_edge_assignment: Some(assignment(other_edge)),
             },
             Inverse::RestoreEdgeSplit {
                 original_edge_index: 0,
@@ -1902,6 +2238,7 @@ mod tests {
                 new_vertex: indexed_vertex(3, fourth_vertex, 4.0).1,
                 new_edge_index: 1,
                 new_edge: indexed_edge(1, other_edge, fourth_vertex, other_vertex).1,
+                new_edge_assignment: Some(assignment(other_edge)),
             },
             Inverse::RestoreEdgeIntersection {
                 original_edges: [
@@ -1910,10 +2247,11 @@ mod tests {
                 ],
                 new_edges: [
                     indexed_edge(1, third_edge, fourth_vertex, other_vertex),
-                    indexed_edge(3, EdgeId::new(), fourth_vertex, third_vertex),
+                    indexed_edge(3, fourth_edge, fourth_vertex, third_vertex),
                 ],
                 new_vertex_index: 4,
                 new_vertex: indexed_vertex(4, fourth_vertex, 4.0).1,
+                new_edge_assignments: vec![assignment(third_edge), assignment(fourth_edge)],
             },
             Inverse::RestoreTJunction {
                 original_edge_index: 0,
@@ -1923,6 +2261,7 @@ mod tests {
                 boundary_vertices: Some(vec![vertex, other_vertex, third_vertex]),
                 changed_vertices: [vertex, other_vertex, third_vertex, fourth_vertex],
                 changed_edges: [edge, other_edge, third_edge],
+                new_edge_assignment: Some(assignment(other_edge)),
             },
             Inverse::RestoreIntersectionCluster {
                 original_boundary_vertices: None,
@@ -1932,6 +2271,7 @@ mod tests {
                 junction_vertex: fourth_vertex,
                 changed_vertices: vec![vertex, other_vertex, fourth_vertex],
                 changed_edges: vec![edge, other_edge],
+                new_edge_assignments: vec![assignment(other_edge)],
             },
             Inverse::RestoreBoundaryVertexRemoval {
                 boundary_index: 1,
@@ -1943,6 +2283,7 @@ mod tests {
                 removed_edge: indexed_edge(1, other_edge, vertex, third_vertex).1,
                 previous_vertex: other_vertex,
                 next_vertex: third_vertex,
+                removed_edge_assignment: Some((1, assignment(other_edge))),
             },
             Inverse::RemoveAddedGeometricConstraint {
                 id: ConstraintId::new(),
@@ -1970,6 +2311,15 @@ mod tests {
             Inverse::RestoreInstructionStepOrder {
                 step_id: step.id,
                 previous_index: 5,
+            },
+            Inverse::RestoreDeletedLayer {
+                index: 1,
+                layer: LayerRecordV1 {
+                    id: layer,
+                    name: "Deleted".to_owned(),
+                    content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+                },
+                assignments: vec![(1, assignment(edge))],
             },
         ]
     }
@@ -2006,6 +2356,7 @@ mod tests {
             "restore_instruction_step_pose",
             "restore_removed_instruction_step",
             "restore_instruction_step_order",
+            "restore_deleted_layer",
         ];
         assert_eq!(inverses.len(), expected_tags.len());
 
@@ -2284,6 +2635,269 @@ mod tests {
             restore(&mismatched, history),
             Err(EditorHistoryErrorV1::CurrentDocumentMismatch)
         ));
+    }
+
+    #[test]
+    fn layer_command_history_reopens_and_replays_exact_crud_and_assignments() {
+        let project_id = ProjectId::new();
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(10.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: edge,
+                start,
+                end,
+                kind: EdgeKind::Mountain,
+            }],
+        };
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Details".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+        };
+        let mut editor = EditorState::new(pattern.clone());
+        editor
+            .execute(
+                0,
+                Command::CreateLayer {
+                    layer: layer.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create layer");
+        editor
+            .execute(
+                1,
+                Command::AssignEdgeToLayer {
+                    edge,
+                    layer: layer.id,
+                },
+            )
+            .expect("assign edge");
+        editor
+            .execute(
+                2,
+                Command::RenameLayer {
+                    layer: layer.id,
+                    name: "Renamed".to_owned(),
+                },
+            )
+            .expect("rename layer");
+        let expected = editor.project_layers().clone();
+        let history = editor
+            .export_history_v1(project_id)
+            .expect("export layer history");
+
+        let mut reopened = EditorState::with_document_parts_layers_and_history_v1(
+            pattern,
+            Paper::default(),
+            InstructionTimeline::default(),
+            GeometricConstraintDocumentV1::default(),
+            expected.clone(),
+            history,
+        )
+        .expect("reopen layer history");
+        assert_eq!(reopened.project_layers(), &expected);
+        for revision in 0..3 {
+            reopened
+                .undo(revision)
+                .expect("undo reopened layer history");
+        }
+        assert_eq!(
+            reopened.project_layers(),
+            &ProjectLayerDocumentV1::default()
+        );
+        for revision in 3..6 {
+            reopened
+                .redo(revision)
+                .expect("redo reopened layer history");
+        }
+        assert_eq!(reopened.project_layers(), &expected);
+    }
+
+    #[test]
+    fn tampered_deleted_layer_inverse_is_rejected_before_input_mutation() {
+        let project_id = ProjectId::new();
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(10.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: edge,
+                start,
+                end,
+                kind: EdgeKind::Valley,
+            }],
+        };
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Temporary".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+        };
+        let mut editor = EditorState::new(pattern.clone());
+        editor
+            .execute(
+                0,
+                Command::CreateLayer {
+                    layer: layer.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create layer");
+        editor
+            .execute(
+                1,
+                Command::AssignEdgeToLayer {
+                    edge,
+                    layer: layer.id,
+                },
+            )
+            .expect("assign edge");
+        editor
+            .execute(2, Command::DeleteLayer { layer: layer.id })
+            .expect("delete assigned layer");
+        let current_layers = editor.project_layers().clone();
+        let mut history = editor
+            .export_history_v1(project_id)
+            .expect("export layer history");
+        let InverseV1::RestoreDeletedLayer { index, .. } = &mut history.undo_stack[2].inverse
+        else {
+            panic!("delete command must store the deleted layer inverse");
+        };
+        *index = u32::MAX;
+        let unchanged = history.clone();
+
+        let result = EditorState::with_document_parts_layers_and_history_v1(
+            pattern,
+            Paper::default(),
+            InstructionTimeline::default(),
+            GeometricConstraintDocumentV1::default(),
+            current_layers,
+            history.clone(),
+        );
+        assert!(matches!(result, Err(EditorHistoryErrorV1::InvalidInverse)));
+        assert_eq!(history, unchanged);
+    }
+
+    #[test]
+    fn tampered_generated_edge_layer_inverse_is_rejected_before_input_mutation() {
+        let project_id = ProjectId::new();
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let new_vertex = VertexId::new();
+        let new_edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(10.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: edge,
+                start,
+                end,
+                kind: EdgeKind::Mountain,
+            }],
+        };
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Inherited".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+        };
+        let mut layers = ProjectLayerDocumentV1::default();
+        layers.layers.push(layer.clone());
+        layers.edge_assignments.push(EdgeLayerAssignmentV1 {
+            edge,
+            layer: layer.id,
+        });
+        let mut editor = EditorState::with_document_parts_constraints_and_layers(
+            pattern,
+            Paper::default(),
+            InstructionTimeline::default(),
+            GeometricConstraintDocumentV1::default(),
+            layers,
+        );
+        editor
+            .execute(
+                0,
+                Command::SplitEdge {
+                    edge,
+                    new_vertex,
+                    new_edge,
+                    fraction: 0.5,
+                },
+            )
+            .expect("split assigned edge");
+        let mut history = editor
+            .export_history_v1(project_id)
+            .expect("export split history");
+        let mut reopened = EditorState::with_document_parts_layers_and_history_v1(
+            editor.pattern.clone(),
+            editor.paper.clone(),
+            editor.instruction_timeline.clone(),
+            editor.geometric_constraints.clone(),
+            editor.project_layers.clone(),
+            history.clone(),
+        )
+        .expect("reopen inherited layer history");
+        reopened.undo(0).expect("undo reopened assigned split");
+        assert_eq!(
+            reopened.project_layers().edge_assignments,
+            vec![EdgeLayerAssignmentV1 {
+                edge,
+                layer: layer.id,
+            }]
+        );
+        reopened.redo(1).expect("redo reopened assigned split");
+        assert_eq!(reopened.project_layers().layer_for_edge(new_edge), layer.id);
+
+        let InverseV1::RestoreEdgeSplit {
+            new_edge_assignment,
+            ..
+        } = &mut history.undo_stack[0].inverse
+        else {
+            panic!("split command must store its generated-edge assignment");
+        };
+        assert!(new_edge_assignment.take().is_some());
+        let unchanged = history.clone();
+
+        let result = EditorState::with_document_parts_layers_and_history_v1(
+            editor.pattern.clone(),
+            editor.paper.clone(),
+            editor.instruction_timeline.clone(),
+            editor.geometric_constraints.clone(),
+            editor.project_layers.clone(),
+            history.clone(),
+        );
+        assert!(matches!(result, Err(EditorHistoryErrorV1::InvalidInverse)));
+        assert_eq!(history, unchanged);
     }
 
     #[test]

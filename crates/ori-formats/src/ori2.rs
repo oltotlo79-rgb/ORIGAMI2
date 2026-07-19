@@ -22,6 +22,7 @@ pub const ORI2_EDITOR_HISTORY_PATH: &str = "editor-history.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
 pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v1";
+pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
 pub const ORI2_FEATURE_EDITOR_HISTORY_V1: &str = "editor_history_v1";
 pub const MAX_EDITOR_HISTORY_JSON_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -239,6 +240,9 @@ fn write_project_archive_parts(
     if !document.geometric_constraints.is_empty() {
         required_features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
     }
+    if !document.layers.is_default() {
+        required_features.push(ORI2_FEATURE_LAYERS_V1.to_owned());
+    }
     if history_bytes.is_some() {
         required_features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
     }
@@ -434,6 +438,16 @@ pub fn read_project_archive_ori2_with_limits(
             feature: ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
         });
     }
+    if !project.layers.is_default()
+        && !manifest
+            .required_features
+            .iter()
+            .any(|feature| feature == ORI2_FEATURE_LAYERS_V1)
+    {
+        return Err(FormatError::MissingRequiredFeature {
+            feature: ORI2_FEATURE_LAYERS_V1,
+        });
+    }
 
     let editor_history = match &manifest.editor_history {
         Some(descriptor) => Some(read_editor_history_entry(
@@ -501,11 +515,12 @@ fn validate_editor_history_for_document(
     document: &ProjectDocument,
     history: &EditorHistoryV1,
 ) -> Result<(), FormatError> {
-    ori_core::EditorState::with_document_parts_and_history_v1(
+    ori_core::EditorState::with_document_parts_layers_and_history_v1(
         document.crease_pattern.clone(),
         document.paper.clone(),
         document.instruction_timeline.clone(),
         document.geometric_constraints.clone(),
+        document.layers.clone(),
         history.clone(),
     )
     .map(|_| ())
@@ -678,6 +693,7 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
                 ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
                     | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
                     | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
+                    | ORI2_FEATURE_LAYERS_V1
                     | ORI2_FEATURE_EDITOR_HISTORY_V1
             )
         })
@@ -858,10 +874,11 @@ mod tests {
     use super::*;
     use ori_core::{Command, EditorState};
     use ori_domain::{
-        AssetId, ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, FaceId,
-        GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle,
-        InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId, Paper,
-        PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
+        AssetId, ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
+        FaceId, GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle,
+        InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId,
+        LayerContentKindV1, LayerId, LayerRecordV1, Paper, PaperAppearance, Point2, RgbaColor,
+        Vertex, VertexId,
     };
 
     fn sample_document() -> ProjectDocument {
@@ -1729,6 +1746,12 @@ mod tests {
             crate::RectangularPaperCreationExpressions::new("400", "400", 400.0, 400.0),
         );
         add_all_geometric_constraint_kinds(&mut document);
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Details".to_owned(),
+            content_kind: LayerContentKindV1::CreasePattern,
+        };
+        document.layers.layers.push(layer);
 
         let bytes = write_project_ori2(&document).expect("write combined project");
         assert_eq!(
@@ -1737,6 +1760,7 @@ mod tests {
                 ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
                 ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
                 ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
+                ORI2_FEATURE_LAYERS_V1.to_owned(),
             ],
             "writer feature order is part of deterministic container v1"
         );
@@ -2387,5 +2411,146 @@ mod tests {
         ]);
         let error = read_project_ori2(&bytes).expect_err("bad project JSON must fail");
         assert!(matches!(error, FormatError::InvalidJson(_)));
+    }
+
+    #[test]
+    fn authored_layers_round_trip_with_required_feature_and_default_stays_legacy() {
+        let default_bytes = write_project_ori2(&sample_document()).expect("write default project");
+        assert!(
+            !manifest_from_archive(&default_bytes)
+                .required_features
+                .contains(&ORI2_FEATURE_LAYERS_V1.to_owned())
+        );
+
+        let mut document = sample_document();
+        let edge = document.crease_pattern.edges[0].id;
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Details".to_owned(),
+            content_kind: LayerContentKindV1::CreasePattern,
+        };
+        document.layers.layers.push(layer.clone());
+        document
+            .layers
+            .edge_assignments
+            .push(EdgeLayerAssignmentV1 {
+                edge,
+                layer: layer.id,
+            });
+
+        let bytes = write_project_ori2(&document).expect("write layered project");
+        assert_eq!(
+            manifest_from_archive(&bytes).required_features,
+            vec![ORI2_FEATURE_LAYERS_V1.to_owned()]
+        );
+        assert_eq!(
+            read_project_ori2(&bytes).expect("read layered project"),
+            document
+        );
+    }
+
+    #[test]
+    fn layered_project_without_required_manifest_feature_is_rejected() {
+        let mut document = sample_document();
+        document.layers.layers.push(LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Notes".to_owned(),
+            content_kind: LayerContentKindV1::Annotation,
+        });
+        let bytes = write_project_ori2(&document).expect("write layered project");
+        let mut entries = archive_entries(&bytes);
+        let manifest_entry = entries
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest entry");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(&manifest_entry.1).expect("manifest JSON");
+        manifest
+            .required_features
+            .retain(|feature| feature != ORI2_FEATURE_LAYERS_V1);
+        manifest_entry.1 = serde_json::to_vec_pretty(&manifest).expect("modified manifest");
+
+        assert!(matches!(
+            read_project_ori2(&raw_zip_owned(&entries)),
+            Err(FormatError::MissingRequiredFeature {
+                feature: ORI2_FEATURE_LAYERS_V1
+            })
+        ));
+    }
+
+    #[test]
+    fn authenticated_archive_restores_operational_layer_history() {
+        let mut document = sample_document();
+        let edge = document.crease_pattern.edges[0].id;
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Details".to_owned(),
+            content_kind: LayerContentKindV1::CreasePattern,
+        };
+        let mut editor = EditorState::with_document_parts_constraints_and_layers(
+            document.crease_pattern.clone(),
+            document.paper.clone(),
+            document.instruction_timeline.clone(),
+            document.geometric_constraints.clone(),
+            document.layers.clone(),
+        );
+        editor
+            .execute(
+                0,
+                Command::CreateLayer {
+                    layer: layer.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create layer");
+        editor
+            .execute(
+                1,
+                Command::AssignEdgeToLayer {
+                    edge,
+                    layer: layer.id,
+                },
+            )
+            .expect("assign edge");
+        document.layers = editor.project_layers().clone();
+        let archive = Ori2ProjectArchive {
+            editor_history: Some(
+                editor
+                    .export_history_v1(document.project_id)
+                    .expect("export layer history"),
+            ),
+            document: document.clone(),
+        };
+
+        let bytes = write_project_archive_ori2(&archive).expect("write layer-history archive");
+        let manifest = manifest_from_archive(&bytes);
+        assert_eq!(
+            manifest.required_features,
+            vec![
+                ORI2_FEATURE_LAYERS_V1.to_owned(),
+                ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned(),
+            ]
+        );
+        let restored = read_project_archive_ori2(&bytes).expect("read layer-history archive");
+        let mut reopened = EditorState::with_document_parts_layers_and_history_v1(
+            restored.document.crease_pattern.clone(),
+            restored.document.paper.clone(),
+            restored.document.instruction_timeline.clone(),
+            restored.document.geometric_constraints.clone(),
+            restored.document.layers.clone(),
+            restored.editor_history.expect("authenticated history"),
+        )
+        .expect("restore operational layer history");
+        assert_eq!(reopened.project_layers().layer_for_edge(edge), layer.id);
+        reopened.undo(0).expect("undo reopened assignment");
+        assert_eq!(
+            reopened.project_layers().layer_for_edge(edge),
+            ori_domain::DEFAULT_PROJECT_LAYER_ID
+        );
+        reopened.undo(1).expect("undo reopened layer creation");
+        assert_eq!(
+            reopened.project_layers(),
+            &ori_domain::ProjectLayerDocumentV1::default()
+        );
     }
 }

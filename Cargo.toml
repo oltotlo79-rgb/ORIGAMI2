@@ -9,6 +9,7 @@ members = [
     "crates/ori-geometry",
     "crates/ori-instructions",
     "crates/ori-kinematics",
+    "crates/ori-numeric",
     "crates/ori-topology",
 ]
 resolver = "2"

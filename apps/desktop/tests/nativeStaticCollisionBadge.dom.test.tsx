@@ -38,7 +38,7 @@ describe('NativeStaticCollisionBadge', () => {
     assert.equal(badge.getAttribute('data-collision-risk'), 'blocking')
     assert.equal(badge.getAttribute('aria-live'), 'polite')
     assert.equal(
-      screen.queryByText('厳密判定｜横断貫通なし'),
+      screen.queryByText('厳密判定｜ゼロ厚み面貫通・重なりなし'),
       null,
     )
   })
@@ -68,8 +68,8 @@ describe('NativeStaticCollisionBadge', () => {
             status: 'certified_nonblocking',
             reason: null,
             expectedUnorderedFacePairs: 0,
-            provenTransversalPairs: 0,
-            firstProvenTransversalPair: null,
+            provenPenetratingPairs: 0,
+            firstProvenPenetratingPair: null,
           },
         }}
       />,
@@ -81,17 +81,17 @@ describe('NativeStaticCollisionBadge', () => {
     assert.equal(badge.getAttribute('aria-live'), 'polite')
   })
 
-  it('renders proven penetration as an assertive blocking alert', () => {
+  it('renders proven zero-thickness penetration or overlap as an assertive blocking alert', () => {
     render(
       <NativeStaticCollisionBadge
         state={{
           kind: 'ready',
           diagnostic: {
             status: 'blocking',
-            reason: 'proven_transversal_penetration',
+            reason: 'proven_zero_thickness_penetration',
             expectedUnorderedFacePairs: 3,
-            provenTransversalPairs: 1,
-            firstProvenTransversalPair: {
+            provenPenetratingPairs: 1,
+            firstProvenPenetratingPair: {
               firstFaceId: 'face-a',
               secondFaceId: 'face-b',
             },
@@ -104,7 +104,10 @@ describe('NativeStaticCollisionBadge', () => {
     assert.equal(badge.getAttribute('data-native-collision-status'), 'penetrating')
     assert.equal(badge.getAttribute('data-collision-risk'), 'blocking')
     assert.equal(badge.getAttribute('aria-live'), 'assertive')
-    assert.match(badge.textContent ?? '', /横断貫通 1・安全認定不可/)
+    assert.match(
+      badge.textContent ?? '',
+      /ゼロ厚み面貫通・重なり 1・安全認定不可/,
+    )
   })
 
   it('does not hide an unavailable result', () => {
@@ -116,8 +119,8 @@ describe('NativeStaticCollisionBadge', () => {
             status: 'unavailable',
             reason: 'pose_authority_unavailable',
             expectedUnorderedFacePairs: null,
-            provenTransversalPairs: null,
-            firstProvenTransversalPair: null,
+            provenPenetratingPairs: null,
+            firstProvenPenetratingPair: null,
           },
         }}
       />,
@@ -212,8 +215,8 @@ describe('NativeStaticCollisionBadge', () => {
               reason,
               expectedUnorderedFacePairs:
                 reason === 'evidence_unavailable' ? 3 : null,
-              provenTransversalPairs: null,
-              firstProvenTransversalPair: null,
+              provenPenetratingPairs: null,
+              firstProvenPenetratingPair: null,
             },
           }}
         />,
@@ -235,8 +238,8 @@ function certified() {
       status: 'certified_nonblocking',
       reason: null,
       expectedUnorderedFacePairs: 0,
-      provenTransversalPairs: 0,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: 0,
+      firstProvenPenetratingPair: null,
     },
   } as const
 }

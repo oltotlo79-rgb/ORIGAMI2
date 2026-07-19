@@ -306,10 +306,18 @@ impl CurrentAppliedPoseBindingResponse {
 /// Captures an untrusted complete-pose request under the project lock,
 /// performs topology and kinematics work in a blocking worker, then adopts it
 /// only if the exact project instance and revision are still current.
+///
+/// This command owns the process-wide native-pose worker permit through its
+/// complete capture/prepare/commit transaction. The separate
+/// apply-response-to-inspection transaction is serialized by the frontend
+/// coordinator because it necessarily spans two IPC commands.
 pub(crate) async fn apply_current_native_pose(
     app_state: &AppState,
     request: NativePoseRequest,
 ) -> Result<ApplyCurrentNativePoseResponse, String> {
+    let permit = app_state
+        .try_acquire_native_pose_worker()
+        .ok_or(APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
     let (authority, captured) = {
         let project =
             lock_project(app_state).map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
@@ -319,19 +327,23 @@ pub(crate) async fn apply_current_native_pose(
             .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
         (authority, captured)
     };
-    let prepared = tauri::async_runtime::spawn_blocking(move || captured.prepare())
-        .await
-        .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?
-        .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+    let (permit, prepared) =
+        tauri::async_runtime::spawn_blocking(move || (permit, captured.prepare()))
+            .await
+            .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+    let prepared = prepared.map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
 
     let mut project =
         lock_project(app_state).map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
     let capability = authority
         .commit_prepared(&mut project, prepared)
         .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
-    Ok(ApplyCurrentNativePoseResponse {
+    let response = ApplyCurrentNativePoseResponse {
         binding: CurrentAppliedPoseBindingResponse::from_claims(&capability.claims),
-    })
+    };
+    drop(project);
+    drop(permit);
+    Ok(response)
 }
 
 impl CurrentAppliedPoseAuthority {
@@ -1029,8 +1041,6 @@ pub(super) struct CurrentAppliedPoseAuthoritySnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use ori_core::{Command, create_rectangular_sheet};
     use ori_domain::{CreasePattern, Paper, Point2, VertexId};
     use serde_json::json;
@@ -1069,6 +1079,108 @@ mod tests {
         let encoded = serde_json::to_value(binding).expect("serialize pose binding");
         assert_eq!(encoded["revision"], 7);
         assert_eq!(encoded["poseGeneration"], u64::MAX.to_string());
+    }
+
+    #[test]
+    fn busy_process_worker_rejects_apply_without_touching_project_or_pose_authority() {
+        let mut project = no_hinge_project();
+        let (authority, current_capability) = adopt_no_hinge_pose(&mut project);
+        let request = request_for(&project);
+        let document_before = project.document();
+        let revision_before = project.editor.revision();
+        let authority_before = authority.test_snapshot().expect("authority snapshot");
+        let state = AppState::new(project);
+
+        let permit = state
+            .try_acquire_native_pose_worker()
+            .expect("first process worker permit");
+        assert!(state.native_pose_worker_is_busy());
+        assert!(state.try_acquire_native_pose_worker().is_none());
+        let error =
+            tauri::async_runtime::block_on(apply_current_native_pose(&state, request.clone()))
+                .expect_err("busy worker must reject another apply");
+        assert_eq!(error, APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE);
+        assert_eq!(
+            authority.test_snapshot().expect("unchanged authority"),
+            authority_before
+        );
+        {
+            let project = state.0.lock().expect("project lock");
+            assert_eq!(project.document(), document_before);
+            assert_eq!(project.editor.revision(), revision_before);
+            assert!(project.editor.current_applied_pose().is_some());
+            assert!(
+                authority
+                    .revalidate_capability(&project, &current_capability)
+                    .expect("revalidate current capability")
+                    .is_some()
+            );
+        }
+
+        drop(permit);
+        assert!(!state.native_pose_worker_is_busy());
+        tauri::async_runtime::block_on(apply_current_native_pose(&state, request))
+            .expect("released permit must allow apply");
+        assert!(!state.native_pose_worker_is_busy());
+    }
+
+    #[test]
+    fn failed_blocking_preparation_releases_process_permit_and_pending_marker() {
+        let project = invalid_topology_project();
+        let authority = project.applied_pose_authority.clone();
+        let request = request_for(&project);
+        let state = AppState::new(project);
+
+        let error = tauri::async_runtime::block_on(apply_current_native_pose(&state, request))
+            .expect_err("invalid topology must fail preparation");
+        assert_eq!(error, APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE);
+        assert!(!state.native_pose_worker_is_busy());
+        assert_eq!(
+            authority.test_snapshot().expect("authority snapshot"),
+            CurrentAppliedPoseAuthoritySnapshot {
+                generation: 0,
+                has_current: false,
+                has_pending: false,
+            }
+        );
+        assert!(state.try_acquire_native_pose_worker().is_some());
+    }
+
+    #[test]
+    fn process_worker_gate_survives_project_replacement() {
+        let state = AppState::new(no_hinge_project());
+        let permit = state
+            .try_acquire_native_pose_worker()
+            .expect("process worker permit");
+        {
+            let mut project = state.0.lock().expect("project lock");
+            let document = project.document();
+            let replacement =
+                ProjectState::from_document(document, std::path::PathBuf::from("same.ori2"));
+            commit_project_replacement(&mut project, replacement).expect("replacement");
+        }
+        assert!(
+            state.try_acquire_native_pose_worker().is_none(),
+            "a fresh project authority must not bypass the process-wide gate"
+        );
+        drop(permit);
+        assert!(state.try_acquire_native_pose_worker().is_some());
+    }
+
+    #[test]
+    fn blocking_worker_panic_releases_process_permit() {
+        let state = AppState::new(no_hinge_project());
+        let permit = state
+            .try_acquire_native_pose_worker()
+            .expect("process worker permit");
+        let join =
+            tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(move || {
+                let _permit = permit;
+                panic!("injected native pose worker panic");
+            }));
+        assert!(join.is_err(), "panic must surface as a join error");
+        assert!(!state.native_pose_worker_is_busy());
+        assert!(state.try_acquire_native_pose_worker().is_some());
     }
 
     fn adopt_no_hinge_pose(
@@ -1517,7 +1629,7 @@ mod tests {
     fn guarded_closure_revalidates_under_project_then_pose_lock() {
         let mut project = no_hinge_project();
         let (_, capability) = adopt_no_hinge_pose(&mut project);
-        let app_state = AppState(Mutex::new(project));
+        let app_state = AppState::new(project);
 
         let generation = with_revalidated_current_applied_pose_capability(
             &app_state,

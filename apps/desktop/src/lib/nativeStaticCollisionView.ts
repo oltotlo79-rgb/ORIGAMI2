@@ -1,5 +1,5 @@
 export type CurrentStaticCollisionDiagnosticReason =
-  | 'proven_transversal_penetration'
+  | 'proven_zero_thickness_penetration'
   | 'evidence_unavailable'
   | 'resource_limit_exceeded'
   | 'inconsistent_state'
@@ -14,8 +14,8 @@ export type CurrentStaticCollisionDiagnostic = Readonly<{
   status: 'certified_nonblocking' | 'blocking' | 'unavailable'
   reason: CurrentStaticCollisionDiagnosticReason | null
   expectedUnorderedFacePairs: number | null
-  provenTransversalPairs: number | null
-  firstProvenTransversalPair: CurrentStaticCollisionFacePair | null
+  provenPenetratingPairs: number | null
+  firstProvenPenetratingPair: CurrentStaticCollisionFacePair | null
 }>
 
 export type NativeStaticCollisionViewState =
@@ -120,31 +120,32 @@ export function presentNativeStaticCollision(
     diagnostic.status === 'certified_nonblocking'
     && diagnostic.reason === null
     && validCount(diagnostic.expectedUnorderedFacePairs)
-    && diagnostic.provenTransversalPairs === 0
-    && diagnostic.firstProvenTransversalPair === null
+    && diagnostic.provenPenetratingPairs === 0
+    && diagnostic.firstProvenPenetratingPair === null
   ) {
     return {
       dataStatus: 'certified_nonblocking',
       badgeClass: 'is-certified',
-      badgeText: '厳密判定｜横断貫通なし',
+      badgeText: '厳密判定｜ゼロ厚み面貫通・重なりなし',
       accessibleText:
-        '現在の表示姿勢では、対象となる全ての面ペアについて横断貫通がないことを証明しました。',
+        '現在の表示姿勢では、対象となる全ての面ペアについて、ゼロ厚み面の貫通または正の面積を持つ重なりがないことを証明しました。',
       requiresSafetyReview: false,
     }
   }
 
   if (
     diagnostic.status === 'blocking'
-    && diagnostic.reason === 'proven_transversal_penetration'
+    && diagnostic.reason === 'proven_zero_thickness_penetration'
   ) {
-    const count = diagnostic.provenTransversalPairs
+    const count = diagnostic.provenPenetratingPairs
     const countText = validCount(count) && count > 0 ? ` ${count}` : ''
     return {
       dataStatus: 'penetrating',
       badgeClass: 'is-blocked',
-      badgeText: `厳密判定｜横断貫通${countText}・安全認定不可`,
+      badgeText:
+        `厳密判定｜ゼロ厚み面貫通・重なり${countText}・安全認定不可`,
       accessibleText:
-        `現在の表示姿勢で横断貫通${countText}件を証明したため、安全認定を遮断しました。`,
+        `現在の表示姿勢でゼロ厚み面の貫通または正の面積を持つ重なり${countText}件を証明したため、安全認定を遮断しました。`,
       requiresSafetyReview: true,
     }
   }

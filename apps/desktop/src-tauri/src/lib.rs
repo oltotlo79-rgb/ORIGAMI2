@@ -150,7 +150,62 @@ fn fold_file_invalid_error<T>(_: T) -> String {
     FOLD_FILE_INVALID_MESSAGE.to_owned()
 }
 
-struct AppState(Mutex<ProjectState>);
+/// Process-lifetime application state.
+///
+/// The native pose worker gate deliberately lives beside, rather than inside,
+/// `ProjectState`. Replacing or reopening a project therefore cannot create a
+/// fresh gate while an obsolete project's heavy worker is still running.
+struct AppState(Mutex<ProjectState>, NativePoseWorkerGate);
+
+impl AppState {
+    fn new(project: ProjectState) -> Self {
+        Self(Mutex::new(project), NativePoseWorkerGate::default())
+    }
+
+    fn try_acquire_native_pose_worker(&self) -> Option<NativePoseWorkerPermit> {
+        self.1.try_acquire()
+    }
+
+    #[cfg(test)]
+    fn native_pose_worker_is_busy(&self) -> bool {
+        self.1.is_busy()
+    }
+}
+
+/// One process-wide heavy native pose worker per managed [`AppState`].
+///
+/// The permit owns the shared atomic so it can move into `spawn_blocking`.
+/// Cancellation of the awaiting future cannot release the gate while the
+/// blocking closure is still running.
+#[derive(Clone, Default)]
+struct NativePoseWorkerGate(Arc<AtomicBool>);
+
+impl NativePoseWorkerGate {
+    fn try_acquire(&self) -> Option<NativePoseWorkerPermit> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| NativePoseWorkerPermit {
+                busy: Arc::clone(&self.0),
+            })
+    }
+
+    #[cfg(test)]
+    fn is_busy(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+struct NativePoseWorkerPermit {
+    busy: Arc<AtomicBool>,
+}
+
+impl Drop for NativePoseWorkerPermit {
+    fn drop(&mut self) {
+        let was_busy = self.busy.swap(false, Ordering::Release);
+        debug_assert!(was_busy, "native pose worker permit released twice");
+    }
+}
 
 #[derive(Default)]
 struct FoldImportState(Mutex<Option<PendingFoldImport>>);
@@ -4247,7 +4302,7 @@ pub fn run() {
             app.manage(DiagnosticsState::from_app_handle(app.handle()));
             Ok(())
         })
-        .manage(AppState(Mutex::new(initial_project_state())))
+        .manage(AppState::new(initial_project_state()))
         .manage(FoldImportState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
@@ -5067,7 +5122,7 @@ mod tests {
 
     #[test]
     fn validation_worker_releases_project_lock_during_exact_analysis() {
-        let state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let state = Arc::new(AppState::new(initial_project_state()));
         let worker_state = Arc::clone(&state);
         let (entered_tx, entered_rx) = mpsc::sync_channel(0);
         let (release_tx, release_rx) = mpsc::sync_channel(0);
@@ -5102,7 +5157,7 @@ mod tests {
 
     #[test]
     fn validation_worker_rejects_same_revision_aba_content() {
-        let state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let state = Arc::new(AppState::new(initial_project_state()));
         let worker_state = Arc::clone(&state);
         let (entered_tx, entered_rx) = mpsc::sync_channel(0);
         let (release_tx, release_rx) = mpsc::sync_channel(0);
@@ -5152,7 +5207,7 @@ mod tests {
 
     #[test]
     fn validation_worker_panic_and_reported_failure_are_redacted_and_fail_closed() {
-        let state = AppState(Mutex::new(initial_project_state()));
+        let state = AppState::new(initial_project_state());
         let private_panic = r"C:\Users\alice\秘密の作品.ori2 at vertex=(12.3,45.6)";
 
         let panic_error = tauri::async_runtime::block_on(validate_project_with_worker(

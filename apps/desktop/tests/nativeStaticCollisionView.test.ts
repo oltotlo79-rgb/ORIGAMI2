@@ -10,8 +10,8 @@ const certified: CurrentStaticCollisionDiagnostic = {
   status: 'certified_nonblocking',
   reason: null,
   expectedUnorderedFacePairs: 0,
-  provenTransversalPairs: 0,
-  firstProvenTransversalPair: null,
+  provenPenetratingPairs: 0,
+  firstProvenPenetratingPair: null,
 }
 
 test('only an affirmative native certificate receives the clear presentation', () => {
@@ -23,7 +23,7 @@ test('only an affirmative native certificate receives the clear presentation', (
   assert.equal(view.dataStatus, 'certified_nonblocking')
   assert.equal(view.badgeClass, 'is-certified')
   assert.equal(view.requiresSafetyReview, false)
-  assert.match(view.badgeText, /横断貫通なし/)
+  assert.match(view.badgeText, /ゼロ厚み面貫通・重なりなし/)
   assert.match(view.accessibleText, /証明/)
 })
 
@@ -51,15 +51,15 @@ test('a result for an older pose is hidden synchronously before effects run', ()
   )
 })
 
-test('a proven transversal is blocking and publishes the count', () => {
+test('a proven zero-thickness penetration or overlap is blocking and publishes the count', () => {
   const view = presentNativeStaticCollision({
     kind: 'ready',
     diagnostic: {
       status: 'blocking',
-      reason: 'proven_transversal_penetration',
+      reason: 'proven_zero_thickness_penetration',
       expectedUnorderedFacePairs: 3,
-      provenTransversalPairs: 1,
-      firstProvenTransversalPair: {
+      provenPenetratingPairs: 1,
+      firstProvenPenetratingPair: {
         firstFaceId: 'face-a',
         secondFaceId: 'face-b',
       },
@@ -69,7 +69,8 @@ test('a proven transversal is blocking and publishes the count', () => {
   assert.equal(view.dataStatus, 'penetrating')
   assert.equal(view.badgeClass, 'is-blocked')
   assert.equal(view.requiresSafetyReview, true)
-  assert.match(view.badgeText, /横断貫通 1・安全認定不可/)
+  assert.match(view.badgeText, /ゼロ厚み面貫通・重なり 1・安全認定不可/)
+  assert.match(view.accessibleText, /正の面積を持つ重なり/)
 })
 
 for (const reason of [
@@ -84,8 +85,8 @@ for (const reason of [
         status: 'blocking',
         reason,
         expectedUnorderedFacePairs: reason === 'evidence_unavailable' ? 3 : null,
-        provenTransversalPairs: null,
-        firstProvenTransversalPair: null,
+        provenPenetratingPairs: null,
+        firstProvenPenetratingPair: null,
       },
     })
 

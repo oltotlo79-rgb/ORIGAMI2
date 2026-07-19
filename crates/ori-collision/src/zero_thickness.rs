@@ -1412,7 +1412,7 @@ pub(super) struct ZeroThicknessAnalysisWork {
 
 #[derive(Debug)]
 pub(super) struct AuthenticatedZeroThicknessPose<'a> {
-    _pose: &'a MaterialTreePose,
+    pose: &'a MaterialTreePose,
     faces: Vec<AuthenticatedFace>,
     pair_dispatches: Vec<Result<PairDispatch, ZeroThicknessAnalysisError>>,
     rational_work: RationalWork,
@@ -1423,6 +1423,22 @@ pub(super) struct AuthenticatedZeroThicknessPose<'a> {
 }
 
 impl AuthenticatedZeroThicknessPose<'_> {
+    pub(super) fn is_for_pose(&self, pose: &MaterialTreePose) -> bool {
+        self.pose.same_instance(pose)
+    }
+
+    pub(super) fn face_id(&self, face_index: usize) -> Option<FaceId> {
+        self.faces.get(face_index).map(|face| face.id)
+    }
+
+    pub(super) fn face_boundary_vertex_count(&self, face_index: usize) -> Option<usize> {
+        self.faces.get(face_index).map(|face| face.boundary.len())
+    }
+
+    pub(super) const fn face_count(&self) -> usize {
+        self.faces.len()
+    }
+
     pub(super) fn dispatch_pair(
         &self,
         first_face_index: usize,
@@ -1692,7 +1708,7 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
     }
     let rational_work = meter.work;
     Ok(AuthenticatedZeroThicknessPose {
-        _pose: pose,
+        pose,
         faces,
         pair_dispatches,
         rational_work,
@@ -4668,6 +4684,21 @@ mod tests {
             .expect("full-fold V pose");
         let analysis = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
             .expect("authenticated full-fold faces");
+        assert!(analysis.is_for_pose(&pose));
+        assert_eq!(analysis.face_count(), pose.face_ids().len());
+        for (index, face) in pose.face_ids().iter().copied().enumerate() {
+            assert_eq!(analysis.face_id(index), Some(face));
+            assert_eq!(
+                analysis.face_boundary_vertex_count(index),
+                pose.face_boundary(face)
+                    .map(|boundary| boundary.vertices().len())
+            );
+        }
+        let same_angle_aba_pose = solve_two_hinge_pose(&model, [180.0, 180.0]);
+        assert!(
+            !analysis.is_for_pose(&same_angle_aba_pose),
+            "an equal-angle re-solve must not inherit the authenticated aggregate"
+        );
         let mut shared_vertex_pairs = 0;
         for first in 0..analysis.faces.len() {
             for second in (first + 1)..analysis.faces.len() {
@@ -4708,6 +4739,132 @@ mod tests {
             }
         }
         assert_eq!(shared_vertex_pairs, 1);
+    }
+
+    #[test]
+    fn public_full_fold_affirmative_honors_every_additive_ledger_exactly() {
+        let (model, _planar_pose) = corner_v_model_and_pose();
+        let pose = solve_two_hinge_pose(&model, [180.0, 180.0]);
+        let baseline = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("baseline full-fold exact aggregate");
+        let work = baseline.work();
+        let total_boundary_vertices = baseline
+            .faces
+            .iter()
+            .map(|face| face.boundary.len())
+            .sum::<usize>();
+        let total_triangulation_work = baseline
+            .faces
+            .iter()
+            .map(|face| estimated_triangulation_work(face.boundary.len()).expect("small face"))
+            .sum::<usize>();
+        let unordered_face_pairs = baseline.pair_dispatches.len();
+        let expected = StaticCollisionError::ProvenTransversalPenetration {
+            expected_unordered_face_pairs: unordered_face_pairs,
+            proven_transversal_pairs: 1,
+            first_proven_transversal_pair: only_non_hinge_face_pair(&model),
+        };
+
+        type LimitSetter = fn(&mut StaticCollisionLimits, usize);
+        let boundaries: [(&str, usize, LimitSetter); 16] = [
+            ("faces", baseline.faces.len(), |limits, value| {
+                limits.max_faces = value
+            }),
+            (
+                "unordered_face_pairs",
+                unordered_face_pairs,
+                |limits, value| limits.max_unordered_face_pairs = value,
+            ),
+            (
+                "total_boundary_vertices",
+                total_boundary_vertices,
+                |limits, value| limits.max_total_boundary_vertices = value,
+            ),
+            ("total_triangles", work.total_triangles, |limits, value| {
+                limits.max_total_triangles = value
+            }),
+            (
+                "total_triangulation_work",
+                total_triangulation_work,
+                |limits, value| limits.max_total_triangulation_work = value,
+            ),
+            (
+                "registry_authentication_work",
+                work.registry_authentication_work,
+                |limits, value| limits.max_registry_authentication_work = value,
+            ),
+            (
+                "total_triangle_pairs",
+                work.total_triangle_pairs,
+                |limits, value| limits.max_total_triangle_pairs = value,
+            ),
+            (
+                "total_boundary_relation_work",
+                work.total_boundary_relation_work,
+                |limits, value| limits.max_total_boundary_relation_work = value,
+            ),
+            (
+                "total_rational_input_storage_bits",
+                work.total_rational_input_storage_bits,
+                |limits, value| limits.max_total_rational_input_storage_bits = value,
+            ),
+            (
+                "total_rational_retained_clone_bits",
+                work.total_rational_retained_clone_bits,
+                |limits, value| limits.max_total_rational_retained_clone_bits = value,
+            ),
+            (
+                "rational_operations",
+                work.rational_operations,
+                |limits, value| limits.max_rational_operations = value,
+            ),
+            (
+                "rational_gcd_fallback_calls",
+                work.rational_gcd_fallback_calls,
+                |limits, value| limits.max_rational_gcd_fallback_calls = value,
+            ),
+            (
+                "rational_gcd_fallback_input_bits",
+                work.rational_gcd_fallback_input_bits,
+                |limits, value| limits.max_rational_gcd_fallback_input_bits = value,
+            ),
+            (
+                "rational_allocations",
+                work.rational_allocations,
+                |limits, value| limits.max_rational_allocations = value,
+            ),
+            (
+                "total_rational_allocation_bits",
+                work.total_rational_allocation_bits,
+                |limits, value| limits.max_total_rational_allocation_bits = value,
+            ),
+            (
+                "total_rational_output_bits",
+                work.total_rational_output_bits,
+                |limits, value| limits.max_total_rational_output_bits = value,
+            ),
+        ];
+
+        for (name, required, set) in boundaries {
+            assert!(required > 0, "{name} must be exercised");
+            let mut exact = StaticCollisionLimits::default();
+            set(&mut exact, required);
+            assert_eq!(
+                prove_static_collision_geometry(&model, &pose, 0.0, exact)
+                    .expect_err("exact public budget must retain the blocking affirmative"),
+                expected,
+                "{name} exact limit"
+            );
+
+            let mut one_short = StaticCollisionLimits::default();
+            set(&mut one_short, required - 1);
+            assert_eq!(
+                prove_static_collision_geometry(&model, &pose, 0.0, one_short)
+                    .expect_err("one-short public budget must fail atomically"),
+                StaticCollisionError::ResourceLimitExceeded,
+                "{name} one-short limit"
+            );
+        }
     }
 
     #[test]

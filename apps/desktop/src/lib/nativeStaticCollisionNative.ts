@@ -384,21 +384,21 @@ function parseInspection(value: unknown): NativeStaticCollisionInspection | null
     'status',
     'reason',
     'expectedUnorderedFacePairs',
-    'provenTransversalPairs',
-    'firstProvenTransversalPair',
+    'provenPenetratingPairs',
+    'firstProvenPenetratingPair',
   ])
   if (!record) return null
   const binding = record.binding === null ? null : parseBinding(record.binding)
   const expected = nullableCount(record.expectedUnorderedFacePairs)
-  const proven = nullableCount(record.provenTransversalPairs)
-  const pair = record.firstProvenTransversalPair === null
+  const proven = nullableCount(record.provenPenetratingPairs)
+  const pair = record.firstProvenPenetratingPair === null
     ? null
-    : parseFacePair(record.firstProvenTransversalPair)
+    : parseFacePair(record.firstProvenPenetratingPair)
   if (
     (record.binding !== null && binding === null)
     || expected === undefined
     || proven === undefined
-    || (record.firstProvenTransversalPair !== null && pair === null)
+    || (record.firstProvenPenetratingPair !== null && pair === null)
     || !isDiagnosticReason(record.reason)
   ) return null
 
@@ -406,8 +406,8 @@ function parseInspection(value: unknown): NativeStaticCollisionInspection | null
     status: record.status as CurrentStaticCollisionDiagnostic['status'],
     reason: record.reason,
     expectedUnorderedFacePairs: expected,
-    provenTransversalPairs: proven,
-    firstProvenTransversalPair: pair,
+    provenPenetratingPairs: proven,
+    firstProvenPenetratingPair: pair,
   })
   if (!diagnosticContractIsValid(diagnostic, binding)) return null
   return Object.freeze({ binding, diagnostic })
@@ -421,8 +421,8 @@ function diagnosticContractIsValid(
     status,
     reason,
     expectedUnorderedFacePairs: expected,
-    provenTransversalPairs: proven,
-    firstProvenTransversalPair: pair,
+    provenPenetratingPairs: proven,
+    firstProvenPenetratingPair: pair,
   } = diagnostic
   if (status === 'certified_nonblocking') {
     return binding !== null
@@ -439,7 +439,7 @@ function diagnosticContractIsValid(
       && pair === null
   }
   if (status !== 'blocking' || binding === null || reason === null) return false
-  if (reason === 'proven_transversal_penetration') {
+  if (reason === 'proven_zero_thickness_penetration') {
     return expected !== null
       && expected > 0
       && proven !== null
@@ -510,7 +510,7 @@ function isDiagnosticReason(
   value: unknown,
 ): value is CurrentStaticCollisionDiagnosticReason | null {
   return value === null
-    || value === 'proven_transversal_penetration'
+    || value === 'proven_zero_thickness_penetration'
     || value === 'evidence_unavailable'
     || value === 'resource_limit_exceeded'
     || value === 'inconsistent_state'

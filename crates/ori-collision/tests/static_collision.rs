@@ -201,6 +201,41 @@ fn corner_mountain_valley_400mm_fixture(reverse_source_collections: bool) -> Two
     )
 }
 
+fn corner_mountain_mountain_400mm_fixture(reverse_source_collections: bool) -> TwoHingeFixture {
+    two_hinge_fixture(
+        11,
+        &[
+            (0.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 200.0),
+            (400.0, 400.0),
+            (200.0, 400.0),
+            (0.0, 400.0),
+        ],
+        &[(0, 2, EdgeKind::Mountain), (0, 4, EdgeKind::Mountain)],
+        reverse_source_collections,
+    )
+}
+
+fn corner_mountain_mountain_quadrilateral_400mm_fixture(
+    reverse_source_collections: bool,
+) -> TwoHingeFixture {
+    two_hinge_fixture(
+        10,
+        &[
+            (0.0, 0.0),
+            (200.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 200.0),
+            (400.0, 400.0),
+            (200.0, 400.0),
+            (0.0, 400.0),
+        ],
+        &[(0, 3, EdgeKind::Mountain), (0, 5, EdgeKind::Mountain)],
+        reverse_source_collections,
+    )
+}
+
 fn only_non_hinge_face_pair(model: &MaterialTreeKinematicsModel) -> [FaceId; 2] {
     let mut pairs = model
         .face_ids()
@@ -500,7 +535,7 @@ fn public_entry_reports_midpoint_transversal_matrix_without_collection_or_root_b
 
 #[test]
 fn public_entry_never_promotes_corner_shared_vertex_contact_to_transversal_penetration() {
-    const CASES: [[f64; 2]; 8] = [
+    const CASES: [[f64; 2]; 7] = [
         [10.0, 0.0],
         [0.0, 10.0],
         [45.0, 45.0],
@@ -508,7 +543,6 @@ fn public_entry_never_promotes_corner_shared_vertex_contact_to_transversal_penet
         [91.0, 91.0],
         [135.0, 135.0],
         [179.0, 179.0],
-        [180.0, 180.0],
     ];
 
     for reverse_source_collections in [false, true] {
@@ -545,6 +579,182 @@ fn public_entry_never_promotes_corner_shared_vertex_contact_to_transversal_penet
             }
         }
     }
+}
+
+#[test]
+fn public_entry_promotes_exact_full_fold_coplanar_area_without_order_bias() {
+    for reverse_source_collections in [false, true] {
+        let fixture = corner_mountain_valley_400mm_fixture(reverse_source_collections);
+        let expected_pair = only_non_hinge_face_pair(&fixture.model);
+        let angles = CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .map(|hinge| HingeAngle::new(hinge, 180.0).expect("valid full-fold angle"))
+                .collect(),
+        )
+        .expect("canonical full-fold angles");
+        for root in fixture.model.face_ids().iter().copied() {
+            let pose = fixture
+                .model
+                .solve(Some(root), &angles)
+                .expect("full-fold corner pose");
+            assert_error(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    0.0,
+                    StaticCollisionLimits::default(),
+                ),
+                StaticCollisionError::ProvenTransversalPenetration {
+                    expected_unordered_face_pairs: 3,
+                    proven_transversal_pairs: 1,
+                    first_proven_transversal_pair: expected_pair,
+                },
+            );
+            for thickness in [-0.0, 0.1, 3.0] {
+                assert_error(
+                    prove_static_collision_geometry(
+                        &fixture.model,
+                        &pose,
+                        thickness,
+                        StaticCollisionLimits::default(),
+                    ),
+                    StaticCollisionError::PairEvidenceUnavailable {
+                        expected_unordered_face_pairs: 3,
+                    },
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn public_entry_promotes_exact_quadrilateral_transversal_without_order_bias() {
+    for reverse_source_collections in [false, true] {
+        let fixture =
+            corner_mountain_mountain_quadrilateral_400mm_fixture(reverse_source_collections);
+        let expected_pair = only_non_hinge_face_pair(&fixture.model);
+        assert!(
+            expected_pair.iter().copied().any(|face| {
+                fixture
+                    .model
+                    .face_boundary(face)
+                    .is_some_and(|boundary| boundary.vertices().len() > 3)
+            }),
+            "the proven outer pair must exercise a non-triangular material face"
+        );
+        let angles = CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .map(|hinge| HingeAngle::new(hinge, 135.0).expect("valid deep-fold angle"))
+                .collect(),
+        )
+        .expect("canonical deep-fold angles");
+        for root in fixture.model.face_ids().iter().copied() {
+            let pose = fixture
+                .model
+                .solve(Some(root), &angles)
+                .expect("deep-fold quadrilateral pose");
+            assert_error(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    0.0,
+                    StaticCollisionLimits::default(),
+                ),
+                StaticCollisionError::ProvenTransversalPenetration {
+                    expected_unordered_face_pairs: 3,
+                    proven_transversal_pairs: 1,
+                    first_proven_transversal_pair: expected_pair,
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn triangular_legacy_transversal_cannot_bypass_the_cayley_dual_gate() {
+    let fixture = corner_mountain_mountain_400mm_fixture(false);
+    let expected_pair = only_non_hinge_face_pair(&fixture.model);
+    assert!(expected_pair.iter().copied().all(|face| {
+        fixture
+            .model
+            .face_boundary(face)
+            .is_some_and(|boundary| boundary.vertices().len() == 3)
+    }));
+    let angles = CanonicalHingeAngles::new(
+        fixture
+            .hinges
+            .iter()
+            .copied()
+            .map(|hinge| HingeAngle::new(hinge, 135.0).expect("valid deep-fold angle"))
+            .collect(),
+    )
+    .expect("canonical deep-fold angles");
+    let pose = fixture
+        .model
+        .solve(Some(fixture.model.face_ids()[0]), &angles)
+        .expect("deep-fold triangular pose");
+    let total_legacy_triangle_pairs = fixture
+        .model
+        .face_ids()
+        .iter()
+        .copied()
+        .enumerate()
+        .flat_map(|(first_index, first)| {
+            fixture.model.face_ids()[first_index + 1..]
+                .iter()
+                .copied()
+                .map(move |second| [first, second])
+        })
+        .map(|[first, second]| {
+            let first_triangles = fixture
+                .model
+                .face_boundary(first)
+                .expect("first boundary")
+                .vertices()
+                .len()
+                - 2;
+            let second_triangles = fixture
+                .model
+                .face_boundary(second)
+                .expect("second boundary")
+                .vertices()
+                .len()
+                - 2;
+            first_triangles * second_triangles
+        })
+        .sum::<usize>();
+
+    assert_error(
+        prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.0,
+            StaticCollisionLimits {
+                max_total_triangle_pairs: total_legacy_triangle_pairs,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        StaticCollisionError::ResourceLimitExceeded,
+    );
+    assert_error(
+        prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.0,
+            StaticCollisionLimits::default(),
+        ),
+        StaticCollisionError::ProvenTransversalPenetration {
+            expected_unordered_face_pairs: 3,
+            proven_transversal_pairs: 1,
+            first_proven_transversal_pair: expected_pair,
+        },
+    );
 }
 
 #[test]

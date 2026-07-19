@@ -83,8 +83,8 @@ test('inspection accepts only a relationally valid certified response', async ()
     status: 'certified_nonblocking',
     reason: null,
     expectedUnorderedFacePairs: 0,
-    provenTransversalPairs: 0,
-    firstProvenTransversalPair: null,
+    provenPenetratingPairs: 0,
+    firstProvenPenetratingPair: null,
   }))
 
   const result = await transport.inspect()
@@ -92,7 +92,28 @@ test('inspection accepts only a relationally valid certified response', async ()
   assert.equal(result.diagnostic.status, 'certified_nonblocking')
 })
 
-test('inspection preserves a canonical proven face pair without raw geometry', async () => {
+test('inspection preserves a canonical proven penetrating pair without raw geometry', async () => {
+  const transport = createNativeStaticCollisionNativeTransport(() => ({
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'proven_zero_thickness_penetration',
+    expectedUnorderedFacePairs: 3,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+    },
+  }))
+
+  const result = await transport.inspect()
+  assert.equal(result.diagnostic.reason, 'proven_zero_thickness_penetration')
+  assert.deepEqual(result.diagnostic.firstProvenPenetratingPair, {
+    firstFaceId: FACE_A,
+    secondFaceId: FACE_B,
+  })
+})
+
+test('inspection rejects the retired transversal-only wire contract', async () => {
   const transport = createNativeStaticCollisionNativeTransport(() => ({
     binding: BINDING,
     status: 'blocking',
@@ -105,12 +126,7 @@ test('inspection preserves a canonical proven face pair without raw geometry', a
     },
   }))
 
-  const result = await transport.inspect()
-  assert.equal(result.diagnostic.reason, 'proven_transversal_penetration')
-  assert.deepEqual(result.diagnostic.firstProvenTransversalPair, {
-    firstFaceId: FACE_A,
-    secondFaceId: FACE_B,
-  })
+  await assert.rejects(transport.inspect(), NativeStaticCollisionNativeError)
 })
 
 test('apply and inspection must bind to the exact same native pose generation', async () => {
@@ -123,8 +139,8 @@ test('apply and inspection must bind to the exact same native pose generation', 
       status: 'certified_nonblocking',
       reason: null,
       expectedUnorderedFacePairs: 0,
-      provenTransversalPairs: 0,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: 0,
+      firstProvenPenetratingPair: null,
     }
   })
 
@@ -145,8 +161,8 @@ test('unavailable pose authority is explicit but cannot satisfy apply-and-inspec
       status: 'unavailable',
       reason: 'pose_authority_unavailable',
       expectedUnorderedFacePairs: null,
-      provenTransversalPairs: null,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: null,
+      firstProvenPenetratingPair: null,
     }
   })
 
@@ -164,16 +180,16 @@ test('malformed and contradictory DTOs fail closed', async () => {
       status: 'certified_nonblocking',
       reason: null,
       expectedUnorderedFacePairs: null,
-      provenTransversalPairs: 0,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: 0,
+      firstProvenPenetratingPair: null,
     },
     {
       binding: BINDING,
       status: 'blocking',
-      reason: 'proven_transversal_penetration',
+      reason: 'proven_zero_thickness_penetration',
       expectedUnorderedFacePairs: 3,
-      provenTransversalPairs: 0,
-      firstProvenTransversalPair: {
+      provenPenetratingPairs: 0,
+      firstProvenPenetratingPair: {
         firstFaceId: FACE_A,
         secondFaceId: FACE_B,
       },
@@ -183,8 +199,8 @@ test('malformed and contradictory DTOs fail closed', async () => {
       status: 'blocking',
       reason: 'evidence_unavailable',
       expectedUnorderedFacePairs: 3,
-      provenTransversalPairs: null,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: null,
+      firstProvenPenetratingPair: null,
       rawGeometry: 'private',
     },
     {
@@ -192,8 +208,8 @@ test('malformed and contradictory DTOs fail closed', async () => {
       status: 'blocking',
       reason: 'resource_limit_exceeded',
       expectedUnorderedFacePairs: null,
-      provenTransversalPairs: null,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: null,
+      firstProvenPenetratingPair: null,
     },
   ]
   for (const value of malformed) {
@@ -324,8 +340,8 @@ test('latest-only coordinator serializes exact work and coalesces queued poses',
       status: 'blocking',
       reason: 'evidence_unavailable',
       expectedUnorderedFacePairs: 1,
-      provenTransversalPairs: null,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: null,
+      firstProvenPenetratingPair: null,
     },
   })
 
@@ -381,8 +397,8 @@ test('an active old result cannot settle the latest pose promise', async () => {
       status: 'blocking',
       reason: 'resource_limit_exceeded',
       expectedUnorderedFacePairs: null,
-      provenTransversalPairs: null,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: null,
+      firstProvenPenetratingPair: null,
     },
   })
   assert.equal((await latestPromise).reason, 'resource_limit_exceeded')
@@ -476,8 +492,8 @@ function certifiedInspection(binding: typeof BINDING) {
       status: 'certified_nonblocking' as const,
       reason: null,
       expectedUnorderedFacePairs: 0,
-      provenTransversalPairs: 0,
-      firstProvenTransversalPair: null,
+      provenPenetratingPairs: 0,
+      firstProvenPenetratingPair: null,
     },
   }
 }

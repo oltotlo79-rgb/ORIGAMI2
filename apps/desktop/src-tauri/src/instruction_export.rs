@@ -1281,7 +1281,7 @@ mod tests {
         let empty_project_id = empty.project_id;
         let cancellation = Arc::new(AtomicBool::new(false));
         let empty_error = capture_export_source(
-            &AppState(Mutex::new(empty)),
+            &AppState::new(empty),
             ProjectId::new(),
             empty_project_id,
             0,
@@ -1307,7 +1307,7 @@ mod tests {
         let stale_project_id = stale.project_id;
         let stale_revision = stale.editor.revision();
         let stale_error = capture_export_source(
-            &AppState(Mutex::new(stale)),
+            &AppState::new(stale),
             ProjectId::new(),
             stale_project_id,
             stale_revision,

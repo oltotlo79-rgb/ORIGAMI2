@@ -2332,7 +2332,7 @@ mod tests {
         );
         assert_ne!(reopened.instance_id, original.instance_id);
 
-        let app_state = Arc::new(AppState(Mutex::new(reopened)));
+        let app_state = Arc::new(AppState::new(reopened));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
         {
             let project = lock_project(&app_state).expect("lock reopened project");
@@ -2417,7 +2417,7 @@ mod tests {
 
     #[test]
     fn project_lock_linearizes_same_revision_begin_install_and_later_begin_wins() {
-        let app_state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let app_state = Arc::new(AppState::new(initial_project_state()));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
         let (project_id, revision, fingerprint) = {
             let project = lock_project(&app_state).expect("read begin request");
@@ -2536,7 +2536,7 @@ mod tests {
 
     #[test]
     fn source_limit_begin_preserves_every_occupied_slot_field() {
-        let app_state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let app_state = Arc::new(AppState::new(initial_project_state()));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
         let (project_id, revision, fingerprint, active_source) = {
             let project = lock_project(&app_state).expect("lock source-limit project");
@@ -3705,7 +3705,7 @@ mod tests {
 
     #[test]
     fn commit_closure_rejects_old_generation_and_deep_clone_before_action() {
-        let app_state = AppState(Mutex::new(initial_project_state()));
+        let app_state = AppState::new(initial_project_state());
         let foldability_state = GlobalFlatFoldabilityState::default();
         let old_capability = {
             let project = lock_project(&app_state).expect("lock project");
@@ -3764,7 +3764,7 @@ mod tests {
 
     #[test]
     fn commit_closure_holds_slot_until_action_finishes_then_cancel_clears_authority() {
-        let app_state = Arc::new(AppState(Mutex::new(initial_project_state())));
+        let app_state = Arc::new(AppState::new(initial_project_state()));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
         let capability = {
             let project = lock_project(&app_state).expect("lock project");

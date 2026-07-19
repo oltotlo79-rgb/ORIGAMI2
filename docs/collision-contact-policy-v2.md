@@ -63,19 +63,29 @@ penetrating > indeterminate > touching > separated
 
 ## 5. 現在のnative実姿勢接続
 
-2026-07-19時点で、三角形material faceとbit-exactな紙厚`+0.0`に限定した
-blocking専用の横断証明を、公開静的衝突入口へ接続している。肯定には、同じ
-issuer/poseへ束縛したcanonical exact Cayley姿勢と、保存binary64 affine係数を
-actual mmの有理数へ直接liftした姿勢の双方で、両面relative interiorの横断を
-厳密に証明する必要がある。共有頂点・共有辺上だけの点接触または線接触、
-共面接触、非三角形、正厚、証拠不足、資源上限は、この横断肯定へ入らない。
+2026-07-19時点で、bit-exactな紙厚`+0.0`に限定したblocking専用の
+ゼロ厚み面貫通・重なり証明を、公開静的衝突入口へ接続している。
+三角形どうしの横断肯定には、同じissuer/poseへ束縛したcanonical exact Cayley姿勢
+`E`と、保存binary64 affine係数をactual mmの有理数へ直接liftした姿勢`F`の双方で、
+両面relative interiorの横断を厳密に証明する必要がある。旧zero-thickness集約だけで
+このdual gateを迂回できない。
 
-公開入口は旧zero-thickness解析の全pairとtriangle-pairを先に照合し、その結果の
-`Penetrating`表示を新しい肯定証拠へ流用しない。新旧二段およびCayley内部三段の
-累積workは一つの呼出側上限へ合算し、one-shortでは部分的な肯定結果を返さない。
-証明済み横断はblocking errorにだけ変換し、collision-free proofの発行条件を
-広げない。
+同じexact pose instance、canonical face registry、全unordered face pairおよび
+全triangle-pairを認証済みのzero-thickness集約からは、180度の
+`coplanar_area_overlap`と、少なくとも一方が非三角whole material faceである
+`transversal_crossing`もblocking肯定する。共有頂点・共有辺上だけの点接触、
+線接触または共有要素接触はどちらの肯定経路にも入らない。`-0.0`、正厚、
+証拠不足および資源上限も肯定へ丸めない。
+
+公開入口は旧zero-thickness解析の全pairとtriangle-pairを先に照合し、
+`Penetrating` decisionだけを肯定証拠へ流用しない。上記2種類に限定したexact evidence
+とdecisionの整合、whole material boundaryの頂点数およびpose/registry/pair完全性を
+同時に再検証する。新旧二段およびCayley内部三段の累積workは一つの呼出側上限へ合算し、
+one-shortでは部分的な肯定結果を返さない。
+証明済みのゼロ厚み面貫通・共面正面積重なりはblocking errorにだけ変換し、
+collision-free proofの発行条件を広げない。desktop wire/UIは
+「ゼロ厚み面貫通・重なり」へ一般化し、旧横断専用DTOを受理しない。
 
 これは4×11表の一部の実geometry issuerであり、表そのものを置き換えない。
-正厚の`boundary_area_contact`証拠、有限共有ヒンジcorridor、共面正面積の正式な
-実姿勢issuer、連続経路certificateおよび場所別層順transportは後続段階である。
+正厚の`boundary_area_contact`証拠、有限共有ヒンジcorridor、連続経路certificate
+および場所別層順transportは後続段階である。

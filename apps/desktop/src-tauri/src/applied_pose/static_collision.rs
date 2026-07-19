@@ -77,6 +77,7 @@ pub(super) enum CurrentStaticCollisionDiagnosticStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum CurrentStaticCollisionDiagnosticReason {
+    #[serde(rename = "proven_zero_thickness_penetration")]
     ProvenTransversalPenetration,
     EvidenceUnavailable,
     ResourceLimitExceeded,
@@ -84,7 +85,9 @@ pub(super) enum CurrentStaticCollisionDiagnosticReason {
     PoseAuthorityUnavailable,
 }
 
-/// Canonically ordered identity of the first proven transversal face pair.
+/// Canonically ordered identity of the first proven zero-thickness
+/// penetrating face pair. This includes transversal crossing and coplanar
+/// positive-area overlap, but never point/line/shared-feature contact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CurrentStaticCollisionFacePair {
@@ -100,7 +103,9 @@ pub(crate) struct CurrentStaticCollisionDiagnosticResponse {
     status: CurrentStaticCollisionDiagnosticStatus,
     reason: Option<CurrentStaticCollisionDiagnosticReason>,
     expected_unordered_face_pairs: Option<usize>,
+    #[serde(rename = "provenPenetratingPairs")]
     proven_transversal_pairs: Option<usize>,
+    #[serde(rename = "firstProvenPenetratingPair")]
     first_proven_transversal_pair: Option<CurrentStaticCollisionFacePair>,
 }
 
@@ -126,6 +131,23 @@ struct PreparedCurrentStaticCollision {
     pose_capability: CurrentAppliedPoseCapability,
     geometry_proof: NativeStaticCollisionGeometryProof,
     claims: CurrentStaticCollisionClaims,
+}
+
+/// A blocking worker failure retains the exact, non-clonable B capability so
+/// the diagnostic command can revalidate that same authority before attaching
+/// its binding to a response.
+struct FailedCurrentStaticCollisionPreparation {
+    pose_capability: CurrentAppliedPoseCapability,
+    error: CurrentStaticCollisionError,
+}
+
+impl fmt::Debug for FailedCurrentStaticCollisionPreparation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FailedCurrentStaticCollisionPreparation")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 struct CurrentStaticCollisionCertificateData {
@@ -225,13 +247,17 @@ pub(crate) fn certify_current_static_collision(
     let Some(capability) = capture_current_pose_capability(app_state)? else {
         return Ok(None);
     };
-    let prepared = prepare_static_collision(capability, limits)?;
+    let prepared = prepare_static_collision(capability, limits).map_err(|failure| failure.error)?;
     mint_current_static_collision(app_state, prepared)
 }
 
 /// Runs the current-pose static diagnosis away from both live locks and
 /// returns only stable, redacted categories. The certificate is intentionally
 /// ephemeral because this command is observation-only.
+///
+/// The process-wide permit covers this complete command. Serializing the
+/// preceding apply response with this later inspection remains the frontend
+/// coordinator's responsibility because that transaction spans two IPC calls.
 pub(crate) async fn inspect_current_static_collision(
     app_state: &AppState,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
@@ -242,6 +268,9 @@ async fn inspect_current_static_collision_with_limits(
     app_state: &AppState,
     limits: StaticCollisionLimits,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let permit = app_state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
     let capability = match capture_current_pose_capability(app_state) {
         Ok(Some(capability)) => capability,
         Ok(None) => {
@@ -252,16 +281,19 @@ async fn inspect_current_static_collision_with_limits(
         Err(error) => return diagnostic_response_from_error(error, None),
     };
     let binding = CurrentAppliedPoseBindingResponse::from_claims(&capability.claims);
-    let prepared =
-        tauri::async_runtime::spawn_blocking(move || prepare_static_collision(capability, limits))
-            .await
-            .map_err(|_| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
+    let (permit, prepared) = tauri::async_runtime::spawn_blocking(move || {
+        (permit, prepare_static_collision(capability, limits))
+    })
+    .await
+    .map_err(|_| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
 
     let prepared = match prepared {
         Ok(prepared) => prepared,
-        Err(error) => return diagnostic_response_from_error(error, Some(binding)),
+        Err(failure) => {
+            return diagnostic_response_from_revalidated_failure(app_state, *failure);
+        }
     };
-    match mint_current_static_collision(app_state, prepared) {
+    let response = match mint_current_static_collision(app_state, prepared) {
         Ok(Some(certificate)) => {
             let response =
                 CurrentStaticCollisionDiagnosticResponse::certified_nonblocking(&certificate);
@@ -272,7 +304,9 @@ async fn inspect_current_static_collision_with_limits(
             None,
         )),
         Err(error) => diagnostic_response_from_error(error, Some(binding)),
-    }
+    };
+    drop(permit);
+    response
 }
 
 impl CurrentStaticCollisionDiagnosticResponse {
@@ -382,6 +416,33 @@ fn diagnostic_response_from_error(
     Ok(response)
 }
 
+fn diagnostic_response_from_revalidated_failure(
+    app_state: &AppState,
+    failure: FailedCurrentStaticCollisionPreparation,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let FailedCurrentStaticCollisionPreparation {
+        pose_capability,
+        error,
+    } = failure;
+    let binding = CurrentAppliedPoseBindingResponse::from_claims(&pose_capability.claims);
+    // Construct the bound blocking DTO inside the exact-B revalidation
+    // closure, while both project and pose locks remain held. A later change
+    // after those locks are released is rejected by the frontend's binding
+    // gate; it can never turn this response into authority for another pose.
+    let revalidated = super::with_revalidated_current_applied_pose_capability(
+        app_state,
+        &pose_capability,
+        move |_, _| diagnostic_response_from_error(error, Some(binding)),
+    )
+    .map_err(|_| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
+    match revalidated {
+        Some(response) => response,
+        None => Ok(CurrentStaticCollisionDiagnosticResponse::pose_unavailable(
+            None,
+        )),
+    }
+}
+
 /// Revalidates the embedded B capability and runs an observation-only action
 /// while the project and pose slot remain locked.
 ///
@@ -443,22 +504,32 @@ fn capture_current_pose_capability(
 fn prepare_static_collision(
     capability: CurrentAppliedPoseCapability,
     limits: StaticCollisionLimits,
-) -> Result<PreparedCurrentStaticCollision, CurrentStaticCollisionError> {
+) -> Result<PreparedCurrentStaticCollision, Box<FailedCurrentStaticCollisionPreparation>> {
     if !detached_pose_capability_is_internally_consistent(&capability) {
-        return Err(CurrentStaticCollisionError::InternalInconsistency);
+        return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+            pose_capability: capability,
+            error: CurrentStaticCollisionError::InternalInconsistency,
+        }));
     }
-    let pose_claims = &capability.claims;
-    let paper_thickness_mm = f64::from_bits(pose_claims.paper_thickness_bits);
+    let paper_thickness_mm = f64::from_bits(capability.claims.paper_thickness_bits);
     // Every native geometry error remains blocking here. In particular, a
     // proven transversal penetration exits before Prepared B or certificate C
     // can be constructed.
-    let geometry_proof = prove_static_collision_geometry(
-        pose_claims.model.as_ref(),
-        pose_claims.pose.as_ref(),
+    let geometry_proof = match prove_static_collision_geometry(
+        capability.claims.model.as_ref(),
+        capability.claims.pose.as_ref(),
         paper_thickness_mm,
         limits,
-    )
-    .map_err(map_static_collision_error)?;
+    ) {
+        Ok(proof) => proof,
+        Err(error) => {
+            return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+                pose_capability: capability,
+                error: map_static_collision_error(error),
+            }));
+        }
+    };
+    let pose_claims = &capability.claims;
     let claims = CurrentStaticCollisionClaims {
         project_instance_id: pose_claims.project_instance_id,
         project_id: pose_claims.project_id,
@@ -478,7 +549,13 @@ fn prepare_static_collision(
         claims,
     };
     if !prepared_static_collision_is_internally_consistent(&prepared) {
-        return Err(CurrentStaticCollisionError::InternalInconsistency);
+        let PreparedCurrentStaticCollision {
+            pose_capability, ..
+        } = prepared;
+        return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+            pose_capability,
+            error: CurrentStaticCollisionError::InternalInconsistency,
+        }));
     }
     Ok(prepared)
 }
@@ -627,7 +704,7 @@ fn map_pose_authority_error(error: super::PoseAuthorityError) -> CurrentStaticCo
 
 #[cfg(test)]
 mod tests {
-    use std::{marker::PhantomData, path::PathBuf, sync::Mutex};
+    use std::{marker::PhantomData, path::PathBuf};
 
     use ori_collision::{StaticCollisionError, prove_static_collision_geometry};
     use ori_core::{Command, create_rectangular_sheet};
@@ -773,7 +850,7 @@ mod tests {
     ) -> (AppState, CurrentStaticCollisionCertificate) {
         let mut project = no_hinge_project_with_thickness(thickness_mm);
         adopt_no_hinge_pose(&mut project);
-        let state = AppState(Mutex::new(project));
+        let state = AppState::new(project);
         let certificate =
             certify_current_static_collision(&state, StaticCollisionLimits::default())
                 .expect("certification")
@@ -793,6 +870,179 @@ mod tests {
             .expect("capture")
             .expect("current pose");
         CurrentAppliedPoseBindingResponse::from_claims(&capability.claims)
+    }
+
+    fn adopted_no_hinge_state() -> AppState {
+        let mut project = no_hinge_project();
+        adopt_no_hinge_pose(&mut project);
+        AppState::new(project)
+    }
+
+    fn blocking_failure_from_current(state: &AppState) -> FailedCurrentStaticCollisionPreparation {
+        let capability = capture_current_pose_capability(state)
+            .expect("capture")
+            .expect("current pose");
+        match prepare_static_collision(
+            capability,
+            StaticCollisionLimits {
+                max_faces: 0,
+                ..StaticCollisionLimits::default()
+            },
+        ) {
+            Ok(_) => panic!("zero face limit must block preparation"),
+            Err(failure) => *failure,
+        }
+    }
+
+    fn unavailable_diagnostic() -> CurrentStaticCollisionDiagnosticResponse {
+        CurrentStaticCollisionDiagnosticResponse::pose_unavailable(None)
+    }
+
+    #[test]
+    fn busy_process_worker_rejects_inspection_without_touching_current_pose() {
+        let state = adopted_no_hinge_state();
+        let binding_before = current_binding(&state);
+        let (authority, authority_before, document_before) = {
+            let project = state.0.lock().expect("project lock");
+            let authority = project.applied_pose_authority.clone();
+            let authority_before = authority.test_snapshot().expect("authority snapshot");
+            (authority, authority_before, project.document())
+        };
+        let permit = state
+            .try_acquire_native_pose_worker()
+            .expect("first process worker permit");
+
+        let error = tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
+            &state,
+            StaticCollisionLimits::default(),
+        ))
+        .expect_err("busy worker must reject another inspection");
+        assert_eq!(error, CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE);
+        assert_eq!(
+            authority.test_snapshot().expect("unchanged authority"),
+            authority_before
+        );
+        {
+            let project = state.0.lock().expect("project lock");
+            assert_eq!(project.document(), document_before);
+        }
+        assert_eq!(current_binding(&state), binding_before);
+
+        drop(permit);
+        assert!(!state.native_pose_worker_is_busy());
+        let diagnosis = tauri::async_runtime::block_on(
+            inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
+        )
+        .expect("released permit must allow inspection");
+        assert_eq!(
+            diagnosis.status,
+            CurrentStaticCollisionDiagnosticStatus::CertifiedNonblocking
+        );
+        assert!(!state.native_pose_worker_is_busy());
+    }
+
+    #[test]
+    fn current_blocking_failure_keeps_its_exact_binding() {
+        let state = adopted_no_hinge_state();
+        let expected_binding = current_binding(&state);
+        let response = diagnostic_response_from_revalidated_failure(
+            &state,
+            blocking_failure_from_current(&state),
+        )
+        .expect("current blocking response");
+        assert_eq!(
+            response,
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(expected_binding),
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::ResourceLimitExceeded),
+                expected_unordered_face_pairs: None,
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            }
+        );
+    }
+
+    #[test]
+    fn post_return_pose_change_is_visible_to_the_frontend_binding_gate() {
+        let state = adopted_no_hinge_state();
+        let response = diagnostic_response_from_revalidated_failure(
+            &state,
+            blocking_failure_from_current(&state),
+        )
+        .expect("bound blocking response");
+        let returned_binding = response.binding.expect("current response binding");
+
+        // Native exact-B revalidation covered response construction. Once the
+        // locks are released a later pose may legitimately replace it, and the
+        // frontend must reject the old DTO by this complete binding mismatch.
+        adopt_no_hinge_pose_in_state(&state);
+        assert_ne!(returned_binding, current_binding(&state));
+        assert_eq!(
+            response.status,
+            CurrentStaticCollisionDiagnosticStatus::Blocking
+        );
+    }
+
+    #[test]
+    fn stale_blocking_failure_is_unbound_after_readoption_edit_reopen_or_foreign_slot() {
+        let same_angle_state = adopted_no_hinge_state();
+        let same_angle_failure = blocking_failure_from_current(&same_angle_state);
+        let original_binding = current_binding(&same_angle_state);
+        adopt_no_hinge_pose_in_state(&same_angle_state);
+        assert_ne!(current_binding(&same_angle_state), original_binding);
+        assert_eq!(
+            diagnostic_response_from_revalidated_failure(&same_angle_state, same_angle_failure,)
+                .expect("same-angle stale diagnosis"),
+            unavailable_diagnostic()
+        );
+
+        let edited_state = adopted_no_hinge_state();
+        let edited_failure = blocking_failure_from_current(&edited_state);
+        {
+            let mut project = edited_state.0.lock().expect("project lock");
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            execute_command(
+                &mut project,
+                project_id,
+                revision,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(1.0, 1.0),
+                },
+            )
+            .expect("edit");
+        }
+        assert_eq!(
+            diagnostic_response_from_revalidated_failure(&edited_state, edited_failure)
+                .expect("post-edit stale diagnosis"),
+            unavailable_diagnostic()
+        );
+
+        let reopened_state = adopted_no_hinge_state();
+        let reopened_failure = blocking_failure_from_current(&reopened_state);
+        {
+            let mut project = reopened_state.0.lock().expect("project lock");
+            let document = project.document();
+            let replacement =
+                ProjectState::from_document(document, PathBuf::from("same-project.ori2"));
+            commit_project_replacement(&mut project, replacement).expect("reopen");
+        }
+        assert_eq!(
+            diagnostic_response_from_revalidated_failure(&reopened_state, reopened_failure)
+                .expect("post-reopen stale diagnosis"),
+            unavailable_diagnostic()
+        );
+
+        let source_state = adopted_no_hinge_state();
+        let foreign_failure = blocking_failure_from_current(&source_state);
+        let foreign_state = adopted_no_hinge_state();
+        assert_eq!(
+            diagnostic_response_from_revalidated_failure(&foreign_state, foreign_failure)
+                .expect("foreign-slot stale diagnosis"),
+            unavailable_diagnostic()
+        );
     }
 
     #[test]
@@ -882,7 +1132,7 @@ mod tests {
     fn native_geometry_proof_runs_after_project_and_pose_locks_are_released() {
         let mut project = no_hinge_project();
         adopt_no_hinge_pose(&mut project);
-        let state = AppState(Mutex::new(project));
+        let state = AppState::new(project);
         let capability = capture_current_pose_capability(&state)
             .expect("capture")
             .expect("current pose");
@@ -956,7 +1206,7 @@ mod tests {
 
         let mut other_project = no_hinge_project();
         adopt_no_hinge_pose(&mut other_project);
-        let other_state = AppState(Mutex::new(other_project));
+        let other_state = AppState::new(other_project);
         assert!(
             with_revalidated_current_static_collision_certificate(
                 &other_state,
@@ -972,7 +1222,7 @@ mod tests {
     fn stale_between_lock_free_proof_and_mint_is_rejected() {
         let mut project = no_hinge_project();
         adopt_no_hinge_pose(&mut project);
-        let state = AppState(Mutex::new(project));
+        let state = AppState::new(project);
         let prepared = prepared_from_current(&state);
 
         adopt_no_hinge_pose_in_state(&state);
@@ -1097,7 +1347,7 @@ mod tests {
             fixed_face_id: Some(topology.faces[0].id),
             complete_hinge_angles,
         };
-        let state = AppState(Mutex::new(project));
+        let state = AppState::new(project);
         let applied = tauri::async_runtime::block_on(
             crate::applied_pose::apply_current_native_pose(&state, request),
         )
@@ -1156,16 +1406,16 @@ mod tests {
         );
         let encoded = serde_json::to_value(diagnosis).expect("serialize diagnosis");
         assert_eq!(encoded["status"], "blocking");
-        assert_eq!(encoded["reason"], "proven_transversal_penetration");
+        assert_eq!(encoded["reason"], "proven_zero_thickness_penetration");
         assert_eq!(encoded["expectedUnorderedFacePairs"], 3);
-        assert_eq!(encoded["provenTransversalPairs"], 1);
+        assert_eq!(encoded["provenPenetratingPairs"], 1);
         assert_eq!(encoded["binding"]["poseGeneration"], "1");
         assert_eq!(
-            encoded["firstProvenTransversalPair"]["firstFaceId"],
+            encoded["firstProvenPenetratingPair"]["firstFaceId"],
             serde_json::to_value(expected_pair[0]).expect("serialize first face")
         );
         assert_eq!(
-            encoded["firstProvenTransversalPair"]["secondFaceId"],
+            encoded["firstProvenPenetratingPair"]["secondFaceId"],
             serde_json::to_value(expected_pair[1]).expect("serialize second face")
         );
         let object = encoded.as_object().expect("diagnosis object");
@@ -1213,7 +1463,7 @@ mod tests {
             }],
         };
         adopt_request(&mut project, request);
-        let state = AppState(Mutex::new(project));
+        let state = AppState::new(project);
         let binding = current_binding(&state);
 
         assert!(matches!(
@@ -1247,7 +1497,7 @@ mod tests {
     fn production_diagnosis_only_reports_safe_after_c_mint_and_fails_closed_otherwise() {
         let mut safe_project = no_hinge_project();
         adopt_no_hinge_pose(&mut safe_project);
-        let safe_state = AppState(Mutex::new(safe_project));
+        let safe_state = AppState::new(safe_project);
         let safe_binding = current_binding(&safe_state);
         assert_eq!(
             tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
@@ -1285,7 +1535,7 @@ mod tests {
             "resource exhaustion must never become a safe success"
         );
 
-        let unavailable_state = AppState(Mutex::new(no_hinge_project()));
+        let unavailable_state = AppState::new(no_hinge_project());
         assert_eq!(
             tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
                 &unavailable_state,

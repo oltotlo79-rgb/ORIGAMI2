@@ -7,7 +7,7 @@ use ori_kinematics::{
 use thiserror::Error;
 
 use crate::{
-    TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
+    IntersectionEvidenceV2, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
     cayley::{
         ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
         scan_bound_pose_for_proven_transversal_penetration,
@@ -129,8 +129,15 @@ pub enum StaticCollisionError {
         expected_unordered_face_pairs: usize,
     },
     #[error(
-        "static collision proved {proven_transversal_pairs} transversal penetrating face pairs among {expected_unordered_face_pairs} unordered face pairs"
+        "static collision proved {proven_transversal_pairs} zero-thickness penetrating face pairs among {expected_unordered_face_pairs} unordered face pairs"
     )]
+    /// Blocking zero-thickness penetration diagnostic.
+    ///
+    /// The historical public Rust variant and field names are retained for
+    /// crate API compatibility. In addition to the Cayley dual-gated transversal path,
+    /// this diagnostic now admits issuer-bound exact coplanar positive-area
+    /// overlap and exact transversal crossing involving a non-triangular
+    /// whole material face.
     ProvenTransversalPenetration {
         expected_unordered_face_pairs: usize,
         proven_transversal_pairs: usize,
@@ -368,11 +375,8 @@ pub fn prove_static_collision_geometry(
         },
     )
     .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
-    let scan = scan_authenticated_zero_thickness_pairs(
-        &analysis,
-        face_count,
-        expected_unordered_face_pairs,
-    )?;
+    let scan =
+        scan_authenticated_zero_thickness_pairs(&analysis, pose, expected_unordered_face_pairs)?;
     if scan.enumerated_unordered_face_pairs != expected_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
@@ -384,6 +388,10 @@ pub fn prove_static_collision_geometry(
 
     // A blocking decision never short-circuits the canonical pair scan.
     // Resource or evidence failures still fail immediately and atomically.
+    // `scan_authenticated_zero_thickness_pairs` also authenticates that its
+    // aggregate is for this exact pose instance, that face identity/order is
+    // the pose's canonical registry, and that every unordered face pair and
+    // every constituent triangle pair was covered.
     // Multi-face diagnostics cannot issue the public geometry proof yet:
     // every material tree contains at least one shared hinge and the finite
     // hinge model remains mandatory. Keeping the only proof constructor in
@@ -391,6 +399,24 @@ pub fn prove_static_collision_geometry(
     // depending on today's decision mix.
     if scan.blocking_unordered_face_pairs > scan.enumerated_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    if scan.proven_zero_thickness_penetrating_pairs > scan.blocking_unordered_face_pairs
+        || (scan.proven_zero_thickness_penetrating_pairs == 0)
+            != scan.first_proven_zero_thickness_penetrating_pair.is_none()
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    if paper_thickness_mm.to_bits() == 0.0_f64.to_bits()
+        && scan.proven_zero_thickness_penetrating_pairs > 0
+    {
+        let [first, second] = scan
+            .first_proven_zero_thickness_penetrating_pair
+            .ok_or(StaticCollisionError::InconsistentMaterialPose)?;
+        return Err(StaticCollisionError::ProvenTransversalPenetration {
+            expected_unordered_face_pairs,
+            proven_transversal_pairs: scan.proven_zero_thickness_penetrating_pairs,
+            first_proven_transversal_pair: [first, second],
+        });
     }
     let transversal_limits = (paper_thickness_mm.to_bits() == 0.0_f64.to_bits())
         .then(|| remaining_proven_transversal_scan_limits(limits, analysis.work()))
@@ -513,6 +539,8 @@ struct ZeroThicknessDiagnosticScan {
     expected_triangle_pairs: usize,
     analyzed_triangle_pairs: usize,
     blocking_unordered_face_pairs: usize,
+    proven_zero_thickness_penetrating_pairs: usize,
+    first_proven_zero_thickness_penetrating_pair: Option<[FaceId; 2]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,15 +548,27 @@ struct ZeroThicknessPairRecord {
     expected_triangle_pairs: usize,
     analyzed_triangle_pairs: usize,
     is_blocking: bool,
+    proves_zero_thickness_penetration: bool,
 }
 
 fn scan_authenticated_zero_thickness_pairs(
     analysis: &AuthenticatedZeroThicknessPose<'_>,
-    face_count: usize,
+    pose: &MaterialTreePose,
     expected_unordered_face_pairs: usize,
 ) -> Result<ZeroThicknessDiagnosticScan, StaticCollisionError> {
+    if !analysis.is_for_pose(pose)
+        || analysis.face_count() != pose.face_ids().len()
+        || pose
+            .face_ids()
+            .iter()
+            .copied()
+            .enumerate()
+            .any(|(index, face)| analysis.face_id(index) != Some(face))
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
     scan_zero_thickness_pair_records(
-        face_count,
+        pose.face_ids(),
         expected_unordered_face_pairs,
         |first_face_index, second_face_index| {
             let dispatch = analysis
@@ -538,9 +578,28 @@ fn scan_authenticated_zero_thickness_pairs(
                 return Err(StaticCollisionError::InconsistentMaterialPose);
             }
             let decision = dispatch.decision();
-            // Retain an explicit evidence read until the complete native
-            // diagnostic snapshot carries the value itself.
-            let _evidence = dispatch.evidence();
+            let evidence = dispatch.evidence();
+            let is_penetrating_geometry = matches!(
+                evidence,
+                IntersectionEvidenceV2::TransversalCrossing
+                    | IntersectionEvidenceV2::CoplanarAreaOverlap
+            );
+            if is_penetrating_geometry != matches!(decision, TopologyContactDecision::Penetrating) {
+                return Err(StaticCollisionError::InconsistentMaterialPose);
+            }
+            let first_boundary_vertices = analysis
+                .face_boundary_vertex_count(first_face_index)
+                .ok_or(StaticCollisionError::InconsistentMaterialPose)?;
+            let second_boundary_vertices = analysis
+                .face_boundary_vertex_count(second_face_index)
+                .ok_or(StaticCollisionError::InconsistentMaterialPose)?;
+            let proves_zero_thickness_penetration =
+                legacy_dispatch_proves_zero_thickness_penetration(
+                    evidence,
+                    decision,
+                    first_boundary_vertices,
+                    second_boundary_vertices,
+                );
             Ok(ZeroThicknessPairRecord {
                 expected_triangle_pairs: dispatch.expected_triangle_pairs(),
                 analyzed_triangle_pairs: dispatch.analyzed_triangle_pairs(),
@@ -550,20 +609,53 @@ fn scan_authenticated_zero_thickness_pairs(
                         | TopologyContactDecision::Touching
                         | TopologyContactDecision::AllowedSharedVertexContact
                 ),
+                proves_zero_thickness_penetration,
             })
         },
     )
 }
 
+const fn legacy_dispatch_proves_zero_thickness_penetration(
+    evidence: IntersectionEvidenceV2,
+    decision: TopologyContactDecision,
+    first_boundary_vertices: usize,
+    second_boundary_vertices: usize,
+) -> bool {
+    // Exact coplanar positive-area overlap is a whole-face affirmative.
+    // Exact transversal evidence is admitted here only where the Cayley
+    // triangle-only bridge cannot represent at least one whole material
+    // face. A triangle/triangle transversal must continue through Cayley's
+    // exact-E plus direct-lift-F dual gate below; legacy evidence alone must
+    // never weaken that established admission rule.
+    if !matches!(decision, TopologyContactDecision::Penetrating) {
+        return false;
+    }
+    match evidence {
+        IntersectionEvidenceV2::CoplanarAreaOverlap => true,
+        IntersectionEvidenceV2::TransversalCrossing => {
+            first_boundary_vertices > 3 || second_boundary_vertices > 3
+        }
+        _ => false,
+    }
+}
+
 fn scan_zero_thickness_pair_records(
-    face_count: usize,
+    face_ids: &[FaceId],
     expected_unordered_face_pairs: usize,
     mut record_for: impl FnMut(usize, usize) -> Result<ZeroThicknessPairRecord, StaticCollisionError>,
 ) -> Result<ZeroThicknessDiagnosticScan, StaticCollisionError> {
-    let mut pair_work = UnorderedFacePairs::new(face_count);
+    if !face_ids
+        .windows(2)
+        .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    let mut pair_work = UnorderedFacePairs::new(face_ids.len());
     let mut expected_triangle_pairs = 0_usize;
     let mut analyzed_triangle_pairs = 0_usize;
     let mut blocking_unordered_face_pairs = 0_usize;
+    let mut proven_zero_thickness_penetrating_pairs = 0_usize;
+    let mut first_proven_zero_thickness_penetrating_pair = None;
     for (first_face_index, second_face_index) in pair_work.by_ref() {
         let record = record_for(first_face_index, second_face_index)?;
         if record.expected_triangle_pairs != record.analyzed_triangle_pairs {
@@ -580,6 +672,16 @@ fn scan_zero_thickness_pair_records(
                 .checked_add(1)
                 .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
         }
+        if record.proves_zero_thickness_penetration {
+            if !record.is_blocking {
+                return Err(StaticCollisionError::InconsistentMaterialPose);
+            }
+            proven_zero_thickness_penetrating_pairs = proven_zero_thickness_penetrating_pairs
+                .checked_add(1)
+                .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
+            first_proven_zero_thickness_penetrating_pair
+                .get_or_insert([face_ids[first_face_index], face_ids[second_face_index]]);
+        }
     }
     if pair_work.enumerated() != expected_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
@@ -589,6 +691,8 @@ fn scan_zero_thickness_pair_records(
         expected_triangle_pairs,
         analyzed_triangle_pairs,
         blocking_unordered_face_pairs,
+        proven_zero_thickness_penetrating_pairs,
+        first_proven_zero_thickness_penetrating_pair,
     })
 }
 
@@ -690,9 +794,16 @@ mod tests {
         ProvenTransversalScanError, ProvenTransversalScanSummary, StaticCollisionError,
         StaticCollisionLimits, UnorderedFacePairs, ZeroThicknessAnalysisWork,
         ZeroThicknessPairRecord, checked_unordered_pair_count, finish_proven_transversal_scan,
-        map_proven_transversal_scan_error, remaining_proven_transversal_scan_limits,
-        scan_zero_thickness_pair_records,
+        legacy_dispatch_proves_zero_thickness_penetration, map_proven_transversal_scan_error,
+        remaining_proven_transversal_scan_limits, scan_zero_thickness_pair_records,
     };
+    use crate::{IntersectionEvidenceV2, TopologyContactDecision};
+
+    fn canonical_face_ids(count: usize) -> Vec<FaceId> {
+        let mut faces = (0..count).map(|_| FaceId::new()).collect::<Vec<_>>();
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        faces
+    }
 
     #[test]
     fn default_rational_allocation_limits_are_finite_and_cover_one_value() {
@@ -747,13 +858,15 @@ mod tests {
 
     #[test]
     fn diagnostic_scan_does_not_stop_after_the_first_blocking_pair() {
+        let faces = canonical_face_ids(3);
         let mut visited = Vec::new();
-        let scan = scan_zero_thickness_pair_records(3, 3, |first, second| {
+        let scan = scan_zero_thickness_pair_records(&faces, 3, |first, second| {
             visited.push((first, second));
             Ok(ZeroThicknessPairRecord {
                 expected_triangle_pairs: 2,
                 analyzed_triangle_pairs: 2,
                 is_blocking: visited.len() == 1,
+                proves_zero_thickness_penetration: visited.len() == 1,
             })
         })
         .expect("complete diagnostic scan");
@@ -763,29 +876,38 @@ mod tests {
         assert_eq!(scan.expected_triangle_pairs, 6);
         assert_eq!(scan.analyzed_triangle_pairs, 6);
         assert_eq!(scan.blocking_unordered_face_pairs, 1);
+        assert_eq!(scan.proven_zero_thickness_penetrating_pairs, 1);
+        assert_eq!(
+            scan.first_proven_zero_thickness_penetrating_pair,
+            Some([faces[0], faces[1]])
+        );
     }
 
     #[test]
     fn diagnostic_scan_rejects_incomplete_or_miscounted_coverage() {
+        let two_faces = canonical_face_ids(2);
         assert_eq!(
-            scan_zero_thickness_pair_records(2, 1, |_, _| {
+            scan_zero_thickness_pair_records(&two_faces, 1, |_, _| {
                 Ok(ZeroThicknessPairRecord {
                     expected_triangle_pairs: 1,
                     analyzed_triangle_pairs: 0,
                     is_blocking: true,
+                    proves_zero_thickness_penetration: false,
                 })
             }),
             Err(StaticCollisionError::InconsistentMaterialPose)
         );
 
+        let three_faces = canonical_face_ids(3);
         let mut calls = 0;
         assert_eq!(
-            scan_zero_thickness_pair_records(3, 2, |_, _| {
+            scan_zero_thickness_pair_records(&three_faces, 2, |_, _| {
                 calls += 1;
                 Ok(ZeroThicknessPairRecord {
                     expected_triangle_pairs: 1,
                     analyzed_triangle_pairs: 1,
                     is_blocking: false,
+                    proves_zero_thickness_penetration: false,
                 })
             }),
             Err(StaticCollisionError::InconsistentMaterialPose)
@@ -794,34 +916,93 @@ mod tests {
             calls, 3,
             "expected-pair mismatch is checked after the complete scan"
         );
+
+        let mut noncanonical_faces = three_faces;
+        noncanonical_faces.swap(0, 1);
+        assert_eq!(
+            scan_zero_thickness_pair_records(&noncanonical_faces, 3, |_, _| unreachable!()),
+            Err(StaticCollisionError::InconsistentMaterialPose)
+        );
     }
 
     #[test]
     fn diagnostic_scan_counts_nonblocking_pairs_and_rejects_total_overflow() {
-        let scan = scan_zero_thickness_pair_records(3, 3, |_, _| {
+        let faces = canonical_face_ids(3);
+        let scan = scan_zero_thickness_pair_records(&faces, 3, |_, _| {
             Ok(ZeroThicknessPairRecord {
                 expected_triangle_pairs: 1,
                 analyzed_triangle_pairs: 1,
                 is_blocking: false,
+                proves_zero_thickness_penetration: false,
             })
         })
         .expect("complete nonblocking diagnostic scan");
         assert_eq!(scan.blocking_unordered_face_pairs, 0);
+        assert_eq!(scan.proven_zero_thickness_penetrating_pairs, 0);
+        assert_eq!(scan.first_proven_zero_thickness_penetrating_pair, None);
 
         let mut calls = 0;
         assert_eq!(
-            scan_zero_thickness_pair_records(3, 3, |_, _| {
+            scan_zero_thickness_pair_records(&faces, 3, |_, _| {
                 calls += 1;
                 let count = if calls == 1 { usize::MAX } else { 1 };
                 Ok(ZeroThicknessPairRecord {
                     expected_triangle_pairs: count,
                     analyzed_triangle_pairs: count,
                     is_blocking: false,
+                    proves_zero_thickness_penetration: false,
                 })
             }),
             Err(StaticCollisionError::ResourceLimitExceeded)
         );
         assert_eq!(calls, 2);
+
+        assert_eq!(
+            scan_zero_thickness_pair_records(&faces[..2], 1, |_, _| {
+                Ok(ZeroThicknessPairRecord {
+                    expected_triangle_pairs: 1,
+                    analyzed_triangle_pairs: 1,
+                    is_blocking: false,
+                    proves_zero_thickness_penetration: true,
+                })
+            }),
+            Err(StaticCollisionError::InconsistentMaterialPose)
+        );
+    }
+
+    #[test]
+    fn legacy_affirmative_keeps_triangle_transversal_behind_the_cayley_dual_gate() {
+        assert!(!legacy_dispatch_proves_zero_thickness_penetration(
+            IntersectionEvidenceV2::TransversalCrossing,
+            TopologyContactDecision::Penetrating,
+            3,
+            3,
+        ));
+        assert!(legacy_dispatch_proves_zero_thickness_penetration(
+            IntersectionEvidenceV2::TransversalCrossing,
+            TopologyContactDecision::Penetrating,
+            4,
+            3,
+        ));
+        assert!(legacy_dispatch_proves_zero_thickness_penetration(
+            IntersectionEvidenceV2::CoplanarAreaOverlap,
+            TopologyContactDecision::Penetrating,
+            3,
+            3,
+        ));
+        for evidence in [
+            IntersectionEvidenceV2::PointContact,
+            IntersectionEvidenceV2::BoundaryLineContact,
+            IntersectionEvidenceV2::SharedFeatureContact,
+            IntersectionEvidenceV2::BoundaryAreaContact,
+        ] {
+            assert!(!legacy_dispatch_proves_zero_thickness_penetration(
+                evidence,
+                TopologyContactDecision::Touching,
+                4,
+                4,
+            ));
+        }
     }
 
     #[test]

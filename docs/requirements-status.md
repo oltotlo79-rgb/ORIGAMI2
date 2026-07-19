@@ -27,21 +27,31 @@ blockingな`indeterminate`へ閉じる。
 
 2026-07-19追記: native binary64姿勢と有理Cayley姿勢の全境界直接差分観測は、
 privateな`MeasuredBinary64AffineEnvelope`として実装した。同じissuer/pose instance、
-共有頂点、hinge端点・中点、構造・保存・厳密算術上限に加え、測定元の
-`RationalCayleyTreePose`であるexact `E`そのものを安全なborrowで保持する。
-参照identityが異なる独立再生成`E1/E2`のenvelope組替えを拒否するが、正式proof ID、
-admission、正厚、renderer、collision classifierまたはmutation authorityを持たない。
-actual-mm閉有理区間のblocking-only横断primitiveもprivate synthetic基盤として実装したが、
-`E` / envelope / topology / pairを認証するbridgeとproduction呼出しは存在せず、
-`ProvenPenetrating`以外は全て`Unresolved`である。したがってSIM-010の状態と完成率は
-変更せず、次にこのbridgeを厚さ0のproduction blocking経路へ接続する。
+共有頂点、hinge端点・中点、構造・保存・厳密算術上限に加え、測定元のexact `E`
+そのものをpointer identity付きの安全なborrowで保持し、独立再生成`E1/E2`との
+envelope組替えを拒否する。この`E`と閉有理envelopeを認証するprivate actual-mm scanも、
+三角形のmaterial faceだけを対象として実装した。scanは認証済みexact境界とhinge registryから
+topologyを内部導出し、全canonical unordered face pairを走査する。肯定のdual gateは、
+canonical exact `E`のzero-width厳密横断と、同じissuer-bound poseの保存binary64 affine係数・
+rest頂点をactual-mm `BigRational`へ直接liftした実在triangleのzero-width厳密横断の双方である。
+measured envelopeはexact pointer/pose authorityとdirect-lift各点のradius内包含を再検証する
+だけで、独立per-face boxを共有点へweldしたり貫通幾何へ使ったりしない。
+400 mm実fixtureでは角起点V字の正順/逆順・全root・指定全角度を貫通0、中点起点を
+135/179度だけ貫通、90/91/180度は`Unresolved`として固定した。入力厚さはbit表現まで
+`+0.0`だけを許可する。正厚、共有ヒンジ、polygon material face、公開proof/診断、
+desktop/production/SIM-010への接続は未実装であり、SIM-010の状態と完成率は変更しない。
 
 2026-07-19追記: Cayley有理核はallocation件数・個別bit・総bitを含む有限workの
 原子的な再開・合算まで強化した。厚さ0幾何も入力、保持clone、演算、中間値、
 GCD fallback、logical BigInt allocation、出力を一つの単調meterで全canonical unordered face pairへ累積し、
-全pair dispatchを準備時に事前計算する。公開静的診断はblocking decisionで短絡せず
-pair数とtriangle-pair数を全件照合するが、複数面では有限ヒンジmodel未完成のため
-安全証明を発行せず`PairEvidenceUnavailable`へ閉じる。これは分類基盤の内部品質であり、
+全pair dispatchを準備時に事前計算する。上記private scanでもexact側とbinary64 direct-lift側の
+全pairおよびmeasured containment再検証が同じ再開・合算meterとatomic one-short境界を共有し、
+各canonical pairの結果を欠落なく保持する。共有頂点では、共有occurrenceがbit-exactに同じ
+zero-width singletonであり、そこから両面のrelative interiorへ正長区間が延びる場合に限る
+証明を使う。独立box内に離間した実現姿勢が存在する監査反例も`Unresolved`へ固定した。
+公開静的診断はblocking decisionで短絡せずpair数と
+triangle-pair数を全件照合するが、複数面では有限ヒンジmodel未完成のため安全証明を
+発行せず`PairEvidenceUnavailable`へ閉じる。これは分類基盤の内部品質であり、
 MUST集計、SIM-010の未着手状態、完成率36.9%は変更しない。
 
 ## プロジェクトと紙
@@ -112,7 +122,7 @@ MUST集計、SIM-010の未着手状態、完成率36.9%は変更しない。
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
-| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。衝突分類v1の4×10を凍結し、正厚境界面接触を独立させたv2の4×11全組合せ表、frontend/native共通の正規corpusと純粋decision表、canonical cell完全照合、VAL-003 certificate生成、および同一slot/certificate identity・単調generation・lock保持commit closureを持つprivate layer-order capabilityは完成した。表示・投影から分離したnative tree kinematics、material/observation型分離、private issuer identity、完全角度列を持つ非永続semantic `AppliedPoseV1`、編集履歴の`PreserveCurrent`/`Restore`意味論、desktopのcurrent pose certificate/capabilityと全本番変異経路のgeneration失効も完成した。native静的衝突は単一面zero-pairについてcurrent pose certificateへ再結合した限定Cまで完成した。厚さ0では認証済み単純境界、凹/collinear対応の決定論的exact三角形分割、面積・辺incidence、全face/triangle-pair coverage、共有関係認証、exact triangle分類、共有頂点のlocal `+Y`法線条件、人工分割対角線を除去する面全体relative-interior区間証明まで完成した。有理演算は入力・保持clone・演算・中間値・GCD fallback・出力の有限meterを全canonical unordered pairへ通して累積し、全pair dispatchを準備時に事前計算する。公開静的診断はblocking decisionで短絡せず全pairとtriangle-pairの件数を照合するが、複数面の安全証明は発行しない。斜め共有featureのraw姿勢不一致はsource不整合と分離し、全pair coverage付きの明示的判定保留を返す。資源制限付き`rational_cayley_local_rotation_v1`と、同一issuer・pose instanceへ束縛した`rational_cayley_tree_pose_v1`のcanonical BFS合成、全共有VertexId・ヒンジ両端/中点のwatertight完全一致、root合同、ABA拒否、単一走査の認証済み境界辺索引、増分前の総項数上限、一時値を含む個別出力bit上限、分子・分母を合算する総storage上限、有理allocationの件数・個別bit・総bitを含むworkの原子的mergeまで完成した。`MeasuredBinary64AffineEnvelope`は測定元exact `E`をborrow identityで保持し、独立再生成`E`との組替えを拒否する。actual-mm区間のprivate blocking-only横断primitiveは`ProvenPenetrating` / `Unresolved`だけを返し、共有点接触、共面、共有ヒンジ、資源超過を安全側へ閉じるsynthetic 13件まで完成した。renderer姿勢への有限誤差包含、H64の既定上限内での完全成功、`E` / envelope / topology / pairを内部認証するbridgeとexact treeから厚さ0production blocking経路への接続、厚さ0の有限ヒンジ許容、正厚証拠、有限ヒンジcorridor、連続衝突、cell-order transportとの結合、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
+| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。さらにcanonical exact `E`と、同じissuer-bound poseのbinary64 affine像をactual-mmへ直接liftした実在triangleの双方をzero-width横断で照合するprivate scanを、三角形material face・厚さ`+0.0`限定で実装した。pointer-bound measured envelopeはauthorityとdirect-lift containmentだけを再検証し、boxを肯定幾何へ使わない。topologyを内部導出して全canonical pairを一つのatomic meterで走査し、400 mmの角起点/中点fixtureを正逆source collection・全root・指定角度で固定した。正厚、共有ヒンジ、polygon material face、H64既定上限内の完全成功、renderer、公開proof/production診断への接続、有限ヒンジcorridor、連続衝突、cell-order transport、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
 
 ## 折り手順
 

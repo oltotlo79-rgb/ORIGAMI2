@@ -3,25 +3,34 @@
 //! This checkpoint deliberately accepts only intervals expressed in the
 //! rational Cayley tree's actual-mm coordinate system.  The zero-thickness
 //! classifier's binary64 common-unit coordinates are scaled by `2^1074` and
-//! must never enter this API.  A later authority bridge must also bind a
-//! measured affine envelope to the canonical exact pose that it measured
-//! before this primitive can consume either object.
-//! That future bridge must first obtain an exact-geometry `Transversal`
-//! classification for the same authenticated pair, must not call this
-//! zero-thickness primitive for positive paper thickness, and must keep
-//! coplanar/180-degree cases unresolved.
+//! must never enter this API. The private authority bridge below binds the
+//! canonical exact pose, the exact object measured by its affine envelope,
+//! and the same issuer-bound binary64 pose. It requires a transversal witness
+//! both in exact `E` and in an exact rational lift of the actual binary64
+//! affine image. Per-face radius boxes authenticate containment only; they
+//! are never welded into invented shared points. Positive paper thickness,
+//! coplanar/180-degree overlap and finite hinges remain unresolved.
 //!
 //! The only positive result is a transversal penetration.  Touching,
 //! separation, coplanarity, shared-hinge contact, numeric uncertainty and
 //! every resource failure all collapse to `Unresolved`.  Consequently this
 //! type cannot widen any collision-free set or issue a public geometry proof.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
 use num_rational::BigRational;
 use num_traits::{One, Signed};
+use ori_domain::{FaceId, VertexId};
+use ori_kinematics::BoundMaterialTreePose;
 
-use super::super::{CayleyError, CayleyLimits, CayleyStage, CayleyWork, WorkMeter};
+use super::{
+    super::{
+        CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactRigidTransform,
+        ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1, RationalCayleyTreePose, TotalTermLimits,
+        WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64, exact_point, point3_array,
+    },
+    MeasuredBinary64AffineEnvelope, MeasuredFaceEnvelope,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockingOnlyDecision {
@@ -38,6 +47,210 @@ enum PairTopology {
     },
     SharedHinge,
     SameFace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CayleyResumeLimits {
+    max_machin_terms_per_series: usize,
+    max_trig_terms_per_series: usize,
+    max_sqrt_refinements: usize,
+    max_interval_operations: usize,
+    max_shift_bits: usize,
+    max_intermediate_bits: usize,
+    max_gcd_fallback_calls: usize,
+    max_gcd_fallback_input_bits: usize,
+    max_rational_allocations: usize,
+    max_rational_allocation_bits: usize,
+    max_total_rational_allocation_bits: usize,
+    max_output_bits: usize,
+}
+
+impl CayleyResumeLimits {
+    fn as_cayley_limits(self) -> CayleyLimits {
+        CayleyLimits {
+            // A resumed containment meter is intentionally incapable of
+            // issuing a new trigonometric candidate. The referenced exact
+            // pose already passed these issuer-only controls while it was
+            // created by the private tree-pose issuer.
+            max_precision_rounds: 0,
+            max_guard_bits: 0,
+            max_candidate_bits: 0,
+            max_machin_terms_per_series: self.max_machin_terms_per_series,
+            max_trig_terms_per_series: self.max_trig_terms_per_series,
+            max_sqrt_refinements: self.max_sqrt_refinements,
+            max_interval_operations: self.max_interval_operations,
+            max_shift_bits: self.max_shift_bits,
+            max_intermediate_bits: self.max_intermediate_bits,
+            max_gcd_fallback_calls: self.max_gcd_fallback_calls,
+            max_gcd_fallback_input_bits: self.max_gcd_fallback_input_bits,
+            max_rational_allocations: self.max_rational_allocations,
+            max_rational_allocation_bits: self.max_rational_allocation_bits,
+            max_total_rational_allocation_bits: self.max_total_rational_allocation_bits,
+            max_output_bits: self.max_output_bits,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuthenticatedTriangleBlockingLimits {
+    max_faces: usize,
+    max_hinges: usize,
+    max_boundary_occurrences: usize,
+    max_triangular_faces: usize,
+    max_unordered_face_pairs: usize,
+    max_triangular_face_pairs: usize,
+    max_topology_vertex_checks: usize,
+    max_hinge_boundary_index_entries: usize,
+    max_hinge_face_lookups: usize,
+    max_hinge_vertex_lookups: usize,
+    max_predicate_calls: usize,
+    max_result_records: usize,
+    max_total_machin_terms: usize,
+    max_total_trig_terms: usize,
+    max_total_sqrt_refinements: usize,
+    exact: CayleyResumeLimits,
+}
+
+const AUTHENTICATED_TRIANGLE_BLOCKING_HARD_LIMITS: AuthenticatedTriangleBlockingLimits =
+    AuthenticatedTriangleBlockingLimits {
+        max_faces: 10_001,
+        max_hinges: 10_000,
+        max_boundary_occurrences: 1_000_000,
+        max_triangular_faces: 50_000,
+        max_unordered_face_pairs: 1_000_000,
+        max_triangular_face_pairs: 1_000_000,
+        max_topology_vertex_checks: 9_000_000,
+        max_hinge_boundary_index_entries: 1_000_000,
+        max_hinge_face_lookups: 20_000,
+        max_hinge_vertex_lookups: 40_000,
+        max_predicate_calls: 2_000_000,
+        max_result_records: 1_000_000,
+        max_total_machin_terms: 4_000_000,
+        max_total_trig_terms: 8_000_000,
+        max_total_sqrt_refinements: 640_000,
+        exact: CayleyResumeLimits {
+            max_machin_terms_per_series: 2_048,
+            max_trig_terms_per_series: 2_048,
+            max_sqrt_refinements: 32,
+            max_interval_operations: 80_000_000,
+            max_shift_bits: 8_192,
+            max_intermediate_bits: 32_768,
+            max_gcd_fallback_calls: 1_000_000,
+            max_gcd_fallback_input_bits: 2_147_483_648,
+            max_rational_allocations: 3_000_000,
+            max_rational_allocation_bits: 65_536,
+            max_total_rational_allocation_bits: 2_500_000_000,
+            max_output_bits: 16_384,
+        },
+    };
+
+impl Default for AuthenticatedTriangleBlockingLimits {
+    fn default() -> Self {
+        AUTHENTICATED_TRIANGLE_BLOCKING_HARD_LIMITS
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AuthenticatedTriangleBlockingWork {
+    faces: usize,
+    hinges: usize,
+    boundary_occurrences: usize,
+    triangular_faces: usize,
+    unordered_face_pairs: usize,
+    expected_triangular_face_pairs: usize,
+    analyzed_triangular_face_pairs: usize,
+    topology_vertex_checks: usize,
+    hinge_boundary_index_entries: usize,
+    hinge_relation_records: usize,
+    hinge_face_lookups: usize,
+    hinge_vertex_lookups: usize,
+    exact_predicate_calls: usize,
+    observed_predicate_calls: usize,
+    unsupported_pair_records: usize,
+    result_records: usize,
+    exact: CayleyWork,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthenticatedTriangleBlockingError {
+    UnsupportedPaperThickness,
+    AuthorityMismatch,
+    InconsistentPose,
+    ResourceLimitExceeded { resource: &'static str },
+    Exact(CayleyError),
+}
+
+impl From<CayleyError> for AuthenticatedTriangleBlockingError {
+    fn from(value: CayleyError) -> Self {
+        Self::Exact(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuthenticatedTrianglePairDecision {
+    first: FaceId,
+    second: FaceId,
+    decision: BlockingOnlyDecision,
+}
+
+/// Sealed blocking diagnostics for one exact pose/envelope object pair.
+///
+/// This private value intentionally carries the issuing objects and bit-exact
+/// paper-thickness input. It cannot construct a public collision-free proof,
+/// and every unsupported or uncertain pair remains `Unresolved`.
+#[derive(Debug)]
+struct AuthenticatedTriangleBlockingScan<'scan, 'exact, 'pose> {
+    exact: &'scan RationalCayleyTreePose<'pose>,
+    measured: &'scan MeasuredBinary64AffineEnvelope<'exact, 'pose>,
+    bound: BoundMaterialTreePose<'pose>,
+    paper_thickness_bits: u64,
+    pairs: Vec<AuthenticatedTrianglePairDecision>,
+    work: AuthenticatedTriangleBlockingWork,
+}
+
+impl AuthenticatedTriangleBlockingScan<'_, '_, '_> {
+    fn decision(&self, first: FaceId, second: FaceId) -> Option<BlockingOnlyDecision> {
+        let (first, second) = canonical_face_pair(first, second)?;
+        self.pairs
+            .binary_search_by(|record| {
+                record
+                    .first
+                    .canonical_bytes()
+                    .cmp(&first.canonical_bytes())
+                    .then_with(|| {
+                        record
+                            .second
+                            .canonical_bytes()
+                            .cmp(&second.canonical_bytes())
+                    })
+            })
+            .ok()
+            .and_then(|index| self.pairs.get(index))
+            .map(|record| record.decision)
+    }
+
+    fn proven_penetrating_pairs(&self) -> usize {
+        self.pairs
+            .iter()
+            .filter(|record| record.decision == BlockingOnlyDecision::ProvenPenetrating)
+            .count()
+    }
+
+    fn is_for(
+        &self,
+        exact: &RationalCayleyTreePose<'_>,
+        measured: &MeasuredBinary64AffineEnvelope<'_, '_>,
+        bound: BoundMaterialTreePose<'_>,
+        paper_thickness_mm: f64,
+    ) -> bool {
+        std::ptr::eq(self.exact, exact)
+            && std::ptr::eq(self.measured, measured)
+            && self.exact.is_for(bound)
+            && self.measured.is_for(exact, bound)
+            && self.bound.model() == bound.model()
+            && self.bound.pose().same_instance(bound.pose())
+            && self.paper_thickness_bits == paper_thickness_mm.to_bits()
+    }
 }
 
 /// Dimension-neutral closed rational interval used by the robust predicate.
@@ -209,6 +422,701 @@ struct ActualMillimetreTriangleEnvelope {
     points: [ActualMillimetrePointInterval; 3],
 }
 
+#[derive(Debug, Clone)]
+struct PreparedAuthenticatedTriangle {
+    exact: ActualMillimetreTriangleEnvelope,
+    observed: ActualMillimetreTriangleEnvelope,
+}
+
+fn scan_authenticated_triangle_pairs_blocking_only<'scan, 'exact, 'pose>(
+    exact: &'scan RationalCayleyTreePose<'pose>,
+    measured: &'scan MeasuredBinary64AffineEnvelope<'exact, 'pose>,
+    bound: BoundMaterialTreePose<'pose>,
+    paper_thickness_mm: f64,
+    limits: AuthenticatedTriangleBlockingLimits,
+) -> Result<
+    AuthenticatedTriangleBlockingScan<'scan, 'exact, 'pose>,
+    AuthenticatedTriangleBlockingError,
+> {
+    validate_authenticated_triangle_blocking_limits(&limits)?;
+    if paper_thickness_mm.to_bits() != 0.0_f64.to_bits() {
+        return Err(AuthenticatedTriangleBlockingError::UnsupportedPaperThickness);
+    }
+    if !exact.is_for(bound) || !measured.is_for(exact, bound) {
+        return Err(AuthenticatedTriangleBlockingError::AuthorityMismatch);
+    }
+    if exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
+        || exact.fixed_face != bound.pose().fixed_face()
+        || exact.faces.is_empty()
+        || exact.faces.len() != measured.faces.len()
+        || exact.faces.len() != exact.work.faces
+        || exact.hinges.len() != exact.work.hinges
+        || bound.model().hinges().len() != exact.hinges.len()
+        || bound.pose().hinge_angles().len() != exact.hinges.len()
+        || measured.work.faces != exact.faces.len()
+        || measured.work.hinges != exact.hinges.len()
+    {
+        return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+    }
+
+    let face_count = exact.faces.len();
+    let hinge_count = exact.hinges.len();
+    bridge_check_count(face_count, limits.max_faces, "faces")?;
+    bridge_check_count(hinge_count, limits.max_hinges, "hinges")?;
+    let expected_hinge_face_lookups = hinge_count.checked_mul(2).ok_or(
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "hinge_face_lookups",
+        },
+    )?;
+    let expected_hinge_vertex_lookups = hinge_count.checked_mul(4).ok_or(
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "hinge_vertex_lookups",
+        },
+    )?;
+    bridge_check_count(
+        expected_hinge_face_lookups,
+        limits.max_hinge_face_lookups,
+        "hinge_face_lookups",
+    )?;
+    bridge_check_count(
+        expected_hinge_vertex_lookups,
+        limits.max_hinge_vertex_lookups,
+        "hinge_vertex_lookups",
+    )?;
+    let expected_pairs = checked_unordered_pair_count(face_count)?;
+    bridge_check_count(
+        expected_pairs,
+        limits.max_unordered_face_pairs,
+        "unordered_face_pairs",
+    )?;
+    bridge_check_count(expected_pairs, limits.max_result_records, "result_records")?;
+
+    let model_faces = bound.model().face_ids();
+    if model_faces.len() != face_count
+        || !exact
+            .faces
+            .iter()
+            .zip(model_faces)
+            .all(|(face, expected)| face.face == *expected)
+        || !exact
+            .faces
+            .windows(2)
+            .all(|pair| pair[0].face.canonical_bytes() < pair[1].face.canonical_bytes())
+        || !measured
+            .faces
+            .iter()
+            .zip(&exact.faces)
+            .all(|(radius, face)| radius.face == face.face)
+    {
+        return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+    }
+
+    let mut work = AuthenticatedTriangleBlockingWork {
+        faces: face_count,
+        hinges: hinge_count,
+        unordered_face_pairs: expected_pairs,
+        ..AuthenticatedTriangleBlockingWork::default()
+    };
+    let mut boundary_occurrences = 0_usize;
+    let mut triangular_faces = 0_usize;
+    for (face, measured_face) in exact.faces.iter().zip(&measured.faces) {
+        if face.boundary.len() < 3 || measured_face.face != face.face {
+            return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+        }
+        boundary_occurrences = boundary_occurrences
+            .checked_add(face.boundary.len())
+            .ok_or(AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+                resource: "boundary_occurrences",
+            })?;
+        bridge_check_count(
+            boundary_occurrences,
+            limits.max_boundary_occurrences,
+            "boundary_occurrences",
+        )?;
+        if face.boundary.len() == 3 {
+            if face.boundary[0].0 == face.boundary[1].0
+                || face.boundary[1].0 == face.boundary[2].0
+                || face.boundary[2].0 == face.boundary[0].0
+            {
+                return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+            }
+            triangular_faces = triangular_faces.checked_add(1).ok_or(
+                AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+                    resource: "triangular_faces",
+                },
+            )?;
+            bridge_check_count(
+                triangular_faces,
+                limits.max_triangular_faces,
+                "triangular_faces",
+            )?;
+        }
+    }
+    if boundary_occurrences != exact.work.boundary_occurrences
+        || boundary_occurrences != measured.work.boundary_occurrences
+    {
+        return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+    }
+    work.boundary_occurrences = boundary_occurrences;
+    work.triangular_faces = triangular_faces;
+    let expected_triangular_face_pairs = checked_unordered_pair_count(triangular_faces)?;
+    bridge_check_count(
+        expected_triangular_face_pairs,
+        limits.max_triangular_face_pairs,
+        "triangular_face_pairs",
+    )?;
+    let expected_topology_vertex_checks = expected_triangular_face_pairs.checked_mul(9).ok_or(
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "topology_vertex_checks",
+        },
+    )?;
+    bridge_check_count(
+        expected_topology_vertex_checks,
+        limits.max_topology_vertex_checks,
+        "topology_vertex_checks",
+    )?;
+    let expected_predicate_calls = expected_triangular_face_pairs.checked_mul(2).ok_or(
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "predicate_calls",
+        },
+    )?;
+    bridge_check_count(
+        expected_predicate_calls,
+        limits.max_predicate_calls,
+        "predicate_calls",
+    )?;
+    work.expected_triangular_face_pairs = expected_triangular_face_pairs;
+    work.unsupported_pair_records = expected_pairs
+        .checked_sub(expected_triangular_face_pairs)
+        .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
+
+    let total_terms = TotalTermLimits {
+        machin_terms: limits.max_total_machin_terms,
+        trig_terms: limits.max_total_trig_terms,
+        sqrt_refinements: limits.max_total_sqrt_refinements,
+    };
+    let exact_limits = limits.exact.as_cayley_limits();
+    let mut meter = WorkMeter::resume(
+        &exact_limits,
+        Some(total_terms),
+        &exact.work.exact,
+        CayleyStage::Containment,
+    )?;
+    meter.merge_work(&measured.work.exact, CayleyStage::Containment)?;
+
+    let hinge_relations = authenticate_hinge_relations(exact, &limits, &mut work)?;
+    let mut triangles = Vec::new();
+    triangles.try_reserve_exact(face_count).map_err(|_| {
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded { resource: "faces" }
+    })?;
+    for (face, radius) in exact.faces.iter().zip(&measured.faces) {
+        triangles.push(if face.boundary.len() == 3 {
+            Some(prepare_authenticated_triangle(
+                face, radius, bound, &mut meter,
+            )?)
+        } else {
+            None
+        });
+    }
+
+    let mut pairs = Vec::new();
+    pairs.try_reserve_exact(expected_pairs).map_err(|_| {
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "result_records",
+        }
+    })?;
+    let mut topology_vertex_checks = 0_usize;
+    for first_index in 0..face_count {
+        for second_index in (first_index + 1)..face_count {
+            let first_face = &exact.faces[first_index];
+            let second_face = &exact.faces[second_index];
+            let decision = match (&triangles[first_index], &triangles[second_index]) {
+                (Some(first), Some(second)) => {
+                    bridge_increment(
+                        &mut work.analyzed_triangular_face_pairs,
+                        limits.max_triangular_face_pairs,
+                        "triangular_face_pairs",
+                    )?;
+                    let topology = derive_pair_topology(
+                        first_face,
+                        second_face,
+                        &hinge_relations,
+                        &mut topology_vertex_checks,
+                        &limits,
+                    )?;
+                    bridge_increment(
+                        &mut work.exact_predicate_calls,
+                        limits.max_predicate_calls,
+                        "predicate_calls",
+                    )?;
+                    let exact_decision = classify_transversal_with_meter(
+                        &first.exact,
+                        &second.exact,
+                        topology,
+                        &mut meter,
+                    )?;
+                    bridge_increment(
+                        &mut work.observed_predicate_calls,
+                        limits.max_predicate_calls,
+                        "predicate_calls",
+                    )?;
+                    let observed_decision = classify_transversal_with_meter(
+                        &first.observed,
+                        &second.observed,
+                        topology,
+                        &mut meter,
+                    )?;
+                    if exact_decision == BlockingOnlyDecision::ProvenPenetrating
+                        && observed_decision == BlockingOnlyDecision::ProvenPenetrating
+                    {
+                        BlockingOnlyDecision::ProvenPenetrating
+                    } else {
+                        BlockingOnlyDecision::Unresolved
+                    }
+                }
+                _ => BlockingOnlyDecision::Unresolved,
+            };
+            pairs.push(AuthenticatedTrianglePairDecision {
+                first: first_face.face,
+                second: second_face.face,
+                decision,
+            });
+        }
+    }
+    work.topology_vertex_checks = topology_vertex_checks;
+    work.result_records = pairs.len();
+    if pairs.len() != expected_pairs
+        || work.analyzed_triangular_face_pairs != expected_triangular_face_pairs
+        || work.exact_predicate_calls != expected_triangular_face_pairs
+        || work.observed_predicate_calls != expected_triangular_face_pairs
+        || work
+            .exact_predicate_calls
+            .checked_add(work.observed_predicate_calls)
+            != Some(expected_predicate_calls)
+        || work.topology_vertex_checks != expected_topology_vertex_checks
+        || work.hinge_relation_records != hinge_count
+        || work.hinge_boundary_index_entries != boundary_occurrences
+        || work.hinge_face_lookups != expected_hinge_face_lookups
+        || work.hinge_vertex_lookups != expected_hinge_vertex_lookups
+        || work
+            .unsupported_pair_records
+            .checked_add(work.analyzed_triangular_face_pairs)
+            != Some(expected_pairs)
+    {
+        return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+    }
+    work.exact = meter.work;
+    Ok(AuthenticatedTriangleBlockingScan {
+        exact,
+        measured,
+        bound,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        pairs,
+        work,
+    })
+}
+
+fn prepare_authenticated_triangle(
+    face: &ExactFacePose,
+    measured: &MeasuredFaceEnvelope,
+    bound: BoundMaterialTreePose<'_>,
+    meter: &mut WorkMeter<'_>,
+) -> Result<PreparedAuthenticatedTriangle, CayleyError> {
+    if face.boundary.len() != 3 || measured.face != face.face {
+        return Err(CayleyError::InvariantFailure {
+            stage: CayleyStage::Containment,
+        });
+    }
+    for radius in &measured.radius {
+        if !valid_canonical_rational(radius, meter)? || radius.is_negative() {
+            return Err(CayleyError::InvariantFailure {
+                stage: CayleyStage::Containment,
+            });
+        }
+    }
+    let binary64_transform = exact_binary64_affine_transform(
+        bound
+            .pose()
+            .face_transform(face.face)
+            .ok_or(CayleyError::InvariantFailure {
+                stage: CayleyStage::Containment,
+            })?,
+        meter,
+    )?;
+    let observed_points = try_array3(|vertex| {
+        let source = bound
+            .model()
+            .vertex_position(face.boundary[vertex].0)
+            .filter(|point| point.y() == 0.0)
+            .ok_or(CayleyError::InvariantFailure {
+                stage: CayleyStage::Containment,
+            })?;
+        let source = exact_point(point3_array(source), meter)?;
+        let observed = apply_exact_transform(&binary64_transform, &source, meter)?;
+        for axis in 0..3 {
+            let delta = meter.subtract_rational(
+                &observed.coordinates[axis],
+                &face.boundary[vertex].1.coordinates[axis],
+                CayleyStage::Containment,
+            )?;
+            let delta = meter.absolute_rational(&delta, CayleyStage::Containment)?;
+            if meter.compare_rational(&delta, &measured.radius[axis], CayleyStage::Containment)?
+                == Ordering::Greater
+            {
+                return Err(CayleyError::InvariantFailure {
+                    stage: CayleyStage::Containment,
+                });
+            }
+        }
+        exact_point_interval(&observed.coordinates, meter)
+    })?;
+    Ok(PreparedAuthenticatedTriangle {
+        exact: ActualMillimetreTriangleEnvelope {
+            points: try_array3(|vertex| {
+                exact_point_interval(&face.boundary[vertex].1.coordinates, meter)
+            })?,
+        },
+        observed: ActualMillimetreTriangleEnvelope {
+            points: observed_points,
+        },
+    })
+}
+
+fn exact_binary64_affine_transform(
+    transform: ori_kinematics::RigidTransform,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactRigidTransform, CayleyError> {
+    let rows = transform.rotation_rows();
+    let translation = transform.translation();
+    Ok(ExactRigidTransform {
+        rotation: try_array3(|row| {
+            try_array3(|column| exact_f64(rows[row][column], meter, CayleyStage::Containment))
+        })?,
+        translation: ExactVector3 {
+            coordinates: [
+                exact_f64(translation.x(), meter, CayleyStage::Containment)?,
+                exact_f64(translation.y(), meter, CayleyStage::Containment)?,
+                exact_f64(translation.z(), meter, CayleyStage::Containment)?,
+            ],
+        },
+    })
+}
+
+fn exact_point_interval(
+    point: &[BigRational; 3],
+    meter: &mut WorkMeter<'_>,
+) -> Result<ActualMillimetrePointInterval, CayleyError> {
+    Ok(ActualMillimetrePointInterval {
+        coordinates: try_array3(|axis| {
+            if !valid_canonical_rational(&point[axis], meter)? {
+                return Err(CayleyError::InvariantFailure {
+                    stage: CayleyStage::Containment,
+                });
+            }
+            ClosedRationalInterval::ordered(
+                meter.clone_rational(&point[axis], CayleyStage::Containment)?,
+                meter.clone_rational(&point[axis], CayleyStage::Containment)?,
+                meter,
+            )
+        })?,
+    })
+}
+
+fn authenticate_hinge_relations(
+    exact: &RationalCayleyTreePose<'_>,
+    limits: &AuthenticatedTriangleBlockingLimits,
+    work: &mut AuthenticatedTriangleBlockingWork,
+) -> Result<HashMap<(FaceId, FaceId), [VertexId; 2]>, AuthenticatedTriangleBlockingError> {
+    bridge_check_count(exact.hinges.len(), limits.max_hinges, "hinges")?;
+    bridge_check_count(
+        exact.work.boundary_occurrences,
+        limits.max_hinge_boundary_index_entries,
+        "hinge_boundary_index_entries",
+    )?;
+    let mut occurrences = HashMap::<(FaceId, VertexId), (usize, usize)>::new();
+    occurrences
+        .try_reserve(exact.work.boundary_occurrences)
+        .map_err(
+            |_| AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+                resource: "hinge_boundary_index_entries",
+            },
+        )?;
+    for (face_index, face) in exact.faces.iter().enumerate() {
+        for (boundary_index, (vertex, _)) in face.boundary.iter().enumerate() {
+            bridge_increment(
+                &mut work.hinge_boundary_index_entries,
+                limits.max_hinge_boundary_index_entries,
+                "hinge_boundary_index_entries",
+            )?;
+            if occurrences
+                .insert((face.face, *vertex), (face_index, boundary_index))
+                .is_some()
+            {
+                return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+            }
+        }
+    }
+    let mut relations = HashMap::new();
+    relations.try_reserve(exact.hinges.len()).map_err(|_| {
+        AuthenticatedTriangleBlockingError::ResourceLimitExceeded { resource: "hinges" }
+    })?;
+    for hinge in &exact.hinges {
+        let key = canonical_face_pair(hinge.parent, hinge.child)
+            .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
+        if hinge.endpoint_vertices[0] == hinge.endpoint_vertices[1] {
+            return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+        }
+        for face_id in [hinge.parent, hinge.child] {
+            bridge_increment(
+                &mut work.hinge_face_lookups,
+                limits.max_hinge_face_lookups,
+                "hinge_face_lookups",
+            )?;
+            let face_index = exact
+                .faces
+                .binary_search_by_key(&face_id.canonical_bytes(), |face| {
+                    face.face.canonical_bytes()
+                })
+                .map_err(|_| AuthenticatedTriangleBlockingError::InconsistentPose)?;
+            for (vertex, endpoint) in hinge.endpoint_vertices.iter().zip(&hinge.world_endpoints) {
+                bridge_increment(
+                    &mut work.hinge_vertex_lookups,
+                    limits.max_hinge_vertex_lookups,
+                    "hinge_vertex_lookups",
+                )?;
+                let (occurrence_face_index, boundary_index) = occurrences
+                    .get(&(face_id, *vertex))
+                    .copied()
+                    .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
+                if occurrence_face_index != face_index
+                    || exact.faces[face_index]
+                        .boundary
+                        .get(boundary_index)
+                        .is_none_or(|(candidate, point)| {
+                            candidate != vertex || !canonical_point_eq(point, endpoint)
+                        })
+                {
+                    return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+                }
+            }
+        }
+        if relations.insert(key, hinge.endpoint_vertices).is_some() {
+            return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+        }
+        bridge_increment(
+            &mut work.hinge_relation_records,
+            limits.max_hinges,
+            "hinges",
+        )?;
+    }
+    Ok(relations)
+}
+
+fn derive_pair_topology(
+    first: &ExactFacePose,
+    second: &ExactFacePose,
+    hinge_relations: &HashMap<(FaceId, FaceId), [VertexId; 2]>,
+    topology_vertex_checks: &mut usize,
+    limits: &AuthenticatedTriangleBlockingLimits,
+) -> Result<PairTopology, AuthenticatedTriangleBlockingError> {
+    if first.face == second.face || first.boundary.len() != 3 || second.boundary.len() != 3 {
+        return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+    }
+    let mut shared = [None; 3];
+    let mut shared_count = 0_usize;
+    for (first_index, (first_vertex, first_point)) in first.boundary.iter().enumerate() {
+        for (second_index, (second_vertex, second_point)) in second.boundary.iter().enumerate() {
+            bridge_increment(
+                topology_vertex_checks,
+                limits.max_topology_vertex_checks,
+                "topology_vertex_checks",
+            )?;
+            if first_vertex == second_vertex {
+                if !canonical_point_eq(first_point, second_point) || shared_count >= shared.len() {
+                    return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+                }
+                shared[shared_count] = Some((first_index, second_index, *first_vertex));
+                shared_count += 1;
+            }
+        }
+    }
+    match shared_count {
+        0 => Ok(PairTopology::NoSharedFeature),
+        1 => {
+            let (first_vertex, second_vertex, _) =
+                shared[0].ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
+            Ok(PairTopology::SharedVertex {
+                first_vertex,
+                second_vertex,
+            })
+        }
+        2 => {
+            let key = canonical_face_pair(first.face, second.face)
+                .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
+            let endpoints = hinge_relations
+                .get(&key)
+                .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
+            let first_shared = shared[0]
+                .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?
+                .2;
+            let second_shared = shared[1]
+                .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?
+                .2;
+            if !same_unordered_vertex_pair(*endpoints, [first_shared, second_shared]) {
+                return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
+            }
+            Ok(PairTopology::SharedHinge)
+        }
+        _ => Err(AuthenticatedTriangleBlockingError::InconsistentPose),
+    }
+}
+
+fn same_unordered_vertex_pair(first: [VertexId; 2], second: [VertexId; 2]) -> bool {
+    (first[0] == second[0] && first[1] == second[1])
+        || (first[0] == second[1] && first[1] == second[0])
+}
+
+fn canonical_face_pair(first: FaceId, second: FaceId) -> Option<(FaceId, FaceId)> {
+    match first.canonical_bytes().cmp(&second.canonical_bytes()) {
+        Ordering::Less => Some((first, second)),
+        Ordering::Greater => Some((second, first)),
+        Ordering::Equal => None,
+    }
+}
+
+fn checked_unordered_pair_count(count: usize) -> Result<usize, AuthenticatedTriangleBlockingError> {
+    count
+        .checked_mul(count.saturating_sub(1))
+        .and_then(|product| product.checked_div(2))
+        .ok_or(AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "unordered_face_pairs",
+        })
+}
+
+fn validate_authenticated_triangle_blocking_limits(
+    limits: &AuthenticatedTriangleBlockingLimits,
+) -> Result<(), AuthenticatedTriangleBlockingError> {
+    let hard = AUTHENTICATED_TRIANGLE_BLOCKING_HARD_LIMITS;
+    let structural_limits = [
+        (limits.max_faces, hard.max_faces),
+        (limits.max_hinges, hard.max_hinges),
+        (
+            limits.max_boundary_occurrences,
+            hard.max_boundary_occurrences,
+        ),
+        (limits.max_triangular_faces, hard.max_triangular_faces),
+        (
+            limits.max_unordered_face_pairs,
+            hard.max_unordered_face_pairs,
+        ),
+        (
+            limits.max_triangular_face_pairs,
+            hard.max_triangular_face_pairs,
+        ),
+        (
+            limits.max_topology_vertex_checks,
+            hard.max_topology_vertex_checks,
+        ),
+        (
+            limits.max_hinge_boundary_index_entries,
+            hard.max_hinge_boundary_index_entries,
+        ),
+        (limits.max_hinge_face_lookups, hard.max_hinge_face_lookups),
+        (
+            limits.max_hinge_vertex_lookups,
+            hard.max_hinge_vertex_lookups,
+        ),
+        (limits.max_predicate_calls, hard.max_predicate_calls),
+        (limits.max_result_records, hard.max_result_records),
+        (limits.max_total_machin_terms, hard.max_total_machin_terms),
+        (limits.max_total_trig_terms, hard.max_total_trig_terms),
+        (
+            limits.max_total_sqrt_refinements,
+            hard.max_total_sqrt_refinements,
+        ),
+    ];
+    let exact_limits = [
+        (
+            limits.exact.max_machin_terms_per_series,
+            hard.exact.max_machin_terms_per_series,
+        ),
+        (
+            limits.exact.max_trig_terms_per_series,
+            hard.exact.max_trig_terms_per_series,
+        ),
+        (
+            limits.exact.max_sqrt_refinements,
+            hard.exact.max_sqrt_refinements,
+        ),
+        (
+            limits.exact.max_interval_operations,
+            hard.exact.max_interval_operations,
+        ),
+        (limits.exact.max_shift_bits, hard.exact.max_shift_bits),
+        (
+            limits.exact.max_intermediate_bits,
+            hard.exact.max_intermediate_bits,
+        ),
+        (
+            limits.exact.max_gcd_fallback_calls,
+            hard.exact.max_gcd_fallback_calls,
+        ),
+        (
+            limits.exact.max_gcd_fallback_input_bits,
+            hard.exact.max_gcd_fallback_input_bits,
+        ),
+        (
+            limits.exact.max_rational_allocations,
+            hard.exact.max_rational_allocations,
+        ),
+        (
+            limits.exact.max_rational_allocation_bits,
+            hard.exact.max_rational_allocation_bits,
+        ),
+        (
+            limits.exact.max_total_rational_allocation_bits,
+            hard.exact.max_total_rational_allocation_bits,
+        ),
+        (limits.exact.max_output_bits, hard.exact.max_output_bits),
+    ];
+    if structural_limits
+        .into_iter()
+        .chain(exact_limits)
+        .any(|(configured, ceiling)| configured > ceiling)
+    {
+        Err(AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+            resource: "configured_hard_ceiling",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn bridge_check_count(
+    count: usize,
+    maximum: usize,
+    resource: &'static str,
+) -> Result<(), AuthenticatedTriangleBlockingError> {
+    if count > maximum {
+        Err(AuthenticatedTriangleBlockingError::ResourceLimitExceeded { resource })
+    } else {
+        Ok(())
+    }
+}
+
+fn bridge_increment(
+    count: &mut usize,
+    maximum: usize,
+    resource: &'static str,
+) -> Result<(), AuthenticatedTriangleBlockingError> {
+    let next = count
+        .checked_add(1)
+        .ok_or(AuthenticatedTriangleBlockingError::ResourceLimitExceeded { resource })?;
+    bridge_check_count(next, maximum, resource)?;
+    *count = next;
+    Ok(())
+}
+
 fn classify_transversal_blocking_only(
     first: &ActualMillimetreTriangleEnvelope,
     second: &ActualMillimetreTriangleEnvelope,
@@ -227,11 +1135,21 @@ fn classify_transversal_metered(
     limits: CayleyLimits,
 ) -> Result<(BlockingOnlyDecision, CayleyWork), CayleyError> {
     let mut meter = WorkMeter::new(&limits);
-    if !valid_triangle_input(first, &mut meter)? || !valid_triangle_input(second, &mut meter)? {
-        return Ok((BlockingOnlyDecision::Unresolved, meter.work));
+    let decision = classify_transversal_with_meter(first, second, topology, &mut meter)?;
+    Ok((decision, meter.work))
+}
+
+fn classify_transversal_with_meter(
+    first: &ActualMillimetreTriangleEnvelope,
+    second: &ActualMillimetreTriangleEnvelope,
+    topology: PairTopology,
+    meter: &mut WorkMeter<'_>,
+) -> Result<BlockingOnlyDecision, CayleyError> {
+    if !valid_triangle_input(first, meter)? || !valid_triangle_input(second, meter)? {
+        return Ok(BlockingOnlyDecision::Unresolved);
     }
     if matches!(topology, PairTopology::SharedHinge | PairTopology::SameFace) {
-        return Ok((BlockingOnlyDecision::Unresolved, meter.work));
+        return Ok(BlockingOnlyDecision::Unresolved);
     }
     let shared = match topology {
         PairTopology::NoSharedFeature => None,
@@ -240,40 +1158,45 @@ fn classify_transversal_metered(
             second_vertex,
         } if first_vertex < 3 && second_vertex < 3 => Some((first_vertex, second_vertex)),
         PairTopology::SharedVertex { .. } => {
-            return Ok((BlockingOnlyDecision::Unresolved, meter.work));
+            return Ok(BlockingOnlyDecision::Unresolved);
         }
         PairTopology::SharedHinge | PairTopology::SameFace => unreachable!(),
     };
-
-    if stable_projection(first, &mut meter)?.is_none()
-        || stable_projection(second, &mut meter)?.is_none()
-    {
-        return Ok((BlockingOnlyDecision::Unresolved, meter.work));
+    if stable_projection(first, meter)?.is_none() || stable_projection(second, meter)?.is_none() {
+        return Ok(BlockingOnlyDecision::Unresolved);
     }
 
     let mut proven = false;
     for edge in 0..3 {
         if shared.is_none_or(|(vertex, _)| !edge_contains_vertex(edge, vertex))
-            && edge_strictly_pierces_triangle(first, edge, second, &mut meter)?
+            && edge_strictly_pierces_triangle(first, edge, second, meter)?
         {
             proven = true;
         }
     }
     for edge in 0..3 {
         if shared.is_none_or(|(_, vertex)| !edge_contains_vertex(edge, vertex))
-            && edge_strictly_pierces_triangle(second, edge, first, &mut meter)?
+            && edge_strictly_pierces_triangle(second, edge, first, meter)?
         {
             proven = true;
         }
     }
-    Ok((
-        if proven {
-            BlockingOnlyDecision::ProvenPenetrating
-        } else {
-            BlockingOnlyDecision::Unresolved
-        },
-        meter.work,
-    ))
+    if let Some((first_vertex, second_vertex)) = shared
+        && shared_vertex_interior_segments_overlap(
+            first,
+            first_vertex,
+            second,
+            second_vertex,
+            meter,
+        )?
+    {
+        proven = true;
+    }
+    Ok(if proven {
+        BlockingOnlyDecision::ProvenPenetrating
+    } else {
+        BlockingOnlyDecision::Unresolved
+    })
 }
 
 fn valid_triangle_input(
@@ -346,6 +1269,165 @@ fn edge_strictly_pierces_triangle(
     }
     let intersection = start.interpolate(end, &parameter, meter)?;
     point_strictly_inside_triangle_projection(&intersection, target, meter)
+}
+
+/// Proves a positive-length transversal through the relative interiors of
+/// two triangles that share exactly one topological vertex.
+///
+/// The ordinary edge-piercing witness is intentionally strict and therefore
+/// cannot see a segment whose far endpoint lies on both opposite edges. This
+/// path is therefore admitted only when both shared occurrences are the same
+/// exact singleton. Nonzero or distinct boxes are rejected: per-face affine
+/// envelopes do not carry the correlation needed to weld them soundly. Each
+/// opposite edge must cross the other plane at a strict interior parameter.
+/// The two cut points and common vertex then lie on the planes' common line;
+/// a strictly positive direction dot product proves that both
+/// relative-interior segments occupy the same ray instead of meeting only at
+/// the shared point.
+fn shared_vertex_interior_segments_overlap(
+    first: &ActualMillimetreTriangleEnvelope,
+    first_shared: usize,
+    second: &ActualMillimetreTriangleEnvelope,
+    second_shared: usize,
+    meter: &mut WorkMeter<'_>,
+) -> Result<bool, CayleyError> {
+    if first_shared >= 3 || second_shared >= 3 {
+        return Ok(false);
+    }
+    if !topological_vertex_is_exactly_coincident(
+        &first.points[first_shared],
+        &second.points[second_shared],
+        meter,
+    )? {
+        return Ok(false);
+    }
+    let shared = ActualMillimetrePointInterval {
+        coordinates: try_array3(|axis| {
+            ClosedRationalInterval::ordered(
+                meter.clone_rational(
+                    &first.points[first_shared].coordinates[axis].lower,
+                    CayleyStage::Containment,
+                )?,
+                meter.clone_rational(
+                    &first.points[first_shared].coordinates[axis].upper,
+                    CayleyStage::Containment,
+                )?,
+                meter,
+            )
+        })?,
+    };
+    let first_points = std::array::from_fn(|index| {
+        if index == first_shared {
+            &shared
+        } else {
+            &first.points[index]
+        }
+    });
+    let second_points = std::array::from_fn(|index| {
+        if index == second_shared {
+            &shared
+        } else {
+            &second.points[index]
+        }
+    });
+    let Some(first_cut) =
+        opposite_edge_plane_cut(&first_points, first_shared, &second_points, meter)?
+    else {
+        return Ok(false);
+    };
+    let Some(second_cut) =
+        opposite_edge_plane_cut(&second_points, second_shared, &first_points, meter)?
+    else {
+        return Ok(false);
+    };
+    let first_direction = first_cut.subtract(&shared, meter)?;
+    let second_direction = second_cut.subtract(&shared, meter)?;
+    Ok(
+        dot(&first_direction, &second_direction, meter)?.strict_sign(meter)?
+            == Some(StrictSign::Positive),
+    )
+}
+
+fn topological_vertex_is_exactly_coincident(
+    first: &ActualMillimetrePointInterval,
+    second: &ActualMillimetrePointInterval,
+    meter: &mut WorkMeter<'_>,
+) -> Result<bool, CayleyError> {
+    for axis in 0..3 {
+        if meter.compare_rational(
+            &first.coordinates[axis].lower,
+            &first.coordinates[axis].upper,
+            CayleyStage::Containment,
+        )? != Ordering::Equal
+            || meter.compare_rational(
+                &second.coordinates[axis].lower,
+                &second.coordinates[axis].upper,
+                CayleyStage::Containment,
+            )? != Ordering::Equal
+            || meter.compare_rational(
+                &first.coordinates[axis].lower,
+                &second.coordinates[axis].lower,
+                CayleyStage::Containment,
+            )? != Ordering::Equal
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn opposite_edge_plane_cut(
+    source: &[&ActualMillimetrePointInterval; 3],
+    shared_vertex: usize,
+    target: &[&ActualMillimetrePointInterval; 3],
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ActualMillimetrePointInterval>, CayleyError> {
+    let start = source[(shared_vertex + 1) % 3];
+    let end = source[(shared_vertex + 2) % 3];
+    let start_distance = signed_plane_distance_points(target, start, meter)?;
+    let end_distance = signed_plane_distance_points(target, end, meter)?;
+    let Some(start_sign) = start_distance.strict_sign(meter)? else {
+        return Ok(None);
+    };
+    let Some(end_sign) = end_distance.strict_sign(meter)? else {
+        return Ok(None);
+    };
+    if start_sign == end_sign {
+        return Ok(None);
+    }
+    let denominator = start_distance.subtract(&end_distance, meter)?;
+    if denominator.contains_zero(meter)? {
+        return Ok(None);
+    }
+    let Some(parameter) = start_distance.divide(&denominator, meter)? else {
+        return Ok(None);
+    };
+    if !parameter.strictly_inside_unit_interval(meter)? {
+        return Ok(None);
+    }
+    start.interpolate(end, &parameter, meter).map(Some)
+}
+
+fn signed_plane_distance_points(
+    triangle: &[&ActualMillimetrePointInterval; 3],
+    point: &ActualMillimetrePointInterval,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ClosedRationalInterval, CayleyError> {
+    let first = triangle[1].subtract(triangle[0], meter)?;
+    let second = triangle[2].subtract(triangle[0], meter)?;
+    let offset = point.subtract(triangle[0], meter)?;
+    determinant(&first, &second, &offset, meter)
+}
+
+fn dot(
+    first: &[ClosedRationalInterval; 3],
+    second: &[ClosedRationalInterval; 3],
+    meter: &mut WorkMeter<'_>,
+) -> Result<ClosedRationalInterval, CayleyError> {
+    let first_term = first[0].multiply(&second[0], meter)?;
+    let second_term = first[1].multiply(&second[1], meter)?;
+    let third_term = first[2].multiply(&second[2], meter)?;
+    first_term.add(&second_term, meter)?.add(&third_term, meter)
 }
 
 fn signed_plane_distance(
@@ -468,6 +1550,14 @@ mod tests {
     use num_bigint::BigInt;
     use num_traits::{One, Zero};
 
+    use super::super::super::stress_tests::{
+        PreparedFixture, corner_mountain_valley_400mm_fixture,
+        corner_mountain_valley_400mm_fixture_with_reversed_source_collections, exact_fixture_pose,
+        midpoint_mountain_400mm_fixture,
+        midpoint_mountain_400mm_fixture_with_reversed_source_collections, solve_fixture,
+        triangle_and_quadrilateral_fixture,
+    };
+    use super::super::{MeasuredEnvelopeLimits, measure_binary64_affine_envelope};
     use super::*;
 
     fn rational(numerator: i64, denominator: i64) -> BigRational {
@@ -694,6 +1784,194 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shared_vertex_positive_length_interior_segment_is_not_only_boundary_contact() {
+        let first = ActualMillimetreTriangleEnvelope {
+            points: [point(0, 0, 0), point(2, -1, 0), point(2, 1, 0)],
+        };
+        let same_ray = ActualMillimetreTriangleEnvelope {
+            points: [point(0, 0, 0), point(2, 0, -1), point(2, 0, 1)],
+        };
+        let opposite_ray = ActualMillimetreTriangleEnvelope {
+            points: [point(0, 0, 0), point(-2, 0, -1), point(-2, 0, 1)],
+        };
+        let topology = PairTopology::SharedVertex {
+            first_vertex: 0,
+            second_vertex: 0,
+        };
+        assert_eq!(
+            classify_transversal_blocking_only(
+                &first,
+                &same_ray,
+                topology,
+                CayleyLimits::default(),
+            ),
+            BlockingOnlyDecision::ProvenPenetrating
+        );
+        assert_eq!(
+            classify_transversal_blocking_only(
+                &first,
+                &opposite_ray,
+                topology,
+                CayleyLimits::default(),
+            ),
+            BlockingOnlyDecision::Unresolved
+        );
+        assert_eq!(
+            classify_transversal_blocking_only(
+                &inflated_triangle(&first, rational(1, 1_000)),
+                &inflated_triangle(&same_ray, rational(1, 1_000)),
+                topology,
+                CayleyLimits::default(),
+            ),
+            BlockingOnlyDecision::Unresolved
+        );
+        assert_eq!(
+            classify_transversal_blocking_only(
+                &inflated_triangle(&first, BigRational::from_integer(3.into())),
+                &inflated_triangle(&same_ray, BigRational::from_integer(3.into())),
+                topology,
+                CayleyLimits::default(),
+            ),
+            BlockingOnlyDecision::Unresolved
+        );
+
+        for first_permutation in TRIANGLE_PERMUTATIONS {
+            for second_permutation in TRIANGLE_PERMUTATIONS {
+                let reordered_first = permuted_triangle(&first, first_permutation);
+                let reordered_second = permuted_triangle(&same_ray, second_permutation);
+                let first_vertex = first_permutation
+                    .iter()
+                    .position(|source| *source == 0)
+                    .expect("first shared vertex");
+                let second_vertex = second_permutation
+                    .iter()
+                    .position(|source| *source == 0)
+                    .expect("second shared vertex");
+                for (left, left_vertex, right, right_vertex) in [
+                    (
+                        &reordered_first,
+                        first_vertex,
+                        &reordered_second,
+                        second_vertex,
+                    ),
+                    (
+                        &reordered_second,
+                        second_vertex,
+                        &reordered_first,
+                        first_vertex,
+                    ),
+                ] {
+                    assert_eq!(
+                        classify_transversal_blocking_only(
+                            left,
+                            right,
+                            PairTopology::SharedVertex {
+                                first_vertex: left_vertex,
+                                second_vertex: right_vertex,
+                            },
+                            CayleyLimits::default(),
+                        ),
+                        BlockingOnlyDecision::ProvenPenetrating
+                    );
+                }
+            }
+        }
+        for coordinate_permutation in TRIANGLE_PERMUTATIONS {
+            for reflection_mask in 0..8 {
+                let transformed_first = coordinate_permuted_and_reflected_triangle(
+                    &first,
+                    coordinate_permutation,
+                    reflection_mask,
+                );
+                let transformed_second = coordinate_permuted_and_reflected_triangle(
+                    &same_ray,
+                    coordinate_permutation,
+                    reflection_mask,
+                );
+                assert_eq!(
+                    classify_transversal_blocking_only(
+                        &transformed_first,
+                        &transformed_second,
+                        topology,
+                        CayleyLimits::default(),
+                    ),
+                    BlockingOnlyDecision::ProvenPenetrating
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn independent_shared_vertex_boxes_are_never_welded_into_a_false_transversal() {
+        let first = ActualMillimetreTriangleEnvelope {
+            points: [point(0, 0, 0), point(5, -2, 0), point(5, 2, 0)],
+        };
+        let second = ActualMillimetreTriangleEnvelope {
+            points: [
+                point(0, 0, 0),
+                ActualMillimetrePointInterval {
+                    coordinates: [
+                        ClosedRationalInterval::point(rational(1, 4)),
+                        ClosedRationalInterval::point(BigRational::zero()),
+                        ClosedRationalInterval::point(rational(-1, 8)),
+                    ],
+                },
+                ActualMillimetrePointInterval {
+                    coordinates: [
+                        ClosedRationalInterval::point(rational(1, 4)),
+                        ClosedRationalInterval::point(BigRational::zero()),
+                        ClosedRationalInterval::point(rational(1, 8)),
+                    ],
+                },
+            ],
+        };
+        let topology = PairTopology::SharedVertex {
+            first_vertex: 0,
+            second_vertex: 0,
+        };
+        assert_eq!(
+            classify_transversal_blocking_only(&first, &second, topology, CayleyLimits::default(),),
+            BlockingOnlyDecision::ProvenPenetrating
+        );
+
+        let half = rational(1, 2);
+        let wide_first = ActualMillimetreTriangleEnvelope {
+            points: first.points.clone().map(|point| {
+                let mut coordinates = point.coordinates;
+                coordinates[1] =
+                    ClosedRationalInterval::inflated(coordinates[1].lower.clone(), half.clone());
+                ActualMillimetrePointInterval { coordinates }
+            }),
+        };
+        assert_eq!(
+            classify_transversal_blocking_only(
+                &wide_first,
+                &second,
+                topology,
+                CayleyLimits::default(),
+            ),
+            BlockingOnlyDecision::Unresolved,
+            "an independent per-face box cannot manufacture a common vertex"
+        );
+
+        let shifted_first = transformed_triangle(
+            &first,
+            BigRational::one(),
+            [BigRational::zero(), -half, BigRational::zero()],
+        );
+        assert_eq!(
+            classify_transversal_blocking_only(
+                &shifted_first,
+                &second,
+                topology,
+                CayleyLimits::default(),
+            ),
+            BlockingOnlyDecision::Unresolved,
+            "this concrete affine realization inside the wide box is separated"
+        );
     }
 
     #[test]
@@ -1150,5 +2428,558 @@ mod tests {
         one_short!(max_rational_allocations);
         one_short!(max_rational_allocation_bits);
         one_short!(max_total_rational_allocation_bits);
+    }
+
+    fn authenticated_fixture_decision_matrix(
+        fixture: &PreparedFixture,
+        cases: &[([f64; 2], usize)],
+    ) -> Vec<([u64; 2], FaceId, Vec<AuthenticatedTrianglePairDecision>)> {
+        let roots = fixture.model.face_ids();
+        assert_eq!(roots.len(), 3);
+        let mut matrix = Vec::new();
+        for (angles, expected_proven) in cases {
+            for root in roots {
+                let pose = solve_fixture(fixture, *root, angles);
+                let bound = fixture
+                    .model
+                    .bind_pose(&pose)
+                    .expect("issuer-bound bridge pose");
+                let exact = exact_fixture_pose(
+                    fixture,
+                    &pose,
+                    super::super::super::ExactTreePoseLimits::default(),
+                );
+                let measured = measure_binary64_affine_envelope(
+                    &exact,
+                    bound,
+                    MeasuredEnvelopeLimits::default(),
+                )
+                .expect("measured exact-pose envelope");
+                let scan = scan_authenticated_triangle_pairs_blocking_only(
+                    &exact,
+                    &measured,
+                    bound,
+                    0.0,
+                    AuthenticatedTriangleBlockingLimits::default(),
+                )
+                .expect("authenticated actual-mm blocking scan");
+                assert!(scan.is_for(&exact, &measured, bound, 0.0));
+                assert_eq!(scan.paper_thickness_bits, 0.0_f64.to_bits());
+                assert_eq!(scan.pairs.len(), 3);
+                assert_eq!(scan.work.faces, 3);
+                assert_eq!(scan.work.unordered_face_pairs, 3);
+                assert_eq!(scan.work.result_records, 3);
+                assert_eq!(
+                    scan.proven_penetrating_pairs(),
+                    *expected_proven,
+                    "angles {angles:?}, root {root:?}"
+                );
+                for record in &scan.pairs {
+                    assert_eq!(
+                        scan.decision(record.first, record.second),
+                        Some(record.decision)
+                    );
+                    assert_eq!(
+                        scan.decision(record.second, record.first),
+                        Some(record.decision)
+                    );
+                }
+                matrix.push((
+                    [angles[0].to_bits(), angles[1].to_bits()],
+                    *root,
+                    scan.pairs,
+                ));
+            }
+        }
+        matrix
+    }
+
+    #[test]
+    fn authenticated_400mm_bridge_fixes_corner_false_positives_and_deep_midpoint_negatives() {
+        let corner_cases = [
+            ([10.0, 0.0], 0),
+            ([0.0, 10.0], 0),
+            ([45.0, 45.0], 0),
+            ([90.0, 90.0], 0),
+            ([91.0, 91.0], 0),
+            ([135.0, 135.0], 0),
+            ([179.0, 179.0], 0),
+            ([180.0, 180.0], 0),
+        ];
+        let corner_baseline = authenticated_fixture_decision_matrix(
+            &corner_mountain_valley_400mm_fixture(0.0),
+            &corner_cases,
+        );
+        let corner_reversed = authenticated_fixture_decision_matrix(
+            &corner_mountain_valley_400mm_fixture_with_reversed_source_collections(0.0),
+            &corner_cases,
+        );
+        assert_eq!(
+            corner_reversed, corner_baseline,
+            "source collection order must preserve every canonical pair decision"
+        );
+
+        let midpoint_cases = [
+            ([90.0, 90.0], 0),
+            ([91.0, 91.0], 0),
+            ([135.0, 135.0], 1),
+            ([179.0, 179.0], 1),
+            ([180.0, 180.0], 0),
+        ];
+        let midpoint_baseline = authenticated_fixture_decision_matrix(
+            &midpoint_mountain_400mm_fixture(),
+            &midpoint_cases,
+        );
+        let midpoint_reversed = authenticated_fixture_decision_matrix(
+            &midpoint_mountain_400mm_fixture_with_reversed_source_collections(),
+            &midpoint_cases,
+        );
+        assert_eq!(
+            midpoint_reversed, midpoint_baseline,
+            "source collection order must preserve every canonical pair decision"
+        );
+    }
+
+    #[test]
+    fn authenticated_bridge_records_mixed_polygon_pairs_as_unsupported() {
+        let fixture = triangle_and_quadrilateral_fixture();
+        let roots = fixture.model.face_ids();
+        assert_eq!(roots.len(), 2);
+        for root in roots {
+            let pose = solve_fixture(&fixture, *root, &[37.0]);
+            let bound = fixture
+                .model
+                .bind_pose(&pose)
+                .expect("issuer-bound mixed-face pose");
+            let exact = exact_fixture_pose(
+                &fixture,
+                &pose,
+                super::super::super::ExactTreePoseLimits::default(),
+            );
+            let measured =
+                measure_binary64_affine_envelope(&exact, bound, MeasuredEnvelopeLimits::default())
+                    .expect("mixed-face measured envelope");
+            let scan = scan_authenticated_triangle_pairs_blocking_only(
+                &exact,
+                &measured,
+                bound,
+                0.0,
+                AuthenticatedTriangleBlockingLimits::default(),
+            )
+            .expect("mixed-face scan");
+
+            assert_eq!(scan.pairs.len(), 1);
+            assert_eq!(scan.work.faces, 2);
+            assert_eq!(scan.work.triangular_faces, 1);
+            assert_eq!(scan.work.unordered_face_pairs, 1);
+            assert_eq!(scan.work.expected_triangular_face_pairs, 0);
+            assert_eq!(scan.work.analyzed_triangular_face_pairs, 0);
+            assert_eq!(scan.work.exact_predicate_calls, 0);
+            assert_eq!(scan.work.observed_predicate_calls, 0);
+            assert_eq!(scan.work.unsupported_pair_records, 1);
+            assert_eq!(scan.work.result_records, 1);
+            assert_eq!(scan.proven_penetrating_pairs(), 0);
+            let record = scan.pairs[0];
+            assert_eq!(record.decision, BlockingOnlyDecision::Unresolved);
+            assert_eq!(
+                scan.decision(record.first, record.second),
+                Some(BlockingOnlyDecision::Unresolved)
+            );
+            assert_eq!(
+                scan.decision(record.second, record.first),
+                Some(BlockingOnlyDecision::Unresolved)
+            );
+        }
+    }
+
+    #[test]
+    fn authenticated_bridge_requires_positive_zero_and_the_exact_measured_object() {
+        let fixture = midpoint_mountain_400mm_fixture();
+        let root = fixture.model.face_ids()[1];
+        let pose = solve_fixture(&fixture, root, &[135.0, 135.0]);
+        let bound = fixture
+            .model
+            .bind_pose(&pose)
+            .expect("issuer-bound bridge pose");
+        let exact = exact_fixture_pose(
+            &fixture,
+            &pose,
+            super::super::super::ExactTreePoseLimits::default(),
+        );
+        let independently_regenerated_exact = exact_fixture_pose(
+            &fixture,
+            &pose,
+            super::super::super::ExactTreePoseLimits::default(),
+        );
+        let measured =
+            measure_binary64_affine_envelope(&exact, bound, MeasuredEnvelopeLimits::default())
+                .expect("measured exact-pose envelope");
+
+        for unsupported in [
+            -0.0,
+            0.1,
+            1.0,
+            3.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(matches!(
+                scan_authenticated_triangle_pairs_blocking_only(
+                    &exact,
+                    &measured,
+                    bound,
+                    unsupported,
+                    AuthenticatedTriangleBlockingLimits::default(),
+                ),
+                Err(AuthenticatedTriangleBlockingError::UnsupportedPaperThickness)
+            ));
+        }
+        assert!(matches!(
+            scan_authenticated_triangle_pairs_blocking_only(
+                &independently_regenerated_exact,
+                &measured,
+                bound,
+                0.0,
+                AuthenticatedTriangleBlockingLimits::default(),
+            ),
+            Err(AuthenticatedTriangleBlockingError::AuthorityMismatch)
+        ));
+        let scan = scan_authenticated_triangle_pairs_blocking_only(
+            &exact,
+            &measured,
+            bound,
+            0.0,
+            AuthenticatedTriangleBlockingLimits::default(),
+        )
+        .expect("identity-matched bridge");
+        assert!(scan.is_for(&exact, &measured, bound, 0.0));
+        assert!(!scan.is_for(&independently_regenerated_exact, &measured, bound, 0.0));
+        assert_eq!(scan.proven_penetrating_pairs(), 1);
+
+        let assert_foreign_bound_rejected = |foreign_bound| {
+            assert!(matches!(
+                scan_authenticated_triangle_pairs_blocking_only(
+                    &exact,
+                    &measured,
+                    foreign_bound,
+                    0.0,
+                    AuthenticatedTriangleBlockingLimits::default(),
+                ),
+                Err(AuthenticatedTriangleBlockingError::AuthorityMismatch)
+            ));
+        };
+        let same_values_pose = solve_fixture(&fixture, root, &[135.0, 135.0]);
+        assert_foreign_bound_rejected(
+            fixture
+                .model
+                .bind_pose(&same_values_pose)
+                .expect("ABA pose bound"),
+        );
+        let rerooted_pose = solve_fixture(&fixture, fixture.model.face_ids()[0], &[135.0, 135.0]);
+        assert_foreign_bound_rejected(
+            fixture
+                .model
+                .bind_pose(&rerooted_pose)
+                .expect("rerooted pose bound"),
+        );
+        let next_angle = f64::from_bits(135.0_f64.to_bits() + 1);
+        let next_pose = solve_fixture(&fixture, root, &[next_angle, 135.0]);
+        assert_foreign_bound_rejected(
+            fixture
+                .model
+                .bind_pose(&next_pose)
+                .expect("one-ULP pose bound"),
+        );
+        let foreign_fixture = midpoint_mountain_400mm_fixture();
+        let foreign_pose = solve_fixture(
+            &foreign_fixture,
+            foreign_fixture.model.face_ids()[1],
+            &[135.0, 135.0],
+        );
+        assert_foreign_bound_rejected(
+            foreign_fixture
+                .model
+                .bind_pose(&foreign_pose)
+                .expect("foreign issuer pose bound"),
+        );
+
+        let mut underreported =
+            measure_binary64_affine_envelope(&exact, bound, MeasuredEnvelopeLimits::default())
+                .expect("second measured envelope");
+        let mut changed = false;
+        'faces: for face in &mut underreported.faces {
+            for radius in &mut face.radius {
+                if radius.is_positive() {
+                    *radius = BigRational::zero();
+                    changed = true;
+                    break 'faces;
+                }
+            }
+        }
+        assert!(changed, "fixture must exercise a nonzero measured radius");
+        assert!(
+            scan_authenticated_triangle_pairs_blocking_only(
+                &exact,
+                &underreported,
+                bound,
+                0.0,
+                AuthenticatedTriangleBlockingLimits::default(),
+            )
+            .is_err(),
+            "the direct binary64 lift must remain inside every authenticated radius"
+        );
+    }
+
+    #[test]
+    fn authenticated_bridge_accepts_exact_limits_and_every_one_short_is_atomic() {
+        let fixture = midpoint_mountain_400mm_fixture();
+        let root = fixture.model.face_ids()[1];
+        let pose = solve_fixture(&fixture, root, &[135.0, 135.0]);
+        let bound = fixture
+            .model
+            .bind_pose(&pose)
+            .expect("issuer-bound bridge pose");
+        let exact = exact_fixture_pose(
+            &fixture,
+            &pose,
+            super::super::super::ExactTreePoseLimits::default(),
+        );
+        let measured =
+            measure_binary64_affine_envelope(&exact, bound, MeasuredEnvelopeLimits::default())
+                .expect("measured exact-pose envelope");
+        let baseline = scan_authenticated_triangle_pairs_blocking_only(
+            &exact,
+            &measured,
+            bound,
+            0.0,
+            AuthenticatedTriangleBlockingLimits::default(),
+        )
+        .expect("baseline bridge");
+        assert_eq!(
+            baseline.pairs.first().map(|record| record.decision),
+            Some(BlockingOnlyDecision::ProvenPenetrating),
+            "the first canonical witness makes a late one-short an atomicity canary"
+        );
+        let work = baseline.work.clone();
+        let exact_limits = AuthenticatedTriangleBlockingLimits {
+            max_faces: work.faces,
+            max_hinges: work.hinges,
+            max_boundary_occurrences: work.boundary_occurrences,
+            max_triangular_faces: work.triangular_faces,
+            max_unordered_face_pairs: work.unordered_face_pairs,
+            max_triangular_face_pairs: work.expected_triangular_face_pairs,
+            max_topology_vertex_checks: work.topology_vertex_checks,
+            max_hinge_boundary_index_entries: work.hinge_boundary_index_entries,
+            max_hinge_face_lookups: work.hinge_face_lookups,
+            max_hinge_vertex_lookups: work.hinge_vertex_lookups,
+            max_predicate_calls: work
+                .exact_predicate_calls
+                .checked_add(work.observed_predicate_calls)
+                .expect("predicate calls"),
+            max_result_records: work.result_records,
+            max_total_machin_terms: work.exact.machin_terms,
+            max_total_trig_terms: work.exact.trig_terms,
+            max_total_sqrt_refinements: work.exact.sqrt_refinements,
+            exact: CayleyResumeLimits {
+                max_machin_terms_per_series: work.exact.max_machin_series_terms,
+                max_trig_terms_per_series: work.exact.max_trig_series_terms,
+                max_sqrt_refinements: work.exact.max_sqrt_call_refinements,
+                max_interval_operations: work.exact.interval_operations,
+                max_shift_bits: work.exact.max_shift_bits,
+                max_intermediate_bits: work.exact.max_preflight_bits,
+                max_gcd_fallback_calls: work.exact.gcd_fallback_calls,
+                max_gcd_fallback_input_bits: work.exact.gcd_fallback_input_bits,
+                max_rational_allocations: work.exact.rational_allocations,
+                max_rational_allocation_bits: work.exact.max_rational_allocation_bits,
+                max_total_rational_allocation_bits: work.exact.total_rational_allocation_bits,
+                max_output_bits: work.exact.max_output_bits,
+            },
+        };
+        let run = |limits| {
+            scan_authenticated_triangle_pairs_blocking_only(&exact, &measured, bound, 0.0, limits)
+        };
+        let exact_scan = run(exact_limits).expect("all exact observed limits");
+        assert_eq!(exact_scan.work, work);
+        assert_eq!(exact_scan.proven_penetrating_pairs(), 1);
+
+        macro_rules! structural_one_short {
+            ($field:ident, $resource:literal) => {{
+                let mut one_short = exact_limits;
+                assert!(one_short.$field > 0, "{} is exercised", stringify!($field));
+                one_short.$field -= 1;
+                assert_eq!(
+                    run(one_short).expect_err(concat!(
+                        stringify!($field),
+                        " one-short must return no scan"
+                    )),
+                    AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+                        resource: $resource
+                    },
+                    "{} one-short must fail at its own resource",
+                    stringify!($field),
+                );
+            }};
+        }
+        structural_one_short!(max_faces, "faces");
+        structural_one_short!(max_hinges, "hinges");
+        structural_one_short!(max_boundary_occurrences, "boundary_occurrences");
+        structural_one_short!(max_triangular_faces, "triangular_faces");
+        structural_one_short!(max_unordered_face_pairs, "unordered_face_pairs");
+        structural_one_short!(max_triangular_face_pairs, "triangular_face_pairs");
+        structural_one_short!(max_topology_vertex_checks, "topology_vertex_checks");
+        structural_one_short!(
+            max_hinge_boundary_index_entries,
+            "hinge_boundary_index_entries"
+        );
+        structural_one_short!(max_hinge_face_lookups, "hinge_face_lookups");
+        structural_one_short!(max_hinge_vertex_lookups, "hinge_vertex_lookups");
+        structural_one_short!(max_predicate_calls, "predicate_calls");
+        structural_one_short!(max_result_records, "result_records");
+
+        macro_rules! exact_one_short {
+            ($field:ident, $resource:literal) => {{
+                let mut one_short = exact_limits;
+                assert!(
+                    one_short.exact.$field > 0,
+                    "{} is exercised",
+                    stringify!($field)
+                );
+                one_short.exact.$field -= 1;
+                match run(one_short).expect_err(concat!(
+                    "exact ",
+                    stringify!($field),
+                    " one-short must return no scan"
+                )) {
+                    AuthenticatedTriangleBlockingError::Exact(
+                        CayleyError::ResourceLimitExceeded { resource, .. },
+                    ) => assert_eq!(
+                        resource,
+                        $resource,
+                        "exact {} one-short must fail at the expected resource",
+                        stringify!($field),
+                    ),
+                    other => panic!(
+                        "exact {} one-short returned the wrong error: {other:?}",
+                        stringify!($field)
+                    ),
+                }
+            }};
+        }
+        exact_one_short!(max_machin_terms_per_series, "machin_terms");
+        exact_one_short!(max_trig_terms_per_series, "trig_terms");
+        exact_one_short!(max_sqrt_refinements, "sqrt_refinements");
+        exact_one_short!(max_interval_operations, "interval_operations");
+        exact_one_short!(max_shift_bits, "shift_bits");
+        // A tighter intermediate preflight can select the metered GCD
+        // fallback. Every other exact limit is already fixed to its observed
+        // minimum, so that alternate path reaches its input-bit boundary
+        // first. The important contract is still atomic rejection.
+        exact_one_short!(max_intermediate_bits, "gcd_fallback_input_bits");
+        exact_one_short!(max_gcd_fallback_calls, "gcd_fallback_calls");
+        exact_one_short!(max_gcd_fallback_input_bits, "gcd_fallback_input_bits");
+        exact_one_short!(max_rational_allocations, "rational_allocations");
+        exact_one_short!(max_rational_allocation_bits, "rational_allocation_bits");
+        exact_one_short!(
+            max_total_rational_allocation_bits,
+            "total_rational_allocation_bits"
+        );
+        exact_one_short!(max_output_bits, "output_bits");
+
+        macro_rules! total_term_one_short {
+            ($field:ident, $resource:literal) => {{
+                let mut one_short = exact_limits;
+                assert!(one_short.$field > 0, "{} is exercised", stringify!($field));
+                one_short.$field -= 1;
+                match run(one_short).expect_err(concat!(
+                    stringify!($field),
+                    " one-short must return no scan"
+                )) {
+                    AuthenticatedTriangleBlockingError::Exact(
+                        CayleyError::ResourceLimitExceeded { resource, .. },
+                    ) => assert_eq!(
+                        resource,
+                        $resource,
+                        "{} one-short must fail at its own resource",
+                        stringify!($field),
+                    ),
+                    other => panic!(
+                        "{} one-short returned the wrong error: {other:?}",
+                        stringify!($field)
+                    ),
+                }
+            }};
+        }
+        total_term_one_short!(max_total_machin_terms, "total_machin_terms");
+        total_term_one_short!(max_total_trig_terms, "total_trig_terms");
+        total_term_one_short!(max_total_sqrt_refinements, "total_sqrt_refinements");
+
+        macro_rules! structural_over_hard_ceiling {
+            ($field:ident) => {{
+                let mut over_hard_ceiling = AUTHENTICATED_TRIANGLE_BLOCKING_HARD_LIMITS;
+                over_hard_ceiling.$field = over_hard_ceiling
+                    .$field
+                    .checked_add(1)
+                    .expect("hard ceiling has room for the rejection probe");
+                assert!(
+                    matches!(
+                        run(over_hard_ceiling),
+                        Err(AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+                            resource: "configured_hard_ceiling"
+                        })
+                    ),
+                    "{} above its hard ceiling must return no scan",
+                    stringify!($field)
+                );
+            }};
+        }
+        structural_over_hard_ceiling!(max_faces);
+        structural_over_hard_ceiling!(max_hinges);
+        structural_over_hard_ceiling!(max_boundary_occurrences);
+        structural_over_hard_ceiling!(max_triangular_faces);
+        structural_over_hard_ceiling!(max_unordered_face_pairs);
+        structural_over_hard_ceiling!(max_triangular_face_pairs);
+        structural_over_hard_ceiling!(max_topology_vertex_checks);
+        structural_over_hard_ceiling!(max_hinge_boundary_index_entries);
+        structural_over_hard_ceiling!(max_hinge_face_lookups);
+        structural_over_hard_ceiling!(max_hinge_vertex_lookups);
+        structural_over_hard_ceiling!(max_predicate_calls);
+        structural_over_hard_ceiling!(max_result_records);
+        structural_over_hard_ceiling!(max_total_machin_terms);
+        structural_over_hard_ceiling!(max_total_trig_terms);
+        structural_over_hard_ceiling!(max_total_sqrt_refinements);
+
+        macro_rules! exact_over_hard_ceiling {
+            ($field:ident) => {{
+                let mut over_hard_ceiling = AUTHENTICATED_TRIANGLE_BLOCKING_HARD_LIMITS;
+                over_hard_ceiling.exact.$field = over_hard_ceiling
+                    .exact
+                    .$field
+                    .checked_add(1)
+                    .expect("hard ceiling has room for the rejection probe");
+                assert!(
+                    matches!(
+                        run(over_hard_ceiling),
+                        Err(AuthenticatedTriangleBlockingError::ResourceLimitExceeded {
+                            resource: "configured_hard_ceiling"
+                        })
+                    ),
+                    "exact {} above its hard ceiling must return no scan",
+                    stringify!($field)
+                );
+            }};
+        }
+        exact_over_hard_ceiling!(max_machin_terms_per_series);
+        exact_over_hard_ceiling!(max_trig_terms_per_series);
+        exact_over_hard_ceiling!(max_sqrt_refinements);
+        exact_over_hard_ceiling!(max_interval_operations);
+        exact_over_hard_ceiling!(max_shift_bits);
+        exact_over_hard_ceiling!(max_intermediate_bits);
+        exact_over_hard_ceiling!(max_gcd_fallback_calls);
+        exact_over_hard_ceiling!(max_gcd_fallback_input_bits);
+        exact_over_hard_ceiling!(max_rational_allocations);
+        exact_over_hard_ceiling!(max_rational_allocation_bits);
+        exact_over_hard_ceiling!(max_total_rational_allocation_bits);
+        exact_over_hard_ceiling!(max_output_bits);
     }
 }

@@ -21,8 +21,8 @@ struct FoldSpec {
     kind: EdgeKind,
 }
 
-struct PreparedFixture {
-    model: MaterialTreeKinematicsModel,
+pub(super) struct PreparedFixture {
+    pub(super) model: MaterialTreeKinematicsModel,
     vertex_ids: Vec<VertexId>,
     hinge_ids: Vec<EdgeId>,
 }
@@ -47,8 +47,17 @@ fn prepare_polygon_fixture(
     coordinates: &[(f64, f64)],
     folds: &[FoldSpec],
 ) -> PreparedFixture {
+    prepare_polygon_fixture_with_source_collections(source_revision, coordinates, folds, false)
+}
+
+fn prepare_polygon_fixture_with_source_collections(
+    source_revision: u64,
+    coordinates: &[(f64, f64)],
+    folds: &[FoldSpec],
+    reverse_source_collections: bool,
+) -> PreparedFixture {
     assert!(coordinates.len() >= 3);
-    let vertices = coordinates
+    let mut vertices = coordinates
         .iter()
         .enumerate()
         .map(|(index, (x, y))| Vertex {
@@ -78,6 +87,10 @@ fn prepare_polygon_fixture(
             end: vertex_ids[fold.end],
             kind: fold.kind,
         });
+    }
+    if reverse_source_collections {
+        vertices.reverse();
+        edges.reverse();
     }
     let pattern = CreasePattern { vertices, edges };
     let paper = Paper {
@@ -118,7 +131,7 @@ fn prepare_polygon_fixture(
     }
 }
 
-fn solve_fixture(
+pub(super) fn solve_fixture(
     fixture: &PreparedFixture,
     root: FaceId,
     angle_magnitudes: &[f64],
@@ -139,7 +152,7 @@ fn solve_fixture(
         .expect("stress tree pose")
 }
 
-fn exact_fixture_pose<'a>(
+pub(super) fn exact_fixture_pose<'a>(
     fixture: &'a PreparedFixture,
     pose: &'a MaterialTreePose,
     limits: ExactTreePoseLimits,
@@ -427,9 +440,22 @@ fn symmetric_near_400mm_v_fixture() -> PreparedFixture {
     )
 }
 
-fn corner_mountain_valley_400mm_fixture(offset: f64) -> PreparedFixture {
+pub(super) fn corner_mountain_valley_400mm_fixture(offset: f64) -> PreparedFixture {
+    corner_mountain_valley_400mm_fixture_with_source_collections(offset, false)
+}
+
+pub(super) fn corner_mountain_valley_400mm_fixture_with_reversed_source_collections(
+    offset: f64,
+) -> PreparedFixture {
+    corner_mountain_valley_400mm_fixture_with_source_collections(offset, true)
+}
+
+fn corner_mountain_valley_400mm_fixture_with_source_collections(
+    offset: f64,
+    reverse_source_collections: bool,
+) -> PreparedFixture {
     let shifted = |x: f64, y: f64| (x + offset, y - offset);
-    prepare_polygon_fixture(
+    prepare_polygon_fixture_with_source_collections(
         402,
         &[
             shifted(0.0, 0.0),
@@ -451,11 +477,23 @@ fn corner_mountain_valley_400mm_fixture(offset: f64) -> PreparedFixture {
                 kind: EdgeKind::Valley,
             },
         ],
+        reverse_source_collections,
     )
 }
 
-fn midpoint_mountain_400mm_fixture() -> PreparedFixture {
-    prepare_polygon_fixture(
+pub(super) fn midpoint_mountain_400mm_fixture() -> PreparedFixture {
+    midpoint_mountain_400mm_fixture_with_source_collections(false)
+}
+
+pub(super) fn midpoint_mountain_400mm_fixture_with_reversed_source_collections() -> PreparedFixture
+{
+    midpoint_mountain_400mm_fixture_with_source_collections(true)
+}
+
+fn midpoint_mountain_400mm_fixture_with_source_collections(
+    reverse_source_collections: bool,
+) -> PreparedFixture {
+    prepare_polygon_fixture_with_source_collections(
         403,
         &[
             (0.0, 0.0),
@@ -476,6 +514,25 @@ fn midpoint_mountain_400mm_fixture() -> PreparedFixture {
                 kind: EdgeKind::Mountain,
             },
         ],
+        reverse_source_collections,
+    )
+}
+
+pub(super) fn triangle_and_quadrilateral_fixture() -> PreparedFixture {
+    prepare_polygon_fixture(
+        405,
+        &[
+            (0.0, 0.0),
+            (400.0, 0.0),
+            (500.0, 200.0),
+            (200.0, 400.0),
+            (0.0, 200.0),
+        ],
+        &[FoldSpec {
+            start: 0,
+            end: 2,
+            kind: EdgeKind::Mountain,
+        }],
     )
 }
 

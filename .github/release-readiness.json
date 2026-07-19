@@ -1,0 +1,7 @@
+{
+  "schema": "origami2.windows-release-readiness.v1",
+  "version": "0.1.0",
+  "allMustRequirementsAccepted": false,
+  "windowsOwnerE2eAccepted": false,
+  "productionReleaseApproved": false
+}

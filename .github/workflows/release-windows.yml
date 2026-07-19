@@ -1,0 +1,304 @@
+name: Windows production release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing canonical release tag (for example v0.1.0)"
+        required: true
+        type: string
+      expected_commit:
+        description: "Full 40-character commit SHA that the tag must resolve to"
+        required: true
+        type: string
+      confirmation:
+        description: "Acknowledge that the Windows installer is intentionally unsigned"
+        required: true
+        type: choice
+        default: DO_NOT_PUBLISH
+        options:
+          - DO_NOT_PUBLISH
+          - PUBLISH_UNSIGNED_WINDOWS_RELEASE
+
+permissions: {}
+
+concurrency:
+  group: windows-production-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate-test-build:
+    name: Validate, test, and build unsigned Windows NSIS
+    runs-on: windows-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.release-gate.outputs.release_tag }}
+      version: ${{ steps.release-gate.outputs.version }}
+      commit_sha: ${{ steps.release-gate.outputs.commit_sha }}
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      installer_name: ${{ steps.package.outputs.installer_name }}
+    steps:
+      - name: Check out the existing release tag
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate trigger, tag, commit, and application versions
+        id: release-gate
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          EXPECTED_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_commit || github.sha }}
+          RELEASE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.confirmation || 'PUBLISH_UNSIGNED_WINDOWS_RELEASE' }}
+        run: >
+          ./.github/scripts/validate_windows_release.ps1
+          -RepositoryRoot $env:GITHUB_WORKSPACE
+          -EventName '${{ github.event_name }}'
+          -Tag $env:RELEASE_TAG
+          -ExpectedCommit $env:EXPECTED_COMMIT
+          -Confirmation $env:RELEASE_CONFIRMATION
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: apps/desktop
+        run: npm test
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Lint frontend
+        working-directory: apps/desktop
+        run: npm run lint
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test Rust workspace
+        env:
+          RUST_BACKTRACE: "1"
+          CARGO_TERM_COLOR: always
+        run: cargo test --workspace --locked --all-targets --no-fail-fast
+
+      - name: Lint Rust workspace
+        env:
+          CARGO_TERM_COLOR: always
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+
+      - name: Set up Python for independent instruction export audit
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Generate instruction PDF and SVG ZIP with outbound network blocked
+        shell: pwsh
+        env:
+          ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY: ${{ runner.temp }}/instruction-export-audit
+        run: ./scripts/run_instruction_export_offline_test.ps1
+
+      - name: Audit instruction PDF and SVG ZIP with external parsers
+        shell: bash
+        env:
+          ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY: ${{ runner.temp }}/instruction-export-audit
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --only-binary=:all: pypdf==6.12.2 PyMuPDF==1.27.2.3
+          python scripts/audit_instruction_exports.py "$ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY"
+
+      - name: Upload failed instruction export audit fixtures
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-instruction-export-audit-${{ github.run_id }}
+          path: ${{ runner.temp }}/instruction-export-audit
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove stale Windows bundle and release outputs
+        shell: pwsh
+        run: |
+          $allowedDirectories = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'target\release\bundle\nsis'),
+            (Join-Path $env:GITHUB_WORKSPACE 'target\windows-release')
+          )
+          foreach ($directory in $allowedDirectories) {
+            if (-not (Test-Path -LiteralPath $directory)) {
+              continue
+            }
+            $resolved = (Resolve-Path -LiteralPath $directory).Path
+            $expected = [System.IO.Path]::GetFullPath($directory)
+            if (-not [string]::Equals(
+              $resolved,
+              $expected,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+              throw "Refusing to remove unexpected release path '$resolved'."
+            }
+            Remove-Item -LiteralPath $resolved -Recurse -Force
+          }
+
+      - name: Build unsigned Windows NSIS installer
+        working-directory: apps/desktop
+        run: npm run bundle:windows:ci
+
+      - name: Verify bundled application resources
+        shell: pwsh
+        run: >
+          ./scripts/verify_windows_bundle.ps1
+          -BundleDirectory ./target/release/bundle/nsis
+
+      - name: Package installer, checksum, and release notes
+        id: package
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release-gate.outputs.commit_sha }}
+        run: >
+          ./.github/scripts/package_windows_release.ps1
+          -BundleDirectory ./target/release/bundle/nsis
+          -OutputDirectory ./target/windows-release
+          -Version $env:RELEASE_VERSION
+          -CommitSha $env:RELEASE_COMMIT
+          -OutputFile $env:GITHUB_OUTPUT
+
+      - name: Independently verify release assets
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release-gate.outputs.commit_sha }}
+        run: >
+          ./.github/scripts/verify_windows_release_assets.ps1
+          -ReleaseDirectory ./target/windows-release
+          -Version $env:RELEASE_VERSION
+          -CommitSha $env:RELEASE_COMMIT
+          -RequireUnsigned
+
+      - name: Upload immutable release candidate artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: target/windows-release
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          include-hidden-files: false
+
+  publish:
+    name: Publish existing tag to GitHub Releases
+    needs: validate-test-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    environment:
+      name: windows-production-release
+      url: ${{ steps.publish.outputs.release_url }}
+    steps:
+      - name: Re-check the release tag without persisted credentials
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: refs/tags/${{ needs.validate-test-build.outputs.release_tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Download the exact tested artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.validate-test-build.outputs.artifact_name }}
+          path: target/windows-release
+
+      - name: Re-check tag commit and release asset digest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate-test-build.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate-test-build.outputs.commit_sha }}
+          INSTALLER_NAME: ${{ needs.validate-test-build.outputs.installer_name }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          cd target/windows-release
+          mapfile -t files < <(
+            find . -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort
+          )
+          expected=("$INSTALLER_NAME" "SHA256SUMS.txt" "release-notes.md")
+          test "${files[*]}" = "${expected[*]}"
+          test -s "$INSTALLER_NAME"
+          test -s release-notes.md
+          sha256sum --check --strict SHA256SUMS.txt
+
+      - name: Refuse to overwrite an existing release, then publish
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate-test-build.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.validate-test-build.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate-test-build.outputs.commit_sha }}
+          INSTALLER_NAME: ${{ needs.validate-test-build.outputs.installer_name }}
+        run: |
+          set -euo pipefail
+          remote_commit="$(
+            gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha
+          )"
+          if [ "$remote_commit" != "$RELEASE_COMMIT" ]; then
+            echo "::error title=Release tag moved::The remote tag no longer resolves to the tested commit."
+            exit 1
+          fi
+          if existing_release_state="$(
+            gh release view "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --json isDraft \
+              --jq 'if .isDraft then "draft" else "published" end' \
+              2>/dev/null
+          )"; then
+            echo "::error title=Release already exists::Refusing to modify or overwrite the existing $existing_release_state release $RELEASE_TAG."
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            "target/windows-release/$INSTALLER_NAME#ORIGAMI2 Windows 10/11 x64 unsigned NSIS installer" \
+            "target/windows-release/SHA256SUMS.txt#SHA-256 checksums" \
+            --repo "$GH_REPO" \
+            --target "$RELEASE_COMMIT" \
+            --verify-tag \
+            --title "ORIGAMI2 $RELEASE_VERSION (Windows)" \
+            --notes-file target/windows-release/release-notes.md \
+            --draft
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GH_REPO" \
+            --draft=false \
+            --latest
+          release_url="$(
+            gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json url --jq .url
+          )"
+          echo "release_url=$release_url" >> "$GITHUB_OUTPUT"

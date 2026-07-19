@@ -154,6 +154,17 @@ jobs:
         run: >
           ./scripts/verify_windows_bundle.ps1
           -BundleDirectory ./target/release/bundle/nsis
+      - name: Verify Windows production release workflow contract
+        shell: pwsh
+        run: |
+          $installers = @(
+            Get-ChildItem -LiteralPath ./target/release/bundle/nsis -File -Filter '*.exe'
+          )
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer for the release contract test."
+          }
+          ./.github/tests/windows_release_workflow_contract.ps1 `
+            -UnsignedExecutableFixture $installers[0].FullName
       - name: Upload verified Windows NSIS installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

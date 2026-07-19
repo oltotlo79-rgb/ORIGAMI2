@@ -1,0 +1,13 @@
+{
+  "schema": "origami2.windows-release-notes.v1",
+  "requiredJapaneseNotices": [
+    "このインストーラーはコード署名されていません。",
+    "SHA256SUMS.txtとGet-FileHashでSHA-256を照合してください。",
+    "macOS版は正式配布対象ではありません。"
+  ],
+  "requiredEnglishNotices": [
+    "This installer is not code signed.",
+    "Verify its SHA-256 with SHA256SUMS.txt and Get-FileHash.",
+    "macOS is not an official release artifact."
+  ]
+}

@@ -26,7 +26,8 @@ pub use crease_pattern_export::{
     export_crease_pattern, export_crease_pattern_with_limits,
 };
 pub use fold::{
-    FoldAssignmentCounts, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionError,
+    FoldAssignmentCounts, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidate,
+    FoldBoundaryCandidateId, FoldBoundaryCandidateSource, FoldConversionError,
     FoldConversionOptions, FoldCreasePatternConversion, FoldEdgeAssignment, FoldFrameUnit,
     FoldImportError, FoldImportLimits, FoldPreview, FoldPreviewEdge, FoldPreviewVertex,
     FoldPreviewWarning, read_fold_preview, read_fold_preview_with_limits,

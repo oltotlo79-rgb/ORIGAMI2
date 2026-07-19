@@ -636,6 +636,7 @@ export function applyFoldImport(
     expectedRevision,
     name: settings.name,
     millimetersPerUnit: settings.mmPerUnit,
+    boundaryCandidateId: settings.boundaryCandidateId,
     assignmentMappings,
   })
 }

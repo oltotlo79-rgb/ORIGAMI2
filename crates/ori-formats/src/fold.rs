@@ -7,13 +7,15 @@
 //! supplies an explicit millimetre scale and assignment mapping.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     marker::PhantomData,
 };
 
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 use ori_geometry::{
-    Orientation, SegmentIntersection, exact_polygon_orientation, segment_intersection,
+    Orientation, PointPolygonRelation, SegmentIntersection, exact_orientation,
+    exact_polygon_orientation, point_polygon_relation, segment_intersection,
 };
 use serde::{
     Deserialize, Serialize,
@@ -38,6 +40,7 @@ pub struct FoldImportLimits {
     pub max_vertices: usize,
     pub max_edges: usize,
     pub max_boundary_edges: usize,
+    pub max_boundary_candidates: usize,
     pub max_intersection_candidates: usize,
 }
 
@@ -50,6 +53,7 @@ impl Default for FoldImportLimits {
             // Boundary validation compares every non-adjacent pair. 1,414
             // edges keep that exact work below one million pairs.
             max_boundary_edges: 1_414,
+            max_boundary_candidates: 64,
             max_intersection_candidates: MAX_FOLD_INTERSECTION_CANDIDATES,
         }
     }
@@ -138,6 +142,31 @@ pub struct FoldPreviewEdge {
     pub assignment: FoldEdgeAssignment,
 }
 
+/// Stable preview-local identifier for one selectable paper boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FoldBoundaryCandidateId(pub u16);
+
+/// Why a boundary candidate is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldBoundaryCandidateSource {
+    /// All source `B` edges already form one valid paper boundary.
+    AssignedBoundary,
+    /// A planar outer-face walk contains every source vertex, but the source
+    /// assignments do not establish a valid boundary by themselves.
+    InferredOuterFace,
+}
+
+/// One validated, simple, non-zero-area boundary choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FoldBoundaryCandidate {
+    pub id: FoldBoundaryCandidateId,
+    pub source: FoldBoundaryCandidateSource,
+    pub vertex_indices: Vec<usize>,
+    pub edge_indices: Vec<usize>,
+}
+
 /// Counts used to show only relevant assignment mapping controls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct FoldAssignmentCounts {
@@ -182,6 +211,8 @@ impl FoldAssignmentCounts {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FoldPreviewWarning {
     MissingFileSpec,
+    MissingEdgesAssignment,
+    BoundaryAssignmentsNeedSelection,
     UnitNeedsScaleSelection,
     IgnoredFields { names: Vec<String> },
 }
@@ -194,7 +225,8 @@ pub struct FoldPreview {
     frame_unit: FoldFrameUnit,
     vertices: Vec<FoldPreviewVertex>,
     edges: Vec<FoldPreviewEdge>,
-    boundary_vertex_indices: Vec<usize>,
+    boundary_candidates: Vec<FoldBoundaryCandidate>,
+    fixed_boundary_candidate: Option<FoldBoundaryCandidateId>,
     assignment_counts: FoldAssignmentCounts,
     warnings: Vec<FoldPreviewWarning>,
 }
@@ -230,9 +262,25 @@ impl FoldPreview {
         &self.edges
     }
 
+    /// Returns every validated boundary choice in deterministic order.
+    #[must_use]
+    pub fn boundary_candidates(&self) -> &[FoldBoundaryCandidate] {
+        &self.boundary_candidates
+    }
+
+    /// Returns the source-assigned boundary when no user choice is required.
+    #[must_use]
+    pub fn fixed_boundary_candidate(&self) -> Option<FoldBoundaryCandidateId> {
+        self.fixed_boundary_candidate
+    }
+
+    /// Compatibility view for callers that only support a valid source `B`
+    /// cycle. Inferred candidates deliberately require explicit selection.
     #[must_use]
     pub fn boundary_vertex_indices(&self) -> &[usize] {
-        &self.boundary_vertex_indices
+        self.fixed_boundary_candidate
+            .and_then(|id| self.boundary_candidate(id))
+            .map_or(&[], |candidate| candidate.vertex_indices.as_slice())
     }
 
     #[must_use]
@@ -250,7 +298,25 @@ impl FoldPreview {
         &self,
         options: &FoldConversionOptions,
     ) -> Result<FoldCreasePatternConversion, FoldConversionError> {
-        convert_preview(self, options)
+        let boundary = self
+            .fixed_boundary_candidate
+            .ok_or(FoldConversionError::BoundaryCandidateNotSpecified)?;
+        convert_preview(self, options, boundary)
+    }
+
+    /// Applies caller-confirmed policy with an explicit boundary choice.
+    pub fn convert_with_boundary_candidate(
+        &self,
+        options: &FoldConversionOptions,
+        boundary: FoldBoundaryCandidateId,
+    ) -> Result<FoldCreasePatternConversion, FoldConversionError> {
+        convert_preview(self, options, boundary)
+    }
+
+    fn boundary_candidate(&self, id: FoldBoundaryCandidateId) -> Option<&FoldBoundaryCandidate> {
+        self.boundary_candidates
+            .iter()
+            .find(|candidate| candidate.id == id)
     }
 }
 
@@ -353,7 +419,7 @@ struct RawFold {
     frame_unit: Option<String>,
     vertices_coords: Vec<RawFoldCoordinate>,
     edges_vertices: Vec<[usize; 2]>,
-    edges_assignment: Vec<FoldEdgeAssignment>,
+    edges_assignment: Option<Vec<FoldEdgeAssignment>>,
     other: BTreeMap<String, IgnoredJsonValue>,
 }
 
@@ -516,8 +582,7 @@ impl<'de> Visitor<'de> for RawFoldVisitor {
                 .ok_or_else(|| A::Error::missing_field("vertices_coords"))?,
             edges_vertices: edges_vertices
                 .ok_or_else(|| A::Error::missing_field("edges_vertices"))?,
-            edges_assignment: edges_assignment
-                .ok_or_else(|| A::Error::missing_field("edges_assignment"))?,
+            edges_assignment,
             other,
         })
     }
@@ -696,6 +761,8 @@ pub enum FoldImportError {
     },
     #[error("FOLD has {actual} boundary edges; the limit is {maximum}")]
     TooManyBoundaryEdges { actual: usize, maximum: usize },
+    #[error("FOLD has more than {maximum} usable boundary candidates")]
+    TooManyBoundaryCandidates { maximum: usize },
     #[error(
         "FOLD geometry has more than {maximum} broad-phase intersection candidates; validation work is bounded"
     )]
@@ -715,6 +782,8 @@ pub enum FoldImportError {
     },
     #[error("FOLD boundary geometry cannot be classified safely")]
     BoundaryGeometryUnrepresentable,
+    #[error("FOLD geometry does not provide a selectable simple outer boundary")]
+    NoUsableBoundaryCandidate,
     #[error("FOLD assignment {assignment:?} requires file_spec 1.2")]
     AssignmentRequiresSpec12 { assignment: FoldEdgeAssignment },
 }
@@ -724,6 +793,10 @@ pub enum FoldImportError {
 pub enum FoldConversionError {
     #[error("millimetres_per_unit must be finite and greater than zero")]
     InvalidMillimetresPerUnit,
+    #[error("a validated FOLD paper-boundary candidate must be selected")]
+    BoundaryCandidateNotSpecified,
+    #[error("FOLD boundary candidate {candidate:?} is not present in this preview")]
+    BoundaryCandidateNotFound { candidate: FoldBoundaryCandidateId },
     #[error("no mapping was selected for FOLD assignment {assignment:?}")]
     MappingNotSpecified { assignment: FoldEdgeAssignment },
     #[error("mapping {target:?} is not permitted for FOLD assignment {assignment:?}")]
@@ -738,6 +811,8 @@ pub enum FoldConversionError {
         first_index: usize,
         duplicate_index: usize,
     },
+    #[error("the selected paper boundary is invalid after scaling")]
+    ScaledBoundaryInvalid,
     #[error("scaled FOLD geometry has more than {maximum} broad-phase intersection candidates")]
     TooManyIntersectionCandidates { maximum: usize },
 }
@@ -773,10 +848,14 @@ pub fn read_fold_preview_with_limits(
             maximum: limits.max_edges,
         });
     }
-    if raw.edges_assignment.len() != raw.edges_vertices.len() {
+    let assignments_missing = raw.edges_assignment.is_none();
+    let edges_assignment = raw
+        .edges_assignment
+        .unwrap_or_else(|| vec![FoldEdgeAssignment::Unassigned; raw.edges_vertices.len()]);
+    if edges_assignment.len() != raw.edges_vertices.len() {
         return Err(FoldImportError::AssignmentCountMismatch {
             edges: raw.edges_vertices.len(),
-            assignments: raw.edges_assignment.len(),
+            assignments: edges_assignment.len(),
         });
     }
     if let Some(file_spec) = raw.file_spec {
@@ -879,7 +958,7 @@ pub fn read_fold_preview_with_limits(
     for (index, (endpoints, assignment)) in raw
         .edges_vertices
         .into_iter()
-        .zip(raw.edges_assignment)
+        .zip(edges_assignment)
         .enumerate()
     {
         for endpoint in endpoints {
@@ -926,10 +1005,43 @@ pub fn read_fold_preview_with_limits(
         }
     }
 
-    let boundary_vertex_indices = boundary_cycle(&edges, &vertices, limits)?;
+    let assigned_boundary = match boundary_cycle(&edges, &vertices, limits) {
+        Ok(cycle) => Some(cycle),
+        Err(FoldImportError::TooManyBoundaryEdges { actual, maximum }) => {
+            return Err(FoldImportError::TooManyBoundaryEdges { actual, maximum });
+        }
+        Err(_) => None,
+    };
+    let (boundary_candidates, fixed_boundary_candidate) = if let Some(cycle) = assigned_boundary {
+        let edge_indices = edges
+            .iter()
+            .filter(|edge| edge.assignment == FoldEdgeAssignment::Boundary)
+            .map(|edge| edge.index)
+            .collect();
+        (
+            vec![FoldBoundaryCandidate {
+                id: FoldBoundaryCandidateId(0),
+                source: FoldBoundaryCandidateSource::AssignedBoundary,
+                vertex_indices: cycle,
+                edge_indices,
+            }],
+            Some(FoldBoundaryCandidateId(0)),
+        )
+    } else {
+        (
+            infer_outer_boundary_candidates(&edges, &vertices, limits)?,
+            None,
+        )
+    };
     let mut warnings = Vec::new();
     if raw.file_spec.is_none() {
         warnings.push(FoldPreviewWarning::MissingFileSpec);
+    }
+    if assignments_missing {
+        warnings.push(FoldPreviewWarning::MissingEdgesAssignment);
+    }
+    if fixed_boundary_candidate.is_none() {
+        warnings.push(FoldPreviewWarning::BoundaryAssignmentsNeedSelection);
     }
     if frame_unit.millimetres_per_unit().is_none() {
         warnings.push(FoldPreviewWarning::UnitNeedsScaleSelection);
@@ -946,7 +1058,8 @@ pub fn read_fold_preview_with_limits(
         frame_unit,
         vertices,
         edges,
-        boundary_vertex_indices,
+        boundary_candidates,
+        fixed_boundary_candidate,
         assignment_counts: counts,
         warnings,
     })
@@ -1108,6 +1221,281 @@ fn boundary_cycle(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FoldPlanarNeighbour {
+    vertex_index: usize,
+    edge_index: usize,
+}
+
+fn infer_outer_boundary_candidates(
+    edges: &[FoldPreviewEdge],
+    vertices: &[FoldPreviewVertex],
+    limits: FoldImportLimits,
+) -> Result<Vec<FoldBoundaryCandidate>, FoldImportError> {
+    if edges.len() < 3 || vertices.len() < 3 {
+        return Err(FoldImportError::NoUsableBoundaryCandidate);
+    }
+    ensure_planar_fold_graph(edges, vertices)?;
+
+    let mut adjacency = vec![Vec::<FoldPlanarNeighbour>::new(); vertices.len()];
+    for edge in edges {
+        adjacency[edge.vertices[0]].push(FoldPlanarNeighbour {
+            vertex_index: edge.vertices[1],
+            edge_index: edge.index,
+        });
+        adjacency[edge.vertices[1]].push(FoldPlanarNeighbour {
+            vertex_index: edge.vertices[0],
+            edge_index: edge.index,
+        });
+    }
+    for (origin_index, neighbours) in adjacency.iter_mut().enumerate() {
+        let origin = vertices[origin_index].position;
+        neighbours.sort_unstable_by(|left, right| {
+            compare_fold_neighbour_direction(origin, *left, *right, vertices)
+        });
+    }
+
+    let mut visited_half_edges = HashSet::with_capacity(edges.len().saturating_mul(2));
+    let mut unique_cycles = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+    let mut validation_work = 0_usize;
+    for edge in edges {
+        for start_vertex in edge.vertices {
+            let start = (edge.index, start_vertex);
+            if visited_half_edges.contains(&start) {
+                continue;
+            }
+            let mut local_half_edges = HashSet::new();
+            let mut cycle_vertices = Vec::new();
+            let mut cycle_edges = Vec::new();
+            let mut current_edge = edge.index;
+            let mut current_vertex = start_vertex;
+            loop {
+                let directed = (current_edge, current_vertex);
+                if directed == start && !cycle_vertices.is_empty() {
+                    break;
+                }
+                if !local_half_edges.insert(directed) {
+                    cycle_vertices.clear();
+                    cycle_edges.clear();
+                    break;
+                }
+                visited_half_edges.insert(directed);
+                cycle_vertices.push(current_vertex);
+                cycle_edges.push(current_edge);
+
+                let source_edge = &edges[current_edge];
+                let next_vertex = if source_edge.vertices[0] == current_vertex {
+                    source_edge.vertices[1]
+                } else if source_edge.vertices[1] == current_vertex {
+                    source_edge.vertices[0]
+                } else {
+                    return Err(FoldImportError::BoundaryGeometryUnrepresentable);
+                };
+                let incoming_position = adjacency[next_vertex]
+                    .iter()
+                    .position(|neighbour| {
+                        neighbour.edge_index == current_edge
+                            && neighbour.vertex_index == current_vertex
+                    })
+                    .ok_or(FoldImportError::BoundaryGeometryUnrepresentable)?;
+                let next_position = if incoming_position == 0 {
+                    adjacency[next_vertex].len().saturating_sub(1)
+                } else {
+                    incoming_position - 1
+                };
+                let Some(next) = adjacency[next_vertex].get(next_position).copied() else {
+                    cycle_vertices.clear();
+                    cycle_edges.clear();
+                    break;
+                };
+                current_vertex = next_vertex;
+                current_edge = next.edge_index;
+            }
+
+            if cycle_vertices.len() < 3
+                || cycle_vertices.len() > limits.max_boundary_edges
+                || cycle_vertices.iter().copied().collect::<HashSet<_>>().len()
+                    != cycle_vertices.len()
+            {
+                continue;
+            }
+            let pair_work = cycle_vertices
+                .len()
+                .checked_mul(cycle_vertices.len().saturating_sub(1))
+                .and_then(|value| value.checked_div(2))
+                .ok_or(FoldImportError::TooManyIntersectionCandidates {
+                    maximum: limits.max_intersection_candidates,
+                })?;
+            validation_work = validation_work
+                .checked_add(pair_work)
+                .and_then(|value| {
+                    value.checked_add(cycle_vertices.len().checked_mul(vertices.len())?)
+                })
+                .ok_or(FoldImportError::TooManyIntersectionCandidates {
+                    maximum: limits.max_intersection_candidates,
+                })?;
+            if validation_work > limits.max_intersection_candidates {
+                return Err(FoldImportError::TooManyIntersectionCandidates {
+                    maximum: limits.max_intersection_candidates,
+                });
+            }
+            if validate_boundary_geometry(&cycle_vertices, vertices).is_err() {
+                continue;
+            }
+            let polygon = cycle_vertices
+                .iter()
+                .map(|index| vertices[*index].position)
+                .collect::<Vec<_>>();
+            let contains_every_vertex = vertices.iter().all(|vertex| {
+                point_polygon_relation(vertex.position, &polygon)
+                    .is_ok_and(|relation| relation != PointPolygonRelation::Outside)
+            });
+            if !contains_every_vertex {
+                continue;
+            }
+            let canonical = canonical_fold_cycle(&cycle_vertices);
+            cycle_edges.sort_unstable();
+            cycle_edges.dedup();
+            unique_cycles.entry(canonical).or_insert(cycle_edges);
+        }
+    }
+
+    if unique_cycles.is_empty() {
+        return Err(FoldImportError::NoUsableBoundaryCandidate);
+    }
+    if unique_cycles.len() > limits.max_boundary_candidates
+        || unique_cycles.len() > usize::from(u16::MAX)
+    {
+        return Err(FoldImportError::TooManyBoundaryCandidates {
+            maximum: limits.max_boundary_candidates.min(usize::from(u16::MAX)),
+        });
+    }
+    Ok(unique_cycles
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (vertex_indices, edge_indices))| FoldBoundaryCandidate {
+                id: FoldBoundaryCandidateId(
+                    u16::try_from(index).expect("candidate count was bounded by u16::MAX"),
+                ),
+                source: FoldBoundaryCandidateSource::InferredOuterFace,
+                vertex_indices,
+                edge_indices,
+            },
+        )
+        .collect())
+}
+
+fn ensure_planar_fold_graph(
+    edges: &[FoldPreviewEdge],
+    vertices: &[FoldPreviewVertex],
+) -> Result<(), FoldImportError> {
+    let mut bounds = edges
+        .iter()
+        .map(|edge| {
+            IntersectionCandidateBounds::new(
+                edge.index,
+                vertices[edge.vertices[0]].position,
+                vertices[edge.vertices[1]].position,
+            )
+        })
+        .collect::<Vec<_>>();
+    bounds.sort_unstable_by(|left, right| {
+        left.min_x
+            .total_cmp(&right.min_x)
+            .then_with(|| left.edge_index.cmp(&right.edge_index))
+    });
+    for (first_position, first_bounds) in bounds.iter().copied().enumerate() {
+        let first = &edges[first_bounds.edge_index];
+        let first_start = vertices[first.vertices[0]].position;
+        let first_end = vertices[first.vertices[1]].position;
+        for second_bounds in bounds.iter().copied().skip(first_position + 1) {
+            if second_bounds.min_x > first_bounds.max_x {
+                break;
+            }
+            if first_bounds.min_y > second_bounds.max_y || second_bounds.min_y > first_bounds.max_y
+            {
+                continue;
+            }
+            let second = &edges[second_bounds.edge_index];
+            let second_start = vertices[second.vertices[0]].position;
+            let second_end = vertices[second.vertices[1]].position;
+            let intersection =
+                segment_intersection(first_start, first_end, second_start, second_end)
+                    .map_err(|_| FoldImportError::BoundaryGeometryUnrepresentable)?;
+            let shared_vertex = first
+                .vertices
+                .iter()
+                .find(|vertex| second.vertices.contains(vertex))
+                .copied();
+            let valid_shared_point = shared_vertex.is_some_and(|vertex| {
+                matches!(
+                    intersection,
+                    SegmentIntersection::Point(point) if point == vertices[vertex].position
+                )
+            });
+            if !matches!(intersection, SegmentIntersection::None) && !valid_shared_point {
+                return Err(FoldImportError::NoUsableBoundaryCandidate);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn compare_fold_neighbour_direction(
+    origin: Point2,
+    left: FoldPlanarNeighbour,
+    right: FoldPlanarNeighbour,
+    vertices: &[FoldPreviewVertex],
+) -> Ordering {
+    let left_point = vertices[left.vertex_index].position;
+    let right_point = vertices[right.vertex_index].position;
+    let left_delta = (left_point.x - origin.x, left_point.y - origin.y);
+    let right_delta = (right_point.x - origin.x, right_point.y - origin.y);
+    let left_half = usize::from(left_delta.1 < 0.0 || (left_delta.1 == 0.0 && left_delta.0 < 0.0));
+    let right_half =
+        usize::from(right_delta.1 < 0.0 || (right_delta.1 == 0.0 && right_delta.0 < 0.0));
+    left_half
+        .cmp(&right_half)
+        .then_with(|| {
+            match exact_orientation(origin, left_point, right_point)
+                .expect("preview points were already admitted as finite")
+            {
+                Orientation::CounterClockwise => Ordering::Less,
+                Orientation::Clockwise => Ordering::Greater,
+                Orientation::Collinear => Ordering::Equal,
+            }
+        })
+        .then_with(|| {
+            left_delta
+                .0
+                .abs()
+                .max(left_delta.1.abs())
+                .total_cmp(&right_delta.0.abs().max(right_delta.1.abs()))
+        })
+        .then_with(|| left.vertex_index.cmp(&right.vertex_index))
+        .then_with(|| left.edge_index.cmp(&right.edge_index))
+}
+
+fn canonical_fold_cycle(cycle: &[usize]) -> Vec<usize> {
+    let minimum = cycle
+        .iter()
+        .copied()
+        .min()
+        .expect("a boundary cycle has at least three vertices");
+    let forward_start = cycle
+        .iter()
+        .position(|vertex| *vertex == minimum)
+        .expect("minimum belongs to the cycle");
+    let forward = (0..cycle.len())
+        .map(|offset| cycle[(forward_start + offset) % cycle.len()])
+        .collect::<Vec<_>>();
+    let reverse = (0..cycle.len())
+        .map(|offset| cycle[(forward_start + cycle.len() - offset) % cycle.len()])
+        .collect::<Vec<_>>();
+    forward.min(reverse)
+}
+
 fn validate_boundary_geometry(
     cycle: &[usize],
     vertices: &[FoldPreviewVertex],
@@ -1162,11 +1550,24 @@ fn validate_boundary_geometry(
 fn convert_preview(
     preview: &FoldPreview,
     options: &FoldConversionOptions,
+    boundary: FoldBoundaryCandidateId,
 ) -> Result<FoldCreasePatternConversion, FoldConversionError> {
     let scale = options.millimetres_per_unit;
     if !scale.is_finite() || scale <= 0.0 {
         return Err(FoldConversionError::InvalidMillimetresPerUnit);
     }
+    let boundary_candidate = preview.boundary_candidate(boundary).ok_or(
+        FoldConversionError::BoundaryCandidateNotFound {
+            candidate: boundary,
+        },
+    )?;
+    let boundary_edge_indices = boundary_candidate
+        .edge_indices
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let uses_assigned_boundary =
+        boundary_candidate.source == FoldBoundaryCandidateSource::AssignedBoundary;
     for assignment in [
         FoldEdgeAssignment::Boundary,
         FoldEdgeAssignment::Mountain,
@@ -1176,7 +1577,16 @@ fn convert_preview(
         FoldEdgeAssignment::Cut,
         FoldEdgeAssignment::Join,
     ] {
-        if preview.assignment_counts.count(assignment) > 0 {
+        let mapping_is_used = if uses_assigned_boundary {
+            preview.assignment_counts.count(assignment) > 0
+        } else if assignment == FoldEdgeAssignment::Boundary {
+            false
+        } else {
+            preview.edges.iter().any(|edge| {
+                edge.assignment == assignment && !boundary_edge_indices.contains(&edge.index)
+            })
+        };
+        if mapping_is_used {
             let target = options
                 .assignment_mapping
                 .target(assignment)
@@ -1210,11 +1620,41 @@ fn convert_preview(
             position,
         });
     }
+    let scaled_preview_vertices = vertices
+        .iter()
+        .enumerate()
+        .map(|(index, vertex)| FoldPreviewVertex {
+            index,
+            position: vertex.position,
+        })
+        .collect::<Vec<_>>();
+    validate_boundary_geometry(&boundary_candidate.vertex_indices, &scaled_preview_vertices)
+        .map_err(|_| FoldConversionError::ScaledBoundaryInvalid)?;
 
     let mut edge_ids = Vec::with_capacity(preview.edges.len());
     let mut edges = Vec::with_capacity(preview.edges.len());
     let mut scaled_candidate_bounds = Vec::with_capacity(preview.edges.len());
     for edge in &preview.edges {
+        if !uses_assigned_boundary && boundary_edge_indices.contains(&edge.index) {
+            let id = EdgeId::new();
+            edge_ids.push(Some(id));
+            scaled_candidate_bounds.push(IntersectionCandidateBounds::new(
+                edge.index,
+                vertices[edge.vertices[0]].position,
+                vertices[edge.vertices[1]].position,
+            ));
+            edges.push(Edge {
+                id,
+                start: vertex_ids[edge.vertices[0]],
+                end: vertex_ids[edge.vertices[1]],
+                kind: EdgeKind::Boundary,
+            });
+            continue;
+        }
+        if !uses_assigned_boundary && edge.assignment == FoldEdgeAssignment::Boundary {
+            edge_ids.push(None);
+            continue;
+        }
         let target = options.assignment_mapping.target(edge.assignment).ok_or(
             FoldConversionError::MappingNotSpecified {
                 assignment: edge.assignment,
@@ -1248,7 +1688,9 @@ fn convert_preview(
         });
     }
     let boundary_vertices = preview
-        .boundary_vertex_indices
+        .boundary_candidate(boundary)
+        .expect("selected boundary was validated above")
+        .vertex_indices
         .iter()
         .map(|index| vertex_ids[*index])
         .collect();
@@ -1383,6 +1825,92 @@ mod tests {
             preview.warnings(),
             [FoldPreviewWarning::IgnoredFields { names }] if names == &["file_creator"]
         ));
+    }
+
+    #[test]
+    fn missing_assignments_expose_an_explicit_outer_boundary_choice() {
+        let bytes = br#"{
+            "file_spec": 1.2,
+            "frame_unit": "mm",
+            "vertices_coords": [[0,0],[10,0],[10,10],[0,10]],
+            "edges_vertices": [[0,1],[1,2],[2,3],[3,0],[0,2]]
+        }"#;
+        let preview = read_fold_preview(bytes).expect("optional assignments are accepted");
+        assert_eq!(preview.fixed_boundary_candidate(), None);
+        assert!(preview.boundary_vertex_indices().is_empty());
+        assert_eq!(preview.assignment_counts().unassigned, 5);
+        assert_eq!(preview.boundary_candidates().len(), 1);
+        let boundary = &preview.boundary_candidates()[0];
+        assert_eq!(boundary.id, FoldBoundaryCandidateId(0));
+        assert_eq!(
+            boundary.source,
+            FoldBoundaryCandidateSource::InferredOuterFace
+        );
+        assert_eq!(boundary.vertex_indices, vec![0, 1, 2, 3]);
+        assert_eq!(boundary.edge_indices, vec![0, 1, 2, 3]);
+        assert!(
+            preview
+                .warnings()
+                .contains(&FoldPreviewWarning::MissingEdgesAssignment)
+        );
+        assert!(
+            preview
+                .warnings()
+                .contains(&FoldPreviewWarning::BoundaryAssignmentsNeedSelection)
+        );
+
+        let conversion = preview
+            .convert_with_boundary_candidate(&options(), boundary.id)
+            .expect("explicit boundary selection converts");
+        let imported = conversion.crease_pattern();
+        assert_eq!(
+            imported
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Boundary)
+                .count(),
+            4
+        );
+        assert_eq!(
+            imported
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Auxiliary)
+                .count(),
+            0,
+            "the non-boundary unassigned diagonal follows the explicit ignore mapping"
+        );
+        assert_eq!(conversion.boundary_vertices().len(), 4);
+    }
+
+    #[test]
+    fn inferred_boundary_ignores_invalid_source_boundary_branches() {
+        let bytes = br#"{
+            "vertices_coords":[[0,0],[2,0],[2,2],[0,2],[1,1]],
+            "edges_vertices":[[0,1],[1,2],[2,3],[3,0],[0,4],[4,2]],
+            "edges_assignment":["B","B","B","B","B","B"]
+        }"#;
+        let preview = read_fold_preview(bytes).expect("outer face candidate");
+        let candidate = preview.boundary_candidates()[0].id;
+        let conversion = preview
+            .convert_with_boundary_candidate(&options(), candidate)
+            .expect("selected outer boundary overrides invalid B branches");
+        assert_eq!(conversion.crease_pattern().edges.len(), 4);
+        assert!(
+            conversion
+                .crease_pattern()
+                .edges
+                .iter()
+                .all(|edge| edge.kind == EdgeKind::Boundary)
+        );
+        assert_eq!(
+            conversion
+                .edge_ids()
+                .iter()
+                .filter(|edge| edge.is_none())
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -1670,18 +2198,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_branching_disconnected_and_self_intersecting_boundaries() {
+    fn invalid_boundary_assignments_require_a_valid_outer_candidate_or_fail_closed() {
         let branching = br#"{
             "vertices_coords":[[0,0],[2,0],[2,2],[0,2],[1,1]],
             "edges_vertices":[[0,1],[1,2],[2,3],[3,0],[0,4],[4,2]],
             "edges_assignment":["B","B","B","B","B","B"]
         }"#;
+        let preview = read_fold_preview(branching)
+            .expect("the planar square remains an explicit boundary choice");
+        assert_eq!(preview.fixed_boundary_candidate(), None);
+        assert_eq!(preview.boundary_candidates().len(), 1);
+        assert_eq!(
+            preview.boundary_candidates()[0].vertex_indices,
+            vec![0, 1, 2, 3]
+        );
+        assert!(
+            preview
+                .warnings()
+                .contains(&FoldPreviewWarning::BoundaryAssignmentsNeedSelection)
+        );
         assert!(matches!(
-            read_fold_preview(branching),
-            Err(FoldImportError::BoundaryDegree {
-                vertex_index: 0,
-                degree: 3
-            })
+            preview.convert(&options()),
+            Err(FoldConversionError::BoundaryCandidateNotSpecified)
         ));
 
         let disconnected = br#"{
@@ -1691,7 +2229,7 @@ mod tests {
         }"#;
         assert!(matches!(
             read_fold_preview(disconnected),
-            Err(FoldImportError::BoundaryDisconnected)
+            Err(FoldImportError::NoUsableBoundaryCandidate)
         ));
 
         let crossing = br#"{
@@ -1701,7 +2239,7 @@ mod tests {
         }"#;
         assert!(matches!(
             read_fold_preview(crossing),
-            Err(FoldImportError::BoundarySelfIntersection { .. })
+            Err(FoldImportError::NoUsableBoundaryCandidate)
         ));
     }
 

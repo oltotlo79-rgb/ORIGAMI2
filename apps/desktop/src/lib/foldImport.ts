@@ -17,9 +17,20 @@ export type FoldImportPreviewVertex = Readonly<{
 }>
 
 export type FoldImportPreviewEdge = Readonly<{
+  source_index: number
   start: number
   end: number
   assignment: FoldAssignmentCode | 'B'
+}>
+
+export type FoldBoundaryCandidateSource =
+  | 'assigned_boundary'
+  | 'inferred_outer_face'
+
+export type FoldImportBoundaryCandidate = Readonly<{
+  id: number
+  source: FoldBoundaryCandidateSource
+  edge_indices: readonly number[]
 }>
 
 export type FoldImportPreview = Readonly<{
@@ -32,6 +43,8 @@ export type FoldImportPreview = Readonly<{
   vertex_count: number
   edge_count: number
   boundary_edge_count: number
+  boundary_candidates: readonly FoldImportBoundaryCandidate[]
+  fixed_boundary_candidate_id: number | null
   assignments: readonly FoldImportAssignmentSummary[]
   preview_vertices: readonly FoldImportPreviewVertex[]
   preview_edges: readonly FoldImportPreviewEdge[]
@@ -44,6 +57,7 @@ export type FoldImportSettings = Readonly<{
   name: string
   mmPerUnit: number
   mappings: FoldImportMapping
+  boundaryCandidateId: number
 }>
 
 export const FOLD_IMPORT_TARGET_OPTIONS: ReadonlyArray<Readonly<{
@@ -135,6 +149,10 @@ export function foldImportWarningMessage(
   switch (category) {
     case 'missing_spec':
       return 'The FOLD specification version is missing, so the file will be interpreted conservatively within the supported range.'
+    case 'missing_assignments':
+      return 'The optional edges_assignment array is missing. Review the paper boundary and explicitly map every remaining unassigned line.'
+    case 'boundary_selection':
+      return 'The source assignments do not establish one valid paper boundary. Select the intended validated outer-boundary candidate.'
     case 'unit_needs_scale':
       return 'The file has no unit information that can be converted to physical size. Enter the millimetres per FOLD unit.'
     case 'ignored_metadata':
@@ -186,6 +204,8 @@ export function foldImportTargetOptions(assignment: FoldAssignmentCode) {
 
 type FoldImportWarningCategory =
   | 'missing_spec'
+  | 'missing_assignments'
+  | 'boundary_selection'
   | 'unit_needs_scale'
   | 'ignored_metadata'
   | 'invalid_title'
@@ -217,6 +237,10 @@ function classifyFoldImportWarning(
   switch (warning) {
     case 'FOLD仕様バージョンの記載がありません。対応範囲として慎重に解釈します。':
       return 'missing_spec'
+    case '辺の割当情報（edges_assignment）がないため、折り線種を確認・指定してください。':
+      return 'missing_assignments'
+    case '外周を一意に確定できないため、取り込む用紙外周を選択してください。':
+      return 'boundary_selection'
     case '実寸へ換算できる単位情報がないため、1単位あたりのmm値を指定してください。':
       return 'unit_needs_scale'
     case 'FOLD内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。':
@@ -276,6 +300,60 @@ export function initialFoldImportMapping(
     if (direct) mapping[assignment] = direct
   }
   return mapping
+}
+
+export function initialFoldBoundaryCandidateId(
+  preview: Pick<
+    FoldImportPreview,
+    'boundary_candidates' | 'fixed_boundary_candidate_id'
+  >,
+) {
+  const fixed = preview.fixed_boundary_candidate_id
+  return fixed !== null
+    && isFoldBoundaryCandidateId(fixed)
+    && preview.boundary_candidates.some((candidate) => candidate.id === fixed)
+    ? fixed
+    : null
+}
+
+export function foldBoundaryCandidate(
+  preview: Pick<FoldImportPreview, 'boundary_candidates'>,
+  candidateId: number | null,
+) {
+  if (candidateId === null || !isFoldBoundaryCandidateId(candidateId)) return null
+  return preview.boundary_candidates.find(({ id }) => id === candidateId) ?? null
+}
+
+export function foldBoundaryCandidateLabel(
+  candidate: FoldImportBoundaryCandidate,
+  locale: Locale = 'ja',
+) {
+  const number = (candidate.id + 1).toLocaleString(
+    locale === 'ja' ? 'ja-JP' : 'en-US',
+  )
+  const count = candidate.edge_indices.length.toLocaleString(
+    locale === 'ja' ? 'ja-JP' : 'en-US',
+  )
+  if (candidate.source === 'assigned_boundary') {
+    return locale === 'ja'
+      ? `元のB線による外周（${count}辺）`
+      : `Boundary from source B lines (${count} edges)`
+  }
+  return locale === 'ja'
+    ? `検証済み外周候補 ${number}（${count}辺）`
+    : `Validated boundary candidate ${number} (${count} edges)`
+}
+
+export function foldBoundaryPreviewEdgeSet(
+  preview: Pick<FoldImportPreview, 'boundary_candidates'>,
+  candidateId: number | null,
+) {
+  const candidate = foldBoundaryCandidate(preview, candidateId)
+  return new Set(candidate?.edge_indices ?? [])
+}
+
+function isFoldBoundaryCandidateId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 65_535
 }
 
 export function unresolvedFoldAssignments(

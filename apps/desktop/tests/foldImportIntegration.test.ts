@@ -32,6 +32,7 @@ test('the client exposes only token-based preview, apply, and cancel FOLD invoca
     'expectedRevision',
     'name: settings.name',
     'millimetersPerUnit: settings.mmPerUnit',
+    'boundaryCandidateId: settings.boundaryCandidateId',
     'assignmentMappings',
   ]) {
     assert.match(apply, new RegExp(escapeRegExp(argument), 'u'), argument)
@@ -74,7 +75,7 @@ test('the toolbar performs file selection before opening one explicit mapping mo
   assert.match(dialogSource, /unresolvedFoldAssignments\(preview\.assignments, mapping\)/u)
   assert.match(
     dialogSource,
-    /onImport\(\{\s*importId: preview\.import_id,\s*name: displayedName\.trim\(\),\s*mmPerUnit: scale,\s*mappings: mapping,\s*\}\)/u,
+    /onImport\(\{\s*importId: preview\.import_id,\s*name: displayedName\.trim\(\),\s*mmPerUnit: scale,\s*mappings: mapping,\s*boundaryCandidateId: selectedBoundary\.id,\s*\}\)/u,
   )
   assert.match(
     dialogSource,

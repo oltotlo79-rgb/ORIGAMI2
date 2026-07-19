@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  foldBoundaryCandidate,
+  foldBoundaryCandidateLabel,
+  foldBoundaryPreviewEdgeSet,
   foldAssignmentLabel,
   foldImportPreviewFileName,
   foldImportSuggestedName,
@@ -8,12 +11,14 @@ import {
   foldImportTargetOptions,
   foldImportWarningMessage,
   foldPreviewBounds,
+  initialFoldBoundaryCandidateId,
   initialFoldImportMapping,
   isAllowedFoldImportTarget,
   isValidFoldImportName,
   parseFoldImportScale,
   unresolvedFoldAssignments,
   type FoldImportAssignmentSummary,
+  type FoldImportPreview,
 } from '../src/lib/foldImport.ts'
 
 const summaries: FoldImportAssignmentSummary[] = [
@@ -67,6 +72,20 @@ test('FOLD assignment targets preserve direct meanings and constrain lossy choic
 })
 
 test('native FOLD warnings and fallback names localize without exposing unknown text', () => {
+  assert.equal(
+    foldImportWarningMessage(
+      '辺の割当情報（edges_assignment）がないため、折り線種を確認・指定してください。',
+      'en',
+    ),
+    'The optional edges_assignment array is missing. Review the paper boundary and explicitly map every remaining unassigned line.',
+  )
+  assert.equal(
+    foldImportWarningMessage(
+      '外周を一意に確定できないため、取り込む用紙外周を選択してください。',
+      'en',
+    ),
+    'The source assignments do not establish one valid paper boundary. Select the intended validated outer-boundary candidate.',
+  )
   assert.equal(
     foldImportWarningMessage(
       'FOLD仕様バージョンの記載がありません。対応範囲として慎重に解釈します。',
@@ -130,6 +149,54 @@ test('native FOLD warnings and fallback names localize without exposing unknown 
       'Selected FOLD file',
     )
   }
+})
+
+test('FOLD boundary candidates require a real preview-local ID and expose only selected edges', () => {
+  const preview = {
+    boundary_candidates: [
+      {
+        id: 0,
+        source: 'assigned_boundary',
+        edge_indices: [0, 1, 2, 3],
+      },
+      {
+        id: 7,
+        source: 'inferred_outer_face',
+        edge_indices: [4, 5, 6],
+      },
+    ],
+    fixed_boundary_candidate_id: 0,
+  } as Pick<
+    FoldImportPreview,
+    'boundary_candidates' | 'fixed_boundary_candidate_id'
+  >
+  assert.equal(initialFoldBoundaryCandidateId(preview), 0)
+  assert.equal(foldBoundaryCandidate(preview, 7)?.source, 'inferred_outer_face')
+  assert.equal(foldBoundaryCandidate(preview, 65_536), null)
+  assert.deepEqual([...foldBoundaryPreviewEdgeSet(preview, 7)], [4, 5, 6])
+  assert.equal(
+    foldBoundaryCandidateLabel(preview.boundary_candidates[0], 'ja'),
+    '元のB線による外周（4辺）',
+  )
+  assert.equal(
+    foldBoundaryCandidateLabel(preview.boundary_candidates[1], 'en'),
+    'Validated boundary candidate 8 (3 edges)',
+  )
+
+  assert.equal(
+    initialFoldBoundaryCandidateId({
+      ...preview,
+      fixed_boundary_candidate_id: 8,
+    }),
+    null,
+  )
+  assert.equal(
+    initialFoldBoundaryCandidateId({
+      ...preview,
+      fixed_boundary_candidate_id: null,
+    }),
+    null,
+  )
 })
 
 test('invalid or missing mappings remain unresolved', () => {

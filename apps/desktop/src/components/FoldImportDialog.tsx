@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  foldBoundaryCandidate,
+  foldBoundaryCandidateLabel,
+  foldBoundaryPreviewEdgeSet,
   foldAssignmentLabel,
   foldImportPreviewFileName,
   foldImportSuggestedName,
@@ -7,6 +10,7 @@ import {
   foldImportTargetLabel,
   foldImportWarningMessage,
   foldPreviewBounds,
+  initialFoldBoundaryCandidateId,
   initialFoldImportMapping,
   isFoldImportFallbackName,
   isValidFoldImportName,
@@ -63,6 +67,13 @@ const FOLD_IMPORT_COPY = {
     mappingTitle: '線種の割当',
     mappingDescription:
       'F・U・JはORIGAMI2に同じ意味の線種がないため、用途を明示的に選んでください。',
+    boundaryTitle: '用紙外周',
+    boundaryDescription:
+      '検証済み候補から、この作品で使う一枚紙の外周を明示してください。候補外のB線は取り込みません。',
+    boundaryAssigned: '元のB線が単一の有効な外周を構成しています。',
+    boundarySelect: '外周候補を選択してください',
+    boundaryUnavailable:
+      '安全に使える外周候補がありません。このファイルは取り込めません。',
     lineUnit: '本',
     boundaryFixed: '用紙境界（固定）',
     assignmentSuffix: 'の割当',
@@ -103,6 +114,13 @@ const FOLD_IMPORT_COPY = {
     mappingTitle: 'Line type mapping',
     mappingDescription:
       'F, U, and J have no directly equivalent ORIGAMI2 line type. Explicitly choose how to use them.',
+    boundaryTitle: 'Paper boundary',
+    boundaryDescription:
+      'Explicitly select the validated outline of the single sheet. Source B lines outside the selected candidate are not imported.',
+    boundaryAssigned: 'The source B lines form one valid paper boundary.',
+    boundarySelect: 'Select a boundary candidate',
+    boundaryUnavailable:
+      'No boundary candidate can be used safely. This file cannot be imported.',
     lineUnit: 'lines',
     boundaryFixed: 'Paper boundary (fixed)',
     assignmentSuffix: ' mapping',
@@ -139,6 +157,9 @@ export function FoldImportDialog({
   const [mapping, setMapping] = useState<FoldImportMapping>(
     () => initialFoldImportMapping(preview.assignments),
   )
+  const [boundaryCandidateId, setBoundaryCandidateId] = useState<number | null>(
+    () => initialFoldBoundaryCandidateId(preview),
+  )
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(
     preview.warnings.length === 0,
   )
@@ -146,10 +167,16 @@ export function FoldImportDialog({
   const nameInputRef = useRef<HTMLInputElement>(null)
   const scale = parseFoldImportScale(scaleInput)
   const unresolved = unresolvedFoldAssignments(preview.assignments, mapping)
+  const selectedBoundary = foldBoundaryCandidate(preview, boundaryCandidateId)
+  const selectedBoundaryEdges = useMemo(
+    () => foldBoundaryPreviewEdgeSet(preview, boundaryCandidateId),
+    [boundaryCandidateId, preview],
+  )
   const nameIsValid = isValidFoldImportName(displayedName)
   const canImport = !busy
     && nameIsValid
     && scale !== null
+    && selectedBoundary !== null
     && unresolved.length === 0
     && warningsAcknowledged
   const bounds = useMemo(
@@ -193,12 +220,13 @@ export function FoldImportDialog({
   }, [busy, onCancel])
 
   const submit = () => {
-    if (!canImport || scale === null) return
+    if (!canImport || scale === null || selectedBoundary === null) return
     onImport({
       importId: preview.import_id,
       name: displayedName.trim(),
       mmPerUnit: scale,
       mappings: mapping,
+      boundaryCandidateId: selectedBoundary.id,
     })
   }
 
@@ -249,8 +277,14 @@ export function FoldImportDialog({
                     if (!start || !end) return null
                     return (
                       <line
-                        key={`${edge.start}:${edge.end}:${index}`}
-                        className={`fold-preview-edge assignment-${edge.assignment.toLowerCase()}`}
+                        key={`${edge.source_index}:${edge.start}:${edge.end}:${index}`}
+                        className={[
+                          'fold-preview-edge',
+                          `assignment-${edge.assignment.toLowerCase()}`,
+                          selectedBoundaryEdges.has(edge.source_index)
+                            ? 'is-selected-boundary'
+                            : '',
+                        ].filter(Boolean).join(' ')}
                         x1={start.x}
                         y1={start.y}
                         x2={end.x}
@@ -292,10 +326,12 @@ export function FoldImportDialog({
               <div>
                 <dt>{copy.metadata.boundary}</dt>
                 <dd>
-                  {preview.boundary_edge_count.toLocaleString(numberLocale)}
+                  {(selectedBoundary?.edge_indices.length ?? preview.boundary_edge_count)
+                    .toLocaleString(numberLocale)}
                   {locale === 'ja'
                     ? copy.edgeUnit
-                    : preview.boundary_edge_count === 1
+                    : (selectedBoundary?.edge_indices.length
+                        ?? preview.boundary_edge_count) === 1
                       ? ' edge'
                       : ` ${copy.edgeUnit}`}
                 </dd>
@@ -347,6 +383,42 @@ export function FoldImportDialog({
               </small>
             </label>
           </div>
+
+          <section
+            className="fold-import-boundary"
+            aria-labelledby="fold-import-boundary-title"
+          >
+            <h3 id="fold-import-boundary-title">{copy.boundaryTitle}</h3>
+            <p>{copy.boundaryDescription}</p>
+            {preview.boundary_candidates.length === 0 ? (
+              <p className="fold-import-attention" role="alert">
+                {copy.boundaryUnavailable}
+              </p>
+            ) : preview.fixed_boundary_candidate_id !== null ? (
+              <p className="fold-import-fixed-mapping">
+                {copy.boundaryAssigned}{' '}
+                {selectedBoundary
+                  ? foldBoundaryCandidateLabel(selectedBoundary, locale)
+                  : copy.boundaryUnavailable}
+              </p>
+            ) : (
+              <fieldset disabled={busy}>
+                <legend>{copy.boundarySelect}</legend>
+                {preview.boundary_candidates.map((candidate) => (
+                  <label key={candidate.id}>
+                    <input
+                      type="radio"
+                      name="fold_boundary_candidate"
+                      value={candidate.id}
+                      checked={boundaryCandidateId === candidate.id}
+                      onChange={() => setBoundaryCandidateId(candidate.id)}
+                    />
+                    {foldBoundaryCandidateLabel(candidate, locale)}
+                  </label>
+                ))}
+              </fieldset>
+            )}
+          </section>
 
           <section className="fold-import-mapping" aria-labelledby="fold-import-mapping-title">
             <h3 id="fold-import-mapping-title">{copy.mappingTitle}</h3>

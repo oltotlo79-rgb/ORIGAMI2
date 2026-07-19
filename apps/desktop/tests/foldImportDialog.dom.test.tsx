@@ -21,6 +21,12 @@ const PREVIEW: FoldImportPreview = {
   vertex_count: 3,
   edge_count: 3,
   boundary_edge_count: 2,
+  boundary_candidates: [{
+    id: 0,
+    source: 'assigned_boundary',
+    edge_indices: [0, 1],
+  }],
+  fixed_boundary_candidate_id: 0,
   assignments: [
     { assignment: 'B', count: 2 },
     { assignment: 'M', count: 1 },
@@ -32,9 +38,9 @@ const PREVIEW: FoldImportPreview = {
     { x: 5, y: 8 },
   ],
   preview_edges: [
-    { start: 0, end: 1, assignment: 'B' },
-    { start: 1, end: 2, assignment: 'B' },
-    { start: 0, end: 2, assignment: 'M' },
+    { source_index: 0, start: 0, end: 1, assignment: 'B' },
+    { source_index: 1, start: 1, end: 2, assignment: 'B' },
+    { source_index: 2, start: 0, end: 2, assignment: 'M' },
   ],
   preview_truncated: false,
   warnings: [
@@ -78,6 +84,7 @@ describe('FoldImportDialog', () => {
         M: 'mountain',
         F: 'auxiliary',
       },
+      boundaryCandidateId: 0,
     })
   })
 
@@ -157,6 +164,49 @@ describe('FoldImportDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: '取込中…' }))
       .toHaveProperty('disabled', true)
+  })
+
+  it('requires an inferred outline choice and highlights only that candidate', () => {
+    const onImport = vi.fn<(settings: FoldImportSettings) => void>()
+    renderDialog({
+      onImport,
+      preview: {
+        ...PREVIEW,
+        boundary_edge_count: 0,
+        boundary_candidates: [
+          {
+            id: 7,
+            source: 'inferred_outer_face',
+            edge_indices: [0, 1],
+          },
+          {
+            id: 9,
+            source: 'inferred_outer_face',
+            edge_indices: [1, 2],
+          },
+        ],
+        fixed_boundary_candidate_id: null,
+        assignments: [{ assignment: 'M', count: 1 }],
+        warnings: [],
+      },
+    })
+
+    const submit = screen.getByRole('button', { name: '取り込む' })
+    expect(submit).toHaveProperty('disabled', true)
+    expect(document.querySelectorAll('line.is-selected-boundary')).toHaveLength(0)
+
+    fireEvent.click(screen.getByLabelText('検証済み外周候補 8（2辺）'))
+    expect(submit).toHaveProperty('disabled', false)
+    expect(document.querySelectorAll('line.is-selected-boundary')).toHaveLength(2)
+
+    fireEvent.click(submit)
+    expect(onImport).toHaveBeenCalledWith({
+      importId: PREVIEW.import_id,
+      name: 'Sample',
+      mmPerUnit: 10,
+      mappings: { M: 'mountain' },
+      boundaryCandidateId: 7,
+    })
   })
 })
 

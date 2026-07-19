@@ -70,13 +70,13 @@ use ori_domain::{
     Paper, Point2, ProjectId, ProjectLayerDocumentV1, RgbaColor, VertexId,
 };
 use ori_formats::{
-    CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
-    FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, Ori2ProjectArchive,
-    ProjectDocument, ProjectNumericExpressions, RectangularPaperCreationExpressions,
-    SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
-    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
-    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind, read_fold_preview,
-    read_svg_preview,
+    CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
+    FoldBoundaryCandidateSource, FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit,
+    FoldPreview, FoldPreviewWarning, Ori2ProjectArchive, ProjectDocument,
+    ProjectNumericExpressions, RectangularPaperCreationExpressions, SvgBoundaryCandidateId,
+    SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern, SvgGroupMapping,
+    SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox,
+    SvgStyleGroupId, SvgWarningKind, read_fold_preview, read_svg_preview,
 };
 #[cfg(test)]
 use project_persistence::{
@@ -705,11 +705,20 @@ struct FoldImportPreviewSnapshot {
     vertex_count: usize,
     edge_count: usize,
     boundary_edge_count: usize,
+    boundary_candidates: Vec<FoldImportBoundaryCandidateSnapshot>,
+    fixed_boundary_candidate_id: Option<u16>,
     assignments: Vec<FoldImportAssignmentSummary>,
     preview_vertices: Vec<FoldImportPreviewVertex>,
     preview_edges: Vec<FoldImportPreviewEdge>,
     preview_truncated: bool,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FoldImportBoundaryCandidateSnapshot {
+    id: u16,
+    source: &'static str,
+    edge_indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -726,6 +735,7 @@ struct FoldImportPreviewVertex {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct FoldImportPreviewEdge {
+    source_index: usize,
     start: usize,
     end: usize,
     assignment: String,
@@ -1471,6 +1481,7 @@ async fn apply_fold_import(
     expected_revision: u64,
     name: String,
     millimeters_per_unit: f64,
+    boundary_candidate_id: u16,
     assignment_mappings: Vec<FoldImportAssignmentMappingRequest>,
 ) -> Result<ProjectSnapshot, String> {
     let name = normalize_project_name(&name)?;
@@ -1484,7 +1495,13 @@ async fn apply_fold_import(
     )?;
     let bytes = Arc::clone(&pending.bytes);
     let replacement = tauri::async_runtime::spawn_blocking(move || {
-        build_fold_import_replacement(&bytes, name, millimeters_per_unit, mappings)
+        build_fold_import_replacement(
+            &bytes,
+            name,
+            millimeters_per_unit,
+            FoldBoundaryCandidateId(boundary_candidate_id),
+            mappings,
+        )
     })
     .await
     .map_err(fold_conversion_task_error)??;
@@ -3818,10 +3835,28 @@ fn fold_import_preview_snapshot(
     })
     .collect();
 
+    let boundary_candidates = preview
+        .boundary_candidates()
+        .iter()
+        .map(|candidate| FoldImportBoundaryCandidateSnapshot {
+            id: candidate.id.0,
+            source: match candidate.source {
+                FoldBoundaryCandidateSource::AssignedBoundary => "assigned_boundary",
+                FoldBoundaryCandidateSource::InferredOuterFace => "inferred_outer_face",
+            },
+            edge_indices: candidate.edge_indices.clone(),
+        })
+        .collect::<Vec<_>>();
+    let boundary_edge_indices = preview
+        .boundary_candidates()
+        .iter()
+        .flat_map(|candidate| candidate.edge_indices.iter().copied())
+        .collect::<HashSet<_>>();
     let mut selected_edges = preview
         .edges()
         .iter()
-        .filter(|edge| edge.assignment == FoldEdgeAssignment::Boundary)
+        .filter(|edge| boundary_edge_indices.contains(&edge.index))
+        .take(MAX_FOLD_IMPORT_PREVIEW_EDGES)
         .collect::<Vec<_>>();
     let sampled_assignments = [
         FoldEdgeAssignment::Mountain,
@@ -3837,7 +3872,9 @@ fn fold_import_preview_snapshot(
             preview
                 .edges()
                 .iter()
-                .filter(|edge| edge.assignment == *assignment)
+                .filter(|edge| {
+                    edge.assignment == *assignment && !boundary_edge_indices.contains(&edge.index)
+                })
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
@@ -3884,6 +3921,7 @@ fn fold_import_preview_snapshot(
     let preview_edges = selected_edges
         .iter()
         .map(|edge| FoldImportPreviewEdge {
+            source_index: edge.index,
             start: dense_vertex_indices[&edge.vertices[0]],
             end: dense_vertex_indices[&edge.vertices[1]],
             assignment: edge.assignment.token().to_owned(),
@@ -3933,6 +3971,10 @@ fn fold_import_preview_snapshot(
         vertex_count: preview.vertices().len(),
         edge_count: preview.edges().len(),
         boundary_edge_count: counts.boundary,
+        boundary_candidates,
+        fixed_boundary_candidate_id: preview
+            .fixed_boundary_candidate()
+            .map(|candidate| candidate.0),
         assignments,
         preview_vertices,
         preview_edges,
@@ -3960,6 +4002,13 @@ fn fold_import_warning_message(warning: &FoldPreviewWarning) -> String {
     match warning {
         FoldPreviewWarning::MissingFileSpec => {
             "FOLD仕様バージョンの記載がありません。対応範囲として慎重に解釈します。".to_owned()
+        }
+        FoldPreviewWarning::MissingEdgesAssignment => {
+            "辺の割当情報（edges_assignment）がないため、折り線種を確認・指定してください。"
+                .to_owned()
+        }
+        FoldPreviewWarning::BoundaryAssignmentsNeedSelection => {
+            "外周を一意に確定できないため、取り込む用紙外周を選択してください。".to_owned()
         }
         FoldPreviewWarning::UnitNeedsScaleSelection => {
             "実寸へ換算できる単位情報がないため、1単位あたりのmm値を指定してください。".to_owned()
@@ -4346,6 +4395,7 @@ fn build_fold_import_replacement(
     bytes: &[u8],
     name: String,
     millimeters_per_unit: f64,
+    boundary_candidate: FoldBoundaryCandidateId,
     mappings: HashMap<String, FoldImportTargetRequest>,
 ) -> Result<ProjectState, String> {
     let preview = read_fold_preview(bytes).map_err(fold_file_invalid_error)?;
@@ -4378,10 +4428,13 @@ fn build_fold_import_replacement(
         join: fold_import_assignment_target(&mappings, "J"),
     };
     let conversion = preview
-        .convert(&FoldConversionOptions {
-            assignment_mapping,
-            millimetres_per_unit: millimeters_per_unit,
-        })
+        .convert_with_boundary_candidate(
+            &FoldConversionOptions {
+                assignment_mapping,
+                millimetres_per_unit: millimeters_per_unit,
+            },
+            boundary_candidate,
+        )
         .map_err(|error| format!("FOLD mapping could not be applied: {error}"))?;
     let (crease_pattern, _, _, boundary_vertices) = conversion.into_parts();
     let mut paper = Paper {
@@ -11890,6 +11943,7 @@ mod tests {
             &valid_bytes,
             "Missing mapping".to_owned(),
             1.0,
+            FoldBoundaryCandidateId(0),
             HashMap::new(),
         )
         .err()
@@ -11916,6 +11970,7 @@ mod tests {
             &crossing_bytes,
             "Crossing".to_owned(),
             1.0,
+            FoldBoundaryCandidateId(0),
             HashMap::from([
                 ("M".to_owned(), FoldImportTargetRequest::Mountain),
                 ("V".to_owned(), FoldImportTargetRequest::Valley),
@@ -11972,6 +12027,7 @@ mod tests {
             &malformed,
             "Private staged input".to_owned(),
             1.0,
+            FoldBoundaryCandidateId(0),
             HashMap::new(),
         )
         .err()
@@ -12015,6 +12071,15 @@ mod tests {
         assert_eq!(response.vertex_count, 4);
         assert_eq!(response.edge_count, 5);
         assert_eq!(response.boundary_edge_count, 4);
+        assert_eq!(response.fixed_boundary_candidate_id, Some(0));
+        assert_eq!(
+            response.boundary_candidates,
+            vec![FoldImportBoundaryCandidateSnapshot {
+                id: 0,
+                source: "assigned_boundary",
+                edge_indices: vec![0, 1, 2, 3],
+            }]
+        );
         assert_eq!(
             response.assignments,
             vec![
@@ -12030,6 +12095,14 @@ mod tests {
         );
         assert_eq!(response.preview_vertices.len(), 4);
         assert_eq!(response.preview_edges.len(), 5);
+        assert_eq!(
+            response
+                .preview_edges
+                .iter()
+                .map(|edge| edge.source_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
         assert!(!response.preview_truncated);
         assert!(response.warnings.is_empty());
 
@@ -12037,6 +12110,7 @@ mod tests {
             &bytes,
             "取込テスト".to_owned(),
             10.0,
+            FoldBoundaryCandidateId(0),
             HashMap::from([("M".to_owned(), FoldImportTargetRequest::Mountain)]),
         )
         .expect("convert FOLD into a project");
@@ -12073,6 +12147,74 @@ mod tests {
     }
 
     #[test]
+    fn fold_import_requires_and_revalidates_an_inferred_boundary_choice() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "file_spec": 1.2,
+            "frame_unit": "mm",
+            "vertices_coords": [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+            "edges_vertices": [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]]
+        }))
+        .expect("serialize assignment-free FOLD fixture");
+        let preview = read_fold_preview(&bytes).expect("read assignment-free FOLD preview");
+        let response = fold_import_preview_snapshot(ProjectId::new(), &preview);
+
+        assert_eq!(response.fixed_boundary_candidate_id, None);
+        assert_eq!(response.boundary_candidates.len(), 1);
+        let candidate = &response.boundary_candidates[0];
+        assert_eq!(candidate.source, "inferred_outer_face");
+        assert_eq!(candidate.edge_indices, vec![0, 1, 2, 3]);
+        assert!(
+            response
+                .preview_edges
+                .iter()
+                .filter(|edge| candidate.edge_indices.contains(&edge.source_index))
+                .all(|edge| edge.assignment == "U")
+        );
+
+        let replacement = build_fold_import_replacement(
+            &bytes,
+            "外周候補を選択".to_owned(),
+            1.0,
+            FoldBoundaryCandidateId(candidate.id),
+            HashMap::from([("U".to_owned(), FoldImportTargetRequest::Auxiliary)]),
+        )
+        .expect("convert with the explicitly selected candidate");
+        assert_eq!(replacement.editor.paper().boundary_vertices.len(), 4);
+        assert_eq!(
+            replacement
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Boundary)
+                .count(),
+            4
+        );
+        assert_eq!(
+            replacement
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == EdgeKind::Auxiliary)
+                .count(),
+            1
+        );
+
+        let stale_error = match build_fold_import_replacement(
+            &bytes,
+            "存在しない候補".to_owned(),
+            1.0,
+            FoldBoundaryCandidateId(candidate.id.saturating_add(1)),
+            HashMap::from([("U".to_owned(), FoldImportTargetRequest::Auxiliary)]),
+        ) {
+            Ok(_) => panic!("an absent candidate ID must be rejected after reparsing"),
+            Err(error) => error,
+        };
+        assert!(stale_error.contains("is not present in this preview"));
+    }
+
+    #[test]
     fn fold_import_rejects_an_active_edge_outside_the_paper() {
         let bytes = serde_json::to_vec(&serde_json::json!({
             "file_spec": 1.2,
@@ -12090,6 +12232,7 @@ mod tests {
             &bytes,
             "紙外の折り線".to_owned(),
             1.0,
+            FoldBoundaryCandidateId(0),
             HashMap::from([("M".to_owned(), FoldImportTargetRequest::Mountain)]),
         )
         .err()
@@ -12118,6 +12261,7 @@ mod tests {
             &bytes,
             "複数線種".to_owned(),
             2.5,
+            FoldBoundaryCandidateId(0),
             HashMap::from([
                 ("M".to_owned(), FoldImportTargetRequest::Mountain),
                 ("V".to_owned(), FoldImportTargetRequest::Valley),

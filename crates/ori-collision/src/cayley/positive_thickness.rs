@@ -38,6 +38,8 @@ use super::{
     rational_storage_bits, try_array3, verify_exact_rotation,
 };
 
+mod ef_boundary;
+
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
 const TRIANGULAR_HINGE_INPUT_RATIONALS: usize = 48;
@@ -1361,6 +1363,11 @@ mod tests {
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
+    use super::ef_boundary::{
+        AxisAlignedEfBoundaryAnalysis, AxisAlignedEfBoundaryCapabilityV1,
+        AxisAlignedEfBoundaryError, AxisAlignedEfBoundaryLimits, AxisAlignedEfBoundaryWork,
+        analyze_axis_aligned_ef_boundary_v1, revalidate_axis_aligned_ef_boundary_v1,
+    };
     use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2910,5 +2917,574 @@ mod tests {
         ));
         assert_eq!(overflow.total_input_storage_bits, usize::MAX);
         assert_eq!(overflow.input_rationals, 1);
+    }
+
+    fn authenticated_ef_prerequisite<'exact, 'pose>(
+        exact: &'exact RationalCayleyTreePose<'pose>,
+        paper_thickness_mm: f64,
+    ) -> SingleTriangularHingePrerequisiteAnalysis<'exact, 'pose> {
+        analyze_single_triangular_hinge_prerequisites_v1(
+            exact,
+            paper_thickness_mm,
+            SingleTriangularHingePrerequisiteLimits::default(),
+        )
+        .expect("finite-hinge prerequisite analysis")
+    }
+
+    fn ef_capability<'a, 'prerequisite, 'exact, 'pose>(
+        analysis: &'a AxisAlignedEfBoundaryAnalysis<'prerequisite, 'exact, 'pose>,
+    ) -> &'a AxisAlignedEfBoundaryCapabilityV1<'prerequisite, 'exact, 'pose> {
+        analysis
+            .capability
+            .as_ref()
+            .expect("E/F boundary must authenticate")
+    }
+
+    #[test]
+    fn ef_boundary_thickness_angle_matrix_is_exact_axis_aligned_and_private() {
+        let model = two_triangle_model();
+        for thickness in [0.1, 1.0, 3.0] {
+            for angle in [10.0, 135.0, 179.0] {
+                let pose = triangular_pose(&model, angle);
+                let bound = model.bind_pose(&pose).expect("issuer-bound pose");
+                let exact = triangular_exact_pose(&model, &pose);
+                let prerequisite_analysis = authenticated_ef_prerequisite(&exact, thickness);
+                let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+                    &prerequisite_analysis.result
+                else {
+                    panic!("{thickness} mm at {angle} degrees: prerequisite");
+                };
+                let analysis = analyze_axis_aligned_ef_boundary_v1(
+                    prerequisite,
+                    &exact,
+                    bound,
+                    thickness,
+                    AxisAlignedEfBoundaryLimits::default(),
+                )
+                .unwrap_or_else(|error| panic!("{thickness} mm at {angle} degrees: {error:?}"));
+                let capability = ef_capability(&analysis);
+                assert!(std::ptr::eq(capability.exact, &exact));
+                assert!(std::ptr::eq(capability.prerequisite, prerequisite));
+                assert_eq!(capability.paper_thickness_bits, thickness.to_bits());
+                assert_eq!(capability.faces.len(), 2);
+                assert_eq!(capability.binary64_face_transforms.len(), 2);
+                assert_eq!(capability.hinge_index, 0);
+                let exact_half_thickness = BigRational::from_float(thickness).unwrap() / integer(2);
+                for face in &capability.faces {
+                    for axis in 0..3 {
+                        assert!(!face.point_component_bound_mm[axis].is_negative());
+                        assert!(!face.normal_component_bound[axis].is_negative());
+                        assert!(!face.solid_component_bound_mm[axis].is_negative());
+                        assert!(
+                            face.solid_component_bound_mm[axis]
+                                >= face.point_component_bound_mm[axis]
+                        );
+                        assert_eq!(
+                            face.solid_component_bound_mm[axis],
+                            &face.point_component_bound_mm[axis]
+                                + &exact_half_thickness * &face.normal_component_bound[axis],
+                            "per-face axis {axis}: point + h*normal"
+                        );
+                    }
+                    assert_eq!(
+                        face.point_linf_bound_mm,
+                        *face.point_component_bound_mm.iter().max().unwrap()
+                    );
+                    assert_eq!(
+                        face.normal_linf_bound,
+                        *face.normal_component_bound.iter().max().unwrap()
+                    );
+                    assert_eq!(
+                        face.solid_linf_bound_mm,
+                        *face.solid_component_bound_mm.iter().max().unwrap()
+                    );
+                }
+                assert_eq!(
+                    capability.point_linf_bound_mm,
+                    *capability.point_component_bound_mm.iter().max().unwrap()
+                );
+                assert_eq!(
+                    capability.normal_linf_bound,
+                    *capability.normal_component_bound.iter().max().unwrap()
+                );
+                assert_eq!(
+                    capability.solid_linf_bound_mm,
+                    *capability.solid_component_bound_mm.iter().max().unwrap()
+                );
+                for axis in 0..3 {
+                    assert_eq!(
+                        capability.solid_component_bound_mm[axis],
+                        &capability.point_component_bound_mm[axis]
+                            + &exact_half_thickness * &capability.normal_component_bound[axis],
+                        "global axis {axis}: point + h*normal"
+                    );
+                }
+                let rebound = revalidate_axis_aligned_ef_boundary_v1(
+                    capability,
+                    prerequisite,
+                    &exact,
+                    bound,
+                    thickness,
+                )
+                .expect("same exact E, F instance, prerequisite, indexes, and thickness");
+                assert!(std::ptr::eq(rebound.capability, capability));
+            }
+        }
+    }
+
+    #[test]
+    fn ef_boundary_normal_term_proves_point_only_is_insufficient() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 3.0);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            3.0,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let capability = ef_capability(&analysis);
+        assert!(
+            capability.normal_linf_bound.is_positive(),
+            "non-cardinal binary64 F and rational Cayley E must retain normal error"
+        );
+        assert!(
+            capability.faces.iter().any(|face| (0..3).any(|axis| {
+                face.solid_component_bound_mm[axis] > face.point_component_bound_mm[axis]
+            })),
+            "positive thickness must add h*normal_error to at least one axis"
+        );
+        assert!(
+            capability.solid_linf_bound_mm > capability.point_linf_bound_mm,
+            "the scalar L∞ solid bound must not collapse to the point-only bound"
+        );
+    }
+
+    #[test]
+    fn ef_boundary_large_translation_and_minimum_subnormal_thickness_remain_exact() {
+        let base = 1_000_000_000_000_000.0;
+        let translated = two_triangle_model_with_options(
+            EdgeKind::Mountain,
+            false,
+            [
+                (base, base),
+                (base + 400.0, base),
+                (base + 400.0, base + 400.0),
+                (base, base + 400.0),
+            ],
+            301,
+        );
+        let translated_pose = triangular_pose(&translated, 179.0);
+        let translated_bound = translated.bind_pose(&translated_pose).unwrap();
+        let translated_exact = triangular_exact_pose(&translated, &translated_pose);
+        let translated_prerequisite = authenticated_ef_prerequisite(&translated_exact, 3.0);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &translated_prerequisite.result
+        else {
+            panic!("large-translation prerequisite");
+        };
+        let translated_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &translated_exact,
+            translated_bound,
+            3.0,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        assert!(translated_analysis.capability.is_some());
+
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let minimum_subnormal = f64::from_bits(1);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, minimum_subnormal);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("minimum-subnormal prerequisite");
+        };
+        let analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            minimum_subnormal,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let capability = ef_capability(&analysis);
+        assert_eq!(capability.paper_thickness_bits, minimum_subnormal.to_bits());
+        assert!(analysis.work.exact.max_shift_bits >= 1_074);
+        assert!(
+            capability.faces.iter().any(|face| (0..3).any(|axis| {
+                face.solid_component_bound_mm[axis] > face.point_component_bound_mm[axis]
+            })),
+            "exact h=t/2 must not underflow the minimum subnormal to zero"
+        );
+    }
+
+    #[test]
+    fn ef_boundary_rejects_separate_exact_aba_foreign_reroot_thickness_faces_and_f_bits() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let independent_exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let duplicate_prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let SingleTriangularHingePrerequisiteResult::Authenticated(duplicate_prerequisite) =
+            &duplicate_prerequisite_analysis.result
+        else {
+            panic!("duplicate prerequisite");
+        };
+        let mismatched_issuer = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &independent_exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            mismatched_issuer.capability.is_none(),
+            "issuance itself rejects a prerequisite from another exact object"
+        );
+        let mut analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let capability = analysis.capability.as_mut().expect("E/F capability");
+
+        let cloned_pose = pose.clone();
+        let cloned_bound = model.bind_pose(&cloned_pose).unwrap();
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &exact,
+                cloned_bound,
+                0.1,
+            )
+            .is_some(),
+            "a clone preserving the same private pose instance is valid"
+        );
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &independent_exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently regenerated E must fail pointer binding"
+        );
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                duplicate_prerequisite,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "an independently issued prerequisite token is not interchangeable"
+        );
+
+        let aba_pose = triangular_pose(&model, 135.0);
+        let aba_bound = model.bind_pose(&aba_pose).unwrap();
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &exact,
+                aba_bound,
+                0.1,
+            )
+            .is_none(),
+            "same-angle re-solve ABA"
+        );
+
+        let rerooted_pose = triangular_pose_with_root(&model, 135.0, model.face_ids()[1]);
+        let rerooted_bound = model.bind_pose(&rerooted_pose).unwrap();
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &exact,
+                rerooted_bound,
+                0.1,
+            )
+            .is_none(),
+            "a different fixed root is a different F instance"
+        );
+
+        let one_ulp_pose = triangular_pose(&model, next_up(135.0));
+        let one_ulp_bound = model.bind_pose(&one_ulp_pose).unwrap();
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &exact,
+                one_ulp_bound,
+                0.1,
+            )
+            .is_none(),
+            "a one-ULP angle change is a different F instance"
+        );
+
+        let foreign = two_triangle_model_with_options(
+            EdgeKind::Mountain,
+            false,
+            [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)],
+            302,
+        );
+        let foreign_pose = triangular_pose(&foreign, 135.0);
+        let foreign_bound = foreign.bind_pose(&foreign_pose).unwrap();
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &exact,
+                foreign_bound,
+                0.1,
+            )
+            .is_none(),
+            "foreign model/issuer"
+        );
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(
+                capability,
+                prerequisite,
+                &exact,
+                bound,
+                next_up(0.1),
+            )
+            .is_none(),
+            "paper thickness is bound by its complete binary64 bit pattern"
+        );
+
+        std::mem::swap(
+            &mut capability.left_face_index,
+            &mut capability.right_face_index,
+        );
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(capability, prerequisite, &exact, bound, 0.1,)
+                .is_none(),
+            "left/right face-index swap"
+        );
+        std::mem::swap(
+            &mut capability.left_face_index,
+            &mut capability.right_face_index,
+        );
+
+        capability.faces.swap(0, 1);
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(capability, prerequisite, &exact, bound, 0.1,)
+                .is_none(),
+            "face-bound record swap"
+        );
+        capability.faces.swap(0, 1);
+
+        let original_f_bit = capability.binary64_face_transforms[0].rotation[0][0];
+        capability.binary64_face_transforms[0].rotation[0][0] = original_f_bit + 1;
+        assert!(
+            revalidate_axis_aligned_ef_boundary_v1(capability, prerequisite, &exact, bound, 0.1,)
+                .is_none(),
+            "one-ULP change to a sealed F matrix coefficient"
+        );
+    }
+
+    fn exact_ef_limits_from_work(work: &AxisAlignedEfBoundaryWork) -> AxisAlignedEfBoundaryLimits {
+        AxisAlignedEfBoundaryLimits {
+            max_authenticated_faces: work.authenticated_faces,
+            max_authenticated_hinges: work.authenticated_hinges,
+            max_boundary_occurrences: work.boundary_occurrences,
+            max_transform_scalar_lifts: work.transform_scalar_lifts,
+            max_transform_bit_bindings: work.transform_bit_bindings,
+            max_source_coordinate_lifts: work.source_coordinate_lifts,
+            max_current_point_reconstructions: work.current_point_reconstructions,
+            max_point_component_bounds: work.point_component_bounds,
+            max_normal_component_bounds: work.normal_component_bounds,
+            max_solid_component_bounds: work.solid_component_bounds,
+            max_face_error_records: work.face_error_records,
+            max_thickness_lifts: work.thickness_lifts,
+            max_half_thickness_divisions: work.half_thickness_divisions,
+            exact: CayleyLimits {
+                max_precision_rounds: 0,
+                max_guard_bits: 0,
+                max_candidate_bits: 0,
+                max_machin_terms_per_series: 0,
+                max_trig_terms_per_series: 0,
+                max_sqrt_refinements: 0,
+                max_interval_operations: work.exact.interval_operations,
+                max_shift_bits: work.exact.max_shift_bits,
+                max_intermediate_bits: work
+                    .exact
+                    .max_preflight_bits
+                    .max(work.exact.max_observed_bits),
+                max_gcd_fallback_calls: work.exact.gcd_fallback_calls,
+                max_gcd_fallback_input_bits: work.exact.gcd_fallback_input_bits,
+                max_rational_allocations: work.exact.rational_allocations,
+                max_rational_allocation_bits: work.exact.max_rational_allocation_bits,
+                max_total_rational_allocation_bits: work.exact.total_rational_allocation_bits,
+                max_output_bits: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn ef_boundary_all_counters_have_exact_and_one_short_limits() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let baseline = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let exact_limits = exact_ef_limits_from_work(&baseline.work);
+        let exact_analysis =
+            analyze_axis_aligned_ef_boundary_v1(prerequisite, &exact, bound, 0.1, exact_limits)
+                .unwrap();
+        assert!(exact_analysis.capability.is_some());
+        assert_eq!(exact_analysis.work, baseline.work);
+
+        let assert_one_short = |resource: &str, limits: AxisAlignedEfBoundaryLimits| {
+            assert!(
+                matches!(
+                    analyze_axis_aligned_ef_boundary_v1(prerequisite, &exact, bound, 0.1, limits,),
+                    Err(AxisAlignedEfBoundaryError::ResourceLimitExceeded)
+                ),
+                "{resource}"
+            );
+        };
+        macro_rules! structural_one_short {
+            ($field:ident) => {
+                if exact_limits.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.$field -= 1;
+                    assert_one_short(stringify!($field), limits);
+                }
+            };
+        }
+        structural_one_short!(max_authenticated_faces);
+        structural_one_short!(max_authenticated_hinges);
+        structural_one_short!(max_boundary_occurrences);
+        structural_one_short!(max_transform_scalar_lifts);
+        structural_one_short!(max_transform_bit_bindings);
+        structural_one_short!(max_source_coordinate_lifts);
+        structural_one_short!(max_current_point_reconstructions);
+        structural_one_short!(max_point_component_bounds);
+        structural_one_short!(max_normal_component_bounds);
+        structural_one_short!(max_solid_component_bounds);
+        structural_one_short!(max_face_error_records);
+        structural_one_short!(max_thickness_lifts);
+        structural_one_short!(max_half_thickness_divisions);
+
+        macro_rules! exact_one_short {
+            ($field:ident) => {
+                if exact_limits.exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.exact.$field -= 1;
+                    assert_one_short(concat!("exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        exact_one_short!(max_interval_operations);
+        exact_one_short!(max_shift_bits);
+        exact_one_short!(max_intermediate_bits);
+        exact_one_short!(max_gcd_fallback_calls);
+        exact_one_short!(max_gcd_fallback_input_bits);
+        exact_one_short!(max_rational_allocations);
+        exact_one_short!(max_rational_allocation_bits);
+        exact_one_short!(max_total_rational_allocation_bits);
+    }
+
+    #[test]
+    fn ef_boundary_caller_cannot_expand_any_hard_cap() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let baseline = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let oversized = AxisAlignedEfBoundaryLimits {
+            max_authenticated_faces: usize::MAX,
+            max_authenticated_hinges: usize::MAX,
+            max_boundary_occurrences: usize::MAX,
+            max_transform_scalar_lifts: usize::MAX,
+            max_transform_bit_bindings: usize::MAX,
+            max_source_coordinate_lifts: usize::MAX,
+            max_current_point_reconstructions: usize::MAX,
+            max_point_component_bounds: usize::MAX,
+            max_normal_component_bounds: usize::MAX,
+            max_solid_component_bounds: usize::MAX,
+            max_face_error_records: usize::MAX,
+            max_thickness_lifts: usize::MAX,
+            max_half_thickness_divisions: usize::MAX,
+            exact: CayleyLimits {
+                max_precision_rounds: usize::MAX,
+                max_guard_bits: usize::MAX,
+                max_candidate_bits: usize::MAX,
+                max_machin_terms_per_series: usize::MAX,
+                max_trig_terms_per_series: usize::MAX,
+                max_sqrt_refinements: usize::MAX,
+                max_interval_operations: usize::MAX,
+                max_shift_bits: usize::MAX,
+                max_intermediate_bits: usize::MAX,
+                max_gcd_fallback_calls: usize::MAX,
+                max_gcd_fallback_input_bits: usize::MAX,
+                max_rational_allocations: usize::MAX,
+                max_rational_allocation_bits: usize::MAX,
+                max_total_rational_allocation_bits: usize::MAX,
+                max_output_bits: usize::MAX,
+            },
+        };
+        let projected =
+            analyze_axis_aligned_ef_boundary_v1(prerequisite, &exact, bound, 0.1, oversized)
+                .unwrap();
+        assert!(projected.capability.is_some());
+        assert_eq!(projected.work, baseline.work);
     }
 }

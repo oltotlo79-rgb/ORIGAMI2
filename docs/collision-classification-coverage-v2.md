@@ -48,6 +48,17 @@ v2実装済みと数えない。証拠不足またはversion不一致は`indeter
 
 desktop current-pose診断とproduction警告UIにも接続済みである。wire reasonとDTO fieldは`proven_zero_thickness_penetration`、`provenPenetratingPairs`、`firstProvenPenetratingPair`へ一般化し、旧`proven_transversal_penetration`、`provenTransversalPairs`、`firstProvenTransversalPair`をstrict parserで拒否する。Rust公開error variant名`ProvenTransversalPenetration`だけはcrate API互換のため維持する。これらはblocking診断を増やすが、public safe proofの成功集合、正厚またはSIM-010の利用者経路を完成させない。
 
+正厚のprivate checkpointでは、1ヒンジ・2三角形面の有限ヒンジ前提tokenを消費し、
+同じCayley exact姿勢`E`とnative binary64 affine姿勢`F`の位置・材料法線差を、
+各軸のexact有理数として測るE/F境界capabilityまで実装した。正厚solidの各軸上限は
+`point[k] + h × normal[k]`で、`h`は紙厚をexact liftしてから2で割る。これは
+componentwise包含であり、L∞欄もユークリッド距離ではない。exact pointer、native
+pose instance、紙厚bits、左右面・hinge indexおよび全`F`係数bitsへprivateに結合し、
+全構造・厳密算術counterをhard cap以下へ制限する。独立な成分boxを相関済み姿勢として
+三角柱交差、共有軸weld、radial marginまたは分類へ用いてはならない。完全交差集合を
+有限ヒンジcorridorへ含める`E`側proofと、direct-lift `F`側の同じproofが完成するまで、
+表3のnative正厚production各行は未実装のままである。
+
 2026-07-19 checkpointでは、厚さ0幾何のbinary64入力をexact有理数へ持ち上げる処理から、三角形分割、面・線・区間演算、比較、全canonical unordered face pairの証拠集約までを、一つの単調な有限資源meterへ統合した。入力・保持clone・演算・中間bit・GCD fallback・出力に加え、exact kernelが明示的に生成するlogical BigInt payloadの件数・個別bit・累積bitをchecked加算し、資源超過時は保存済みpair表を発行しない。全pairのdispatchは準備時にcanonical順で事前計算し、後続の参照順によって作業量や結果が変わらない。
 
 公開静的衝突境界は、blocking decisionを見つけても走査を短絡せず、全unordered face pairと全triangle-pairの期待数・解析数を照合する。資源超過または証拠取得失敗はその時点で原子的にfail-closedとする。複数面では有限ヒンジmodelが未完成なので、診断結果が非blockingでも`NativeStaticCollisionGeometryProof`を発行せず、`PairEvidenceUnavailable`を返す。安全証明constructorは単一面・0 pairの枝だけに残している。
@@ -73,7 +84,7 @@ blocking肯定の集約自体も同じexact pose instanceとcanonical face順へ
 
 1. actual-mm閉有理区間のprivate blocking-only横断primitiveを、`ProvenPenetrating` / `Unresolved`だけのsealed結果、共有関係、strict境界、全資源上限で固定する。このprivate synthetic段階は完了済みだが、production decisionまたはpublic safe proofを発行しない。
 2. exact tree `E`、同じissuer-bound poseのbinary64 affine係数・rest頂点のdirect lift、`E`を測定したenvelope、内部導出topology、canonical face pairだけからactual-mm入力を作るprivate scanと、角起点V・辺中点山山Vの三角material face実姿勢回帰、およびnative公開静的衝突入口へのblocking専用接続は完了した。canonical exact `E`側とdirect-lift実在triangle側の両方が同一pairを肯定した場合だけtriangle横断をblocking errorへ接続し、envelope boxを肯定幾何として使わず、multi-face safe setも広げない。全pair認証済みの180度共面正面積重なりと非三角whole material face横断、desktop current-pose診断およびproduction UIへの接続も完了した。H64既定上限内の完全成功とrenderer有限包含は後続である。
-3. その後に正厚`boundary_area_contact` / `shared_feature_thickness_overlap` / `positive_volume_overlap`、有限ヒンジ`shared_feature_flat_stack` / corridorをnativeで実装する。
+3. 正厚の有限ヒンジ前提とprivate E/F componentwise境界は完了した。次に完全な三角柱交差集合を有限ヒンジcorridorへ含める`E`側proofとdirect-lift `F`側proofを別々に完成させ、両方を再結合してから、正厚`boundary_area_contact` / `shared_feature_thickness_overlap` / `positive_volume_overlap`、有限ヒンジ`shared_feature_flat_stack` / corridorをnative productionへ接続する。
 4. current-pose apply・同generation静的診断・blocking表示への結合は完了した。multi-face safe certificate、native continuous collisionおよび全操作経路の停止へ結合し、`indeterminate`を貫通同等のblocking停止へ流す。
 5. 全pair coverageと有限workを維持したままcell-order transportを結合し、atomic `ApplyStackedFold` command、最後に折り重ねUIを接続する。
 

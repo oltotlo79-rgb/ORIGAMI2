@@ -487,6 +487,75 @@ radius(face, component) =
 
 `F - E`はaffineであり、単純多角形の材料面は境界頂点のconvex hullに含まれるため、各成分の絶対差はface内部全域で`radius`以下になる。この証明は凹faceにも適用し、ear-clipping後の一部頂点、AABB cornerまたは代表点だけの検査へ縮小しない。同じ`VertexId`の全face occurrenceを一つのexact点へ照合し、各hingeのstart、end、midpointも親、子、hingeの全経路で包含する。正厚では別gateとして材料法線列も比較し、位置包含へ少なくとも`(thickness / 2) * normal_error`を加える。位置radiusだけで正厚を認証しない。
 
+2026-07-19 checkpointで、この正厚gateの限定private sliceを実装した。対象は既存の
+有限ヒンジ前提が認証した1ヒンジ・2三角形面だけであり、全境界頂点の位置差と
+local `+Y`材料法線列の差から、各軸の
+`solid[k] = point[k] + h × normal[k]`を完全有理算術で求める。`h`は入力紙厚を
+binary64のまま先に半分へ丸めず、exact lift後に2で割る。face別と全体のL∞値は
+3成分の最大であり、ユークリッド距離ではない。capabilityは有限ヒンジ前提token、
+exact object pointer、native model/pose instance、紙厚bits、左右面・hinge index、
+全binary64 transform係数bitsへ結合する。独立な成分boxには面間相関がないため、
+共有軸をweldした三角柱、有限corridorのradial margin、離間・接触・貫通分類、
+safe setまたはSIM-010 authorityへ使用しない。次工程は三角柱どうしの完全交差集合を
+exact `E`の有限corridorへ含める専用tokenであり、その後にdirect-lift `F`でも同じ
+全交差集合包含を別tokenとして証明する。
+
+##### C.1.1 正厚phase 2: exact `E`の完全交差集合と有限回廊
+
+phase 2はprivateな`ExactEFiniteHingeCorridorCapabilityV1`に限定し、production分類、
+safe proof、連続衝突またはmutation authorityへ接続しない。既存の有限ヒンジ前提と
+E/F境界capabilityをborrowで再結合するが、証明対象のsolid geometryはcanonical
+exact `E`だけから構成する。E/F境界のcomponent boxは交差predicateへ入力しない。
+
+各三角形solidは中央面の三頂点をlocal `+Y`方向へ`±h`だけ移動した6頂点と、
+cap 2面・side 3面の計5閉halfspaceで表す。centroidを厳密な内点として各法線の向きを
+統一し、6頂点すべてのhalfspace包含、facet incidence、非ゼロfacet法線および
+非ゼロaffine volumeを発行前に再検証する。二つの三角柱が作る計10平面から、
+canonical順の全`C(10, 3) = 120`三つ組を走査する。法線を`n0,n1,n2`、
+平面定数を`b0,b1,b2`とし、`D = n0 · (n1 × n2)`が非ゼロの場合だけCramer則
+
+```text
+x = (b0(n1 × n2) + b1(n2 × n0) + b2(n0 × n1)) / D
+```
+
+で候補を求める。全10閉halfspace内の候補だけをexact canonical rationalで重複除去し、
+全120組と全membership検査が完了した後だけ交差polytope頂点集合を発行する。
+閉・有界・full-dimensionalな入力では、各extreme pointにrank 3のactive normalがあるため、
+この列挙は完全交差集合の全頂点を被覆する。
+
+有限ヒンジ回廊は、軸始点`A`、軸ベクトル`d`、`D2 = d · d`、半紙厚`h`、
+co-oriented法線`nL,nR`から`c2 = (1 + nL · nR) / 2`をexactに再構成する。
+各交差頂点`x`へ次の閉条件を適用する。
+
+```text
+0 <= (x - A) · d <= D2
+c2 × |(x - A) × d|² <= h² × D2
+```
+
+平方根、法線正規化または`R = h / cos(theta/2)`の除算を行わない。軸端、半径境界、
+`R = L`は許容する閉境界であり、strictな外側だけをoutsideとする。軸方向の線形値と
+半径方向の凸二次値は凸polytopeの頂点で最大になるため、全交差頂点の合格は
+完全交差集合全体の有限回廊包含を証明する。180度、`c2 <= 2^-52`または`R > L`は
+既存前提の`LayerOffsetUnmodeled`をそのまま伝播する。
+
+交差集合のaffine rank 3はpositive-volume、rank 2かつ左右の各prismに共通する
+反対向きsupport facetを認証できる場合だけpositive-area/zero-volume boundary contactとする。
+空集合、rank 0、rank 1、supportを認証できないrank 2は許容capabilityを発行しない。
+phase 3では保存済み`F`係数bitsとsource頂点をactual-mm `BigRational`へ直接liftし、
+同じkernelと同じ有限回廊で完全交差集合を別に証明する。`E`と`F`が同じinteraction kindで
+ともにcontainedの場合だけdual capability候補とし、途中の片側成功を保持しない。
+
+phase 2の1走査に対する構造hard capは、faces 2、hinges 1、prisms 2、
+solid vertices 12、facets 10、facet-vertex checks 60、halfspaces 10、
+plane triples 120、nonsingular solves 120以下、membership checks 1,200以下、
+retained candidates 120以下、dedup comparisons 7,140以下、corridor vertex tests 120以下、
+support equality checks 1,200以下、rank tests 120以下とする。source/input lift、
+paper thicknessのexact除算、cross/dot/determinant/division、有理allocation・個別bit・
+累積bitも同じ有限meterへ課金する。caller指定上限はhard capとのminimumへ射影し、
+全構造・exact counterのexact-limit成功、各one-short、checked overflow、
+callerによるhard cap拡張拒否を回帰する。phase 3では`F`分を同じ累積meterへ追加し、
+段階ごとにbudgetをresetしない。
+
 直接差分による包含とは別に、広すぎる対応を拒否するversion固定admission budgetを置く。v1候補は次とし、定数、演算数表、binary表現およびhard ceilingをowner承認後にmodel versionへ凍結する。
 
 ```text

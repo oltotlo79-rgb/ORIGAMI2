@@ -21,9 +21,16 @@
 
 #[allow(dead_code)]
 mod cayley;
+mod cell_order_transport;
 mod static_collision;
 mod zero_thickness;
 
+pub use cell_order_transport::{
+    CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CellOrderTransportErrorV1, CellOrderTransportLimitsV1,
+    CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,
+    NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
+    prove_single_face_cell_order_transport_v1, revalidate_single_face_cell_order_transport_v1,
+};
 pub use static_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
     NativeStaticCollisionGeometryProof, StaticCollisionError, StaticCollisionLimits,

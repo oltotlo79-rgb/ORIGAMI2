@@ -223,6 +223,7 @@ FOLD取込と同じ状態契約を用いる。
 - 各資源上限の境界値と上限+1をtestし、10,000本の有効線図を上限内で処理する。preview 5,000本への省略が本体を削減しない。
 - CSS selectorと対応する9種のstyle property値はbyte数ではなくUnicode scalar value数で120まで受理し、121を入力段階で拒否する。未対応propertyは値を保持せず具体警告へ集約し、長い値や33件以上の宣言だけを理由に文書全体を拒否しない。style text全体の256 KiB超過は拒否する。
 - stylesheetとinline styleの`!important`をCSS優先関係に従って解決し、未対応property内の文字列を対応propertyへ誤適用しない。
+- CSSのproperty名と`!important`はASCII大文字小文字を区別せず、対応する9種のcanonical名へ正規化してから解決する。XMLのpresentation attribute名はXML規則どおり大文字小文字を区別する。
 - warning acknowledgement、dirty確認、取消、重複取消、token世代、instance/project/revisionのstale検出を確認する。
 - 実DOMへ確認画面をrenderし、Tab/Shift+Tabと外部focusのtrap、IME変換中Escapeの無視、縮尺・mapping・外周変更時のvalidation/確認解除、検証・取消・適用失敗時のdialog保持をeventで確認する。
 - 事前検証IDを倍率・mapping・外周・project identityへ束縛し、旧世代・改変・未検証のIDによる適用を拒否する。変換後のCut有無と最終幅・高さが事前検証とapplyで一致する。

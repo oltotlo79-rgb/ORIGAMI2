@@ -2064,18 +2064,18 @@ fn parse_declarations(
         if property.is_empty() {
             return Err(SvgImportError::InvalidCss);
         }
-        if !is_supported_style_property(property) {
+        let Some(supported_property) = canonical_style_property(property) else {
             warnings.add(SvgWarningKind::UnsupportedStyleProperty(bounded_detail(
                 property,
             )))?;
             continue;
-        }
+        };
         let (value, important) = parse_css_declaration_value(value)?;
         let declaration = StyleDeclaration {
-            value: checked_style_value(property, value)?,
+            value: checked_style_value(supported_property, value)?,
             important,
         };
-        match property {
+        match supported_property {
             "stroke" => cascade_style_declaration(&mut declarations.stroke, declaration),
             "color" => cascade_style_declaration(&mut declarations.color, declaration),
             "fill" => cascade_style_declaration(&mut declarations.fill, declaration),
@@ -2097,19 +2097,20 @@ fn parse_declarations(
     Ok(declarations)
 }
 
-fn is_supported_style_property(property: &str) -> bool {
-    matches!(
-        property,
-        "stroke"
-            | "color"
-            | "fill"
-            | "stroke-width"
-            | "stroke-dasharray"
-            | "stroke-opacity"
-            | "opacity"
-            | "display"
-            | "visibility"
-    )
+fn canonical_style_property(property: &str) -> Option<&'static str> {
+    [
+        "stroke",
+        "color",
+        "fill",
+        "stroke-width",
+        "stroke-dasharray",
+        "stroke-opacity",
+        "opacity",
+        "display",
+        "visibility",
+    ]
+    .into_iter()
+    .find(|supported| property.eq_ignore_ascii_case(supported))
 }
 
 fn parse_css_declaration_value(value: &str) -> Result<(&str, bool), SvgImportError> {
@@ -4313,6 +4314,39 @@ mod tests {
             preview.style_groups()[2].stroke,
             RgbaColor::opaque(255, 255, 0),
             "a later declaration must win at equal specificity and importance"
+        );
+    }
+
+    #[test]
+    fn css_property_names_are_ascii_case_insensitive() {
+        let source = standard_document(
+            r#"
+                <line
+                    style="STROKE:#ff0000 !IMPORTANT;Stroke-Width:2"
+                    x1="10"
+                    y1="10"
+                    x2="90"
+                    y2="90"
+                />
+            "#,
+        );
+
+        let preview =
+            read_svg_preview(source.as_bytes()).expect("ASCII case-insensitive CSS properties");
+
+        assert_eq!(preview.edges().len(), 1);
+        assert_eq!(preview.style_groups().len(), 1);
+        assert_eq!(
+            preview.style_groups()[0].stroke,
+            RgbaColor::opaque(255, 0, 0)
+        );
+        assert_eq!(preview.style_groups()[0].stroke_width, 2.0);
+        assert!(
+            !preview
+                .warnings()
+                .iter()
+                .any(|warning| matches!(warning.kind, SvgWarningKind::UnsupportedStyleProperty(_))),
+            "supported CSS property spelling must not be downgraded to an unsupported warning"
         );
     }
 

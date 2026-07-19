@@ -394,6 +394,7 @@
 
 ## 進行中
 
+- Claudeコードレビュー第2回の即時修正1-1〜1-5は、拡張子補正後の既存保存先拒否とatomic create-new、折り図errorの型付きcategory化、SVG ZIPから未参照TTFと`@font-face`の削除、川崎・前川判定のproject lock外実行まで対応済みである。取込過剰拒否はSVG側の未対応property・`!important`対応に加え、CSS規則どおりproperty名もASCII大文字小文字を区別せずcanonical 9 propertyへ正規化する回帰を追加した。FOLD側の任意`edges_assignment`と利用者が選ぶ境界候補はDTO・UI・適用時再検証を伴う契約変更のため未対応であり、アプリ内fontの静的化・subset化および全IPC error schemaの一括移行とともに独立checkpointで扱う
 - [native current applied pose設計](native-applied-pose-design.md)に従い、表示・投影から独立したnative kinematics、current pose capability、native静的・連続衝突、場所別cell-order transport、原子的commitを順に実装する作業。4×11分類表と実geometry証拠の対応を先に完成させ、任意の現在3D状態で局所的に重なる層を安全に扱えるまで折り重ねUIへ着手しない
 - 非cardinalな斜め共有ヒンジで面ごとのbinary64変換像に微小な端点差が生じる問題を、任意epsilonではなくexact rigidなwatertight canonical poseまたは検証可能な全face誤差包含で解決する作業。raw姿勢の横断・共面正面積を端点不一致より優先する暫定案は不採用とし、現在は完全coverage付き判定保留へ閉じる
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業

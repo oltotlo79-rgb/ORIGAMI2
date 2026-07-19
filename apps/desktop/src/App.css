@@ -394,7 +394,7 @@ button { color: inherit; }
   background:
     linear-gradient(90deg, rgb(203 212 220 / .22) 1px, transparent 1px),
     linear-gradient(rgb(203 212 220 / .22) 1px, transparent 1px),
-    var(--panel);
+    #ffffff;
   background-size: 20px 20px;
 }
 .fold-import-preview svg,
@@ -419,15 +419,15 @@ button { color: inherit; }
 .fold-preview-edge {
   stroke: #7a8791;
   stroke-width: 1.5px;
-  stroke-linecap: round;
+  stroke-linecap: butt;
 }
-.fold-preview-edge.assignment-m { stroke: var(--mountain); }
+.fold-preview-edge.assignment-m { stroke: var(--mountain); stroke-dasharray: 10 3 2 3; }
 .fold-preview-edge.assignment-v { stroke: var(--valley); stroke-dasharray: 5 3; }
 .fold-preview-edge.assignment-b { stroke: #26313b; stroke-width: 2px; }
-.fold-preview-edge.assignment-c { stroke: #1e1e1e; stroke-width: 2px; stroke-dasharray: 7 2 1 2; }
+.fold-preview-edge.assignment-c { stroke: #1e1e1e; stroke-width: 2px; stroke-dasharray: 10 3 2 3 2 3; }
 .fold-preview-edge.assignment-f,
 .fold-preview-edge.assignment-u,
-.fold-preview-edge.assignment-j { stroke: #8d969e; stroke-dasharray: 2 3; }
+.fold-preview-edge.assignment-j { stroke: #7b8794; stroke-dasharray: 1 3; stroke-linecap: round; }
 .fold-import-metadata,
 .svg-import-metadata {
   display: grid;
@@ -527,15 +527,15 @@ button { color: inherit; }
 .svg-preview-edge {
   stroke: #7a8791;
   stroke-width: 1.5px;
-  stroke-linecap: round;
+  stroke-linecap: butt;
 }
 .svg-preview-edge.target-boundary { stroke: #26313b; stroke-width: 2px; }
-.svg-preview-edge.target-mountain { stroke: var(--mountain); }
+.svg-preview-edge.target-mountain { stroke: var(--mountain); stroke-dasharray: 10 3 2 3; }
 .svg-preview-edge.target-valley { stroke: var(--valley); stroke-dasharray: 5 3; }
 .svg-preview-edge.target-auxiliary,
-.svg-preview-edge.target-ignore { stroke: #8d969e; stroke-dasharray: 2 3; }
+.svg-preview-edge.target-ignore { stroke: #7b8794; stroke-dasharray: 1 3; stroke-linecap: round; }
 .svg-preview-edge.target-ignore { opacity: .38; }
-.svg-preview-edge.target-cut { stroke: #1e1e1e; stroke-width: 2px; stroke-dasharray: 7 2 1 2; }
+.svg-preview-edge.target-cut { stroke: #1e1e1e; stroke-width: 2px; stroke-dasharray: 10 3 2 3 2 3; }
 .svg-preview-boundary-candidate {
   fill: none;
   stroke: #ee8a25;
@@ -601,7 +601,6 @@ button { color: inherit; }
 .svg-import-dash-swatch line {
   stroke: #59646c;
   stroke-width: 2px;
-  stroke-linecap: butt;
 }
 .svg-import-attention { margin: 0; color: #913535 !important; font-size: 11px; }
 .svg-import-loss-badge {

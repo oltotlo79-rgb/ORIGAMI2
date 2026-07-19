@@ -56,8 +56,9 @@ use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
     FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, ProjectDocument,
     SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
-    SvgGroupMapping, SvgGroupTarget, SvgPreview, SvgPreviewWarning, SvgRootPhysicalSize,
-    SvgRootViewBox, SvgStyleGroupId, SvgWarningKind, read_fold_preview, read_svg_preview,
+    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
+    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind, read_fold_preview,
+    read_svg_preview,
 };
 #[cfg(test)]
 use project_persistence::{
@@ -522,6 +523,7 @@ struct SvgImportStyleGroupSnapshot {
     stroke: Option<String>,
     stroke_color: Option<String>,
     dash_array: Option<String>,
+    line_cap: SvgLineCap,
     classes: Vec<String>,
     layer: Option<String>,
     representative_id: Option<String>,
@@ -3231,6 +3233,7 @@ fn svg_import_preview_snapshot(
                             .join(" "),
                     ),
                 },
+                line_cap: group.line_cap,
                 classes: group.classes.clone(),
                 layer: group.layer.clone(),
                 representative_id: group.representative_id.clone(),
@@ -3287,7 +3290,7 @@ fn svg_import_preview_snapshot(
     }
     if !preview.style_groups().is_empty() {
         warnings.push(
-            "SVGのstroke色、透明度、線幅、破線表現は線種確認にだけ使用し、取込後には保存しません。"
+            "SVGのstroke色、透明度、線幅、破線・線端表現は線種確認にだけ使用し、取込後には保存しません。"
                 .to_owned(),
         );
     }
@@ -9620,6 +9623,26 @@ mod tests {
             });
             assert!(!message.contains("SECRET"));
         }
+
+        let source = br##"<svg xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 10 10" width="10mm" height="10mm"
+                              fill="none">
+              <line stroke="#111111" stroke-linecap="SECRET_LINE_CAP"
+                    x1="0" y1="0" x2="10" y2="10"/>
+            </svg>"##;
+        let preview = read_svg_preview(source).expect("parse unknown line-cap fixture");
+        assert_eq!(
+            preview.warnings(),
+            &[SvgPreviewWarning {
+                kind: SvgWarningKind::UnsupportedAttribute("stroke-linecap".to_owned()),
+                occurrences: 1,
+            }]
+        );
+        let response = svg_import_preview_snapshot(ProjectId::new(), &preview)
+            .expect("build unknown line-cap snapshot");
+        let encoded = serde_json::to_string(&response).expect("serialize SVG preview snapshot");
+        assert!(!encoded.contains("SECRET"));
+        assert!(!encoded.contains("LINE_CAP"));
     }
 
     #[test]
@@ -9631,7 +9654,8 @@ mod tests {
               <rect x="0" y="0" width="100" height="100"
                     fill="none" stroke="#222222" data-origami-kind="boundary"/>
               <line id="main-fold" x1="0" y1="0" x2="100" y2="100"
-                    stroke="#cc3344" data-origami-kind="mountain"/>
+                    stroke="#cc3344" stroke-linecap="round"
+                    data-origami-kind="mountain"/>
             </svg>"##;
         let bytes = source.as_bytes();
         let preview = read_svg_preview(bytes).expect("read SVG preview");
@@ -9659,16 +9683,30 @@ mod tests {
         assert!(response.style_groups.iter().all(|group| {
             group.element_count > 0
                 && group.segment_count > 0
+                && matches!(
+                    group.line_cap,
+                    SvgLineCap::Butt | SvgLineCap::Round | SvgLineCap::Square
+                )
                 && group
                     .stroke_color
                     .as_deref()
                     .is_some_and(|color| color.starts_with('#'))
         }));
-        assert!(response.style_groups.iter().any(|group| {
-            group.representative_id.as_deref() == Some("main-fold")
-                && group.element_count == 1
-                && group.segment_count == 1
-        }));
+        let main_fold_group = response
+            .style_groups
+            .iter()
+            .find(|group| group.representative_id.as_deref() == Some("main-fold"))
+            .expect("main fold style group");
+        assert_eq!(main_fold_group.element_count, 1);
+        assert_eq!(main_fold_group.segment_count, 1);
+        assert_eq!(main_fold_group.line_cap, SvgLineCap::Round);
+        assert_eq!(
+            serde_json::to_value(main_fold_group)
+                .expect("serialize SVG style group snapshot")
+                .get("line_cap")
+                .and_then(serde_json::Value::as_str),
+            Some("round")
+        );
         assert_eq!(response.preview_edges.len(), 5);
         assert!(!response.preview_truncated);
         assert!(response.preview_edges.iter().all(|edge| {

@@ -606,13 +606,14 @@ fn serialize_svg(
         let style = svg_edge_style(edge.kind);
         writeln!(
             output,
-            "  <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"1\"{} data-origami-kind=\"{}\"/>",
+            "  <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"1\"{} stroke-linecap=\"{}\" data-origami-kind=\"{}\"/>",
             canonical_zero(start.x),
             canonical_zero(start.y),
             canonical_zero(end.x),
             canonical_zero(end.y),
             style.stroke,
             style.dash_attribute,
+            style.line_cap,
             style.semantic
         )
         .expect("writing to a String cannot fail");
@@ -625,6 +626,7 @@ fn serialize_svg(
 struct SvgEdgeStyle {
     stroke: &'static str,
     dash_attribute: &'static str,
+    line_cap: &'static str,
     semantic: &'static str,
 }
 
@@ -633,26 +635,31 @@ const fn svg_edge_style(kind: EdgeKind) -> SvgEdgeStyle {
         EdgeKind::Boundary => SvgEdgeStyle {
             stroke: "#111111",
             dash_attribute: "",
+            line_cap: "butt",
             semantic: "boundary",
         },
         EdgeKind::Mountain => SvgEdgeStyle {
             stroke: "#d32f2f",
-            dash_attribute: "",
+            dash_attribute: " stroke-dasharray=\"6 2 1 2\"",
+            line_cap: "butt",
             semantic: "mountain",
         },
         EdgeKind::Valley => SvgEdgeStyle {
             stroke: "#1976d2",
-            dash_attribute: " stroke-dasharray=\"6 3\"",
+            dash_attribute: " stroke-dasharray=\"3 1.5\"",
+            line_cap: "butt",
             semantic: "valley",
         },
         EdgeKind::Auxiliary => SvgEdgeStyle {
             stroke: "#757575",
-            dash_attribute: " stroke-dasharray=\"2 3\"",
+            dash_attribute: " stroke-dasharray=\"0.5 1.5\"",
+            line_cap: "round",
             semantic: "auxiliary",
         },
         EdgeKind::Cut => SvgEdgeStyle {
             stroke: "#000000",
-            dash_attribute: " stroke-dasharray=\"8 3 2 3\"",
+            dash_attribute: " stroke-dasharray=\"8 2 1 2 1 2\"",
+            line_cap: "butt",
             semantic: "cut",
         },
     }
@@ -868,6 +875,65 @@ mod tests {
                     .bytes;
                 assert_eq!(bytes, baseline, "{format:?} must remain millimetre based");
             }
+        }
+    }
+
+    #[test]
+    fn svg_styles_remain_distinct_when_every_stroke_is_printed_black() {
+        let styles = [
+            svg_edge_style(EdgeKind::Boundary),
+            svg_edge_style(EdgeKind::Mountain),
+            svg_edge_style(EdgeKind::Valley),
+            svg_edge_style(EdgeKind::Auxiliary),
+            svg_edge_style(EdgeKind::Cut),
+        ];
+
+        let colours = styles
+            .iter()
+            .map(|style| style.stroke)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(colours.len(), styles.len(), "screen colours must be unique");
+
+        let monochrome_patterns = styles
+            .iter()
+            .map(|style| style.dash_attribute)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            monochrome_patterns.len(),
+            styles.len(),
+            "five line kinds must remain visually unique after colour is removed"
+        );
+        assert_eq!(
+            styles.map(|style| (style.dash_attribute, style.line_cap, style.semantic)),
+            [
+                ("", "butt", "boundary"),
+                (" stroke-dasharray=\"6 2 1 2\"", "butt", "mountain"),
+                (" stroke-dasharray=\"3 1.5\"", "butt", "valley"),
+                (" stroke-dasharray=\"0.5 1.5\"", "round", "auxiliary"),
+                (" stroke-dasharray=\"8 2 1 2 1 2\"", "butt", "cut"),
+            ]
+        );
+
+        let (pattern, paper) = sample_pattern();
+        let artifact = export_crease_pattern(
+            CreasePatternExportFormat::Svg,
+            "monochrome styles",
+            &pattern,
+            &paper,
+        )
+        .expect("SVG export");
+        let svg = std::str::from_utf8(&artifact.bytes).expect("UTF-8 SVG");
+        for style in styles {
+            assert!(
+                svg.lines().any(|line| {
+                    line.contains(&format!("stroke=\"{}\"", style.stroke))
+                        && line.contains(style.dash_attribute)
+                        && line.contains(&format!("stroke-linecap=\"{}\"", style.line_cap))
+                        && line.contains(&format!("data-origami-kind=\"{}\"", style.semantic))
+                }),
+                "serialized SVG is missing the {:?} style",
+                style.semantic
+            );
         }
     }
 

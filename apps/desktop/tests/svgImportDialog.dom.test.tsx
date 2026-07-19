@@ -36,6 +36,7 @@ const PREVIEW: SvgImportPreview = {
     stroke: '#000000',
     stroke_color: '#000000',
     dash_array: null,
+    line_cap: 'round',
     classes: ['paper'],
     layer: '外周',
     representative_id: 'paper-boundary',
@@ -76,6 +77,15 @@ afterEach(() => {
 })
 
 describe('SvgImportDialog DOM interactions', () => {
+  it('renders the source dash sample with the native line-cap value', () => {
+    renderDialog()
+
+    const sample = document.querySelector('.svg-import-dash-swatch line')
+    expect(sample?.getAttribute('stroke-linecap')).toBe('round')
+    expect((sample as SVGLineElement | null)?.style.strokeLinecap).toBe('round')
+    expect(sample ? window.getComputedStyle(sample).strokeLinecap : null).toBe('round')
+  })
+
   it('traps forward, reverse, and escaped focus inside the rendered dialog', () => {
     const onCancel = vi.fn()
     renderDialog({ onCancel })

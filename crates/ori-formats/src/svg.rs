@@ -134,6 +134,15 @@ pub enum SvgDashPattern {
     Dashes(Vec<f64>),
 }
 
+/// Normalized source stroke line-cap used as a line-type mapping cue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SvgLineCap {
+    Butt,
+    Round,
+    Square,
+}
+
 /// One source style signature presented for explicit mapping.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SvgStyleGroup {
@@ -144,6 +153,7 @@ pub struct SvgStyleGroup {
     pub stroke: RgbaColor,
     pub stroke_width: f64,
     pub dash_pattern: SvgDashPattern,
+    pub line_cap: SvgLineCap,
     pub classes: Vec<String>,
     pub layer: Option<String>,
     pub semantic: Option<String>,
@@ -569,6 +579,7 @@ struct StyleDeclarations {
     fill: Option<StyleDeclaration>,
     stroke_width: Option<StyleDeclaration>,
     stroke_dasharray: Option<StyleDeclaration>,
+    stroke_linecap: Option<StyleDeclaration>,
     stroke_opacity: Option<StyleDeclaration>,
     opacity: Option<StyleDeclaration>,
     display: Option<StyleDeclaration>,
@@ -589,6 +600,7 @@ impl StyleDeclarations {
         overlay!(fill);
         overlay!(stroke_width);
         overlay!(stroke_dasharray);
+        overlay!(stroke_linecap);
         overlay!(stroke_opacity);
         overlay!(opacity);
         overlay!(display);
@@ -603,6 +615,7 @@ struct StyleDeclarationRefs<'a> {
     fill: Option<&'a StyleDeclaration>,
     stroke_width: Option<&'a StyleDeclaration>,
     stroke_dasharray: Option<&'a StyleDeclaration>,
+    stroke_linecap: Option<&'a StyleDeclaration>,
     stroke_opacity: Option<&'a StyleDeclaration>,
     opacity: Option<&'a StyleDeclaration>,
     display: Option<&'a StyleDeclaration>,
@@ -628,6 +641,7 @@ impl<'a> StyleDeclarationRefs<'a> {
         overlay!(fill);
         overlay!(stroke_width);
         overlay!(stroke_dasharray);
+        overlay!(stroke_linecap);
         overlay!(stroke_opacity);
         overlay!(opacity);
         overlay!(display);
@@ -653,6 +667,7 @@ impl<'a> StyleDeclarationRefs<'a> {
         apply!(fill);
         apply!(stroke_width);
         apply!(stroke_dasharray);
+        apply!(stroke_linecap);
         apply!(stroke_opacity);
         apply!(opacity);
         apply!(display);
@@ -667,6 +682,7 @@ struct ComputedStyle {
     fill: String,
     stroke_width: String,
     stroke_dasharray: String,
+    stroke_linecap: String,
     stroke_opacity: String,
     visibility: String,
     opacity_product: f64,
@@ -681,6 +697,7 @@ impl Default for ComputedStyle {
             fill: "black".to_owned(),
             stroke_width: "1".to_owned(),
             stroke_dasharray: "none".to_owned(),
+            stroke_linecap: "butt".to_owned(),
             stroke_opacity: "1".to_owned(),
             visibility: "visible".to_owned(),
             opacity_product: 1.0,
@@ -714,6 +731,7 @@ impl ComputedStyle {
             fill: inherited(&declarations.fill, &parent.fill),
             stroke_width: inherited(&declarations.stroke_width, &parent.stroke_width),
             stroke_dasharray: inherited(&declarations.stroke_dasharray, &parent.stroke_dasharray),
+            stroke_linecap: inherited(&declarations.stroke_linecap, &parent.stroke_linecap),
             stroke_opacity: inherited(&declarations.stroke_opacity, &parent.stroke_opacity),
             visibility: inherited(&declarations.visibility, &parent.visibility),
             opacity_product: parent.opacity_product * local_opacity,
@@ -762,6 +780,7 @@ struct StyleKey {
     stroke: [u8; 4],
     stroke_width: u64,
     dash: Vec<u64>,
+    line_cap: SvgLineCap,
     classes: Vec<String>,
     layer: Option<String>,
     semantic: Option<String>,
@@ -1109,6 +1128,8 @@ impl SvgParser {
                 return Ok(None);
             }
         };
+        let line_cap = parse_line_cap(&context.style.stroke_linecap)
+            .expect("computed stroke-linecap is normalized before geometry is grouped");
         if !matches!(Paint::from_str(&context.style.fill), Ok(Paint::None)) {
             self.warnings.add(SvgWarningKind::FillIgnored)?;
         }
@@ -1133,6 +1154,7 @@ impl SvgParser {
             stroke: [stroke.red, stroke.green, stroke.blue, stroke.alpha],
             stroke_width: canonical_f64_bits(width),
             dash: dash_bits,
+            line_cap,
             classes: classes.clone(),
             layer: context.layer.clone(),
             semantic: context.semantic.clone(),
@@ -1155,6 +1177,7 @@ impl SvgParser {
             stroke,
             stroke_width: width,
             dash_pattern: dash,
+            line_cap,
             classes,
             layer: context.layer.clone(),
             semantic: context.semantic.clone(),
@@ -1506,7 +1529,7 @@ fn build_context(
         .map(String::as_str)
         .collect::<HashSet<_>>();
     parser.record_css_rule_element_evaluations(parser.css_rules.len())?;
-    let mut declarations = presentation_declarations(attributes)?;
+    let mut declarations = presentation_declarations(attributes, &mut parser.warnings)?;
     let mut css_declarations = StyleDeclarationRefs::default();
     for rule in &parser.css_rules {
         if local_class_set.contains(rule.class.as_str()) {
@@ -2016,6 +2039,7 @@ fn is_shape_name(name: &str) -> bool {
 
 fn presentation_declarations(
     attributes: &HashMap<String, String>,
+    warnings: &mut WarningCollector,
 ) -> Result<StyleDeclarations, SvgImportError> {
     let value = |name: &str| {
         attributes
@@ -2024,12 +2048,17 @@ fn presentation_declarations(
             .transpose()
             .map(|value| value.map(StyleDeclaration::normal))
     };
+    let stroke_linecap = match value("stroke-linecap")? {
+        Some(declaration) => normalize_line_cap_declaration(declaration, warnings)?,
+        None => None,
+    };
     Ok(StyleDeclarations {
         stroke: value("stroke")?,
         color: value("color")?,
         fill: value("fill")?,
         stroke_width: value("stroke-width")?,
         stroke_dasharray: value("stroke-dasharray")?,
+        stroke_linecap,
         stroke_opacity: value("stroke-opacity")?,
         opacity: value("opacity")?,
         display: value("display")?,
@@ -2075,6 +2104,14 @@ fn parse_declarations(
             value: checked_style_value(supported_property, value)?,
             important,
         };
+        let declaration = if supported_property == "stroke-linecap" {
+            let Some(declaration) = normalize_line_cap_declaration(declaration, warnings)? else {
+                continue;
+            };
+            declaration
+        } else {
+            declaration
+        };
         match supported_property {
             "stroke" => cascade_style_declaration(&mut declarations.stroke, declaration),
             "color" => cascade_style_declaration(&mut declarations.color, declaration),
@@ -2084,6 +2121,9 @@ fn parse_declarations(
             }
             "stroke-dasharray" => {
                 cascade_style_declaration(&mut declarations.stroke_dasharray, declaration)
+            }
+            "stroke-linecap" => {
+                cascade_style_declaration(&mut declarations.stroke_linecap, declaration)
             }
             "stroke-opacity" => {
                 cascade_style_declaration(&mut declarations.stroke_opacity, declaration)
@@ -2104,6 +2144,7 @@ fn canonical_style_property(property: &str) -> Option<&'static str> {
         "fill",
         "stroke-width",
         "stroke-dasharray",
+        "stroke-linecap",
         "stroke-opacity",
         "opacity",
         "display",
@@ -2326,6 +2367,41 @@ fn parse_dash_pattern(value: &str) -> Result<SvgDashPattern, ()> {
         values.extend(duplicate);
     }
     Ok(SvgDashPattern::Dashes(values))
+}
+
+fn parse_line_cap(value: &str) -> Option<SvgLineCap> {
+    if value.eq_ignore_ascii_case("butt") {
+        Some(SvgLineCap::Butt)
+    } else if value.eq_ignore_ascii_case("round") {
+        Some(SvgLineCap::Round)
+    } else if value.eq_ignore_ascii_case("square") {
+        Some(SvgLineCap::Square)
+    } else {
+        None
+    }
+}
+
+fn normalize_line_cap_declaration(
+    mut declaration: StyleDeclaration,
+    warnings: &mut WarningCollector,
+) -> Result<Option<StyleDeclaration>, SvgImportError> {
+    if declaration.value.eq_ignore_ascii_case("inherit") {
+        declaration.value = "inherit".to_owned();
+        return Ok(Some(declaration));
+    }
+    let Some(line_cap) = parse_line_cap(&declaration.value) else {
+        warnings.add(SvgWarningKind::UnsupportedAttribute(
+            "stroke-linecap".to_owned(),
+        ))?;
+        return Ok(None);
+    };
+    declaration.value = match line_cap {
+        SvgLineCap::Butt => "butt",
+        SvgLineCap::Round => "round",
+        SvgLineCap::Square => "square",
+    }
+    .to_owned();
+    Ok(Some(declaration))
 }
 
 fn shape_length(
@@ -2573,6 +2649,7 @@ fn warn_unknown_attributes(
                 | "fill"
                 | "stroke-width"
                 | "stroke-dasharray"
+                | "stroke-linecap"
                 | "stroke-opacity"
                 | "opacity"
                 | "display"
@@ -3546,6 +3623,159 @@ mod tests {
             read_svg_preview(recursive.as_bytes()),
             Err(SvgImportError::NoSupportedGeometry)
         ));
+    }
+
+    #[test]
+    fn accepts_bounded_stroke_linecaps_through_presentation_and_css_cascade() {
+        let preview = preview(
+            r#"
+                <style>
+                    .square { stroke-linecap: square; }
+                    .important-round { stroke-linecap: round !important; }
+                </style>
+                <g stroke-linecap="round">
+                    <line x1="0" y1="10" x2="10" y2="10"/>
+                    <line stroke-linecap="butt" x1="0" y1="20" x2="10" y2="20"/>
+                    <line class="square" x1="0" y1="30" x2="10" y2="30"/>
+                    <line class="important-round" style="stroke-linecap: triangle"
+                          x1="0" y1="40" x2="10" y2="40"/>
+                </g>
+            "#,
+        );
+
+        assert_eq!(preview.edges().len(), 4);
+        assert_eq!(preview.style_groups().len(), 4);
+        assert_eq!(
+            preview
+                .style_groups()
+                .iter()
+                .map(|group| group.line_cap)
+                .collect::<HashSet<_>>(),
+            HashSet::from([SvgLineCap::Butt, SvgLineCap::Round, SvgLineCap::Square])
+        );
+        assert_eq!(
+            preview
+                .warnings()
+                .iter()
+                .find(|warning| {
+                    warning.kind
+                        == SvgWarningKind::UnsupportedAttribute("stroke-linecap".to_owned())
+                })
+                .map(|warning| warning.occurrences),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn linecap_alone_separates_otherwise_identical_source_style_groups() {
+        let preview = preview(
+            r#"
+                <line stroke-linecap="butt" x1="0" y1="10" x2="10" y2="10"/>
+                <line stroke-linecap="round" x1="0" y1="20" x2="10" y2="20"/>
+                <line stroke-linecap="square" x1="0" y1="30" x2="10" y2="30"/>
+            "#,
+        );
+
+        assert_eq!(preview.style_groups().len(), 3);
+        assert_eq!(
+            preview
+                .style_groups()
+                .iter()
+                .map(|group| group.line_cap)
+                .collect::<HashSet<_>>(),
+            HashSet::from([SvgLineCap::Butt, SvgLineCap::Round, SvgLineCap::Square])
+        );
+        assert_eq!(
+            preview
+                .edges()
+                .iter()
+                .map(|edge| edge.style_group)
+                .collect::<HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn warns_for_unknown_stroke_linecaps_and_rejects_oversized_values() {
+        let preview = preview(
+            r#"
+                <line stroke-linecap="triangle" x1="0" y1="10" x2="10" y2="10"/>
+                <line style="stroke-linecap: url(https://example.invalid/external)"
+                      x1="0" y1="20" x2="10" y2="20"/>
+            "#,
+        );
+        assert_eq!(preview.edges().len(), 2);
+        assert_eq!(
+            preview
+                .warnings()
+                .iter()
+                .find(|warning| {
+                    warning.kind
+                        == SvgWarningKind::UnsupportedAttribute("stroke-linecap".to_owned())
+                })
+                .map(|warning| warning.occurrences),
+            Some(2)
+        );
+        let warning_debug = format!("{:?}", preview.warnings());
+        assert!(!warning_debug.contains("triangle"));
+        assert!(!warning_debug.contains("example.invalid"));
+
+        let oversized = "x".repeat(MAX_STYLE_VALUE_CHARS + 1);
+        let source = standard_document(&format!(
+            r#"<line stroke-linecap="{oversized}" x1="0" y1="0" x2="10" y2="10"/>"#
+        ));
+        assert!(matches!(
+            read_svg_preview(source.as_bytes()),
+            Err(SvgImportError::StyleValueTooLong {
+                property,
+                maximum: MAX_STYLE_VALUE_CHARS
+            }) if property == "stroke-linecap"
+        ));
+    }
+
+    #[test]
+    fn invalid_linecap_declarations_warn_and_fall_back_through_the_css_cascade() {
+        let preview = preview(
+            r#"
+                <g stroke-linecap="round">
+                    <line stroke-linecap="triangle"
+                          x1="0" y1="10" x2="10" y2="10"/>
+                    <line x1="0" y1="20" x2="10" y2="20"/>
+                </g>
+                <line stroke-linecap="square" style="stroke-linecap: triangle"
+                      x1="0" y1="30" x2="10" y2="30"/>
+            "#,
+        );
+
+        assert_eq!(preview.style_groups().len(), 2);
+        assert_eq!(
+            preview
+                .style_groups()
+                .iter()
+                .map(|group| group.line_cap)
+                .collect::<HashSet<_>>(),
+            HashSet::from([SvgLineCap::Round, SvgLineCap::Square])
+        );
+        assert_eq!(
+            preview
+                .style_groups()
+                .iter()
+                .find(|group| group.line_cap == SvgLineCap::Round)
+                .map(|group| group.segment_count),
+            Some(2)
+        );
+        assert_eq!(
+            preview
+                .warnings()
+                .iter()
+                .find(|warning| {
+                    warning.kind
+                        == SvgWarningKind::UnsupportedAttribute("stroke-linecap".to_owned())
+                })
+                .map(|warning| warning.occurrences),
+            Some(2)
+        );
     }
 
     #[test]

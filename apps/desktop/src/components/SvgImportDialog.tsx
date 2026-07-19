@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   initialSvgImportMapping,
   isValidSvgImportName,
+  isSvgImportLineCap,
   parseSvgImportScale,
   safeSvgStrokeColor,
   svgImportBoundaryIsValid,
@@ -449,6 +450,9 @@ export function SvgImportDialog({
             <div className="svg-import-mapping-list">
               {preview.style_groups.map((group, index) => {
                 const sourceColor = safeSvgStrokeColor(group.stroke_color)
+                const sourceLineCap = isSvgImportLineCap(group.line_cap)
+                  ? group.line_cap
+                  : undefined
                 return (
                   <label key={group.group_id}>
                     <span className="svg-import-style-description">
@@ -463,8 +467,12 @@ export function SvgImportDialog({
                             y1="4"
                             x2="39"
                             y2="4"
-                            style={sourceColor ? { stroke: sourceColor } : undefined}
+                            style={{
+                              ...(sourceColor ? { stroke: sourceColor } : {}),
+                              ...(sourceLineCap ? { strokeLinecap: sourceLineCap } : {}),
+                            }}
                             strokeDasharray={group.dash_array ?? undefined}
+                            strokeLinecap={sourceLineCap}
                           />
                         </svg>
                       </span>

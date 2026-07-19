@@ -19,6 +19,10 @@ import {
 import { createIntersectionSnapIndex } from '../lib/intersectionSnap'
 import { createCanvasLineDrawBatches } from '../lib/canvasBatching'
 import {
+  CREASE_LINE_PRESENTATIONS,
+  type CreaseLineKind,
+} from '../lib/creaseLinePresentation'
+import {
   createVertexPlacement,
   isSupportedIntersectionTarget,
   type VertexPlacement,
@@ -32,7 +36,7 @@ export type CreaseLine = {
   y1: number
   x2: number
   y2: number
-  kind: 'mountain' | 'valley' | 'auxiliary' | 'boundary' | 'cut'
+  kind: CreaseLineKind
 }
 
 export type PaperBounds = {
@@ -171,22 +175,6 @@ const SNAP_KIND_LABELS: Record<SnapKind, string> = {
   angle: '角度',
   edge: '辺',
   grid: 'グリッド',
-}
-
-const COLORS: Record<CreaseLine['kind'], string> = {
-  mountain: '#d95252',
-  valley: '#3678d4',
-  auxiliary: '#7b8794',
-  boundary: '#23303f',
-  cut: '#e59b35',
-}
-
-const LINE_DASHES: Record<CreaseLine['kind'], number[]> = {
-  mountain: [],
-  valley: [7, 5],
-  auxiliary: [3, 4],
-  boundary: [],
-  cut: [12, 4, 2, 4],
 }
 
 export function CreaseCanvas({
@@ -376,9 +364,11 @@ export function CreaseCanvas({
       context.restore()
 
       if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
-        context.strokeStyle = COLORS.boundary
+        const presentation = CREASE_LINE_PRESENTATIONS.boundary
+        context.strokeStyle = presentation.color
         context.lineWidth = 1.2
-        context.setLineDash([])
+        context.lineCap = presentation.lineCap
+        context.setLineDash(presentation.canvasDash.slice())
         context.stroke()
       }
 
@@ -404,13 +394,16 @@ export function CreaseCanvas({
           pathCount += 1
         }
         if (pathCount > 0) {
-          context.strokeStyle = COLORS[batch.kind]
-          context.lineWidth = batch.selected ? 4 : batch.kind === 'boundary' ? 2.5 : 1.8
-          context.setLineDash(LINE_DASHES[batch.kind])
+          const presentation = CREASE_LINE_PRESENTATIONS[batch.kind]
+          context.strokeStyle = presentation.color
+          context.lineWidth = batch.selected ? 4 : presentation.lineWidth
+          context.lineCap = presentation.lineCap
+          context.setLineDash(presentation.canvasDash.slice())
           context.stroke()
         }
       }
       context.setLineDash([])
+      context.lineCap = 'butt'
 
       if (parallelReference) {
         const start = mapPaperPoint(transform, parallelReference.x1, parallelReference.y1)

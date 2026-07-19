@@ -45,9 +45,10 @@ pub use ori2::{
 pub use svg::{
     SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,
     SvgConversionOptions, SvgConvertedGroup, SvgCreasePatternConversion, SvgDashPattern,
-    SvgGroupMapping, SvgGroupTarget, SvgImportError, SvgImportLimits, SvgPreview, SvgPreviewEdge,
-    SvgPreviewVertex, SvgPreviewWarning, SvgRootLengthUnit, SvgRootPhysicalSize, SvgRootViewBox,
-    SvgStyleGroup, SvgStyleGroupId, SvgWarningKind, read_svg_preview, read_svg_preview_with_limits,
+    SvgGroupMapping, SvgGroupTarget, SvgImportError, SvgImportLimits, SvgLineCap, SvgPreview,
+    SvgPreviewEdge, SvgPreviewVertex, SvgPreviewWarning, SvgRootLengthUnit, SvgRootPhysicalSize,
+    SvgRootViewBox, SvgStyleGroup, SvgStyleGroupId, SvgWarningKind, read_svg_preview,
+    read_svg_preview_with_limits,
 };
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;

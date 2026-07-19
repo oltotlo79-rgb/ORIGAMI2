@@ -15,6 +15,8 @@ export type SvgImportTarget =
 
 export type SvgImportMapping = Readonly<Record<string, SvgImportTarget | undefined>>
 
+export type SvgImportLineCap = 'butt' | 'round' | 'square'
+
 export type SvgRootLengthUnit =
   | 'mm'
   | 'cm'
@@ -46,6 +48,7 @@ export type SvgImportStyleGroup = Readonly<{
   stroke: string | null
   stroke_color: string | null
   dash_array: string | null
+  line_cap: SvgImportLineCap
   classes: readonly string[]
   layer: string | null
   representative_id: string | null
@@ -134,6 +137,17 @@ const SVG_IMPORT_TARGETS = new Set(
   SVG_IMPORT_TARGET_OPTIONS.map(({ value }) => value),
 )
 
+const SVG_IMPORT_LINE_CAPS = new Set<SvgImportLineCap>([
+  'butt',
+  'round',
+  'square',
+])
+
+export function isSvgImportLineCap(value: unknown): value is SvgImportLineCap {
+  return typeof value === 'string'
+    && SVG_IMPORT_LINE_CAPS.has(value as SvgImportLineCap)
+}
+
 export function isSvgImportTarget(value: unknown): value is SvgImportTarget {
   return typeof value === 'string'
     && SVG_IMPORT_TARGETS.has(value as SvgImportTarget)
@@ -158,7 +172,11 @@ export function unresolvedSvgImportGroups(
   return groups.filter((group) => {
     const target = mapping[String(group.group_id)]
     return group.segment_count > 0
-      && (!isValidSvgGroupId(group.group_id) || !isSvgImportTarget(target))
+      && (
+        !isValidSvgGroupId(group.group_id)
+        || !isSvgImportTarget(target)
+        || !isSvgImportLineCap(group.line_cap)
+      )
   })
 }
 
@@ -191,6 +209,7 @@ export function svgImportStyleLabel(group: SvgImportStyleGroup) {
   if (group.semantic_hint) parts.push(`属性: data-origami-kind=${group.semantic_hint}`)
   if (group.stroke) parts.push(`色: ${group.stroke}`)
   if (group.dash_array) parts.push(`線種: ${group.dash_array}`)
+  parts.push(`線端: ${isSvgImportLineCap(group.line_cap) ? group.line_cap : '不明'}`)
   return parts.length > 0 ? parts.join(' / ') : '属性指定なし'
 }
 

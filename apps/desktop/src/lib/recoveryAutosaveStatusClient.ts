@@ -233,15 +233,18 @@ export function createRecoveryAutosaveStatusPoller(
       started = true
       lifecycle += 1
       publish(Object.freeze({ kind: 'checking' }))
-      refresh()
       try {
         intervalHandle = clock.setInterval(
           refresh,
           RECOVERY_AUTOSAVE_STATUS_POLL_INTERVAL_MS,
         )
       } catch {
+        started = false
+        lifecycle += 1
         publish(Object.freeze({ kind: 'monitor_unavailable' }))
+        return
       }
+      refresh()
     },
     refresh,
     dispose() {

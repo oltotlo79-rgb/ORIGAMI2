@@ -149,6 +149,38 @@ test('browser-disabled polling never invokes native code or installs a timer', (
   assert.deepEqual(views, [])
 })
 
+test('timer installation failure stays unavailable without starting an unmonitored request', () => {
+  let calls = 0
+  const views: RecoveryAutosaveMonitorView[] = []
+  const poller = createRecoveryAutosaveStatusPoller({
+    nativeAvailable: true,
+    client: {
+      async getStatus() {
+        calls += 1
+        return OPERATIONAL
+      },
+    },
+    clock: {
+      setInterval() {
+        throw new Error('timer unavailable')
+      },
+      clearInterval() {
+        throw new Error('must not clear an uninstalled timer')
+      },
+    },
+    onChange: (view) => views.push(view),
+  })
+
+  poller.start()
+  poller.refresh()
+  poller.dispose()
+  assert.equal(calls, 0)
+  assert.deepEqual(views, [
+    { kind: 'checking' },
+    { kind: 'monitor_unavailable' },
+  ])
+})
+
 test('polling is immediate, fixed at five seconds, single-flight, and StrictMode disposal rejects late results', async () => {
   const pending = deferred<RecoveryAutosaveStatus>()
   let calls = 0

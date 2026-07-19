@@ -96,7 +96,15 @@ test('the first user-input slice connects both new-paper dimensions without trus
   assert.doesNotMatch(newProjectSubmit, /String\(error\)/u)
   assert.match(
     newProjectSubmit,
-    /newProjectExpressionErrorMessage\(error\)[\s\S]*?新しいプロジェクトを作成できませんでした/u,
+    /const japaneseMessage = newProjectExpressionErrorMessage\(error, 'ja'\)\s*\?\? '新しいプロジェクトを作成できませんでした。'/u,
+  )
+  assert.match(
+    newProjectSubmit,
+    /const englishMessage = newProjectExpressionErrorMessage\(error, 'en'\)\s*\?\? 'The new project could not be created\.'/u,
+  )
+  assert.match(
+    newProjectSubmit,
+    /setNewProjectError\(appMessage\(\{[\s\S]*?ja: formatLocalizedText\('ja',[\s\S]*?japaneseMessage[\s\S]*?en: formatLocalizedText\('en',[\s\S]*?englishMessage/u,
   )
   assert.match(
     nativeLib,

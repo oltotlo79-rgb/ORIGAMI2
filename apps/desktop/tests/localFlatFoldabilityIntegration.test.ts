@@ -43,19 +43,29 @@ test('snapshot replacement, validation errors, and benchmark mode cannot retain 
     appSource,
     /disabled=\{coreBusy \|\| benchmarkLoading \|\| Boolean\(benchmarkRun\) \|\| !nativeSnapshot\}/u,
   )
-  assert.match(appSource, /setValidation\(null\)[\s\S]*setCoreStatus\(`検証エラー/u)
+  assert.match(
+    appSource,
+    /setValidation\(null\)[\s\S]*?setCoreStatus\(appMessage\(\{\s*ja: '検証エラー: \{error\}',\s*en: 'Validation error: \{error\}',\s*\}, \{ error: String\(error\) \}\)\)/u,
+  )
 })
 
 test('the inspector exposes bounded, selectable, non-color-only local results', () => {
-  assert.match(appSource, />局所平坦折り条件</u)
+  assert.match(
+    appSource,
+    /\{text\(\{\s*ja: '局所平坦折り条件',\s*en: 'Local flat-foldability conditions',\s*\}\)\}/u,
+  )
   assert.match(appSource, /role="status"/u)
   assert.match(appSource, /aria-live="polite"/u)
   assert.match(appSource, /aria-atomic="true"/u)
   assert.match(appSource, /aria-pressed=\{selectedVertexId === item\.vertexId\}/u)
   assert.match(appSource, /川崎条件/u)
+  assert.match(appSource, /Kawasaki condition/u)
   assert.match(appSource, /前川条件/u)
+  assert.match(appSource, /Maekawa condition/u)
   assert.match(appSource, /確認が必要な頂点/u)
+  assert.match(appSource, /Vertices requiring review/u)
   assert.match(appSource, /展開図全体が平坦に折り畳めることや、実際の折り経路は保証しません/u)
+  assert.match(appSource, /It does not guarantee that the entire pattern can fold flat or that a physical folding path exists\./u)
   assert.match(
     presentationSource,
     /LOCAL_FLAT_FOLDABILITY_VISIBLE_ITEM_LIMIT = 20/u,

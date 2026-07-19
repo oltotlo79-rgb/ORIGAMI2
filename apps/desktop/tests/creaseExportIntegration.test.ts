@@ -10,7 +10,10 @@ const nativeExportSource = readSource('../src-tauri/src/crease_export.rs')
 
 test('the toolbar opens one background-blocking export confirmation dialog', () => {
   assert.match(appSource, /ref=\{creaseExportButtonRef\}/u)
-  assert.match(appSource, />\s*\{fileOperation === 'crease_export' \? '生成中…' : '書出し'\}\s*</u)
+  assert.match(
+    appSource,
+    /\{fileOperation === 'crease_export'\s*\?\s*text\(\{\s*ja: '生成中…',\s*en: 'Generating…'\s*\}\)\s*:\s*text\(\{\s*ja: '書出し',\s*en: 'Export'\s*\}\)\}/u,
+  )
   assert.match(appSource, /\|\| creaseExportOpen/u)
   assert.match(appSource, /\{creaseExportOpen && \(\s*<CreaseExportDialog/u)
   assert.match(appSource, /requestAnimationFrame\(\(\) => creaseExportButtonRef\.current\?\.focus\(\)\)/u)

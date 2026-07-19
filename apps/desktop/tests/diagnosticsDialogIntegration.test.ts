@@ -12,7 +12,10 @@ test('the native-only status action opens one modal that makes every background 
     /isDiagnosticsShareAvailable\(\)\s*&&\s*\(/u,
   )
   assert.match(appSource, /aria-haspopup="dialog"/u)
-  assert.match(appSource, />\s*診断情報\s*</u)
+  assert.match(
+    appSource,
+    /\{text\(\{\s*ja: '診断情報',\s*en: 'Diagnostics'\s*\}\)\}/u,
+  )
   assert.equal(
     appSource.match(/inert=\{modalOpen\}/gu)?.length,
     5,

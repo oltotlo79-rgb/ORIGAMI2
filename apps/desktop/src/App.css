@@ -109,6 +109,28 @@ button { color: inherit; }
   color: var(--muted);
   white-space: nowrap;
 }
+.language-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.language-control select {
+  min-width: 76px;
+  height: 23px;
+  padding: 3px 24px 3px 7px;
+  border: 1px solid var(--border-dark);
+  border-radius: 5px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.language-control select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .top-actions { margin-left: auto; display: flex; gap: 7px; }
 .top-actions button, .timeline button {
   border: 1px solid var(--border);

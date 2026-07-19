@@ -44,10 +44,11 @@ test('App refreshes Undo/Redo availability after applying a limit', () => {
 test('App exposes explicit loading, retry, desktop-only, and bound control states', () => {
   const panel = section(
     appSource,
-    '          <section>\n            <h2>編集履歴</h2>',
-    '          <section>\n            <h2>スナップ</h2>',
+    "<h2>{text({ ja: '編集履歴', en: 'Edit history' })}</h2>",
+    "<h2>{text({ ja: 'スナップ', en: 'Snap' })}</h2>",
   )
 
+  assert.match(panel, /ja: '編集履歴', en: 'Edit history'/u)
   assert.match(panel, /<HistoryLimitControl/u)
   assert.match(panel, /settings=\{boundHistoryLimitSettings\}/u)
   assert.match(panel, /expectedProjectInstanceId=\{nativeSnapshot\.project_instance_id\}/u)

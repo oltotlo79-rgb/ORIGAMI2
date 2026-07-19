@@ -136,7 +136,14 @@ test('both paper thickness controls use exact custom steps and retain direct inp
 
   assert.equal(controls.length, 2)
   assert.match(componentSource, /step="any"/u)
-  assert.match(componentSource, /aria-label="紙厚"/u)
+  assert.match(
+    componentSource,
+    /ariaLabel: Object\.freeze\(\{ ja: '紙厚', en: 'Paper thickness' \}\)/u,
+  )
+  assert.match(
+    componentSource,
+    /aria-label=\{text\(PAPER_THICKNESS_TEXT\.ariaLabel\)\}/u,
+  )
   assert.match(
     componentSource,
     /useEffect\(\(\) => \{\s*setState\(\{\s*dirty: false,\s*steppedMillimetres: null,\s*value: initialValue,[\s\S]*?\}, \[initialValue, sourceToken\]\)/u,

@@ -68,10 +68,27 @@ test('all configured action buttons expose dynamic title and ARIA mappings', () 
     assert.equal(
       count(
         appSource,
-        `\${keyboardShortcutDisplayValue('${command}', keyboardShortcuts)}`,
+        `shortcut: keyboardShortcutDisplayValue('${command}', keyboardShortcuts)`,
       ),
       1,
       `${command} title`,
+    )
+  }
+  for (const [ja, en] of [
+    ['新規 ({shortcut})', 'New ({shortcut})'],
+    ['開く ({shortcut})', 'Open ({shortcut})'],
+    ['保存 ({shortcut})', 'Save ({shortcut})'],
+    ['別名保存 ({shortcut})', 'Save as ({shortcut})'],
+    ['元に戻す ({shortcut})', 'Undo ({shortcut})'],
+    ['やり直す ({shortcut})', 'Redo ({shortcut})'],
+  ]) {
+    assert.match(
+      appSource,
+      new RegExp(
+        `title=\\{formattedText\\(\\{\\s*ja: '${escapeRegExp(ja)}',\\s*en: '${escapeRegExp(en)}'`,
+        'u',
+      ),
+      `${ja} / ${en} localized title`,
     )
   }
 })
@@ -92,4 +109,8 @@ test('shortcut settings remain inside the modal-inert statusbar', () => {
 
 function count(source: string, needle: string) {
   return source.split(needle).length - 1
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }

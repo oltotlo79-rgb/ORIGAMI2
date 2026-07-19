@@ -6,6 +6,7 @@ const appSource = readSource('../src/App.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/FoldImportDialog.tsx')
 const foldImportSource = readSource('../src/lib/foldImport.ts')
+const appMessagesSource = readSource('../src/lib/appMessages.ts')
 
 test('the client exposes only token-based preview, apply, and cancel FOLD invocations', () => {
   const preview = exportedFunction('previewFoldImport')
@@ -102,7 +103,11 @@ test('dirty-project confirmation is deferred until immediately before replacemen
   assert.ok(applyIndex > operationLeaseIndex, 'replacement must happen after confirmation')
   assert.match(
     confirm,
-    /current\.is_dirty\s*&&\s*!window\.confirm\([^)]*FOLD展開図へ置き換えますか？[^)]*\)\s*\)\s*return/u,
+    /current\.is_dirty\s*&&\s*!window\.confirm\(appConfirmationText\(locale, 'replaceWithFold'\)\)\s*\)\s*return/u,
+  )
+  assert.match(
+    appMessagesSource,
+    /replaceWithFold:\s*\{\s*ja: '未保存の変更があります。保存せずにFOLD展開図へ置き換えますか？',\s*en: 'There are unsaved changes\. Replace them with the FOLD crease pattern\?'/u,
   )
   assert.match(
     confirm,
@@ -150,7 +155,6 @@ test('apply closes and resets editor state only after success while errors keep 
   assert.ok(closeIndex > snapshotIndex, 'the dialog must close only after snapshot application')
   for (const reset of [
     'setBenchmarkRun(null)',
-    "setBenchmarkStatus('FOLD取込により通常の展開図へ戻りました')",
     'setSelectedLineId(null)',
     'setSelectedVertexId(null)',
     'setPendingEdgeStart(null)',
@@ -160,8 +164,15 @@ test('apply closes and resets editor state only after success while errors keep 
   ]) {
     assert.match(tryBody, new RegExp(escapeRegExp(reset), 'u'), reset)
   }
+  assert.match(
+    tryBody,
+    /setBenchmarkStatus\(appMessage\(\{\s*ja: 'FOLD取込により通常の展開図へ戻りました',\s*en: 'Returned to the normal crease pattern after FOLD import',\s*\}\)\)/u,
+  )
 
-  assert.match(catchBody, /setFoldImportError\(`取り込めませんでした: \$\{message\}`\)/u)
+  assert.match(
+    catchBody,
+    /setFoldImportError\(appMessage\(\{\s*ja: '取り込めませんでした: \{error\}',\s*en: 'Could not import: \{error\}',\s*\}, \{ error: message \}\)\)/u,
+  )
   assert.doesNotMatch(catchBody, /setFoldImportPreview\(null\)/u)
   assert.doesNotMatch(finallyBody, /setFoldImportPreview\(null\)/u)
   assert.match(finallyBody, /coreOperationRef\.current = false/u)

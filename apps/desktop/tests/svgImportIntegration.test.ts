@@ -7,6 +7,7 @@ const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/SvgImportDialog.tsx')
 const svgImportSource = readSource('../src/lib/svgImport.ts')
 const nativeSource = readSource('../src-tauri/src/lib.rs')
+const appMessagesSource = readSource('../src/lib/appMessages.ts')
 
 test('the client exposes only token-based preview, validation, apply, and cancel SVG invocations', () => {
   const preview = exportedFunction('previewSvgImport')
@@ -140,7 +141,11 @@ test('dirty-project confirmation is deferred until immediately before SVG replac
   assert.ok(applyIndex > operationLeaseIndex, 'replacement must happen after confirmation')
   assert.match(
     confirm,
-    /const replaceDirtyProjectConfirmed = current\.is_dirty[\s\S]*?replaceDirtyProjectConfirmed\s*&&\s*!window\.confirm\([^)]*SVG展開図へ置き換えますか？[^)]*\)\s*\)\s*return/u,
+    /const replaceDirtyProjectConfirmed = current\.is_dirty[\s\S]*?replaceDirtyProjectConfirmed\s*&&\s*!window\.confirm\(appConfirmationText\(locale, 'replaceWithSvg'\)\)\s*\)\s*return/u,
+  )
+  assert.match(
+    appMessagesSource,
+    /replaceWithSvg:\s*\{\s*ja: '未保存の変更があります。保存せずにSVG展開図へ置き換えますか？',\s*en: 'There are unsaved changes\. Replace them with the SVG crease pattern\?'/u,
   )
   assert.match(
     confirm,
@@ -151,7 +156,7 @@ test('dirty-project confirmation is deferred until immediately before SVG replac
     /project\.is_dirty\(\)\s*&&\s*!replace_dirty_project_confirmed/u,
   )
   assert.equal(
-    appSource.match(/window\.confirm\([^)]*SVG展開図へ置き換えますか？/gu)?.length,
+    appSource.match(/window\.confirm\(appConfirmationText\(locale, 'replaceWithSvg'\)\)/gu)?.length,
     1,
   )
 })
@@ -196,7 +201,6 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
   assert.ok(closeIndex > snapshotIndex, 'the dialog must close only after snapshot application')
   for (const reset of [
     'setBenchmarkRun(null)',
-    "setBenchmarkStatus('SVG取込により通常の展開図へ戻りました')",
     'setSelectedLineId(null)',
     'setSelectedVertexId(null)',
     'setPendingEdgeStart(null)',
@@ -208,12 +212,19 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
   ]) {
     assert.match(tryBody, new RegExp(escapeRegExp(reset), 'u'), reset)
   }
+  assert.match(
+    tryBody,
+    /setBenchmarkStatus\(appMessage\(\{\s*ja: 'SVG取込により通常の展開図へ戻りました',\s*en: 'Returned to the normal crease pattern after SVG import',\s*\}\)\)/u,
+  )
 
   assert.match(
     tryBody,
     /requestAnimationFrame\(\(\) => svgImportButtonRef\.current\?\.focus\(\)\)/u,
   )
-  assert.match(catchBody, /setSvgImportError\(`取り込めませんでした: \$\{message\}`\)/u)
+  assert.match(
+    catchBody,
+    /setSvgImportError\(appMessage\(\{\s*ja: '取り込めませんでした: \{error\}',\s*en: 'Could not import: \{error\}',\s*\}, \{ error: message \}\)\)/u,
+  )
   assert.doesNotMatch(catchBody, /setSvgImportPreview\(null\)|setBenchmarkRun\(null\)/u)
   assert.doesNotMatch(finallyBody, /setSvgImportPreview\(null\)|setBenchmarkRun\(null\)/u)
   assert.match(finallyBody, /coreOperationRef\.current = false/u)
@@ -241,7 +252,10 @@ test('cancel invalidates the SVG preview token, keeps project state, and restore
     /requestAnimationFrame\(\(\) => svgImportButtonRef\.current\?\.focus\(\)\)/u,
   )
   assert.doesNotMatch(catchBody, /setSvgImportPreview\(null\)/u)
-  assert.match(catchBody, /setSvgImportError\(`取消を完了できませんでした: \$\{message\}`\)/u)
+  assert.match(
+    catchBody,
+    /setSvgImportError\(appMessage\(\{\s*ja: '取消を完了できませんでした: \{error\}',\s*en: 'Could not cancel: \{error\}',\s*\}, \{ error: message \}\)\)/u,
+  )
   assert.doesNotMatch(finallyBody, /setSvgImportPreview\(null\)/u)
   assert.match(finallyBody, /coreOperationRef\.current = false/u)
 })

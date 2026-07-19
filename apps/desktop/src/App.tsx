@@ -28,6 +28,7 @@ import { HistoryLimitControl } from './components/HistoryLimitControl'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
+import { LanguageControl } from './components/LanguageControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
@@ -120,6 +121,7 @@ import {
   getRecoveryCandidate,
   prepareWindowClose,
   restoreRecoveryCandidate,
+  WINDOW_CLOSE_STATUS,
   type RecoveryCandidateAvailable,
   type RecoveryCandidateInvalid,
 } from './lib/recoveryClient'
@@ -204,18 +206,30 @@ import {
   evaluatePositiveMillimetreExpression,
   numericExpressionNativeErrorCategory,
 } from './lib/numericExpressionNative'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  useLocale,
+  type Locale,
+  type LocalizedText,
+  type MessageVariables,
+} from './lib/i18n'
+import { appConfirmationText } from './lib/appMessages'
 import './App.css'
 
-const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
-  { kind: 'grid', label: 'グリッド' },
-  { kind: 'vertex', label: '頂点' },
-  { kind: 'intersection', label: '交点' },
-  { kind: 'edge', label: '辺' },
-  { kind: 'midpoint', label: '中点' },
-  { kind: 'horizontal', label: '水平' },
-  { kind: 'vertical', label: '垂直' },
-  { kind: 'parallel', label: '平行' },
-  { kind: 'angle', label: '角度' },
+const SNAP_OPTIONS: ReadonlyArray<{
+  kind: keyof SnapSettings
+  label: LocalizedText
+}> = [
+  { kind: 'grid', label: { ja: 'グリッド', en: 'Grid' } },
+  { kind: 'vertex', label: { ja: '頂点', en: 'Vertex' } },
+  { kind: 'intersection', label: { ja: '交点', en: 'Intersection' } },
+  { kind: 'edge', label: { ja: '辺', en: 'Edge' } },
+  { kind: 'midpoint', label: { ja: '中点', en: 'Midpoint' } },
+  { kind: 'horizontal', label: { ja: '水平', en: 'Horizontal' } },
+  { kind: 'vertical', label: { ja: '垂直', en: 'Vertical' } },
+  { kind: 'parallel', label: { ja: '平行', en: 'Parallel' } },
+  { kind: 'angle', label: { ja: '角度', en: 'Angle' } },
 ]
 
 const nativeStaticCollisionTransport =
@@ -269,7 +283,86 @@ type WorkspaceLayoutStyle = CSSProperties & {
   '--workspace-timeline-height': string
 }
 
+type AppMessage = Readonly<{
+  text: LocalizedText
+  variables?: MessageVariables
+}>
+
+function appMessage(
+  text: LocalizedText,
+  variables?: MessageVariables,
+): AppMessage {
+  return Object.freeze({ text, variables })
+}
+
+function appMessageWithLocalizedVariables(
+  text: LocalizedText,
+  variables: (locale: Locale) => MessageVariables,
+): AppMessage {
+  return appMessage({
+    ja: formatLocalizedText('ja', text, variables('ja')),
+    en: formatLocalizedText('en', text, variables('en')),
+  })
+}
+
+function instructionExportErrorAppMessage(
+  error: unknown,
+  text: LocalizedText,
+): AppMessage {
+  return appMessageWithLocalizedVariables(text, (locale) => ({
+    error: instructionExportErrorMessage(error, locale),
+  }))
+}
+
+function appMessageText(
+  locale: Locale,
+  message: AppMessage | null,
+): string | null {
+  if (!message) return null
+  return formatLocalizedText(locale, message.text, message.variables)
+}
+
+function windowCloseAppMessage(message: string): AppMessage {
+  const translated = new Map<string, LocalizedText>([
+    [WINDOW_CLOSE_STATUS.recoveryBlocked, {
+      ja: WINDOW_CLOSE_STATUS.recoveryBlocked,
+      en: 'Finish reviewing the recovery data before quitting.',
+    }],
+    [WINDOW_CLOSE_STATUS.coreBlocked, {
+      ja: WINDOW_CLOSE_STATUS.coreBlocked,
+      en: 'Wait for the current operation to finish before quitting.',
+    }],
+    [WINDOW_CLOSE_STATUS.cancelled, {
+      ja: WINDOW_CLOSE_STATUS.cancelled,
+      en: 'Quit was cancelled. You can continue editing.',
+    }],
+    [WINDOW_CLOSE_STATUS.preparing, {
+      ja: WINDOW_CLOSE_STATUS.preparing,
+      en: 'Safely organizing recovery data before quitting…',
+    }],
+    [WINDOW_CLOSE_STATUS.stale, {
+      ja: WINDOW_CLOSE_STATUS.stale,
+      en: 'The project changed while preparing to quit. Please quit again.',
+    }],
+    [WINDOW_CLOSE_STATUS.failed, {
+      ja: WINDOW_CLOSE_STATUS.failed,
+      en: 'Quit preparation could not finish. Keep the app open and try again.',
+    }],
+  ])
+  return appMessage(
+    translated.get(message) ?? { ja: message, en: message },
+  )
+}
+
 function App() {
+  const locale = useLocale()
+  const text = (localized: LocalizedText) => (
+    selectLocalizedText(locale, localized)
+  )
+  const formattedText = (
+    localized: LocalizedText,
+    variables?: MessageVariables,
+  ) => formatLocalizedText(locale, localized, variables)
   const keyboardShortcuts = useSyncExternalStore(
     keyboardShortcutStore.subscribe,
     keyboardShortcutStore.getSnapshot,
@@ -312,7 +405,9 @@ function App() {
   ] = useState(0)
   const [manualPoseChangeSequence, setManualPoseChangeSequence] = useState(0)
   const [activeTool, setActiveTool] = useState('select')
-  const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
+  const [benchmarkStatusMessage, setBenchmarkStatus] = useState<AppMessage>(
+    () => appMessage({ ja: '未実行', en: 'Not run' }),
+  )
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
@@ -339,8 +434,16 @@ function App() {
   const [geometricConstraintDocumentInvalid, setGeometricConstraintDocumentInvalid] =
     useState(false)
   const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
-  const [topologyStatus, setTopologyStatus] = useState(
-    isNativeCoreAvailable() ? '面・ヒンジ解析待ち' : '3D解析はデスクトップ版で利用できます',
+  const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
+    () => isNativeCoreAvailable()
+      ? appMessage({
+          ja: '面・ヒンジ解析待ち',
+          en: 'Waiting for face and hinge analysis',
+        })
+      : appMessage({
+          ja: '3D解析はデスクトップ版で利用できます',
+          en: '3D analysis is available in the desktop app',
+        }),
   )
   const [validation, setValidation] = useState<ValidationSnapshot | null>(null)
   const [globalFlatFoldabilityJob, setGlobalFlatFoldabilityJob] =
@@ -349,8 +452,10 @@ function App() {
     useState<GlobalFlatFoldabilityTimePreset>(
       DEFAULT_GLOBAL_FLAT_FOLDABILITY_TIME_PRESET,
     )
-  const [coreStatus, setCoreStatus] = useState(
-    isNativeCoreAvailable() ? 'コア接続中…' : 'ブラウザ試作モード',
+  const [coreStatusMessage, setCoreStatus] = useState<AppMessage>(
+    () => isNativeCoreAvailable()
+      ? appMessage({ ja: 'コア接続中…', en: 'Connecting to core…' })
+      : appMessage({ ja: 'ブラウザ試作モード', en: 'Browser prototype mode' }),
   )
   const [pendingEdgeStart, setPendingEdgeStart] = useState<string | null>(null)
   const [cancelInteractionToken, setCancelInteractionToken] = useState(0)
@@ -366,12 +471,15 @@ function App() {
   >(null)
   const [coreBusy, setCoreBusy] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
-  const [newProjectError, setNewProjectError] = useState<string | null>(null)
+  const [newProjectErrorMessage, setNewProjectError] =
+    useState<AppMessage | null>(null)
   const [diagnosticsDialogOpen, setDiagnosticsDialogOpen] = useState(false)
   const [foldImportPreview, setFoldImportPreview] = useState<FoldImportPreview | null>(null)
-  const [foldImportError, setFoldImportError] = useState<string | null>(null)
+  const [foldImportErrorMessage, setFoldImportError] =
+    useState<AppMessage | null>(null)
   const [svgImportPreview, setSvgImportPreview] = useState<SvgImportPreview | null>(null)
-  const [svgImportError, setSvgImportError] = useState<string | null>(null)
+  const [svgImportErrorMessage, setSvgImportError] =
+    useState<AppMessage | null>(null)
   const [svgImportValidation, setSvgImportValidation] =
     useState<SvgImportSettingsValidation | null>(null)
   const [creaseExportOpen, setCreaseExportOpen] = useState(false)
@@ -379,8 +487,10 @@ function App() {
     useState<CreasePatternExportFormat>('fold')
   const [creaseExportPreview, setCreaseExportPreview] =
     useState<CreasePatternExportPreview | null>(null)
-  const [creaseExportError, setCreaseExportError] = useState<string | null>(null)
-  const [creaseExportNotice, setCreaseExportNotice] = useState<string | null>(null)
+  const [creaseExportErrorMessage, setCreaseExportError] =
+    useState<AppMessage | null>(null)
+  const [creaseExportNoticeMessage, setCreaseExportNotice] =
+    useState<AppMessage | null>(null)
   const [instructionExportOpen, setInstructionExportOpen] = useState(false)
   const [instructionExportFormat, setInstructionExportFormat] =
     useState<InstructionExportFormat>('pdf')
@@ -390,8 +500,10 @@ function App() {
     useState(false)
   const [instructionExportPhase, setInstructionExportPhase] =
     useState<InstructionExportPhase>('validating')
-  const [instructionExportError, setInstructionExportError] = useState<string | null>(null)
-  const [instructionExportNotice, setInstructionExportNotice] = useState<string | null>(null)
+  const [instructionExportErrorState, setInstructionExportError] =
+    useState<AppMessage | null>(null)
+  const [instructionExportNoticeMessage, setInstructionExportNotice] =
+    useState<AppMessage | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -403,6 +515,25 @@ function App() {
   const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
     ...DEFAULT_SNAP_SETTINGS,
   }))
+  const benchmarkStatus = appMessageText(
+    locale,
+    benchmarkStatusMessage,
+  ) ?? ''
+  const topologyStatus = appMessageText(locale, topologyStatusMessage) ?? ''
+  const coreStatus = appMessageText(locale, coreStatusMessage) ?? ''
+  const newProjectError = appMessageText(locale, newProjectErrorMessage)
+  const foldImportError = appMessageText(locale, foldImportErrorMessage)
+  const svgImportError = appMessageText(locale, svgImportErrorMessage)
+  const creaseExportError = appMessageText(locale, creaseExportErrorMessage)
+  const creaseExportNotice = appMessageText(locale, creaseExportNoticeMessage)
+  const instructionExportError = appMessageText(
+    locale,
+    instructionExportErrorState,
+  )
+  const instructionExportNotice = appMessageText(
+    locale,
+    instructionExportNoticeMessage,
+  )
   const recoveryBlocking = recoveryStartup.kind !== 'ready'
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
@@ -544,7 +675,10 @@ function App() {
     setGeometricConstraintDocumentInvalid(constraintDocumentInvalid)
     setValidation(null)
     setTopologyResponse(null)
-    setTopologyStatus('面・ヒンジ解析待ち')
+    setTopologyStatus(appMessage({
+      ja: '面・ヒンジ解析待ち',
+      en: 'Waiting for face and hinge analysis',
+    }))
   }, [])
   const acceptAppliedHistoryLimit = useCallback(async (
     settings: HistoryLimitSettings,
@@ -568,13 +702,19 @@ function App() {
 
     applySnapshot(refreshed)
     setHistoryLimitLoadState({ kind: 'ready', settings })
-    setCoreStatus(`Undo・Redo履歴の上限を${settings.historyEntryLimit}件に変更しました。`)
+    setCoreStatus(appMessage({
+      ja: 'Undo・Redo履歴の上限を{limit}件に変更しました。',
+      en: 'Undo/redo history limit changed to {limit}.',
+    }, { limit: settings.historyEntryLimit }))
   }, [applySnapshot])
   const resetRecoveredProjectUi = useCallback(() => {
     benchmarkRequestIdRef.current += 1
     setBenchmarkLoading(false)
     setBenchmarkRun(null)
-    setBenchmarkStatus('復元した編集内容を表示しています')
+    setBenchmarkStatus(appMessage({
+      ja: '復元した編集内容を表示しています',
+      en: 'Showing restored edits',
+    }))
     setSelectedLineId(null)
     setSelectedVertexId(null)
     setPendingEdgeStart(null)
@@ -595,7 +735,10 @@ function App() {
     setRecoveryActionBusy(true)
     setRecoveryActionError(false)
     setRecoveryStartup({ kind: 'checking' })
-    setCoreStatus('復旧データを確認しています…')
+    setCoreStatus(appMessage({
+      ja: '復旧データを確認しています…',
+      en: 'Checking recovery data…',
+    }))
     try {
       const [snapshot, candidate] = await Promise.all([
         getProjectSnapshot(),
@@ -608,10 +751,16 @@ function App() {
       applySnapshot(snapshot)
       if (candidate.status === 'none') {
         setRecoveryStartup({ kind: 'ready' })
-        setCoreStatus(`Rustコア revision ${snapshot.revision}`)
+        setCoreStatus(appMessage({
+          ja: 'Rustコア revision {revision}',
+          en: 'Rust core revision {revision}',
+        }, { revision: snapshot.revision }))
       } else {
         setRecoveryStartup({ kind: 'candidate', candidate })
-        setCoreStatus('未保存の復旧データについて判断してください。')
+        setCoreStatus(appMessage({
+          ja: '未保存の復旧データについて判断してください。',
+          en: 'Choose how to handle the unsaved recovery data.',
+        }))
       }
     } catch {
       if (
@@ -620,7 +769,10 @@ function App() {
       ) return
       reportUnexpected('app.project_snapshot')
       setRecoveryStartup({ kind: 'failed' })
-      setCoreStatus('復旧データを確認できませんでした。再試行してください。')
+      setCoreStatus(appMessage({
+        ja: '復旧データを確認できませんでした。再試行してください。',
+        en: 'Recovery data could not be checked. Please try again.',
+      }))
     } finally {
       if (
         recoveryMountedRef.current
@@ -661,7 +813,10 @@ function App() {
       applySnapshot(recoveredSnapshot, true)
       resetRecoveredProjectUi()
       setRecoveryStartup({ kind: 'ready' })
-      setCoreStatus('未保存の編集内容を復元しました。保存先を選んで保存してください。')
+      setCoreStatus(appMessage({
+        ja: '未保存の編集内容を復元しました。保存先を選んで保存してください。',
+        en: 'Unsaved edits were restored. Choose a location and save them.',
+      }))
     } catch {
       if (
         !recoveryMountedRef.current
@@ -669,7 +824,10 @@ function App() {
         || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
       ) return
       setRecoveryActionError(true)
-      setCoreStatus('復旧データを復元できませんでした。もう一度お試しください。')
+      setCoreStatus(appMessage({
+        ja: '復旧データを復元できませんでした。もう一度お試しください。',
+        en: 'Recovery data could not be restored. Please try again.',
+      }))
     } finally {
       if (
         recoveryMountedRef.current
@@ -699,7 +857,10 @@ function App() {
         || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
       ) return
       setRecoveryStartup({ kind: 'ready' })
-      setCoreStatus('復旧データを破棄しました。')
+      setCoreStatus(appMessage({
+        ja: '復旧データを破棄しました。',
+        en: 'Recovery data was discarded.',
+      }))
     } catch {
       if (
         !recoveryMountedRef.current
@@ -707,7 +868,10 @@ function App() {
         || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
       ) return
       setRecoveryActionError(true)
-      setCoreStatus('復旧データを破棄できませんでした。もう一度お試しください。')
+      setCoreStatus(appMessage({
+        ja: '復旧データを破棄できませんでした。もう一度お試しください。',
+        en: 'Recovery data could not be discarded. Please try again.',
+      }))
     } finally {
       if (
         recoveryMountedRef.current
@@ -888,7 +1052,10 @@ function App() {
     ? fixedFaceOptions.findIndex((face) => face.id === effectiveFixedFaceId)
     : -1
   const effectiveFixedFaceLabel = effectiveFixedFaceIndex >= 0
-    ? `面 ${effectiveFixedFaceIndex + 1}`
+    ? formattedText({
+        ja: '面 {index}',
+        en: 'Face {index}',
+      }, { index: effectiveFixedFaceIndex + 1 })
     : undefined
   const fixedFaceEnabled = fixedFaceOptions.length > 1 && !benchmarkRun
   const foldPreviewHingeIds = useMemo(() => new Set(
@@ -904,7 +1071,10 @@ function App() {
     ? selectedLineId
     : null
   const foldPreviewStatus = topologyResponse?.simulation_ready && !foldPreviewModel
-    ? '3D入力の整合性検証で遮断'
+    ? text({
+        ja: '3D入力の整合性検証で遮断',
+        en: 'Blocked by 3D input consistency validation',
+      })
     : topologyStatus
   const foldPreviewStatusClass = foldPreviewModel
     ? 'status-valid'
@@ -1041,7 +1211,7 @@ function App() {
         paperBounds.maxY - paperBounds.minY,
         lengthDisplayUnit,
       )}`
-    : '寸法不明'
+    : text({ ja: '寸法不明', en: 'Unknown dimensions' })
   const paperCenter = paperBounds
     ? {
         x: (paperBounds.minX + paperBounds.maxX) / 2,
@@ -1073,8 +1243,9 @@ function App() {
       : null
   const snapStatusLabel = SNAP_OPTIONS
     .filter(({ kind }) => snapSettings[kind])
-    .map(({ label }) => label)
-    .join('・') || 'なし'
+    .map(({ label }) => text(label))
+    .join(text({ ja: '・', en: ', ' }))
+    || text({ ja: 'なし', en: 'None' })
 
   const runShortcutFileOperation = useEffectEvent((
     operation: 'open' | 'save' | 'save_as',
@@ -1241,7 +1412,10 @@ function App() {
     const expectedProjectId = nativeSnapshot.project_id
     const expectedRevision = nativeSnapshot.revision
     let disposed = false
-    setTopologyStatus('面・ヒンジ解析中…')
+    setTopologyStatus(appMessage({
+      ja: '面・ヒンジ解析中…',
+      en: 'Analyzing faces and hinges…',
+    }))
 
     analyzeProjectTopology(expectedProjectId, expectedRevision)
       .then((response) => {
@@ -1255,11 +1429,18 @@ function App() {
         ) return
         setTopologyResponse(response)
         if (response.simulation_ready && response.snapshot) {
-          setTopologyStatus(
-            `${response.snapshot.faces.length}面・${response.snapshot.hinge_adjacency.length}ヒンジ`,
-          )
+          setTopologyStatus(appMessage({
+            ja: '{faces}面・{hinges}ヒンジ',
+            en: '{faces} faces · {hinges} hinges',
+          }, {
+            faces: response.snapshot.faces.length,
+            hinges: response.snapshot.hinge_adjacency.length,
+          }))
         } else {
-          setTopologyStatus(`3D解析で遮断（${response.issues.length}件）`)
+          setTopologyStatus(appMessage({
+            ja: '3D解析で遮断（{count}件）',
+            en: '3D analysis blocked ({count} issues)',
+          }, { count: response.issues.length }))
         }
       })
       .catch((error: unknown) => {
@@ -1272,7 +1453,10 @@ function App() {
         ) return
         reportUnexpected('app.topology_analysis')
         setTopologyResponse(null)
-        setTopologyStatus(`3D解析エラー: ${String(error)}`)
+        setTopologyStatus(appMessage({
+          ja: '3D解析エラー: {error}',
+          en: '3D analysis error: {error}',
+        }, { error: String(error) }))
       })
 
     return () => {
@@ -1326,7 +1510,7 @@ function App() {
           }
         },
         confirmDiscard: () => window.confirm(
-          '未保存の変更があります。変更を破棄して終了しますか？\nキャンセルすると編集画面に戻ります。',
+          appConfirmationText(locale, 'quitDiscard'),
         ),
         prepare: prepareWindowClose,
         cancel: cancelWindowClosePrepare,
@@ -1335,7 +1519,9 @@ function App() {
           coreOperationRef.current = locked
           if (recoveryMountedRef.current) setCoreBusy(locked)
         },
-        setStatus: setCoreStatus,
+        setStatus: (message) => {
+          setCoreStatus(windowCloseAppMessage(message))
+        },
         reportFailure: reportCloseGuardFailure,
       },
     )
@@ -1347,9 +1533,10 @@ function App() {
     }).catch(() => {
       if (!disposed) {
         reportCloseGuardFailure()
-        setCoreStatus(
-          '終了確認を開始できませんでした。アプリを開いたまま、もう一度お試しください。',
-        )
+        setCoreStatus(appMessage({
+          ja: '終了確認を開始できませんでした。アプリを開いたまま、もう一度お試しください。',
+          en: 'The quit check could not start. Keep the app open and try again.',
+        }))
       }
     })
 
@@ -1358,7 +1545,7 @@ function App() {
       closeHandshake.dispose()
       unlisten?.()
     }
-  }, [])
+  }, [locale])
 
   const runNativeEdit = useCallback(async (
     action: (
@@ -1392,15 +1579,24 @@ function App() {
         )
       ) {
         reportUnexpected('app.project_snapshot')
-        setCoreStatus('コアエラー: 編集結果を現在のプロジェクトへ結合できませんでした')
+        setCoreStatus(appMessage({
+          ja: 'コアエラー: 編集結果を現在のプロジェクトへ結合できませんでした',
+          en: 'Core error: the edit result could not be merged into the current project',
+        }))
         return false
       }
       applySnapshot(snapshot)
       setValidation(null)
-      setCoreStatus(`Rustコア revision ${snapshot.revision}`)
+      setCoreStatus(appMessage({
+        ja: 'Rustコア revision {revision}',
+        en: 'Rust core revision {revision}',
+      }, { revision: snapshot.revision }))
       return true
     } catch (error) {
-      setCoreStatus(`コアエラー: ${String(error)}`)
+      setCoreStatus(appMessage({
+        ja: 'コアエラー: {error}',
+        en: 'Core error: {error}',
+      }, { error: String(error) }))
       return false
     } finally {
       coreOperationRef.current = false
@@ -1458,12 +1654,18 @@ function App() {
 
   const deleteSelection = useCallback(async () => {
     if (benchmarkRun) {
-      setCoreStatus('性能テストの図は読み取り専用です。通常図へ戻ると編集できます')
+      setCoreStatus(appMessage({
+        ja: '性能テストの図は読み取り専用です。通常図へ戻ると編集できます',
+        en: 'The benchmark pattern is read-only. Return to the normal pattern to edit.',
+      }))
       return
     }
     if (selectedLine) {
       if (selectedLine.kind === 'boundary') {
-        setCoreStatus('輪郭線の追加・削除は紙形状編集から行います')
+        setCoreStatus(appMessage({
+          ja: '輪郭線の追加・削除は紙形状編集から行います',
+          en: 'Add or remove boundary edges through paper shape editing.',
+        }))
         return
       }
       const removed = await runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -1473,7 +1675,10 @@ function App() {
     }
     if (selectedVertex) {
       if (selectedVertexIsBoundary && paperBoundaryVertexCount <= 3) {
-        setCoreStatus('輪郭は最低3点必要なため、この輪郭頂点は削除できません')
+        setCoreStatus(appMessage({
+          ja: '輪郭は最低3点必要なため、この輪郭頂点は削除できません',
+          en: 'This boundary vertex cannot be deleted because a boundary needs at least three points.',
+        }))
         return
       }
       const removed = await runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -1486,8 +1691,14 @@ function App() {
       setPendingEdgeStart(null)
       setActiveTool('select')
       setCoreStatus(selectedVertexIsBoundary
-        ? '輪郭頂点を削除し、隣接する輪郭辺を統合しました（元に戻すで復元できます）'
-        : '頂点を削除しました（元に戻すで復元できます）')
+        ? appMessage({
+            ja: '輪郭頂点を削除し、隣接する輪郭辺を統合しました（元に戻すで復元できます）',
+            en: 'Deleted the boundary vertex and merged its adjacent edges (Undo can restore it).',
+          })
+        : appMessage({
+            ja: '頂点を削除しました（元に戻すで復元できます）',
+            en: 'Deleted the vertex (Undo can restore it).',
+          }))
     }
   }, [
     benchmarkRun,
@@ -1525,12 +1736,18 @@ function App() {
     setPendingEdgeStart(null)
     if (!addedVertex) {
       setSelectedVertexId(null)
-      setCoreStatus('輪郭辺を分割しましたが、新しい頂点を特定できませんでした')
+      setCoreStatus(appMessage({
+        ja: '輪郭辺を分割しましたが、新しい頂点を特定できませんでした',
+        en: 'The boundary edge was split, but the new vertex could not be identified.',
+      }))
       return
     }
     setSelectedVertexId(addedVertex.id)
     setActiveTool('select')
-    setCoreStatus('輪郭辺を中点で分割し、新しい頂点を選択しました')
+    setCoreStatus(appMessage({
+      ja: '輪郭辺を中点で分割し、新しい頂点を選択しました',
+      en: 'Split the boundary edge at its midpoint and selected the new vertex.',
+    }))
   }
 
   async function placeCanvasVertex(placement: VertexPlacement) {
@@ -1555,7 +1772,12 @@ function App() {
         )
       } else if (placement.operation === 'split-edge') {
         const edge = current.crease_pattern.edges.find(({ id }) => id === placement.edgeId)
-        if (!edge) throw new Error(`分割対象の辺が見つかりません: ${placement.edgeId}`)
+        if (!edge) {
+          throw new Error(formattedText({
+            ja: '分割対象の辺が見つかりません: {edgeId}',
+            en: 'The edge to split was not found: {edgeId}',
+          }, { edgeId: placement.edgeId }))
+        }
         snapshot = edge.kind === 'boundary'
           ? await splitBoundaryEdge(
               projectId,
@@ -1575,7 +1797,12 @@ function App() {
         if (!isSupportedIntersectionPlacement(
           placement,
           current.crease_pattern.edges,
-        )) throw new Error('交点接続の対象辺が不正です')
+        )) {
+          throw new Error(text({
+            ja: '交点接続の対象辺が不正です',
+            en: 'The edges selected for intersection connection are invalid.',
+          }))
+        }
         const response = placement.operation === 'connect-intersection'
           ? await connectEdgeIntersection(
               projectId,
@@ -1627,17 +1854,29 @@ function App() {
           && result.connectedVertexId !== placement.junctionVertexId
         )
       ) {
-        setCoreStatus('交点を接続しましたが、接続頂点を確認できませんでした')
+        setCoreStatus(appMessage({
+          ja: '交点を接続しましたが、接続頂点を確認できませんでした',
+          en: 'The intersection was connected, but the connected vertex could not be verified.',
+        }))
         return
       }
       setSelectedLineId(null)
       setPendingEdgeStart(null)
       setSelectedVertexId(result.connectedVertexId)
       setCoreStatus(placement.operation === 'connect-t-junction'
-        ? 'T字交点を接続しました（元に戻す1回で復元できます）'
+        ? appMessage({
+            ja: 'T字交点を接続しました（元に戻す1回で復元できます）',
+            en: 'Connected the T-junction (one Undo restores it).',
+          })
         : placement.operation === 'connect-intersection-cluster'
-          ? `${placement.targets.length}本の辺を交点クラスタとして接続しました（元に戻す1回で復元できます）`
-          : '交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）')
+          ? appMessage({
+              ja: '{count}本の辺を交点クラスタとして接続しました（元に戻す1回で復元できます）',
+              en: 'Connected {count} edges as an intersection cluster (one Undo restores it).',
+            }, { count: placement.targets.length })
+          : appMessage({
+              ja: '交点で2本の辺を原子的に分割しました（元に戻す1回で復元できます）',
+              en: 'Atomically split two edges at their intersection (one Undo restores it).',
+            }))
       return
     }
 
@@ -1648,13 +1887,22 @@ function App() {
     setPendingEdgeStart(null)
     if (addedVertices.length !== 1) {
       setSelectedVertexId(null)
-      setCoreStatus('頂点を作成しましたが、新しい頂点を一意に特定できませんでした')
+      setCoreStatus(appMessage({
+        ja: '頂点を作成しましたが、新しい頂点を一意に特定できませんでした',
+        en: 'A vertex was created, but it could not be uniquely identified.',
+      }))
       return
     }
     setSelectedVertexId(addedVertices[0].id)
     setCoreStatus(placement.operation === 'split-edge'
-      ? '辺を分割し、新しい頂点を選択しました（元に戻すで復元できます）'
-      : '頂点を追加して選択しました（元に戻すで復元できます）')
+      ? appMessage({
+          ja: '辺を分割し、新しい頂点を選択しました（元に戻すで復元できます）',
+          en: 'Split the edge and selected the new vertex (Undo can restore it).',
+        })
+      : appMessage({
+          ja: '頂点を追加して選択しました（元に戻すで復元できます）',
+          en: 'Added and selected a vertex (Undo can restore it).',
+        }))
   }
 
   useEffect(() => {
@@ -1731,11 +1979,17 @@ function App() {
     ) return
     if (!pendingEdgeStart) {
       setPendingEdgeStart(vertexId)
-      setCoreStatus('線の終点を選択してください')
+      setCoreStatus(appMessage({
+        ja: '線の終点を選択してください',
+        en: 'Select the line endpoint.',
+      }))
       return
     }
     if (pendingEdgeStart === vertexId) {
-      setCoreStatus('始点とは異なる頂点を選択してください')
+      setCoreStatus(appMessage({
+        ja: '始点とは異なる頂点を選択してください',
+        en: 'Select a vertex different from the start point.',
+      }))
       return
     }
     const start = pendingEdgeStart
@@ -1776,7 +2030,10 @@ function App() {
       currentUnit,
     )
     if (x === null || y === null) {
-      setCoreStatus('座標には有限の数値を入力してください')
+      setCoreStatus(appMessage({
+        ja: '座標には有限の数値を入力してください',
+        en: 'Enter finite numeric coordinates.',
+      }))
       return
     }
     void runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -1799,11 +2056,17 @@ function App() {
     const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
     const backColor = parseHexColor(String(form.get('back_color') ?? ''))
     if (thicknessMm === null || thicknessMm < 0) {
-      setCoreStatus('紙厚には0以上の有限の数値を入力してください')
+      setCoreStatus(appMessage({
+        ja: '紙厚には0以上の有限の数値を入力してください',
+        en: 'Enter a finite paper thickness of 0 or greater.',
+      }))
       return
     }
     if (!frontColor || !backColor) {
-      setCoreStatus('表色と裏色には有効な色を指定してください')
+      setCoreStatus(appMessage({
+        ja: '表色と裏色には有効な色を指定してください',
+        en: 'Choose valid front and back colors.',
+      }))
       return
     }
 
@@ -1822,7 +2085,10 @@ function App() {
     if (!current || coreOperationRef.current) return
     const currentSize = resolveRectangularPaperSize(current)
     if (!currentSize) {
-      setCoreStatus('現在の紙は軸平行な長方形ではないため、サイズを変更できません')
+      setCoreStatus(appMessage({
+        ja: '現在の紙は軸平行な長方形ではないため、サイズを変更できません',
+        en: 'The current paper is not an axis-aligned rectangle, so it cannot be resized here.',
+      }))
       return
     }
 
@@ -1845,11 +2111,17 @@ function App() {
           currentUnit,
         )
     if (widthMm === null || widthMm <= 0) {
-      setCoreStatus('用紙の幅には0より大きい有限の数値を入力してください')
+      setCoreStatus(appMessage({
+        ja: '用紙の幅には0より大きい有限の数値を入力してください',
+        en: 'Enter a finite paper width greater than 0.',
+      }))
       return
     }
     if (heightMm === null || heightMm <= 0) {
-      setCoreStatus('用紙の高さには0より大きい有限の数値を入力してください')
+      setCoreStatus(appMessage({
+        ja: '用紙の高さには0より大きい有限の数値を入力してください',
+        en: 'Enter a finite paper height greater than 0.',
+      }))
       return
     }
 
@@ -1871,7 +2143,10 @@ function App() {
     coreOperationRef.current = true
     setCoreBusy(true)
     setValidation(null)
-    setCoreStatus(`revision ${current.revision}: 検証中…`)
+    setCoreStatus(appMessage({
+      ja: 'revision {revision}: 検証中…',
+      en: 'revision {revision}: validating…',
+    }, { revision: current.revision }))
     setCancelInteractionToken((token) => token + 1)
     try {
       const result = await validateProject()
@@ -1883,7 +2158,10 @@ function App() {
         || result.project_id !== latest.project_id
         || result.revision !== latest.revision
       ) {
-        setCoreStatus('検証中に内容が変更されたため、再度検証してください')
+        setCoreStatus(appMessage({
+          ja: '検証中に内容が変更されたため、再度検証してください',
+          en: 'The project changed during validation. Please validate again.',
+        }))
         return
       }
       const localPresentation = createLocalFlatFoldabilityPresentation(
@@ -1894,17 +2172,41 @@ function App() {
       if (localPresentation.kind === 'invalid') {
         reportValidationUnexpected()
       }
-      const geometryStatus = result.is_valid
-        ? '幾何検証に合格'
-        : `幾何問題${result.issues.length}件`
-      setCoreStatus(
-        `revision ${result.revision}: ${geometryStatus}・`
-        + localFlatFoldabilityCoreStatus(localPresentation),
-      )
+      setCoreStatus(appMessage({
+        ja: formatLocalizedText('ja', {
+          ja: 'revision {revision}: {geometry}・{local}',
+          en: '',
+        }, {
+          revision: result.revision,
+          geometry: result.is_valid
+            ? '幾何検証に合格'
+            : formatLocalizedText('ja', {
+                ja: '幾何問題{count}件',
+                en: '',
+              }, { count: result.issues.length }),
+          local: localFlatFoldabilityCoreStatus(localPresentation, 'ja'),
+        }),
+        en: formatLocalizedText('en', {
+          ja: '',
+          en: 'revision {revision}: {geometry} · {local}',
+        }, {
+          revision: result.revision,
+          geometry: result.is_valid
+            ? 'Geometry passed'
+            : formatLocalizedText('en', {
+                ja: '',
+                en: '{count} geometry issues',
+              }, { count: result.issues.length }),
+          local: localFlatFoldabilityCoreStatus(localPresentation, 'en'),
+        }),
+      }))
     } catch (error) {
       reportValidationUnexpected()
       setValidation(null)
-      setCoreStatus(`検証エラー: ${String(error)}`)
+      setCoreStatus(appMessage({
+        ja: '検証エラー: {error}',
+        en: 'Validation error: {error}',
+      }, { error: String(error) }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -1930,32 +2232,50 @@ function App() {
     const backColor = parseHexColor(String(form.get('back_color') ?? ''))
 
     if (!name) {
-      setNewProjectError('作品名を入力してください。')
+      setNewProjectError(appMessage({
+        ja: '作品名を入力してください。',
+        en: 'Enter a project name.',
+      }))
       return
     }
     if ([...name].length > 120 || hasControlCharacter(name)) {
-      setNewProjectError('作品名は制御文字を含まない120文字以内にしてください。')
+      setNewProjectError(appMessage({
+        ja: '作品名は制御文字を含まない120文字以内にしてください。',
+        en: 'Use at most 120 characters and do not include control characters.',
+      }))
       return
     }
     if (!widthExpression.trim()) {
-      setNewProjectError('幅の式を入力してください。')
+      setNewProjectError(appMessage({
+        ja: '幅の式を入力してください。',
+        en: 'Enter a width expression.',
+      }))
       return
     }
     if (!heightExpression.trim()) {
-      setNewProjectError('高さの式を入力してください。')
+      setNewProjectError(appMessage({
+        ja: '高さの式を入力してください。',
+        en: 'Enter a height expression.',
+      }))
       return
     }
     if (!thicknessInput || !Number.isFinite(thicknessMm) || thicknessMm < 0) {
-      setNewProjectError('紙厚には0以上の有限の数値を入力してください。')
+      setNewProjectError(appMessage({
+        ja: '紙厚には0以上の有限の数値を入力してください。',
+        en: 'Enter a finite paper thickness of 0 or greater.',
+      }))
       return
     }
     if (!frontColor || !backColor) {
-      setNewProjectError('表色と裏色を選択してください。')
+      setNewProjectError(appMessage({
+        ja: '表色と裏色を選択してください。',
+        en: 'Choose front and back colors.',
+      }))
       return
     }
     if (
       current.is_dirty &&
-      !window.confirm('未保存の変更があります。保存せずに新しいプロジェクトを作成しますか？')
+      !window.confirm(appConfirmationText(locale, 'newProject'))
     ) return
 
     coreOperationRef.current = true
@@ -1987,12 +2307,35 @@ function App() {
       setParallelReferenceEdgeId(null)
       setActiveTool('select')
       setNewProjectOpen(false)
-      setCoreStatus(`「${snapshot.name}」を作成しました。保存先はまだ設定されていません。`)
+      setCoreStatus(appMessage({
+        ja: '「{name}」を作成しました。保存先はまだ設定されていません。',
+        en: 'Created “{name}”. A save location has not been set yet.',
+      }, { name: snapshot.name }))
     } catch (error) {
-      const message = newProjectExpressionErrorMessage(error)
+      const japaneseMessage = newProjectExpressionErrorMessage(error, 'ja')
         ?? '新しいプロジェクトを作成できませんでした。'
-      setNewProjectError(`作成できませんでした: ${message}`)
-      setCoreStatus(`新規作成エラー: ${message}`)
+      const englishMessage = newProjectExpressionErrorMessage(error, 'en')
+        ?? 'The new project could not be created.'
+      setNewProjectError(appMessage({
+        ja: formatLocalizedText('ja', {
+          ja: '作成できませんでした: {message}',
+          en: '',
+        }, { message: japaneseMessage }),
+        en: formatLocalizedText('en', {
+          ja: '',
+          en: 'Could not create the project: {message}',
+        }, { message: englishMessage }),
+      }))
+      setCoreStatus(appMessage({
+        ja: formatLocalizedText('ja', {
+          ja: '新規作成エラー: {message}',
+          en: '',
+        }, { message: japaneseMessage }),
+        en: formatLocalizedText('en', {
+          ja: '',
+          en: 'New project error: {message}',
+        }, { message: englishMessage }),
+      }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2009,7 +2352,7 @@ function App() {
     if (
       operation === 'open' &&
       current.is_dirty &&
-      !window.confirm('未保存の変更があります。保存せずに別のプロジェクトを開きますか？')
+      !window.confirm(appConfirmationText(locale, 'openProject'))
     ) return
 
     coreOperationRef.current = true
@@ -2029,7 +2372,10 @@ function App() {
         operation === 'open' && !response.canceled,
       )
       if (response.canceled) {
-        setCoreStatus('ファイル操作をキャンセルしました')
+        setCoreStatus(appMessage({
+          ja: 'ファイル操作をキャンセルしました',
+          en: 'File operation cancelled',
+        }))
         return
       }
       if (operation === 'open') {
@@ -2040,10 +2386,19 @@ function App() {
         setParallelReferenceEdgeId(null)
       }
       setCoreStatus(operation === 'open'
-        ? `「${response.project.name}」を開きました`
-        : `「${response.project.name}」を保存しました`)
+        ? appMessage({
+            ja: '「{name}」を開きました',
+            en: 'Opened “{name}”',
+          }, { name: response.project.name })
+        : appMessage({
+            ja: '「{name}」を保存しました',
+            en: 'Saved “{name}”',
+          }, { name: response.project.name }))
     } catch (error) {
-      setCoreStatus(`ファイルエラー: ${String(error)}`)
+      setCoreStatus(appMessage({
+        ja: 'ファイルエラー: {error}',
+        en: 'File error: {error}',
+      }, { error: String(error) }))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2062,16 +2417,28 @@ function App() {
     try {
       const response = await previewFoldImport()
       if (response.canceled) {
-        setCoreStatus('FOLD取込をキャンセルしました')
+        setCoreStatus(appMessage({
+          ja: 'FOLD取込をキャンセルしました',
+          en: 'FOLD import cancelled',
+        }))
         return
       }
       if (!response.preview) {
-        throw new Error('取込プレビューが返されませんでした')
+        throw new Error(text({
+          ja: '取込プレビューが返されませんでした',
+          en: 'No import preview was returned.',
+        }))
       }
       setFoldImportPreview(response.preview)
-      setCoreStatus('FOLDの線種・縮尺を確認してください')
+      setCoreStatus(appMessage({
+        ja: 'FOLDの線種・縮尺を確認してください',
+        en: 'Review the FOLD line types and scale.',
+      }))
     } catch (error) {
-      setCoreStatus(`FOLD読込エラー: ${String(error)}`)
+      setCoreStatus(appMessage({
+        ja: 'FOLD読込エラー: {error}',
+        en: 'FOLD read error: {error}',
+      }, { error: String(error) }))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2087,9 +2454,15 @@ function App() {
     setCoreBusy(true)
     try {
       await cancelFoldImport(preview.import_id)
-      setCoreStatus('FOLD取込をキャンセルしました')
+      setCoreStatus(appMessage({
+        ja: 'FOLD取込をキャンセルしました',
+        en: 'FOLD import cancelled',
+      }))
     } catch (error) {
-      setCoreStatus(`FOLD取込の後始末エラー: ${String(error)}`)
+      setCoreStatus(appMessage({
+        ja: 'FOLD取込の後始末エラー: {error}',
+        en: 'FOLD import cleanup error: {error}',
+      }, { error: String(error) }))
     } finally {
       setFoldImportPreview(null)
       setFoldImportError(null)
@@ -2104,7 +2477,7 @@ function App() {
     if (!current || coreOperationRef.current) return
     if (
       current.is_dirty
-      && !window.confirm('未保存の変更があります。保存せずにFOLD展開図へ置き換えますか？')
+      && !window.confirm(appConfirmationText(locale, 'replaceWithFold'))
     ) return
 
     coreOperationRef.current = true
@@ -2119,7 +2492,10 @@ function App() {
       )
       applySnapshot(snapshot, true)
       setBenchmarkRun(null)
-      setBenchmarkStatus('FOLD取込により通常の展開図へ戻りました')
+      setBenchmarkStatus(appMessage({
+        ja: 'FOLD取込により通常の展開図へ戻りました',
+        en: 'Returned to the normal crease pattern after FOLD import',
+      }))
       setFoldImportPreview(null)
       setSelectedLineId(null)
       setSelectedVertexId(null)
@@ -2129,12 +2505,21 @@ function App() {
       setFoldAngleOverrides({ projectId: null, values: new Map() })
       setFixedFaceChoice({ projectId: null, faceId: null })
       setActiveTool('select')
-      setCoreStatus(`FOLDから「${snapshot.name}」を取り込みました。保存先はまだ設定されていません。`)
+      setCoreStatus(appMessage({
+        ja: 'FOLDから「{name}」を取り込みました。保存先はまだ設定されていません。',
+        en: 'Imported “{name}” from FOLD. A save location has not been set yet.',
+      }, { name: snapshot.name }))
       requestAnimationFrame(() => foldImportButtonRef.current?.focus())
     } catch (error) {
       const message = String(error)
-      setFoldImportError(`取り込めませんでした: ${message}`)
-      setCoreStatus(`FOLD取込エラー: ${message}`)
+      setFoldImportError(appMessage({
+        ja: '取り込めませんでした: {error}',
+        en: 'Could not import: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: 'FOLD取込エラー: {error}',
+        en: 'FOLD import error: {error}',
+      }, { error: message }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2153,16 +2538,28 @@ function App() {
     try {
       const response = await previewSvgImport()
       if (response.canceled) {
-        setCoreStatus('SVG取込をキャンセルしました')
+        setCoreStatus(appMessage({
+          ja: 'SVG取込をキャンセルしました',
+          en: 'SVG import cancelled',
+        }))
         return
       }
       if (!response.preview) {
-        throw new Error('取込プレビューが返されませんでした')
+        throw new Error(text({
+          ja: '取込プレビューが返されませんでした',
+          en: 'No import preview was returned.',
+        }))
       }
       setSvgImportPreview(response.preview)
-      setCoreStatus('SVGの外周・線種・縮尺を確認してください')
+      setCoreStatus(appMessage({
+        ja: 'SVGの外周・線種・縮尺を確認してください',
+        en: 'Review the SVG boundary, line types, and scale.',
+      }))
     } catch (error) {
-      setCoreStatus(`SVG読込エラー: ${String(error)}`)
+      setCoreStatus(appMessage({
+        ja: 'SVG読込エラー: {error}',
+        en: 'SVG read error: {error}',
+      }, { error: String(error) }))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2178,15 +2575,24 @@ function App() {
     setCoreBusy(true)
     try {
       await cancelSvgImport(preview.import_id)
-      setCoreStatus('SVG取込をキャンセルしました')
+      setCoreStatus(appMessage({
+        ja: 'SVG取込をキャンセルしました',
+        en: 'SVG import cancelled',
+      }))
       setSvgImportPreview(null)
       setSvgImportError(null)
       setSvgImportValidation(null)
       requestAnimationFrame(() => svgImportButtonRef.current?.focus())
     } catch (error) {
       const message = String(error)
-      setSvgImportError(`取消を完了できませんでした: ${message}`)
-      setCoreStatus(`SVG取込の後始末エラー: ${message}`)
+      setSvgImportError(appMessage({
+        ja: '取消を完了できませんでした: {error}',
+        en: 'Could not cancel: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: 'SVG取込の後始末エラー: {error}',
+        en: 'SVG import cleanup error: {error}',
+      }, { error: message }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2208,15 +2614,32 @@ function App() {
         settings,
       )
       setSvgImportValidation(validation)
-      setCoreStatus(
-        `SVG外周を検証しました: ${validation.width_mm.toLocaleString()} × ${
-          validation.height_mm.toLocaleString()
-        } mm`,
-      )
+      setCoreStatus(appMessage({
+        ja: formatLocalizedText('ja', {
+          ja: 'SVG外周を検証しました: {width} × {height} mm',
+          en: '',
+        }, {
+          width: validation.width_mm.toLocaleString('ja'),
+          height: validation.height_mm.toLocaleString('ja'),
+        }),
+        en: formatLocalizedText('en', {
+          ja: '',
+          en: 'Validated SVG boundary: {width} × {height} mm',
+        }, {
+          width: validation.width_mm.toLocaleString('en'),
+          height: validation.height_mm.toLocaleString('en'),
+        }),
+      }))
     } catch (error) {
       const message = String(error)
-      setSvgImportError(`外周を検証できませんでした: ${message}`)
-      setCoreStatus(`SVG外周検証エラー: ${message}`)
+      setSvgImportError(appMessage({
+        ja: '外周を検証できませんでした: {error}',
+        en: 'Could not validate the boundary: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: 'SVG外周検証エラー: {error}',
+        en: 'SVG boundary validation error: {error}',
+      }, { error: message }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2229,7 +2652,7 @@ function App() {
     const replaceDirtyProjectConfirmed = current.is_dirty
     if (
       replaceDirtyProjectConfirmed
-      && !window.confirm('未保存の変更があります。保存せずにSVG展開図へ置き換えますか？')
+      && !window.confirm(appConfirmationText(locale, 'replaceWithSvg'))
     ) return
 
     coreOperationRef.current = true
@@ -2245,7 +2668,10 @@ function App() {
       )
       applySnapshot(snapshot, true)
       setBenchmarkRun(null)
-      setBenchmarkStatus('SVG取込により通常の展開図へ戻りました')
+      setBenchmarkStatus(appMessage({
+        ja: 'SVG取込により通常の展開図へ戻りました',
+        en: 'Returned to the normal crease pattern after SVG import',
+      }))
       setSvgImportPreview(null)
       setSvgImportValidation(null)
       setSelectedLineId(null)
@@ -2256,12 +2682,21 @@ function App() {
       setFoldAngleOverrides({ projectId: null, values: new Map() })
       setFixedFaceChoice({ projectId: null, faceId: null })
       setActiveTool('select')
-      setCoreStatus(`SVGから「${snapshot.name}」を取り込みました。保存先はまだ設定されていません。`)
+      setCoreStatus(appMessage({
+        ja: 'SVGから「{name}」を取り込みました。保存先はまだ設定されていません。',
+        en: 'Imported “{name}” from SVG. A save location has not been set yet.',
+      }, { name: snapshot.name }))
       requestAnimationFrame(() => svgImportButtonRef.current?.focus())
     } catch (error) {
       const message = String(error)
-      setSvgImportError(`取り込めませんでした: ${message}`)
-      setCoreStatus(`SVG取込エラー: ${message}`)
+      setSvgImportError(appMessage({
+        ja: '取り込めませんでした: {error}',
+        en: 'Could not import: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: 'SVG取込エラー: {error}',
+        en: 'SVG import error: {error}',
+      }, { error: message }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2301,17 +2736,33 @@ function App() {
         || latest.revision !== current.revision
       ) {
         await cancelCreasePatternExport(preview.export_id).catch(() => undefined)
-        throw new Error('編集中のプロジェクトと一致しない書き出しプレビューを拒否しました')
+        throw new Error(text({
+          ja: '編集中のプロジェクトと一致しない書き出しプレビューを拒否しました',
+          en: 'Rejected an export preview that does not match the current project.',
+        }))
       }
       setCreaseExportPreview(preview)
-      setCoreStatus(
-        `${creasePatternExportFormatLabel(preview.format)}書き出しの情報損失を確認してください`,
-      )
+      setCoreStatus(appMessage({
+        ja: formatLocalizedText('ja', {
+          ja: '{format}書き出しの情報損失を確認してください',
+          en: '',
+        }, { format: localizedCreaseExportFormatLabel(preview.format, 'ja') }),
+        en: formatLocalizedText('en', {
+          ja: '',
+          en: 'Review information loss for the {format} export.',
+        }, { format: localizedCreaseExportFormatLabel(preview.format, 'en') }),
+      }))
     } catch (error) {
       if (requestId !== creaseExportRequestIdRef.current) return
       const message = String(error)
-      setCreaseExportError(`書き出しデータを準備できませんでした: ${message}`)
-      setCoreStatus(`展開図書き出しエラー: ${message}`)
+      setCreaseExportError(appMessage({
+        ja: '書き出しデータを準備できませんでした: {error}',
+        en: 'Could not prepare export data: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: '展開図書き出しエラー: {error}',
+        en: 'Crease-pattern export error: {error}',
+      }, { error: message }))
     } finally {
       if (requestId === creaseExportRequestIdRef.current) {
         setFileOperation(null)
@@ -2357,12 +2808,21 @@ function App() {
       setCreaseExportPreview(null)
       setCreaseExportError(null)
       setCreaseExportNotice(null)
-      setCoreStatus('展開図書き出しをキャンセルしました')
+      setCoreStatus(appMessage({
+        ja: '展開図書き出しをキャンセルしました',
+        en: 'Crease-pattern export cancelled',
+      }))
       requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
     } catch (error) {
       const message = String(error)
-      setCreaseExportError(`取消を完了できませんでした: ${message}`)
-      setCoreStatus(`展開図書き出しの後始末エラー: ${message}`)
+      setCreaseExportError(appMessage({
+        ja: '取消を完了できませんでした: {error}',
+        en: 'Could not cancel: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: '展開図書き出しの後始末エラー: {error}',
+        en: 'Crease-pattern export cleanup error: {error}',
+      }, { error: message }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2377,7 +2837,10 @@ function App() {
       current.project_id !== preview.expected_project_id
       || current.revision !== preview.expected_revision
     ) {
-      setCreaseExportError('編集内容が変わったため、書き出しデータを作り直してください。')
+      setCreaseExportError(appMessage({
+        ja: '編集内容が変わったため、書き出しデータを作り直してください。',
+        en: 'The project changed. Rebuild the export data.',
+      }))
       return
     }
 
@@ -2394,19 +2857,34 @@ function App() {
         warningsAcknowledged,
       )
       if (response.canceled) {
-        setCreaseExportNotice('保存先の選択をキャンセルしました。確認画面から再試行できます。')
-        setCoreStatus('展開図の保存先選択をキャンセルしました')
+        setCreaseExportNotice(appMessage({
+          ja: '保存先の選択をキャンセルしました。確認画面から再試行できます。',
+          en: 'Save location selection was cancelled. You can retry from the review screen.',
+        }))
+        setCoreStatus(appMessage({
+          ja: '展開図の保存先選択をキャンセルしました',
+          en: 'Crease-pattern save location selection cancelled',
+        }))
         return
       }
       setCreaseExportOpen(false)
       setCreaseExportPreview(null)
       setCreaseExportNotice(null)
-      setCoreStatus(`${preview.suggested_file_name}を書き出しました`)
+      setCoreStatus(appMessage({
+        ja: '{fileName}を書き出しました',
+        en: 'Exported {fileName}',
+      }, { fileName: preview.suggested_file_name }))
       requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
     } catch (error) {
       const message = String(error)
-      setCreaseExportError(`書き出せませんでした: ${message}`)
-      setCoreStatus(`展開図書き出しエラー: ${message}`)
+      setCreaseExportError(appMessage({
+        ja: '書き出せませんでした: {error}',
+        en: 'Could not export: {error}',
+      }, { error: message }))
+      setCoreStatus(appMessage({
+        ja: '展開図書き出しエラー: {error}',
+        en: 'Crease-pattern export error: {error}',
+      }, { error: message }))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2469,15 +2947,31 @@ function App() {
       }
       setInstructionExportPreview(preview)
       setInstructionExportPhase('ready')
-      setCoreStatus(
-        `${instructionExportFormatLabel(preview.format)}の内容と注意事項を確認してください。`,
-      )
+      setCoreStatus(appMessage({
+        ja: formatLocalizedText('ja', {
+          ja: '{format}の内容と注意事項を確認してください。',
+          en: '',
+        }, {
+          format: localizedInstructionExportFormatLabel(preview.format, 'ja'),
+        }),
+        en: formatLocalizedText('en', {
+          ja: '',
+          en: 'Review the {format} content and notices.',
+        }, {
+          format: localizedInstructionExportFormatLabel(preview.format, 'en'),
+        }),
+      }))
     } catch (error) {
       if (requestId !== instructionExportRequestIdRef.current) return
       instructionExportGenerationIdRef.current = null
-      const message = instructionExportErrorMessage(error)
-      setInstructionExportError(`折り図を準備できませんでした: ${message}`)
-      setCoreStatus(`折り図書き出しエラー: ${message}`)
+      setInstructionExportError(instructionExportErrorAppMessage(error, {
+        ja: '折り図を準備できませんでした: {error}',
+        en: 'Could not prepare the instructions: {error}',
+      }))
+      setCoreStatus(instructionExportErrorAppMessage(error, {
+        ja: '折り図書き出しエラー: {error}',
+        en: 'Instruction export error: {error}',
+      }))
     } finally {
       if (requestId === instructionExportRequestIdRef.current) {
         setInstructionExportGenerationActive(false)
@@ -2512,9 +3006,10 @@ function App() {
           requestId !== instructionExportRequestIdRef.current
           || instructionExportGenerationIdRef.current !== exportId
         ) return
-        setInstructionExportNotice(
-          `進捗表示を更新できませんでした: ${instructionExportErrorMessage(error)} 生成結果を待っています。`,
-        )
+        setInstructionExportNotice(instructionExportErrorAppMessage(error, {
+          ja: '進捗表示を更新できませんでした: {error} 生成結果を待っています。',
+          en: 'Progress could not be updated: {error} Waiting for the generated result.',
+        }))
         return
       }
     }
@@ -2551,14 +3046,23 @@ function App() {
       setFileOperation(null)
       coreOperationRef.current = false
       setCoreBusy(false)
-      setCoreStatus('折り図の生成を中止しています。')
+      setCoreStatus(appMessage({
+        ja: '折り図の生成を中止しています。',
+        en: 'Stopping instruction generation…',
+      }))
       requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
       if (exportId) {
         try {
           await cancelInstructionExport(exportId)
-          setCoreStatus('折り図の生成を中止しました。')
+          setCoreStatus(appMessage({
+            ja: '折り図の生成を中止しました。',
+            en: 'Instruction generation stopped.',
+          }))
         } catch {
-          setCoreStatus('折り図の生成は終了済みです。')
+          setCoreStatus(appMessage({
+            ja: '折り図の生成は終了済みです。',
+            en: 'Instruction generation has already finished.',
+          }))
         }
       }
       return
@@ -2580,12 +3084,20 @@ function App() {
       setInstructionExportPreview(null)
       setInstructionExportError(null)
       setInstructionExportNotice(null)
-      setCoreStatus('折り図の書き出しをキャンセルしました。')
+      setCoreStatus(appMessage({
+        ja: '折り図の書き出しをキャンセルしました。',
+        en: 'Instruction export cancelled.',
+      }))
       requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
     } catch (error) {
-      const message = instructionExportErrorMessage(error)
-      setInstructionExportError(`キャンセルを完了できませんでした: ${message}`)
-      setCoreStatus(`折り図キャンセルエラー: ${message}`)
+      setInstructionExportError(instructionExportErrorAppMessage(error, {
+        ja: 'キャンセルを完了できませんでした: {error}',
+        en: 'Could not cancel: {error}',
+      }))
+      setCoreStatus(instructionExportErrorAppMessage(error, {
+        ja: '折り図キャンセルエラー: {error}',
+        en: 'Instruction cancellation error: {error}',
+      }))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2600,9 +3112,10 @@ function App() {
       current.project_id !== preview.expected_project_id
       || current.revision !== preview.expected_revision
     ) {
-      setInstructionExportError(
-        '編集内容が変わったため、折り図データを作り直してください。',
-      )
+      setInstructionExportError(appMessage({
+        ja: '編集内容が変わったため、折り図データを作り直してください。',
+        en: 'The project changed. Rebuild the instruction data.',
+      }))
       return
     }
 
@@ -2619,22 +3132,34 @@ function App() {
         warningsAcknowledged,
       )
       if (response.canceled) {
-        setInstructionExportNotice(
-          '保存先の選択をキャンセルしました。この画面からもう一度保存できます。',
-        )
-        setCoreStatus('折り図の保存先選択をキャンセルしました。')
+        setInstructionExportNotice(appMessage({
+          ja: '保存先の選択をキャンセルしました。この画面からもう一度保存できます。',
+          en: 'Save location selection was cancelled. You can save again from this screen.',
+        }))
+        setCoreStatus(appMessage({
+          ja: '折り図の保存先選択をキャンセルしました。',
+          en: 'Instruction save location selection cancelled.',
+        }))
         return
       }
       setInstructionExportOpen(false)
       instructionExportGenerationIdRef.current = null
       setInstructionExportPreview(null)
       setInstructionExportNotice(null)
-      setCoreStatus(`${preview.suggested_file_name}を書き出しました。`)
+      setCoreStatus(appMessage({
+        ja: '{fileName}を書き出しました。',
+        en: 'Exported {fileName}.',
+      }, { fileName: preview.suggested_file_name }))
       requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
     } catch (error) {
-      const message = instructionExportErrorMessage(error)
-      setInstructionExportError(`折り図を書き出せませんでした: ${message}`)
-      setCoreStatus(`折り図書き出しエラー: ${message}`)
+      setInstructionExportError(instructionExportErrorAppMessage(error, {
+        ja: '折り図を書き出せませんでした: {error}',
+        en: 'Could not export the instructions: {error}',
+      }))
+      setCoreStatus(instructionExportErrorAppMessage(error, {
+        ja: '折り図書き出しエラー: {error}',
+        en: 'Instruction export error: {error}',
+      }))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2645,7 +3170,10 @@ function App() {
   async function toggleBenchmark() {
     if (benchmarkRun) {
       setBenchmarkRun(null)
-      setBenchmarkStatus('通常の展開図に戻りました')
+      setBenchmarkStatus(appMessage({
+        ja: '通常の展開図に戻りました',
+        en: 'Returned to the normal crease pattern',
+      }))
       setSelectedLineId(null)
       setSelectedVertexId(null)
       return
@@ -2653,7 +3181,10 @@ function App() {
     if (benchmarkLoading) return
 
     setBenchmarkLoading(true)
-    setBenchmarkStatus('10,000本の実データを生成・転送中…')
+    setBenchmarkStatus(appMessage({
+      ja: '10,000本の実データを生成・転送中…',
+      en: 'Generating and transferring 10,000 real edges…',
+    }))
     setSelectedLineId(null)
     setSelectedVertexId(null)
     setPendingEdgeStart(null)
@@ -2678,13 +3209,20 @@ function App() {
         startedAt,
       }
       setBenchmarkRun(run)
-      setBenchmarkStatus(
-        `${run.lines.length.toLocaleString()}本 · ${formatBytes(payloadBytes)} · `
-        + `生成+転送 ${responseMs.toFixed(1)}ms · Canvas計測中…`,
-      )
+      setBenchmarkStatus(appMessageWithLocalizedVariables({
+        ja: '{count}本 · {bytes} · 生成+転送 {responseMs}ms · Canvas計測中…',
+        en: '{count} edges · {bytes} · generation + transfer {responseMs} ms · measuring canvas…',
+      }, (locale) => ({
+        count: run.lines.length.toLocaleString(locale),
+        bytes: formatBytes(payloadBytes, locale),
+        responseMs: responseMs.toFixed(1),
+      })))
     } catch (error) {
       reportUnexpected('app.benchmark')
-      setBenchmarkStatus(`ベンチマーク失敗: ${String(error)}`)
+      setBenchmarkStatus(appMessage({
+        ja: 'ベンチマーク失敗: {error}',
+        en: 'Benchmark failed: {error}',
+      }, { error: String(error) }))
     } finally {
       setBenchmarkLoading(false)
     }
@@ -2698,13 +3236,20 @@ function App() {
       0,
       endToEndMs - run.responseMs - run.preparationMs - metrics.totalDurationMs,
     )
-    setBenchmarkStatus(
-      `${metrics.lineCount.toLocaleString()}本 · ${formatBytes(run.payloadBytes)} · `
-      + `生成+転送 ${run.responseMs.toFixed(1)}ms · 変換 ${run.preparationMs.toFixed(1)}ms · `
-      + `UI準備 ${uiPreparationMs.toFixed(1)}ms · 初描画 ${metrics.initialDrawMs.toFixed(1)}ms · `
-      + `${metrics.sampleFrameCount}f ${metrics.framesPerSecond.toFixed(1)} FPS · `
-      + `p95 ${metrics.p95DrawMs.toFixed(1)}ms`,
-    )
+    setBenchmarkStatus(appMessageWithLocalizedVariables({
+      ja: '{count}本 · {bytes} · 生成+転送 {responseMs}ms · 変換 {preparationMs}ms · UI準備 {uiMs}ms · 初描画 {drawMs}ms · {frames}f {fps} FPS · p95 {p95}ms',
+      en: '{count} edges · {bytes} · generation + transfer {responseMs} ms · conversion {preparationMs} ms · UI preparation {uiMs} ms · initial draw {drawMs} ms · {frames}f {fps} FPS · p95 {p95} ms',
+    }, (locale) => ({
+      count: metrics.lineCount.toLocaleString(locale),
+      bytes: formatBytes(run.payloadBytes, locale),
+      responseMs: run.responseMs.toFixed(1),
+      preparationMs: run.preparationMs.toFixed(1),
+      uiMs: uiPreparationMs.toFixed(1),
+      drawMs: metrics.initialDrawMs.toFixed(1),
+      frames: metrics.sampleFrameCount,
+      fps: metrics.framesPerSecond.toFixed(1),
+      p95: metrics.p95DrawMs.toFixed(1),
+    })))
   }
 
   return (
@@ -2717,39 +3262,63 @@ function App() {
           className="document-name"
           title={nativeSnapshot?.current_path ?? undefined}
         >
-          {nativeSnapshot?.name ?? '無題のプロジェクト'}
+          {nativeSnapshot?.name ?? text({
+            ja: '無題のプロジェクト',
+            en: 'Untitled project',
+          })}
           {nativeSnapshot?.is_dirty ? ' *' : ''}
         </span>
-        <nav className="top-actions" aria-label="プロジェクト操作">
+        <nav
+          className="top-actions"
+          aria-label={text({
+            ja: 'プロジェクト操作',
+            en: 'Project actions',
+          })}
+        >
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title={`新規 (${keyboardShortcutDisplayValue('new', keyboardShortcuts)})`}
+            title={formattedText({
+              ja: '新規 ({shortcut})',
+              en: 'New ({shortcut})',
+            }, {
+              shortcut: keyboardShortcutDisplayValue('new', keyboardShortcuts),
+            })}
             aria-keyshortcuts={keyboardShortcutAriaValue('new', keyboardShortcuts)}
             onClick={() => {
               setNewProjectError(null)
               setNewProjectOpen(true)
             }}
           >
-            新規
+            {text({ ja: '新規', en: 'New' })}
           </button>
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot?.can_undo}
             onClick={() => runNativeEdit(undo)}
-            title={`元に戻す (${keyboardShortcutDisplayValue('undo', keyboardShortcuts)})`}
+            title={formattedText({
+              ja: '元に戻す ({shortcut})',
+              en: 'Undo ({shortcut})',
+            }, {
+              shortcut: keyboardShortcutDisplayValue('undo', keyboardShortcuts),
+            })}
             aria-keyshortcuts={keyboardShortcutAriaValue('undo', keyboardShortcuts)}
           >
-            元に戻す
+            {text({ ja: '元に戻す', en: 'Undo' })}
           </button>
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot?.can_redo}
             onClick={() => runNativeEdit(redo)}
-            title={`やり直す (${keyboardShortcutDisplayValue('redo', keyboardShortcuts)})`}
+            title={formattedText({
+              ja: 'やり直す ({shortcut})',
+              en: 'Redo ({shortcut})',
+            }, {
+              shortcut: keyboardShortcutDisplayValue('redo', keyboardShortcuts),
+            })}
             aria-keyshortcuts={keyboardShortcutAriaValue('redo', keyboardShortcuts)}
           >
-            やり直す
+            {text({ ja: 'やり直す', en: 'Redo' })}
           </button>
           <button
             type="button"
@@ -2760,16 +3329,23 @@ function App() {
                 addVertex(projectId, revision, projectInstanceId, paperCenter.x, paperCenter.y))
             }}
           >
-            中央に頂点
+            {text({ ja: '中央に頂点', en: 'Vertex at center' })}
           </button>
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title={`開く (${keyboardShortcutDisplayValue('open', keyboardShortcuts)})`}
+            title={formattedText({
+              ja: '開く ({shortcut})',
+              en: 'Open ({shortcut})',
+            }, {
+              shortcut: keyboardShortcutDisplayValue('open', keyboardShortcuts),
+            })}
             aria-keyshortcuts={keyboardShortcutAriaValue('open', keyboardShortcuts)}
             onClick={() => void runFileOperation('open')}
           >
-            {fileOperation === 'open' ? '開いています…' : '開く'}
+            {fileOperation === 'open'
+              ? text({ ja: '開いています…', en: 'Opening…' })
+              : text({ ja: '開く', en: 'Open' })}
           </button>
           <button
             ref={foldImportButtonRef}
@@ -2778,7 +3354,9 @@ function App() {
             onClick={() => void beginFoldImport()}
             aria-haspopup="dialog"
           >
-            {fileOperation === 'fold_import' ? '解析中…' : 'FOLD取込'}
+            {fileOperation === 'fold_import'
+              ? text({ ja: '解析中…', en: 'Analyzing…' })
+              : text({ ja: 'FOLD取込', en: 'Import FOLD' })}
           </button>
           <button
             ref={svgImportButtonRef}
@@ -2787,7 +3365,9 @@ function App() {
             onClick={() => void beginSvgImport()}
             aria-haspopup="dialog"
           >
-            {fileOperation === 'svg_import' ? '解析中…' : 'SVG取込'}
+            {fileOperation === 'svg_import'
+              ? text({ ja: '解析中…', en: 'Analyzing…' })
+              : text({ ja: 'SVG取込', en: 'Import SVG' })}
           </button>
           <button
             ref={creaseExportButtonRef}
@@ -2796,25 +3376,41 @@ function App() {
             onClick={beginCreaseExport}
             aria-haspopup="dialog"
           >
-            {fileOperation === 'crease_export' ? '生成中…' : '書出し'}
+            {fileOperation === 'crease_export'
+              ? text({ ja: '生成中…', en: 'Generating…' })
+              : text({ ja: '書出し', en: 'Export' })}
           </button>
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title={`保存 (${keyboardShortcutDisplayValue('save', keyboardShortcuts)})`}
+            title={formattedText({
+              ja: '保存 ({shortcut})',
+              en: 'Save ({shortcut})',
+            }, {
+              shortcut: keyboardShortcutDisplayValue('save', keyboardShortcuts),
+            })}
             aria-keyshortcuts={keyboardShortcutAriaValue('save', keyboardShortcuts)}
             onClick={() => void runFileOperation('save')}
           >
-            {fileOperation === 'save' ? '保存中…' : '保存'}
+            {fileOperation === 'save'
+              ? text({ ja: '保存中…', en: 'Saving…' })
+              : text({ ja: '保存', en: 'Save' })}
           </button>
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
-            title={`別名保存 (${keyboardShortcutDisplayValue('save_as', keyboardShortcuts)})`}
+            title={formattedText({
+              ja: '別名保存 ({shortcut})',
+              en: 'Save as ({shortcut})',
+            }, {
+              shortcut: keyboardShortcutDisplayValue('save_as', keyboardShortcuts),
+            })}
             aria-keyshortcuts={keyboardShortcutAriaValue('save_as', keyboardShortcuts)}
             onClick={() => void runFileOperation('save_as')}
           >
-            {fileOperation === 'save_as' ? '保存中…' : '別名保存'}
+            {fileOperation === 'save_as'
+              ? text({ ja: '保存中…', en: 'Saving…' })
+              : text({ ja: '別名保存', en: 'Save as' })}
           </button>
           <button
             type="button"
@@ -2822,22 +3418,25 @@ function App() {
             disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
             onClick={() => void runValidation()}
           >
-            検証
+            {text({ ja: '検証', en: 'Validate' })}
           </button>
         </nav>
       </header>
 
       <section className="workspace" inert={modalOpen} id="workspace-main" data-inspector-side={workspaceLayout.inspectorSide}>
-        <aside className="tool-rail" aria-label="作図ツール">
-          {[
-            ['select', '↖', '選択'],
-            ['vertex', '＋', '頂点'],
-            ['mountain', '━', '山折り'],
-            ['valley', '┅', '谷折り'],
-            ['auxiliary', '┈', '補助線'],
-            ['cut', '✂', '切断'],
-            ['measure', '∠', '計測'],
-          ].map(([id, icon, label]) => (
+        <aside
+          className="tool-rail"
+          aria-label={text({ ja: '作図ツール', en: 'Drawing tools' })}
+        >
+          {([
+            { id: 'select', icon: '↖', label: { ja: '選択', en: 'Select' } },
+            { id: 'vertex', icon: '＋', label: { ja: '頂点', en: 'Vertex' } },
+            { id: 'mountain', icon: '━', label: { ja: '山折り', en: 'Mountain fold' } },
+            { id: 'valley', icon: '┅', label: { ja: '谷折り', en: 'Valley fold' } },
+            { id: 'auxiliary', icon: '┈', label: { ja: '補助線', en: 'Auxiliary line' } },
+            { id: 'cut', icon: '✂', label: { ja: '切断', en: 'Cut' } },
+            { id: 'measure', icon: '∠', label: { ja: '計測', en: 'Measure' } },
+          ] as const).map(({ id, icon, label }) => (
             <button
               type="button"
               key={id}
@@ -2847,8 +3446,8 @@ function App() {
                 setActiveTool(id)
                 setPendingEdgeStart(null)
               }}
-              title={label}
-              aria-label={label}
+              title={text(label)}
+              aria-label={text(label)}
               aria-pressed={activeTool === id}
             >
               {icon}
@@ -2863,11 +3462,20 @@ function App() {
         >
           <article id="crease-editor-panel" className="panel crease-panel">
             <div className="panel-heading">
-              <span>2D 展開図</span>
+              <span>{text({ ja: '2D 展開図', en: '2D crease pattern' })}</span>
               <span className="panel-meta">
                 {benchmarkRun
-                  ? `性能テスト · ${displayedLines.length.toLocaleString()}本`
-                  : `${paperSizeLabel} · ${displayedLines.length.toLocaleString()}本`}
+                  ? formattedText({
+                      ja: '性能テスト · {count}本',
+                      en: 'Benchmark · {count} edges',
+                    }, { count: displayedLines.length.toLocaleString(locale) })
+                  : formattedText({
+                      ja: '{size} · {count}本',
+                      en: '{size} · {count} edges',
+                    }, {
+                      size: paperSizeLabel,
+                      count: displayedLines.length.toLocaleString(locale),
+                    })}
               </span>
             </div>
             <CreaseCanvas
@@ -2883,6 +3491,7 @@ function App() {
               measurementLabel={formatLineMeasurementLabel(
                 selectedLineMeasurement,
                 displayedLengthUnit,
+                locale,
               )}
               snapSettings={snapSettings}
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
@@ -2904,9 +3513,15 @@ function App() {
                 ? undefined
                 : (reason) => {
                     if (reason === 'intersection-truncated') {
-                      setCoreStatus('交点候補が過密なため配置できません。拡大して再試行してください')
+                      setCoreStatus(appMessage({
+                        ja: '交点候補が過密なため配置できません。拡大して再試行してください',
+                        en: 'Too many intersection candidates. Zoom in and try again.',
+                      }))
                     } else if (reason === 'intersection-blocked') {
-                      setCoreStatus('未対応または曖昧な交点クラスタのため配置できません。辺や頂点の重複を確認してください')
+                      setCoreStatus(appMessage({
+                        ja: '未対応または曖昧な交点クラスタのため配置できません。辺や頂点の重複を確認してください',
+                        en: 'This intersection cluster is unsupported or ambiguous. Check for overlapping edges or vertices.',
+                      }))
                     }
                   }}
               onSelectVertex={benchmarkRun
@@ -2928,7 +3543,7 @@ function App() {
 
           <article id="fold-preview-panel" className="panel preview-panel">
             <div className="panel-heading">
-              <span>3D プレビュー</span>
+              <span>{text({ ja: '3D プレビュー', en: '3D preview' })}</span>
               <span className={foldPreviewStatusClass}>{foldPreviewStatus}</span>
             </div>
             <FoldPreview
@@ -2992,7 +3607,9 @@ function App() {
               lengthDisplayUnit={lengthDisplayUnit}
             />
             <div className="fixed-face-control">
-              <label htmlFor="fixed-face">固定面</label>
+              <label htmlFor="fixed-face">
+                {text({ ja: '固定面', en: 'Fixed face' })}
+              </label>
               <select
                 id="fixed-face"
                 value={effectiveFixedFaceId ?? ''}
@@ -3009,18 +3626,31 @@ function App() {
               >
                 {fixedFaceOptions.length > 0
                   ? fixedFaceOptions.map((face, index) => (
-                      <option value={face.id} key={face.id}>面 {index + 1}</option>
+                      <option value={face.id} key={face.id}>
+                        {formattedText({
+                          ja: '面 {index}',
+                          en: 'Face {index}',
+                        }, { index: index + 1 })}
+                      </option>
                     ))
-                  : <option value="">選択不可</option>}
+                  : (
+                      <option value="">
+                        {text({ ja: '選択不可', en: 'Unavailable' })}
+                      </option>
+                    )}
               </select>
-              <span>{fixedFaceEnabled ? '青枠・固定' : '—'}</span>
+              <span>
+                {fixedFaceEnabled
+                  ? text({ ja: '青枠・固定', en: 'Blue outline · fixed' })
+                  : '—'}
+              </span>
             </div>
             <div className="fold-control">
               <label htmlFor="fold-angle">
                 {foldPreviewModel?.kind === 'fold_graph'
                   && foldPreviewModel.kinematics.kind === 'tree'
-                  ? '全ヒンジ'
-                  : '指定折り量'}
+                  ? text({ ja: '全ヒンジ', en: 'All hinges' })
+                  : text({ ja: '指定折り量', en: 'Target fold' })}
               </label>
               <input
                 id="fold-angle"
@@ -3041,8 +3671,14 @@ function App() {
                     step="0.1"
                     aria-label={
                       foldPreviewModel?.kind === 'fold_graph'
-                        ? '全ヒンジの指定折り量（度）'
-                        : '指定折り量（度）'
+                        ? text({
+                            ja: '全ヒンジの指定折り量（度）',
+                            en: 'Target fold for all hinges (degrees)',
+                          })
+                        : text({
+                            ja: '指定折り量（度）',
+                            en: 'Target fold (degrees)',
+                          })
                     }
                     value={foldAngle}
                     onChange={(event) => updateUniformFoldAngle(event.currentTarget.valueAsNumber)}
@@ -3056,12 +3692,24 @@ function App() {
               && foldTreeHingeAngles ? (
                 <section className="hinge-angle-controls" aria-labelledby="hinge-angle-title">
                   <div className="hinge-angle-heading">
-                    <strong id="hinge-angle-title">ヒンジ別の折り量</strong>
-                    <span>橙枠=従属面・衝突未検証</span>
+                    <strong id="hinge-angle-title">
+                      {text({
+                        ja: 'ヒンジ別の折り量',
+                        en: 'Fold amount by hinge',
+                      })}
+                    </strong>
+                    <span>
+                      {text({
+                        ja: '橙枠=従属面・衝突未検証',
+                        en: 'Orange outline = dependent face; collision unchecked',
+                      })}
+                    </span>
                   </div>
                   {foldPreviewModel.kinematics.joints.map((joint, index) => {
                     const hingeAngle = foldTreeHingeAngles[index]?.angleDegrees ?? foldAngle
-                    const label = joint.hinge.assignment === 'mountain' ? '山折り' : '谷折り'
+                    const label = joint.hinge.assignment === 'mountain'
+                      ? text({ ja: '山折り', en: 'mountain fold' })
+                      : text({ ja: '谷折り', en: 'valley fold' })
                     const inputId = `hinge-angle-${joint.hinge.edgeId}`
                     const selected = selectedLineId === joint.hinge.edgeId
                     return (
@@ -3070,9 +3718,21 @@ function App() {
                           type="button"
                           className="hinge-select-button"
                           aria-pressed={benchmarkRun ? false : selected}
-                          aria-label={`${index + 1}番目の${label}を2D・3Dで${selected ? '選択解除' : '選択'}`}
+                          aria-label={formattedText({
+                            ja: '{index}番目の{label}を2D・3Dで{action}',
+                            en: '{action} {label} {index} in 2D and 3D',
+                          }, {
+                            index: index + 1,
+                            label,
+                            action: selected
+                              ? text({ ja: '選択解除', en: 'Deselect' })
+                              : text({ ja: '選択', en: 'Select' }),
+                          })}
                           disabled={Boolean(benchmarkRun)}
-                          title={`2D・3Dで選択: ${joint.hinge.edgeId}`}
+                          title={formattedText({
+                            ja: '2D・3Dで選択: {edgeId}',
+                            en: 'Select in 2D and 3D: {edgeId}',
+                          }, { edgeId: joint.hinge.edgeId })}
                           onClick={() => {
                             setSelectedLineId(selected ? null : joint.hinge.edgeId)
                             setSelectedVertexId(null)
@@ -3086,7 +3746,10 @@ function App() {
                           min="0"
                           max="180"
                           step="0.1"
-                          aria-label={`${index + 1}番目の${label}の折り量`}
+                          aria-label={formattedText({
+                            ja: '{index}番目の{label}の折り量',
+                            en: 'Fold amount for {label} {index}',
+                          }, { index: index + 1, label })}
                           value={hingeAngle}
                           onChange={(event) => updateHingeFoldAngle(
                             joint.hinge.edgeId,
@@ -3099,7 +3762,10 @@ function App() {
                             min="0"
                             max="180"
                             step="0.1"
-                            aria-label={`${index + 1}番目の${label}の角度`}
+                            aria-label={formattedText({
+                              ja: '{index}番目の{label}の角度',
+                              en: 'Angle for {label} {index}',
+                            }, { index: index + 1, label })}
                             value={hingeAngle}
                             onChange={(event) => updateHingeFoldAngle(
                               joint.hinge.edgeId,
@@ -3119,16 +3785,21 @@ function App() {
         <WorkspaceLayoutSeparator kind="inspector" />
 
         <aside id="workspace-inspector-panel" className="inspector panel">
-          <div className="panel-heading">プロパティ</div>
+          <div className="panel-heading">
+            {text({ ja: 'プロパティ', en: 'Properties' })}
+          </div>
           <section>
-            <h2>選択要素</h2>
+            <h2>{text({ ja: '選択要素', en: 'Selection' })}</h2>
             {selectedLine ? (
               <>
                 <dl>
                   <div><dt>ID</dt><dd>{selectedLine.id}</dd></div>
-                  <div><dt>種類</dt><dd>{lineKindLabel(selectedLine.kind)}</dd></div>
                   <div>
-                    <dt>始点</dt>
+                    <dt>{text({ ja: '種類', en: 'Type' })}</dt>
+                    <dd>{lineKindLabel(selectedLine.kind, locale)}</dd>
+                  </div>
+                  <div>
+                    <dt>{text({ ja: '始点', en: 'Start' })}</dt>
                     <dd>{formatLengthPoint(
                       selectedLine.x1,
                       selectedLine.y1,
@@ -3136,7 +3807,7 @@ function App() {
                     )}</dd>
                   </div>
                   <div>
-                    <dt>終点</dt>
+                    <dt>{text({ ja: '終点', en: 'End' })}</dt>
                     <dd>{formatLengthPoint(
                       selectedLine.x2,
                       selectedLine.y2,
@@ -3145,11 +3816,27 @@ function App() {
                   </div>
                   <div><dt>ΔX</dt><dd>{formatLength(selectedLineMeasurement?.deltaX, displayedLengthUnit)}</dd></div>
                   <div><dt>ΔY</dt><dd>{formatLength(selectedLineMeasurement?.deltaY, displayedLengthUnit)}</dd></div>
-                  <div><dt>長さ</dt><dd>{formatLength(selectedLineMeasurement?.length, displayedLengthUnit)}</dd></div>
-                  <div><dt>角度</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.angleDegrees, '°', 2)}</dd></div>
+                  <div>
+                    <dt>{text({ ja: '長さ', en: 'Length' })}</dt>
+                    <dd>{formatLength(selectedLineMeasurement?.length, displayedLengthUnit)}</dd>
+                  </div>
+                  <div>
+                    <dt>{text({ ja: '角度', en: 'Angle' })}</dt>
+                    <dd>{formatMeasurementValue(
+                      selectedLineMeasurement?.angleDegrees,
+                      '°',
+                      2,
+                      locale,
+                    )}</dd>
+                  </div>
                 </dl>
                 {benchmarkRun ? (
-                  <p className="muted">性能テストの図は選択・計測のみ可能です。</p>
+                  <p className="muted">
+                    {text({
+                      ja: '性能テストの図は選択・計測のみ可能です。',
+                      en: 'The benchmark pattern supports selection and measurement only.',
+                    })}
+                  </p>
                 ) : (
                   <div className="property-actions">
                     <button
@@ -3161,8 +3848,14 @@ function App() {
                       ))}
                     >
                       {parallelReferenceEdgeId === selectedLine.id
-                        ? '方向参照を解除'
-                        : '方向参照に設定'}
+                        ? text({
+                            ja: '方向参照を解除',
+                            en: 'Clear direction reference',
+                          })
+                        : text({
+                            ja: '方向参照に設定',
+                            en: 'Set as direction reference',
+                          })}
                     </button>
                     {selectedLine.kind === 'boundary' ? (
                       <button
@@ -3170,7 +3863,10 @@ function App() {
                         disabled={coreBusy}
                         onClick={() => void splitSelectedBoundaryEdge()}
                       >
-                        輪郭辺を中点で分割
+                        {text({
+                          ja: '輪郭辺を中点で分割',
+                          en: 'Split boundary edge at midpoint',
+                        })}
                       </button>
                     ) : (
                       <button
@@ -3179,30 +3875,49 @@ function App() {
                         disabled={coreBusy}
                         onClick={() => void deleteSelection()}
                       >
-                        線を削除
+                        {text({ ja: '線を削除', en: 'Delete line' })}
                       </button>
                     )}
                   </div>
                 )}
                 {selectedLine.kind === 'boundary' && (
-                  <p className="muted">分割後に選択される新しい頂点を移動して、紙の輪郭を編集できます。</p>
+                  <p className="muted">
+                    {text({
+                      ja: '分割後に選択される新しい頂点を移動して、紙の輪郭を編集できます。',
+                      en: 'Move the newly selected vertex after splitting to edit the paper boundary.',
+                    })}
+                  </p>
                 )}
               </>
             ) : selectedBenchmarkVertex ? (
               <>
                 <dl>
                   <div><dt>ID</dt><dd>{selectedBenchmarkVertex.id}</dd></div>
-                  <div><dt>種類</dt><dd>性能テスト頂点</dd></div>
+                  <div>
+                    <dt>{text({ ja: '種類', en: 'Type' })}</dt>
+                    <dd>{text({
+                      ja: '性能テスト頂点',
+                      en: 'Benchmark vertex',
+                    })}</dd>
+                  </div>
                   <div><dt>X</dt><dd>{selectedBenchmarkVertex.x}</dd></div>
                   <div><dt>Y</dt><dd>{selectedBenchmarkVertex.y}</dd></div>
                 </dl>
-                <p className="muted">性能テストの図は選択・計測のみ可能です。</p>
+                <p className="muted">
+                  {text({
+                    ja: '性能テストの図は選択・計測のみ可能です。',
+                    en: 'The benchmark pattern supports selection and measurement only.',
+                  })}
+                </p>
               </>
             ) : selectedVertex ? (
               <>
                 <dl>
                   <div><dt>ID</dt><dd>{selectedVertex.id}</dd></div>
-                  <div><dt>種類</dt><dd>頂点</dd></div>
+                  <div>
+                    <dt>{text({ ja: '種類', en: 'Type' })}</dt>
+                    <dd>{text({ ja: '頂点', en: 'Vertex' })}</dd>
+                  </div>
                 </dl>
                 <form
                   key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}:${lengthDisplayUnit.key}`}
@@ -3216,7 +3931,10 @@ function App() {
                       disabled={coreBusy}
                       initialMillimetres={selectedVertex.position.x}
                       unit={lengthDisplayUnit}
-                      ariaLabel={`頂点のX座標 (${lengthDisplayUnit.label})`}
+                      ariaLabel={formattedText({
+                        ja: '頂点のX座標 ({unit})',
+                        en: 'Vertex X coordinate ({unit})',
+                      }, { unit: lengthDisplayUnit.label })}
                     />
                   </label>
                   <label className="field">
@@ -3226,11 +3944,16 @@ function App() {
                       disabled={coreBusy}
                       initialMillimetres={selectedVertex.position.y}
                       unit={lengthDisplayUnit}
-                      ariaLabel={`頂点のY座標 (${lengthDisplayUnit.label})`}
+                      ariaLabel={formattedText({
+                        ja: '頂点のY座標 ({unit})',
+                        en: 'Vertex Y coordinate ({unit})',
+                      }, { unit: lengthDisplayUnit.label })}
                     />
                   </label>
                   <div className="property-actions">
-                    <button type="submit" disabled={coreBusy}>座標を更新</button>
+                    <button type="submit" disabled={coreBusy}>
+                      {text({ ja: '座標を更新', en: 'Update coordinates' })}
+                    </button>
                     <button
                       type="button"
                       className="danger"
@@ -3241,18 +3964,34 @@ function App() {
                       onClick={() => void deleteSelection()}
                     >
                       {selectedVertexIsBoundary
-                        ? '輪郭頂点を削除して辺を統合'
-                        : '頂点を削除'}
+                        ? text({
+                            ja: '輪郭頂点を削除して辺を統合',
+                            en: 'Delete boundary vertex and merge edges',
+                          })
+                        : text({ ja: '頂点を削除', en: 'Delete vertex' })}
                     </button>
                   </div>
                   <p className="muted">
                     {selectedVertexIsBoundary
-                      ? `輪郭は最低3点必要です（現在${paperBoundaryVertexCount}点）。この操作は元に戻せます。接続線がある場合など、安全に統合できない削除は拒否されます。`
-                      : '接続線がある頂点は、線を削除してから削除します。'}
+                      ? formattedText({
+                          ja: '輪郭は最低3点必要です（現在{count}点）。この操作は元に戻せます。接続線がある場合など、安全に統合できない削除は拒否されます。',
+                          en: 'A boundary needs at least three points ({count} currently). This action can be undone. Unsafe deletion, such as a vertex with connected lines, is rejected.',
+                        }, { count: paperBoundaryVertexCount })
+                      : text({
+                          ja: '接続線がある頂点は、線を削除してから削除します。',
+                          en: 'Delete connected lines before deleting their vertex.',
+                        })}
                   </p>
                 </form>
               </>
-            ) : <p className="muted">線または頂点を選択してください</p>}
+            ) : (
+              <p className="muted">
+                {text({
+                  ja: '線または頂点を選択してください',
+                  en: 'Select a line or vertex',
+                })}
+              </p>
+            )}
           </section>
           {nativeSnapshot && !benchmarkRun && (
             <GeometricConstraintPanel
@@ -3279,19 +4018,29 @@ function App() {
           )}
           {validation && (
             <section className={validation.is_valid ? 'validation-report valid' : 'validation-report invalid'}>
-              <h2>幾何検証</h2>
+              <h2>{text({ ja: '幾何検証', en: 'Geometry validation' })}</h2>
               {validation.is_valid ? (
-                <p>問題は見つかりませんでした。</p>
+                <p>
+                  {text({
+                    ja: '問題は見つかりませんでした。',
+                    en: 'No issues were found.',
+                  })}
+                </p>
               ) : (
                 <>
-                  <p>{validation.issues.length}件の問題が見つかりました。</p>
+                  <p>
+                    {formattedText({
+                      ja: '{count}件の問題が見つかりました。',
+                      en: '{count} issues were found.',
+                    }, { count: validation.issues.length })}
+                  </p>
                   <ul>
                     {validation.issues.slice(0, 20).map((issue, index) => {
                       const edgeId = issue.edges.find((id) =>
                         nativeLines.some((line) => line.id === id))
                       const vertexId = issue.vertices.find((id) =>
                         nativeSnapshot?.crease_pattern.vertices.some((vertex) => vertex.id === id))
-                      const label = validationIssueLabel(issue.code)
+                      const label = validationIssueLabel(issue.code, locale)
                       return (
                         <li key={`${issue.code}:${index}`}>
                           {edgeId || vertexId ? (
@@ -3326,7 +4075,12 @@ function App() {
                   : localFlatFoldabilityPresentation.kind
               }`}
             >
-              <h2>局所平坦折り条件</h2>
+              <h2>
+                {text({
+                  ja: '局所平坦折り条件',
+                  en: 'Local flat-foldability conditions',
+                })}
+              </h2>
               <p
                 id="local-flat-foldability-summary"
                 className="local-flat-foldability-summary"
@@ -3334,74 +4088,115 @@ function App() {
                 aria-live="polite"
                 aria-atomic="true"
               >
-                {localFlatFoldabilityPresentation.summaryText}
+                {localizedLocalFlatFoldabilitySummary(
+                  localFlatFoldabilityPresentation,
+                  locale,
+                )}
               </p>
               {localFlatFoldabilityPresentation.maxExactFoldDegree !== null && (
                 <p className="local-flat-foldability-coverage">
-                  対応範囲: 紙内部の単一頂点・ゼロ厚モデル、
-                  折り線次数{localFlatFoldabilityPresentation.maxExactFoldDegree}以下
+                  {formattedText({
+                    ja: '対応範囲: 紙内部の単一頂点・ゼロ厚モデル、折り線次数{degree}以下',
+                    en: 'Coverage: a single interior vertex, zero-thickness model, fold degree {degree} or less',
+                  }, {
+                    degree: localFlatFoldabilityPresentation.maxExactFoldDegree,
+                  })}
                 </p>
               )}
               {localFlatFoldabilityPresentation.kind === 'ready' && (
                 <>
                   <ul
                     className="local-flat-foldability-counts"
-                    aria-label="局所平坦折り条件の頂点別件数"
+                    aria-label={text({
+                      ja: '局所平坦折り条件の頂点別件数',
+                      en: 'Vertex counts by local flat-foldability result',
+                    })}
                   >
                     {([
-                      ['satisfied', '成立', localFlatFoldabilityPresentation.counts.satisfied],
-                      ['violated', '不成立', localFlatFoldabilityPresentation.counts.violated],
+                      [
+                        'satisfied',
+                        { ja: '成立', en: 'Satisfied' },
+                        localFlatFoldabilityPresentation.counts.satisfied,
+                      ],
+                      [
+                        'violated',
+                        { ja: '不成立', en: 'Violated' },
+                        localFlatFoldabilityPresentation.counts.violated,
+                      ],
                       [
                         'not-applicable',
-                        '対象外',
+                        { ja: '対象外', en: 'Not applicable' },
                         localFlatFoldabilityPresentation.counts.notApplicable,
                       ],
                       [
                         'indeterminate',
-                        '判定不能',
+                        { ja: '判定不能', en: 'Indeterminate' },
                         localFlatFoldabilityPresentation.counts.indeterminate,
                       ],
                     ] as const).map(([kind, label, count]) => (
                       <li key={kind} className={`is-${kind}`}>
-                        <span>{label}</span>
-                        <strong>{count.toLocaleString()}</strong>
+                        <span>{text(label)}</span>
+                        <strong>{count.toLocaleString(locale)}</strong>
                       </li>
                     ))}
                   </ul>
                   {selectedLocalFlatFoldability && (
                     <div className="selected-local-flat-foldability">
-                      <h3>選択頂点の局所条件</h3>
+                      <h3>
+                        {text({
+                          ja: '選択頂点の局所条件',
+                          en: 'Local conditions for selected vertex',
+                        })}
+                      </h3>
                       <dl>
                         <div>
-                          <dt>総合</dt>
+                          <dt>{text({ ja: '総合', en: 'Overall' })}</dt>
                           <dd>
-                            {localFlatFoldabilityConditionLabel(
+                            {localizedLocalFlatFoldabilityConditionLabel(
                               selectedLocalFlatFoldability.verdict,
+                              locale,
                             )}
                           </dd>
                         </div>
                         <div>
-                          <dt>川崎条件</dt>
+                          <dt>
+                            {text({
+                              ja: '川崎条件',
+                              en: 'Kawasaki condition',
+                            })}
+                          </dt>
                           <dd>
-                            {localFlatFoldabilityConditionLabel(
+                            {localizedLocalFlatFoldabilityConditionLabel(
                               selectedLocalFlatFoldability.kawasaki,
+                              locale,
                             )}
                           </dd>
                         </div>
                         <div>
-                          <dt>前川条件</dt>
+                          <dt>
+                            {text({
+                              ja: '前川条件',
+                              en: 'Maekawa condition',
+                            })}
+                          </dt>
                           <dd>
-                            {localFlatFoldabilityConditionLabel(
+                            {localizedLocalFlatFoldabilityConditionLabel(
                               selectedLocalFlatFoldability.maekawa,
+                              locale,
                             )}
                           </dd>
                         </div>
                         <div>
-                          <dt>折り線次数</dt>
+                          <dt>{text({ ja: '折り線次数', en: 'Fold degree' })}</dt>
                           <dd>{selectedLocalFlatFoldability.foldDegree}</dd>
                         </div>
                         <div>
-                          <dt>山折り / 谷折り</dt>
+                          <dt>
+                            {text({
+                              ja: '山折り / 谷折り',
+                              en: 'Mountain / valley',
+                            })}
+                          </dt>
                           <dd>
                             {selectedLocalFlatFoldability.mountainCount}
                             {' / '}
@@ -3411,9 +4206,10 @@ function App() {
                       </dl>
                       {selectedLocalFlatFoldability.reason && (
                         <p className="local-flat-foldability-reason">
-                          {localFlatFoldabilityReasonLabel(
+                          {localizedLocalFlatFoldabilityReasonLabel(
                             selectedLocalFlatFoldability.reason,
                             localFlatFoldabilityPresentation.maxExactFoldDegree,
+                            locale,
                           )}
                         </p>
                       )}
@@ -3421,25 +4217,47 @@ function App() {
                   )}
                   {localFlatFoldabilityPresentation.visibleItems.length > 0 && (
                     <>
-                      <h3>確認が必要な頂点</h3>
+                      <h3>
+                        {text({
+                          ja: '確認が必要な頂点',
+                          en: 'Vertices requiring review',
+                        })}
+                      </h3>
                       <ul className="local-flat-foldability-items">
                         {localFlatFoldabilityPresentation.visibleItems.map((item) => {
-                          const verdictLabel = localFlatFoldabilityConditionLabel(item.verdict)
-                          const reasonLabel = localFlatFoldabilityReasonLabel(
+                          const verdictLabel =
+                            localizedLocalFlatFoldabilityConditionLabel(
+                              item.verdict,
+                              locale,
+                            )
+                          const reasonLabel = localizedLocalFlatFoldabilityReasonLabel(
                             item.reason,
                             localFlatFoldabilityPresentation.maxExactFoldDegree,
+                            locale,
                           )
                           return (
                             <li key={item.vertexId}>
                               <button
                                 type="button"
                                 aria-pressed={selectedVertexId === item.vertexId}
-                                aria-label={
-                                  `頂点${item.ordinal}、局所必要条件${verdictLabel}。`
-                                  + `川崎条件${localFlatFoldabilityConditionLabel(item.kawasaki)}、`
-                                  + `前川条件${localFlatFoldabilityConditionLabel(item.maekawa)}。`
-                                  + reasonLabel
-                                }
+                                aria-label={formattedText({
+                                  ja: '頂点{ordinal}、局所必要条件{verdict}。川崎条件{kawasaki}、前川条件{maekawa}。{reason}',
+                                  en: 'Vertex {ordinal}: local necessary condition {verdict}. Kawasaki condition {kawasaki}; Maekawa condition {maekawa}. {reason}',
+                                }, {
+                                  ordinal: item.ordinal,
+                                  verdict: verdictLabel,
+                                  kawasaki:
+                                    localizedLocalFlatFoldabilityConditionLabel(
+                                      item.kawasaki,
+                                      locale,
+                                    ),
+                                  maekawa:
+                                    localizedLocalFlatFoldabilityConditionLabel(
+                                      item.maekawa,
+                                      locale,
+                                    ),
+                                  reason: reasonLabel,
+                                })}
                                 onClick={() => {
                                   setSelectedVertexId(item.vertexId)
                                   setSelectedLineId(null)
@@ -3448,11 +4266,29 @@ function App() {
                                 <span className={`local-verdict is-${item.verdict}`}>
                                   {verdictLabel}
                                 </span>
-                                <span>頂点 {item.ordinal}</span>
+                                <span>
+                                  {formattedText({
+                                    ja: '頂点 {ordinal}',
+                                    en: 'Vertex {ordinal}',
+                                  }, { ordinal: item.ordinal })}
+                                </span>
                                 <span className="local-flat-foldability-item-detail">
                                   {reasonLabel || (
-                                    `川崎 ${localFlatFoldabilityConditionLabel(item.kawasaki)}・`
-                                    + `前川 ${localFlatFoldabilityConditionLabel(item.maekawa)}`
+                                    formattedText({
+                                      ja: '川崎 {kawasaki}・前川 {maekawa}',
+                                      en: 'Kawasaki {kawasaki} · Maekawa {maekawa}',
+                                    }, {
+                                      kawasaki:
+                                        localizedLocalFlatFoldabilityConditionLabel(
+                                          item.kawasaki,
+                                          locale,
+                                        ),
+                                      maekawa:
+                                        localizedLocalFlatFoldabilityConditionLabel(
+                                          item.maekawa,
+                                          locale,
+                                        ),
+                                    })
                                   )}
                                 </span>
                               </button>
@@ -3462,9 +4298,14 @@ function App() {
                       </ul>
                       {localFlatFoldabilityPresentation.hiddenItemCount > 0 && (
                         <p className="muted">
-                          ほか
-                          {localFlatFoldabilityPresentation.hiddenItemCount.toLocaleString()}
-                          頂点。頂点を選択すると個別結果を確認できます。
+                          {formattedText({
+                            ja: 'ほか{count}頂点。頂点を選択すると個別結果を確認できます。',
+                            en: '{count} more vertices. Select a vertex to review its result.',
+                          }, {
+                            count:
+                              localFlatFoldabilityPresentation.hiddenItemCount
+                                .toLocaleString(locale),
+                          })}
                         </p>
                       )}
                     </>
@@ -3472,8 +4313,10 @@ function App() {
                 </>
               )}
               <p className="local-flat-foldability-disclaimer">
-                成立はこのモデルで確認した局所必要条件だけを表します。
-                展開図全体が平坦に折り畳めることや、実際の折り経路は保証しません。
+                {text({
+                  ja: '成立はこのモデルで確認した局所必要条件だけを表します。展開図全体が平坦に折り畳めることや、実際の折り経路は保証しません。',
+                  en: 'Satisfied means only that the local necessary conditions were verified by this model. It does not guarantee that the entire pattern can fold flat or that a physical folding path exists.',
+                })}
               </p>
             </section>
           )}
@@ -3492,7 +4335,7 @@ function App() {
             onCancel={cancelGlobalFlatFoldability}
           />
           <section>
-            <h2>紙</h2>
+            <h2>{text({ ja: '紙', en: 'Paper' })}</h2>
             <LengthUnitControl
               unit={lengthDisplayUnit}
               references={boundaryLengthReferences}
@@ -3506,7 +4349,9 @@ function App() {
               noValidate
             >
               <div className="field">
-                <label htmlFor="paper-thickness-mm">厚さ</label>
+                <label htmlFor="paper-thickness-mm">
+                  {text({ ja: '厚さ', en: 'Thickness' })}
+                </label>
                 <PaperThicknessInput
                   id="paper-thickness-mm"
                   name="thickness_display"
@@ -3526,7 +4371,7 @@ function App() {
               </div>
               <div className="paper-color-fields">
                 <label className="paper-color-field">
-                  <span>表色</span>
+                  <span>{text({ ja: '表色', en: 'Front color' })}</span>
                   <input
                     name="front_color"
                     type="color"
@@ -3535,7 +4380,7 @@ function App() {
                   />
                 </label>
                 <label className="paper-color-field">
-                  <span>裏色</span>
+                  <span>{text({ ja: '裏色', en: 'Back color' })}</span>
                   <input
                     name="back_color"
                     type="color"
@@ -3551,16 +4396,19 @@ function App() {
                   defaultChecked={nativeSnapshot?.paper.cutting_allowed ?? false}
                   disabled={coreBusy || !nativeSnapshot}
                 />{' '}
-                切断を許可
+                {text({ ja: '切断を許可', en: 'Allow cutting' })}
               </label>
               <div className="property-actions">
                 <button type="submit" disabled={coreBusy || !nativeSnapshot}>
-                  紙設定を更新
+                  {text({
+                    ja: '紙設定を更新',
+                    en: 'Update paper settings',
+                  })}
                 </button>
               </div>
             </form>
             <div className="paper-size-editor">
-              <h3>用紙サイズ</h3>
+              <h3>{text({ ja: '用紙サイズ', en: 'Paper size' })}</h3>
               <form
                 key={paperResizeFormKey}
                 className="paper-size-form"
@@ -3569,7 +4417,7 @@ function App() {
               >
                 <div className="paper-size-fields">
                   <label className="field">
-                    <span>幅</span>
+                    <span>{text({ ja: '幅', en: 'Width' })}</span>
                     <LengthValueInput
                       name="width_display"
                       minimumMillimetres={0}
@@ -3578,12 +4426,15 @@ function App() {
                       readOnly={rectangularRatioReferenceAxis === 'width'}
                       required
                       disabled={coreBusy || !rectangularPaperSize}
-                      ariaLabel={`用紙の幅 (${lengthDisplayUnit.label})`}
+                      ariaLabel={formattedText({
+                        ja: '用紙の幅 ({unit})',
+                        en: 'Paper width ({unit})',
+                      }, { unit: lengthDisplayUnit.label })}
                     />
                     <span>{lengthDisplayUnit.label}</span>
                   </label>
                   <label className="field">
-                    <span>高さ</span>
+                    <span>{text({ ja: '高さ', en: 'Height' })}</span>
                     <LengthValueInput
                       name="height_display"
                       minimumMillimetres={0}
@@ -3592,18 +4443,27 @@ function App() {
                       readOnly={rectangularRatioReferenceAxis === 'height'}
                       required
                       disabled={coreBusy || !rectangularPaperSize}
-                      ariaLabel={`用紙の高さ (${lengthDisplayUnit.label})`}
+                      ariaLabel={formattedText({
+                        ja: '用紙の高さ ({unit})',
+                        en: 'Paper height ({unit})',
+                      }, { unit: lengthDisplayUnit.label })}
                     />
                     <span>{lengthDisplayUnit.label}</span>
                   </label>
                 </div>
                 {!rectangularPaperSize && (
                   <p className="paper-size-note">
-                    軸平行な長方形として判定できない紙は、この画面ではサイズ変更できません。
+                    {text({
+                      ja: '軸平行な長方形として判定できない紙は、この画面ではサイズ変更できません。',
+                      en: 'Paper that is not recognized as an axis-aligned rectangle cannot be resized here.',
+                    })}
                   </p>
                 )}
                 <p className="paper-size-note">
-                  サイズ変更時は、折り線を含むすべての頂点を左上基準で比例変換します。
+                  {text({
+                    ja: 'サイズ変更時は、折り線を含むすべての頂点を左上基準で比例変換します。',
+                    en: 'Resizing proportionally transforms every vertex, including fold lines, from the top-left origin.',
+                  })}
                 </p>
                 <CreationDimensionExpressionSummary
                   key={nativeSnapshot?.project_id ?? 'no-project'}
@@ -3611,10 +4471,14 @@ function App() {
                 />
                 {rectangularRatioReferenceAxis && (
                   <p className="paper-size-note">
-                    紙辺比では基準辺と平行な
-                    {rectangularRatioReferenceAxis === 'width' ? '幅' : '高さ'}
-                    は 1 のまま読み取り専用です。直交する寸法だけを変更し、
-                    基準辺の物理長は維持します。
+                    {formattedText({
+                      ja: '紙辺比では基準辺と平行な{axis}は 1 のまま読み取り専用です。直交する寸法だけを変更し、基準辺の物理長は維持します。',
+                      en: 'For a paper-edge ratio, {axis} remains read-only at 1. Only the perpendicular dimension changes, preserving the physical length of the reference edge.',
+                    }, {
+                      axis: rectangularRatioReferenceAxis === 'width'
+                        ? text({ ja: '幅', en: 'width' })
+                        : text({ ja: '高さ', en: 'height' }),
+                    })}
                   </p>
                 )}
                 <div className="property-actions">
@@ -3622,14 +4486,17 @@ function App() {
                     type="submit"
                     disabled={coreBusy || !nativeSnapshot || !rectangularPaperSize}
                   >
-                    用紙サイズを変更
+                    {text({
+                      ja: '用紙サイズを変更',
+                      en: 'Resize paper',
+                    })}
                   </button>
                 </div>
               </form>
             </div>
           </section>
           <section>
-            <h2>編集履歴</h2>
+            <h2>{text({ ja: '編集履歴', en: 'Edit history' })}</h2>
             {boundHistoryLimitSettings && nativeSnapshot ? (
               <HistoryLimitControl
                 settings={boundHistoryLimitSettings}
@@ -3641,7 +4508,12 @@ function App() {
               />
             ) : historyLimitLoadState.kind === 'failed' ? (
               <div role="alert">
-                <p>Undo・Redo履歴の上限を確認できませんでした。</p>
+                <p>
+                  {text({
+                    ja: 'Undo・Redo履歴の上限を確認できませんでした。',
+                    en: 'The undo/redo history limit could not be checked.',
+                  })}
+                </p>
                 <button
                   type="button"
                   disabled={coreBusy || recoveryBlocking}
@@ -3649,22 +4521,31 @@ function App() {
                     (sequence) => sequence + 1,
                   )}
                 >
-                  再試行
+                  {text({ ja: '再試行', en: 'Retry' })}
                 </button>
               </div>
             ) : historyLimitLoadState.kind === 'unavailable' ? (
               <p className="muted">
-                履歴上限の設定はデスクトップ版で利用できます。
+                {text({
+                  ja: '履歴上限の設定はデスクトップ版で利用できます。',
+                  en: 'History limit settings are available in the desktop app.',
+                })}
               </p>
             ) : (
               <p className="muted" role="status" aria-live="polite">
-                履歴上限を確認しています…
+                {text({
+                  ja: '履歴上限を確認しています…',
+                  en: 'Checking history limit…',
+                })}
               </p>
             )}
           </section>
           <section>
-            <h2>スナップ</h2>
-            <div className="chip-row" aria-label="スナップ設定">
+            <h2>{text({ ja: 'スナップ', en: 'Snap' })}</h2>
+            <div
+              className="chip-row"
+              aria-label={text({ ja: 'スナップ設定', en: 'Snap settings' })}
+            >
               {SNAP_OPTIONS.map(({ kind, label }) => (
                 <button
                   key={kind}
@@ -3674,14 +4555,14 @@ function App() {
                   disabled={coreBusy}
                   onClick={() => setSnapSettings((current) => toggleSnapSetting(current, kind))}
                 >
-                  {label}
+                  {text(label)}
                 </button>
               ))}
             </div>
             <div className="angle-snap-settings">
-              <h3>角度スナップ</h3>
+              <h3>{text({ ja: '角度スナップ', en: 'Angle snap' })}</h3>
               <label className="angle-snap-field">
-                <span>プリセット</span>
+                <span>{text({ ja: 'プリセット', en: 'Preset' })}</span>
                 <select
                   value={selectedAnglePreset}
                   disabled={coreBusy}
@@ -3699,11 +4580,13 @@ function App() {
                   {ANGLE_SNAP_PRESETS.map((preset) => (
                     <option key={preset} value={preset}>{preset}°</option>
                   ))}
-                  <option value="custom">任意角</option>
+                  <option value="custom">
+                    {text({ ja: '任意角', en: 'Custom angle' })}
+                  </option>
                 </select>
               </label>
               <label className="angle-snap-field">
-                <span>角度</span>
+                <span>{text({ ja: '角度', en: 'Angle' })}</span>
                 <span className="angle-input-with-unit">
                   <input
                     ref={angleInputRef}
@@ -3732,12 +4615,22 @@ function App() {
               </label>
               {!angleInputIsValid && (
                 <p id="angle-snap-error" className="field-error" role="alert">
-                  角度は0より大きく90以下で入力してください。最後の正常値を使用します。
+                  {text({
+                    ja: '角度は0より大きく90以下で入力してください。最後の正常値を使用します。',
+                    en: 'Enter an angle greater than 0 and no more than 90. The last valid value will be used.',
+                  })}
                 </p>
               )}
               <div className="angle-reference-setting">
-                <span>基準</span>
-                <div className="chip-row" role="group" aria-label="角度スナップの基準">
+                <span>{text({ ja: '基準', en: 'Reference' })}</span>
+                <div
+                  className="chip-row"
+                  role="group"
+                  aria-label={text({
+                    ja: '角度スナップの基準',
+                    en: 'Angle snap reference',
+                  })}
+                >
                   <button
                     type="button"
                     className={`chip${angleReferenceKind === 'global-horizontal' ? ' active' : ''}`}
@@ -3745,7 +4638,7 @@ function App() {
                     disabled={coreBusy}
                     onClick={() => setAngleReferenceKind('global-horizontal')}
                   >
-                    水平
+                    {text({ ja: '水平', en: 'Horizontal' })}
                   </button>
                   <button
                     type="button"
@@ -3754,36 +4647,60 @@ function App() {
                     disabled={coreBusy}
                     onClick={() => setAngleReferenceKind('edge')}
                   >
-                    方向参照辺
+                    {text({
+                      ja: '方向参照辺',
+                      en: 'Direction reference edge',
+                    })}
                   </button>
                 </div>
               </div>
               <p className="muted">
-                現在: {formatAngleDegrees(angleDegrees)}°・
-                {angleReferenceKind === 'global-horizontal' ? '水平基準' : '方向参照辺基準'}
+                {formattedText({
+                  ja: '現在: {angle}°・{reference}',
+                  en: 'Current: {angle}° · {reference}',
+                }, {
+                  angle: formatAngleDegrees(angleDegrees),
+                  reference: angleReferenceKind === 'global-horizontal'
+                    ? text({ ja: '水平基準', en: 'horizontal reference' })
+                    : text({
+                        ja: '方向参照辺基準',
+                        en: 'direction edge reference',
+                      }),
+                })}
               </p>
               {snapSettings.angle && angleReferenceKind === 'edge' && !parallelReferenceLine && (
                 <p className="field-error" role="status">
-                  線を選択して方向参照に設定してください。暗黙に水平基準へは切り替えません。
+                  {text({
+                    ja: '線を選択して方向参照に設定してください。暗黙に水平基準へは切り替えません。',
+                    en: 'Select a line and set it as the direction reference. The app will not silently switch to horizontal.',
+                  })}
                 </p>
               )}
             </div>
             {parallelReferenceLine ? (
               <div className="property-actions">
                 <span className="muted" title={parallelReferenceLine.id}>
-                  方向参照（平行・角度）: {lineKindLabel(parallelReferenceLine.kind)}
+                  {formattedText({
+                    ja: '方向参照（平行・角度）: {kind}',
+                    en: 'Direction reference (parallel and angle): {kind}',
+                  }, {
+                    kind: lineKindLabel(parallelReferenceLine.kind, locale),
+                  })}
                 </span>
                 <button
                   type="button"
                   disabled={coreBusy}
                   onClick={() => setParallelReferenceEdgeId(null)}
                 >
-                  参照を解除
+                  {text({ ja: '参照を解除', en: 'Clear reference' })}
                 </button>
               </div>
             ) : (
               <p className="muted">
-                線を選択して「方向参照に設定」を押すと、平行・角度スナップの基準にできます。
+                {text({
+                  ja: '線を選択して「方向参照に設定」を押すと、平行・角度スナップの基準にできます。',
+                  en: 'Select a line and choose “Set as direction reference” to use it for parallel and angle snapping.',
+                })}
               </p>
             )}
           </section>
@@ -3841,8 +4758,18 @@ function App() {
           >
             <header>
               <div>
-                <span className="dialog-eyebrow">一枚紙から開始</span>
-                <h2 id="new-project-title">新しいプロジェクト</h2>
+                <span className="dialog-eyebrow">
+                  {text({
+                    ja: '一枚紙から開始',
+                    en: 'Start from one sheet',
+                  })}
+                </span>
+                <h2 id="new-project-title">
+                  {text({
+                    ja: '新しいプロジェクト',
+                    en: 'New project',
+                  })}
+                </h2>
               </div>
               <button
                 type="button"
@@ -3852,17 +4779,20 @@ function App() {
                   setNewProjectOpen(false)
                   setNewProjectError(null)
                 }}
-                aria-label="閉じる"
+                aria-label={text({ ja: '閉じる', en: 'Close' })}
               >
                 ×
               </button>
             </header>
             <form onSubmit={submitNewProject} noValidate>
               <label className="dialog-field dialog-field-wide">
-                <span>作品名</span>
+                <span>{text({ ja: '作品名', en: 'Project name' })}</span>
                 <input
                   name="name"
-                  defaultValue="無題の作品"
+                  defaultValue={text({
+                    ja: '無題の作品',
+                    en: 'Untitled work',
+                  })}
                   maxLength={120}
                   required
                   autoFocus
@@ -3871,36 +4801,46 @@ function App() {
               </label>
 
               <fieldset>
-                <legend>用紙サイズ</legend>
+                <legend>{text({ ja: '用紙サイズ', en: 'Paper size' })}</legend>
                 <div className="dialog-grid two-columns">
                   <label className="dialog-field">
-                    <span>幅</span>
+                    <span>{text({ ja: '幅', en: 'Width' })}</span>
                     <NumericExpressionInput
                       id="new-project-width-expression"
                       name="width_expression"
                       defaultSource="400"
                       disabled={coreBusy}
-                      ariaLabel="用紙の幅の式 (mm)"
+                      ariaLabel={text({
+                        ja: '用紙の幅の式 (mm)',
+                        en: 'Paper width expression (mm)',
+                      })}
                     />
                   </label>
                   <label className="dialog-field">
-                    <span>高さ</span>
+                    <span>{text({ ja: '高さ', en: 'Height' })}</span>
                     <NumericExpressionInput
                       id="new-project-height-expression"
                       name="height_expression"
                       defaultSource="400"
                       disabled={coreBusy}
-                      ariaLabel="用紙の高さの式 (mm)"
+                      ariaLabel={text({
+                        ja: '用紙の高さの式 (mm)',
+                        en: 'Paper height expression (mm)',
+                      })}
                     />
                   </label>
                 </div>
               </fieldset>
 
               <fieldset>
-                <legend>材料設定</legend>
+                <legend>
+                  {text({ ja: '材料設定', en: 'Material settings' })}
+                </legend>
                 <div className="dialog-grid three-columns">
                   <div className="dialog-field">
-                    <label htmlFor="new-project-paper-thickness-mm">紙厚</label>
+                    <label htmlFor="new-project-paper-thickness-mm">
+                      {text({ ja: '紙厚', en: 'Paper thickness' })}
+                    </label>
                     <span className="number-with-unit">
                       <PaperThicknessInput
                         id="new-project-paper-thickness-mm"
@@ -3911,7 +4851,7 @@ function App() {
                     </span>
                   </div>
                   <label className="dialog-field color-field">
-                    <span>表色</span>
+                    <span>{text({ ja: '表色', en: 'Front color' })}</span>
                     <input
                       name="front_color"
                       type="color"
@@ -3920,7 +4860,7 @@ function App() {
                     />
                   </label>
                   <label className="dialog-field color-field">
-                    <span>裏色</span>
+                    <span>{text({ ja: '裏色', en: 'Back color' })}</span>
                     <input
                       name="back_color"
                       type="color"
@@ -3931,12 +4871,18 @@ function App() {
                 </div>
                 <label className="dialog-check">
                   <input name="cutting_allowed" type="checkbox" disabled={coreBusy} />
-                  この作品で切断線の作成を許可する
+                  {text({
+                    ja: 'この作品で切断線の作成を許可する',
+                    en: 'Allow cut lines in this project',
+                  })}
                 </label>
               </fieldset>
 
               <p className="dialog-note">
-                左上を (0, 0) mm とする長方形の用紙と、4本の輪郭線を作成します。
+                {text({
+                  ja: '左上を (0, 0) mm とする長方形の用紙と、4本の輪郭線を作成します。',
+                  en: 'Creates rectangular paper with its top-left at (0, 0) mm and four boundary edges.',
+                })}
               </p>
               {newProjectError && <p className="dialog-error" role="alert">{newProjectError}</p>}
               <footer>
@@ -3948,10 +4894,12 @@ function App() {
                     setNewProjectError(null)
                   }}
                 >
-                  キャンセル
+                  {text({ ja: 'キャンセル', en: 'Cancel' })}
                 </button>
                 <button type="submit" className="primary" disabled={coreBusy}>
-                  {coreBusy ? '作成中…' : '作成'}
+                  {coreBusy
+                    ? text({ ja: '作成中…', en: 'Creating…' })
+                    : text({ ja: '作成', en: 'Create' })}
                 </button>
               </footer>
             </form>
@@ -4027,13 +4975,31 @@ function App() {
       />
 
       <footer className="statusbar" inert={modalOpen}>
-        <span>ツール: {benchmarkRun ? '性能テスト選択' : toolLabel(activeTool)}</span>
+        <span>
+          {formattedText({
+            ja: 'ツール: {tool}',
+            en: 'Tool: {tool}',
+          }, {
+            tool: benchmarkRun
+              ? text({
+                  ja: '性能テスト選択',
+                  en: 'Benchmark selection',
+                })
+              : toolLabel(activeTool, locale),
+          })}
+        </span>
         <span>{coreStatus}</span>
-        <span>スナップ: {snapStatusLabel}</span>
+        <span>
+          {formattedText({
+            ja: 'スナップ: {status}',
+            en: 'Snap: {status}',
+          }, { status: snapStatusLabel })}
+        </span>
         <span className="status-spacer" />
         <KeyboardShortcutControl />
         <WorkspaceLayoutControl />
         <ThemeControl />
+        <LanguageControl />
         {isDiagnosticsShareAvailable() && (
           <button
             ref={diagnosticsButtonRef}
@@ -4042,7 +5008,7 @@ function App() {
             aria-haspopup="dialog"
             onClick={() => setDiagnosticsDialogOpen(true)}
           >
-            診断情報
+            {text({ ja: '診断情報', en: 'Diagnostics' })}
           </button>
         )}
         <button
@@ -4051,7 +5017,17 @@ function App() {
           disabled={coreBusy || benchmarkLoading}
           onClick={() => void toggleBenchmark()}
         >
-          {benchmarkLoading ? '読込中…' : benchmarkRun ? '通常図へ戻る' : '10,000本テスト'}
+          {benchmarkLoading
+            ? text({ ja: '読込中…', en: 'Loading…' })
+            : benchmarkRun
+              ? text({
+                  ja: '通常図へ戻る',
+                  en: 'Return to normal pattern',
+                })
+              : text({
+                  ja: '10,000本テスト',
+                  en: '10,000-edge test',
+                })}
         </button>
         <span className="benchmark-status" aria-live="polite" title={benchmarkStatus}>
           {benchmarkStatus}
@@ -4081,14 +5057,15 @@ function sameRecoveryCandidate(
     && candidate.status === 'invalid'
 }
 
-function lineKindLabel(kind: CreaseLine['kind']) {
-  return {
-    mountain: '山折り',
-    valley: '谷折り',
-    auxiliary: '補助線',
-    boundary: '輪郭線',
-    cut: '切断線',
-  }[kind]
+function lineKindLabel(kind: CreaseLine['kind'], locale: Locale) {
+  const labels: Readonly<Record<CreaseLine['kind'], LocalizedText>> = {
+    mountain: { ja: '山折り', en: 'Mountain fold' },
+    valley: { ja: '谷折り', en: 'Valley fold' },
+    auxiliary: { ja: '補助線', en: 'Auxiliary line' },
+    boundary: { ja: '輪郭線', en: 'Boundary edge' },
+    cut: { ja: '切断線', en: 'Cut line' },
+  }
+  return selectLocalizedText(locale, labels[kind])
 }
 
 function normalizeFoldAngle(value: number) {
@@ -4096,63 +5073,261 @@ function normalizeFoldAngle(value: number) {
   return Math.min(180, Math.max(0, value))
 }
 
-function formatBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes < 0) return 'サイズ不明'
+function formatBytes(bytes: number, locale: Locale) {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return selectLocalizedText(locale, {
+      ja: 'サイズ不明',
+      en: 'Unknown size',
+    })
+  }
   if (bytes < 1_000) return `${bytes} B`
   if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`
   return `${(bytes / 1_000_000).toFixed(2)} MB`
 }
 
-function toolLabel(tool: string) {
-  return {
-    select: '選択',
-    vertex: '頂点',
-    mountain: '山折り',
-    valley: '谷折り',
-    auxiliary: '補助線',
-    cut: '切断',
-    measure: '計測',
-  }[tool]
+function toolLabel(tool: string, locale: Locale) {
+  const labels: Readonly<Record<string, LocalizedText>> = {
+    select: { ja: '選択', en: 'Select' },
+    vertex: { ja: '頂点', en: 'Vertex' },
+    mountain: { ja: '山折り', en: 'Mountain fold' },
+    valley: { ja: '谷折り', en: 'Valley fold' },
+    auxiliary: { ja: '補助線', en: 'Auxiliary line' },
+    cut: { ja: '切断', en: 'Cut' },
+    measure: { ja: '計測', en: 'Measure' },
+  }
+  const label = labels[tool]
+  return label ? selectLocalizedText(locale, label) : tool
 }
 
-function validationIssueLabel(code: string) {
-  return {
-    non_finite_vertex: '有限でない頂点座標',
-    duplicate_vertex: '同じ位置の重複頂点',
-    missing_endpoint: '存在しない端点を参照する線',
-    zero_length_edge: '長さ0の線',
-    unsplit_intersection: '分割されていない交差・重なり',
-    intersection_calculation_failed: '交差計算に失敗',
-    non_finite_thickness: '紙の厚さが有限値ではありません',
-    negative_thickness: '紙の厚さは0 mm以上にする必要があります',
-    too_few_boundary_vertices: '紙の輪郭には3つ以上の頂点が必要です',
-    duplicate_boundary_vertex: '紙の輪郭に同じ頂点が重複しています',
-    missing_boundary_vertex: '紙の輪郭が存在しない頂点を参照しています',
-    non_finite_boundary_vertex: '紙の輪郭頂点の座標が有限値ではありません',
-    missing_boundary_edge: '紙の輪郭線が不足しています',
-    duplicate_boundary_edge: '紙の輪郭線が重複しています',
-    unexpected_boundary_edge: '紙の輪郭に余分な輪郭線があります',
-    zero_length_boundary_edge: '紙の輪郭に長さ0の辺があります',
-    boundary_self_intersection: '紙の輪郭が自己交差しています',
-    boundary_intersection_calculation_failed: '紙の輪郭の交差判定に失敗しました',
-    zero_area_boundary: '紙の輪郭の面積が0です',
-    boundary_area_calculation_failed: '紙の輪郭の面積計算に失敗しました',
-  }[code] ?? code
+function validationIssueLabel(code: string, locale: Locale) {
+  const labels: Readonly<Record<string, LocalizedText>> = {
+    non_finite_vertex: {
+      ja: '有限でない頂点座標',
+      en: 'Non-finite vertex coordinates',
+    },
+    duplicate_vertex: {
+      ja: '同じ位置の重複頂点',
+      en: 'Duplicate vertices at the same position',
+    },
+    missing_endpoint: {
+      ja: '存在しない端点を参照する線',
+      en: 'Line references a missing endpoint',
+    },
+    zero_length_edge: { ja: '長さ0の線', en: 'Zero-length line' },
+    unsplit_intersection: {
+      ja: '分割されていない交差・重なり',
+      en: 'Unsplit intersection or overlap',
+    },
+    intersection_calculation_failed: {
+      ja: '交差計算に失敗',
+      en: 'Intersection calculation failed',
+    },
+    non_finite_thickness: {
+      ja: '紙の厚さが有限値ではありません',
+      en: 'Paper thickness is not finite',
+    },
+    negative_thickness: {
+      ja: '紙の厚さは0 mm以上にする必要があります',
+      en: 'Paper thickness must be at least 0 mm',
+    },
+    too_few_boundary_vertices: {
+      ja: '紙の輪郭には3つ以上の頂点が必要です',
+      en: 'Paper boundary needs at least three vertices',
+    },
+    duplicate_boundary_vertex: {
+      ja: '紙の輪郭に同じ頂点が重複しています',
+      en: 'Paper boundary contains a duplicate vertex',
+    },
+    missing_boundary_vertex: {
+      ja: '紙の輪郭が存在しない頂点を参照しています',
+      en: 'Paper boundary references a missing vertex',
+    },
+    non_finite_boundary_vertex: {
+      ja: '紙の輪郭頂点の座標が有限値ではありません',
+      en: 'Paper boundary vertex coordinates are not finite',
+    },
+    missing_boundary_edge: {
+      ja: '紙の輪郭線が不足しています',
+      en: 'Paper boundary edges are missing',
+    },
+    duplicate_boundary_edge: {
+      ja: '紙の輪郭線が重複しています',
+      en: 'Paper boundary contains a duplicate edge',
+    },
+    unexpected_boundary_edge: {
+      ja: '紙の輪郭に余分な輪郭線があります',
+      en: 'Paper boundary contains an unexpected edge',
+    },
+    zero_length_boundary_edge: {
+      ja: '紙の輪郭に長さ0の辺があります',
+      en: 'Paper boundary contains a zero-length edge',
+    },
+    boundary_self_intersection: {
+      ja: '紙の輪郭が自己交差しています',
+      en: 'Paper boundary intersects itself',
+    },
+    boundary_intersection_calculation_failed: {
+      ja: '紙の輪郭の交差判定に失敗しました',
+      en: 'Paper boundary intersection test failed',
+    },
+    zero_area_boundary: {
+      ja: '紙の輪郭の面積が0です',
+      en: 'Paper boundary has zero area',
+    },
+    boundary_area_calculation_failed: {
+      ja: '紙の輪郭の面積計算に失敗しました',
+      en: 'Paper boundary area calculation failed',
+    },
+  }
+  const label = labels[code]
+  return label ? selectLocalizedText(locale, label) : code
 }
 
 function localFlatFoldabilityCoreStatus(
   presentation: LocalFlatFoldabilityPresentation,
+  locale: Locale,
 ) {
-  if (presentation.kind === 'invalid') return '局所判定結果を確認不能'
-  if (presentation.kind === 'blocked') return '局所判定を前段の幾何問題で遮断'
+  if (presentation.kind === 'invalid') {
+    return selectLocalizedText(locale, {
+      ja: '局所判定結果を確認不能',
+      en: 'Local result unavailable',
+    })
+  }
+  if (presentation.kind === 'blocked') {
+    return selectLocalizedText(locale, {
+      ja: '局所判定を前段の幾何問題で遮断',
+      en: 'Local analysis blocked by geometry issues',
+    })
+  }
   if (presentation.reportStatus === 'necessary_conditions_satisfied') {
-    return `局所必要条件が${presentation.counts.satisfied}頂点で成立`
+    return formatLocalizedText(locale, {
+      ja: '局所必要条件が{count}頂点で成立',
+      en: 'Local necessary conditions satisfied at {count} vertices',
+    }, { count: presentation.counts.satisfied })
   }
-  if (presentation.reportStatus === 'not_applicable') return '局所判定の対象頂点なし'
+  if (presentation.reportStatus === 'not_applicable') {
+    return selectLocalizedText(locale, {
+      ja: '局所判定の対象頂点なし',
+      en: 'No vertices eligible for local analysis',
+    })
+  }
   if (presentation.reportStatus === 'violated') {
-    return `局所必要条件に不成立${presentation.counts.violated}頂点`
+    return formatLocalizedText(locale, {
+      ja: '局所必要条件に不成立{count}頂点',
+      en: 'Local necessary conditions violated at {count} vertices',
+    }, { count: presentation.counts.violated })
   }
-  return `局所判定不能${presentation.counts.indeterminate}頂点`
+  return formatLocalizedText(locale, {
+    ja: '局所判定不能{count}頂点',
+    en: 'Local result indeterminate at {count} vertices',
+  }, { count: presentation.counts.indeterminate })
+}
+
+function localizedLocalFlatFoldabilityConditionLabel(
+  condition: Parameters<typeof localFlatFoldabilityConditionLabel>[0],
+  locale: Locale,
+) {
+  if (locale === 'ja') return localFlatFoldabilityConditionLabel(condition)
+  return {
+    satisfied: 'Satisfied',
+    violated: 'Violated',
+    not_applicable: 'Not applicable',
+    indeterminate: 'Indeterminate',
+  }[condition]
+}
+
+function localizedLocalFlatFoldabilityReasonLabel(
+  reason: Parameters<typeof localFlatFoldabilityReasonLabel>[0],
+  maxExactFoldDegree: number,
+  locale: Locale,
+) {
+  if (locale === 'ja') {
+    return localFlatFoldabilityReasonLabel(reason, maxExactFoldDegree)
+  }
+  switch (reason) {
+    case 'paper_boundary':
+      return 'Paper boundary vertices are outside the current local model.'
+    case 'cut_incident':
+      return 'Vertices incident to a cut line are outside the current local model.'
+    case 'fold_degree_limit':
+      return formatLocalizedText(locale, {
+        ja: '',
+        en: 'Indeterminate because the fold degree exceeds the exact limit ({limit}).',
+      }, { limit: maxExactFoldDegree })
+    case 'no_incident_fold_edges':
+      return 'Not applicable because there are no incident mountain or valley folds.'
+    case null:
+      return ''
+  }
+}
+
+function localizedLocalFlatFoldabilitySummary(
+  presentation: LocalFlatFoldabilityPresentation,
+  locale: Locale,
+) {
+  if (presentation.kind === 'invalid') {
+    return selectLocalizedText(locale, {
+      ja: '局所平坦折り条件の結果を確認できませんでした。成立とは扱いません。',
+      en: 'The local flat-foldability result could not be verified and is not treated as satisfied.',
+    })
+  }
+  if (presentation.kind === 'blocked') {
+    return selectLocalizedText(locale, {
+      ja: '前段の幾何構造に問題があるため、局所平坦折り条件は判定していません。',
+      en: 'Local flat-foldability was not evaluated because the preceding geometry has issues.',
+    })
+  }
+  const detail = formatLocalizedText(locale, {
+    ja: '成立{satisfied}、不成立{violated}、対象外{notApplicable}、判定不能{indeterminate}',
+    en: 'satisfied {satisfied}, violated {violated}, not applicable {notApplicable}, indeterminate {indeterminate}',
+  }, {
+    satisfied: presentation.counts.satisfied,
+    violated: presentation.counts.violated,
+    notApplicable: presentation.counts.notApplicable,
+    indeterminate: presentation.counts.indeterminate,
+  })
+  switch (presentation.reportStatus) {
+    case 'necessary_conditions_satisfied':
+      return formatLocalizedText(locale, {
+        ja: '対応範囲内の局所必要条件が成立しました（{detail}）。',
+        en: 'Local necessary conditions are satisfied within the supported scope ({detail}).',
+      }, { detail })
+    case 'not_applicable':
+      return formatLocalizedText(locale, {
+        ja: '現在の局所条件を適用できる頂点がありません（{detail}）。',
+        en: 'No vertices are eligible for the current local conditions ({detail}).',
+      }, { detail })
+    case 'violated':
+      return formatLocalizedText(locale, {
+        ja: '局所必要条件に不成立の頂点があります（{detail}）。',
+        en: 'Some vertices violate the local necessary conditions ({detail}).',
+      }, { detail })
+    case 'indeterminate':
+      return formatLocalizedText(locale, {
+        ja: '局所必要条件を判定できない頂点があります（{detail}）。',
+        en: 'Some vertices have indeterminate local necessary conditions ({detail}).',
+      }, { detail })
+  }
+}
+
+function localizedCreaseExportFormatLabel(
+  format: CreasePatternExportFormat,
+  locale: Locale,
+) {
+  if (locale === 'ja') return creasePatternExportFormatLabel(format)
+  return format === 'dxf'
+    ? 'DXF (AutoCAD 2007)'
+    : creasePatternExportFormatLabel(format)
+}
+
+function localizedInstructionExportFormatLabel(
+  format: InstructionExportFormat,
+  locale: Locale,
+) {
+  if (locale === 'ja') return instructionExportFormatLabel(format)
+  return format === 'svg_zip'
+    ? 'SVG images ZIP'
+    : instructionExportFormatLabel(format)
 }
 
 function reportValidationUnexpected() {
@@ -4302,10 +5477,19 @@ function formatMeasurementValue(
   value: number | null | undefined,
   unit: string,
   maximumFractionDigits = 3,
+  locale: Locale = 'ja',
 ) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '計測不可'
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return selectLocalizedText(locale, {
+      ja: '計測不可',
+      en: 'Unavailable',
+    })
+  }
   const normalized = Object.is(value, -0) ? 0 : value
-  return `${normalized.toLocaleString('ja-JP', { maximumFractionDigits })}${unit}`
+  return `${normalized.toLocaleString(
+    locale === 'ja' ? 'ja-JP' : 'en-US',
+    { maximumFractionDigits },
+  )}${unit}`
 }
 
 function formatAngleDegrees(value: number) {
@@ -4317,9 +5501,17 @@ function formatAngleDegrees(value: number) {
 function formatLineMeasurementLabel(
   measurement: LineMeasurement | null,
   unit: ReturnType<typeof resolveLengthDisplayUnit>,
+  locale: Locale,
 ) {
-  if (!measurement) return '計測不可'
-  return `${formatLength(measurement.length, unit)} / ${formatMeasurementValue(measurement.angleDegrees, '°', 2)}`
+  if (!measurement) {
+    return selectLocalizedText(locale, {
+      ja: '計測不可',
+      en: 'Unavailable',
+    })
+  }
+  return `${formatLength(measurement.length, unit)} / ${
+    formatMeasurementValue(measurement.angleDegrees, '°', 2, locale)
+  }`
 }
 
 function rgbaToCss(color: RgbaColor | undefined) {
@@ -4354,24 +5546,45 @@ function hasControlCharacter(value: string) {
   })
 }
 
-function newProjectExpressionErrorMessage(error: unknown) {
+function newProjectExpressionErrorMessage(
+  error: unknown,
+  locale: Locale,
+) {
   const category = numericExpressionNativeErrorCategory(error)
   if (!category) return null
   switch (category) {
     case 'invalid_request':
-      return '幅または高さの式が空か、入力上限を超えています。'
+      return selectLocalizedText(locale, {
+        ja: '幅または高さの式が空か、入力上限を超えています。',
+        en: 'The width or height expression is empty or exceeds an input limit.',
+      })
     case 'invalid_expression':
-      return '幅または高さの式を解釈できません。'
+      return selectLocalizedText(locale, {
+        ja: '幅または高さの式を解釈できません。',
+        en: 'The width or height expression could not be parsed.',
+      })
     case 'resource_limit':
-      return '幅または高さの式が複雑すぎるため評価を中止しました。'
+      return selectLocalizedText(locale, {
+        ja: '幅または高さの式が複雑すぎるため評価を中止しました。',
+        en: 'Evaluation stopped because the width or height expression is too complex.',
+      })
     case 'result_out_of_range':
-      return '幅または高さを正のmm値として安全に採用できません。'
+      return selectLocalizedText(locale, {
+        ja: '幅または高さを正のmm値として安全に採用できません。',
+        en: 'The width or height cannot be safely used as a positive millimetre value.',
+      })
     case 'native_unavailable':
-      return '式を使った新規作成はデスクトップ版で利用できます。'
+      return selectLocalizedText(locale, {
+        ja: '式を使った新規作成はデスクトップ版で利用できます。',
+        en: 'Creating a project from expressions is available in the desktop app.',
+      })
     case 'invalid_response':
     case 'stale_response':
     case 'internal_failure':
-      return '幅または高さの評価結果を採用できませんでした。'
+      return selectLocalizedText(locale, {
+        ja: '幅または高さの評価結果を採用できませんでした。',
+        en: 'The evaluated width or height result could not be used.',
+      })
   }
 }
 

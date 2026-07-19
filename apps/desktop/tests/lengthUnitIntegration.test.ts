@@ -74,11 +74,17 @@ test('benchmark, expression-backed new-project, and import contracts remain expl
   )
   assert.equal((app.match(/name="width_expression"/gu) ?? []).length, 1)
   assert.equal((app.match(/name="height_expression"/gu) ?? []).length, 1)
-  assert.match(app, /ariaLabel="用紙の幅の式 \(mm\)"/u)
-  assert.match(app, /ariaLabel="用紙の高さの式 \(mm\)"/u)
   assert.match(
     app,
-    /validation\.width_mm\.toLocaleString\(\)[\s\S]*?validation\.height_mm\.toLocaleString\(\)[\s\S]*?\} mm/u,
+    /ariaLabel=\{text\(\{\s*ja: '用紙の幅の式 \(mm\)',\s*en: 'Paper width expression \(mm\)',\s*\}\)\}/u,
+  )
+  assert.match(
+    app,
+    /ariaLabel=\{text\(\{\s*ja: '用紙の高さの式 \(mm\)',\s*en: 'Paper height expression \(mm\)',\s*\}\)\}/u,
+  )
+  assert.match(
+    app,
+    /ja: formatLocalizedText\('ja',[\s\S]*?validation\.width_mm\.toLocaleString\('ja'\)[\s\S]*?validation\.height_mm\.toLocaleString\('ja'\)[\s\S]*?en: formatLocalizedText\('en',[\s\S]*?validation\.width_mm\.toLocaleString\('en'\)[\s\S]*?validation\.height_mm\.toLocaleString\('en'\)/u,
   )
 })
 

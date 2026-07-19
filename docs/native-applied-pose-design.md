@@ -474,7 +474,7 @@ watertight姿勢の第一checkpointは、`ori-collision`内部だけで使用す
 
 #### C.1 `MaterialTreePose` exact-affine包含（次工程設計）
 
-この項は監査を反映した未実装の次工程設計であり、Cの完成やcollision safe setの拡張を表さない。未承認の先行実装ではprivateな`MeasuredBinary64AffineEnvelope`として直接差分だけを観測し、proof model ID、admission判定およびsafe判定能力を持たせない。演算数表、三角関数の厳密誤差上限およびhard ceilingの承認後に限り、正式proof model ID候補`material_tree_binary64_affine_containment_v1`を`rational_cayley_tree_pose_v1`、`material_tree_kinematics_mm_v1`、exact material model issuerおよび同じ`BoundMaterialTreePose` instanceへ結合する。proof/build authorityはopaque、non-`Serialize`、public constructorなしとし、caller matrix、ID文字列または値が等しい別solveから再構成できないようにする。
+この項のうち未承認の直接差分観測はprivateな`MeasuredBinary64AffineEnvelope`として実装済みだが、Cの完成やcollision safe setの拡張を表さない。この型は同じ`BoundMaterialTreePose` instanceだけを受理し、proof model ID、admission判定およびsafe判定能力を持たない。全boundary occurrence、共有`VertexId`、各hingeのstart/end/midpointと親/子/hinge-parent経路、clone/ABA/foreign/reroot/1 ULP、構造・保存・厳密算術のexact-limit/one-shortをprivate testで固定した。演算数表、三角関数の厳密誤差上限およびhard ceilingの承認後に限り、正式proof model ID候補`material_tree_binary64_affine_containment_v1`を`rational_cayley_tree_pose_v1`、`material_tree_kinematics_mm_v1`、exact material model issuerおよび同じpose instanceへ結合する。proof/build authorityはopaque、non-`Serialize`、public constructorなしとし、caller matrix、ID文字列または値が等しい別solveから再構成できないようにする。
 
 各faceのnative binary64 `RigidTransform`の12係数をIEEE 754 bit列からdyadic有理数へ完全変換し、その係数を無丸めの有理算術で評価する理想affine map `F`とする。同じsource boundary vertexをexact Cayley tree map `E`へ適用し、全boundary occurrenceについて次を直接計算する。これは保存済みmatrix係数が表す理想mapの包含であり、JavaScriptやGPUでmatrixを点へ適用する際の追加丸めはC.2の別gateで扱う。
 

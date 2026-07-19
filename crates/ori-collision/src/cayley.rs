@@ -71,6 +71,7 @@ enum CayleyStage {
     Matrix,
     Output,
     Tree,
+    Containment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2994,11 +2995,21 @@ fn apply_point(
     point: &ExactPoint3,
     meter: &mut WorkMeter<'_>,
 ) -> Result<ExactPoint3, CayleyError> {
+    apply_point_at_stage(rotation, translation, point, meter, CayleyStage::Matrix)
+}
+
+fn apply_point_at_stage(
+    rotation: &[[BigRational; 3]; 3],
+    translation: &ExactVector3,
+    point: &ExactPoint3,
+    meter: &mut WorkMeter<'_>,
+    stage: CayleyStage,
+) -> Result<ExactPoint3, CayleyError> {
     let coordinates = try_array3(|row| {
         let mut result = translation.coordinates[row].clone();
         for (coefficient, coordinate) in rotation[row].iter().zip(&point.coordinates) {
-            let product = meter.multiply_rational(coefficient, coordinate, CayleyStage::Matrix)?;
-            result = meter.add_rational(&result, &product, CayleyStage::Matrix)?;
+            let product = meter.multiply_rational(coefficient, coordinate, stage)?;
+            result = meter.add_rational(&result, &product, stage)?;
         }
         Ok(result)
     })?;
@@ -3137,6 +3148,8 @@ fn try_array3<T>(
 ) -> Result<[T; 3], CayleyError> {
     Ok([element(0)?, element(1)?, element(2)?])
 }
+
+mod containment;
 
 #[cfg(test)]
 mod stress_tests;

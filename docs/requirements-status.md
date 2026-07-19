@@ -25,6 +25,12 @@ precision collapseは実装・実行済みである。角起点・辺中点Vのf
 pose/thickness再結合拒否は未実装である。単純なversion差し替えは行わず、証拠不足を
 blockingな`indeterminate`へ閉じる。
 
+2026-07-19追記: native binary64姿勢と有理Cayley姿勢の全境界直接差分観測は、
+privateな`MeasuredBinary64AffineEnvelope`として実装した。同じissuer/pose instance、
+共有頂点、hinge端点・中点、構造・保存・厳密算術上限を再認証するが、正式proof ID、
+admission、正厚、renderer、collision classifierまたはmutation authorityを持たない。
+したがってSIM-010の状態と完成率は変更せず、次にexact treeを厚さ0分類器へ接続する。
+
 ## プロジェクトと紙
 
 | ID | 状態 | 現在の根拠・不足 |

@@ -179,7 +179,9 @@ rotation_sign   = assignment_sign × direction_sign
 
 ### 6.6 native binary64 exact-affine包含とrenderer境界（次工程設計）
 
-本節は監査結果を固定する次工程設計であり、実装済みカバレッジには数えない。未承認の先行実装はprivateな`MeasuredBinary64AffineEnvelope`として直接差分だけを観測し、証明model ID、admission判定およびsafe判定能力を持たせない。演算数表、三角関数の厳密誤差上限およびhard ceilingの承認後に限り、正式model ID候補`material_tree_binary64_affine_containment_v1`を`rational_cayley_tree_pose_v1`、`material_tree_kinematics_mm_v1`および同一の`BoundMaterialTreePose` issuer/pose instanceへprivateに結合する。proofとbuilderは公開constructorを持たず、`Serialize`、caller提供matrix、公開IDの照合だけから再構成できてはならない。
+本節のうち未承認の直接差分観測はprivateな`MeasuredBinary64AffineEnvelope`として実装済みだが、正式admission、renderer接続およびcollision safe setは次工程であり、productionの実装済みカバレッジには数えない。この型は同じ`BoundMaterialTreePose` instanceだけを受理し、証明model ID、admission判定およびsafe判定能力を持たない。演算数表、三角関数の厳密誤差上限およびhard ceilingの承認後に限り、正式model ID候補`material_tree_binary64_affine_containment_v1`を`rational_cayley_tree_pose_v1`、`material_tree_kinematics_mm_v1`および同一のissuer/pose instanceへprivateに結合する。proofとbuilderは公開constructorを持たず、`Serialize`、caller提供matrix、公開IDの照合だけから再構成できてはならない。
+
+2026-07-19時点のprivate観測は、全faceの保存済みbinary64係数をbit-exact有理数へ変換し、全boundary occurrenceで`F - E`の成分別最大値を測る。共有`VertexId`を全出現で再照合し、各hingeのstart/end/midpointをexact parent/child/stored pathとbinary64 parent/child/hinge-parent pathで検査する。単一面identity、斜め3-4-5軸37度、clone/ABA/foreign/reroot/1 ULP、全22個の構造・保存上限、厳密算術上限、canonical破損およびchecked overflowを7件で固定した。測定値は分類器、正厚、rendererまたはSIM-010へ渡していない。
 
 #### 6.6.1 面境界全域の成分別包含
 

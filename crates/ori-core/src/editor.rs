@@ -1,10 +1,17 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
-use crate::applied_pose::AppliedPoseV1;
+use crate::{
+    DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_VERTICES, GeometricConstraintErrorV1,
+    GeometricConstraintResourceV1, applied_pose::AppliedPoseV1,
+    validate_geometric_constraint_record_against_pattern_v1,
+};
 use ori_domain::{
-    CreasePattern, Edge, EdgeId, EdgeKind, InstructionPose, InstructionStep, InstructionStepId,
-    InstructionTimeline, InstructionTimelineValidationError, LengthDisplayUnit, Paper, Point2,
-    RgbaColor, Vertex, VertexId, validate_instruction_timeline,
+    ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+    GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
+    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionPose, InstructionStep,
+    InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, LengthDisplayUnit,
+    Paper, Point2, RgbaColor, Vertex, VertexId, validate_geometric_constraint_document_v1,
+    validate_instruction_timeline,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -112,6 +119,17 @@ pub enum Command {
     RemoveBoundaryVertex {
         vertex: VertexId,
     },
+    /// Adds one strictly validated record. Persisted-domain validation runs
+    /// before reference and local-geometry validation.
+    AddGeometricConstraint {
+        record: GeometricConstraintRecordV1,
+    },
+    /// Removes the first matching raw record without validating unrelated
+    /// records, allowing an unchecked loaded document to be repaired one
+    /// record at a time. Undo restores the exact record and vector index.
+    RemoveGeometricConstraint {
+        id: ConstraintId,
+    },
     AddInstructionStep {
         step: InstructionStep,
     },
@@ -142,6 +160,8 @@ pub struct CommandResult {
     pub changed_edges: Vec<EdgeId>,
     pub settings_changed: bool,
     pub instructions_changed: bool,
+    /// Whether the authored geometric-constraint document changed.
+    pub constraints_changed: bool,
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -388,6 +408,32 @@ pub enum CommandError {
     },
     #[error("invalid instruction timeline: {0}")]
     InstructionTimelineInvalid(#[from] InstructionTimelineValidationError),
+    #[error("invalid geometric-constraint document: {0}")]
+    GeometricConstraintDocumentInvalid(#[from] GeometricConstraintDocumentValidationErrorV1),
+    #[error("geometric constraint is invalid for the current geometry: {0}")]
+    GeometricConstraintGeometryInvalid(GeometricConstraintErrorV1),
+    #[error(
+        "geometric-constraint {resource:?} count overflowed while projecting the command result"
+    )]
+    GeometricConstraintGeometryCountOverflow {
+        resource: GeometricConstraintResourceV1,
+    },
+    #[error(
+        "geometric-constraint {resource:?} index would contain {actual} records; the hard maximum is {maximum}"
+    )]
+    GeometricConstraintGeometryLimitExceeded {
+        resource: GeometricConstraintResourceV1,
+        actual: usize,
+        maximum: usize,
+    },
+    #[error("geometric constraint {0:?} already exists")]
+    GeometricConstraintAlreadyExists(ConstraintId),
+    #[error("geometric constraint {0:?} was not found")]
+    GeometricConstraintNotFound(ConstraintId),
+    #[error(
+        "geometric constraint {constraint:?} must be removed before changing referenced geometry"
+    )]
+    GeometricConstraintBlocksGeometryMutation { constraint: ConstraintId },
 }
 
 #[derive(Debug, Clone)]
@@ -524,6 +570,13 @@ enum Inverse {
         removed_edge: Edge,
         previous_vertex: VertexId,
         next_vertex: VertexId,
+    },
+    RemoveAddedGeometricConstraint {
+        id: ConstraintId,
+    },
+    RestoreRemovedGeometricConstraint {
+        index: usize,
+        record: GeometricConstraintRecordV1,
     },
     RemoveAddedInstructionStep {
         step_id: InstructionStepId,
@@ -1086,6 +1139,7 @@ fn intersection_cluster_changes(
         edges,
         settings: false,
         instructions: false,
+        constraints: false,
     }
 }
 
@@ -1146,10 +1200,168 @@ fn apply_boundary_vertex_removal(
     pattern.edges.remove(removed_edge_index);
 }
 
+#[derive(Default)]
+struct ConstraintMutationTargets {
+    all_geometry: bool,
+    vertices: HashSet<VertexId>,
+    edges: HashSet<EdgeId>,
+}
+
+impl ConstraintMutationTargets {
+    fn is_empty(&self) -> bool {
+        !self.all_geometry && self.vertices.is_empty() && self.edges.is_empty()
+    }
+
+    fn is_referenced_by(&self, constraint: &GeometricConstraintKindV1) -> bool {
+        if self.all_geometry {
+            return true;
+        }
+        match *constraint {
+            GeometricConstraintKindV1::FixedLength { edge, .. }
+            | GeometricConstraintKindV1::Horizontal { edge }
+            | GeometricConstraintKindV1::Vertical { edge } => self.edges.contains(&edge),
+            GeometricConstraintKindV1::FixedAngle {
+                vertex,
+                first_edge,
+                second_edge,
+                ..
+            } => {
+                self.vertices.contains(&vertex)
+                    || self.edges.contains(&first_edge)
+                    || self.edges.contains(&second_edge)
+            }
+            GeometricConstraintKindV1::EqualLength {
+                first_edge,
+                second_edge,
+            }
+            | GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } => self.edges.contains(&first_edge) || self.edges.contains(&second_edge),
+            GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
+                self.vertices.contains(&vertex) || self.edges.contains(&line_edge)
+            }
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex,
+                second_vertex,
+                axis_edge,
+            } => {
+                self.vertices.contains(&first_vertex)
+                    || self.vertices.contains(&second_vertex)
+                    || self.edges.contains(&axis_edge)
+            }
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex,
+                source_vertex,
+                target_vertex,
+                ..
+            } => {
+                self.vertices.contains(&center_vertex)
+                    || self.vertices.contains(&source_vertex)
+                    || self.vertices.contains(&target_vertex)
+            }
+            GeometricConstraintKindV1::AngleBisector {
+                vertex,
+                first_edge,
+                second_edge,
+                bisector_edge,
+            } => {
+                self.vertices.contains(&vertex)
+                    || self.edges.contains(&first_edge)
+                    || self.edges.contains(&second_edge)
+                    || self.edges.contains(&bisector_edge)
+            }
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ..
+            } => self.edges.contains(&numerator_edge) || self.edges.contains(&denominator_edge),
+        }
+    }
+}
+
+fn point_bits_equal(first: Point2, second: Point2) -> bool {
+    first.x.to_bits() == second.x.to_bits() && first.y.to_bits() == second.y.to_bits()
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONSTRAINT_LOCK_VISITS: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn record_constraint_lock_edge_visit() {
+    #[cfg(test)]
+    CONSTRAINT_LOCK_VISITS.with(|counter| {
+        if let Some((edges, constraints)) = counter.get() {
+            counter.set(Some((edges + 1, constraints)));
+        }
+    });
+}
+
+fn record_constraint_lock_record_visit() {
+    #[cfg(test)]
+    CONSTRAINT_LOCK_VISITS.with(|counter| {
+        if let Some((edges, constraints)) = counter.get() {
+            counter.set(Some((edges, constraints + 1)));
+        }
+    });
+}
+
+#[cfg(test)]
+fn begin_constraint_lock_visit_count() {
+    CONSTRAINT_LOCK_VISITS.with(|counter| counter.set(Some((0, 0))));
+}
+
+#[cfg(test)]
+fn finish_constraint_lock_visit_count() -> (usize, usize) {
+    CONSTRAINT_LOCK_VISITS.with(|counter| {
+        let result = counter
+            .get()
+            .expect("constraint-lock visit counting must have been started");
+        counter.set(None);
+        result
+    })
+}
+
+fn collect_incident_constraint_edges(
+    pattern: &CreasePattern,
+    vertex: VertexId,
+    target_edges: &mut HashSet<EdgeId>,
+) {
+    for edge in &pattern.edges {
+        record_constraint_lock_edge_visit();
+        if edge.start == vertex || edge.end == vertex {
+            target_edges.insert(edge.id);
+        }
+    }
+}
+
+fn ensure_geometric_constraint_result_count(
+    resource: GeometricConstraintResourceV1,
+    current: usize,
+    added: usize,
+    maximum: usize,
+) -> Result<(), CommandError> {
+    let actual = current
+        .checked_add(added)
+        .ok_or(CommandError::GeometricConstraintGeometryCountOverflow { resource })?;
+    if actual > maximum {
+        Err(CommandError::GeometricConstraintGeometryLimitExceeded {
+            resource,
+            actual,
+            maximum,
+        })
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EditorState {
     pattern: CreasePattern,
     paper: Paper,
+    geometric_constraints: GeometricConstraintDocumentV1,
     instruction_timeline: InstructionTimeline,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
@@ -1185,9 +1397,34 @@ impl EditorState {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
     ) -> Self {
+        Self::with_document_parts_and_constraints(
+            pattern,
+            paper,
+            instruction_timeline,
+            GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints: Vec::new(),
+            },
+        )
+    }
+
+    /// Restores all persisted, user-editable document parts including authored
+    /// geometric constraints.
+    ///
+    /// Loading is intentionally not an edit and therefore starts with revision
+    /// zero and empty history. Admission remains explicit at the persistence
+    /// boundary so repairable legacy geometry is not silently rewritten here.
+    #[must_use]
+    pub const fn with_document_parts_and_constraints(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+    ) -> Self {
         Self {
             pattern,
             paper,
+            geometric_constraints,
             instruction_timeline,
             current_applied_pose: None,
             revision: 0,
@@ -1214,6 +1451,11 @@ impl EditorState {
     #[must_use]
     pub const fn instruction_timeline(&self) -> &InstructionTimeline {
         &self.instruction_timeline
+    }
+
+    #[must_use]
+    pub const fn geometric_constraints(&self) -> &GeometricConstraintDocumentV1 {
+        &self.geometric_constraints
     }
 
     /// Returns the non-persisted semantic pose currently shown as applied.
@@ -1269,6 +1511,7 @@ impl EditorState {
     ) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
+        self.ensure_geometric_constraint_resource_admission(&command)?;
         let result = command.changes(&self.pattern, &self.paper);
         let geometry_before = command
             .may_change_kinematic_geometry()
@@ -1339,6 +1582,8 @@ impl EditorState {
     }
 
     fn apply(&mut self, command: &Command) -> Result<Inverse, CommandError> {
+        self.ensure_geometric_constraint_resource_admission(command)?;
+        self.ensure_geometric_constraints_allow(command)?;
         match *command {
             Command::AddVertex { id, position } => {
                 if self.vertex_index(id).is_some() {
@@ -1495,6 +1740,39 @@ impl EditorState {
                 fraction,
             } => self.split_boundary_edge(edge, new_vertex, new_edge, fraction),
             Command::RemoveBoundaryVertex { vertex } => self.remove_boundary_vertex(vertex),
+            Command::AddGeometricConstraint { ref record } => {
+                if self
+                    .geometric_constraints
+                    .constraints
+                    .iter()
+                    .any(|candidate| candidate.id == record.id)
+                {
+                    return Err(CommandError::GeometricConstraintAlreadyExists(record.id));
+                }
+                let mut candidate = self.geometric_constraints.clone();
+                candidate.constraints.push(record.clone());
+                // Persisted-domain validation intentionally precedes all
+                // reference and geometry checks, establishing one stable
+                // public error order for every constraint kind.
+                validate_geometric_constraint_document_v1(&candidate)?;
+                self.validate_new_constraint_geometry(record)?;
+                self.geometric_constraints = candidate;
+                Ok(Inverse::RemoveAddedGeometricConstraint { id: record.id })
+            }
+            Command::RemoveGeometricConstraint { id } => {
+                let mut candidate = self.geometric_constraints.clone();
+                let index = candidate
+                    .constraints
+                    .iter()
+                    .position(|record| record.id == id)
+                    .ok_or(CommandError::GeometricConstraintNotFound(id))?;
+                let record = candidate.constraints.remove(index);
+                // Removal is a monotonic repair operation. A loaded document
+                // is allowed to be temporarily invalid, so unrelated
+                // remaining records are deliberately not revalidated here.
+                self.geometric_constraints = candidate;
+                Ok(Inverse::RestoreRemovedGeometricConstraint { index, record })
+            }
             Command::AddInstructionStep { ref step } => {
                 if self
                     .instruction_timeline
@@ -1596,6 +1874,165 @@ impl EditorState {
         validate_instruction_timeline(&candidate)?;
         self.instruction_timeline = candidate;
         Ok(())
+    }
+
+    fn validate_new_constraint_geometry(
+        &self,
+        record: &GeometricConstraintRecordV1,
+    ) -> Result<(), CommandError> {
+        match validate_geometric_constraint_record_against_pattern_v1(&self.pattern, record) {
+            Ok(()) => Ok(()),
+            Err(GeometricConstraintErrorV1::MissingVertex { vertex, .. }) => {
+                Err(CommandError::VertexNotFound(vertex))
+            }
+            Err(GeometricConstraintErrorV1::MissingEdge { edge, .. }) => {
+                Err(CommandError::EdgeNotFound(edge))
+            }
+            Err(error) => Err(CommandError::GeometricConstraintGeometryInvalid(error)),
+        }
+    }
+
+    fn ensure_geometric_constraint_resource_admission(
+        &self,
+        command: &Command,
+    ) -> Result<(), CommandError> {
+        let adds_constraint = matches!(command, Command::AddGeometricConstraint { .. });
+        if self.geometric_constraints.is_empty() && !adds_constraint {
+            return Ok(());
+        }
+
+        let Some((added_vertices, added_edges)) = command.geometric_resource_growth()? else {
+            if !adds_constraint {
+                return Ok(());
+            }
+            return self.ensure_geometric_constraint_result_counts(0, 0);
+        };
+        self.ensure_geometric_constraint_result_counts(added_vertices, added_edges)
+    }
+
+    fn ensure_geometric_constraint_result_counts(
+        &self,
+        added_vertices: usize,
+        added_edges: usize,
+    ) -> Result<(), CommandError> {
+        ensure_geometric_constraint_result_count(
+            GeometricConstraintResourceV1::Vertices,
+            self.pattern.vertices.len(),
+            added_vertices,
+            DEFAULT_MAX_CONSTRAINT_VERTICES,
+        )?;
+        ensure_geometric_constraint_result_count(
+            GeometricConstraintResourceV1::Edges,
+            self.pattern.edges.len(),
+            added_edges,
+            DEFAULT_MAX_CONSTRAINT_EDGES,
+        )
+    }
+
+    fn ensure_geometric_constraints_allow(&self, command: &Command) -> Result<(), CommandError> {
+        if self.geometric_constraints.constraints.is_empty() {
+            return Ok(());
+        }
+        let targets = self.constraint_mutation_targets(command)?;
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        let mut blocker = None;
+        for record in &self.geometric_constraints.constraints {
+            record_constraint_lock_record_visit();
+            if targets.is_referenced_by(&record.constraint)
+                && blocker.is_none_or(|current: &GeometricConstraintRecordV1| {
+                    record.id.canonical_bytes() < current.id.canonical_bytes()
+                })
+            {
+                blocker = Some(record);
+            }
+        }
+        if let Some(record) = blocker {
+            Err(CommandError::GeometricConstraintBlocksGeometryMutation {
+                constraint: record.id,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn constraint_mutation_targets(
+        &self,
+        command: &Command,
+    ) -> Result<ConstraintMutationTargets, CommandError> {
+        let mut targets = ConstraintMutationTargets::default();
+        match command {
+            Command::MoveVertex { id, position } => {
+                if self.vertex_index(*id).is_some_and(|index| {
+                    point_bits_equal(self.pattern.vertices[index].position, *position)
+                }) {
+                    return Ok(targets);
+                }
+                targets.vertices.insert(*id);
+                collect_incident_constraint_edges(&self.pattern, *id, &mut targets.edges);
+            }
+            Command::RemoveVertex { id } => {
+                targets.vertices.insert(*id);
+                collect_incident_constraint_edges(&self.pattern, *id, &mut targets.edges);
+            }
+            Command::RemoveEdge { id }
+            | Command::SplitEdge { edge: id, .. }
+            | Command::SplitBoundaryEdge { edge: id, .. } => {
+                targets.edges.insert(*id);
+            }
+            Command::ResizeRectangularPaper {
+                width_mm,
+                height_mm,
+            } => {
+                let resized = self.planned_rectangular_positions(*width_mm, *height_mm)?;
+                targets.all_geometry = self
+                    .pattern
+                    .vertices
+                    .iter()
+                    .zip(resized)
+                    .any(|(vertex, position)| !point_bits_equal(vertex.position, position));
+            }
+            Command::ConnectEdgeIntersection {
+                first_edge,
+                second_edge,
+                ..
+            }
+            | Command::ConnectTJunction {
+                first_edge,
+                second_edge,
+                ..
+            } => {
+                targets.edges.insert(*first_edge);
+                targets.edges.insert(*second_edge);
+            }
+            Command::ConnectIntersectionCluster {
+                targets: cluster_targets,
+                ..
+            } => {
+                targets
+                    .edges
+                    .extend(cluster_targets.iter().map(|target| target.edge));
+            }
+            Command::RemoveBoundaryVertex { vertex } => {
+                targets.vertices.insert(*vertex);
+                collect_incident_constraint_edges(&self.pattern, *vertex, &mut targets.edges);
+            }
+            Command::AddVertex { .. }
+            | Command::AddEdge { .. }
+            | Command::SetCuttingAllowed { .. }
+            | Command::UpdatePaperProperties { .. }
+            | Command::SetLengthDisplayUnit { .. }
+            | Command::AddGeometricConstraint { .. }
+            | Command::RemoveGeometricConstraint { .. }
+            | Command::AddInstructionStep { .. }
+            | Command::UpdateInstructionStepMetadata { .. }
+            | Command::ReplaceInstructionStepPose { .. }
+            | Command::RemoveInstructionStep { .. }
+            | Command::MoveInstructionStep { .. } => {}
+        }
+        Ok(targets)
     }
 
     fn remove_boundary_vertex(&mut self, vertex_id: VertexId) -> Result<Inverse, CommandError> {
@@ -2507,6 +2944,31 @@ impl EditorState {
         width_mm: f64,
         height_mm: f64,
     ) -> Result<Inverse, CommandError> {
+        let resized_positions = self.planned_rectangular_positions(width_mm, height_mm)?;
+        let previous_positions = self
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<Vec<_>>();
+        for (vertex, position) in self.pattern.vertices.iter_mut().zip(resized_positions) {
+            vertex.position = position;
+        }
+        Ok(Inverse::RestoreVertexPositions {
+            vertices: previous_positions,
+        })
+    }
+
+    /// Computes the exact coordinates the resize command would commit.
+    ///
+    /// The constraint mutation guard and the mutating implementation share
+    /// this planner so a resize bypasses a lock only when every resulting
+    /// coordinate is bit-for-bit unchanged (including signed zero).
+    fn planned_rectangular_positions(
+        &self,
+        width_mm: f64,
+        height_mm: f64,
+    ) -> Result<Vec<Point2>, CommandError> {
         Self::validate_resize_dimensions(width_mm, height_mm)?;
         let boundary = self.rectangular_boundary()?;
         let same_width = width_mm == boundary.max_x - boundary.min_x;
@@ -2537,12 +2999,6 @@ impl EditorState {
             return Err(CommandError::PaperResizeScaleNotRepresentable);
         }
 
-        let previous_positions = self
-            .pattern
-            .vertices
-            .iter()
-            .map(|vertex| (vertex.id, vertex.position))
-            .collect::<Vec<_>>();
         let mut resized_positions = Vec::with_capacity(self.pattern.vertices.len());
         for vertex in &self.pattern.vertices {
             if !vertex.position.x.is_finite() || !vertex.position.y.is_finite() {
@@ -2585,12 +3041,7 @@ impl EditorState {
             );
         }
 
-        for (vertex, position) in self.pattern.vertices.iter_mut().zip(resized_positions) {
-            vertex.position = position;
-        }
-        Ok(Inverse::RestoreVertexPositions {
-            vertices: previous_positions,
-        })
+        Ok(resized_positions)
     }
 
     fn validate_resize_dimensions(width_mm: f64, height_mm: f64) -> Result<(), CommandError> {
@@ -3155,6 +3606,30 @@ impl EditorState {
                     .boundary_vertices
                     .insert(*boundary_index, vertex.id);
             }
+            Inverse::RemoveAddedGeometricConstraint { id } => {
+                let index = self
+                    .geometric_constraints
+                    .constraints
+                    .iter()
+                    .position(|record| record.id == *id)
+                    .ok_or(CommandError::GeometricConstraintNotFound(*id))?;
+                // This inverse is a trusted delta created only after strict
+                // Add admission. Removing that exact record must also work if
+                // the surrounding loaded document is repairably invalid.
+                self.geometric_constraints.constraints.remove(index);
+            }
+            Inverse::RestoreRemovedGeometricConstraint { index, record } => {
+                if *index > self.geometric_constraints.constraints.len() {
+                    return Err(CommandError::GeometricConstraintNotFound(record.id));
+                }
+                // Undo restores the exact raw record and index captured by
+                // Remove. Revalidating here would make an invalid-but-loaded
+                // document impossible to repair and impossible to restore
+                // byte-for-byte through trusted history.
+                self.geometric_constraints
+                    .constraints
+                    .insert(*index, record.clone());
+            }
             Inverse::RemoveAddedInstructionStep { step_id } => {
                 let mut candidate = self.instruction_timeline.clone();
                 let index = candidate
@@ -3275,6 +3750,7 @@ impl EditorState {
             changed_edges: changes.edges,
             settings_changed: changes.settings,
             instructions_changed: changes.instructions,
+            constraints_changed: changes.constraints,
         }
     }
 }
@@ -3285,9 +3761,52 @@ struct Changes {
     edges: Vec<EdgeId>,
     settings: bool,
     instructions: bool,
+    constraints: bool,
 }
 
 impl Command {
+    fn geometric_resource_growth(&self) -> Result<Option<(usize, usize)>, CommandError> {
+        let growth = match self {
+            Self::AddVertex { .. } => (1, 0),
+            Self::AddEdge { .. } | Self::ConnectTJunction { .. } => (0, 1),
+            Self::SplitEdge { .. } | Self::SplitBoundaryEdge { .. } => (1, 1),
+            Self::ConnectEdgeIntersection { .. } => (1, 2),
+            Self::ConnectIntersectionCluster { junction, targets } => {
+                let added_edges = targets.iter().try_fold(0usize, |count, target| {
+                    if target.new_edge.is_some() {
+                        count.checked_add(1).ok_or(
+                            CommandError::GeometricConstraintGeometryCountOverflow {
+                                resource: GeometricConstraintResourceV1::Edges,
+                            },
+                        )
+                    } else {
+                        Ok(count)
+                    }
+                })?;
+                (
+                    usize::from(matches!(junction, JunctionVertexIntent::Create { .. })),
+                    added_edges,
+                )
+            }
+            Self::MoveVertex { .. }
+            | Self::RemoveVertex { .. }
+            | Self::RemoveEdge { .. }
+            | Self::SetCuttingAllowed { .. }
+            | Self::UpdatePaperProperties { .. }
+            | Self::SetLengthDisplayUnit { .. }
+            | Self::ResizeRectangularPaper { .. }
+            | Self::RemoveBoundaryVertex { .. }
+            | Self::AddGeometricConstraint { .. }
+            | Self::RemoveGeometricConstraint { .. }
+            | Self::AddInstructionStep { .. }
+            | Self::UpdateInstructionStepMetadata { .. }
+            | Self::ReplaceInstructionStepPose { .. }
+            | Self::RemoveInstructionStep { .. }
+            | Self::MoveInstructionStep { .. } => return Ok(None),
+        };
+        Ok(Some(growth))
+    }
+
     /// Returns whether this command can change the canonical material
     /// kinematics geometry.
     ///
@@ -3311,6 +3830,8 @@ impl Command {
             Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
             | Self::SetLengthDisplayUnit { .. }
+            | Self::AddGeometricConstraint { .. }
+            | Self::RemoveGeometricConstraint { .. }
             | Self::AddInstructionStep { .. }
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
@@ -3328,18 +3849,21 @@ impl Command {
                 edges: Vec::new(),
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::AddEdge { id, start, end, .. } => Changes {
                 vertices: vec![start, end],
                 edges: vec![id],
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::RemoveEdge { id } => Changes {
                 vertices: Vec::new(),
                 edges: vec![id],
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
@@ -3348,12 +3872,14 @@ impl Command {
                 edges: Vec::new(),
                 settings: true,
                 instructions: false,
+                constraints: false,
             },
             Self::ResizeRectangularPaper { .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: Vec::new(),
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::SplitEdge {
                 edge,
@@ -3373,6 +3899,7 @@ impl Command {
                     edges: vec![edge, new_edge],
                     settings: false,
                     instructions: false,
+                    constraints: false,
                 }
             }
             Self::ConnectEdgeIntersection {
@@ -3411,6 +3938,7 @@ impl Command {
                     edges,
                     settings: false,
                     instructions: false,
+                    constraints: false,
                 }
             }
             Self::ConnectTJunction {
@@ -3447,6 +3975,7 @@ impl Command {
                         .flatten()
                         .any(|(_, edge)| edge.kind == EdgeKind::Boundary),
                     instructions: false,
+                    constraints: false,
                 }
             }
             Self::ConnectIntersectionCluster {
@@ -3471,6 +4000,7 @@ impl Command {
                     edges: vec![edge, new_edge],
                     settings: true,
                     instructions: false,
+                    constraints: false,
                 }
             }
             Self::RemoveBoundaryVertex { vertex } => {
@@ -3505,6 +4035,13 @@ impl Command {
                     edges,
                     settings: true,
                     instructions: false,
+                    constraints: false,
+                }
+            }
+            Self::AddGeometricConstraint { .. } | Self::RemoveGeometricConstraint { .. } => {
+                Changes {
+                    constraints: true,
+                    ..Changes::default()
                 }
             }
             Self::AddInstructionStep { .. }
@@ -3516,6 +4053,7 @@ impl Command {
                 edges: Vec::new(),
                 settings: false,
                 instructions: true,
+                constraints: false,
             },
         }
     }
@@ -3530,30 +4068,35 @@ impl Inverse {
                 edges: Vec::new(),
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreEdge { edge, .. } => Changes {
                 vertices: vec![edge.start, edge.end],
                 edges: vec![edge.id],
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::RestorePaperProperties { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreLengthDisplayUnit { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreVertexPositions { vertices } => Changes {
                 vertices: vertices.iter().map(|(id, _)| *id).collect(),
                 edges: Vec::new(),
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreBoundarySplit {
                 original_edge,
@@ -3565,6 +4108,7 @@ impl Inverse {
                 edges: vec![original_edge.id, new_edge.id],
                 settings: true,
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreEdgeSplit {
                 original_edge,
@@ -3576,6 +4120,7 @@ impl Inverse {
                 edges: vec![original_edge.id, new_edge.id],
                 settings: false,
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreEdgeIntersection {
                 original_edges,
@@ -3598,6 +4143,7 @@ impl Inverse {
                     edges,
                     settings: false,
                     instructions: false,
+                    constraints: false,
                 }
             }
             Self::RestoreTJunction {
@@ -3610,6 +4156,7 @@ impl Inverse {
                 edges: changed_edges.to_vec(),
                 settings: boundary_vertices.is_some(),
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreIntersectionCluster {
                 original_boundary_vertices,
@@ -3621,6 +4168,7 @@ impl Inverse {
                 edges: changed_edges.clone(),
                 settings: original_boundary_vertices.is_some(),
                 instructions: false,
+                constraints: false,
             },
             Self::RestoreBoundaryVertexRemoval {
                 vertex,
@@ -3634,6 +4182,12 @@ impl Inverse {
                 edges: vec![kept_edge.id, removed_edge.id],
                 settings: true,
                 instructions: false,
+                constraints: false,
+            },
+            Self::RemoveAddedGeometricConstraint { .. }
+            | Self::RestoreRemovedGeometricConstraint { .. } => Changes {
+                constraints: true,
+                ..Changes::default()
             },
             Self::RemoveAddedInstructionStep { .. }
             | Self::RestoreInstructionStepMetadata { .. }
@@ -3644,6 +4198,7 @@ impl Inverse {
                 edges: Vec::new(),
                 settings: false,
                 instructions: true,
+                constraints: false,
             },
         }
     }
@@ -3657,6 +4212,7 @@ mod tests {
     struct EditorStateSnapshot {
         pattern: CreasePattern,
         paper: Paper,
+        geometric_constraints: GeometricConstraintDocumentV1,
         instruction_timeline: InstructionTimeline,
         current_applied_pose: Option<crate::AppliedPoseV1>,
         revision: Revision,
@@ -3668,11 +4224,113 @@ mod tests {
         EditorStateSnapshot {
             pattern: editor.pattern.clone(),
             paper: editor.paper.clone(),
+            geometric_constraints: editor.geometric_constraints.clone(),
             instruction_timeline: editor.instruction_timeline.clone(),
             current_applied_pose: editor.current_applied_pose.clone(),
             revision: editor.revision,
             undo_stack: format!("{:?}", editor.undo_stack),
             redo_stack: format!("{:?}", editor.redo_stack),
+        }
+    }
+
+    struct ConstraintResourceFixture {
+        editor: EditorState,
+        vertices: [VertexId; 4],
+        edges: [EdgeId; 3],
+        repair_vertex: VertexId,
+        filler_vertex: Vertex,
+        filler_edge: Edge,
+    }
+
+    fn constraint_resource_fixture(
+        vertex_count: usize,
+        edge_count: usize,
+    ) -> ConstraintResourceFixture {
+        assert!(vertex_count >= 5);
+        assert!(edge_count >= 3);
+
+        let vertices = std::array::from_fn::<_, 4, _>(|_| VertexId::new());
+        let edges = std::array::from_fn::<_, 3, _>(|_| EdgeId::new());
+        let mut pattern_vertices = vec![
+            Vertex {
+                id: vertices[0],
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: vertices[1],
+                position: Point2::new(10.0, 10.0),
+            },
+            Vertex {
+                id: vertices[2],
+                position: Point2::new(0.0, 10.0),
+            },
+            Vertex {
+                id: vertices[3],
+                position: Point2::new(10.0, 0.0),
+            },
+        ];
+        let repair_vertex = VertexId::new();
+        pattern_vertices.push(Vertex {
+            id: repair_vertex,
+            position: Point2::new(20.0, 20.0),
+        });
+        let filler_vertex = Vertex {
+            id: VertexId::new(),
+            position: Point2::new(30.0, 30.0),
+        };
+        pattern_vertices.resize(vertex_count, filler_vertex.clone());
+
+        let mut pattern_edges = vec![
+            Edge {
+                id: edges[0],
+                start: vertices[0],
+                end: vertices[1],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: edges[1],
+                start: vertices[2],
+                end: vertices[3],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: edges[2],
+                start: vertices[0],
+                end: vertices[2],
+                kind: EdgeKind::Auxiliary,
+            },
+        ];
+        let filler_edge = Edge {
+            id: EdgeId::new(),
+            start: vertices[1],
+            end: vertices[2],
+            kind: EdgeKind::Mountain,
+        };
+        pattern_edges.resize(edge_count, filler_edge.clone());
+
+        let constraint = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: edges[0] },
+        };
+        let editor = EditorState::with_document_parts_and_constraints(
+            CreasePattern {
+                vertices: pattern_vertices,
+                edges: pattern_edges,
+            },
+            Paper::default(),
+            InstructionTimeline::default(),
+            GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints: vec![constraint],
+            },
+        );
+        ConstraintResourceFixture {
+            editor,
+            vertices,
+            edges,
+            repair_vertex,
+            filler_vertex,
+            filler_edge,
         }
     }
 
@@ -11859,9 +12517,1346 @@ mod tests {
 
         let undo = editor.undo(0).expect("empty undo is a no-op");
         assert_eq!(undo.revision, 0);
+        assert!(!undo.constraints_changed);
         assert_eq!(editor_state_snapshot(&editor), before);
         let redo = editor.redo(0).expect("empty redo is a no-op");
         assert_eq!(redo.revision, 0);
+        assert!(!redo.constraints_changed);
         assert_eq!(editor_state_snapshot(&editor), before);
+    }
+
+    #[test]
+    fn geometric_constraint_add_remove_and_history_preserve_id_and_order() {
+        let (mut editor, pattern, _) = rectangular_editor();
+        let first = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: pattern.edges[4].id,
+            },
+        };
+        let second = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Vertical {
+                edge: pattern.edges[0].id,
+            },
+        };
+
+        editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: first.clone(),
+                },
+            )
+            .expect("add first constraint");
+        editor
+            .execute(
+                1,
+                Command::AddGeometricConstraint {
+                    record: second.clone(),
+                },
+            )
+            .expect("add second constraint");
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![first.clone(), second.clone()]
+        );
+
+        editor
+            .execute(2, Command::RemoveGeometricConstraint { id: first.id })
+            .expect("remove first constraint");
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![second.clone()]
+        );
+        editor.undo(3).expect("restore first at its original index");
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![first.clone(), second.clone()]
+        );
+        editor.undo(4).expect("undo second add");
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![first.clone()]
+        );
+        editor.redo(5).expect("redo second add");
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![first, second]
+        );
+        assert_eq!(editor.revision(), 6);
+    }
+
+    #[test]
+    fn persisted_geometric_constraints_restore_without_history() {
+        let (_, pattern, paper) = rectangular_editor();
+        let constraints = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::Horizontal {
+                    edge: pattern.edges[4].id,
+                },
+            }],
+        };
+        let editor = EditorState::with_document_parts_and_constraints(
+            pattern,
+            paper,
+            InstructionTimeline::default(),
+            constraints.clone(),
+        );
+
+        assert_eq!(editor.geometric_constraints(), &constraints);
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn constraint_commands_reject_duplicate_and_missing_references_atomically() {
+        let (mut editor, pattern, _) = rectangular_editor();
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: pattern.edges[4].id,
+            },
+        };
+        editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            )
+            .expect("add fixture constraint");
+
+        let before_duplicate = editor_state_snapshot(&editor);
+        assert_eq!(
+            editor.execute(
+                1,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            ),
+            Err(CommandError::GeometricConstraintAlreadyExists(record.id))
+        );
+        assert_eq!(editor_state_snapshot(&editor), before_duplicate);
+
+        let missing_edge = EdgeId::new();
+        let missing = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Vertical { edge: missing_edge },
+        };
+        let before_missing = editor_state_snapshot(&editor);
+        assert_eq!(
+            editor.execute(1, Command::AddGeometricConstraint { record: missing },),
+            Err(CommandError::EdgeNotFound(missing_edge))
+        );
+        assert_eq!(editor_state_snapshot(&editor), before_missing);
+    }
+
+    #[test]
+    fn referenced_geometry_is_locked_until_constraint_is_explicitly_removed() {
+        let (mut editor, pattern, _) = rectangular_editor();
+        let constrained_edge = pattern.edges[4].clone();
+        let unrelated_vertex = pattern.vertices[2].id;
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: constrained_edge.id,
+            },
+        };
+        editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            )
+            .expect("add horizontal constraint");
+
+        for command in [
+            Command::MoveVertex {
+                id: constrained_edge.start,
+                position: Point2::new(61.0, 45.0),
+            },
+            Command::RemoveEdge {
+                id: constrained_edge.id,
+            },
+            Command::ResizeRectangularPaper {
+                width_mm: 120.0,
+                height_mm: 60.0,
+            },
+        ] {
+            let before = editor_state_snapshot(&editor);
+            assert_eq!(
+                editor.execute(editor.revision(), command),
+                Err(CommandError::GeometricConstraintBlocksGeometryMutation {
+                    constraint: record.id,
+                })
+            );
+            assert_eq!(editor_state_snapshot(&editor), before);
+        }
+
+        editor
+            .execute(
+                1,
+                Command::MoveVertex {
+                    id: unrelated_vertex,
+                    position: Point2::new(-30.0, 90.0),
+                },
+            )
+            .expect("unrelated vertex remains editable");
+        editor
+            .execute(2, Command::RemoveGeometricConstraint { id: record.id })
+            .expect("remove the explicit lock");
+        editor
+            .execute(
+                3,
+                Command::MoveVertex {
+                    id: constrained_edge.start,
+                    position: Point2::new(61.0, 45.0),
+                },
+            )
+            .expect("referenced geometry becomes editable after constraint removal");
+    }
+
+    #[test]
+    fn constraint_only_edits_preserve_the_current_runtime_pose() {
+        let (mut editor, pattern, _) = rectangular_editor();
+        let pose = runtime_pose(25.0);
+        editor.adopt_current_applied_pose(pose.clone());
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: pattern.edges[4].id,
+            },
+        };
+
+        editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            )
+            .expect("constraint metadata does not replace pose");
+        assert_eq!(editor.current_applied_pose(), Some(&pose));
+        editor.undo(1).expect("undo constraint metadata");
+        assert_eq!(editor.current_applied_pose(), Some(&pose));
+        editor.redo(2).expect("redo constraint metadata");
+        assert_eq!(editor.current_applied_pose(), Some(&pose));
+    }
+
+    #[test]
+    fn every_constraint_kind_rejects_a_missing_reference_without_any_state_change() {
+        #[derive(Clone, Copy)]
+        enum ExpectedMissing {
+            Vertex(VertexId),
+            Edge(EdgeId),
+        }
+
+        let (base, pattern, _) = rectangular_editor();
+        let missing_vertex = VertexId::new();
+        let missing_edge = EdgeId::new();
+        let vertex_a = pattern.vertices[0].id;
+        let vertex_b = pattern.vertices[1].id;
+        let edge_a = pattern.edges[0].id;
+        let edge_b = pattern.edges[1].id;
+        let edge_c = pattern.edges[2].id;
+        let cases = vec![
+            (
+                "fixed_length",
+                GeometricConstraintKindV1::FixedLength {
+                    edge: missing_edge,
+                    length_mm: 1.0,
+                },
+                ExpectedMissing::Edge(missing_edge),
+            ),
+            (
+                "fixed_angle",
+                GeometricConstraintKindV1::FixedAngle {
+                    vertex: missing_vertex,
+                    first_edge: edge_a,
+                    second_edge: edge_b,
+                    angle_degrees: 90.0,
+                },
+                ExpectedMissing::Vertex(missing_vertex),
+            ),
+            (
+                "horizontal",
+                GeometricConstraintKindV1::Horizontal { edge: missing_edge },
+                ExpectedMissing::Edge(missing_edge),
+            ),
+            (
+                "vertical",
+                GeometricConstraintKindV1::Vertical { edge: missing_edge },
+                ExpectedMissing::Edge(missing_edge),
+            ),
+            (
+                "equal_length",
+                GeometricConstraintKindV1::EqualLength {
+                    first_edge: missing_edge,
+                    second_edge: edge_a,
+                },
+                ExpectedMissing::Edge(missing_edge),
+            ),
+            (
+                "parallel",
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: edge_a,
+                    second_edge: missing_edge,
+                },
+                ExpectedMissing::Edge(missing_edge),
+            ),
+            (
+                "point_on_line",
+                GeometricConstraintKindV1::PointOnLine {
+                    vertex: missing_vertex,
+                    line_edge: edge_a,
+                },
+                ExpectedMissing::Vertex(missing_vertex),
+            ),
+            (
+                "mirror_symmetry",
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: missing_vertex,
+                    second_vertex: vertex_a,
+                    axis_edge: edge_a,
+                },
+                ExpectedMissing::Vertex(missing_vertex),
+            ),
+            (
+                "rotational_symmetry",
+                GeometricConstraintKindV1::RotationalSymmetry {
+                    center_vertex: missing_vertex,
+                    source_vertex: vertex_a,
+                    target_vertex: vertex_b,
+                    angle_degrees: 120.0,
+                },
+                ExpectedMissing::Vertex(missing_vertex),
+            ),
+            (
+                "angle_bisector",
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex: missing_vertex,
+                    first_edge: edge_a,
+                    second_edge: edge_b,
+                    bisector_edge: edge_c,
+                },
+                ExpectedMissing::Vertex(missing_vertex),
+            ),
+            (
+                "length_ratio",
+                GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: edge_a,
+                    denominator_edge: missing_edge,
+                    ratio: 2.0,
+                },
+                ExpectedMissing::Edge(missing_edge),
+            ),
+        ];
+
+        assert_eq!(cases.len(), 11);
+        for (name, constraint, expected) in cases {
+            let mut editor = base.clone();
+            let before = editor_state_snapshot(&editor);
+            let error = editor
+                .execute(
+                    0,
+                    Command::AddGeometricConstraint {
+                        record: GeometricConstraintRecordV1 {
+                            id: ConstraintId::new(),
+                            constraint,
+                        },
+                    },
+                )
+                .expect_err(name);
+            match expected {
+                ExpectedMissing::Vertex(vertex) => {
+                    assert_eq!(error, CommandError::VertexNotFound(vertex), "{name}");
+                }
+                ExpectedMissing::Edge(edge) => {
+                    assert_eq!(error, CommandError::EdgeNotFound(edge), "{name}");
+                }
+            }
+            assert_eq!(editor_state_snapshot(&editor), before, "{name}");
+        }
+    }
+
+    #[test]
+    fn adding_a_constraint_checks_domain_before_references_and_normalizes_operand_errors() {
+        let (base, _, _) = rectangular_editor();
+        let missing_edge = EdgeId::new();
+        let invalid_id = ConstraintId::new();
+        let mut domain_editor = base.clone();
+        let before = editor_state_snapshot(&domain_editor);
+        assert_eq!(
+            domain_editor.execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: GeometricConstraintRecordV1 {
+                        id: invalid_id,
+                        constraint: GeometricConstraintKindV1::FixedLength {
+                            edge: missing_edge,
+                            length_mm: 0.0,
+                        },
+                    },
+                },
+            ),
+            Err(CommandError::GeometricConstraintDocumentInvalid(
+                GeometricConstraintDocumentValidationErrorV1::NonPositiveFixedLength {
+                    constraint: invalid_id,
+                },
+            ))
+        );
+        assert_eq!(editor_state_snapshot(&domain_editor), before);
+
+        let first_missing = EdgeId::new();
+        let second_missing = EdgeId::new();
+        let expected_missing = if first_missing.canonical_bytes() < second_missing.canonical_bytes()
+        {
+            first_missing
+        } else {
+            second_missing
+        };
+        let constraint_id = ConstraintId::new();
+        let mut errors = Vec::new();
+        for (first_edge, second_edge) in [
+            (first_missing, second_missing),
+            (second_missing, first_missing),
+        ] {
+            let mut editor = base.clone();
+            let before = editor_state_snapshot(&editor);
+            errors.push(
+                editor
+                    .execute(
+                        0,
+                        Command::AddGeometricConstraint {
+                            record: GeometricConstraintRecordV1 {
+                                id: constraint_id,
+                                constraint: GeometricConstraintKindV1::EqualLength {
+                                    first_edge,
+                                    second_edge,
+                                },
+                            },
+                        },
+                    )
+                    .expect_err("both edge references are missing"),
+            );
+            assert_eq!(editor_state_snapshot(&editor), before);
+        }
+        assert_eq!(errors[0], errors[1]);
+        assert_eq!(errors[0], CommandError::EdgeNotFound(expected_missing));
+    }
+
+    #[test]
+    fn new_constraint_geometry_validation_ignores_unrelated_damage_but_rejects_relevant_damage() {
+        let (_, mut pattern, paper) = rectangular_editor();
+        let target_edge = pattern.edges[4].id;
+        pattern.vertices[2].position.x = f64::NAN;
+        let mut editor = EditorState::with_paper(pattern, paper);
+        let accepted = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: target_edge },
+        };
+        editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: accepted.clone(),
+                },
+            )
+            .expect("unrelated malformed vertex must not block admission");
+        assert_eq!(editor.geometric_constraints().constraints, vec![accepted]);
+
+        let (_, mut pattern, paper) = rectangular_editor();
+        let target = pattern.edges[4].clone();
+        let start = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == target.start)
+            .expect("target start")
+            .position;
+        pattern
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == target.end)
+            .expect("target end")
+            .position = start;
+        let mut editor = EditorState::with_paper(pattern, paper);
+        let before = editor_state_snapshot(&editor);
+        let id = ConstraintId::new();
+        assert_eq!(
+            editor.execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: GeometricConstraintRecordV1 {
+                        id,
+                        constraint: GeometricConstraintKindV1::FixedLength {
+                            edge: target.id,
+                            length_mm: 10.0,
+                        },
+                    },
+                },
+            ),
+            Err(CommandError::GeometricConstraintGeometryInvalid(
+                GeometricConstraintErrorV1::DegenerateGeometryEdge { edge: target.id },
+            ))
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+    }
+
+    #[test]
+    fn loaded_invalid_constraints_can_be_repaired_and_undo_restores_exact_raw_records() {
+        let (_, pattern, paper) = rectangular_editor();
+        let first = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::FixedLength {
+                edge: pattern.edges[0].id,
+                length_mm: 0.0,
+            },
+        };
+        let second = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: pattern.edges[1].id,
+                denominator_edge: pattern.edges[2].id,
+                ratio: -1.0,
+            },
+        };
+        let raw = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![first.clone(), second.clone()],
+        };
+        let mut editor = EditorState::with_document_parts_and_constraints(
+            pattern,
+            paper,
+            InstructionTimeline::default(),
+            raw.clone(),
+        );
+
+        let remove_first = editor
+            .execute(0, Command::RemoveGeometricConstraint { id: first.id })
+            .expect("remove one invalid raw record");
+        assert!(remove_first.constraints_changed);
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![second.clone()]
+        );
+        let remove_second = editor
+            .execute(1, Command::RemoveGeometricConstraint { id: second.id })
+            .expect("progressively remove the remaining invalid record");
+        assert!(remove_second.constraints_changed);
+        assert!(editor.geometric_constraints().constraints.is_empty());
+
+        let restore_second = editor.undo(2).expect("restore exact second raw record");
+        assert!(restore_second.constraints_changed);
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![second.clone()]
+        );
+        let restore_first = editor.undo(3).expect("restore exact original document");
+        assert!(restore_first.constraints_changed);
+        assert_eq!(editor.geometric_constraints(), &raw);
+
+        assert!(
+            editor
+                .redo(4)
+                .expect("redo first removal")
+                .constraints_changed
+        );
+        assert_eq!(
+            editor.geometric_constraints().constraints,
+            vec![second.clone()]
+        );
+        assert!(
+            editor
+                .redo(5)
+                .expect("redo second removal")
+                .constraints_changed
+        );
+        assert!(editor.geometric_constraints().constraints.is_empty());
+
+        let duplicate_id = ConstraintId::new();
+        let duplicate_raw = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![
+                GeometricConstraintRecordV1 {
+                    id: duplicate_id,
+                    constraint: GeometricConstraintKindV1::Horizontal {
+                        edge: editor.pattern.edges[0].id,
+                    },
+                },
+                GeometricConstraintRecordV1 {
+                    id: duplicate_id,
+                    constraint: GeometricConstraintKindV1::Vertical {
+                        edge: editor.pattern.edges[1].id,
+                    },
+                },
+            ],
+        };
+        let mut duplicate_editor = EditorState::with_document_parts_and_constraints(
+            editor.pattern.clone(),
+            editor.paper.clone(),
+            InstructionTimeline::default(),
+            duplicate_raw.clone(),
+        );
+        duplicate_editor
+            .execute(0, Command::RemoveGeometricConstraint { id: duplicate_id })
+            .expect("remove one duplicate raw record");
+        assert_eq!(
+            duplicate_editor.geometric_constraints().constraints,
+            vec![duplicate_raw.constraints[1].clone()]
+        );
+        duplicate_editor
+            .undo(1)
+            .expect("trusted undo restores a duplicate raw ID exactly");
+        assert_eq!(duplicate_editor.geometric_constraints(), &duplicate_raw);
+    }
+
+    #[test]
+    fn add_is_strict_even_when_loaded_state_was_not_validated() {
+        let (_, pattern, paper) = rectangular_editor();
+        let invalid_id = ConstraintId::new();
+        let invalid_document = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: invalid_id,
+                constraint: GeometricConstraintKindV1::FixedLength {
+                    edge: pattern.edges[0].id,
+                    length_mm: 0.0,
+                },
+            }],
+        };
+        let mut editor = EditorState::with_document_parts_and_constraints(
+            pattern.clone(),
+            paper,
+            InstructionTimeline::default(),
+            invalid_document,
+        );
+        let before = editor_state_snapshot(&editor);
+        assert_eq!(
+            editor.execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::Horizontal {
+                            edge: pattern.edges[1].id,
+                        },
+                    },
+                },
+            ),
+            Err(CommandError::GeometricConstraintDocumentInvalid(
+                GeometricConstraintDocumentValidationErrorV1::NonPositiveFixedLength {
+                    constraint: invalid_id,
+                },
+            ))
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+    }
+
+    #[test]
+    fn constraint_change_reporting_is_true_only_for_constraint_history_transitions() {
+        let (mut editor, pattern, _) = rectangular_editor();
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: pattern.edges[4].id,
+            },
+        };
+        let add = editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            )
+            .expect("add");
+        assert!(add.constraints_changed);
+        assert!(!add.settings_changed);
+        assert!(!add.instructions_changed);
+        assert!(editor.undo(1).expect("undo add").constraints_changed);
+        assert!(editor.redo(2).expect("redo add").constraints_changed);
+        assert!(
+            editor
+                .execute(3, Command::RemoveGeometricConstraint { id: record.id })
+                .expect("remove")
+                .constraints_changed
+        );
+        assert!(editor.undo(4).expect("undo remove").constraints_changed);
+        assert!(editor.redo(5).expect("redo remove").constraints_changed);
+    }
+
+    #[test]
+    fn bit_exact_geometry_noops_bypass_constraint_locks_but_bit_changes_do_not() {
+        let (mut editor, pattern, _) = rectangular_editor();
+        let constrained_edge = pattern.edges[4].clone();
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: constrained_edge.id,
+            },
+        };
+        editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            )
+            .expect("constraint");
+        let position = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == constrained_edge.start)
+            .expect("start")
+            .position;
+        let exact_move = editor
+            .execute(
+                1,
+                Command::MoveVertex {
+                    id: constrained_edge.start,
+                    position,
+                },
+            )
+            .expect("bit-exact move is history-bearing but geometry-preserving");
+        assert!(!exact_move.constraints_changed);
+        assert_eq!(editor.pattern(), &pattern);
+        editor.undo(2).expect("undo exact move");
+        editor.redo(3).expect("redo exact move");
+
+        let same_size = editor
+            .execute(
+                4,
+                Command::ResizeRectangularPaper {
+                    width_mm: 100.0,
+                    height_mm: 50.0,
+                },
+            )
+            .expect("bit-exact resize bypasses constraint lock");
+        assert!(!same_size.constraints_changed);
+        assert_eq!(editor.pattern(), &pattern);
+
+        let sheet =
+            crate::create_rectangular_sheet(100.0, 50.0, false).expect("signed-zero fixture");
+        let (mut signed_pattern, paper) = sheet.into_parts();
+        let left_vertices = signed_pattern
+            .vertices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, vertex)| (vertex.position.x == 0.0).then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(left_vertices.len(), 2);
+        signed_pattern.vertices[left_vertices[0]].position.x = -0.0;
+        signed_pattern.vertices[left_vertices[1]].position.x = 0.0;
+        let signed_edge = signed_pattern.edges[0].id;
+        let signed_constraint = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: signed_edge },
+        };
+        let mut signed_editor = EditorState::with_paper(signed_pattern.clone(), paper);
+        signed_editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: signed_constraint.clone(),
+                },
+            )
+            .expect("signed-zero fixture constraint");
+
+        let signed_before = editor_state_snapshot(&signed_editor);
+        assert_eq!(
+            signed_editor.execute(
+                1,
+                Command::ResizeRectangularPaper {
+                    width_mm: 100.0,
+                    height_mm: 50.0,
+                },
+            ),
+            Err(CommandError::GeometricConstraintBlocksGeometryMutation {
+                constraint: signed_constraint.id,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&signed_editor), signed_before);
+
+        let moved_vertex = signed_pattern.edges[0].start;
+        let original = signed_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == moved_vertex)
+            .expect("signed edge start")
+            .position;
+        let changed_zero = Point2::new(
+            if original.x.to_bits() == 0.0_f64.to_bits() {
+                -0.0
+            } else {
+                0.0
+            },
+            original.y,
+        );
+        let move_before = editor_state_snapshot(&signed_editor);
+        assert_eq!(
+            signed_editor.execute(
+                1,
+                Command::MoveVertex {
+                    id: moved_vertex,
+                    position: changed_zero,
+                },
+            ),
+            Err(CommandError::GeometricConstraintBlocksGeometryMutation {
+                constraint: signed_constraint.id,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&signed_editor), move_before);
+    }
+
+    #[test]
+    fn geometric_constraint_growth_table_accepts_exact_limits_and_rejects_one_over_atomically() {
+        type CommandFactory = fn(&ConstraintResourceFixture) -> Command;
+        let cases: [(
+            &str,
+            usize,
+            usize,
+            GeometricConstraintResourceV1,
+            CommandFactory,
+        ); 8] = [
+            (
+                "add_vertex",
+                1,
+                0,
+                GeometricConstraintResourceV1::Vertices,
+                |_| Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(40.0, 40.0),
+                },
+            ),
+            (
+                "add_edge",
+                0,
+                1,
+                GeometricConstraintResourceV1::Edges,
+                |fixture| Command::AddEdge {
+                    id: EdgeId::new(),
+                    start: fixture.vertices[0],
+                    end: fixture.vertices[3],
+                    kind: EdgeKind::Mountain,
+                },
+            ),
+            (
+                "split_edge",
+                1,
+                1,
+                GeometricConstraintResourceV1::Vertices,
+                |fixture| Command::SplitEdge {
+                    edge: fixture.edges[0],
+                    new_vertex: VertexId::new(),
+                    new_edge: EdgeId::new(),
+                    fraction: 0.5,
+                },
+            ),
+            (
+                "connect_edge_intersection",
+                1,
+                2,
+                GeometricConstraintResourceV1::Vertices,
+                |fixture| Command::ConnectEdgeIntersection {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                    new_vertex: VertexId::new(),
+                    first_new_edge: EdgeId::new(),
+                    second_new_edge: EdgeId::new(),
+                },
+            ),
+            (
+                "connect_t_junction",
+                0,
+                1,
+                GeometricConstraintResourceV1::Edges,
+                |fixture| Command::ConnectTJunction {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                    new_edge: EdgeId::new(),
+                },
+            ),
+            (
+                "connect_intersection_cluster_create",
+                1,
+                3,
+                GeometricConstraintResourceV1::Vertices,
+                |fixture| Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Create {
+                        id: VertexId::new(),
+                    },
+                    targets: fixture
+                        .edges
+                        .iter()
+                        .copied()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            ),
+            (
+                "connect_intersection_cluster_reuse",
+                0,
+                3,
+                GeometricConstraintResourceV1::Edges,
+                |fixture| Command::ConnectIntersectionCluster {
+                    junction: JunctionVertexIntent::Reuse {
+                        id: fixture.vertices[0],
+                    },
+                    targets: fixture
+                        .edges
+                        .iter()
+                        .copied()
+                        .map(|edge| IntersectionEdgeTarget {
+                            edge,
+                            new_edge: Some(EdgeId::new()),
+                        })
+                        .collect(),
+                },
+            ),
+            (
+                "split_boundary_edge",
+                1,
+                1,
+                GeometricConstraintResourceV1::Vertices,
+                |fixture| Command::SplitBoundaryEdge {
+                    edge: fixture.edges[0],
+                    new_vertex: VertexId::new(),
+                    new_edge: EdgeId::new(),
+                    fraction: 0.5,
+                },
+            ),
+        ];
+
+        for (name, added_vertices, added_edges, failing_resource, command_factory) in cases {
+            let mut fixture = constraint_resource_fixture(
+                DEFAULT_MAX_CONSTRAINT_VERTICES - added_vertices,
+                DEFAULT_MAX_CONSTRAINT_EDGES - added_edges,
+            );
+            let command = command_factory(&fixture);
+            assert_eq!(
+                command.geometric_resource_growth(),
+                Ok(Some((added_vertices, added_edges))),
+                "{name} growth mapping"
+            );
+            assert_eq!(
+                fixture
+                    .editor
+                    .ensure_geometric_constraint_resource_admission(&command),
+                Ok(()),
+                "{name} must admit exact equality"
+            );
+
+            match failing_resource {
+                GeometricConstraintResourceV1::Vertices => fixture
+                    .editor
+                    .pattern
+                    .vertices
+                    .push(fixture.filler_vertex.clone()),
+                GeometricConstraintResourceV1::Edges => fixture
+                    .editor
+                    .pattern
+                    .edges
+                    .push(fixture.filler_edge.clone()),
+                GeometricConstraintResourceV1::Constraints
+                | GeometricConstraintResourceV1::References => {
+                    unreachable!("geometry growth only uses vertex and edge resources")
+                }
+            }
+            fixture
+                .editor
+                .adopt_current_applied_pose(runtime_pose(73.0));
+            let before = editor_state_snapshot(&fixture.editor);
+            let maximum = match failing_resource {
+                GeometricConstraintResourceV1::Vertices => DEFAULT_MAX_CONSTRAINT_VERTICES,
+                GeometricConstraintResourceV1::Edges => DEFAULT_MAX_CONSTRAINT_EDGES,
+                GeometricConstraintResourceV1::Constraints
+                | GeometricConstraintResourceV1::References => unreachable!(),
+            };
+            assert_eq!(
+                fixture.editor.execute(0, command),
+                Err(CommandError::GeometricConstraintGeometryLimitExceeded {
+                    resource: failing_resource,
+                    actual: maximum + 1,
+                    maximum,
+                }),
+                "{name} must reject the first result beyond the hard ceiling"
+            );
+            assert_eq!(
+                editor_state_snapshot(&fixture.editor),
+                before,
+                "{name} rejection must preserve every editor authority"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_constraint_growth_commands_can_reach_the_exact_hard_ceiling() {
+        let mut vertex_fixture =
+            constraint_resource_fixture(DEFAULT_MAX_CONSTRAINT_VERTICES - 1, 3);
+        vertex_fixture
+            .editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(40.0, 40.0),
+                },
+            )
+            .expect("the exact vertex ceiling is inclusive");
+        assert_eq!(
+            vertex_fixture.editor.pattern.vertices.len(),
+            DEFAULT_MAX_CONSTRAINT_VERTICES
+        );
+
+        let mut edge_fixture = constraint_resource_fixture(5, DEFAULT_MAX_CONSTRAINT_EDGES - 1);
+        edge_fixture
+            .editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: EdgeId::new(),
+                    start: edge_fixture.vertices[0],
+                    end: edge_fixture.vertices[3],
+                    kind: EdgeKind::Mountain,
+                },
+            )
+            .expect("the exact edge ceiling is inclusive");
+        assert_eq!(
+            edge_fixture.editor.pattern.edges.len(),
+            DEFAULT_MAX_CONSTRAINT_EDGES
+        );
+    }
+
+    #[test]
+    fn first_constraint_checks_shared_pattern_limits_before_mutation() {
+        let mut exact = constraint_resource_fixture(
+            DEFAULT_MAX_CONSTRAINT_VERTICES,
+            DEFAULT_MAX_CONSTRAINT_EDGES,
+        );
+        exact.editor.geometric_constraints = GeometricConstraintDocumentV1::default();
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: exact.edges[0],
+            },
+        };
+        exact
+            .editor
+            .execute(
+                0,
+                Command::AddGeometricConstraint {
+                    record: record.clone(),
+                },
+            )
+            .expect("the first constraint accepts exact vertex and edge ceilings");
+        assert_eq!(exact.editor.geometric_constraints.constraints, vec![record]);
+
+        for (vertex_count, edge_count, resource, maximum) in [
+            (
+                DEFAULT_MAX_CONSTRAINT_VERTICES + 1,
+                3,
+                GeometricConstraintResourceV1::Vertices,
+                DEFAULT_MAX_CONSTRAINT_VERTICES,
+            ),
+            (
+                5,
+                DEFAULT_MAX_CONSTRAINT_EDGES + 1,
+                GeometricConstraintResourceV1::Edges,
+                DEFAULT_MAX_CONSTRAINT_EDGES,
+            ),
+        ] {
+            let mut oversized = constraint_resource_fixture(vertex_count, edge_count);
+            oversized.editor.geometric_constraints = GeometricConstraintDocumentV1::default();
+            oversized
+                .editor
+                .adopt_current_applied_pose(runtime_pose(74.0));
+            let record = GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::Horizontal {
+                    edge: oversized.edges[0],
+                },
+            };
+            let before = editor_state_snapshot(&oversized.editor);
+            assert_eq!(
+                oversized
+                    .editor
+                    .execute(0, Command::AddGeometricConstraint { record }),
+                Err(CommandError::GeometricConstraintGeometryLimitExceeded {
+                    resource,
+                    actual: maximum + 1,
+                    maximum,
+                })
+            );
+            assert_eq!(editor_state_snapshot(&oversized.editor), before);
+        }
+    }
+
+    #[test]
+    fn empty_constraint_documents_keep_oversized_geometry_repairable_and_editable() {
+        let mut vertex_fixture =
+            constraint_resource_fixture(DEFAULT_MAX_CONSTRAINT_VERTICES + 1, 3);
+        vertex_fixture.editor.geometric_constraints = GeometricConstraintDocumentV1::default();
+        vertex_fixture
+            .editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(50.0, 50.0),
+                },
+            )
+            .expect("constraints-empty oversized vertices remain editable");
+        assert_eq!(
+            vertex_fixture.editor.pattern.vertices.len(),
+            DEFAULT_MAX_CONSTRAINT_VERTICES + 2
+        );
+
+        let mut edge_fixture = constraint_resource_fixture(5, DEFAULT_MAX_CONSTRAINT_EDGES + 1);
+        edge_fixture.editor.geometric_constraints = GeometricConstraintDocumentV1::default();
+        edge_fixture
+            .editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: EdgeId::new(),
+                    start: edge_fixture.vertices[0],
+                    end: edge_fixture.vertices[3],
+                    kind: EdgeKind::Mountain,
+                },
+            )
+            .expect("constraints-empty oversized edges remain editable");
+        assert_eq!(
+            edge_fixture.editor.pattern.edges.len(),
+            DEFAULT_MAX_CONSTRAINT_EDGES + 2
+        );
+    }
+
+    #[test]
+    fn oversized_constraint_repairs_and_trusted_undo_restore_exact_raw_state() {
+        let mut fixture = constraint_resource_fixture(DEFAULT_MAX_CONSTRAINT_VERTICES + 1, 3);
+        let original_pattern = fixture.editor.pattern.clone();
+        let original_constraints = fixture.editor.geometric_constraints.clone();
+
+        fixture
+            .editor
+            .execute(
+                0,
+                Command::RemoveVertex {
+                    id: fixture.repair_vertex,
+                },
+            )
+            .expect("a decreasing repair remains available above the ceiling");
+        assert_eq!(
+            fixture.editor.pattern.vertices.len(),
+            DEFAULT_MAX_CONSTRAINT_VERTICES
+        );
+        fixture
+            .editor
+            .undo(1)
+            .expect("trusted undo restores the exact oversized loaded geometry");
+        assert_eq!(fixture.editor.pattern, original_pattern);
+        assert_eq!(fixture.editor.geometric_constraints, original_constraints);
+
+        let constraint_id = fixture.editor.geometric_constraints.constraints[0].id;
+        fixture
+            .editor
+            .execute(2, Command::RemoveGeometricConstraint { id: constraint_id })
+            .expect("constraint deletion remains a repair operation");
+        assert!(fixture.editor.geometric_constraints.is_empty());
+        fixture
+            .editor
+            .undo(3)
+            .expect("trusted undo restores the exact raw constraint record");
+        assert_eq!(fixture.editor.pattern, original_pattern);
+        assert_eq!(fixture.editor.geometric_constraints, original_constraints);
+    }
+
+    #[test]
+    fn execute_limit_failure_preserves_populated_undo_redo_and_pose_authority() {
+        let mut fixture = constraint_resource_fixture(DEFAULT_MAX_CONSTRAINT_VERTICES - 2, 3);
+        for revision in 0..2 {
+            fixture
+                .editor
+                .execute(
+                    revision,
+                    Command::AddVertex {
+                        id: VertexId::new(),
+                        position: Point2::new(60.0 + revision as f64, 60.0),
+                    },
+                )
+                .expect("prepare two undo entries");
+        }
+        fixture
+            .editor
+            .undo(2)
+            .expect("prepare simultaneous nonempty undo and redo stacks");
+        assert!(fixture.editor.can_undo());
+        assert!(fixture.editor.can_redo());
+        fixture
+            .editor
+            .pattern
+            .vertices
+            .push(fixture.filler_vertex.clone());
+        fixture
+            .editor
+            .adopt_current_applied_pose(runtime_pose(74.5));
+        let before = editor_state_snapshot(&fixture.editor);
+
+        assert_eq!(
+            fixture.editor.execute(
+                3,
+                Command::AddVertex {
+                    id: VertexId::new(),
+                    position: Point2::new(63.0, 60.0),
+                },
+            ),
+            Err(CommandError::GeometricConstraintGeometryLimitExceeded {
+                resource: GeometricConstraintResourceV1::Vertices,
+                actual: DEFAULT_MAX_CONSTRAINT_VERTICES + 1,
+                maximum: DEFAULT_MAX_CONSTRAINT_VERTICES,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&fixture.editor), before);
+    }
+
+    #[test]
+    fn redo_limit_failure_preserves_pattern_paper_constraints_history_revision_and_pose() {
+        let mut fixture = constraint_resource_fixture(DEFAULT_MAX_CONSTRAINT_VERTICES - 1, 3);
+        let added_vertex = VertexId::new();
+        fixture
+            .editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: added_vertex,
+                    position: Point2::new(60.0, 60.0),
+                },
+            )
+            .expect("prepare one redo entry at the exact ceiling");
+        fixture
+            .editor
+            .undo(1)
+            .expect("return to the pre-add state while retaining redo");
+        fixture
+            .editor
+            .pattern
+            .vertices
+            .push(fixture.filler_vertex.clone());
+        fixture
+            .editor
+            .adopt_current_applied_pose(runtime_pose(75.0));
+        let before = editor_state_snapshot(&fixture.editor);
+
+        assert_eq!(
+            fixture.editor.redo(2),
+            Err(CommandError::GeometricConstraintGeometryLimitExceeded {
+                resource: GeometricConstraintResourceV1::Vertices,
+                actual: DEFAULT_MAX_CONSTRAINT_VERTICES + 1,
+                maximum: DEFAULT_MAX_CONSTRAINT_VERTICES,
+            })
+        );
+        assert_eq!(editor_state_snapshot(&fixture.editor), before);
+        assert!(
+            fixture
+                .editor
+                .pattern
+                .vertices
+                .iter()
+                .all(|vertex| vertex.id != added_vertex)
+        );
+    }
+
+    #[test]
+    fn projected_constraint_resource_counts_use_checked_typed_errors() {
+        assert_eq!(
+            ensure_geometric_constraint_result_count(
+                GeometricConstraintResourceV1::Vertices,
+                DEFAULT_MAX_CONSTRAINT_VERTICES,
+                0,
+                DEFAULT_MAX_CONSTRAINT_VERTICES,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_geometric_constraint_result_count(
+                GeometricConstraintResourceV1::Edges,
+                DEFAULT_MAX_CONSTRAINT_EDGES,
+                1,
+                DEFAULT_MAX_CONSTRAINT_EDGES,
+            ),
+            Err(CommandError::GeometricConstraintGeometryLimitExceeded {
+                resource: GeometricConstraintResourceV1::Edges,
+                actual: DEFAULT_MAX_CONSTRAINT_EDGES + 1,
+                maximum: DEFAULT_MAX_CONSTRAINT_EDGES,
+            })
+        );
+        assert_eq!(
+            ensure_geometric_constraint_result_count(
+                GeometricConstraintResourceV1::Vertices,
+                usize::MAX,
+                1,
+                usize::MAX,
+            ),
+            Err(CommandError::GeometricConstraintGeometryCountOverflow {
+                resource: GeometricConstraintResourceV1::Vertices,
+            })
+        );
+    }
+
+    #[test]
+    fn constraint_lock_visit_count_is_additive_for_maximum_v1_sizes() {
+        let pattern = crate::benchmark_pattern(DEFAULT_MAX_CONSTRAINT_EDGES);
+        let moved_vertex = pattern.edges[0].start;
+        let target_edge = pattern.edges[0].id;
+        let constraints = (0..ori_domain::DEFAULT_MAX_CONSTRAINT_RECORDS)
+            .map(|_| GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::Horizontal { edge: target_edge },
+            })
+            .collect::<Vec<_>>();
+        let expected_blocker = constraints
+            .iter()
+            .min_by_key(|record| record.id.canonical_bytes())
+            .expect("nonempty fixture")
+            .id;
+        let editor = EditorState::with_document_parts_and_constraints(
+            pattern,
+            Paper::default(),
+            InstructionTimeline::default(),
+            GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints,
+            },
+        );
+
+        begin_constraint_lock_visit_count();
+        let result = editor.ensure_geometric_constraints_allow(&Command::MoveVertex {
+            id: moved_vertex,
+            position: Point2::new(0.25, 0.25),
+        });
+        let (edge_visits, constraint_visits) = finish_constraint_lock_visit_count();
+
+        assert_eq!(
+            result,
+            Err(CommandError::GeometricConstraintBlocksGeometryMutation {
+                constraint: expected_blocker,
+            })
+        );
+        assert_eq!(edge_visits, DEFAULT_MAX_CONSTRAINT_EDGES);
+        assert_eq!(
+            constraint_visits,
+            ori_domain::DEFAULT_MAX_CONSTRAINT_RECORDS
+        );
+        assert_eq!(
+            edge_visits + constraint_visits,
+            DEFAULT_MAX_CONSTRAINT_EDGES + ori_domain::DEFAULT_MAX_CONSTRAINT_RECORDS
+        );
     }
 }

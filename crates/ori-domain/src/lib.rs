@@ -3,6 +3,16 @@ use std::{collections::HashSet, error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod constraints;
+
+pub use constraints::{
+    ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,
+    DEFAULT_MAX_CONSTRAINT_REFERENCES, DEFAULT_MAX_CONSTRAINT_VERTICES,
+    GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
+    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
+    GeometricConstraintRecordV1, validate_geometric_constraint_document_v1,
+};
+
 macro_rules! entity_id {
     ($name:ident) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

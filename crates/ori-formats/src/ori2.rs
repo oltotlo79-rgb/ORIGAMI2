@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::{FormatError, ProjectDocument, read_project_json, write_project_json};
+use crate::{
+    FormatError, MAX_PROJECT_JSON_BYTES, ProjectDocument, read_project_json, write_project_json,
+};
 
 pub const ORI2_CONTAINER_IDENTIFIER: &str = "ORIGAMI2";
 pub const CURRENT_ORI2_CONTAINER_VERSION: u32 = 1;
@@ -17,6 +19,7 @@ pub const ORI2_MANIFEST_PATH: &str = "manifest.json";
 pub const ORI2_PROJECT_PATH: &str = "project.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
+pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v1";
 
 const REQUIRED_ENTRY_COUNT: usize = 2;
 const ORI2_DEFLATE_LEVEL: i64 = 6;
@@ -45,24 +48,31 @@ impl Default for Ori2Limits {
             max_archive_size: 64 * 1024 * 1024,
             max_entry_count: 4_096,
             max_entry_path_length: 1_024,
-            max_entry_uncompressed_size: 128 * 1024 * 1024,
+            max_entry_uncompressed_size: MAX_PROJECT_JSON_BYTES as u64,
             max_total_uncompressed_size: 256 * 1024 * 1024,
             max_manifest_size: 1024 * 1024,
-            max_project_size: 128 * 1024 * 1024,
+            max_project_size: MAX_PROJECT_JSON_BYTES as u64,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ori2Manifest {
     pub container: String,
     pub container_version: u32,
+    /// Semantic set of format features required to read the project.
+    ///
+    /// Readers accept known values in any order and tolerate duplicates for
+    /// backward compatibility. Writers emit each value once in canonical
+    /// format-defined order.
     #[serde(default)]
     pub required_features: Vec<String>,
     pub project: Ori2ProjectEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ori2ProjectEntry {
     pub path: String,
     pub format_version: u32,
@@ -111,12 +121,7 @@ pub fn write_project_ori2_with_limits(
     ensure_path_length(ORI2_PROJECT_PATH, limits)?;
 
     let project_bytes = write_project_json(document)?;
-    ensure_entry_size(ORI2_PROJECT_PATH, project_bytes.len() as u64, limits)?;
-    ensure_specific_size(
-        ORI2_PROJECT_PATH,
-        project_bytes.len() as u64,
-        limits.max_project_size,
-    )?;
+    ensure_project_entry_size(project_bytes.len() as u64, limits)?;
 
     let mut required_features = Vec::new();
     if !document.instruction_timeline.steps.is_empty() {
@@ -124,6 +129,9 @@ pub fn write_project_ori2_with_limits(
     }
     if !document.numeric_expressions.is_empty() {
         required_features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
+    }
+    if !document.geometric_constraints.is_empty() {
+        required_features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
     }
     let manifest = Ori2Manifest::new(&project_bytes, document.format_version, required_features);
     let manifest_bytes =
@@ -198,11 +206,7 @@ pub fn read_project_ori2_with_limits(
         serde_json::from_slice(&manifest_bytes).map_err(FormatError::InvalidManifestJson)?;
     validate_manifest(&manifest)?;
 
-    ensure_specific_size(
-        ORI2_PROJECT_PATH,
-        manifest.project.uncompressed_size,
-        limits.max_project_size,
-    )?;
+    ensure_project_entry_size(manifest.project.uncompressed_size, limits)?;
     let archived_project_size = archive.by_name(ORI2_PROJECT_PATH)?.size();
     if manifest.project.uncompressed_size != archived_project_size {
         return Err(FormatError::ProjectSizeMismatch {
@@ -210,9 +214,7 @@ pub fn read_project_ori2_with_limits(
             actual: archived_project_size,
         });
     }
-    let project_limit = limits
-        .max_project_size
-        .min(limits.max_entry_uncompressed_size);
+    let project_limit = effective_project_entry_size_limit(limits);
     let project_bytes = read_bounded_entry(&mut archive, ORI2_PROJECT_PATH, project_limit)?;
     let actual_size = project_bytes.len() as u64;
     if manifest.project.uncompressed_size != actual_size {
@@ -257,6 +259,16 @@ pub fn read_project_ori2_with_limits(
     {
         return Err(FormatError::MissingRequiredFeature {
             feature: ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+        });
+    }
+    if !project.geometric_constraints.is_empty()
+        && !manifest
+            .required_features
+            .iter()
+            .any(|feature| feature == ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1)
+    {
+        return Err(FormatError::MissingRequiredFeature {
+            feature: ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
         });
     }
     Ok(project)
@@ -415,17 +427,21 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
             latest: CURRENT_ORI2_CONTAINER_VERSION,
         });
     }
-    let unsupported_features = manifest
+    let mut unsupported_features = manifest
         .required_features
         .iter()
         .filter(|feature| {
             !matches!(
                 feature.as_str(),
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1 | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+                    | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
+                    | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
             )
         })
         .cloned()
         .collect::<Vec<_>>();
+    unsupported_features.sort_unstable();
+    unsupported_features.dedup();
     if !unsupported_features.is_empty() {
         return Err(FormatError::UnsupportedRequiredFeatures {
             features: unsupported_features,
@@ -501,6 +517,21 @@ fn ensure_entry_size(path: &str, actual: u64, limits: Ori2Limits) -> Result<(), 
     ensure_specific_size(path, actual, limits.max_entry_uncompressed_size)
 }
 
+fn effective_project_entry_size_limit(limits: Ori2Limits) -> u64 {
+    limits
+        .max_project_size
+        .min(limits.max_entry_uncompressed_size)
+        .min(MAX_PROJECT_JSON_BYTES as u64)
+}
+
+fn ensure_project_entry_size(actual: u64, limits: Ori2Limits) -> Result<(), FormatError> {
+    ensure_specific_size(
+        ORI2_PROJECT_PATH,
+        actual,
+        effective_project_entry_size_limit(limits),
+    )
+}
+
 fn ensure_specific_size(path: &str, actual: u64, limit: u64) -> Result<(), FormatError> {
     if actual > limit {
         return Err(FormatError::EntryTooLarge {
@@ -541,7 +572,8 @@ fn is_sha256_hex(value: &str) -> bool {
 mod tests {
     use super::*;
     use ori_domain::{
-        AssetId, CreasePattern, Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle,
+        AssetId, ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, FaceId,
+        GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle,
         InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId, Paper,
         PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
     };
@@ -570,6 +602,89 @@ mod tests {
                 }],
             },
         )
+    }
+
+    fn project_id_from_wire(value: &str) -> ori_domain::ProjectId {
+        serde_json::from_str(&format!("\"{value}\"")).expect("project ID fixture")
+    }
+
+    fn add_all_geometric_constraint_kinds(document: &mut ProjectDocument) {
+        let vertex_ids = std::array::from_fn::<_, 4, _>(|_| VertexId::new());
+        let edge_ids = std::array::from_fn::<_, 6, _>(|_| EdgeId::new());
+        document.crease_pattern = CreasePattern {
+            vertices: vertex_ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| Vertex {
+                    id: *id,
+                    position: Point2::new(index as f64, (index * index) as f64),
+                })
+                .collect(),
+            edges: edge_ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| Edge {
+                    id: *id,
+                    start: vertex_ids[index % vertex_ids.len()],
+                    end: vertex_ids[(index + 1) % vertex_ids.len()],
+                    kind: EdgeKind::Valley,
+                })
+                .collect(),
+        };
+        document.geometric_constraints.constraints = [
+            GeometricConstraintKindV1::FixedLength {
+                edge: edge_ids[0],
+                length_mm: 10.5,
+            },
+            GeometricConstraintKindV1::FixedAngle {
+                vertex: vertex_ids[0],
+                first_edge: edge_ids[0],
+                second_edge: edge_ids[1],
+                angle_degrees: 45.0,
+            },
+            GeometricConstraintKindV1::Horizontal { edge: edge_ids[2] },
+            GeometricConstraintKindV1::Vertical { edge: edge_ids[3] },
+            GeometricConstraintKindV1::EqualLength {
+                first_edge: edge_ids[0],
+                second_edge: edge_ids[1],
+            },
+            GeometricConstraintKindV1::Parallel {
+                first_edge: edge_ids[2],
+                second_edge: edge_ids[3],
+            },
+            GeometricConstraintKindV1::PointOnLine {
+                vertex: vertex_ids[1],
+                line_edge: edge_ids[4],
+            },
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: vertex_ids[0],
+                second_vertex: vertex_ids[1],
+                axis_edge: edge_ids[5],
+            },
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: vertex_ids[0],
+                source_vertex: vertex_ids[1],
+                target_vertex: vertex_ids[2],
+                angle_degrees: 120.0,
+            },
+            GeometricConstraintKindV1::AngleBisector {
+                vertex: vertex_ids[3],
+                first_edge: edge_ids[0],
+                second_edge: edge_ids[1],
+                bisector_edge: edge_ids[2],
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edge_ids[4],
+                denominator_edge: edge_ids[5],
+                ratio: 2.0,
+            },
+        ]
+        .into_iter()
+        .map(|constraint| GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint,
+        })
+        .collect();
     }
 
     fn raw_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -661,6 +776,45 @@ mod tests {
     }
 
     #[test]
+    fn ori2_reader_and_writer_reject_the_nil_project_id_with_a_typed_error() {
+        let mut document = sample_document();
+        document.project_id = project_id_from_wire("00000000-0000-0000-0000-000000000000");
+
+        assert!(matches!(
+            write_project_ori2(&document),
+            Err(FormatError::NilProjectId)
+        ));
+
+        let project = serde_json::to_vec(&document).expect("serialize nil-ID archive fixture");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        assert!(matches!(
+            read_project_ori2(&bytes),
+            Err(FormatError::NilProjectId)
+        ));
+    }
+
+    #[test]
+    fn ori2_round_trip_accepts_non_nil_uuid_versions_and_variants() {
+        for wire in [
+            "10000000-0000-0000-0000-000000000001",
+            "10000000-0000-1000-8000-000000000001",
+            "10000000-0000-f000-c000-000000000001",
+            "10000000-0000-7000-e000-000000000001",
+        ] {
+            let mut document = sample_document();
+            document.project_id = project_id_from_wire(wire);
+
+            let bytes = write_project_ori2(&document).expect("write non-nil project ID");
+            let restored = read_project_ori2(&bytes).expect("read non-nil project ID");
+            assert_eq!(restored.project_id, document.project_id, "{wire}");
+        }
+    }
+
+    #[test]
     fn writer_is_byte_deterministic_and_fixes_zip_metadata() {
         assert_eq!(
             ORI2_DEFLATE_LEVEL, 6,
@@ -668,6 +822,7 @@ mod tests {
         );
         let mut original = sample_document();
         add_sample_instruction(&mut original);
+        add_all_geometric_constraint_kinds(&mut original);
 
         let first = write_project_ori2(&original).expect("first .ori2 write");
         for attempt in 2..=3 {
@@ -715,6 +870,49 @@ mod tests {
     }
 
     #[test]
+    fn geometric_constraint_manifest_wire_and_digest_are_exact_v1_goldens() {
+        const EXPECTED_MANIFEST: &str = r#"{
+  "container": "ORIGAMI2",
+  "container_version": 1,
+  "required_features": [
+    "geometric_constraints_v1"
+  ],
+  "project": {
+    "path": "project.json",
+    "format_version": 1,
+    "uncompressed_size": 20,
+    "sha256": "d88bf399e67c0574c03d47dd19ec99ebe1641083faa6688893cd902eb6051a3f"
+  }
+}"#;
+        const EXPECTED_MANIFEST_SHA256: &str =
+            "c9f787cb3ae0fc17d5d45857a2c0db9b773e5076880da75f0cad9e717014a7dd";
+        let project = br#"{"format_version":1}"#;
+
+        assert_eq!(
+            ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+            "geometric_constraints_v1"
+        );
+        assert_eq!(project.len(), 20);
+        let manifest = Ori2Manifest::new(
+            project,
+            crate::CURRENT_FORMAT_VERSION,
+            vec![ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned()],
+        );
+        let wire = serde_json::to_string_pretty(&manifest).expect("serialize exact manifest");
+        assert_eq!(wire, EXPECTED_MANIFEST);
+        assert_eq!(sha256_hex(wire.as_bytes()), EXPECTED_MANIFEST_SHA256);
+        assert_eq!(
+            manifest.project.sha256,
+            "d88bf399e67c0574c03d47dd19ec99ebe1641083faa6688893cd902eb6051a3f"
+        );
+        assert_eq!(
+            Ori2Limits::default().max_project_size,
+            MAX_PROJECT_JSON_BYTES as u64,
+            "direct JSON and default .ori2 readers share the hard project ceiling"
+        );
+    }
+
+    #[test]
     fn ori2_round_trip_preserves_instructions_and_declares_required_feature() {
         let mut original = sample_document();
         add_sample_instruction(&mut original);
@@ -749,6 +947,44 @@ mod tests {
         );
         let restored = read_project_ori2(&bytes).expect("read expressions");
         assert_eq!(restored.numeric_expressions, original.numeric_expressions);
+    }
+
+    #[test]
+    fn ori2_preserves_all_constraint_kinds_and_declares_the_required_feature() {
+        let mut original = sample_document();
+        add_all_geometric_constraint_kinds(&mut original);
+
+        let bytes = write_project_ori2(&original).expect("write constraints");
+        let manifest = manifest_from_archive(&bytes);
+        assert_eq!(
+            manifest.required_features,
+            vec![ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned()]
+        );
+
+        let restored = read_project_ori2(&bytes).expect("read constraints");
+        assert_eq!(restored, original);
+        assert_eq!(restored.geometric_constraints.constraints.len(), 11);
+    }
+
+    #[test]
+    fn writer_uses_fixed_required_feature_order_for_combined_project() {
+        let mut document = sample_document();
+        add_sample_instruction(&mut document);
+        document.numeric_expressions.rectangular_paper_creation = Some(
+            crate::RectangularPaperCreationExpressions::new("400", "400", 400.0, 400.0),
+        );
+        add_all_geometric_constraint_kinds(&mut document);
+
+        let bytes = write_project_ori2(&document).expect("write combined project");
+        assert_eq!(
+            manifest_from_archive(&bytes).required_features,
+            vec![
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
+            ],
+            "writer feature order is part of deterministic container v1"
+        );
     }
 
     #[test]
@@ -797,6 +1033,87 @@ mod tests {
     }
 
     #[test]
+    fn reads_legacy_ori2_without_geometric_constraints() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize document");
+        value
+            .as_object_mut()
+            .expect("project object")
+            .remove("geometric_constraints");
+        let project = serde_json::to_vec(&value).expect("serialize legacy project");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let restored = read_project_ori2(&bytes).expect("read legacy .ori2");
+        assert!(restored.geometric_constraints.is_empty());
+        let rewritten = write_project_ori2(&restored).expect("rewrite legacy .ori2");
+        assert!(
+            !manifest_from_archive(&rewritten)
+                .required_features
+                .iter()
+                .any(|feature| feature == ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1)
+        );
+    }
+
+    #[test]
+    fn manifest_defaults_legacy_features_but_rejects_unknown_envelope_fields() {
+        let project = write_project_json(&sample_document()).expect("project JSON");
+        let base = serde_json::to_value(Ori2Manifest::new(
+            &project,
+            crate::CURRENT_FORMAT_VERSION,
+            vec![],
+        ))
+        .expect("serialize manifest value");
+
+        let mut legacy = base.clone();
+        legacy
+            .as_object_mut()
+            .expect("manifest object")
+            .remove("required_features");
+        let legacy_manifest = serde_json::to_vec(&legacy).expect("serialize legacy manifest");
+        let legacy_archive = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &legacy_manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        read_project_ori2(&legacy_archive).expect("legacy missing feature set defaults to empty");
+
+        let mut unknown_manifest = base.clone();
+        unknown_manifest
+            .as_object_mut()
+            .expect("manifest object")
+            .insert("future_container_field".to_owned(), serde_json::json!(true));
+        let unknown_manifest =
+            serde_json::to_vec(&unknown_manifest).expect("serialize unknown manifest field");
+        let unknown_manifest_archive = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &unknown_manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        assert!(matches!(
+            read_project_ori2(&unknown_manifest_archive),
+            Err(FormatError::InvalidManifestJson(_))
+        ));
+
+        let mut unknown_project_entry = base;
+        unknown_project_entry["project"]
+            .as_object_mut()
+            .expect("project entry object")
+            .insert("future_project_field".to_owned(), serde_json::json!(true));
+        let unknown_project_entry =
+            serde_json::to_vec(&unknown_project_entry).expect("serialize unknown project field");
+        let unknown_project_archive = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &unknown_project_entry),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        assert!(matches!(
+            read_project_ori2(&unknown_project_archive),
+            Err(FormatError::InvalidManifestJson(_))
+        ));
+    }
+
+    #[test]
     fn reads_legacy_ori2_without_length_display_unit_as_millimetres() {
         let document = sample_document();
         let mut value = serde_json::to_value(&document).expect("serialize document");
@@ -819,23 +1136,74 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_required_feature_but_accepts_known_timeline_feature() {
+    fn required_features_are_a_semantic_set_and_unknown_errors_are_canonical() {
         let project = write_project_json(&sample_document()).expect("project JSON");
-        let known_manifest = manifest_for_features(
+        let permutations = [
+            [
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+            ],
+            [
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+            ],
+            [
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+            ],
+            [
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+            ],
+            [
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+            ],
+            [
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+            ],
+        ];
+        for features in permutations {
+            let manifest =
+                manifest_for_features(&project, features.map(str::to_owned).into_iter().collect());
+            let bytes = raw_zip(&[
+                (ORI2_MANIFEST_PATH, &manifest),
+                (ORI2_PROJECT_PATH, &project),
+            ]);
+            read_project_ori2(&bytes).expect("known feature permutation");
+        }
+
+        let duplicate_manifest = manifest_for_features(
             &project,
-            vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()],
+            vec![
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
+            ],
         );
-        let known_bytes = raw_zip(&[
-            (ORI2_MANIFEST_PATH, &known_manifest),
+        let duplicate_bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &duplicate_manifest),
             (ORI2_PROJECT_PATH, &project),
         ]);
-        read_project_ori2(&known_bytes).expect("known required feature");
+        read_project_ori2(&duplicate_bytes).expect("duplicate known features remain compatible");
 
         let unknown_manifest = manifest_for_features(
             &project,
             vec![
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
-                "future_fold_solver_v9".to_owned(),
+                "future_z_solver_v9".to_owned(),
+                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
+                "future_a_solver_v2".to_owned(),
+                "future_z_solver_v9".to_owned(),
+                "future_a_solver_v2".to_owned(),
             ],
         );
         let unknown_bytes = raw_zip(&[
@@ -847,7 +1215,11 @@ mod tests {
         assert!(matches!(
             error,
             FormatError::UnsupportedRequiredFeatures { features }
-                if features == vec!["future_fold_solver_v9".to_owned()]
+                if features
+                    == vec![
+                        "future_a_solver_v2".to_owned(),
+                        "future_z_solver_v9".to_owned(),
+                    ]
         ));
     }
 
@@ -891,6 +1263,85 @@ mod tests {
             FormatError::MissingRequiredFeature {
                 feature: ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
             }
+        ));
+    }
+
+    #[test]
+    fn rejects_geometric_constraint_content_without_required_manifest_feature() {
+        let mut document = sample_document();
+        add_all_geometric_constraint_kinds(&mut document);
+        let project = write_project_json(&document).expect("project JSON");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let error =
+            read_project_ori2(&bytes).expect_err("geometric-constraint feature is required");
+        assert!(matches!(
+            error,
+            FormatError::MissingRequiredFeature {
+                feature: ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
+            }
+        ));
+    }
+
+    #[test]
+    fn ori2_reader_and_writer_reject_invalid_constraint_metadata_and_references() {
+        let mut invalid_metadata = sample_document();
+        add_all_geometric_constraint_kinds(&mut invalid_metadata);
+        invalid_metadata.geometric_constraints.schema_version += 1;
+        assert!(matches!(
+            write_project_ori2(&invalid_metadata),
+            Err(FormatError::InvalidGeometricConstraints(
+                ori_domain::GeometricConstraintDocumentValidationErrorV1::
+                    UnsupportedSchemaVersion { .. }
+            ))
+        ));
+        let project =
+            serde_json::to_vec(&invalid_metadata).expect("serialize invalid metadata fixture");
+        let manifest = manifest_for_features(
+            &project,
+            vec![ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned()],
+        );
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        assert!(matches!(
+            read_project_ori2(&bytes),
+            Err(FormatError::InvalidGeometricConstraints(
+                ori_domain::GeometricConstraintDocumentValidationErrorV1::
+                    UnsupportedSchemaVersion { .. }
+            ))
+        ));
+
+        let mut dangling = sample_document();
+        add_all_geometric_constraint_kinds(&mut dangling);
+        let missing = EdgeId::new();
+        let GeometricConstraintKindV1::FixedLength { edge, .. } =
+            &mut dangling.geometric_constraints.constraints[0].constraint
+        else {
+            panic!("first fixture is fixed length");
+        };
+        *edge = missing;
+        assert!(matches!(
+            write_project_ori2(&dangling),
+            Err(FormatError::MissingConstraintEdge { edge, .. }) if edge == missing
+        ));
+        let project = serde_json::to_vec(&dangling).expect("serialize dangling fixture");
+        let manifest = manifest_for_features(
+            &project,
+            vec![ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned()],
+        );
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+        assert!(matches!(
+            read_project_ori2(&bytes),
+            Err(FormatError::MissingConstraintEdge { edge, .. }) if edge == missing
         ));
     }
 
@@ -1052,6 +1503,39 @@ mod tests {
         assert!(matches!(
             error,
             FormatError::EntryTooLarge { path, .. } if path == ORI2_PROJECT_PATH
+        ));
+    }
+
+    #[test]
+    fn relaxed_ori2_limits_cannot_exceed_the_project_json_hard_ceiling() {
+        let relaxed = Ori2Limits {
+            max_archive_size: 256 * 1024 * 1024,
+            max_entry_uncompressed_size: 256 * 1024 * 1024,
+            max_total_uncompressed_size: 512 * 1024 * 1024,
+            max_project_size: 256 * 1024 * 1024,
+            ..Ori2Limits::default()
+        };
+
+        let bytes = write_project_ori2_with_limits(&sample_document(), relaxed)
+            .expect("a normal project remains writable with relaxed caller limits");
+        read_project_ori2_with_limits(&bytes, relaxed)
+            .expect("a writer artifact remains readable with the same limits");
+
+        assert_eq!(
+            effective_project_entry_size_limit(relaxed),
+            MAX_PROJECT_JSON_BYTES as u64
+        );
+        ensure_project_entry_size(MAX_PROJECT_JSON_BYTES as u64, relaxed)
+            .expect("equality with the hard ceiling must succeed");
+        assert!(matches!(
+            ensure_project_entry_size(MAX_PROJECT_JSON_BYTES as u64 + 1, relaxed),
+            Err(FormatError::EntryTooLarge {
+                path,
+                actual,
+                limit
+            }) if path == ORI2_PROJECT_PATH
+                && actual == MAX_PROJECT_JSON_BYTES as u64 + 1
+                && limit == MAX_PROJECT_JSON_BYTES as u64
         ));
     }
 

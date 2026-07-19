@@ -57,7 +57,11 @@ type InstructionTimelinePanelProps = {
   exportButtonRef: RefObject<HTMLButtonElement | null>
   inert?: boolean
   runNativeEdit(
-    action: (projectId: string, revision: number) => Promise<ProjectSnapshot>,
+    action: (
+      projectId: string,
+      revision: number,
+      projectInstanceId: string,
+    ) => Promise<ProjectSnapshot>,
   ): Promise<boolean>
   applyStepPose(step: InstructionStepPresentation): boolean
   onExport(): void
@@ -319,10 +323,11 @@ export function InstructionTimelinePanel({
     const previousIds = new Set(presentation.steps.map(({ id }) => id))
     let addedStepId: string | null = null
     const title = `手順 ${presentation.steps.length + 1}`
-    const succeeded = await runNativeEdit(async (projectId, revision) => {
+    const succeeded = await runNativeEdit(async (projectId, revision, projectInstanceId) => {
       const response = await addInstructionStep(
         projectId,
         revision,
+        projectInstanceId,
         title,
         '',
         '',
@@ -370,10 +375,11 @@ export function InstructionTimelinePanel({
       return
     }
     cancelPlayback('revision_changed')
-    const succeeded = await runNativeEdit((projectId, revision) =>
+    const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       updateInstructionStepMetadata(
         projectId,
         revision,
+        projectInstanceId,
         selectedStep.id,
         metadata.title,
         metadata.description,
@@ -387,10 +393,11 @@ export function InstructionTimelinePanel({
   async function replaceSelectedPose() {
     if (editingDisabled || !selectedStep || !captureDraft) return
     cancelPlayback('revision_changed')
-    const succeeded = await runNativeEdit((projectId, revision) =>
+    const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       replaceInstructionStepPose(
         projectId,
         revision,
+        projectInstanceId,
         selectedStep.id,
         captureDraft.fixedFace,
         captureDraft.hingeAngles,
@@ -405,8 +412,8 @@ export function InstructionTimelinePanel({
     if (!window.confirm(`「${selectedStep.title}」を削除しますか？`)) return
     cancelPlayback('revision_changed')
     const deletedId = selectedStep.id
-    const succeeded = await runNativeEdit((projectId, revision) =>
-      removeInstructionStep(projectId, revision, deletedId))
+    const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
+      removeInstructionStep(projectId, revision, projectInstanceId, deletedId))
     if (!succeeded) {
       setNotice('手順を削除できませんでした')
       return
@@ -424,8 +431,14 @@ export function InstructionTimelinePanel({
       || targetIndex === selectedStep.index
     ) return
     cancelPlayback('revision_changed')
-    const succeeded = await runNativeEdit((projectId, revision) =>
-      moveInstructionStep(projectId, revision, selectedStep.id, targetIndex))
+    const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
+      moveInstructionStep(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedStep.id,
+        targetIndex,
+      ))
     setNotice(succeeded ? '手順の順番を変更しました' : '手順を移動できませんでした')
   }
 

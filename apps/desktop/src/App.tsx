@@ -22,6 +22,7 @@ import { CreationDimensionExpressionSummary } from './components/CreationDimensi
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
+import { GeometricConstraintPanel } from './components/GeometricConstraintPanel'
 import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
@@ -35,7 +36,9 @@ import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import {
   addEdge,
+  addEdgeOrientationConstraint,
   addVertex,
+  analyzeGeometricConstraints,
   analyzeProjectTopology,
   applyFoldImport,
   applySvgImport,
@@ -61,6 +64,7 @@ import {
   redo,
   removeBoundaryVertex,
   removeEdge,
+  removeGeometricConstraint,
   removeVertex,
   resizeRectangularPaper,
   saveProject,
@@ -101,7 +105,10 @@ import type {
   SvgImportSettingsDraft,
   SvgImportSettingsValidation,
 } from './lib/svgImport'
+import { normalizeGeometricConstraintDocument } from './lib/geometricConstraints'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
+import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
+import { useGeometricConstraintPreflight } from './lib/useGeometricConstraintPreflight'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
 import {
@@ -271,6 +278,8 @@ function App() {
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
+  const [geometricConstraintDocumentInvalid, setGeometricConstraintDocumentInvalid] =
+    useState(false)
   const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
   const [topologyStatus, setTopologyStatus] = useState(
     isNativeCoreAvailable() ? '面・ヒンジ解析待ち' : '3D解析はデスクトップ版で利用できます',
@@ -351,6 +360,41 @@ function App() {
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
+  const analyzeCurrentGeometricConstraints = useCallback(async (
+    expectedProjectInstanceId: string,
+    expectedProjectId: string,
+    expectedRevision: number,
+  ) => {
+    const response = await analyzeGeometricConstraints(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    const current = latestSnapshotRef.current
+    if (
+      !current
+      || current.project_instance_id !== response.project_instance_id
+      || current.project_id !== response.project_id
+      || current.revision !== response.revision
+    ) {
+      throw new Error('stale geometric-constraint preflight response')
+    }
+    return response
+  }, [])
+  const reportGeometricConstraintAnalysisFailure = useCallback(() => {
+    reportUnexpected('app.validation')
+  }, [])
+  const {
+    preflight: geometricConstraintPreflight,
+    analyzing: geometricConstraintAnalysisBusy,
+    failed: geometricConstraintAnalysisFailed,
+    retry: retryGeometricConstraintAnalysis,
+  } = useGeometricConstraintPreflight({
+    snapshot: nativeSnapshot,
+    enabled: isNativeCoreAvailable() && !geometricConstraintDocumentInvalid,
+    analyze: analyzeCurrentGeometricConstraints,
+    onFailure: reportGeometricConstraintAnalysisFailure,
+  })
   const nativeStaticCollisionRequest = useMemo(() => {
     const project = nativeSnapshot
     const pose = appliedFoldPose
@@ -394,14 +438,30 @@ function App() {
     snapshot: ProjectSnapshot,
     forceReplacement = false,
   ) => {
+    const rawConstraints = snapshot.geometric_constraints === undefined
+      ? { schema_version: 1, constraints: [] }
+      : snapshot.geometric_constraints
+    const geometricConstraints = normalizeGeometricConstraintDocument(rawConstraints)
+    const constraintDocumentInvalid = geometricConstraints === null
+    if (constraintDocumentInvalid) {
+      reportUnexpected('app.validation')
+    }
+    const admittedSnapshot: ProjectSnapshot = {
+      ...snapshot,
+      geometric_constraints: geometricConstraints ?? {
+        schema_version: 1,
+        constraints: [],
+      },
+    }
     topologyRequestIdRef.current += 1
-    latestSnapshotRef.current = snapshot
+    latestSnapshotRef.current = admittedSnapshot
     globalFlatFoldabilityCoordinatorRef.current?.invalidate({
-      projectId: snapshot.project_id,
-      revision: snapshot.revision,
-      foldModelFingerprint: snapshot.fold_model_fingerprint,
+      projectId: admittedSnapshot.project_id,
+      revision: admittedSnapshot.revision,
+      foldModelFingerprint: admittedSnapshot.fold_model_fingerprint,
     }, forceReplacement)
-    setNativeSnapshot(snapshot)
+    setNativeSnapshot(admittedSnapshot)
+    setGeometricConstraintDocumentInvalid(constraintDocumentInvalid)
     setValidation(null)
     setTopologyResponse(null)
     setTopologyStatus('面・ヒンジ解析待ち')
@@ -924,7 +984,11 @@ function App() {
   }, [])
 
   const runNativeEdit = useCallback(async (
-    action: (projectId: string, revision: number) => Promise<ProjectSnapshot>,
+    action: (
+      projectId: string,
+      revision: number,
+      projectInstanceId: string,
+    ) => Promise<ProjectSnapshot>,
   ) => {
     const current = latestSnapshotRef.current
     if (!current || coreOperationRef.current) return false
@@ -932,7 +996,24 @@ function App() {
     setCoreBusy(true)
     setCancelInteractionToken((token) => token + 1)
     try {
-      const snapshot = await action(current.project_id, current.revision)
+      const snapshot = await action(
+        current.project_id,
+        current.revision,
+        current.project_instance_id,
+      )
+      if (
+        latestSnapshotRef.current !== current
+        || !isExpectedNativeEditSnapshot(
+          snapshot,
+          current.project_instance_id,
+          current.project_id,
+          current.revision,
+        )
+      ) {
+        reportUnexpected('app.project_snapshot')
+        setCoreStatus('コアエラー: 編集結果を現在のプロジェクトへ結合できませんでした')
+        return false
+      }
       applySnapshot(snapshot)
       setValidation(null)
       setCoreStatus(`Rustコア revision ${snapshot.revision}`)
@@ -945,6 +1026,30 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+
+  const addSelectedEdgeOrientationConstraint = useCallback((
+    orientation: 'horizontal' | 'vertical',
+  ) => {
+    if (!selectedLine || benchmarkRun) return
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      addEdgeOrientationConstraint(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedLine.id,
+        orientation,
+      ))
+  }, [benchmarkRun, runNativeEdit, selectedLine])
+
+  const removeConstraint = useCallback((constraintId: string) => {
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      removeGeometricConstraint(
+        projectId,
+        revision,
+        projectInstanceId,
+        constraintId,
+      ))
+  }, [runNativeEdit])
 
   const startGlobalFlatFoldability = useCallback((
     timeLimitSeconds: GlobalFlatFoldabilityTimePreset,
@@ -980,8 +1085,8 @@ function App() {
         setCoreStatus('輪郭線の追加・削除は紙形状編集から行います')
         return
       }
-      const removed = await runNativeEdit((projectId, revision) =>
-        removeEdge(projectId, revision, selectedLine.id))
+      const removed = await runNativeEdit((projectId, revision, projectInstanceId) =>
+        removeEdge(projectId, revision, projectInstanceId, selectedLine.id))
       if (removed) setSelectedLineId(null)
       return
     }
@@ -990,10 +1095,10 @@ function App() {
         setCoreStatus('輪郭は最低3点必要なため、この輪郭頂点は削除できません')
         return
       }
-      const removed = await runNativeEdit((projectId, revision) =>
+      const removed = await runNativeEdit((projectId, revision, projectInstanceId) =>
         selectedVertexIsBoundary
-          ? removeBoundaryVertex(projectId, revision, selectedVertex.id)
-          : removeVertex(projectId, revision, selectedVertex.id))
+          ? removeBoundaryVertex(projectId, revision, projectInstanceId, selectedVertex.id)
+          : removeVertex(projectId, revision, projectInstanceId, selectedVertex.id))
       if (!removed) return
       setSelectedVertexId(null)
       setSelectedLineId(null)
@@ -1019,8 +1124,14 @@ function App() {
       current.crease_pattern.vertices.map((vertex) => vertex.id),
     )
     const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
-    const succeeded = await runNativeEdit(async (projectId, revision) => {
-      const snapshot = await splitBoundaryEdge(projectId, revision, selectedLine.id, 0.5)
+    const succeeded = await runNativeEdit(async (projectId, revision, projectInstanceId) => {
+      const snapshot = await splitBoundaryEdge(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedLine.id,
+        0.5,
+      )
       result.snapshot = snapshot
       return snapshot
     })
@@ -1051,16 +1162,34 @@ function App() {
       snapshot: null,
       connectedVertexId: null,
     }
-    const succeeded = await runNativeEdit(async (projectId, revision) => {
+    const succeeded = await runNativeEdit(async (projectId, revision, projectInstanceId) => {
       let snapshot: ProjectSnapshot
       if (placement.operation === 'add') {
-        snapshot = await addVertex(projectId, revision, placement.x, placement.y)
+        snapshot = await addVertex(
+          projectId,
+          revision,
+          projectInstanceId,
+          placement.x,
+          placement.y,
+        )
       } else if (placement.operation === 'split-edge') {
         const edge = current.crease_pattern.edges.find(({ id }) => id === placement.edgeId)
         if (!edge) throw new Error(`分割対象の辺が見つかりません: ${placement.edgeId}`)
         snapshot = edge.kind === 'boundary'
-          ? await splitBoundaryEdge(projectId, revision, placement.edgeId, placement.fraction)
-          : await splitEdge(projectId, revision, placement.edgeId, placement.fraction)
+          ? await splitBoundaryEdge(
+              projectId,
+              revision,
+              projectInstanceId,
+              placement.edgeId,
+              placement.fraction,
+            )
+          : await splitEdge(
+              projectId,
+              revision,
+              projectInstanceId,
+              placement.edgeId,
+              placement.fraction,
+            )
       } else {
         if (!isSupportedIntersectionPlacement(
           placement,
@@ -1070,6 +1199,7 @@ function App() {
           ? await connectEdgeIntersection(
               projectId,
               revision,
+              projectInstanceId,
               placement.firstEdgeId,
               placement.secondEdgeId,
             )
@@ -1077,12 +1207,14 @@ function App() {
             ? await connectTJunction(
                 projectId,
                 revision,
+                projectInstanceId,
                 placement.firstEdgeId,
                 placement.secondEdgeId,
               )
             : await connectIntersectionCluster(
                 projectId,
                 revision,
+                projectInstanceId,
                 placement.targets,
                 placement.junctionVertexId,
               )
@@ -1223,8 +1355,8 @@ function App() {
     }
     const start = pendingEdgeStart
     setPendingEdgeStart(null)
-    void runNativeEdit((projectId, revision) =>
-      addEdge(projectId, revision, start, vertexId, activeTool))
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      addEdge(projectId, revision, projectInstanceId, start, vertexId, activeTool))
   }
 
   function selectCanvasVertex(vertexId: string) {
@@ -1262,8 +1394,8 @@ function App() {
       setCoreStatus('座標には有限の数値を入力してください')
       return
     }
-    void runNativeEdit((projectId, revision) =>
-      moveVertex(projectId, revision, selectedVertex.id, x, y))
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      moveVertex(projectId, revision, projectInstanceId, selectedVertex.id, x, y))
   }
 
   function submitPaperProperties(event: FormEvent<HTMLFormElement>) {
@@ -1290,8 +1422,8 @@ function App() {
       return
     }
 
-    void runNativeEdit((projectId, revision) =>
-      updatePaperProperties(projectId, revision, {
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      updatePaperProperties(projectId, revision, projectInstanceId, {
         thicknessMm,
         frontColor: { ...frontColor, alpha: current.paper.front.color.alpha },
         backColor: { ...backColor, alpha: current.paper.back.color.alpha },
@@ -1336,16 +1468,16 @@ function App() {
       return
     }
 
-    void runNativeEdit((projectId, revision) =>
-      resizeRectangularPaper(projectId, revision, widthMm, heightMm))
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      resizeRectangularPaper(projectId, revision, projectInstanceId, widthMm, heightMm))
   }
 
   function changeLengthDisplayUnit(
-    unit: Parameters<typeof setLengthDisplayUnit>[2],
+    unit: Parameters<typeof setLengthDisplayUnit>[3],
   ) {
     if (coreOperationRef.current) return
-    void runNativeEdit((projectId, revision) =>
-      setLengthDisplayUnit(projectId, revision, unit))
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      setLengthDisplayUnit(projectId, revision, projectInstanceId, unit))
   }
 
   async function runValidation() {
@@ -2230,8 +2362,8 @@ function App() {
             disabled={coreBusy || !nativeSnapshot || !paperCenter}
             onClick={() => {
               if (!paperCenter) return
-              void runNativeEdit((projectId, revision) =>
-                addVertex(projectId, revision, paperCenter.x, paperCenter.y))
+              void runNativeEdit((projectId, revision, projectInstanceId) =>
+                addVertex(projectId, revision, projectInstanceId, paperCenter.x, paperCenter.y))
             }}
           >
             中央に頂点
@@ -2392,8 +2524,8 @@ function App() {
               onMoveVertex={benchmarkRun
                 ? undefined
                 : (vertexId, x, y) => {
-                    void runNativeEdit((projectId, revision) =>
-                      moveVertex(projectId, revision, vertexId, x, y))
+                    void runNativeEdit((projectId, revision, projectInstanceId) =>
+                      moveVertex(projectId, revision, projectInstanceId, vertexId, x, y))
                   }}
             />
           </article>
@@ -2728,6 +2860,29 @@ function App() {
               </>
             ) : <p className="muted">線または頂点を選択してください</p>}
           </section>
+          {nativeSnapshot && !benchmarkRun && (
+            <GeometricConstraintPanel
+              document={nativeSnapshot.geometric_constraints ?? {
+                schema_version: 1,
+                constraints: [],
+              }}
+              preflight={geometricConstraintPreflight?.result ?? null}
+              analyzing={geometricConstraintAnalysisBusy}
+              analysisFailed={
+                geometricConstraintAnalysisFailed || geometricConstraintDocumentInvalid
+              }
+              selectedEdgeId={selectedLine?.id ?? null}
+              disabled={coreBusy || geometricConstraintDocumentInvalid}
+              onAddOrientation={addSelectedEdgeOrientationConstraint}
+              onRemove={removeConstraint}
+              onSelectEdge={(edgeId) => {
+                if (!nativeLines.some((line) => line.id === edgeId)) return
+                setSelectedLineId(edgeId)
+                setSelectedVertexId(null)
+              }}
+              onRetryAnalysis={retryGeometricConstraintAnalysis}
+            />
+          )}
           {validation && (
             <section className={validation.is_valid ? 'validation-report valid' : 'validation-report invalid'}>
               <h2>幾何検証</h2>

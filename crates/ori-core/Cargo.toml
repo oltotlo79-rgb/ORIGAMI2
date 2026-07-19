@@ -13,7 +13,6 @@ ori-geometry = { path = "../ori-geometry" }
 ori-topology = { path = "../ori-topology" }
 serde.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

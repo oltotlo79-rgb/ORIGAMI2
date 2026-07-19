@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約38.6%（2026-07-19、暫定の重み付き概算）**
+**全体完成率: 約40.1%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値38.09%に対し、資源制限付き高精度数式評価を新規用紙の幅・高さ、native正式採用、`.ori2`保存・読込検証、式/評価値切替へ接続し、「数式・幾何制約」を0%から6%へ更新した。差分0.54ポイント（全体比率9% × 6ポイント）を加えた38.63%を小数第1位へ丸めて表示している。privateな正厚三角柱交差核とexact E/F有限ヒンジ回廊証明、UI未接続の幾何制約基盤は利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、38.63%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値38.63%に対し、11種の幾何制約をproject・`.ori2`・Undo/Redoへ保存し、選択線への水平・垂直制約追加、全11種の一覧・対象選択・削除、7種の直接矛盾の原因と判定保留をUIへ接続したため、「数式・幾何制約」を6%から22%へ更新した。差分1.44ポイント（全体比率9% × 16ポイント）を加えた40.07%を小数第1位へ丸めて表示している。水平・垂直以外の作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverは未実装である。privateな正厚三角柱交差核、exact E/F有限ヒンジ回廊証明、完全平坦180度に限定した多面層順序anchorは利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、40.07%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -15,17 +15,20 @@
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
 | プロジェクト・保存・履歴 | 8% | 45% | 3.60% | 原子的編集、差分Undo/Redo、`.ori2`保存に加え、project単位のmm/cm/inch/紙辺比と換算編集を実装。履歴上限設定、履歴永続化、自動保存、クラッシュ復旧を残す |
 | 2D展開図エディター | 15% | 51% | 7.65% | 基本編集、9種スナップ、画面・取込・SVG書出で統一した白黒識別可能な5線種を実装。面編集、数式作図、レイヤー、対称編集を残す |
-| 数式・幾何制約 | 9% | 6% | 0.54% | 新規用紙の幅・高さで高精度数式入力、式保存、読込時再検証、式/評価値切替を接続。既存幾何の数式入力・式駆動更新、11種制約の利用者経路、矛盾表示を残す |
+| 数式・幾何制約 | 9% | 22% | 1.98% | 新規用紙の数式入力に加え、11種制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因・判定保留表示を接続。残る9種の作成UI、式駆動更新、拘束solverを残す |
 | 3D折り・紙厚・衝突 | 17% | 52% | 8.84% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持に加え、同一native姿勢へ束縛した厳密静的診断と安全認定不可・判定保留の表示を接続。正厚の本番証明、native連続停止、専用層順3D表示、折り重ね、閉路、切断由来を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
 | 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
 | 多言語・設定・配布・QA | 5% | 46% | 2.30% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、ライト/ダーク/OS連動、Windows/macOS標準shortcut、主要shortcutの変更・重複検出、保存可能な作業レイアウトを実装。i18n、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **38.63%** | — |
+| **合計** | **100%** | — | **40.07%** | — |
 
 ## 完了
 
+- EDT-008/009の最初の利用者向け縦切りとして、11種のversion固定制約を`ProjectDocument`と`.ori2` required featureへ保存し、旧projectは空制約へ移行する一方、非空制約のfeature宣言欠落・未知field・不正schema・dangling参照を拒否する。EditorはAdd/Removeを原子的なUndo/Redoへ統合し、制約が参照する頂点・辺の変更を明示削除まで遮断する。新規制約だけの関連geometryを検証するため、無関係な修復対象を維持しつつ、10万辺＋1万制約のlock判定を`O(E+C)`へ固定した。UIは選択線へ水平・垂直を追加し、保存済み11種を日本語で一覧・対象選択・削除できる。native preflightはproject instance・project・revisionへ束縛し、process-wide worker gateで同時実行を1件へ制限する。frontendは古い結果をsnapshot変更renderから即時に隠し、実行中1件＋最新待機1件へcoalesceし、unmount・retry・StrictModeを含めてstale completionを破棄する。7種の直接矛盾では原因種別と最大3個の制約IDを表示し、完全solverが必要、資源上限、文書不正、通信失敗はすべて同じ目立つ安全保留へ閉じ、「直接矛盾なし」も全制約充足の証明ではないと明記する。frontendはuntrusted DTOをown data field、canonical UUID、10,000件/40,000参照、値域、全7 conflict、stale bindingまで厳密検証し、編集snapshotも同じinstance/projectの次revisionだけを現在projectへ結合する。表示は制約200件、矛盾50件、未確認ID 20件で上限を設けた。永続化境界はproject/manifest envelopeの未知fieldを拒否し、unordered参照のmissing errorをcanonical化し、全11種wireとmanifest literalをgolden固定した。直接JSONはserde前に非緩和の128 MiB上限を適用し、`.ori2`と同じhard ceilingをreader・writerで共有する。空V1制約集合は未参照geometryを走査せず、最初の制約追加時から共通10万頂点・辺上限を適用する。project IDはnilを拒否する一方、canonicalな非nil UUIDのversion/variantを制限しない。全24変更commandをproject instanceへ束縛し、将来の追加漏れもsource-derived回帰で検出する。`ori-domain` 25件、`ori-core` 226件、`ori-formats` 179件、desktop native 274件、frontend Node 1,176件、DOM 95件、workspace Clippy、fmt、lint、production buildが成功した。EDT-008/009を未着手から部分実装へ更新し、MUST集計を38 / 28 / 21、完成率を40.07%（表示40.1%）とした
+- 折り重ね前提の多面層順序transportとして、全ヒンジがbit-exact 180度で、平坦折り判定のreference faceをrootにした多面treeだけを対象に、facewise layer-order snapshotを現在のnative material poseへ再結合する観測専用anchorを追加した。source identity/revision/fingerprint、material face registry、exact affine姿勢、convex overlap cellの完全被覆・内部非重複、cell-local・face-pair・global order、全resource limitを再検証し、snapshot object・model issuer・pose instanceのABAを拒否する。山谷2ヒンジの3面accordionで3層順序・source順不変・certificate改変拒否を固定し、複数180度合成の幾何比較だけは`-0.0`を`+0.0`へcanonical化する一方、1 ULP差を引き続き拒否する。public snapshot自体を認証せず、静的衝突、正厚、連続3D、shared-hinge admission、編集権限を一切付与しない境界を明記した。専用8件、`ori-collision` unit/integration 243件、doc 3件、check、Clippy、fmtが成功した。desktopのprivate current guard、層順3D viewer、折り重ねcommand/UIへ未接続なのでSIM-010、MUST集計、完成率への加算は行っていない
+- コミット`a99fe2b`の[CI #265](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29693878656)は、frontend、Windows/macOS Rust、Windows/macOS bundleの全5 jobを14分13秒で完走した。frontendは38秒、Windows正式版向けNSIS bundleは5分3秒、macOS自動build検証は2分55秒で成功し、単一面の現在姿勢層順序proofと11種幾何制約の内部基盤を含むworkspace・配布buildの整合を確認した
 - 折り重ね前提のcell-order transport bootstrapとして、no-hinge・単一material faceだけを対象に、native kinematics model issuer、exact pose instance、static collision proof identity、紙厚bits、canonical world境界、bottom-to-top 1層を一体で保持するopaque proofを追加した。cloneだけが同一proof identityを維持し、同角度再solve、別issuer、同一geometry・同一厚さで再発行したstatic proof、厚さ差替えを拒否する。再検証はimmutable native geometryからcell key、face、境界座標bits、層順序を再構築し、static proofのface数とexpected/analyzed face・triangle pairが単一面zero-pair契約どおりかもconsumer側で照合する。`+0.0`と0.1 mm、source collection順序、全logical limit境界、90/180度共有hinge・複数面fail-closedを回帰した。独立監査で見つけたstatic proof再発行ABAの単独回帰不足と下位counter意味論への依存を修正し、専用integration 6件、全target check、Clippy、fmt、diff-checkが成功した。proof単独にはproject/revision/generation、current layer capability、mutation権限がなく、複数面transportへ未接続なのでSIM-010、MUST集計38 / 26 / 23、完成率38.63%は変更していない
 - EDT-008/009の内部基盤として、固定長、固定角、水平、垂直、等長、平行、点の線上、鏡映対称、回転対称、角度二等分、長さ比の11種を、unknown field・kindを拒否するversion固定DTOへ実装した。constraint・vertex・edgeのnil/重複、geometry参照、入射、同一要素、非有限値、範囲、件数・参照数を検証し、unordered operandと`-0`を検証前にcanonical化する。prepared setは検証元`CreasePattern`をlifetime borrowして安全なRustから古いgeometryへ持ち越せず、callerが既定hard ceilingを緩和することもできない。7種の直接矛盾を全件走査し、最大3 IDのcanonical最小原因を返す一方、部分検査の固定角・長さ比を含む未証明系は`Unknown`へ閉じる。初回監査のCritical / High / Medium / Low 0 / 1 / 2 / 3を修正した後、独立再監査で見つけた共有固定長group×等長pairの二次再走査も、各固定長assignmentを一度だけ要約する`O(N log N + output)`処理へ改め、1,000共有＋1,000相手＋1,000等長でvisit 2,000回と原因出力3,000 IDを固定した。制約release 23件、`ori-core` unit 203件、doc 6件、全target check、Clippy、rustdoc、fmtが成功し、最終独立監査の残存Critical / High / Medium / Lowはすべて0件だった。project保存・編集command・UI・solverへ未接続なのでEDT-008/009は未着手、MUST集計38 / 26 / 23と完成率38.63%は変更していない
 - コミット`0674359`の[CI #263](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29692819742)は、frontend、Windows/macOS Rust、Windows/macOS bundleの全5 jobを13分33秒で完走した。Windows正式版向けNSIS bundleは4分52秒、macOS自動build検証は1分46秒で成功し、用紙サイズ数式入力と直前の正厚C2診断を含むworkspace・配布buildの整合を確認した

@@ -5,9 +5,7 @@ import {
   type GlobalFlatFoldabilityErrorCategory,
   type GlobalFlatFoldabilityJobDto,
 } from './globalFlatFoldability.ts'
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 const MAX_TIME_LIMIT_MS = 300_000
 
 export type GlobalFlatFoldabilityNativeContext = Readonly<{
@@ -168,7 +166,7 @@ function defaultNativeInvoke(
 }
 
 function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && UUID_PATTERN.test(value)
+  return isCanonicalNonNilUuid(value)
 }
 
 function isRevision(value: unknown): value is number {

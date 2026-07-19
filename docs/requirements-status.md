@@ -1,6 +1,6 @@
 # MUST要件 実装状況
 
-更新日: 2026-07-19
+更新日: 2026-07-20
 
 `requirements-definition.md`のMUST 87件を、利用者がUIから実行できるかを基準に追跡する。配布・CI要件だけは、要件に明記された自動検証または成果物が存在するかを基準とする。内部基盤やテストだけが完成していても、利用者機能がUI未接続なら「実装済み」へは上げない。
 
@@ -8,7 +8,7 @@
 - 部分実装: 有用な一部が動作するが、要件に明記された範囲を満たさない
 - 未着手: 要件固有の利用経路が存在しない
 
-現在の行単位集計は **実装済み38 / 部分実装26 / 未着手23**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
+現在の行単位集計は **実装済み38 / 部分実装28 / 未着手21**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。2026-07-20に11種幾何制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因と判定保留表示を利用者経路へ接続し、EDT-008/009を未着手から部分実装へ更新した。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
 
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
@@ -193,8 +193,8 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | EDT-005 | 部分実装 | 新規作成時の幅・高さの原式とnative採用値をversion固定schemaで`.ori2`へ保存し、読込時再評価・bit一致検証と式/評価値切替表示が動作。既存幾何の式保持、式による再計算、Undo/Redo統合を残す |
 | EDT-006 | 実装済み | 9種snap、個別切替、優先順位、空間索引 |
 | EDT-007 | 部分実装 | 平行・垂直等の補助あり。円・compass作図なし |
-| EDT-008 | 未着手 | 11種のversion固定DTO、参照・有限値・資源上限の検証、元geometryを借用するcanonical prepared setは`ori-core`内部に実装。project schema、保存、編集command、UI、拘束solverへ未接続のため利用者経路なし |
-| EDT-009 | 未着手 | 7種の直接矛盾、最大3 IDの決定論的原因、`DirectConflict / Unknown / NoDirectConflict`の安全なpreflightは`ori-core`内部に実装。project・UIへの原因表示、非線形・推移的矛盾のsolverへ未接続 |
+| EDT-008 | 部分実装 | 11種をproject・`.ori2`・Undo/Redoへ保存し、UIから選択線へ水平/垂直を追加、全11種を一覧・対象選択・削除できる。参照geometryは制約削除まで変更を遮断する。残る9種の作成UI、拘束を満たす自動変形、座標・数式入力との統合を残す |
+| EDT-009 | 部分実装 | 7種の直接矛盾をproject instance・project・revisionへ束縛して診断し、原因種別と最大3制約IDをblocking表示する。完全solverが必要・資源上限・文書不正・通信失敗は目立つ判定保留へ閉じる。非線形・推移的矛盾の完全solverと編集前の解消提案を残す |
 | EDT-010 | 未着手 | 左右・回転対称編集なし |
 | EDT-011 | 実装済み | 不正・未完成状態の表示と保存を許可 |
 | EDT-012 | 部分実装 | 3D移行のfail-closed遮断あり。問題位置・理由の網羅表示を残す |
@@ -226,7 +226,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
-| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。bit-exactな厚さ`+0.0`では、三角形どうしのcanonical exact `E`＋direct-lift `F` dual-gate横断、非三角whole material faceのexact横断、180度のexact共面正面積重なりをnative公開静的入口へblocking専用で接続し、desktop current-pose apply、process-wide worker gate、同generation診断、stale binding除去、一般化したproduction警告UIまで到達した。正厚では有限半径scalar、1ヒンジ・2三角形面限定の共有境界・材料半平面・current共有端点・材料法線・有限軸方向範囲を同じexact poseへ束縛するprivate前提token、および同じ`E/F`の位置・法線差から正厚solidの成分別上限を封印するprivate capabilityまで固定した。さらに2個のexact三角柱の完全閉交差集合を全120平面三つ組から構成し、rank・正体積・対向support facetを有限累積budgetで返すprivate kernel、exact `E`側の全canonical交差頂点を閉じた有限ヒンジ回廊へ包含するprivate能力token、およびdirect-lift `F`側でcanonical affine half-prismへの完全包含・有界性・有限半径を示すC2診断まで完成した。C2は共有端点driftを許容するauthorityではなく、`ContainedUnadmitted`以外の安全認定を発行しない。no-hinge・単一material faceでは、同一model issuer・pose instance・静的衝突proof identity・紙厚bitsへ束縛し、world境界と1層順序をbit再検証するopaque cell-order transport bootstrapを追加したが、project mutation権限は持たない。全boundary point/normal/solidを束縛する共有hinge admission、native exact topology margin、正厚の本番証明、共有ヒンジ一般、H64既定上限内の完全成功、native連続衝突、複数面cell-order transport、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
+| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。bit-exactな厚さ`+0.0`では、三角形どうしのcanonical exact `E`＋direct-lift `F` dual-gate横断、非三角whole material faceのexact横断、180度のexact共面正面積重なりをnative公開静的入口へblocking専用で接続し、desktop current-pose apply、process-wide worker gate、同generation診断、stale binding除去、一般化したproduction警告UIまで到達した。正厚では有限半径scalar、1ヒンジ・2三角形面限定の共有境界・材料半平面・current共有端点・材料法線・有限軸方向範囲を同じexact poseへ束縛するprivate前提token、および同じ`E/F`の位置・法線差から正厚solidの成分別上限を封印するprivate capabilityまで固定した。さらに2個のexact三角柱の完全閉交差集合を全120平面三つ組から構成し、rank・正体積・対向support facetを有限累積budgetで返すprivate kernel、exact `E`側の全canonical交差頂点を閉じた有限ヒンジ回廊へ包含するprivate能力token、およびdirect-lift `F`側でcanonical affine half-prismへの完全包含・有界性・有限半径を示すC2診断まで完成した。C2は共有端点driftを許容するauthorityではなく、`ContainedUnadmitted`以外の安全認定を発行しない。no-hinge・単一material faceのopaque bootstrapに加え、全ヒンジがbit-exact 180度の多面treeでは、平坦折り判定のexact facewise layer-order snapshotを同じmodel issuer・pose instanceへ再結合し、3面3層、source順不変、ABA・certificate改変拒否まで再検証する観測専用anchorを実装した。どちらもproject mutation権限を持たない。全boundary point/normal/solidを束縛する共有hinge admission、native exact topology margin、正厚の本番証明、共有ヒンジ一般、H64既定上限内の完全成功、native連続衝突、非180度・正厚・連続姿勢へ一般化した多面transport、desktop current guard、層順viewer、原子的`ApplyStackedFold` commandとUIは未実装である。これらの完成前は折り重ねUIへ着手しない |
 
 ## 折り手順
 

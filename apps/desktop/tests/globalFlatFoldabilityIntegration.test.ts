@@ -48,11 +48,11 @@ test('snapshot changes invalidate before publishing and replacements are explici
   )
   assert.match(
     applySnapshot,
-    /latestSnapshotRef\.current = snapshot\s*globalFlatFoldabilityCoordinatorRef\.current\?\.invalidate\(\{\s*projectId: snapshot\.project_id,\s*revision: snapshot\.revision,\s*foldModelFingerprint: snapshot\.fold_model_fingerprint,\s*\}, forceReplacement\)\s*setNativeSnapshot\(snapshot\)/u,
+    /latestSnapshotRef\.current = admittedSnapshot\s*globalFlatFoldabilityCoordinatorRef\.current\?\.invalidate\(\{\s*projectId: admittedSnapshot\.project_id,\s*revision: admittedSnapshot\.revision,\s*foldModelFingerprint: admittedSnapshot\.fold_model_fingerprint,\s*\}, forceReplacement\)\s*setNativeSnapshot\(admittedSnapshot\)/u,
   )
   assert.match(
     appSource,
-    /const snapshot = await action\(current\.project_id, current\.revision\)\s*applySnapshot\(snapshot\)/u,
+    /const snapshot = await action\(\s*current\.project_id,\s*current\.revision,\s*current\.project_instance_id,\s*\)[\s\S]*?isExpectedNativeEditSnapshot\([\s\S]*?applySnapshot\(snapshot\)/u,
   )
   assert.match(
     appSource,

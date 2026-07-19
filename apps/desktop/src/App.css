@@ -1191,6 +1191,116 @@ html[data-theme='dark'] .svg-import-loss-badge {
   font-size: 11px;
 }
 .property-actions button.danger { color: #a73535; border-color: #d9a7a7; }
+.geometric-constraints-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.geometric-constraints-heading h2 { margin-bottom: 0; }
+.geometric-constraints-heading span { color: var(--muted); font-size: 11px; }
+.geometric-constraint-add-actions { margin-block: 9px 7px; }
+.geometric-constraint-add-actions button { flex: 1 1 100px; }
+.geometric-constraint-preflight {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.geometric-constraint-preflight.is-pending {
+  border-color: rgb(22 113 184 / 52%);
+  background: rgb(239 247 255 / 70%);
+  color: #165f99;
+}
+.geometric-constraint-preflight.is-clear {
+  border-color: rgb(40 114 73 / 55%);
+  background: rgb(240 251 245 / 78%);
+  color: #287249;
+}
+.geometric-constraint-preflight.is-blocking {
+  border-color: rgb(179 65 65 / 72%);
+  background: rgb(255 239 239 / 90%);
+  color: #9f3030;
+  font-weight: 650;
+  box-shadow: 0 0 0 1px rgb(179 65 65 / 16%);
+}
+.geometric-constraint-preflight button {
+  justify-self: start;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 3px 7px;
+  background: var(--panel-strong);
+  color: inherit;
+  font: inherit;
+}
+.geometric-constraint-conflicts {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.geometric-constraint-conflicts li {
+  display: grid;
+  gap: 1px;
+  padding-left: 7px;
+  border-left: 2px solid currentColor;
+}
+.geometric-constraint-conflicts strong { font-size: 11px; }
+.geometric-constraint-conflicts span {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+}
+.geometric-constraint-list {
+  display: grid;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.geometric-constraint-list > li {
+  display: grid;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-strong);
+}
+.geometric-constraint-list > li > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.geometric-constraint-list strong { font-size: 11px; }
+.geometric-constraint-list span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.geometric-constraint-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.geometric-constraint-row-actions button {
+  min-height: 27px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 7px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+}
+.geometric-constraint-row-actions button.danger { color: #a73535; border-color: #d9a7a7; }
 .validation-report p { margin: 0; font-size: 12px; }
 .validation-report.valid { border-left: 3px solid #4f9a6d; }
 .validation-report.invalid { border-left: 3px solid #c85c5c; }
@@ -1733,6 +1843,21 @@ html[data-theme='dark'] .angle-snap-settings input[aria-invalid="true"] { border
 html[data-theme='dark'] .dialog-error { background: #4a2929; color: #f1b7b7; }
 html[data-theme='dark'] .numeric-expression-rejected { color: #ffb4ab; }
 html[data-theme='dark'] .numeric-expression-accepted { color: #8ed5a6; }
+html[data-theme='dark'] .geometric-constraint-preflight.is-pending {
+  border-color: #4f91c4;
+  background: #233b4d;
+  color: #b9dcf5;
+}
+html[data-theme='dark'] .geometric-constraint-preflight.is-clear {
+  border-color: #579773;
+  background: #243e31;
+  color: #b3dfc3;
+}
+html[data-theme='dark'] .geometric-constraint-preflight.is-blocking {
+  border-color: #c76c6c;
+  background: #4a2929;
+  color: #ffc1c1;
+}
 html[data-theme='dark'] .keyboard-shortcut-error {
   border-left-color: #ff8a93;
   background: #4a292d;

@@ -3,10 +3,9 @@ import type {
   ProjectSnapshot,
   ProjectTopologyResponse,
 } from './coreClient'
+import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 
 export const MAX_FOLD_PREVIEW_WORLD_SIZE = 4.4
-
-const CANONICAL_ENTITY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
 
 export type FoldPreviewWorldVertex = Readonly<{
   vertexId: string
@@ -874,7 +873,7 @@ function nonEmptyString(value: unknown) {
 }
 
 function canonicalEntityId(value: unknown) {
-  return typeof value === 'string' && CANONICAL_ENTITY_ID.test(value) ? value : null
+  return isCanonicalNonNilUuid(value) ? value : null
 }
 
 function finiteNumber(value: unknown) {

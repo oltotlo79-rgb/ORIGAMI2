@@ -716,8 +716,23 @@ mod tests {
     use super::*;
     use crate::{
         ProjectState, applied_pose::NativePoseHingeAngleRequest, applied_pose::NativePoseRequest,
-        commit_project_replacement, execute_command,
+        commit_project_replacement, execute_command as execute_bound_command,
     };
+
+    fn execute_command(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        command: Command,
+    ) -> Result<crate::ProjectSnapshot, String> {
+        execute_bound_command(
+            project,
+            project.instance_id,
+            expected_project_id,
+            expected_revision,
+            command,
+        )
+    }
 
     fn no_hinge_project_with_thickness(thickness_mm: f64) -> ProjectState {
         let sheet = create_rectangular_sheet(40.0, 30.0, false).expect("rectangle fixture");

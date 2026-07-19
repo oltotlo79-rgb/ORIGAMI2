@@ -999,6 +999,20 @@ test('all referenced entity IDs must use canonical lowercase hyphenated UUID tex
     JSON.stringify(topologyFixture()).replaceAll(ids.west, 'west-face'),
   ) as ProjectTopologyResponse
   assert.equal(buildFoldPreviewModel(projectFixture(), arbitraryFace), null)
+
+  const nilProject = projectFixture()
+  const nilTopology = topologyFixture()
+  nilProject.project_id = '00000000-0000-0000-0000-000000000000'
+  nilTopology.project_id = nilProject.project_id
+  assert.equal(buildFoldPreviewModel(nilProject, nilTopology), null)
+
+  const nilEntity = JSON.parse(
+    JSON.stringify(topologyFixture()).replaceAll(
+      ids.west,
+      '00000000-0000-0000-0000-000000000000',
+    ),
+  ) as ProjectTopologyResponse
+  assert.equal(buildFoldPreviewModel(projectFixture(), nilEntity), null)
 })
 
 test('hinge direction and adjacency contracts are checked independently of source direction', () => {

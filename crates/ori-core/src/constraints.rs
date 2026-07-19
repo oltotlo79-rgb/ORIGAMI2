@@ -3,8 +3,10 @@
 //! The persisted [`GeometricConstraintDocumentV1`] is deliberately separate
 //! from [`GeometricConstraintSetV1`]. Deserializing a document is not evidence
 //! that its IDs, references, scalar values, or resource use are valid.
-//! [`prepare_geometric_constraints_v1`] establishes those local invariants
-//! against one crease-pattern snapshot.
+//! [`validate_geometric_constraint_document_v1`] establishes the
+//! geometry-independent persisted invariants, while
+//! [`prepare_geometric_constraints_v1`] additionally establishes reference and
+//! geometry invariants against one crease-pattern snapshot.
 //!
 //! The preflight is intentionally not a geometric solver. A
 //! [`ConstraintPreflightV1::NoDirectConflict`] result only says that every
@@ -20,137 +22,28 @@
 //! not promise to convert an operating-system-wide OOM into a recoverable
 //! result.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+pub use ori_domain::{
+    ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,
+    DEFAULT_MAX_CONSTRAINT_REFERENCES, DEFAULT_MAX_CONSTRAINT_VERTICES,
+    GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
+    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
+    GeometricConstraintRecordV1, validate_geometric_constraint_document_v1,
+};
 use ori_domain::{CreasePattern, Edge, EdgeId, Vertex, VertexId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
 /// Stable semantic identifier for the first geometric-constraint model.
 pub const GEOMETRIC_CONSTRAINT_MODEL_ID_V1: &str = "geometric_constraints_v1";
-/// Exact persisted schema version accepted by this implementation.
-pub const GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1: u32 = 1;
 
-/// Default and non-relaxable V1 vertex-count ceiling.
-pub const DEFAULT_MAX_CONSTRAINT_VERTICES: usize = 100_000;
-/// Default and non-relaxable V1 edge-count ceiling.
-pub const DEFAULT_MAX_CONSTRAINT_EDGES: usize = 100_000;
-/// Default and non-relaxable V1 authored-constraint-count ceiling.
-pub const DEFAULT_MAX_CONSTRAINT_RECORDS: usize = 10_000;
-/// Default and non-relaxable V1 referenced-role-count ceiling.
-pub const DEFAULT_MAX_CONSTRAINT_REFERENCES: usize = 40_000;
 /// Default and non-relaxable V1 preflight-record-count ceiling.
 pub const DEFAULT_MAX_CONSTRAINT_PRECHECKS: usize = 10_000;
 /// Maximum size of one deterministic direct-conflict cause witness.
 pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 3;
 
 type CanonicalId = [u8; 16];
-
-/// Stable, persistence-safe identity of one authored constraint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ConstraintId(Uuid);
-
-impl ConstraintId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-
-    /// Returns the UUID in canonical RFC byte order.
-    #[must_use]
-    pub const fn canonical_bytes(&self) -> CanonicalId {
-        self.0.into_bytes()
-    }
-}
-
-impl Default for ConstraintId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Persistence envelope. Unknown fields and unknown constraint kinds are
-/// rejected by serde rather than silently discarded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GeometricConstraintDocumentV1 {
-    pub schema_version: u32,
-    pub constraints: Vec<GeometricConstraintRecordV1>,
-}
-
-impl Default for GeometricConstraintDocumentV1 {
-    fn default() -> Self {
-        Self {
-            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
-            constraints: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GeometricConstraintRecordV1 {
-    pub id: ConstraintId,
-    pub constraint: GeometricConstraintKindV1,
-}
-
-/// The eleven first-version geometric constraints required by EDT-008.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum GeometricConstraintKindV1 {
-    FixedLength {
-        edge: EdgeId,
-        length_mm: f64,
-    },
-    FixedAngle {
-        vertex: VertexId,
-        first_edge: EdgeId,
-        second_edge: EdgeId,
-        angle_degrees: f64,
-    },
-    Horizontal {
-        edge: EdgeId,
-    },
-    Vertical {
-        edge: EdgeId,
-    },
-    EqualLength {
-        first_edge: EdgeId,
-        second_edge: EdgeId,
-    },
-    Parallel {
-        first_edge: EdgeId,
-        second_edge: EdgeId,
-    },
-    PointOnLine {
-        vertex: VertexId,
-        line_edge: EdgeId,
-    },
-    MirrorSymmetry {
-        first_vertex: VertexId,
-        second_vertex: VertexId,
-        axis_edge: EdgeId,
-    },
-    RotationalSymmetry {
-        center_vertex: VertexId,
-        source_vertex: VertexId,
-        target_vertex: VertexId,
-        angle_degrees: f64,
-    },
-    AngleBisector {
-        vertex: VertexId,
-        first_edge: EdgeId,
-        second_edge: EdgeId,
-        bisector_edge: EdgeId,
-    },
-    LengthRatio {
-        numerator_edge: EdgeId,
-        denominator_edge: EdgeId,
-        ratio: f64,
-    },
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -503,6 +396,12 @@ struct GeometryRegistry<'a> {
 
 /// Validates and canonicalizes a persisted constraint document against one
 /// geometry snapshot.
+///
+/// An empty V1 document has no geometry references, so it is admitted without
+/// scanning or imposing constraint-specific vertex and edge ceilings on the
+/// borrowed pattern. The schema and constraint-count ceiling are still
+/// checked. The first non-empty document performs the full bounded geometry
+/// validation below.
 pub fn prepare_geometric_constraints_v1<'pattern>(
     pattern: &'pattern CreasePattern,
     document: &GeometricConstraintDocumentV1,
@@ -516,6 +415,18 @@ pub fn prepare_geometric_constraints_v1<'pattern>(
     }
     let limits = limits.effective();
     check_resource(
+        GeometricConstraintResourceV1::Constraints,
+        document.constraints.len(),
+        limits.max_constraints,
+    )?;
+    if document.constraints.is_empty() {
+        return Ok(GeometricConstraintSetV1 {
+            source_pattern: pattern,
+            constraints: Vec::new(),
+            max_preflight_checks: limits.max_preflight_checks,
+        });
+    }
+    check_resource(
         GeometricConstraintResourceV1::Vertices,
         pattern.vertices.len(),
         limits.max_vertices,
@@ -525,12 +436,6 @@ pub fn prepare_geometric_constraints_v1<'pattern>(
         pattern.edges.len(),
         limits.max_edges,
     )?;
-    check_resource(
-        GeometricConstraintResourceV1::Constraints,
-        document.constraints.len(),
-        limits.max_constraints,
-    )?;
-
     let vertices = prepare_vertex_registry(&pattern.vertices)?;
     let edges = prepare_edge_registry(&pattern.edges, &vertices)?;
     let registry = GeometryRegistry {
@@ -542,7 +447,7 @@ pub fn prepare_geometric_constraints_v1<'pattern>(
         .constraints
         .iter()
         .try_fold(0usize, |count, record| {
-            count.checked_add(constraint_reference_count(&record.constraint))
+            count.checked_add(record.constraint.reference_count())
         })
         .ok_or(GeometricConstraintErrorV1::ReferenceCountOverflow)?;
     check_resource(
@@ -584,12 +489,165 @@ pub fn prepare_geometric_constraints_v1<'pattern>(
         validate_constraint(&normalized, registry)?;
         constraints.push(normalized);
     }
+    // Run the geometry-independent persistence validator only after the
+    // existing geometry and per-record checks. This reuses the low-level
+    // contract without changing ori-core's established error precedence.
+    validate_geometric_constraint_document_v1(document).map_err(map_persisted_document_error)?;
 
     Ok(GeometricConstraintSetV1 {
         source_pattern: pattern,
         constraints,
         max_preflight_checks: limits.max_preflight_checks,
     })
+}
+
+/// Validates one prospective record against only the geometry it references.
+///
+/// This is the editor admission boundary for adding a constraint to a
+/// repairable document. Geometry-independent persisted invariants are checked
+/// first. The geometry snapshot is then reduced to directly referenced
+/// vertices, directly referenced edges, and the endpoints of those edges
+/// before the ordinary V1 preparation contract is applied. Consequently,
+/// malformed geometry that the new record cannot observe does not prevent the
+/// record from being admitted, while duplicate IDs and malformed endpoints in
+/// its dependency closure remain visible.
+pub fn validate_geometric_constraint_record_against_pattern_v1(
+    pattern: &CreasePattern,
+    record: &GeometricConstraintRecordV1,
+) -> Result<(), GeometricConstraintErrorV1> {
+    let document = GeometricConstraintDocumentV1 {
+        schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+        constraints: vec![record.clone()],
+    };
+    validate_geometric_constraint_document_v1(&document).map_err(map_persisted_document_error)?;
+
+    let mut referenced_vertices = BTreeSet::new();
+    let mut referenced_edges = BTreeSet::new();
+    collect_constraint_references(
+        &record.constraint,
+        &mut referenced_vertices,
+        &mut referenced_edges,
+    );
+
+    let mut edge_indices = BTreeSet::new();
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        if referenced_edges.contains(&edge.id.canonical_bytes()) {
+            edge_indices.insert(index);
+            referenced_vertices.insert(edge.start.canonical_bytes());
+            referenced_vertices.insert(edge.end.canonical_bytes());
+        }
+    }
+    let vertex_indices = pattern
+        .vertices
+        .iter()
+        .enumerate()
+        .filter_map(|(index, vertex)| {
+            referenced_vertices
+                .contains(&vertex.id.canonical_bytes())
+                .then_some(index)
+        })
+        .collect::<BTreeSet<_>>();
+
+    let relevant_pattern = CreasePattern {
+        vertices: vertex_indices
+            .into_iter()
+            .map(|index| pattern.vertices[index].clone())
+            .collect(),
+        edges: edge_indices
+            .into_iter()
+            .map(|index| pattern.edges[index].clone())
+            .collect(),
+    };
+    prepare_geometric_constraints_v1(
+        &relevant_pattern,
+        &document,
+        GeometricConstraintLimitsV1::default(),
+    )
+    .map(|_| ())
+}
+
+fn collect_constraint_references(
+    constraint: &GeometricConstraintKindV1,
+    vertices: &mut BTreeSet<CanonicalId>,
+    edges: &mut BTreeSet<CanonicalId>,
+) {
+    let mut vertex = |id: VertexId| {
+        vertices.insert(id.canonical_bytes());
+    };
+    let mut edge = |id: EdgeId| {
+        edges.insert(id.canonical_bytes());
+    };
+    match *constraint {
+        GeometricConstraintKindV1::FixedLength { edge: target, .. }
+        | GeometricConstraintKindV1::Horizontal { edge: target }
+        | GeometricConstraintKindV1::Vertical { edge: target } => edge(target),
+        GeometricConstraintKindV1::FixedAngle {
+            vertex: angle_vertex,
+            first_edge,
+            second_edge,
+            ..
+        } => {
+            vertex(angle_vertex);
+            edge(first_edge);
+            edge(second_edge);
+        }
+        GeometricConstraintKindV1::EqualLength {
+            first_edge,
+            second_edge,
+        }
+        | GeometricConstraintKindV1::Parallel {
+            first_edge,
+            second_edge,
+        } => {
+            edge(first_edge);
+            edge(second_edge);
+        }
+        GeometricConstraintKindV1::PointOnLine {
+            vertex: point,
+            line_edge,
+        } => {
+            vertex(point);
+            edge(line_edge);
+        }
+        GeometricConstraintKindV1::MirrorSymmetry {
+            first_vertex,
+            second_vertex,
+            axis_edge,
+        } => {
+            vertex(first_vertex);
+            vertex(second_vertex);
+            edge(axis_edge);
+        }
+        GeometricConstraintKindV1::RotationalSymmetry {
+            center_vertex,
+            source_vertex,
+            target_vertex,
+            ..
+        } => {
+            vertex(center_vertex);
+            vertex(source_vertex);
+            vertex(target_vertex);
+        }
+        GeometricConstraintKindV1::AngleBisector {
+            vertex: angle_vertex,
+            first_edge,
+            second_edge,
+            bisector_edge,
+        } => {
+            vertex(angle_vertex);
+            edge(first_edge);
+            edge(second_edge);
+            edge(bisector_edge);
+        }
+        GeometricConstraintKindV1::LengthRatio {
+            numerator_edge,
+            denominator_edge,
+            ..
+        } => {
+            edge(numerator_edge);
+            edge(denominator_edge);
+        }
+    }
 }
 
 fn check_resource(
@@ -605,6 +663,95 @@ fn check_resource(
         })
     } else {
         Ok(())
+    }
+}
+
+fn map_persisted_document_error(
+    error: GeometricConstraintDocumentValidationErrorV1,
+) -> GeometricConstraintErrorV1 {
+    match error {
+        GeometricConstraintDocumentValidationErrorV1::UnsupportedSchemaVersion {
+            actual,
+            expected,
+        } => GeometricConstraintErrorV1::UnsupportedSchemaVersion { actual, expected },
+        GeometricConstraintDocumentValidationErrorV1::TooManyConstraints { actual, maximum } => {
+            GeometricConstraintErrorV1::ResourceLimitExceeded {
+                resource: GeometricConstraintResourceV1::Constraints,
+                actual,
+                maximum,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::TooManyReferences { actual, maximum } => {
+            GeometricConstraintErrorV1::ResourceLimitExceeded {
+                resource: GeometricConstraintResourceV1::References,
+                actual,
+                maximum,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::ReferenceCountOverflow => {
+            GeometricConstraintErrorV1::ReferenceCountOverflow
+        }
+        GeometricConstraintDocumentValidationErrorV1::AllocationFailed => {
+            GeometricConstraintErrorV1::AllocationFailed {
+                resource: GeometricConstraintResourceV1::Constraints,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NilConstraintId => {
+            GeometricConstraintErrorV1::NilConstraintId
+        }
+        GeometricConstraintDocumentValidationErrorV1::DuplicateConstraintId { constraint } => {
+            GeometricConstraintErrorV1::DuplicateConstraintId { constraint }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NilVertexReference { .. } => {
+            GeometricConstraintErrorV1::NilVertexId
+        }
+        GeometricConstraintDocumentValidationErrorV1::NilEdgeReference { .. } => {
+            GeometricConstraintErrorV1::NilEdgeId
+        }
+        GeometricConstraintDocumentValidationErrorV1::RepeatedVertexReference {
+            constraint,
+            vertex,
+        } => GeometricConstraintErrorV1::RepeatedVertexReference { constraint, vertex },
+        GeometricConstraintDocumentValidationErrorV1::RepeatedEdgeReference {
+            constraint,
+            edge,
+        } => GeometricConstraintErrorV1::RepeatedEdgeReference { constraint, edge },
+        GeometricConstraintDocumentValidationErrorV1::NonFiniteFixedLength { constraint } => {
+            GeometricConstraintErrorV1::NonFiniteValue {
+                constraint,
+                field: ConstraintScalarFieldV1::LengthMillimetres,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NonPositiveFixedLength { constraint } => {
+            GeometricConstraintErrorV1::NonPositiveLength { constraint }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NonFiniteFixedAngle { constraint } => {
+            GeometricConstraintErrorV1::NonFiniteValue {
+                constraint,
+                field: ConstraintScalarFieldV1::AngleDegrees,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::FixedAngleOutOfRange { constraint } => {
+            GeometricConstraintErrorV1::AngleOutOfRange { constraint }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NonFiniteRotationAngle { constraint } => {
+            GeometricConstraintErrorV1::NonFiniteValue {
+                constraint,
+                field: ConstraintScalarFieldV1::RotationAngleDegrees,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::RotationAngleOutOfRange { constraint } => {
+            GeometricConstraintErrorV1::RotationAngleOutOfRange { constraint }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NonFiniteLengthRatio { constraint } => {
+            GeometricConstraintErrorV1::NonFiniteValue {
+                constraint,
+                field: ConstraintScalarFieldV1::Ratio,
+            }
+        }
+        GeometricConstraintDocumentValidationErrorV1::NonPositiveLengthRatio { constraint } => {
+            GeometricConstraintErrorV1::NonPositiveRatio { constraint }
+        }
     }
 }
 
@@ -681,22 +828,6 @@ fn prepare_edge_registry<'a>(
         .into_iter()
         .map(|edge| (edge.id.canonical_bytes(), edge))
         .collect())
-}
-
-fn constraint_reference_count(constraint: &GeometricConstraintKindV1) -> usize {
-    match constraint {
-        GeometricConstraintKindV1::FixedLength { .. }
-        | GeometricConstraintKindV1::Horizontal { .. }
-        | GeometricConstraintKindV1::Vertical { .. } => 1,
-        GeometricConstraintKindV1::EqualLength { .. }
-        | GeometricConstraintKindV1::Parallel { .. }
-        | GeometricConstraintKindV1::PointOnLine { .. }
-        | GeometricConstraintKindV1::LengthRatio { .. } => 2,
-        GeometricConstraintKindV1::FixedAngle { .. }
-        | GeometricConstraintKindV1::MirrorSymmetry { .. }
-        | GeometricConstraintKindV1::RotationalSymmetry { .. } => 3,
-        GeometricConstraintKindV1::AngleBisector { .. } => 4,
-    }
 }
 
 fn validate_constraint(
@@ -1997,8 +2128,11 @@ mod tests {
             .expect("nil vertex ID has valid UUID wire syntax");
         let mut nil_vertex_fixture = Fixture::new();
         nil_vertex_fixture.pattern.vertices[0].id = nil_vertex;
+        let vertex_document = document([record(GeometricConstraintKindV1::Horizontal {
+            edge: nil_vertex_fixture.edges[0],
+        })]);
         assert_eq!(
-            prepare(&nil_vertex_fixture, &document([])).expect_err("nil vertex ID must fail"),
+            prepare(&nil_vertex_fixture, &vertex_document).expect_err("nil vertex ID must fail"),
             GeometricConstraintErrorV1::NilVertexId
         );
 
@@ -2006,8 +2140,11 @@ mod tests {
             .expect("nil edge ID has valid UUID wire syntax");
         let mut nil_edge_fixture = Fixture::new();
         nil_edge_fixture.pattern.edges[0].id = nil_edge;
+        let edge_document = document([record(GeometricConstraintKindV1::Horizontal {
+            edge: nil_edge,
+        })]);
         assert_eq!(
-            prepare(&nil_edge_fixture, &document([])).expect_err("nil edge ID must fail"),
+            prepare(&nil_edge_fixture, &edge_document).expect_err("nil edge ID must fail"),
             GeometricConstraintErrorV1::NilEdgeId
         );
     }
@@ -2015,7 +2152,9 @@ mod tests {
     #[test]
     fn duplicate_and_invalid_geometry_registries_are_rejected_deterministically() {
         let fixture = Fixture::new();
-        let empty = document([]);
+        let referenced = document([record(GeometricConstraintKindV1::Horizontal {
+            edge: fixture.edges[0],
+        })]);
 
         let mut duplicate_vertex = fixture.pattern.clone();
         duplicate_vertex
@@ -2024,7 +2163,7 @@ mod tests {
         assert!(matches!(
             prepare_geometric_constraints_v1(
                 &duplicate_vertex,
-                &empty,
+                &referenced,
                 GeometricConstraintLimitsV1::default()
             ),
             Err(GeometricConstraintErrorV1::DuplicateVertexId { .. })
@@ -2035,7 +2174,7 @@ mod tests {
         assert!(matches!(
             prepare_geometric_constraints_v1(
                 &duplicate_edge,
-                &empty,
+                &referenced,
                 GeometricConstraintLimitsV1::default()
             ),
             Err(GeometricConstraintErrorV1::DuplicateEdgeId { .. })
@@ -2046,7 +2185,7 @@ mod tests {
         assert!(matches!(
             prepare_geometric_constraints_v1(
                 &non_finite,
-                &empty,
+                &referenced,
                 GeometricConstraintLimitsV1::default()
             ),
             Err(GeometricConstraintErrorV1::NonFiniteVertexPosition { .. })
@@ -2057,7 +2196,7 @@ mod tests {
         assert!(matches!(
             prepare_geometric_constraints_v1(
                 &missing_endpoint,
-                &empty,
+                &referenced,
                 GeometricConstraintLimitsV1::default()
             ),
             Err(GeometricConstraintErrorV1::EdgeEndpointMissing { .. })
@@ -2068,7 +2207,7 @@ mod tests {
         assert!(matches!(
             prepare_geometric_constraints_v1(
                 &degenerate_identity,
-                &empty,
+                &referenced,
                 GeometricConstraintLimitsV1::default()
             ),
             Err(GeometricConstraintErrorV1::DegenerateGeometryEdge { .. })
@@ -2079,10 +2218,63 @@ mod tests {
         assert!(matches!(
             prepare_geometric_constraints_v1(
                 &degenerate_position,
-                &empty,
+                &referenced,
                 GeometricConstraintLimitsV1::default()
             ),
             Err(GeometricConstraintErrorV1::DegenerateGeometryEdge { .. })
+        ));
+    }
+
+    #[test]
+    fn empty_v1_document_skips_unreferenced_geometry_but_first_constraint_enforces_the_cap() {
+        let repeated = Vertex {
+            id: VertexId::new(),
+            position: Point2::new(f64::NAN, 0.0),
+        };
+        let oversized = CreasePattern {
+            vertices: vec![repeated; DEFAULT_MAX_CONSTRAINT_VERTICES + 1],
+            edges: Vec::new(),
+        };
+        let empty = document([]);
+        let prepared = prepare_geometric_constraints_v1(
+            &oversized,
+            &empty,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("an empty document has no geometry references to validate");
+        assert!(prepared.is_for_pattern(&oversized));
+        assert!(prepared.constraints().is_empty());
+        assert_eq!(
+            prepared.preflight(),
+            ConstraintPreflightV1::NoDirectConflict
+        );
+
+        let first_constraint = document([record(GeometricConstraintKindV1::Horizontal {
+            edge: EdgeId::new(),
+        })]);
+        assert_eq!(
+            prepare_geometric_constraints_v1(
+                &oversized,
+                &first_constraint,
+                GeometricConstraintLimitsV1::default(),
+            )
+            .expect_err("the first constraint activates the shared geometry ceiling"),
+            GeometricConstraintErrorV1::ResourceLimitExceeded {
+                resource: GeometricConstraintResourceV1::Vertices,
+                actual: DEFAULT_MAX_CONSTRAINT_VERTICES + 1,
+                maximum: DEFAULT_MAX_CONSTRAINT_VERTICES,
+            }
+        );
+
+        let mut future_empty = empty;
+        future_empty.schema_version += 1;
+        assert!(matches!(
+            prepare_geometric_constraints_v1(
+                &oversized,
+                &future_empty,
+                GeometricConstraintLimitsV1::default(),
+            ),
+            Err(GeometricConstraintErrorV1::UnsupportedSchemaVersion { .. })
         ));
     }
 
@@ -2454,6 +2646,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn preflight_defaults_use_the_domain_shared_geometry_hard_ceilings() {
+        let limits = GeometricConstraintLimitsV1::default();
+        assert_eq!(
+            limits.max_vertices,
+            ori_domain::DEFAULT_MAX_CONSTRAINT_VERTICES
+        );
+        assert_eq!(limits.max_edges, ori_domain::DEFAULT_MAX_CONSTRAINT_EDGES);
+        assert_eq!(
+            DEFAULT_MAX_CONSTRAINT_VERTICES,
+            ori_domain::DEFAULT_MAX_CONSTRAINT_VERTICES
+        );
+        assert_eq!(
+            DEFAULT_MAX_CONSTRAINT_EDGES,
+            ori_domain::DEFAULT_MAX_CONSTRAINT_EDGES
+        );
     }
 
     #[test]

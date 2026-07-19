@@ -19,10 +19,13 @@ pub use constraints::{
     DEFAULT_MAX_CONSTRAINT_RECORDS, DEFAULT_MAX_CONSTRAINT_REFERENCES,
     DEFAULT_MAX_CONSTRAINT_VERTICES, DirectConstraintConflictKindV1, DirectConstraintConflictV1,
     GEOMETRIC_CONSTRAINT_MODEL_ID_V1, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
-    GeometricConstraintDocumentV1, GeometricConstraintErrorV1, GeometricConstraintKindV1,
-    GeometricConstraintLimitsV1, GeometricConstraintRecordV1, GeometricConstraintResourceV1,
-    GeometricConstraintSetV1, GeometricConstraintUnknownReasonV1, MAX_DIRECT_CONFLICT_CAUSE_IDS_V1,
+    GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
+    GeometricConstraintErrorV1, GeometricConstraintKindV1, GeometricConstraintLimitsV1,
+    GeometricConstraintRecordV1, GeometricConstraintResourceV1, GeometricConstraintSetV1,
+    GeometricConstraintUnknownReasonV1, MAX_DIRECT_CONFLICT_CAUSE_IDS_V1,
     preflight_direct_conflicts_v1, prepare_geometric_constraints_v1,
+    validate_geometric_constraint_document_v1,
+    validate_geometric_constraint_record_against_pattern_v1,
 };
 pub use editor::{
     Command, CommandError, CommandResult, EditorState, IntersectionEdgeTarget,

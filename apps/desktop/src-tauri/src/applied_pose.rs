@@ -1052,7 +1052,51 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{execute_command, execute_redo, execute_undo};
+    use crate::{
+        execute_command as execute_bound_command, execute_redo as execute_bound_redo,
+        execute_undo as execute_bound_undo,
+    };
+
+    fn execute_command(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        command: Command,
+    ) -> Result<crate::ProjectSnapshot, String> {
+        execute_bound_command(
+            project,
+            project.instance_id,
+            expected_project_id,
+            expected_revision,
+            command,
+        )
+    }
+
+    fn execute_undo(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+    ) -> Result<crate::ProjectSnapshot, String> {
+        execute_bound_undo(
+            project,
+            project.instance_id,
+            expected_project_id,
+            expected_revision,
+        )
+    }
+
+    fn execute_redo(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+    ) -> Result<crate::ProjectSnapshot, String> {
+        execute_bound_redo(
+            project,
+            project.instance_id,
+            expected_project_id,
+            expected_revision,
+        )
+    }
 
     fn no_hinge_project() -> ProjectState {
         let sheet = create_rectangular_sheet(40.0, 30.0, false).expect("rectangle fixture");

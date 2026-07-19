@@ -45,14 +45,16 @@ use numeric_expression::{
     evaluate_positive_millimetre_pair_in_worker,
 };
 use ori_core::{
-    BoundaryEdgeRef, Command, EditorState, EditorTopology, IntersectionEdgeTarget,
-    JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue, PointPolygonRelation,
-    TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
-    analyze_local_flat_foldability, create_rectangular_sheet, segment_midpoint_polygon_relation,
-    validate_paper,
+    BoundaryEdgeRef, Command, ConstraintPreflightV1, DirectConstraintConflictV1, EditorState,
+    EditorTopology, GeometricConstraintLimitsV1, GeometricConstraintUnknownReasonV1,
+    IntersectionEdgeTarget, JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue,
+    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
+    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
+    segment_midpoint_polygon_relation, validate_paper,
 };
 use ori_domain::{
-    CreasePattern, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
+    ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
+    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
     LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId, RgbaColor,
     VertexId,
@@ -140,6 +142,10 @@ const PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE: &str =
     "保存された作成時サイズ式を検証できませんでした。";
 const PROJECT_NUMERIC_EXPRESSIONS_BUSY_MESSAGE: &str =
     "作成時サイズ式を評価中です。少し待ってからもう一度開いてください。";
+const GEOMETRIC_CONSTRAINT_ANALYSIS_BUSY_MESSAGE: &str =
+    "geometric-constraint analysis is already in progress";
+const GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE: &str =
+    "geometric-constraint analysis did not complete";
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
@@ -163,16 +169,28 @@ fn fold_file_invalid_error<T>(_: T) -> String {
     FOLD_FILE_INVALID_MESSAGE.to_owned()
 }
 
+fn geometric_constraint_analysis_task_error<T>(_: T) -> String {
+    GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE.to_owned()
+}
+
 /// Process-lifetime application state.
 ///
 /// The native pose worker gate deliberately lives beside, rather than inside,
 /// `ProjectState`. Replacing or reopening a project therefore cannot create a
 /// fresh gate while an obsolete project's heavy worker is still running.
-struct AppState(Mutex<ProjectState>, NativePoseWorkerGate);
+struct AppState(
+    Mutex<ProjectState>,
+    NativePoseWorkerGate,
+    GeometricConstraintWorkerGate,
+);
 
 impl AppState {
     fn new(project: ProjectState) -> Self {
-        Self(Mutex::new(project), NativePoseWorkerGate::default())
+        Self(
+            Mutex::new(project),
+            NativePoseWorkerGate::default(),
+            GeometricConstraintWorkerGate::default(),
+        )
     }
 
     fn try_acquire_native_pose_worker(&self) -> Option<NativePoseWorkerPermit> {
@@ -182,6 +200,15 @@ impl AppState {
     #[cfg(test)]
     fn native_pose_worker_is_busy(&self) -> bool {
         self.1.is_busy()
+    }
+
+    fn try_acquire_geometric_constraint_worker(&self) -> Option<GeometricConstraintWorkerPermit> {
+        self.2.try_acquire()
+    }
+
+    #[cfg(test)]
+    fn geometric_constraint_worker_is_busy(&self) -> bool {
+        self.2.is_busy()
     }
 }
 
@@ -217,6 +244,44 @@ impl Drop for NativePoseWorkerPermit {
     fn drop(&mut self) {
         let was_busy = self.busy.swap(false, Ordering::Release);
         debug_assert!(was_busy, "native pose worker permit released twice");
+    }
+}
+
+/// Process-wide gate for bounded geometric-constraint preflight work.
+///
+/// The permit owns the shared atomic and moves into `spawn_blocking`, so
+/// abandoning an awaiting WebView request cannot release the gate before the
+/// native worker actually exits.
+#[derive(Clone, Default)]
+struct GeometricConstraintWorkerGate(Arc<AtomicBool>);
+
+impl GeometricConstraintWorkerGate {
+    fn try_acquire(&self) -> Option<GeometricConstraintWorkerPermit> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| GeometricConstraintWorkerPermit {
+                busy: Arc::clone(&self.0),
+            })
+    }
+
+    #[cfg(test)]
+    fn is_busy(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+struct GeometricConstraintWorkerPermit {
+    busy: Arc<AtomicBool>,
+}
+
+impl Drop for GeometricConstraintWorkerPermit {
+    fn drop(&mut self) {
+        let was_busy = self.busy.swap(false, Ordering::Release);
+        debug_assert!(
+            was_busy,
+            "geometric constraint worker permit released twice"
+        );
     }
 }
 
@@ -340,10 +405,11 @@ impl ProjectState {
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
         let saved_document = document.clone();
         let numeric_expressions = document.numeric_expressions;
-        let editor = EditorState::with_document_parts(
+        let editor = EditorState::with_document_parts_and_constraints(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
+            document.geometric_constraints,
         );
         Self {
             instance_id: ProjectId::new(),
@@ -367,6 +433,7 @@ impl ProjectState {
             crease_pattern: self.editor.pattern().clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
             numeric_expressions: self.numeric_expressions.clone(),
+            geometric_constraints: self.editor.geometric_constraints().clone(),
         }
     }
 
@@ -381,6 +448,7 @@ impl ProjectState {
             || saved.crease_pattern != *self.editor.pattern()
             || saved.instruction_timeline != *self.editor.instruction_timeline()
             || saved.numeric_expressions != self.numeric_expressions
+            || saved.geometric_constraints != *self.editor.geometric_constraints()
     }
 }
 
@@ -427,10 +495,47 @@ struct ProjectSnapshot {
     crease_pattern: CreasePattern,
     instruction_timeline: InstructionTimeline,
     numeric_expressions: ProjectNumericExpressions,
+    geometric_constraints: GeometricConstraintDocumentV1,
     fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
     cutting_allowed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EdgeOrientationConstraint {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Serialize)]
+struct GeometricConstraintPreflightResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    result: GeometricConstraintPreflightResult,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum GeometricConstraintPreflightResult {
+    DirectConflict {
+        conflicts: Vec<DirectConstraintConflictV1>,
+    },
+    NoDirectConflict,
+    Unknown {
+        reason: GeometricConstraintUnknownReason,
+        unchecked_constraint_ids: Vec<ConstraintId>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GeometricConstraintUnknownReason {
+    WorkLimitExceeded,
+    SolverRequiredConstraintKinds,
+    InvalidDocumentOrGeometry,
 }
 
 #[derive(Debug, Serialize)]
@@ -827,6 +932,167 @@ async fn inspect_current_static_collision(
     state: State<'_, AppState>,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
     inspect_current_static_collision_authority(&state).await
+}
+
+#[tauri::command]
+async fn analyze_geometric_constraints(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<GeometricConstraintPreflightResponse, String> {
+    analyze_geometric_constraints_with_worker(
+        &state,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        |pattern, document| Ok(analyze_geometric_constraint_document(&pattern, &document)),
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct GeometricConstraintAnalysisBinding {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+}
+
+struct GeometricConstraintAnalysisInput {
+    binding: GeometricConstraintAnalysisBinding,
+    pattern: CreasePattern,
+    document: GeometricConstraintDocumentV1,
+}
+
+async fn analyze_geometric_constraints_with_worker<F>(
+    state: &AppState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    worker: F,
+) -> Result<GeometricConstraintPreflightResponse, String>
+where
+    F: FnOnce(
+            CreasePattern,
+            GeometricConstraintDocumentV1,
+        ) -> Result<GeometricConstraintPreflightResult, String>
+        + Send
+        + 'static,
+{
+    let permit = state
+        .try_acquire_geometric_constraint_worker()
+        .ok_or_else(|| GEOMETRIC_CONSTRAINT_ANALYSIS_BUSY_MESSAGE.to_owned())?;
+    let input = {
+        let project = lock_project(state)?;
+        capture_geometric_constraint_analysis(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?
+    };
+    let binding = input.binding;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        worker(input.pattern, input.document)
+    })
+    .await
+    .map_err(geometric_constraint_analysis_task_error)?
+    .map_err(geometric_constraint_analysis_task_error)?;
+
+    let project = lock_project(state)?;
+    finish_geometric_constraint_analysis(&project, binding, result)
+}
+
+fn capture_geometric_constraint_analysis(
+    project: &ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<GeometricConstraintAnalysisInput, String> {
+    ensure_expected_project(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    Ok(GeometricConstraintAnalysisInput {
+        binding: GeometricConstraintAnalysisBinding {
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: project.editor.revision(),
+        },
+        pattern: project.editor.pattern().clone(),
+        document: project.editor.geometric_constraints().clone(),
+    })
+}
+
+fn finish_geometric_constraint_analysis(
+    project: &ProjectState,
+    binding: GeometricConstraintAnalysisBinding,
+    result: GeometricConstraintPreflightResult,
+) -> Result<GeometricConstraintPreflightResponse, String> {
+    ensure_expected_project(
+        project,
+        binding.project_instance_id,
+        binding.project_id,
+        binding.revision,
+    )?;
+    Ok(GeometricConstraintPreflightResponse {
+        project_instance_id: binding.project_instance_id,
+        project_id: binding.project_id,
+        revision: binding.revision,
+        result,
+    })
+}
+
+fn analyze_geometric_constraint_document(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+) -> GeometricConstraintPreflightResult {
+    if document.schema_version == ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1
+        && document.is_empty()
+    {
+        return GeometricConstraintPreflightResult::NoDirectConflict;
+    }
+
+    let Ok(prepared) =
+        prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
+    else {
+        let mut unchecked_constraint_ids = document
+            .constraints
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        return GeometricConstraintPreflightResult::Unknown {
+            reason: GeometricConstraintUnknownReason::InvalidDocumentOrGeometry,
+            unchecked_constraint_ids,
+        };
+    };
+
+    match prepared.preflight() {
+        ConstraintPreflightV1::DirectConflict { conflicts } => {
+            GeometricConstraintPreflightResult::DirectConflict { conflicts }
+        }
+        ConstraintPreflightV1::NoDirectConflict => {
+            GeometricConstraintPreflightResult::NoDirectConflict
+        }
+        ConstraintPreflightV1::Unknown {
+            reason,
+            unchecked_constraint_ids,
+        } => GeometricConstraintPreflightResult::Unknown {
+            reason: match reason {
+                GeometricConstraintUnknownReasonV1::WorkLimitExceeded => {
+                    GeometricConstraintUnknownReason::WorkLimitExceeded
+                }
+                GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds => {
+                    GeometricConstraintUnknownReason::SolverRequiredConstraintKinds
+                }
+            },
+            unchecked_constraint_ids,
+        },
+    }
 }
 
 const VALIDATION_ANALYSIS_FAILED_MESSAGE: &str =
@@ -1322,6 +1588,7 @@ fn cancel_svg_import(
 #[tauri::command]
 fn add_vertex(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     x: f64,
@@ -1330,6 +1597,7 @@ fn add_vertex(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::AddVertex {
@@ -1342,6 +1610,7 @@ fn add_vertex(
 #[tauri::command]
 fn move_vertex(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     id: VertexId,
@@ -1351,6 +1620,7 @@ fn move_vertex(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::MoveVertex {
@@ -1363,6 +1633,7 @@ fn move_vertex(
 #[tauri::command]
 fn remove_vertex(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     id: VertexId,
@@ -1370,6 +1641,7 @@ fn remove_vertex(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::RemoveVertex { id },
@@ -1379,6 +1651,7 @@ fn remove_vertex(
 #[tauri::command]
 fn add_edge(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     start: VertexId,
@@ -1388,6 +1661,7 @@ fn add_edge(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::AddEdge {
@@ -1402,6 +1676,7 @@ fn add_edge(
 #[tauri::command]
 fn remove_edge(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     id: EdgeId,
@@ -1409,6 +1684,7 @@ fn remove_edge(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::RemoveEdge { id },
@@ -1416,31 +1692,102 @@ fn remove_edge(
 }
 
 #[tauri::command]
+fn add_edge_orientation_constraint(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    orientation: EdgeOrientationConstraint,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let constraint = match orientation {
+        EdgeOrientationConstraint::Horizontal => GeometricConstraintKindV1::Horizontal { edge },
+        EdgeOrientationConstraint::Vertical => GeometricConstraintKindV1::Vertical { edge },
+    };
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddGeometricConstraint {
+            record: GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint,
+            },
+        },
+    )
+}
+
+#[tauri::command]
+fn remove_geometric_constraint(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    constraint: ConstraintId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::RemoveGeometricConstraint { id: constraint },
+    )
+}
+
+#[tauri::command]
 fn undo(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    execute_undo(&mut project, expected_project_id, expected_revision)
+    execute_undo(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )
 }
 
 #[tauri::command]
 fn redo(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    execute_redo(&mut project, expected_project_id, expected_revision)
+    execute_redo(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )
 }
 
 fn execute_undo(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_project_identity(project, expected_project_id)?;
+    ensure_project_instance_identity(project, expected_project_instance_id, expected_project_id)?;
     if project.editor.revision() != expected_revision
         || !project.editor.can_undo()
         || project.editor.revision() == ori_core::MAX_REVISION
@@ -1465,10 +1812,11 @@ fn execute_undo(
 
 fn execute_redo(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_project_identity(project, expected_project_id)?;
+    ensure_project_instance_identity(project, expected_project_instance_id, expected_project_id)?;
     if project.editor.revision() != expected_revision
         || !project.editor.can_redo()
         || project.editor.revision() == ori_core::MAX_REVISION
@@ -1495,6 +1843,7 @@ fn execute_redo(
 #[tauri::command]
 async fn add_instruction_step(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     title: String,
@@ -1506,6 +1855,7 @@ async fn add_instruction_step(
 ) -> Result<ProjectSnapshot, String> {
     let analyzed = analyze_instruction_pose(
         &state,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         fixed_face,
@@ -1513,9 +1863,16 @@ async fn add_instruction_step(
     )
     .await?;
     let mut project = lock_project(&state)?;
-    let pose = finish_instruction_pose(&project, expected_project_id, expected_revision, analyzed)?;
+    let pose = finish_instruction_pose(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        analyzed,
+    )?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::AddInstructionStep {
@@ -1535,6 +1892,7 @@ async fn add_instruction_step(
 #[tauri::command]
 fn update_instruction_step_metadata(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     step_id: InstructionStepId,
@@ -1546,6 +1904,7 @@ fn update_instruction_step_metadata(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::UpdateInstructionStepMetadata {
@@ -1561,6 +1920,7 @@ fn update_instruction_step_metadata(
 #[tauri::command]
 async fn replace_instruction_step_pose(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     step_id: InstructionStepId,
@@ -1569,6 +1929,7 @@ async fn replace_instruction_step_pose(
 ) -> Result<ProjectSnapshot, String> {
     let analyzed = analyze_instruction_pose(
         &state,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         fixed_face,
@@ -1576,9 +1937,16 @@ async fn replace_instruction_step_pose(
     )
     .await?;
     let mut project = lock_project(&state)?;
-    let pose = finish_instruction_pose(&project, expected_project_id, expected_revision, analyzed)?;
+    let pose = finish_instruction_pose(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        analyzed,
+    )?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::ReplaceInstructionStepPose { step_id, pose },
@@ -1588,6 +1956,7 @@ async fn replace_instruction_step_pose(
 #[tauri::command]
 fn remove_instruction_step(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     step_id: InstructionStepId,
@@ -1595,6 +1964,7 @@ fn remove_instruction_step(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::RemoveInstructionStep { step_id },
@@ -1604,6 +1974,7 @@ fn remove_instruction_step(
 #[tauri::command]
 fn move_instruction_step(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     step_id: InstructionStepId,
@@ -1612,6 +1983,7 @@ fn move_instruction_step(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::MoveInstructionStep {
@@ -1624,6 +1996,7 @@ fn move_instruction_step(
 #[tauri::command]
 fn set_cutting_allowed(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     allowed: bool,
@@ -1631,15 +2004,18 @@ fn set_cutting_allowed(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::SetCuttingAllowed { allowed },
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn update_paper_properties(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     thickness_mm: f64,
@@ -1650,6 +2026,7 @@ fn update_paper_properties(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::UpdatePaperProperties {
@@ -1664,6 +2041,7 @@ fn update_paper_properties(
 #[tauri::command]
 fn set_length_display_unit(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     unit: LengthDisplayUnit,
@@ -1671,6 +2049,7 @@ fn set_length_display_unit(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::SetLengthDisplayUnit { unit },
@@ -1680,6 +2059,7 @@ fn set_length_display_unit(
 #[tauri::command]
 fn resize_rectangular_paper(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     width_mm: f64,
@@ -1688,6 +2068,7 @@ fn resize_rectangular_paper(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::ResizeRectangularPaper {
@@ -1700,6 +2081,7 @@ fn resize_rectangular_paper(
 #[tauri::command]
 fn split_edge(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     edge: EdgeId,
@@ -1708,6 +2090,7 @@ fn split_edge(
     let mut project = lock_project(&state)?;
     execute_edge_split(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         edge,
@@ -1717,6 +2100,7 @@ fn split_edge(
 
 fn execute_edge_split(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     edge: EdgeId,
@@ -1724,6 +2108,7 @@ fn execute_edge_split(
 ) -> Result<ProjectSnapshot, String> {
     execute_command(
         project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::SplitEdge {
@@ -1738,6 +2123,7 @@ fn execute_edge_split(
 #[tauri::command]
 fn connect_edge_intersection(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     first_edge: EdgeId,
@@ -1746,6 +2132,7 @@ fn connect_edge_intersection(
     let mut project = lock_project(&state)?;
     execute_edge_intersection_connection(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         first_edge,
@@ -1755,6 +2142,7 @@ fn connect_edge_intersection(
 
 fn execute_edge_intersection_connection(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     first_edge: EdgeId,
@@ -1763,6 +2151,7 @@ fn execute_edge_intersection_connection(
     let vertex_id = VertexId::new();
     let snapshot = execute_command(
         project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::ConnectEdgeIntersection {
@@ -1782,6 +2171,7 @@ fn execute_edge_intersection_connection(
 #[tauri::command]
 fn connect_intersection_cluster(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     targets: Vec<IntersectionClusterTargetRequest>,
@@ -1791,6 +2181,7 @@ fn connect_intersection_cluster(
     let mut project = lock_project(&state)?;
     execute_intersection_cluster_connection(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         targets,
@@ -1800,6 +2191,7 @@ fn connect_intersection_cluster(
 
 fn execute_intersection_cluster_connection(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     targets: Vec<IntersectionClusterTargetRequest>,
@@ -1825,6 +2217,7 @@ fn execute_intersection_cluster_connection(
         .collect();
     let snapshot = execute_command(
         project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::ConnectIntersectionCluster { junction, targets },
@@ -1852,6 +2245,7 @@ fn validate_intersection_cluster_target_count(count: usize) -> Result<(), String
 #[tauri::command]
 fn connect_t_junction(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     first_edge: EdgeId,
@@ -1860,6 +2254,7 @@ fn connect_t_junction(
     let mut project = lock_project(&state)?;
     execute_t_junction_connection(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         first_edge,
@@ -1869,6 +2264,7 @@ fn connect_t_junction(
 
 fn execute_t_junction_connection(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     first_edge: EdgeId,
@@ -1877,6 +2273,7 @@ fn execute_t_junction_connection(
     let new_edge = EdgeId::new();
     let snapshot = execute_command(
         project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::ConnectTJunction {
@@ -1901,6 +2298,7 @@ fn execute_t_junction_connection(
 #[tauri::command]
 fn split_boundary_edge(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     edge: EdgeId,
@@ -1909,6 +2307,7 @@ fn split_boundary_edge(
     let mut project = lock_project(&state)?;
     execute_boundary_split(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         edge,
@@ -1918,6 +2317,7 @@ fn split_boundary_edge(
 
 fn execute_boundary_split(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     edge: EdgeId,
@@ -1925,6 +2325,7 @@ fn execute_boundary_split(
 ) -> Result<ProjectSnapshot, String> {
     execute_command(
         project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::SplitBoundaryEdge {
@@ -1939,6 +2340,7 @@ fn execute_boundary_split(
 #[tauri::command]
 fn remove_boundary_vertex(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     vertex: VertexId,
@@ -1946,6 +2348,7 @@ fn remove_boundary_vertex(
     let mut project = lock_project(&state)?;
     execute_command(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::RemoveBoundaryVertex { vertex },
@@ -2262,11 +2665,12 @@ fn commit_svg_import_replacement(
 
 fn execute_command(
     project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     command: Command,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_project_identity(project, expected_project_id)?;
+    ensure_project_instance_identity(project, expected_project_instance_id, expected_project_id)?;
     if project.editor.revision() != expected_revision
         || project.editor.revision() == ori_core::MAX_REVISION
     {
@@ -2433,16 +2837,24 @@ fn ensure_project_identity(
     }
 }
 
+fn ensure_project_instance_identity(
+    project: &ProjectState,
+    expected_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+) -> Result<(), String> {
+    if project.instance_id != expected_instance_id {
+        return Err("the open project instance changed while the file dialog was open".to_owned());
+    }
+    ensure_project_identity(project, expected_project_id)
+}
+
 fn ensure_expected_project(
     project: &ProjectState,
     expected_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<(), String> {
-    if project.instance_id != expected_instance_id {
-        return Err("the open project instance changed while the file dialog was open".to_owned());
-    }
-    ensure_project_identity(project, expected_project_id)?;
+    ensure_project_instance_identity(project, expected_instance_id, expected_project_id)?;
     if project.editor.revision() == expected_revision {
         Ok(())
     } else {
@@ -2475,6 +2887,7 @@ struct AnalyzedInstructionPose {
 
 async fn analyze_instruction_pose(
     state: &AppState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     fixed_face: Option<FaceId>,
@@ -2488,6 +2901,12 @@ async fn analyze_instruction_pose(
     validate_instruction_hinge_angle_values(&hinge_angles)?;
     let (project_instance_id, input) = {
         let project = lock_project(state)?;
+        ensure_expected_project(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
         (
             project.instance_id,
             capture_topology_input(&project, expected_project_id, expected_revision)?,
@@ -2511,22 +2930,22 @@ async fn analyze_instruction_pose(
 
 fn finish_instruction_pose(
     project: &ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     analyzed: AnalyzedInstructionPose,
 ) -> Result<InstructionPose, String> {
-    ensure_project_identity(project, expected_project_id)?;
+    ensure_expected_project(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
     if project.instance_id != analyzed.project_instance_id {
         return Err(
             "the open project instance changed while the instruction pose was being analyzed"
                 .to_owned(),
         );
-    }
-    if project.editor.revision() != expected_revision {
-        return Err(format!(
-            "expected revision {expected_revision}, but the current revision is {}",
-            project.editor.revision()
-        ));
     }
     if !analyzed
         .input
@@ -2773,6 +3192,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         crease_pattern: project.editor.pattern().clone(),
         instruction_timeline: project.editor.instruction_timeline().clone(),
         numeric_expressions: project.numeric_expressions.clone(),
+        geometric_constraints: project.editor.geometric_constraints().clone(),
         fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -4406,6 +4826,7 @@ pub fn run() {
             validate_project,
             apply_current_native_pose,
             inspect_current_static_collision,
+            analyze_geometric_constraints,
             evaluate_numeric_expression,
             analyze_project_topology,
             begin_global_flat_foldability,
@@ -4435,6 +4856,8 @@ pub fn run() {
             remove_vertex,
             add_edge,
             remove_edge,
+            add_edge_orientation_constraint,
+            remove_geometric_constraint,
             undo,
             redo,
             add_instruction_step,
@@ -4537,6 +4960,140 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    fn execute_command(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        command: Command,
+    ) -> Result<ProjectSnapshot, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_command(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            command,
+        )
+    }
+
+    fn execute_undo(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+    ) -> Result<ProjectSnapshot, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_undo(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )
+    }
+
+    fn execute_redo(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+    ) -> Result<ProjectSnapshot, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_redo(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )
+    }
+
+    fn execute_edge_split(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        edge: EdgeId,
+        fraction: f64,
+    ) -> Result<ProjectSnapshot, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_edge_split(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            edge,
+            fraction,
+        )
+    }
+
+    fn execute_edge_intersection_connection(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+    ) -> Result<EdgeIntersectionResponse, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_edge_intersection_connection(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            first_edge,
+            second_edge,
+        )
+    }
+
+    fn execute_intersection_cluster_connection(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        targets: Vec<IntersectionClusterTargetRequest>,
+        junction_vertex_id: Option<VertexId>,
+    ) -> Result<EdgeIntersectionResponse, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_intersection_cluster_connection(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            targets,
+            junction_vertex_id,
+        )
+    }
+
+    fn execute_t_junction_connection(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+    ) -> Result<TJunctionResponse, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_t_junction_connection(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            first_edge,
+            second_edge,
+        )
+    }
+
+    fn execute_boundary_split(
+        project: &mut ProjectState,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        edge: EdgeId,
+        fraction: f64,
+    ) -> Result<ProjectSnapshot, String> {
+        let expected_project_instance_id = project.instance_id;
+        super::execute_boundary_split(
+            project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            edge,
+            fraction,
+        )
+    }
 
     struct TestDirectory {
         path: PathBuf,
@@ -4715,6 +5272,8 @@ mod tests {
         instance_id: ProjectId,
         project_id: ProjectId,
         document: ProjectDocument,
+        editor_debug: String,
+        applied_pose_authority: applied_pose::CurrentAppliedPoseAuthoritySnapshot,
         current_path: Option<PathBuf>,
         saved_revision: Option<u64>,
         saved_document: Option<ProjectDocument>,
@@ -4729,6 +5288,11 @@ mod tests {
             instance_id: project.instance_id,
             project_id: project.project_id,
             document: project.document(),
+            editor_debug: format!("{:?}", project.editor),
+            applied_pose_authority: project
+                .applied_pose_authority
+                .test_snapshot()
+                .expect("capture applied-pose authority"),
             current_path: project.current_path.clone(),
             saved_revision: project.saved_revision,
             saved_document: project.saved_document.clone(),
@@ -4737,6 +5301,567 @@ mod tests {
             can_redo: project.editor.can_redo(),
             is_dirty: project.is_dirty(),
         }
+    }
+
+    fn geometric_constraint_binding(state: &AppState) -> (ProjectId, ProjectId, u64) {
+        let project = lock_project(state).expect("lock geometric-constraint project");
+        (
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+        )
+    }
+
+    fn geometric_constraint_project_signature(state: &AppState) -> ProjectStateSignature {
+        let project = lock_project(state).expect("lock geometric-constraint project");
+        project_state_signature(&project)
+    }
+
+    fn run_default_geometric_constraint_analysis(
+        state: &AppState,
+        binding: (ProjectId, ProjectId, u64),
+    ) -> Result<GeometricConstraintPreflightResponse, String> {
+        tauri::async_runtime::block_on(analyze_geometric_constraints_with_worker(
+            state,
+            binding.0,
+            binding.1,
+            binding.2,
+            |pattern, document| Ok(analyze_geometric_constraint_document(&pattern, &document)),
+        ))
+    }
+
+    fn wait_for_geometric_constraint_worker_idle(state: &Arc<AppState>) {
+        let observer_state = Arc::clone(state);
+        let (idle_tx, idle_rx) = mpsc::sync_channel(0);
+        let observer = thread::spawn(move || {
+            while observer_state.geometric_constraint_worker_is_busy() {
+                thread::yield_now();
+            }
+            idle_tx.send(()).expect("announce idle worker gate");
+        });
+        idle_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("geometric-constraint worker gate must become idle");
+        observer
+            .join()
+            .expect("worker-gate observer must not panic");
+    }
+
+    #[test]
+    fn geometric_constraint_document_is_dirty_undoable_and_loadable() {
+        let mut project = initial_project_state();
+        let edge = project.editor.pattern().edges[0].id;
+        let record = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge },
+        };
+        let project_id = project.project_id;
+
+        let added = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddGeometricConstraint {
+                record: record.clone(),
+            },
+        )
+        .expect("add constraint through native project bridge");
+        assert_eq!(
+            added.geometric_constraints.constraints,
+            vec![record.clone()]
+        );
+        assert!(added.is_dirty);
+        assert_eq!(
+            project.document().geometric_constraints.constraints,
+            vec![record.clone()]
+        );
+
+        let undone = execute_undo(&mut project, project_id, 1).expect("undo constraint");
+        assert!(undone.geometric_constraints.is_empty());
+        assert!(!undone.is_dirty);
+        let redone = execute_redo(&mut project, project_id, 2).expect("redo constraint");
+        assert_eq!(
+            redone.geometric_constraints.constraints,
+            vec![record.clone()]
+        );
+        assert!(redone.is_dirty);
+
+        let document = project.document();
+        let loaded =
+            ProjectState::from_document(document.clone(), PathBuf::from("constraint.ori2"));
+        assert_eq!(loaded.document(), document);
+        assert_eq!(
+            loaded.editor.geometric_constraints().constraints,
+            vec![record]
+        );
+        assert!(!loaded.is_dirty());
+        assert!(!loaded.editor.can_undo());
+        assert!(!loaded.editor.can_redo());
+    }
+
+    #[test]
+    fn geometric_constraint_preflight_exposes_all_three_safe_states() {
+        let project = initial_project_state();
+        let pattern = project.editor.pattern();
+        let first_edge = pattern.edges[0].id;
+        let second_edge = pattern.edges[1].id;
+        let horizontal = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: first_edge },
+        };
+
+        let no_direct = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![horizontal.clone()],
+        };
+        assert_eq!(
+            analyze_geometric_constraint_document(pattern, &no_direct),
+            GeometricConstraintPreflightResult::NoDirectConflict
+        );
+
+        let direct = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![
+                horizontal,
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::Vertical { edge: first_edge },
+                },
+            ],
+        };
+        let GeometricConstraintPreflightResult::DirectConflict { conflicts } =
+            analyze_geometric_constraint_document(pattern, &direct)
+        else {
+            panic!("horizontal plus vertical must be a direct conflict");
+        };
+        assert_eq!(conflicts.len(), 1);
+
+        let solver_required = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: first_edge,
+                    denominator_edge: second_edge,
+                    ratio: 2.0,
+                },
+            }],
+        };
+        assert!(matches!(
+            analyze_geometric_constraint_document(pattern, &solver_required),
+            GeometricConstraintPreflightResult::Unknown {
+                reason: GeometricConstraintUnknownReason::SolverRequiredConstraintKinds,
+                ..
+            }
+        ));
+    }
+
+    fn oversized_geometric_constraint_vertex_pattern() -> CreasePattern {
+        let vertices = (0..=ori_domain::DEFAULT_MAX_CONSTRAINT_VERTICES)
+            .map(|index| Vertex {
+                id: VertexId::new(),
+                position: Point2::new(index as f64, (index % 2) as f64),
+            })
+            .collect::<Vec<_>>();
+        let edges = vec![Edge {
+            id: EdgeId::new(),
+            start: vertices[0].id,
+            end: vertices[1].id,
+            kind: EdgeKind::Mountain,
+        }];
+        CreasePattern { vertices, edges }
+    }
+
+    #[test]
+    fn geometric_constraint_empty_v1_preflight_skips_oversized_and_repair_geometry() {
+        let empty = GeometricConstraintDocumentV1::default();
+        let empty_before = empty.clone();
+        let oversized = oversized_geometric_constraint_vertex_pattern();
+        let oversized_before = oversized.clone();
+
+        assert_eq!(oversized.vertices.len(), 100_001);
+        assert_eq!(
+            analyze_geometric_constraint_document(&oversized, &empty),
+            GeometricConstraintPreflightResult::NoDirectConflict
+        );
+        assert_eq!(oversized, oversized_before);
+        assert_eq!(empty, empty_before);
+
+        let duplicate_vertex = VertexId::new();
+        let repair_geometry = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: duplicate_vertex,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: duplicate_vertex,
+                    position: Point2::new(1.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: EdgeId::new(),
+                start: duplicate_vertex,
+                end: VertexId::new(),
+                kind: EdgeKind::Valley,
+            }],
+        };
+        let repair_geometry_before = repair_geometry.clone();
+
+        assert_eq!(
+            analyze_geometric_constraint_document(&repair_geometry, &empty),
+            GeometricConstraintPreflightResult::NoDirectConflict
+        );
+        assert_eq!(repair_geometry, repair_geometry_before);
+        assert_eq!(empty, empty_before);
+    }
+
+    #[test]
+    fn geometric_constraint_empty_invalid_schema_remains_unknown() {
+        let pattern = CreasePattern::empty();
+        let invalid = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1 + 1,
+            constraints: Vec::new(),
+        };
+        let pattern_before = pattern.clone();
+        let invalid_before = invalid.clone();
+
+        assert_eq!(
+            analyze_geometric_constraint_document(&pattern, &invalid),
+            GeometricConstraintPreflightResult::Unknown {
+                reason: GeometricConstraintUnknownReason::InvalidDocumentOrGeometry,
+                unchecked_constraint_ids: Vec::new(),
+            }
+        );
+        assert_eq!(pattern, pattern_before);
+        assert_eq!(invalid, invalid_before);
+    }
+
+    #[test]
+    fn geometric_constraint_non_empty_oversized_geometry_remains_unknown() {
+        let pattern = oversized_geometric_constraint_vertex_pattern();
+        let constraint_id = ConstraintId::new();
+        let document = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: constraint_id,
+                constraint: GeometricConstraintKindV1::Horizontal {
+                    edge: pattern.edges[0].id,
+                },
+            }],
+        };
+        let pattern_before = pattern.clone();
+        let document_before = document.clone();
+
+        assert_eq!(
+            analyze_geometric_constraint_document(&pattern, &document),
+            GeometricConstraintPreflightResult::Unknown {
+                reason: GeometricConstraintUnknownReason::InvalidDocumentOrGeometry,
+                unchecked_constraint_ids: vec![constraint_id],
+            }
+        );
+        assert_eq!(pattern, pattern_before);
+        assert_eq!(document, document_before);
+    }
+
+    #[test]
+    fn geometric_constraint_preflight_fails_closed_for_invalid_references() {
+        let project = initial_project_state();
+        let first = ConstraintId::new();
+        let second = ConstraintId::new();
+        let invalid = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![
+                GeometricConstraintRecordV1 {
+                    id: first,
+                    constraint: GeometricConstraintKindV1::Horizontal {
+                        edge: EdgeId::new(),
+                    },
+                },
+                GeometricConstraintRecordV1 {
+                    id: second,
+                    constraint: GeometricConstraintKindV1::Vertical {
+                        edge: EdgeId::new(),
+                    },
+                },
+            ],
+        };
+
+        let GeometricConstraintPreflightResult::Unknown {
+            reason,
+            unchecked_constraint_ids,
+        } = analyze_geometric_constraint_document(project.editor.pattern(), &invalid)
+        else {
+            panic!("invalid references must not be reported as safe");
+        };
+        assert_eq!(
+            reason,
+            GeometricConstraintUnknownReason::InvalidDocumentOrGeometry
+        );
+        let mut expected = vec![first, second];
+        expected.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        assert_eq!(unchecked_constraint_ids, expected);
+    }
+
+    #[test]
+    fn geometric_constraint_worker_gate_is_exclusive_and_releases_with_its_permit() {
+        let gate = GeometricConstraintWorkerGate::default();
+        let permit = gate.try_acquire().expect("first worker permit");
+        assert!(gate.is_busy());
+        assert!(
+            gate.try_acquire().is_none(),
+            "parallel preflight must not allocate another worker"
+        );
+        drop(permit);
+        assert!(!gate.is_busy());
+        assert!(gate.try_acquire().is_some());
+    }
+
+    #[test]
+    fn abandoned_geometric_constraint_waiter_keeps_gate_until_worker_exit_then_retries() {
+        let state = Arc::new(AppState::new(initial_project_state()));
+        let binding = geometric_constraint_binding(&state);
+        let before = geometric_constraint_project_signature(&state);
+        let worker_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+
+        let waiting = tauri::async_runtime::spawn(async move {
+            analyze_geometric_constraints_with_worker(
+                &worker_state,
+                binding.0,
+                binding.1,
+                binding.2,
+                move |pattern, document| {
+                    entered_tx.send(()).expect("announce worker entry");
+                    release_rx.recv().expect("release constraint worker");
+                    Ok(analyze_geometric_constraint_document(&pattern, &document))
+                },
+            )
+            .await
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("geometric-constraint worker must start");
+        assert!(state.geometric_constraint_worker_is_busy());
+        waiting.abort();
+        assert!(
+            tauri::async_runtime::block_on(waiting).is_err(),
+            "the abandoned waiting future must be cancelled"
+        );
+        assert!(
+            state.geometric_constraint_worker_is_busy(),
+            "cancelling the waiter must not release a running blocking worker"
+        );
+
+        let busy_error = tauri::async_runtime::block_on(analyze_geometric_constraints_with_worker(
+            &state,
+            binding.0,
+            binding.1,
+            binding.2,
+            |_, _| {
+                panic!("a busy gate must reject before invoking another worker");
+            },
+        ))
+        .expect_err("parallel analysis must be rejected");
+        assert_eq!(busy_error, GEOMETRIC_CONSTRAINT_ANALYSIS_BUSY_MESSAGE);
+
+        release_tx
+            .send(())
+            .expect("release abandoned geometric-constraint worker");
+        wait_for_geometric_constraint_worker_idle(&state);
+        assert!(!state.geometric_constraint_worker_is_busy());
+
+        let retried = run_default_geometric_constraint_analysis(&state, binding)
+            .expect("the gate must be reusable after the blocking worker exits");
+        assert_eq!(retried.project_instance_id, binding.0);
+        assert_eq!(retried.project_id, binding.1);
+        assert_eq!(retried.revision, binding.2);
+        assert_eq!(
+            retried.result,
+            GeometricConstraintPreflightResult::NoDirectConflict
+        );
+        assert_eq!(geometric_constraint_project_signature(&state), before);
+    }
+
+    #[test]
+    fn geometric_constraint_worker_releases_project_lock_and_discards_reopen_aba_completion() {
+        let state = Arc::new(AppState::new(initial_project_state()));
+        let stale_binding = geometric_constraint_binding(&state);
+        let document = {
+            let project = lock_project(&state).expect("capture original project document");
+            project.document()
+        };
+        let worker_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+
+        let analysis = thread::spawn(move || {
+            tauri::async_runtime::block_on(analyze_geometric_constraints_with_worker(
+                &worker_state,
+                stale_binding.0,
+                stale_binding.1,
+                stale_binding.2,
+                move |pattern, constraints| {
+                    entered_tx.send(()).expect("announce worker entry");
+                    release_rx.recv().expect("release constraint worker");
+                    Ok(analyze_geometric_constraint_document(
+                        &pattern,
+                        &constraints,
+                    ))
+                },
+            ))
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("geometric-constraint worker must start");
+        let (current_binding, reopened_before) = {
+            let Ok(mut project) = state.0.try_lock() else {
+                release_tx
+                    .send(())
+                    .expect("release blocked geometric-constraint worker");
+                analysis
+                    .join()
+                    .expect("analysis caller must not panic")
+                    .expect("unchanged analysis must finish");
+                panic!("the project lock must be released during constraint analysis");
+            };
+            *project =
+                ProjectState::from_document(document, PathBuf::from("same-constraints.ori2"));
+            assert_eq!(project.project_id, stale_binding.1);
+            assert_eq!(project.editor.revision(), stale_binding.2);
+            assert_ne!(project.instance_id, stale_binding.0);
+            (
+                (
+                    project.instance_id,
+                    project.project_id,
+                    project.editor.revision(),
+                ),
+                project_state_signature(&project),
+            )
+        };
+
+        release_tx
+            .send(())
+            .expect("release stale geometric-constraint worker");
+        let stale_error = analysis
+            .join()
+            .expect("analysis caller must not panic")
+            .expect_err("same-ID and revision reopen must reject stale completion");
+        assert_eq!(
+            stale_error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert!(!state.geometric_constraint_worker_is_busy());
+        assert_eq!(
+            geometric_constraint_project_signature(&state),
+            reopened_before
+        );
+
+        let retried = run_default_geometric_constraint_analysis(&state, current_binding)
+            .expect("the reopened instance must be able to retry");
+        assert_eq!(retried.project_instance_id, current_binding.0);
+        assert_eq!(retried.project_id, current_binding.1);
+        assert_eq!(retried.revision, current_binding.2);
+        assert_eq!(
+            geometric_constraint_project_signature(&state),
+            reopened_before
+        );
+    }
+
+    #[test]
+    fn geometric_constraint_worker_failures_are_redacted_release_gate_and_preserve_state() {
+        let state = Arc::new(AppState::new(initial_project_state()));
+        let binding = geometric_constraint_binding(&state);
+        let before = geometric_constraint_project_signature(&state);
+        let private_failure = r"C:\Users\alice\private-constraints.ori2; constraint_id=secret-17";
+
+        let reported_error =
+            tauri::async_runtime::block_on(analyze_geometric_constraints_with_worker(
+                &state,
+                binding.0,
+                binding.1,
+                binding.2,
+                move |_, _| Err(private_failure.to_owned()),
+            ))
+            .expect_err("a reported worker failure must fail the command");
+        assert_eq!(reported_error, GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE);
+        assert!(!reported_error.contains("alice"));
+        assert!(!reported_error.contains("private-constraints"));
+        assert!(!reported_error.contains("secret-17"));
+        assert!(!state.geometric_constraint_worker_is_busy());
+        assert_eq!(geometric_constraint_project_signature(&state), before);
+        run_default_geometric_constraint_analysis(&state, binding)
+            .expect("the gate must be reusable after a reported worker failure");
+
+        let private_panic = r"C:\Users\bob\private-constraints.ori2; constraint_id=panic-secret-23";
+        let panic_error =
+            tauri::async_runtime::block_on(analyze_geometric_constraints_with_worker(
+                &state,
+                binding.0,
+                binding.1,
+                binding.2,
+                move |_, _| -> Result<GeometricConstraintPreflightResult, String> {
+                    panic!("{private_panic}");
+                },
+            ))
+            .expect_err("a panicking worker must fail the command");
+        assert_eq!(panic_error, GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE);
+        assert!(!panic_error.contains("bob"));
+        assert!(!panic_error.contains("private-constraints"));
+        assert!(!panic_error.contains("panic-secret-23"));
+        assert!(!state.geometric_constraint_worker_is_busy());
+        assert_eq!(geometric_constraint_project_signature(&state), before);
+        run_default_geometric_constraint_analysis(&state, binding)
+            .expect("the gate must be reusable after a panicking worker");
+        assert_eq!(geometric_constraint_project_signature(&state), before);
+    }
+
+    #[test]
+    fn geometric_constraint_capture_rejections_and_success_all_release_gate() {
+        let state = Arc::new(AppState::new(initial_project_state()));
+        let binding = geometric_constraint_binding(&state);
+        let before = geometric_constraint_project_signature(&state);
+        let rejection_cases = [
+            (
+                (ProjectId::new(), binding.1, binding.2),
+                "the open project instance changed while the file dialog was open",
+            ),
+            (
+                (binding.0, ProjectId::new(), binding.2),
+                "the active project changed before the command was applied",
+            ),
+            (
+                (binding.0, binding.1, binding.2 + 1),
+                "the project changed while the file dialog was open",
+            ),
+        ];
+
+        for (rejected_binding, expected_error) in rejection_cases {
+            let error = tauri::async_runtime::block_on(analyze_geometric_constraints_with_worker(
+                &state,
+                rejected_binding.0,
+                rejected_binding.1,
+                rejected_binding.2,
+                |_, _| {
+                    panic!("capture rejection must happen before worker invocation");
+                },
+            ))
+            .expect_err("invalid capture binding must be rejected");
+            assert_eq!(error, expected_error);
+            assert!(!state.geometric_constraint_worker_is_busy());
+            assert_eq!(geometric_constraint_project_signature(&state), before);
+        }
+
+        let response = run_default_geometric_constraint_analysis(&state, binding)
+            .expect("a valid capture and worker must succeed");
+        assert_eq!(response.project_instance_id, binding.0);
+        assert_eq!(response.project_id, binding.1);
+        assert_eq!(response.revision, binding.2);
+        assert!(!state.geometric_constraint_worker_is_busy());
+        assert_eq!(geometric_constraint_project_signature(&state), before);
     }
 
     #[test]
@@ -5085,12 +6210,58 @@ mod tests {
         assert_eq!(reopened.editor.pattern(), project.editor.pattern());
         assert_eq!(reopened.editor.paper(), project.editor.paper());
         assert_ne!(reopened.instance_id, project.instance_id);
+        let before = project_state_signature(&reopened);
 
         assert_eq!(
-            finish_instruction_pose(&reopened, project_id, 0, analyzed)
-                .expect_err("an old open-instance analysis must not mutate the reopened project"),
+            super::finish_instruction_pose(
+                &reopened,
+                reopened.instance_id,
+                project_id,
+                0,
+                analyzed,
+            )
+            .expect_err("an old open-instance analysis must not mutate the reopened project"),
             "the open project instance changed while the instruction pose was being analyzed"
         );
+        assert_eq!(project_state_signature(&reopened), before);
+    }
+
+    #[test]
+    fn instruction_pose_capture_rejects_same_document_revision_after_reopen_aba() {
+        let project = initial_project_state();
+        let stale_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let reopened =
+            ProjectState::from_document(project.document(), PathBuf::from("same-project.ori2"));
+        assert_eq!(reopened.project_id, expected_project_id);
+        assert_eq!(reopened.editor.revision(), expected_revision);
+        assert_ne!(reopened.instance_id, stale_instance_id);
+        let state = AppState::new(reopened);
+        let before = {
+            let project = lock_project(&state).expect("lock reopened project");
+            project_state_signature(&project)
+        };
+
+        let result = tauri::async_runtime::block_on(analyze_instruction_pose(
+            &state,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            None,
+            Vec::new(),
+        ));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("reopened ABA instance must reject delayed instruction analysis"),
+        };
+
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
+        let project = lock_project(&state).expect("lock unchanged reopened project");
+        assert_eq!(project_state_signature(&project), before);
     }
 
     #[test]
@@ -7305,6 +8476,137 @@ mod tests {
             "the open project instance changed while the file dialog was open"
         );
         assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn execute_command_rejects_same_document_revision_after_reopen_aba() {
+        let project = initial_project_state();
+        let stale_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let mut reopened =
+            ProjectState::from_document(project.document(), PathBuf::from("same-project.ori2"));
+        assert_eq!(reopened.project_id, expected_project_id);
+        assert_eq!(reopened.editor.revision(), expected_revision);
+        assert_ne!(reopened.instance_id, stale_instance_id);
+        let before = project_state_signature(&reopened);
+
+        let error = super::execute_command(
+            &mut reopened,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            Command::AddVertex {
+                id: VertexId::new(),
+                position: Point2::new(25.0, 25.0),
+            },
+        )
+        .expect_err("reopened ABA instance must reject a delayed edit command");
+
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&reopened), before);
+    }
+
+    #[test]
+    fn execute_undo_rejects_same_project_and_revision_from_a_foreign_instance() {
+        let mut stale_project = initial_project_state();
+        let expected_project_id = stale_project.project_id;
+        execute_command(
+            &mut stale_project,
+            expected_project_id,
+            0,
+            Command::SetCuttingAllowed { allowed: true },
+        )
+        .expect("advance the stale project to revision one");
+        let stale_instance_id = stale_project.instance_id;
+        let expected_revision = stale_project.editor.revision();
+
+        let mut reopened = ProjectState::from_document(
+            stale_project.document(),
+            PathBuf::from("same-project.ori2"),
+        );
+        execute_command(
+            &mut reopened,
+            expected_project_id,
+            0,
+            Command::SetCuttingAllowed { allowed: false },
+        )
+        .expect("create undo history at the same revision");
+        assert_eq!(reopened.editor.revision(), expected_revision);
+        assert!(reopened.editor.can_undo());
+        assert_ne!(reopened.instance_id, stale_instance_id);
+        let before = project_state_signature(&reopened);
+
+        let error = super::execute_undo(
+            &mut reopened,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+        )
+        .expect_err("foreign project instance must not consume undo history");
+
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&reopened), before);
+    }
+
+    #[test]
+    fn execute_redo_rejects_same_project_and_revision_from_a_foreign_instance() {
+        let mut stale_project = initial_project_state();
+        let expected_project_id = stale_project.project_id;
+        execute_command(
+            &mut stale_project,
+            expected_project_id,
+            0,
+            Command::SetCuttingAllowed { allowed: true },
+        )
+        .expect("advance the stale project to revision one");
+        execute_command(
+            &mut stale_project,
+            expected_project_id,
+            1,
+            Command::SetCuttingAllowed { allowed: false },
+        )
+        .expect("advance the stale project to revision two");
+        let stale_instance_id = stale_project.instance_id;
+        let expected_revision = stale_project.editor.revision();
+
+        let mut reopened = ProjectState::from_document(
+            stale_project.document(),
+            PathBuf::from("same-project.ori2"),
+        );
+        execute_command(
+            &mut reopened,
+            expected_project_id,
+            0,
+            Command::SetCuttingAllowed { allowed: true },
+        )
+        .expect("create current-instance undo history");
+        execute_undo(&mut reopened, expected_project_id, 1)
+            .expect("create redo history at revision two");
+        assert_eq!(reopened.editor.revision(), expected_revision);
+        assert!(reopened.editor.can_redo());
+        assert_ne!(reopened.instance_id, stale_instance_id);
+        let before = project_state_signature(&reopened);
+
+        let error = super::execute_redo(
+            &mut reopened,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+        )
+        .expect_err("foreign project instance must not consume redo history");
+
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
+        assert_eq!(project_state_signature(&reopened), before);
     }
 
     #[test]

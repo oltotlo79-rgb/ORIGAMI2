@@ -8,7 +8,10 @@ const thickness = read('../src/components/PaperThicknessInput.tsx')
 
 test('App applies one snapshot display unit to every authoring length surface', () => {
   assert.match(app, /<LengthUnitControl/u)
-  assert.match(app, /setLengthDisplayUnit\(projectId, revision, unit\)/u)
+  assert.match(
+    app,
+    /setLengthDisplayUnit\(projectId, revision, projectInstanceId, unit\)/u,
+  )
   assert.match(app, /paperSizeLabel[\s\S]*?formatLengthValue\(/u)
   assert.match(app, /measurementLabel=\{formatLineMeasurementLabel\([\s\S]*?displayedLengthUnit/u)
   assert.match(app, /formatLengthPoint\([\s\S]*?displayedLengthUnit/u)

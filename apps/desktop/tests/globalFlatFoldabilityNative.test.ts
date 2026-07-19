@@ -102,6 +102,23 @@ test('begin accepts only the bounded immediate source-limit terminal', async () 
   assert.deepEqual(result.job, SOURCE_LIMIT_COMPLETED)
 })
 
+test('UUID version and variant bits do not narrow the native Rust contract', async () => {
+  const projectId = '00000000-0000-0000-7000-000000000001'
+  const jobId = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+  const calls: Array<readonly [string, Readonly<Record<string, unknown>> | undefined]> = []
+  const transport = createGlobalFlatFoldabilityNativeTransport((command, arguments_) => {
+    calls.push([command, arguments_])
+    return { job_id: jobId, job: QUEUED }
+  })
+
+  const result = await transport.begin({
+    ...CONTEXT,
+    projectId,
+  }, 30_000)
+  assert.equal(result.jobId, jobId)
+  assert.equal(calls[0]?.[1]?.expectedProjectId, projectId)
+})
+
 test('poll claims a terminal result without requesting progress', async () => {
   const commands: string[] = []
   const transport = createGlobalFlatFoldabilityNativeTransport((command) => {
@@ -196,6 +213,11 @@ test('invalid local requests are rejected before invoking native code', async ()
   const invalidContexts = [
     {
       projectId: 'not-an-id',
+      revision: 0,
+      foldModelFingerprint: FOLD_MODEL_FINGERPRINT,
+    },
+    {
+      projectId: '00000000-0000-0000-0000-000000000000',
       revision: 0,
       foldModelFingerprint: FOLD_MODEL_FINGERPRINT,
     },

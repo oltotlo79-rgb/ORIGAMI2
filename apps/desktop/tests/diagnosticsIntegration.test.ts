@@ -20,10 +20,10 @@ test('only allowlisted scope codes cross the frontend diagnostics boundary', () 
   const expected = new Map<DiagnosticScope, number>([
     ['app.unhandled_error', 1],
     ['app.unhandled_rejection', 1],
-    ['app.project_snapshot', 1],
+    ['app.project_snapshot', 2],
     ['app.topology_analysis', 1],
     ['app.close_guard', 1],
-    ['app.validation', 1],
+    ['app.validation', 3],
     ['app.benchmark', 1],
     ['fold_preview.geometry', 1],
     ['fold_preview.render', 2],

@@ -7,8 +7,10 @@ mod ori2;
 mod svg;
 
 use ori_domain::{
-    CreasePattern, InstructionTimeline, InstructionTimelineValidationError, Paper, ProjectId,
-    validate_instruction_timeline,
+    ConstraintId, CreasePattern, EdgeId, GeometricConstraintDocumentV1,
+    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1, InstructionTimeline,
+    InstructionTimelineValidationError, Paper, ProjectId, VertexId,
+    validate_geometric_constraint_document_v1, validate_instruction_timeline,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -36,11 +38,16 @@ pub use instruction_export::{
     MAX_INSTRUCTION_EXPORT_TITLE_CHARS, export_instruction_document,
     export_instruction_document_with_limits,
 };
+pub use ori_domain::{
+    DEFAULT_MAX_CONSTRAINT_EDGES as MAX_PROJECT_CONSTRAINT_INDEX_EDGES,
+    DEFAULT_MAX_CONSTRAINT_VERTICES as MAX_PROJECT_CONSTRAINT_INDEX_VERTICES,
+};
 pub use ori2::{
     CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER,
-    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH,
-    ORI2_PROJECT_PATH, Ori2Limits, Ori2Manifest, Ori2ProjectEntry, read_project_ori2,
-    read_project_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
+    ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2Limits,
+    Ori2Manifest, Ori2ProjectEntry, read_project_ori2, read_project_ori2_with_limits,
+    write_project_ori2, write_project_ori2_with_limits,
 };
 pub use svg::{
     SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,
@@ -54,6 +61,25 @@ pub use svg::{
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION: u32 = 1;
 pub const MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES: usize = 4_096;
+/// Non-relaxable byte ceiling for directly supplied `project.json` input.
+pub const MAX_PROJECT_JSON_BYTES: usize = 128 * 1024 * 1024;
+
+/// Resource limits applied before parsing a directly supplied `project.json`.
+///
+/// A caller may lower `max_input_size`, but values above
+/// [`MAX_PROJECT_JSON_BYTES`] never relax the format's hard ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectJsonLimits {
+    pub max_input_size: usize,
+}
+
+impl Default for ProjectJsonLimits {
+    fn default() -> Self {
+        Self {
+            max_input_size: MAX_PROJECT_JSON_BYTES,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +124,7 @@ impl ProjectNumericExpressions {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectDocument {
     pub format_version: u32,
     pub project_id: ProjectId,
@@ -109,6 +136,11 @@ pub struct ProjectDocument {
     pub instruction_timeline: InstructionTimeline,
     #[serde(default, skip_serializing_if = "ProjectNumericExpressions::is_empty")]
     pub numeric_expressions: ProjectNumericExpressions,
+    #[serde(
+        default,
+        skip_serializing_if = "GeometricConstraintDocumentV1::is_empty"
+    )]
+    pub geometric_constraints: GeometricConstraintDocumentV1,
 }
 
 impl ProjectDocument {
@@ -122,6 +154,7 @@ impl ProjectDocument {
             crease_pattern,
             instruction_timeline: InstructionTimeline::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
+            geometric_constraints: GeometricConstraintDocumentV1::default(),
         }
     }
 }
@@ -130,6 +163,10 @@ impl ProjectDocument {
 pub enum FormatError {
     #[error("project JSON is invalid: {0}")]
     InvalidJson(#[from] serde_json::Error),
+    #[error("project JSON is {actual} bytes; the limit is {limit} bytes")]
+    ProjectJsonTooLarge { actual: usize, limit: usize },
+    #[error("project_id must not be the nil UUID")]
+    NilProjectId,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error(".ori2 ZIP data is invalid: {0}")]
@@ -200,25 +237,273 @@ pub enum FormatError {
     InvalidInstructionTimeline(#[from] InstructionTimelineValidationError),
     #[error("project numeric-expression metadata is invalid")]
     InvalidNumericExpressions,
+    #[error("project geometric-constraint metadata is invalid: {0}")]
+    InvalidGeometricConstraints(#[from] GeometricConstraintDocumentValidationErrorV1),
+    #[error(
+        "cannot validate geometric constraints against {actual} crease-pattern vertices; the hard maximum is {maximum}"
+    )]
+    TooManyConstraintIndexVertices { actual: usize, maximum: usize },
+    #[error(
+        "cannot validate geometric constraints against {actual} crease-pattern edges; the hard maximum is {maximum}"
+    )]
+    TooManyConstraintIndexEdges { actual: usize, maximum: usize },
+    #[error("memory for the geometric-constraint {index_name} index could not be reserved")]
+    ConstraintIndexAllocationFailed { index_name: &'static str },
+    #[error(
+        "geometric constraint {constraint:?} references missing crease-pattern vertex {vertex:?}"
+    )]
+    MissingConstraintVertex {
+        constraint: ConstraintId,
+        vertex: VertexId,
+    },
+    #[error("geometric constraint {constraint:?} references missing crease-pattern edge {edge:?}")]
+    MissingConstraintEdge {
+        constraint: ConstraintId,
+        edge: EdgeId,
+    },
 }
 
 pub fn write_project_json(document: &ProjectDocument) -> Result<Vec<u8>, FormatError> {
+    write_project_json_with_size_limit(document, MAX_PROJECT_JSON_BYTES)
+}
+
+fn write_project_json_with_size_limit(
+    document: &ProjectDocument,
+    requested_limit: usize,
+) -> Result<Vec<u8>, FormatError> {
+    validate_project_envelope(document)?;
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
-    Ok(serde_json::to_vec_pretty(document)?)
+    validate_project_geometric_constraints(document)?;
+    let bytes = serde_json::to_vec_pretty(document)?;
+    ensure_project_json_size(bytes.len(), requested_limit)?;
+    Ok(bytes)
 }
 
 pub fn read_project_json(bytes: &[u8]) -> Result<ProjectDocument, FormatError> {
+    read_project_json_with_limits(bytes, ProjectJsonLimits::default())
+}
+
+/// Reads project JSON with a caller-selected byte limit.
+///
+/// The byte count is checked before serde sees the input. The caller-selected
+/// limit can tighten, but cannot relax, [`MAX_PROJECT_JSON_BYTES`].
+pub fn read_project_json_with_limits(
+    bytes: &[u8],
+    limits: ProjectJsonLimits,
+) -> Result<ProjectDocument, FormatError> {
+    ensure_project_json_size(bytes.len(), limits.max_input_size)?;
     let document: ProjectDocument = serde_json::from_slice(bytes)?;
+    validate_project_envelope(&document)?;
+    validate_instruction_timeline(&document.instruction_timeline)?;
+    validate_numeric_expressions(&document.numeric_expressions)?;
+    validate_project_geometric_constraints(&document)?;
+    Ok(document)
+}
+
+fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatError> {
     if document.format_version != CURRENT_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion {
             found: document.format_version,
             latest: CURRENT_FORMAT_VERSION,
         });
     }
-    validate_instruction_timeline(&document.instruction_timeline)?;
-    validate_numeric_expressions(&document.numeric_expressions)?;
-    Ok(document)
+    if document.project_id.canonical_bytes() == [0; 16] {
+        return Err(FormatError::NilProjectId);
+    }
+    Ok(())
+}
+
+fn ensure_project_json_size(actual: usize, requested_limit: usize) -> Result<(), FormatError> {
+    let limit = requested_limit.min(MAX_PROJECT_JSON_BYTES);
+    if actual > limit {
+        return Err(FormatError::ProjectJsonTooLarge { actual, limit });
+    }
+    Ok(())
+}
+
+fn canonical_edge_reference_pair(first: EdgeId, second: EdgeId) -> [EdgeId; 2] {
+    if first.canonical_bytes() <= second.canonical_bytes() {
+        [first, second]
+    } else {
+        [second, first]
+    }
+}
+
+fn canonical_vertex_reference_pair(first: VertexId, second: VertexId) -> [VertexId; 2] {
+    if first.canonical_bytes() <= second.canonical_bytes() {
+        [first, second]
+    } else {
+        [second, first]
+    }
+}
+
+/// Validates only persistence metadata and entity existence.
+///
+/// Geometry-dependent checks intentionally stay out of this adapter so an
+/// incomplete or degenerate crease pattern remains loadable for EDT-011 repair.
+/// Empty constraint documents return before any crease-pattern size ceiling is
+/// applied. For non-empty documents, the bounded sorted indexes and sorted
+/// constraint traversal cost `O((V + E + C) log(V + E + C))` time and
+/// `O(V + E + C)` storage.
+fn validate_project_geometric_constraints(document: &ProjectDocument) -> Result<(), FormatError> {
+    validate_geometric_constraint_document_v1(&document.geometric_constraints)?;
+    if document.geometric_constraints.is_empty() {
+        return Ok(());
+    }
+
+    let vertex_count = document.crease_pattern.vertices.len();
+    if vertex_count > MAX_PROJECT_CONSTRAINT_INDEX_VERTICES {
+        return Err(FormatError::TooManyConstraintIndexVertices {
+            actual: vertex_count,
+            maximum: MAX_PROJECT_CONSTRAINT_INDEX_VERTICES,
+        });
+    }
+    let edge_count = document.crease_pattern.edges.len();
+    if edge_count > MAX_PROJECT_CONSTRAINT_INDEX_EDGES {
+        return Err(FormatError::TooManyConstraintIndexEdges {
+            actual: edge_count,
+            maximum: MAX_PROJECT_CONSTRAINT_INDEX_EDGES,
+        });
+    }
+
+    let mut vertices = Vec::new();
+    vertices.try_reserve_exact(vertex_count).map_err(|_| {
+        FormatError::ConstraintIndexAllocationFailed {
+            index_name: "vertex",
+        }
+    })?;
+    vertices.extend(
+        document
+            .crease_pattern
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id.canonical_bytes()),
+    );
+    vertices.sort_unstable();
+    vertices.dedup();
+
+    let mut edges = Vec::new();
+    edges
+        .try_reserve_exact(edge_count)
+        .map_err(|_| FormatError::ConstraintIndexAllocationFailed { index_name: "edge" })?;
+    edges.extend(
+        document
+            .crease_pattern
+            .edges
+            .iter()
+            .map(|edge| edge.id.canonical_bytes()),
+    );
+    edges.sort_unstable();
+    edges.dedup();
+
+    let constraint_count = document.geometric_constraints.constraints.len();
+    let mut constraints = Vec::new();
+    constraints
+        .try_reserve_exact(constraint_count)
+        .map_err(|_| FormatError::ConstraintIndexAllocationFailed {
+            index_name: "constraint-order",
+        })?;
+    constraints.extend(document.geometric_constraints.constraints.iter());
+    constraints.sort_unstable_by_key(|record| record.id.canonical_bytes());
+
+    for record in constraints {
+        let require_vertex = |vertex: VertexId| {
+            if vertices.binary_search(&vertex.canonical_bytes()).is_ok() {
+                Ok(())
+            } else {
+                Err(FormatError::MissingConstraintVertex {
+                    constraint: record.id,
+                    vertex,
+                })
+            }
+        };
+        let require_edge = |edge: EdgeId| {
+            if edges.binary_search(&edge.canonical_bytes()).is_ok() {
+                Ok(())
+            } else {
+                Err(FormatError::MissingConstraintEdge {
+                    constraint: record.id,
+                    edge,
+                })
+            }
+        };
+
+        match &record.constraint {
+            GeometricConstraintKindV1::FixedLength { edge, .. }
+            | GeometricConstraintKindV1::Horizontal { edge }
+            | GeometricConstraintKindV1::Vertical { edge } => require_edge(*edge)?,
+            GeometricConstraintKindV1::FixedAngle {
+                vertex,
+                first_edge,
+                second_edge,
+                ..
+            } => {
+                require_vertex(*vertex)?;
+                for edge in canonical_edge_reference_pair(*first_edge, *second_edge) {
+                    require_edge(edge)?;
+                }
+            }
+            GeometricConstraintKindV1::EqualLength {
+                first_edge,
+                second_edge,
+            }
+            | GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } => {
+                for edge in canonical_edge_reference_pair(*first_edge, *second_edge) {
+                    require_edge(edge)?;
+                }
+            }
+            GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
+                require_vertex(*vertex)?;
+                require_edge(*line_edge)?;
+            }
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex,
+                second_vertex,
+                axis_edge,
+            } => {
+                for vertex in canonical_vertex_reference_pair(*first_vertex, *second_vertex) {
+                    require_vertex(vertex)?;
+                }
+                require_edge(*axis_edge)?;
+            }
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex,
+                source_vertex,
+                target_vertex,
+                ..
+            } => {
+                require_vertex(*center_vertex)?;
+                require_vertex(*source_vertex)?;
+                require_vertex(*target_vertex)?;
+            }
+            GeometricConstraintKindV1::AngleBisector {
+                vertex,
+                first_edge,
+                second_edge,
+                bisector_edge,
+            } => {
+                require_vertex(*vertex)?;
+                for edge in canonical_edge_reference_pair(*first_edge, *second_edge) {
+                    require_edge(edge)?;
+                }
+                require_edge(*bisector_edge)?;
+            }
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ..
+            } => {
+                require_edge(*numerator_edge)?;
+                require_edge(*denominator_edge)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_numeric_expressions(
@@ -249,9 +534,9 @@ fn valid_numeric_expression_source(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        AssetId, Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
-        InstructionPoseModel, InstructionStep, InstructionStepId, LengthDisplayUnit,
-        PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
+        AssetId, Edge, EdgeId, EdgeKind, FaceId, GeometricConstraintRecordV1,
+        InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
+        InstructionStepId, LengthDisplayUnit, PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
     };
 
     use super::*;
@@ -282,12 +567,734 @@ mod tests {
         )
     }
 
+    fn project_id_from_wire(value: &str) -> ProjectId {
+        serde_json::from_str(&format!("\"{value}\"")).expect("project ID fixture")
+    }
+
+    fn fixed_constraint_id(index: usize) -> ConstraintId {
+        serde_json::from_str(&format!("\"10000000-0000-4000-9000-{index:012x}\""))
+            .expect("fixed constraint ID")
+    }
+
+    fn fixed_vertex_id(index: usize) -> VertexId {
+        serde_json::from_str(&format!("\"20000000-0000-4000-9000-{index:012x}\""))
+            .expect("fixed vertex ID")
+    }
+
+    fn fixed_edge_id(index: usize) -> EdgeId {
+        serde_json::from_str(&format!("\"30000000-0000-4000-9000-{index:012x}\""))
+            .expect("fixed edge ID")
+    }
+
+    fn add_all_geometric_constraint_kinds(document: &mut ProjectDocument) {
+        let vertex_ids = std::array::from_fn::<_, 4, _>(|_| VertexId::new());
+        let edge_ids = std::array::from_fn::<_, 6, _>(|_| EdgeId::new());
+        document.crease_pattern = CreasePattern {
+            vertices: vertex_ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| Vertex {
+                    id: *id,
+                    position: Point2::new(index as f64, (index * index) as f64),
+                })
+                .collect(),
+            edges: edge_ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| Edge {
+                    id: *id,
+                    start: vertex_ids[index % vertex_ids.len()],
+                    end: vertex_ids[(index + 1) % vertex_ids.len()],
+                    kind: EdgeKind::Mountain,
+                })
+                .collect(),
+        };
+
+        let kinds = [
+            GeometricConstraintKindV1::FixedLength {
+                edge: edge_ids[0],
+                length_mm: 10.5,
+            },
+            GeometricConstraintKindV1::FixedAngle {
+                vertex: vertex_ids[0],
+                first_edge: edge_ids[0],
+                second_edge: edge_ids[1],
+                angle_degrees: 45.0,
+            },
+            GeometricConstraintKindV1::Horizontal { edge: edge_ids[2] },
+            GeometricConstraintKindV1::Vertical { edge: edge_ids[3] },
+            GeometricConstraintKindV1::EqualLength {
+                first_edge: edge_ids[0],
+                second_edge: edge_ids[1],
+            },
+            GeometricConstraintKindV1::Parallel {
+                first_edge: edge_ids[2],
+                second_edge: edge_ids[3],
+            },
+            GeometricConstraintKindV1::PointOnLine {
+                vertex: vertex_ids[1],
+                line_edge: edge_ids[4],
+            },
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: vertex_ids[0],
+                second_vertex: vertex_ids[1],
+                axis_edge: edge_ids[5],
+            },
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: vertex_ids[0],
+                source_vertex: vertex_ids[1],
+                target_vertex: vertex_ids[2],
+                angle_degrees: 120.0,
+            },
+            GeometricConstraintKindV1::AngleBisector {
+                vertex: vertex_ids[3],
+                first_edge: edge_ids[0],
+                second_edge: edge_ids[1],
+                bisector_edge: edge_ids[2],
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edge_ids[4],
+                denominator_edge: edge_ids[5],
+                ratio: 2.0,
+            },
+        ];
+        document.geometric_constraints.constraints = kinds
+            .into_iter()
+            .map(|constraint| GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint,
+            })
+            .collect();
+    }
+
     #[test]
     fn json_round_trip_preserves_ids_geometry_and_kinds() {
         let original = sample_document();
         let bytes = write_project_json(&original).expect("write project");
+        assert!(bytes.len() <= MAX_PROJECT_JSON_BYTES);
         let restored = read_project_json(&bytes).expect("read project");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn json_reader_and_writer_reject_the_nil_project_id_with_a_typed_error() {
+        let mut document = sample_document();
+        document.project_id = project_id_from_wire("00000000-0000-0000-0000-000000000000");
+
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::NilProjectId)
+        ));
+
+        let bytes = serde_json::to_vec(&document).expect("serialize nil-ID read fixture");
+        assert!(matches!(
+            read_project_json(&bytes),
+            Err(FormatError::NilProjectId)
+        ));
+    }
+
+    #[test]
+    fn json_round_trip_accepts_non_nil_uuid_versions_and_variants() {
+        for wire in [
+            "10000000-0000-0000-0000-000000000001",
+            "10000000-0000-1000-8000-000000000001",
+            "10000000-0000-f000-c000-000000000001",
+            "10000000-0000-7000-e000-000000000001",
+        ] {
+            let mut document = sample_document();
+            document.project_id = project_id_from_wire(wire);
+
+            let bytes = write_project_json(&document).expect("write non-nil project ID");
+            let restored = read_project_json(&bytes).expect("read non-nil project ID");
+            assert_eq!(restored.project_id, document.project_id, "{wire}");
+        }
+    }
+
+    #[test]
+    fn empty_geometric_constraints_are_omitted_and_legacy_json_defaults_to_empty() {
+        let document = sample_document();
+        let bytes = write_project_json(&document).expect("write project");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("parse project JSON");
+        assert!(
+            value.get("geometric_constraints").is_none(),
+            "an empty optional feature must not alter canonical legacy JSON"
+        );
+
+        value
+            .as_object_mut()
+            .expect("project object")
+            .remove("geometric_constraints");
+        let legacy = serde_json::to_vec(&value).expect("serialize legacy fixture");
+        let restored = read_project_json(&legacy).expect("read legacy project");
+        assert!(restored.geometric_constraints.is_empty());
+        let rewritten = write_project_json(&restored).expect("rewrite legacy project");
+        assert!(
+            !String::from_utf8(rewritten)
+                .expect("JSON is UTF-8")
+                .contains("geometric_constraints")
+        );
+    }
+
+    #[test]
+    fn project_document_rejects_unknown_envelope_fields() {
+        let mut value = serde_json::to_value(sample_document()).expect("serialize project");
+        value.as_object_mut().expect("project object").insert(
+            "future_format_extension".to_owned(),
+            serde_json::json!(true),
+        );
+        let bytes = serde_json::to_vec(&value).expect("serialize future project");
+
+        assert!(matches!(
+            read_project_json(&bytes),
+            Err(FormatError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn project_json_size_guard_has_exact_and_one_over_hard_ceiling_semantics() {
+        ensure_project_json_size(MAX_PROJECT_JSON_BYTES, usize::MAX)
+            .expect("equality with the hard ceiling must succeed");
+        assert!(matches!(
+            ensure_project_json_size(MAX_PROJECT_JSON_BYTES + 1, usize::MAX),
+            Err(FormatError::ProjectJsonTooLarge {
+                actual,
+                limit: MAX_PROJECT_JSON_BYTES
+            }) if actual == MAX_PROJECT_JSON_BYTES + 1
+        ));
+
+        ensure_project_json_size(7, 7).expect("equality with a tighter limit must succeed");
+        assert!(matches!(
+            ensure_project_json_size(8, 7),
+            Err(FormatError::ProjectJsonTooLarge {
+                actual: 8,
+                limit: 7
+            })
+        ));
+
+        let document = sample_document();
+        let expected = serde_json::to_vec_pretty(&document).expect("serialize size fixture");
+        assert_eq!(
+            write_project_json_with_size_limit(&document, expected.len())
+                .expect("writer accepts its exact generated size"),
+            expected
+        );
+        assert!(matches!(
+            write_project_json_with_size_limit(&document, expected.len() - 1),
+            Err(FormatError::ProjectJsonTooLarge { actual, limit })
+                if actual == expected.len() && limit == expected.len() - 1
+        ));
+
+        // The public reader invokes this same guard before serde.
+        assert!(matches!(
+            read_project_json_with_limits(b"!", ProjectJsonLimits { max_input_size: 0 }),
+            Err(FormatError::ProjectJsonTooLarge {
+                actual: 1,
+                limit: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn direct_json_reader_honours_a_smaller_custom_limit_at_the_exact_boundary() {
+        let original = sample_document();
+        let bytes = write_project_json(&original).expect("write project");
+        let exact = ProjectJsonLimits {
+            max_input_size: bytes.len(),
+        };
+        assert_eq!(
+            read_project_json_with_limits(&bytes, exact).expect("exact custom limit"),
+            original
+        );
+
+        let smaller = ProjectJsonLimits {
+            max_input_size: bytes.len() - 1,
+        };
+        assert!(matches!(
+            read_project_json_with_limits(&bytes, smaller),
+            Err(FormatError::ProjectJsonTooLarge { actual, limit })
+                if actual == bytes.len() && limit == bytes.len() - 1
+        ));
+    }
+
+    #[test]
+    fn json_round_trip_preserves_all_eleven_geometric_constraint_kinds() {
+        let mut original = sample_document();
+        add_all_geometric_constraint_kinds(&mut original);
+
+        let bytes = write_project_json(&original).expect("write constraints");
+        assert!(
+            String::from_utf8(bytes.clone())
+                .expect("JSON is UTF-8")
+                .contains("\"geometric_constraints\"")
+        );
+        let restored = read_project_json(&bytes).expect("read constraints");
+
+        assert_eq!(restored, original);
+        assert_eq!(restored.geometric_constraints.constraints.len(), 11);
+    }
+
+    #[test]
+    fn json_reader_and_writer_reject_invalid_geometric_constraint_metadata() {
+        let mut document = sample_document();
+        add_all_geometric_constraint_kinds(&mut document);
+        document.geometric_constraints.schema_version += 1;
+
+        let write_error =
+            write_project_json(&document).expect_err("writer must reject future metadata");
+        assert!(matches!(
+            write_error,
+            FormatError::InvalidGeometricConstraints(
+                GeometricConstraintDocumentValidationErrorV1::UnsupportedSchemaVersion { .. }
+            )
+        ));
+
+        let bytes = serde_json::to_vec(&document).expect("serialize invalid fixture directly");
+        let read_error = read_project_json(&bytes).expect_err("reader must reject future metadata");
+        assert!(matches!(
+            read_error,
+            FormatError::InvalidGeometricConstraints(
+                GeometricConstraintDocumentValidationErrorV1::UnsupportedSchemaVersion { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn json_reader_and_writer_reject_dangling_constraint_references() {
+        let mut missing_vertex = sample_document();
+        add_all_geometric_constraint_kinds(&mut missing_vertex);
+        let absent_vertex = VertexId::new();
+        let constraint_id = missing_vertex.geometric_constraints.constraints[1].id;
+        let GeometricConstraintKindV1::FixedAngle { vertex, .. } =
+            &mut missing_vertex.geometric_constraints.constraints[1].constraint
+        else {
+            panic!("second fixture is fixed angle");
+        };
+        *vertex = absent_vertex;
+        assert!(matches!(
+            write_project_json(&missing_vertex),
+            Err(FormatError::MissingConstraintVertex {
+                constraint,
+                vertex
+            }) if constraint == constraint_id && vertex == absent_vertex
+        ));
+        let bytes = serde_json::to_vec(&missing_vertex).expect("serialize dangling vertex fixture");
+        assert!(matches!(
+            read_project_json(&bytes),
+            Err(FormatError::MissingConstraintVertex {
+                constraint,
+                vertex
+            }) if constraint == constraint_id && vertex == absent_vertex
+        ));
+
+        let mut missing_edge = sample_document();
+        add_all_geometric_constraint_kinds(&mut missing_edge);
+        let absent_edge = EdgeId::new();
+        let constraint_id = missing_edge.geometric_constraints.constraints[0].id;
+        let GeometricConstraintKindV1::FixedLength { edge, .. } =
+            &mut missing_edge.geometric_constraints.constraints[0].constraint
+        else {
+            panic!("first fixture is fixed length");
+        };
+        *edge = absent_edge;
+        assert!(matches!(
+            write_project_json(&missing_edge),
+            Err(FormatError::MissingConstraintEdge { constraint, edge })
+                if constraint == constraint_id && edge == absent_edge
+        ));
+        let bytes = serde_json::to_vec(&missing_edge).expect("serialize dangling edge fixture");
+        assert!(matches!(
+            read_project_json(&bytes),
+            Err(FormatError::MissingConstraintEdge { constraint, edge })
+                if constraint == constraint_id && edge == absent_edge
+        ));
+    }
+
+    #[test]
+    fn every_reference_role_across_all_eleven_kinds_requires_an_existing_entity() {
+        #[derive(Clone, Copy)]
+        enum Reference {
+            Vertex(VertexId),
+            Edge(EdgeId),
+        }
+
+        let mut original = sample_document();
+        add_all_geometric_constraint_kinds(&mut original);
+        for record in original.geometric_constraints.constraints.clone() {
+            let references = match record.constraint {
+                GeometricConstraintKindV1::FixedLength { edge, .. }
+                | GeometricConstraintKindV1::Horizontal { edge }
+                | GeometricConstraintKindV1::Vertical { edge } => {
+                    vec![Reference::Edge(edge)]
+                }
+                GeometricConstraintKindV1::FixedAngle {
+                    vertex,
+                    first_edge,
+                    second_edge,
+                    ..
+                } => vec![
+                    Reference::Vertex(vertex),
+                    Reference::Edge(first_edge),
+                    Reference::Edge(second_edge),
+                ],
+                GeometricConstraintKindV1::EqualLength {
+                    first_edge,
+                    second_edge,
+                }
+                | GeometricConstraintKindV1::Parallel {
+                    first_edge,
+                    second_edge,
+                } => vec![Reference::Edge(first_edge), Reference::Edge(second_edge)],
+                GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
+                    vec![Reference::Vertex(vertex), Reference::Edge(line_edge)]
+                }
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex,
+                    second_vertex,
+                    axis_edge,
+                } => vec![
+                    Reference::Vertex(first_vertex),
+                    Reference::Vertex(second_vertex),
+                    Reference::Edge(axis_edge),
+                ],
+                GeometricConstraintKindV1::RotationalSymmetry {
+                    center_vertex,
+                    source_vertex,
+                    target_vertex,
+                    ..
+                } => vec![
+                    Reference::Vertex(center_vertex),
+                    Reference::Vertex(source_vertex),
+                    Reference::Vertex(target_vertex),
+                ],
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex,
+                    first_edge,
+                    second_edge,
+                    bisector_edge,
+                } => vec![
+                    Reference::Vertex(vertex),
+                    Reference::Edge(first_edge),
+                    Reference::Edge(second_edge),
+                    Reference::Edge(bisector_edge),
+                ],
+                GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge,
+                    denominator_edge,
+                    ..
+                } => vec![
+                    Reference::Edge(numerator_edge),
+                    Reference::Edge(denominator_edge),
+                ],
+            };
+
+            for reference in references {
+                let mut candidate = original.clone();
+                candidate.geometric_constraints.constraints = vec![record.clone()];
+                match reference {
+                    Reference::Vertex(vertex) => {
+                        candidate
+                            .crease_pattern
+                            .vertices
+                            .retain(|candidate| candidate.id != vertex);
+                        assert!(matches!(
+                            validate_project_geometric_constraints(&candidate),
+                            Err(FormatError::MissingConstraintVertex {
+                                constraint,
+                                vertex: missing
+                            }) if constraint == record.id && missing == vertex
+                        ));
+                    }
+                    Reference::Edge(edge) => {
+                        candidate
+                            .crease_pattern
+                            .edges
+                            .retain(|candidate| candidate.id != edge);
+                        assert!(matches!(
+                            validate_project_geometric_constraints(&candidate),
+                            Err(FormatError::MissingConstraintEdge {
+                                constraint,
+                                edge: missing
+                            }) if constraint == record.id && missing == edge
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dangling_reference_failure_is_deterministic_across_record_order() {
+        let first_id = ConstraintId::new();
+        let second_id = ConstraintId::new();
+        let first_edge = EdgeId::new();
+        let second_edge = EdgeId::new();
+        let expected_constraint = if first_id.canonical_bytes() < second_id.canonical_bytes() {
+            first_id
+        } else {
+            second_id
+        };
+        let records = vec![
+            GeometricConstraintRecordV1 {
+                id: first_id,
+                constraint: GeometricConstraintKindV1::Horizontal { edge: first_edge },
+            },
+            GeometricConstraintRecordV1 {
+                id: second_id,
+                constraint: GeometricConstraintKindV1::Vertical { edge: second_edge },
+            },
+        ];
+        let mut document = ProjectDocument::new("Deterministic error", CreasePattern::empty());
+        document.geometric_constraints.constraints = records;
+
+        for reverse in [false, true] {
+            if reverse {
+                document.geometric_constraints.constraints.reverse();
+            }
+            assert!(matches!(
+                validate_project_geometric_constraints(&document),
+                Err(FormatError::MissingConstraintEdge { constraint, .. })
+                    if constraint == expected_constraint
+            ));
+        }
+    }
+
+    #[test]
+    fn unordered_constraint_reference_failures_use_canonical_id_order() {
+        #[derive(Debug, Clone, Copy)]
+        enum MissingReference {
+            Edge(EdgeId),
+            Vertex(VertexId),
+        }
+
+        let low_edge = fixed_edge_id(1);
+        let high_edge = fixed_edge_id(2);
+        let existing_edge = fixed_edge_id(9);
+        let low_vertex = fixed_vertex_id(1);
+        let high_vertex = fixed_vertex_id(2);
+        let existing_vertex = fixed_vertex_id(9);
+        let cases = vec![
+            (
+                "fixed_angle",
+                GeometricConstraintKindV1::FixedAngle {
+                    vertex: existing_vertex,
+                    first_edge: low_edge,
+                    second_edge: high_edge,
+                    angle_degrees: 90.0,
+                },
+                GeometricConstraintKindV1::FixedAngle {
+                    vertex: existing_vertex,
+                    first_edge: high_edge,
+                    second_edge: low_edge,
+                    angle_degrees: 90.0,
+                },
+                MissingReference::Edge(low_edge),
+            ),
+            (
+                "equal_length",
+                GeometricConstraintKindV1::EqualLength {
+                    first_edge: low_edge,
+                    second_edge: high_edge,
+                },
+                GeometricConstraintKindV1::EqualLength {
+                    first_edge: high_edge,
+                    second_edge: low_edge,
+                },
+                MissingReference::Edge(low_edge),
+            ),
+            (
+                "parallel",
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: low_edge,
+                    second_edge: high_edge,
+                },
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: high_edge,
+                    second_edge: low_edge,
+                },
+                MissingReference::Edge(low_edge),
+            ),
+            (
+                "mirror_symmetry",
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: low_vertex,
+                    second_vertex: high_vertex,
+                    axis_edge: existing_edge,
+                },
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: high_vertex,
+                    second_vertex: low_vertex,
+                    axis_edge: existing_edge,
+                },
+                MissingReference::Vertex(low_vertex),
+            ),
+            (
+                "angle_bisector",
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex: existing_vertex,
+                    first_edge: low_edge,
+                    second_edge: high_edge,
+                    bisector_edge: existing_edge,
+                },
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex: existing_vertex,
+                    first_edge: high_edge,
+                    second_edge: low_edge,
+                    bisector_edge: existing_edge,
+                },
+                MissingReference::Edge(low_edge),
+            ),
+        ];
+
+        for (name, forward, reversed, expected) in cases {
+            for constraint in [forward, reversed] {
+                let mut document = ProjectDocument::new(
+                    "Canonical references",
+                    CreasePattern {
+                        vertices: vec![Vertex {
+                            id: existing_vertex,
+                            position: Point2::new(0.0, 0.0),
+                        }],
+                        edges: vec![Edge {
+                            id: existing_edge,
+                            start: existing_vertex,
+                            end: existing_vertex,
+                            kind: EdgeKind::Mountain,
+                        }],
+                    },
+                );
+                let constraint_id = fixed_constraint_id(1);
+                document.geometric_constraints.constraints = vec![GeometricConstraintRecordV1 {
+                    id: constraint_id,
+                    constraint,
+                }];
+                match (expected, validate_project_geometric_constraints(&document)) {
+                    (
+                        MissingReference::Edge(expected_edge),
+                        Err(FormatError::MissingConstraintEdge { constraint, edge }),
+                    ) => {
+                        assert_eq!(constraint, constraint_id, "{name}");
+                        assert_eq!(edge, expected_edge, "{name}");
+                    }
+                    (
+                        MissingReference::Vertex(expected_vertex),
+                        Err(FormatError::MissingConstraintVertex { constraint, vertex }),
+                    ) => {
+                        assert_eq!(constraint, constraint_id, "{name}");
+                        assert_eq!(vertex, expected_vertex, "{name}");
+                    }
+                    (expected, actual) => {
+                        panic!("{name}: expected {expected:?}, got {actual:?}")
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn constraint_existence_check_preserves_repairable_degenerate_geometry() {
+        let missing_endpoint = VertexId::new();
+        let edge = EdgeId::new();
+        let mut document = ProjectDocument::new(
+            "Repairable",
+            CreasePattern {
+                vertices: Vec::new(),
+                edges: vec![Edge {
+                    id: edge,
+                    start: missing_endpoint,
+                    end: missing_endpoint,
+                    kind: EdgeKind::Mountain,
+                }],
+            },
+        );
+        document.geometric_constraints.constraints = vec![GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::FixedLength {
+                edge,
+                length_mm: 1.0,
+            },
+        }];
+
+        let bytes = write_project_json(&document)
+            .expect("an existing edge remains saveable despite unusable endpoints");
+        let restored =
+            read_project_json(&bytes).expect("repairable incomplete geometry remains loadable");
+        assert_eq!(restored, document);
+    }
+
+    #[test]
+    fn constraint_reference_indexes_enforce_exact_hard_ceilings_only_when_needed() {
+        let endpoint = VertexId::new();
+        let referenced_edge = EdgeId::new();
+        let mut document = ProjectDocument::new(
+            "Bounded constraint indexes",
+            CreasePattern {
+                vertices: (0..MAX_PROJECT_CONSTRAINT_INDEX_VERTICES)
+                    .map(|index| Vertex {
+                        id: endpoint,
+                        position: Point2::new(index as f64, 0.0),
+                    })
+                    .collect(),
+                edges: (0..MAX_PROJECT_CONSTRAINT_INDEX_EDGES)
+                    .map(|_| Edge {
+                        id: referenced_edge,
+                        start: endpoint,
+                        end: endpoint,
+                        kind: EdgeKind::Mountain,
+                    })
+                    .collect(),
+            },
+        );
+        document.geometric_constraints.constraints = vec![GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: referenced_edge,
+            },
+        }];
+
+        validate_project_geometric_constraints(&document).expect("exact ceilings are accepted");
+        document.crease_pattern.vertices.push(Vertex {
+            id: VertexId::new(),
+            position: Point2::new(0.0, 0.0),
+        });
+        assert!(matches!(
+            validate_project_geometric_constraints(&document),
+            Err(FormatError::TooManyConstraintIndexVertices {
+                actual,
+                maximum: MAX_PROJECT_CONSTRAINT_INDEX_VERTICES
+            }) if actual == MAX_PROJECT_CONSTRAINT_INDEX_VERTICES + 1
+        ));
+
+        document.crease_pattern.vertices.pop();
+        document.crease_pattern.edges.push(Edge {
+            id: EdgeId::new(),
+            start: endpoint,
+            end: endpoint,
+            kind: EdgeKind::Mountain,
+        });
+        assert!(matches!(
+            validate_project_geometric_constraints(&document),
+            Err(FormatError::TooManyConstraintIndexEdges {
+                actual,
+                maximum: MAX_PROJECT_CONSTRAINT_INDEX_EDGES
+            }) if actual == MAX_PROJECT_CONSTRAINT_INDEX_EDGES + 1
+        ));
+
+        document.geometric_constraints = GeometricConstraintDocumentV1::default();
+        validate_project_geometric_constraints(&document)
+            .expect("unrelated oversized repair geometry is ignored without constraints");
+    }
+
+    #[test]
+    fn constraint_reference_indexes_use_the_domain_shared_hard_ceilings() {
+        assert_eq!(
+            MAX_PROJECT_CONSTRAINT_INDEX_VERTICES,
+            ori_domain::DEFAULT_MAX_CONSTRAINT_VERTICES
+        );
+        assert_eq!(
+            MAX_PROJECT_CONSTRAINT_INDEX_EDGES,
+            ori_domain::DEFAULT_MAX_CONSTRAINT_EDGES
+        );
     }
 
     fn add_sample_instruction(document: &mut ProjectDocument) {
@@ -526,9 +1533,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_format_version() {
+    fn reader_and_writer_reject_unknown_format_version() {
         let mut document = sample_document();
         document.format_version = CURRENT_FORMAT_VERSION + 1;
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::UnsupportedVersion {
+                found: 2,
+                latest: 1
+            })
+        ));
+
         let bytes = serde_json::to_vec(&document).expect("serialize future project");
         let error = read_project_json(&bytes).expect_err("future version must fail");
         assert!(matches!(

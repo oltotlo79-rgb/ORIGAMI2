@@ -22,6 +22,14 @@ import type {
   InstructionExportPreviewResponse,
   InstructionExportSaveResponse,
 } from './instructionExport.ts'
+import {
+  normalizeGeometricConstraintPreflightResponse,
+  type GeometricConstraintDocumentV1,
+  type GeometricConstraintKindV1,
+  type GeometricConstraintPreflightResponseV1,
+  type GeometricConstraintPreflightResultV1,
+  type GeometricConstraintRecordV1,
+} from './geometricConstraints.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -63,6 +71,12 @@ export type PaperSnapshot = {
   back: { color: RgbaColor; texture_asset: string | null }
 }
 
+export type GeometricConstraintKind = GeometricConstraintKindV1
+export type GeometricConstraintRecord = GeometricConstraintRecordV1
+export type GeometricConstraintDocument = GeometricConstraintDocumentV1
+export type GeometricConstraintPreflightResult = GeometricConstraintPreflightResultV1
+export type GeometricConstraintPreflightResponse = GeometricConstraintPreflightResponseV1
+
 export type ProjectSnapshot = {
   project_instance_id: string
   project_id: string
@@ -80,6 +94,7 @@ export type ProjectSnapshot = {
   can_redo: boolean
   cutting_allowed: boolean
   instruction_timeline: InstructionTimeline
+  geometric_constraints?: GeometricConstraintDocument
   numeric_expressions?: {
     rectangular_paper_creation?: {
       schema_version: 1
@@ -391,6 +406,28 @@ export function analyzeProjectTopology(expectedProjectId: string, expectedRevisi
   })
 }
 
+export function analyzeGeometricConstraints(
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+) {
+  return invoke<unknown>('analyze_geometric_constraints', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  }).then((response) => {
+    const normalized = normalizeGeometricConstraintPreflightResponse(response, {
+      project_instance_id: expectedProjectInstanceId,
+      project_id: expectedProjectId,
+      revision: expectedRevision,
+    })
+    if (!normalized) {
+      throw new Error('invalid geometric-constraint preflight response')
+    }
+    return normalized
+  })
+}
+
 export function openProject() {
   return invoke<ProjectFileResponse>('open_project')
 }
@@ -557,6 +594,7 @@ function svgImportStyleMappings(settings: SvgImportSettingsDraft['mappings']) {
 export function addInstructionStep(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   title: string,
   description: string,
   caution: string,
@@ -565,6 +603,7 @@ export function addInstructionStep(
   hingeAngles: readonly InstructionHingeAngle[],
 ) {
   return invoke<ProjectSnapshot>('add_instruction_step', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     title,
@@ -579,6 +618,7 @@ export function addInstructionStep(
 export function updateInstructionStepMetadata(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   stepId: string,
   title: string,
   description: string,
@@ -586,6 +626,7 @@ export function updateInstructionStepMetadata(
   durationMs: number,
 ) {
   return invoke<ProjectSnapshot>('update_instruction_step_metadata', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     stepId,
@@ -599,11 +640,13 @@ export function updateInstructionStepMetadata(
 export function replaceInstructionStepPose(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   stepId: string,
   fixedFace: string | null,
   hingeAngles: readonly InstructionHingeAngle[],
 ) {
   return invoke<ProjectSnapshot>('replace_instruction_step_pose', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     stepId,
@@ -615,9 +658,11 @@ export function replaceInstructionStepPose(
 export function removeInstructionStep(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   stepId: string,
 ) {
   return invoke<ProjectSnapshot>('remove_instruction_step', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     stepId,
@@ -627,10 +672,12 @@ export function removeInstructionStep(
 export function moveInstructionStep(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   stepId: string,
   targetIndex: number,
 ) {
   return invoke<ProjectSnapshot>('move_instruction_step', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     stepId,
@@ -658,18 +705,32 @@ export function newProject(
   })
 }
 
-export function addVertex(expectedProjectId: string, expectedRevision: number, x: number, y: number) {
-  return invoke<ProjectSnapshot>('add_vertex', { expectedProjectId, expectedRevision, x, y })
+export function addVertex(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  x: number,
+  y: number,
+) {
+  return invoke<ProjectSnapshot>('add_vertex', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    x,
+    y,
+  })
 }
 
 export function addEdge(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   start: string,
   end: string,
   kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
 ) {
   return invoke<ProjectSnapshot>('add_edge', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     start,
@@ -681,47 +742,125 @@ export function addEdge(
 export function moveVertex(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   id: string,
   x: number,
   y: number,
 ) {
-  return invoke<ProjectSnapshot>('move_vertex', { expectedProjectId, expectedRevision, id, x, y })
+  return invoke<ProjectSnapshot>('move_vertex', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
+    x,
+    y,
+  })
 }
 
-export function removeVertex(expectedProjectId: string, expectedRevision: number, id: string) {
-  return invoke<ProjectSnapshot>('remove_vertex', { expectedProjectId, expectedRevision, id })
+export function removeVertex(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  id: string,
+) {
+  return invoke<ProjectSnapshot>('remove_vertex', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
+  })
 }
 
 export function removeBoundaryVertex(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   vertex: string,
 ) {
   return invoke<ProjectSnapshot>('remove_boundary_vertex', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     vertex,
   })
 }
 
-export function removeEdge(expectedProjectId: string, expectedRevision: number, id: string) {
-  return invoke<ProjectSnapshot>('remove_edge', { expectedProjectId, expectedRevision, id })
+export function removeEdge(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  id: string,
+) {
+  return invoke<ProjectSnapshot>('remove_edge', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
+  })
 }
 
-export function undo(expectedProjectId: string, expectedRevision: number) {
-  return invoke<ProjectSnapshot>('undo', { expectedProjectId, expectedRevision })
+export function addEdgeOrientationConstraint(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  edge: string,
+  orientation: 'horizontal' | 'vertical',
+) {
+  return invoke<ProjectSnapshot>('add_edge_orientation_constraint', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    edge,
+    orientation,
+  })
 }
 
-export function redo(expectedProjectId: string, expectedRevision: number) {
-  return invoke<ProjectSnapshot>('redo', { expectedProjectId, expectedRevision })
+export function removeGeometricConstraint(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  constraint: string,
+) {
+  return invoke<ProjectSnapshot>('remove_geometric_constraint', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    constraint,
+  })
+}
+
+export function undo(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<ProjectSnapshot>('undo', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
+}
+
+export function redo(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<ProjectSnapshot>('redo', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
 }
 
 export function setCuttingAllowed(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   allowed: boolean,
 ) {
   return invoke<ProjectSnapshot>('set_cutting_allowed', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     allowed,
@@ -731,9 +870,11 @@ export function setCuttingAllowed(
 export function updatePaperProperties(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   settings: PaperPropertySettings,
 ) {
   return invoke<ProjectSnapshot>('update_paper_properties', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     thicknessMm: settings.thicknessMm,
@@ -746,9 +887,11 @@ export function updatePaperProperties(
 export function setLengthDisplayUnit(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   unit: LengthDisplayUnit,
 ) {
   return invoke<ProjectSnapshot>('set_length_display_unit', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     unit,
@@ -758,10 +901,12 @@ export function setLengthDisplayUnit(
 export function resizeRectangularPaper(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   widthMm: number,
   heightMm: number,
 ) {
   return invoke<ProjectSnapshot>('resize_rectangular_paper', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     widthMm,
@@ -772,10 +917,12 @@ export function resizeRectangularPaper(
 export function splitBoundaryEdge(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   edge: string,
   fraction: number,
 ) {
   return invoke<ProjectSnapshot>('split_boundary_edge', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     edge,
@@ -786,10 +933,12 @@ export function splitBoundaryEdge(
 export function splitEdge(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   edge: string,
   fraction: number,
 ) {
   return invoke<ProjectSnapshot>('split_edge', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     edge,
@@ -800,10 +949,12 @@ export function splitEdge(
 export function connectEdgeIntersection(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   firstEdge: string,
   secondEdge: string,
 ) {
   return invoke<EdgeIntersectionResponse>('connect_edge_intersection', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     firstEdge,
@@ -814,10 +965,12 @@ export function connectEdgeIntersection(
 export function connectIntersectionCluster(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   targets: readonly IntersectionClusterTarget[],
   junctionVertexId?: string,
 ) {
   return invoke<EdgeIntersectionResponse>('connect_intersection_cluster', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     targets,
@@ -828,10 +981,12 @@ export function connectIntersectionCluster(
 export function connectTJunction(
   expectedProjectId: string,
   expectedRevision: number,
+  expectedProjectInstanceId: string,
   firstEdge: string,
   secondEdge: string,
 ) {
   return invoke<EdgeIntersectionResponse>('connect_t_junction', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     firstEdge,

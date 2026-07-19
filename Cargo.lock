@@ -2090,10 +2090,12 @@ dependencies = [
  "num-rational",
  "num-traits",
  "ori-domain",
+ "ori-foldability",
  "ori-kinematics",
  "ori-topology",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
 ]
 
@@ -2109,7 +2111,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "uuid",
 ]
 
 [[package]]

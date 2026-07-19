@@ -22,6 +22,7 @@
 #[allow(dead_code)]
 mod cayley;
 mod cell_order_transport;
+mod flat_endpoint_layer_order;
 mod static_collision;
 mod zero_thickness;
 
@@ -30,6 +31,13 @@ pub use cell_order_transport::{
     CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,
     NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
     prove_single_face_cell_order_transport_v1, revalidate_single_face_cell_order_transport_v1,
+};
+pub use flat_endpoint_layer_order::{
+    FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointCellKeyV1, FlatEndpointLayerCellV1,
+    FlatEndpointLayerOrderAnchorErrorV1, FlatEndpointLayerOrderInputV1,
+    FlatEndpointLayerOrderLimitsV1, FlatEndpointLayerOrderResourceV1, FlatEndpointLayerOrderWorkV1,
+    NativeFlatEndpointLayerOrderAnchorV1, anchor_flat_endpoint_layer_order_v1,
+    revalidate_flat_endpoint_layer_order_anchor_v1,
 };
 pub use static_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,

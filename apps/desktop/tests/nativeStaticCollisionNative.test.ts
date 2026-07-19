@@ -75,6 +75,47 @@ test('pose keys are canonical, complete, and fail closed', () => {
     }),
   )
   assert.equal(nativeStaticCollisionPoseKey({ ...POSE, projectId: 'invalid' }), null)
+  assert.equal(
+    nativeStaticCollisionPoseKey({
+      projectInstanceId: '00000000-0000-0000-7000-000000000001',
+      projectId: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      revision: 7,
+      fixedFaceId: '00000000-0000-0000-0000-000000000003',
+      completeHingeAngles: [
+        {
+          edgeId: '00000000-0000-0000-7000-000000000005',
+          angleDegrees: 135,
+        },
+      ],
+    }) === null,
+    false,
+  )
+  assert.equal(
+    nativeStaticCollisionPoseKey({
+      ...POSE,
+      projectId: '00000000-0000-0000-0000-000000000000',
+    }),
+    null,
+  )
+})
+
+test('inspection accepts canonical non-nil UUIDs with arbitrary version and variant bits', async () => {
+  const binding = {
+    projectInstanceId: '00000000-0000-0000-7000-000000000001',
+    projectId: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    revision: 7,
+    poseGeneration: '11',
+  }
+  const transport = createNativeStaticCollisionNativeTransport(() => ({
+    binding,
+    status: 'certified_nonblocking',
+    reason: null,
+    expectedUnorderedFacePairs: 0,
+    provenPenetratingPairs: 0,
+    firstProvenPenetratingPair: null,
+  }))
+
+  assert.deepEqual((await transport.inspect()).binding, binding)
 })
 
 test('inspection accepts only a relationally valid certified response', async () => {
@@ -226,6 +267,10 @@ test('invalid pose requests are rejected before native invocation', async () => 
   })
   const invalid = [
     { ...POSE, projectInstanceId: 'not-an-id' },
+    {
+      ...POSE,
+      projectId: '00000000-0000-0000-0000-000000000000',
+    },
     { ...POSE, revision: -1 },
     { ...POSE, fixedFaceId: 'not-an-id' },
     {

@@ -22,6 +22,7 @@ test('all instruction commands keep camel-case invoke arguments and registered n
 
   const add = exportedFunction('addInstructionStep')
   for (const argument of [
+    'expectedProjectInstanceId',
     'expectedProjectId',
     'expectedRevision',
     'title',
@@ -38,7 +39,7 @@ test('all instruction commands keep camel-case invoke arguments and registered n
   const replace = exportedFunction('replaceInstructionStepPose')
   assert.match(
     replace,
-    /\{\s*expectedProjectId,\s*expectedRevision,\s*stepId,\s*fixedFace,\s*hingeAngles,\s*\}/u,
+    /\{\s*expectedProjectInstanceId,\s*expectedProjectId,\s*expectedRevision,\s*stepId,\s*fixedFace,\s*hingeAngles,\s*\}/u,
   )
   assert.doesNotMatch(replace, /fingerprint|sourceModel/u)
 })

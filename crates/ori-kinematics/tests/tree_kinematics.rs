@@ -7,7 +7,8 @@ use ori_kinematics::{
     Point3, TreeKinematicsLimits, VertexPosition3, deterministic_sin_cos_degrees,
 };
 use ori_topology::{
-    EdgeIncidence, FaceExtractionInput, FoldAssignment, TopologySnapshot, analyze_faces,
+    BoundaryWalk, EdgeIncidence, Face, FaceExtractionInput, FoldAssignment, HalfEdgeRef,
+    TopologySnapshot, analyze_faces, canonical_face_key,
 };
 
 struct FoldFixture {
@@ -153,6 +154,68 @@ fn planar_fixture() -> FoldFixture {
         })
         .collect();
     extract_fixture(vertices, edges, boundary, Vec::new())
+}
+
+fn unchecked_single_face_fixture(points: &[(f64, f64)]) -> FoldFixture {
+    let vertices = points
+        .iter()
+        .enumerate()
+        .map(|(index, (x, y))| vertex(index as u64 + 1, *x, *y))
+        .collect::<Vec<_>>();
+    let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+    let edges = (0..boundary.len())
+        .map(|index| {
+            edge(
+                index as u64 + 1,
+                boundary[index],
+                boundary[(index + 1) % boundary.len()],
+                EdgeKind::Boundary,
+            )
+        })
+        .collect::<Vec<_>>();
+    let half_edges = edges
+        .iter()
+        .map(|edge| HalfEdgeRef {
+            edge: edge.id,
+            origin: edge.start,
+            destination: edge.end,
+        })
+        .collect::<Vec<_>>();
+    let signed_double_area = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .map(|((x1, y1), (x2, y2))| x1 * y2 - y1 * x2)
+        .sum::<f64>();
+    assert!(signed_double_area > 0.0);
+    let key = canonical_face_key(&half_edges).expect("adversarial face key");
+    let face = Face {
+        id: fixture_face_id(1),
+        key,
+        outer: BoundaryWalk {
+            half_edges,
+            signed_double_area,
+        },
+        area: signed_double_area * 0.5,
+    };
+    let topology = TopologySnapshot {
+        source_revision: 17,
+        edge_incidence: edges
+            .iter()
+            .map(|edge| (edge.id, EdgeIncidence::Boundary { material: face.id }))
+            .collect(),
+        faces: vec![face],
+        hinge_adjacency: Vec::new(),
+    };
+    FoldFixture {
+        pattern: CreasePattern { vertices, edges },
+        paper: Paper {
+            boundary_vertices: boundary.clone(),
+            ..Paper::default()
+        },
+        topology,
+        hinges: Vec::new(),
+        vertices: boundary,
+    }
 }
 
 fn model(fixture: &FoldFixture) -> MaterialTreeKinematicsModel {
@@ -579,6 +642,60 @@ fn material_face_boundaries_are_canonical_pose_consistent_and_issuer_bound() {
 }
 
 #[test]
+fn positive_signed_area_self_intersection_cannot_issue_material_boundary() {
+    // Edges (4, 0)->(0, 4) and (4, 4)->(0, 3) cross strictly,
+    // while the adversarial snapshot still carries positive numeric area.
+    let fixture = unchecked_single_face_fixture(&[
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (0.0, 4.0),
+        (4.0, 4.0),
+        (0.0, 3.0),
+    ]);
+    assert_eq!(
+        MaterialTreeKinematicsModel::prepare(
+            &fixture.pattern,
+            &fixture.paper,
+            &fixture.topology,
+            TreeKinematicsLimits::default(),
+        ),
+        Err(KinematicsError::UnsupportedTopology)
+    );
+    assert_eq!(
+        ObservationTreeKinematicsModel::prepare_with_positions(
+            &fixture.pattern,
+            &fixture.paper,
+            &fixture.topology,
+            &material_position_records(&fixture.pattern),
+            TreeKinematicsLimits::default(),
+        ),
+        Err(KinematicsError::UnsupportedTopology)
+    );
+}
+
+#[test]
+fn geometric_zero_length_boundary_cannot_issue_material_boundary() {
+    // Distinct vertex IDs are insufficient: the second edge has equal exact
+    // binary64 endpoint coordinates and must not become a material boundary.
+    let fixture = unchecked_single_face_fixture(&[
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+    ]);
+    assert_eq!(
+        MaterialTreeKinematicsModel::prepare(
+            &fixture.pattern,
+            &fixture.paper,
+            &fixture.topology,
+            TreeKinematicsLimits::default(),
+        ),
+        Err(KinematicsError::UnsupportedTopology)
+    );
+}
+
+#[test]
 fn material_face_boundary_registry_ignores_cycle_start_and_source_edge_direction() {
     let fixture = non_commuting_fixture();
     let baseline = model(&fixture);
@@ -851,6 +968,7 @@ fn material_topology_ignores_isolated_draft_vertices_and_auxiliary_geometry() {
     let angles = canonical_angles(&[(fixture.hinges[0], 31.0), (fixture.hinges[1], 77.0)]);
     let expected = baseline.solve(Some(root), &angles).expect("baseline pose");
 
+    let duplicate_coordinate_isolated = fixture_vertex_id(97);
     let finite_isolated = fixture_vertex_id(98);
     let nonfinite_isolated = fixture_vertex_id(99);
     let auxiliary = edge(
@@ -859,11 +977,26 @@ fn material_topology_ignores_isolated_draft_vertices_and_auxiliary_geometry() {
         fixture_vertex_id(999),
         EdgeKind::Auxiliary,
     );
+    let duplicate_coordinate_auxiliary = edge(
+        98,
+        duplicate_coordinate_isolated,
+        finite_isolated,
+        EdgeKind::Auxiliary,
+    );
     let mut pattern = fixture.pattern.clone();
+    let material_position = pattern.vertices[0].position;
+    pattern
+        .vertices
+        .push(vertex(97, material_position.x, material_position.y));
     pattern.vertices.push(vertex(98, 30.0, 30.0));
     pattern.vertices.push(vertex(99, f64::NAN, f64::INFINITY));
+    pattern.edges.push(duplicate_coordinate_auxiliary.clone());
     pattern.edges.push(auxiliary.clone());
     let mut topology = fixture.topology.clone();
+    topology.edge_incidence.push((
+        duplicate_coordinate_auxiliary.id,
+        EdgeIncidence::AuxiliaryIgnored,
+    ));
     topology
         .edge_incidence
         .push((auxiliary.id, EdgeIncidence::AuxiliaryIgnored));
@@ -880,9 +1013,17 @@ fn material_topology_ignores_isolated_draft_vertices_and_auxiliary_geometry() {
     .expect("material participants only");
     assert_eq!(material.face_ids(), baseline.face_ids());
     assert_eq!(material.hinges(), baseline.hinges());
+    assert_eq!(
+        material.vertex_position(duplicate_coordinate_isolated),
+        None
+    );
     assert_eq!(material.vertex_position(finite_isolated), None);
     assert_eq!(material.vertex_position(nonfinite_isolated), None);
     let material_pose = material.solve(Some(root), &angles).expect("material pose");
+    assert_eq!(
+        material_pose.vertex_position(duplicate_coordinate_isolated),
+        None
+    );
     assert_eq!(material_pose.vertex_position(finite_isolated), None);
     for face in baseline.face_ids() {
         assert_eq!(

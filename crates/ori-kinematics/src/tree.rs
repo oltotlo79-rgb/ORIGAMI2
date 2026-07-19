@@ -4,9 +4,10 @@ use std::{
 };
 
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, VertexId};
-use ori_geometry::polygon_signed_double_area;
+use ori_geometry::{SegmentIntersection, polygon_signed_double_area, segment_intersection};
 use ori_topology::{
-    EdgeIncidence, FaceAdjacency, FaceKey, FoldAssignment, TopologySnapshot, canonical_face_key,
+    CanonicalFaceKeyError, EdgeIncidence, FaceAdjacency, FaceKey, FoldAssignment, TopologySnapshot,
+    canonical_face_key,
 };
 
 use crate::{
@@ -17,6 +18,7 @@ use crate::{
 pub const MATERIAL_TREE_KINEMATICS_MODEL_ID: &str = "material_tree_kinematics_mm_v1";
 pub const CALLER_EMBEDDING_OBSERVATION_MODEL_ID: &str =
     "caller_embedding_tree_kinematics_observation_v1";
+const MAX_SIMPLE_BOUNDARY_EXACT_INTERSECTION_TESTS: usize = 10_000_000;
 
 /// Hard work bounds checked before model allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +195,27 @@ struct PreparedFaceBoundary {
     face: FaceId,
     vertices: Vec<VertexId>,
     edges: Vec<EdgeId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SimpleBoundaryValidationBudget {
+    remaining_exact_intersection_tests: usize,
+}
+
+impl SimpleBoundaryValidationBudget {
+    const fn production() -> Self {
+        Self {
+            remaining_exact_intersection_tests: MAX_SIMPLE_BOUNDARY_EXACT_INTERSECTION_TESTS,
+        }
+    }
+
+    fn charge_exact_intersection_test(&mut self) -> Result<(), KinematicsError> {
+        self.remaining_exact_intersection_tests = self
+            .remaining_exact_intersection_tests
+            .checked_sub(1)
+            .ok_or(KinematicsError::ResourceLimitExceeded)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -589,10 +612,22 @@ fn prepare_tree(
     }
 
     let (mut positions, source_positions) = unique_positions(pattern, supplied_positions)?;
-    let edges = unique_edges(pattern, paper, &positions, &source_positions)?;
+    let mut simple_boundary_budget = SimpleBoundaryValidationBudget::production();
+    let edges = unique_edges(
+        pattern,
+        paper,
+        &positions,
+        &source_positions,
+        &mut simple_boundary_budget,
+    )?;
     let incidences = unique_incidences(topology, &edges)?;
-    let (face_ids, face_boundaries, face_keys, occurrences) =
-        validate_faces(topology, &edges, &positions, &source_positions)?;
+    let (face_ids, face_boundaries, face_keys, occurrences) = validate_faces(
+        topology,
+        &edges,
+        &positions,
+        &source_positions,
+        &mut simple_boundary_budget,
+    )?;
     validate_incidences(&edges, &incidences, &face_ids, &occurrences)?;
     validate_adjacency_registry(topology, &incidences, &face_keys)?;
     retain_material_positions(&mut positions, &edges)?;
@@ -815,10 +850,15 @@ fn unique_edges<'a>(
     paper: &Paper,
     positions: &HashMap<VertexId, Point3>,
     source_positions: &HashMap<VertexId, Point2>,
+    simple_boundary_budget: &mut SimpleBoundaryValidationBudget,
 ) -> Result<HashMap<EdgeId, &'a Edge>, KinematicsError> {
     let mut boundary_vertices = HashSet::new();
     boundary_vertices
         .try_reserve(paper.boundary_vertices.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    let mut paper_boundary_positions = Vec::new();
+    paper_boundary_positions
+        .try_reserve_exact(paper.boundary_vertices.len())
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     for vertex in &paper.boundary_vertices {
         let source_position = source_positions
@@ -833,7 +873,13 @@ fn unique_edges<'a>(
         if !boundary_vertices.insert(*vertex) {
             return Err(KinematicsError::UnsupportedTopology);
         }
+        paper_boundary_positions.push(*source_position);
     }
+    validate_simple_boundary(
+        &paper.boundary_vertices,
+        &paper_boundary_positions,
+        simple_boundary_budget,
+    )?;
     let mut paper_boundary_edges = HashSet::new();
     paper_boundary_edges
         .try_reserve(paper.boundary_vertices.len())
@@ -855,6 +901,10 @@ fn unique_edges<'a>(
     let mut source_boundary_edges = HashSet::new();
     source_boundary_edges
         .try_reserve(paper.boundary_vertices.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    let mut material_position_owners = HashMap::new();
+    material_position_owners
+        .try_reserve(positions.len())
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     for edge in &pattern.edges {
         if edges.insert(edge.id, edge).is_some() {
@@ -878,6 +928,15 @@ fn unique_edges<'a>(
                 || !positions.contains_key(&vertex)
             {
                 return Err(KinematicsError::UnrepresentableGeometry);
+            }
+            match material_position_owners.entry(exact_point_key(*source_position)) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(vertex);
+                }
+                std::collections::hash_map::Entry::Occupied(entry) if *entry.get() == vertex => {}
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(KinematicsError::UnsupportedTopology);
+                }
             }
         }
         if edge.kind == EdgeKind::Boundary
@@ -945,6 +1004,7 @@ fn validate_faces(
     edges: &HashMap<EdgeId, &Edge>,
     positions: &HashMap<VertexId, Point3>,
     source_positions: &HashMap<VertexId, Point2>,
+    simple_boundary_budget: &mut SimpleBoundaryValidationBudget,
 ) -> Result<ValidatedFaces, KinematicsError> {
     let mut face_ids_set = HashSet::new();
     face_ids_set
@@ -968,15 +1028,19 @@ fn validate_faces(
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     for face in &topology.faces {
         let walk = &face.outer.half_edges;
-        if walk.len() < 3
-            || !face_ids_set.insert(face.id)
-            || !face_keys_set.insert(face.key)
-            || canonical_face_key(walk).ok() != Some(face.key)
-        {
+        if walk.len() < 3 || !face_ids_set.insert(face.id) || !face_keys_set.insert(face.key) {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let actual_face_key = canonical_face_key(walk).map_err(map_canonical_face_key_error)?;
+        if actual_face_key != face.key {
             return Err(KinematicsError::UnsupportedTopology);
         }
         let mut source_boundary = Vec::new();
         source_boundary
+            .try_reserve_exact(walk.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        let mut boundary_vertices = Vec::new();
+        boundary_vertices
             .try_reserve_exact(walk.len())
             .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
         for half_edge in walk {
@@ -986,7 +1050,9 @@ fn validate_faces(
                     .copied()
                     .ok_or(KinematicsError::UnsupportedTopology)?,
             );
+            boundary_vertices.push(half_edge.origin);
         }
+        validate_simple_boundary(&boundary_vertices, &source_boundary, simple_boundary_budget)?;
         let signed_double_area = polygon_signed_double_area(&source_boundary)
             .map_err(|_| KinematicsError::UnrepresentableGeometry)?;
         let area = signed_double_area * 0.5;
@@ -1000,10 +1066,6 @@ fn validate_faces(
             return Err(KinematicsError::UnsupportedTopology);
         }
         face_keys.insert(face.id, face.key);
-        let mut boundary_vertices = Vec::new();
-        boundary_vertices
-            .try_reserve_exact(walk.len())
-            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
         let mut boundary_edges = Vec::new();
         boundary_edges
             .try_reserve_exact(walk.len())
@@ -1031,7 +1093,6 @@ fn validate_faces(
                 .try_reserve(1)
                 .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
             edge_occurrences.push((face.id, half_edge.origin, half_edge.destination));
-            boundary_vertices.push(half_edge.origin);
             boundary_edges.push(half_edge.edge);
         }
         canonicalize_face_boundary(&mut boundary_vertices, &mut boundary_edges)?;
@@ -1057,6 +1118,130 @@ fn validate_faces(
         return Err(KinematicsError::UnsupportedTopology);
     }
     Ok((face_ids, face_boundaries, face_keys, occurrences))
+}
+
+/// Validates the exact binary64 topology of one closed material boundary.
+///
+/// Concave polygons and consecutive collinear vertices are supported. A
+/// collinear middle vertex is valid only when the two adjacent edges meet at
+/// that endpoint without backtracking over a positive interval. Every
+/// non-adjacent edge pair must be disjoint. Distinct vertex records at the
+/// same exact coordinate, including `-0.0` versus `+0.0`, are rejected before
+/// an identity-bearing material boundary can be issued.
+fn validate_simple_boundary(
+    vertices: &[VertexId],
+    points: &[Point2],
+    budget: &mut SimpleBoundaryValidationBudget,
+) -> Result<(), KinematicsError> {
+    if vertices.len() < 3 || vertices.len() != points.len() {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+
+    let mut unique_vertices = HashSet::new();
+    unique_vertices
+        .try_reserve(vertices.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    let mut unique_points = HashSet::new();
+    unique_points
+        .try_reserve(points.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    for (vertex, point) in vertices.iter().copied().zip(points.iter().copied()) {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Err(KinematicsError::UnrepresentableGeometry);
+        }
+        if !unique_vertices.insert(vertex) || !unique_points.insert(exact_point_key(point)) {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+    }
+
+    for index in 0..points.len() {
+        if points[index] == points[(index + 1) % points.len()] {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+    }
+
+    // An x-axis sweep is a conservative broad phase only. All accepted or
+    // rejected intersection topology comes from ori-geometry's exact
+    // arbitrary-precision binary64 segment predicate.
+    let mut by_min_x = Vec::new();
+    by_min_x
+        .try_reserve_exact(points.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    by_min_x.extend(0..points.len());
+    by_min_x.sort_unstable_by(|left, right| {
+        boundary_edge_min_x(points, *left)
+            .total_cmp(&boundary_edge_min_x(points, *right))
+            .then_with(|| left.cmp(right))
+    });
+
+    for (sweep_index, first_index) in by_min_x.iter().copied().enumerate() {
+        let first_start = points[first_index];
+        let first_end = points[(first_index + 1) % points.len()];
+        let first_max_x = first_start.x.max(first_end.x);
+        let first_min_y = first_start.y.min(first_end.y);
+        let first_max_y = first_start.y.max(first_end.y);
+        for second_index in by_min_x.iter().copied().skip(sweep_index + 1) {
+            if boundary_edge_min_x(points, second_index) > first_max_x {
+                break;
+            }
+            let second_start = points[second_index];
+            let second_end = points[(second_index + 1) % points.len()];
+            let second_min_y = second_start.y.min(second_end.y);
+            let second_max_y = second_start.y.max(second_end.y);
+            if second_min_y > first_max_y || first_min_y > second_max_y {
+                continue;
+            }
+
+            budget.charge_exact_intersection_test()?;
+            let adjacent = boundary_edges_are_adjacent(first_index, second_index, points.len());
+            match segment_intersection(first_start, first_end, second_start, second_end) {
+                Ok(SegmentIntersection::None) => {}
+                Ok(SegmentIntersection::Point(point))
+                    if adjacent
+                        && adjacent_shared_endpoint(first_index, second_index, points) == point => {
+                }
+                Ok(SegmentIntersection::Point(_) | SegmentIntersection::CollinearOverlap) => {
+                    return Err(KinematicsError::UnsupportedTopology);
+                }
+                Err(_) => return Err(KinematicsError::UnrepresentableGeometry),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn boundary_edge_min_x(points: &[Point2], index: usize) -> f64 {
+    points[index].x.min(points[(index + 1) % points.len()].x)
+}
+
+fn boundary_edges_are_adjacent(first: usize, second: usize, length: usize) -> bool {
+    first.abs_diff(second) == 1 || first.abs_diff(second) == length - 1
+}
+
+fn adjacent_shared_endpoint(first: usize, second: usize, points: &[Point2]) -> Point2 {
+    if (first + 1) % points.len() == second {
+        points[second]
+    } else {
+        debug_assert_eq!((second + 1) % points.len(), first);
+        points[first]
+    }
+}
+
+fn exact_point_key(point: Point2) -> (u64, u64) {
+    (exact_coordinate_key(point.x), exact_coordinate_key(point.y))
+}
+
+fn exact_coordinate_key(value: f64) -> u64 {
+    if value == 0.0 { 0 } else { value.to_bits() }
+}
+
+fn map_canonical_face_key_error(error: CanonicalFaceKeyError) -> KinematicsError {
+    match error {
+        CanonicalFaceKeyError::AllocationFailed
+        | CanonicalFaceKeyError::BoundaryLengthUnrepresentable => {
+            KinematicsError::ResourceLimitExceeded
+        }
+    }
 }
 
 fn canonicalize_face_boundary(
@@ -1480,8 +1665,26 @@ fn checked_double(count: usize, maximum: usize) -> Result<usize, KinematicsError
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_accumulate, checked_double};
+    use ori_domain::{Point2, VertexId};
+    use ori_topology::CanonicalFaceKeyError;
+
+    use super::{
+        SimpleBoundaryValidationBudget, checked_accumulate, checked_double, exact_point_key,
+        map_canonical_face_key_error, validate_simple_boundary,
+    };
     use crate::KinematicsError;
+
+    fn vertex_ids(count: usize) -> Vec<VertexId> {
+        (0..count).map(|_| VertexId::new()).collect()
+    }
+
+    fn validate_points(points: &[Point2]) -> Result<(), KinematicsError> {
+        validate_simple_boundary(
+            &vertex_ids(points.len()),
+            points,
+            &mut SimpleBoundaryValidationBudget::production(),
+        )
+    }
 
     #[test]
     fn resource_arithmetic_cannot_overflow_or_cross_its_limit() {
@@ -1502,6 +1705,206 @@ mod tests {
         assert_eq!(
             checked_double(usize::MAX, usize::MAX),
             Err(KinematicsError::ResourceLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn exact_simple_boundary_accepts_concavity_collinear_vertices_and_cycle_symmetry() {
+        let points = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(2.0, 2.0),
+            Point2::new(0.0, 4.0),
+        ];
+        for rotation in 0..points.len() {
+            let mut rotated = points.clone();
+            rotated.rotate_left(rotation);
+            assert_eq!(validate_points(&rotated), Ok(()));
+            rotated.reverse();
+            assert_eq!(validate_points(&rotated), Ok(()));
+        }
+    }
+
+    #[test]
+    fn exact_simple_boundary_rejects_every_non_simple_contact_class() {
+        let invalid = [
+            // Strict crossing with positive signed area.
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(0.0, 4.0),
+                Point2::new(4.0, 4.0),
+                Point2::new(0.0, 3.0),
+            ],
+            // A non-adjacent vertex touches the strict interior of edge 0.
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(4.0, 4.0),
+                Point2::new(2.0, 0.0),
+                Point2::new(0.0, 4.0),
+            ],
+            // Adjacent collinear edges backtrack over positive length.
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(2.0, 0.0),
+                Point2::new(4.0, 4.0),
+                Point2::new(0.0, 4.0),
+            ],
+            // A non-adjacent edge overlaps the first edge.
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(4.0, 4.0),
+                Point2::new(1.0, 0.0),
+                Point2::new(3.0, 0.0),
+                Point2::new(0.0, 4.0),
+            ],
+        ];
+        for points in invalid {
+            for rotation in 0..points.len() {
+                let mut rotated = points.clone();
+                rotated.rotate_left(rotation);
+                assert_eq!(
+                    validate_points(&rotated),
+                    Err(KinematicsError::UnsupportedTopology)
+                );
+                rotated.reverse();
+                assert_eq!(
+                    validate_points(&rotated),
+                    Err(KinematicsError::UnsupportedTopology)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_simple_boundary_rejects_duplicate_identity_and_exact_coordinate() {
+        let points = [
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(0.0, 4.0),
+        ];
+        let mut duplicate_identity = vertex_ids(points.len());
+        duplicate_identity[2] = duplicate_identity[0];
+        assert_eq!(
+            validate_simple_boundary(
+                &duplicate_identity,
+                &points,
+                &mut SimpleBoundaryValidationBudget::production(),
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+
+        let duplicate_coordinate = [
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(-0.0, 0.0),
+            Point2::new(0.0, 4.0),
+        ];
+        assert_eq!(
+            validate_points(&duplicate_coordinate),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+        assert_eq!(
+            exact_point_key(Point2::new(-0.0, 0.0)),
+            exact_point_key(Point2::new(0.0, -0.0))
+        );
+    }
+
+    #[test]
+    fn exact_simple_boundary_handles_maximum_and_subnormal_finite_coordinates() {
+        let maximum = f64::MAX;
+        assert_eq!(
+            validate_points(&[
+                Point2::new(-maximum, -maximum),
+                Point2::new(maximum, -maximum),
+                Point2::new(maximum, maximum),
+                Point2::new(-maximum, maximum),
+            ]),
+            Ok(())
+        );
+
+        let subnormal = f64::from_bits(1);
+        assert_eq!(
+            validate_points(&[
+                Point2::new(0.0, 0.0),
+                Point2::new(subnormal, 0.0),
+                Point2::new(subnormal, subnormal),
+                Point2::new(0.0, subnormal),
+            ]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn exact_simple_boundary_never_accepts_extreme_scale_crossings() {
+        for scale in [f64::from_bits(1), f64::MAX / 4.0] {
+            let crossing = [
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0 * scale, 0.0),
+                Point2::new(0.0, 4.0 * scale),
+                Point2::new(4.0 * scale, 4.0 * scale),
+                Point2::new(0.0, 3.0 * scale),
+            ];
+            assert!(
+                validate_points(&crossing).is_err(),
+                "an exact crossing must fail closed at scale {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_simple_boundary_work_budget_is_fail_closed_at_one_past_limit() {
+        let points = [
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(4.0, 4.0),
+            Point2::new(0.0, 4.0),
+        ];
+        let vertices = vertex_ids(points.len());
+        let mut measured = SimpleBoundaryValidationBudget {
+            remaining_exact_intersection_tests: 100,
+        };
+        validate_simple_boundary(&vertices, &points, &mut measured).expect("measured square");
+        let exact = 100 - measured.remaining_exact_intersection_tests;
+        assert!(exact > 0);
+
+        assert_eq!(
+            validate_simple_boundary(
+                &vertices,
+                &points,
+                &mut SimpleBoundaryValidationBudget {
+                    remaining_exact_intersection_tests: exact,
+                },
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_simple_boundary(
+                &vertices,
+                &points,
+                &mut SimpleBoundaryValidationBudget {
+                    remaining_exact_intersection_tests: exact - 1,
+                },
+            ),
+            Err(KinematicsError::ResourceLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn canonical_face_key_allocation_failure_remains_a_resource_failure() {
+        assert_eq!(
+            map_canonical_face_key_error(CanonicalFaceKeyError::AllocationFailed),
+            KinematicsError::ResourceLimitExceeded
+        );
+        assert_eq!(
+            map_canonical_face_key_error(CanonicalFaceKeyError::BoundaryLengthUnrepresentable),
+            KinematicsError::ResourceLimitExceeded
         );
     }
 }

@@ -53,7 +53,24 @@ jobs:
           CARGO_TERM_COLOR: always
         run: |
           set -o pipefail
-          cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 | tee cargo-test.log
+          test_status=0
+          cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 | tee cargo-test.log || test_status=$?
+          if [ "$test_status" -ne 0 ]; then
+            failure_summary="$(
+              grep -E '(^test .* FAILED$|^failures:|panicked at|test result: FAILED|error: test failed|error: could not compile)' cargo-test.log \
+                | tail -n 24 \
+                | tr '\n' ' ' \
+                | sed -E 's/[[:space:]]+/ /g'
+            )"
+            if [ -z "$failure_summary" ]; then
+              failure_summary="Rust tests failed. Download rust-test-log-${{ matrix.os }} for the complete output."
+            fi
+            failure_summary="${failure_summary//'%'/'%25'}"
+            failure_summary="${failure_summary//$'\r'/'%0D'}"
+            failure_summary="${failure_summary//$'\n'/'%0A'}"
+            echo "::error title=Rust tests failed::$failure_summary"
+          fi
+          exit "$test_status"
       - name: Upload Rust test log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

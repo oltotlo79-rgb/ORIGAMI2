@@ -1,8 +1,13 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { FoldPreviewCollisionBadge } from '../src/components/FoldPreviewCollisionBadge'
-import type { CollisionSummary } from '../src/lib/foldPreviewCollisionView'
+import {
+  describeCollisionSummary,
+  type CollisionSummary,
+} from '../src/lib/foldPreviewCollisionView'
+import { useLocale, type LocaleStore } from '../src/lib/i18n.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 type ReadySummary = Extract<CollisionSummary, { kind: 'ready' }>
 
@@ -12,6 +17,73 @@ afterEach(() => {
 })
 
 describe('FoldPreviewCollisionBadge', () => {
+  it('live-translates blocking text, ARIA, and the generated description', () => {
+    const localeStore = localeFixture('ja')
+    const summary = ready({ indeterminateInteractions: 2 })
+    render(
+      <LocalizedCollisionBadge
+        summary={summary}
+        localeStore={localeStore}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toContain(
+      '交差の可能性・判定保留 2',
+    )
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    const badge = screen.getByRole('alert', {
+      name: /^Safety warning\. Current pose\. Possible intersection/u,
+    })
+    expect(badge.textContent).toBe(
+      'Current pose | Possible intersection / indeterminate 2 · safety review required',
+    )
+    expect(badge.getAttribute('title')).toContain(
+      '2 possible intersections / indeterminate results',
+    )
+    expect(badge.getAttribute('title')).toContain(
+      'Indeterminate results require safety review',
+    )
+  })
+
+  it('renders English unavailable, shared-vertex, and flat-stack policies', () => {
+    const localeStore = localeFixture('en')
+    const rendered = render(
+      <LocalizedCollisionBadge
+        summary={{ kind: 'unavailable', requestKey: 'pose' }}
+        localeStore={localeStore}
+      />,
+    )
+    expect(screen.getByRole('alert', {
+      name: /Collision check unavailable · safety review required/u,
+    }).getAttribute('data-collision-status')).toBe('unavailable')
+
+    rendered.rerender(
+      <LocalizedCollisionBadge
+        summary={ready({ nonAdjacentAllowedSharedVertexContacts: 1 })}
+        localeStore={localeStore}
+      />,
+    )
+    expect(screen.getByRole('status', {
+      name: /Allowed shared-vertex contact 1 · penetration 0/u,
+    }).textContent).toContain('Current pose |')
+
+    rendered.rerender(
+      <LocalizedCollisionBadge
+        summary={ready({
+          hingeInteractions: 1,
+          hingeModelFlatSurfaceStacks: 1,
+        })}
+        localeStore={localeStore}
+      />,
+    )
+    expect(screen.getByRole('status', {
+      name: /Allowed zero-thickness flat stack 1/u,
+    }).getAttribute('data-collision-risk')).toBe('informational')
+  })
+
   it('shows indeterminate intersections as an explicit blocking collision risk', () => {
     const { container } = render(
       <FoldPreviewCollisionBadge
@@ -180,6 +252,28 @@ describe('FoldPreviewCollisionBadge', () => {
     expect(badge.getAttribute('aria-live')).toBe('polite')
   })
 })
+
+function LocalizedCollisionBadge({
+  summary,
+  localeStore,
+}: Readonly<{
+  summary: CollisionSummary | null
+  localeStore: LocaleStore
+}>) {
+  const locale = useLocale(localeStore)
+  return (
+    <FoldPreviewCollisionBadge
+      summary={summary}
+      description={describeCollisionSummary(
+        summary,
+        true,
+        'unverified',
+        locale,
+      )}
+      localeStore={localeStore}
+    />
+  )
+}
 
 function ready(overrides: Partial<ReadySummary> = {}): ReadySummary {
   return {

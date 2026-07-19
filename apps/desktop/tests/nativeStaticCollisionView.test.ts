@@ -175,3 +175,108 @@ test('checking, failed, and contradictory DTOs never look certified', () => {
     assert.equal(view.requiresSafetyReview, true)
   }
 })
+
+test('English presents every exact-check outcome without changing wire status', () => {
+  assert.deepEqual(
+    presentNativeStaticCollision({ kind: 'idle' }, 'en'),
+    {
+      dataStatus: 'idle',
+      badgeClass: 'is-idle',
+      badgeText: 'Exact check | Waiting for pose',
+      accessibleText:
+        'The exact collision check is waiting for a stable displayed pose.',
+      requiresSafetyReview: false,
+    },
+  )
+  assert.match(
+    presentNativeStaticCollision({ kind: 'waiting' }, 'en').accessibleText,
+    /Do not treat this pose as safety-verified/u,
+  )
+  assert.equal(
+    presentNativeStaticCollision({ kind: 'checking' }, 'en').badgeText,
+    'Exact check | Checking',
+  )
+  assert.equal(
+    presentNativeStaticCollision({ kind: 'failed' }, 'en').badgeText,
+    'Exact check | Failed · safety review required',
+  )
+
+  const clear = presentNativeStaticCollision({
+    kind: 'ready',
+    diagnostic: certified,
+  }, 'en')
+  assert.equal(clear.dataStatus, 'certified_nonblocking')
+  assert.match(clear.badgeText, /No zero-thickness surface penetration or overlap/u)
+
+  const zeroThickness = presentNativeStaticCollision({
+    kind: 'ready',
+    diagnostic: {
+      status: 'blocking',
+      reason: 'proven_zero_thickness_penetration',
+      expectedUnorderedFacePairs: 3,
+      provenPenetratingPairs: 2,
+      firstProvenPenetratingPair: null,
+    },
+  }, 'en')
+  assert.equal(zeroThickness.dataStatus, 'penetrating')
+  assert.match(zeroThickness.badgeText, /penetration or overlap 2/u)
+
+  const positiveThickness = presentNativeStaticCollision({
+    kind: 'ready',
+    diagnostic: {
+      status: 'blocking',
+      reason: 'proven_positive_thickness_penetration',
+      expectedUnorderedFacePairs: 3,
+      provenPenetratingPairs: 1,
+      firstProvenPenetratingPair: {
+        firstFaceId: '00000000-0000-4000-8000-000000000001',
+        secondFaceId: '00000000-0000-4000-8000-000000000002',
+      },
+    },
+  }, 'en')
+  assert.equal(
+    positiveThickness.badgeText,
+    'Exact check | Material penetration including paper thickness 1 · safety certification denied',
+  )
+  assert.match(
+    positiveThickness.accessibleText,
+    /material penetrations including paper thickness/u,
+  )
+
+  const reasonLabels = new Map([
+    ['evidence_unavailable', 'Insufficient evidence'],
+    ['resource_limit_exceeded', 'Resource limit'],
+    ['inconsistent_state', 'Inconsistent state'],
+  ] as const)
+  for (const [reason, label] of reasonLabels) {
+    const view = presentNativeStaticCollision({
+      kind: 'ready',
+      diagnostic: {
+        status: 'blocking',
+        reason,
+        expectedUnorderedFacePairs: reason === 'evidence_unavailable' ? 3 : null,
+        provenPenetratingPairs: null,
+        firstProvenPenetratingPair: null,
+      },
+    }, 'en')
+    assert.equal(view.dataStatus, 'indeterminate')
+    assert.match(view.badgeText, new RegExp(label, 'u'))
+    assert.match(view.accessibleText, /Do not treat this pose as safety-verified/u)
+  }
+
+  const unavailable = presentNativeStaticCollision({
+    kind: 'ready',
+    diagnostic: {
+      status: 'unavailable',
+      reason: 'pose_authority_unavailable',
+      expectedUnorderedFacePairs: null,
+      provenPenetratingPairs: null,
+      firstProvenPenetratingPair: null,
+    },
+  }, 'en')
+  assert.equal(unavailable.dataStatus, 'unavailable')
+  assert.equal(
+    unavailable.badgeText,
+    'Exact check | Unavailable · safety review required',
+  )
+})

@@ -32,3 +32,14 @@ test('the collision alert is not hidden with the visual status stack', () => {
     /className=\{`fold-preview-correction \$\{correctionAnalysisView\.badgeClass\}`\}[\s\S]*?aria-hidden="true"/u,
   )
 })
+
+test('both visible and accessible collision descriptions receive the live locale', () => {
+  assert.match(
+    previewSource,
+    /describeCollisionSummary\(\s*currentCollisionSummary,\s*false,\s*collisionPathDisclosure,\s*locale,\s*\)/u,
+  )
+  assert.match(
+    previewSource,
+    /describeCollisionSummary\(\s*currentCollisionSummary,\s*true,\s*collisionPathDisclosure,\s*locale,\s*\)/u,
+  )
+})

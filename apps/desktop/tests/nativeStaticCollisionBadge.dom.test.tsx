@@ -1,15 +1,95 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
   NativeStaticCollisionBadge,
   PoseBoundNativeStaticCollisionBadge,
 } from '../src/components/NativeStaticCollisionBadge'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(cleanup)
 
 describe('NativeStaticCollisionBadge', () => {
+  it('live-translates terminal failure, title, ARIA, and retry controls', () => {
+    const localeStore = localeFixture('ja')
+    render(
+      <NativeStaticCollisionBadge
+        state={{ kind: 'failed' }}
+        onRetry={() => undefined}
+        localeStore={localeStore}
+      />,
+    )
+    assert.ok(screen.getByRole('button', {
+      name: '厳密衝突判定を再試行',
+    }))
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    const alert = screen.getByRole('alert', {
+      name: /^Native exact collision check\./u,
+    })
+    assert.match(alert.textContent ?? '', /Exact check \| Failed/u)
+    assert.match(alert.getAttribute('title') ?? '', /could not be completed/u)
+    assert.match(
+      alert.getAttribute('aria-label') ?? '',
+      /Do not treat this pose as safety-verified/u,
+    )
+    assert.ok(screen.getByRole('button', {
+      name: 'Retry exact collision check',
+    }))
+  })
+
+  it('renders English thickness penetration and indeterminate holds as alerts', () => {
+    const localeStore = localeFixture('en')
+    const rendered = render(
+      <NativeStaticCollisionBadge
+        localeStore={localeStore}
+        state={{
+          kind: 'ready',
+          diagnostic: {
+            status: 'blocking',
+            reason: 'proven_positive_thickness_penetration',
+            expectedUnorderedFacePairs: 3,
+            provenPenetratingPairs: 1,
+            firstProvenPenetratingPair: {
+              firstFaceId: '00000000-0000-4000-8000-000000000001',
+              secondFaceId: '00000000-0000-4000-8000-000000000002',
+            },
+          },
+        }}
+      />,
+    )
+    let alert = screen.getByRole('alert', {
+      name: /material penetrations including paper thickness/u,
+    })
+    assert.equal(alert.getAttribute('data-native-collision-status'), 'penetrating')
+    assert.match(alert.textContent ?? '', /Material penetration including paper thickness 1/u)
+
+    rendered.rerender(
+      <NativeStaticCollisionBadge
+        localeStore={localeStore}
+        state={{
+          kind: 'ready',
+          diagnostic: {
+            status: 'blocking',
+            reason: 'evidence_unavailable',
+            expectedUnorderedFacePairs: 3,
+            provenPenetratingPairs: null,
+            firstProvenPenetratingPair: null,
+          },
+        }}
+      />,
+    )
+    alert = screen.getByRole('alert', {
+      name: /required face-pair evidence could not be obtained/u,
+    })
+    assert.equal(alert.getAttribute('data-native-collision-status'), 'indeterminate')
+    assert.match(alert.textContent ?? '', /possible intersection \/ indeterminate/u)
+  })
+
   it('hides an old green certificate in the first paint of a newly rendered pose', () => {
     const oldPose = pose(10, 'stable')
     const nextPose = pose(45, 'stable')

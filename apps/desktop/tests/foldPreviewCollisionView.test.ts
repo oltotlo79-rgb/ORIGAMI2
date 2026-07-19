@@ -325,6 +325,85 @@ test('pending, unavailable, clear, and detailed descriptions retain safety wordi
   assert.doesNotMatch(separatelyReported, /連続運動中の衝突は未検証/)
 })
 
+test('English covers every safety hold and allowed topology presentation', () => {
+  assert.equal(collisionBadgeText(null, 'en'), 'Collision check in progress')
+  assert.equal(
+    describeCollisionSummary(null, true, 'unverified', 'en'),
+    'Checking collision candidates for the current pose',
+  )
+  const unavailable: CollisionSummary = {
+    kind: 'unavailable',
+    requestKey: 'pose',
+  }
+  assert.equal(
+    collisionBadgeText(unavailable, 'en'),
+    'Collision check unavailable · safety review required',
+  )
+
+  const penetration = ready({
+    totalCandidates: 2,
+    narrowInteractions: 2,
+    nonAdjacentPenetrations: 1,
+    hingeOutsidePenetrations: 1,
+  })
+  assert.equal(
+    collisionBadgeText(penetration, 'en'),
+    'Penetration 2 (outside hinge 1) · contact 0',
+  )
+
+  const sharedVertex = ready({
+    totalCandidates: 1,
+    narrowInteractions: 1,
+    nonAdjacentAllowedSharedVertexContacts: 1,
+  })
+  assert.equal(
+    collisionBadgeText(sharedVertex, 'en'),
+    'Allowed shared-vertex contact 1 · penetration 0',
+  )
+
+  const flatStack = ready({
+    totalCandidates: 1,
+    narrowInteractions: 1,
+    hingeModelFlatSurfaceStacks: 1,
+  })
+  assert.equal(
+    collisionBadgeText(flatStack, 'en'),
+    'Allowed zero-thickness flat stack 1 · ordinary penetration 0',
+  )
+
+  const layerOffset = ready({
+    totalCandidates: 1,
+    narrowInteractions: 1,
+    hingeLayerOffsetUnmodeled: 1,
+    hingeUnresolvedInteractions: 1,
+  })
+  assert.equal(
+    collisionBadgeText(layerOffset, 'en'),
+    'Indeterminate because layer offsets are not modeled 1 · safety review required · penetration not allowed',
+  )
+
+  const indeterminate = ready({
+    totalCandidates: 1,
+    narrowInteractions: 1,
+    indeterminateInteractions: 1,
+    hingeUnresolvedInteractions: 1,
+  })
+  assert.equal(
+    collisionBadgeText(indeterminate, 'en'),
+    'Possible intersection / indeterminate 1 (unresolved hinge 1) · safety review required',
+  )
+  const description = describeCollisionSummary(
+    indeterminate,
+    true,
+    'separately_reported',
+    'en',
+  )
+  assert.match(description, /possible intersections \/ indeterminate results/u)
+  assert.match(description, /Indeterminate results require safety review/u)
+  assert.match(description, /approximate mid-surface check/u)
+  assert.match(description, /continuous-path checking is shown separately/u)
+})
+
 function ready(overrides: Partial<ReadyCollisionSummary> = {}): ReadyCollisionSummary {
   return {
     kind: 'ready',

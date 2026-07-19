@@ -8,6 +8,7 @@ import {
   MILLIMETRE_LENGTH_DISPLAY_UNIT,
   type ResolvedLengthDisplayUnit,
 } from '../lib/lengthUnit'
+import { useLocale } from '../lib/i18n.ts'
 import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
@@ -471,6 +472,7 @@ export function FoldPreview({
   thicknessMm,
   lengthDisplayUnit = MILLIMETRE_LENGTH_DISPLAY_UNIT,
 }: FoldPreviewProps) {
+  const locale = useLocale()
   const hostRef = useRef<HTMLDivElement>(null)
   const runtimeRef = useRef<PreviewRuntime | null>(null)
   const descriptionId = useId()
@@ -3982,6 +3984,7 @@ export function FoldPreview({
     currentCollisionSummary,
     false,
     collisionPathDisclosure,
+    locale,
   )
   const previewPoseNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
     ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}`
@@ -4017,6 +4020,7 @@ export function FoldPreview({
     currentCollisionSummary,
     true,
     collisionPathDisclosure,
+    locale,
   )
   const correctionAnalysisDescription = treeCorrectionAnalysisAvailable
     ? `。${correctionAnalysisView.accessibleText}`

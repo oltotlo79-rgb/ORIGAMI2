@@ -30,7 +30,8 @@
 
 use std::cmp::Ordering;
 
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
+use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 use ori_domain::{EdgeId, FaceId, VertexId};
@@ -47,17 +48,819 @@ pub(super) enum ZeroThicknessAnalysisError {
     ResourceLimitExceeded,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct RestBoundaryVertex {
-    id: VertexId,
-    point: Point3,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RationalWork {
+    max_input_bits: usize,
+    total_input_storage_bits: usize,
+    total_retained_clone_bits: usize,
+    operations: usize,
+    max_preflight_bits: usize,
+    max_intermediate_bits: usize,
+    gcd_fallback_calls: usize,
+    gcd_fallback_input_bits: usize,
+    max_gcd_fallback_call_input_bits: usize,
+    rational_allocations: usize,
+    max_rational_allocation_bits: usize,
+    total_rational_allocation_bits: usize,
+    max_output_bits: usize,
+    total_output_bits: usize,
 }
 
+// Allocation counters are logical exact-kernel allocations: every BigInt
+// magnitude or BigRational clone explicitly produced at this boundary is
+// precharged by a safe payload-bit upper bound. The workspace pins
+// num-bigint 0.4.8 and num-rational 0.4.2. Their internal arithmetic scratch is
+// additionally bounded by the operation/intermediate-bit limits and, for
+// Stein GCD, by both the call and aggregate-input-bit limits. This keeps the
+// public contract independent of allocator capacity rounding while still
+// placing finite bounds on every production path.
+//
+// Vec backing stores are a separate structural resource: every production
+// numeric Vec uses `try_reserve_exact` only after its face, boundary, triangle,
+// pair, interval or clipping bound has been checked. Its retained rational
+// payloads are still charged here when cloned or constructed.
+struct RationalWorkMeter<'a> {
+    limits: &'a ZeroThicknessGeometryLimits,
+    work: RationalWork,
+}
+
+impl<'a> RationalWorkMeter<'a> {
+    fn new(limits: &'a ZeroThicknessGeometryLimits) -> Self {
+        Self {
+            limits,
+            work: RationalWork::default(),
+        }
+    }
+
+    #[cfg(test)]
+    fn unlimited(limits: &'a ZeroThicknessGeometryLimits) -> Self {
+        Self::new(limits)
+    }
+
+    fn checked_allocation_work(
+        &self,
+        allocation_bits: &[usize],
+    ) -> Result<(usize, usize, usize), ZeroThicknessAnalysisError> {
+        let count = self
+            .work
+            .rational_allocations
+            .checked_add(allocation_bits.len())
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if count > self.limits.max_rational_allocations {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+
+        let mut maximum = self.work.max_rational_allocation_bits;
+        let mut total = self.work.total_rational_allocation_bits;
+        for bits in allocation_bits {
+            if *bits > self.limits.max_rational_allocation_bits {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+            total = total
+                .checked_add(*bits)
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+            if total > self.limits.max_total_rational_allocation_bits {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+            maximum = maximum.max(*bits);
+        }
+        Ok((count, maximum, total))
+    }
+
+    fn commit_allocation_work(&mut self, checked: (usize, usize, usize)) {
+        self.work.rational_allocations = checked.0;
+        self.work.max_rational_allocation_bits = checked.1;
+        self.work.total_rational_allocation_bits = checked.2;
+    }
+
+    fn charge_allocations(
+        &mut self,
+        allocation_bits: &[usize],
+    ) -> Result<(), ZeroThicknessAnalysisError> {
+        let checked = self.checked_allocation_work(allocation_bits)?;
+        self.commit_allocation_work(checked);
+        Ok(())
+    }
+
+    fn zero(&mut self) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.preflight_value_bits(1)?;
+        self.charge_allocations(&[0, 1])?;
+        Ok(BigRational::zero())
+    }
+
+    fn one(&mut self) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.preflight_value_bits(1)?;
+        self.charge_allocations(&[1, 1])?;
+        Ok(BigRational::one())
+    }
+
+    fn positive_integer(&mut self, value: u64) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        if value == 0 {
+            return self.zero();
+        }
+        let numerator_bits = usize::try_from(u64::BITS - value.leading_zeros())
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        self.preflight_value_bits(numerator_bits)?;
+        self.charge_allocations(&[numerator_bits, 1])?;
+        Ok(BigRational::from_integer(BigInt::from(value)))
+    }
+
+    fn clone_temporary(
+        &mut self,
+        value: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.preflight_value_bits(rational_bits(value))?;
+        self.charge_allocations(&[bigint_bits(value.numer()), bigint_bits(value.denom())])?;
+        Ok(value.clone())
+    }
+
+    fn negate_temporary(
+        &mut self,
+        value: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.preflight_value_bits(rational_bits(value))?;
+        self.charge_allocations(&[bigint_bits(value.numer()), bigint_bits(value.denom())])?;
+        Ok(-value)
+    }
+
+    fn input_binary64_common_unit(
+        &mut self,
+        value: f64,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        let bits = value.to_bits();
+        let negative = bits >> 63 != 0;
+        let exponent = ((bits >> 52) & 0x7ff) as usize;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let (significand, shift) = if exponent == 0 {
+            (fraction, 0)
+        } else {
+            (fraction | (1_u64 << 52), exponent - 1)
+        };
+        let significand_bits = if significand == 0 {
+            0
+        } else {
+            usize::try_from(u64::BITS - significand.leading_zeros())
+                .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?
+        };
+        let numerator_bits = shifted_nonzero_bits(significand_bits, shift)?;
+        self.charge_input_shape(
+            numerator_bits.max(1),
+            numerator_bits
+                .checked_add(1)
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?,
+            &[significand_bits, numerator_bits, 1],
+        )?;
+        let mut integer = BigInt::from(significand) << shift;
+        if negative {
+            integer = -integer;
+        }
+        let result = BigRational::from_integer(integer);
+        debug_assert_eq!(rational_bits(&result), numerator_bits.max(1));
+        Ok(result)
+    }
+
+    fn input_binary64_scalar(
+        &mut self,
+        value: f64,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        const COMMON_UNIT_SHIFT: usize = 1_074;
+        let bits = value.to_bits();
+        let negative = bits >> 63 != 0;
+        let exponent = ((bits >> 52) & 0x7ff) as usize;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let (significand, common_shift) = if exponent == 0 {
+            (fraction, 0)
+        } else {
+            (fraction | (1_u64 << 52), exponent - 1)
+        };
+        if significand == 0 {
+            self.charge_input_shape(1, 1, &[0, 1])?;
+            let result = BigRational::zero();
+            return Ok(result);
+        }
+
+        let trailing = usize::try_from(significand.trailing_zeros())
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let cancellable = trailing
+            .checked_add(common_shift)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?
+            .min(COMMON_UNIT_SHIFT);
+        let reduced_significand = significand >> trailing.min(cancellable);
+        let residual_numerator_shift = common_shift
+            .checked_add(trailing)
+            .and_then(|value| value.checked_sub(cancellable))
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let denominator_shift = COMMON_UNIT_SHIFT
+            .checked_sub(cancellable)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let significand_bits = usize::try_from(u64::BITS - reduced_significand.leading_zeros())
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let numerator_bits = shifted_nonzero_bits(significand_bits, residual_numerator_shift)?;
+        let denominator_bits = shifted_nonzero_bits(1, denominator_shift)?;
+        self.charge_input_shape(
+            numerator_bits.max(denominator_bits),
+            numerator_bits
+                .checked_add(denominator_bits)
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?,
+            &[significand_bits, numerator_bits, 1, denominator_bits],
+        )?;
+        let mut numerator = BigInt::from(reduced_significand) << residual_numerator_shift;
+        if negative {
+            numerator = -numerator;
+        }
+        let denominator = BigInt::one() << denominator_shift;
+        let result = BigRational::new_raw(numerator, denominator);
+        debug_assert_eq!(rational_bits(&result), numerator_bits.max(denominator_bits));
+        Ok(result)
+    }
+
+    fn charge_input_shape(
+        &mut self,
+        bits: usize,
+        storage: usize,
+        allocation_bits: &[usize],
+    ) -> Result<(), ZeroThicknessAnalysisError> {
+        let total = self
+            .work
+            .total_input_storage_bits
+            .checked_add(storage)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if bits > self.limits.max_rational_input_bits
+            || total > self.limits.max_total_rational_input_storage_bits
+        {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        let allocation = self.checked_allocation_work(allocation_bits)?;
+        self.work.max_input_bits = self.work.max_input_bits.max(bits);
+        self.work.total_input_storage_bits = total;
+        self.commit_allocation_work(allocation);
+        Ok(())
+    }
+
+    fn clone_retained(
+        &mut self,
+        value: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.preflight_value_bits(rational_bits(value))?;
+        let storage = rational_storage_bits(value)?;
+        let total = self
+            .work
+            .total_retained_clone_bits
+            .checked_add(storage)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if total > self.limits.max_total_rational_retained_clone_bits {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        let allocation = self
+            .checked_allocation_work(&[bigint_bits(value.numer()), bigint_bits(value.denom())])?;
+        self.work.total_retained_clone_bits = total;
+        self.commit_allocation_work(allocation);
+        Ok(value.clone())
+    }
+
+    fn operation(&mut self) -> Result<(), ZeroThicknessAnalysisError> {
+        let next = self
+            .work
+            .operations
+            .checked_add(1)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if next > self.limits.max_rational_operations {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        self.work.operations = next;
+        Ok(())
+    }
+
+    fn preflight_value_bits(&mut self, bits: usize) -> Result<(), ZeroThicknessAnalysisError> {
+        self.work.max_preflight_bits = self.work.max_preflight_bits.max(bits);
+        if bits > self.limits.max_rational_intermediate_bits {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        Ok(())
+    }
+
+    fn gcd_fallback(
+        &mut self,
+        left: &BigInt,
+        right: &BigInt,
+    ) -> Result<BigInt, ZeroThicknessAnalysisError> {
+        let left_bits = bigint_bits(left);
+        let right_bits = bigint_bits(right);
+        self.preflight_value_bits(left_bits.max(right_bits))?;
+        let call_input_bits = left_bits
+            .checked_add(right_bits)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let calls = self
+            .work
+            .gcd_fallback_calls
+            .checked_add(1)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let total_input_bits = self
+            .work
+            .gcd_fallback_input_bits
+            .checked_add(call_input_bits)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if calls > self.limits.max_rational_gcd_fallback_calls
+            || total_input_bits > self.limits.max_rational_gcd_fallback_input_bits
+        {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        let output_bits = gcd_bits_upper_bound(left, right);
+        self.preflight_value_bits(output_bits)?;
+        // num-bigint 0.4.8 implements Stein GCD by cloning both magnitudes and
+        // mutating those two buffers in place before returning the surviving
+        // magnitude. Charge both working clones and the returned integer
+        // before invoking the dependency.
+        let allocation = self.checked_allocation_work(&[left_bits, right_bits, output_bits])?;
+        self.work.gcd_fallback_calls = calls;
+        self.work.gcd_fallback_input_bits = total_input_bits;
+        self.work.max_gcd_fallback_call_input_bits = self
+            .work
+            .max_gcd_fallback_call_input_bits
+            .max(call_input_bits);
+        self.commit_allocation_work(allocation);
+        let result = left.gcd(right);
+        debug_assert!(bigint_bits(&result) <= output_bits);
+        Ok(result)
+    }
+
+    fn normalize_refined(
+        &mut self,
+        numerator: BigInt,
+        denominator: BigInt,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        if denominator.is_zero() {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let gcd = self.gcd_fallback(&numerator, &denominator)?;
+        let numerator_bits = quotient_bits_upper_bound(&numerator, &gcd)?;
+        let denominator_bits = quotient_bits_upper_bound(&denominator, &gcd)?;
+        self.preflight_value_bits(numerator_bits)?;
+        self.preflight_value_bits(denominator_bits)?;
+        self.charge_allocations(&[numerator_bits, denominator_bits])?;
+        let mut numerator = numerator / &gcd;
+        let mut denominator = denominator / gcd;
+        debug_assert!(bigint_bits(&numerator) <= numerator_bits);
+        debug_assert!(bigint_bits(&denominator) <= denominator_bits);
+        if denominator.is_negative() {
+            numerator = -numerator;
+            denominator = -denominator;
+        }
+        Ok(BigRational::new_raw(numerator, denominator))
+    }
+
+    fn add(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.add_or_subtract(left, right, false)
+    }
+
+    fn subtract(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.add_or_subtract(left, right, true)
+    }
+
+    fn add_or_subtract(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+        subtract: bool,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.operation()?;
+        self.preflight_value_bits(rational_bits(left))?;
+        self.preflight_value_bits(rational_bits(right))?;
+        if right.is_zero() {
+            return self.clone_temporary(left);
+        }
+        if left.is_zero() {
+            let result = if subtract {
+                self.negate_temporary(right)?
+            } else {
+                self.clone_temporary(right)?
+            };
+            self.observe_intermediate(&result)?;
+            return Ok(result);
+        }
+
+        if left.denom() == right.denom() {
+            let numerator_bits =
+                sum_bits_upper_bound(bigint_bits(left.numer()), bigint_bits(right.numer()))?;
+            let denominator_bits = bigint_bits(left.denom());
+            self.preflight_value_bits(numerator_bits)?;
+            self.preflight_value_bits(denominator_bits)?;
+            self.charge_allocations(&[numerator_bits, denominator_bits])?;
+            let numerator = if subtract {
+                left.numer() - right.numer()
+            } else {
+                left.numer() + right.numer()
+            };
+            let denominator = left.denom().clone();
+            debug_assert!(bigint_bits(&numerator) <= numerator_bits);
+            debug_assert!(bigint_bits(&denominator) <= denominator_bits);
+            let result = self.normalize_refined(numerator, denominator)?;
+            self.observe_intermediate(&result)?;
+            return Ok(result);
+        }
+
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.denom())?;
+        let left_multiplier_bits = quotient_bits_upper_bound(right.denom(), &denominator_gcd)?;
+        let right_multiplier_bits = quotient_bits_upper_bound(left.denom(), &denominator_gcd)?;
+        self.preflight_value_bits(left_multiplier_bits)?;
+        self.preflight_value_bits(right_multiplier_bits)?;
+        self.charge_allocations(&[left_multiplier_bits, right_multiplier_bits])?;
+        let left_multiplier = right.denom() / &denominator_gcd;
+        let right_multiplier = left.denom() / denominator_gcd;
+        debug_assert!(bigint_bits(&left_multiplier) <= left_multiplier_bits);
+        debug_assert!(bigint_bits(&right_multiplier) <= right_multiplier_bits);
+
+        let left_product_bits =
+            product_bits_upper_bound(bigint_bits(left.numer()), bigint_bits(&left_multiplier))?;
+        let right_product_bits =
+            product_bits_upper_bound(bigint_bits(right.numer()), bigint_bits(&right_multiplier))?;
+        let numerator_bits = sum_bits_upper_bound(left_product_bits, right_product_bits)?;
+        let denominator_bits =
+            product_bits_upper_bound(bigint_bits(left.denom()), bigint_bits(&left_multiplier))?;
+        for bits in [
+            left_product_bits,
+            right_product_bits,
+            numerator_bits,
+            denominator_bits,
+        ] {
+            self.preflight_value_bits(bits)?;
+        }
+        self.charge_allocations(&[
+            left_product_bits,
+            right_product_bits,
+            numerator_bits,
+            denominator_bits,
+        ])?;
+        let left_numerator = left.numer() * &left_multiplier;
+        let right_numerator = right.numer() * &right_multiplier;
+        let numerator = if subtract {
+            left_numerator - right_numerator
+        } else {
+            left_numerator + right_numerator
+        };
+        let denominator = left.denom() * left_multiplier;
+        debug_assert!(bigint_bits(&numerator) <= numerator_bits);
+        debug_assert!(bigint_bits(&denominator) <= denominator_bits);
+        let result = self.normalize_refined(numerator, denominator)?;
+        self.observe_intermediate(&result)?;
+        Ok(result)
+    }
+
+    fn multiply(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.operation()?;
+        self.preflight_value_bits(rational_bits(left))?;
+        self.preflight_value_bits(rational_bits(right))?;
+        if left.is_zero() || right.is_zero() {
+            return self.zero();
+        }
+        let numerator_gcd = self.gcd_fallback(left.numer(), right.denom())?;
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.numer())?;
+        let left_numerator_bits = quotient_bits_upper_bound(left.numer(), &numerator_gcd)?;
+        let right_denominator_bits = quotient_bits_upper_bound(right.denom(), &numerator_gcd)?;
+        let right_numerator_bits = quotient_bits_upper_bound(right.numer(), &denominator_gcd)?;
+        let left_denominator_bits = quotient_bits_upper_bound(left.denom(), &denominator_gcd)?;
+        for bits in [
+            left_numerator_bits,
+            right_denominator_bits,
+            right_numerator_bits,
+            left_denominator_bits,
+        ] {
+            self.preflight_value_bits(bits)?;
+        }
+        self.charge_allocations(&[
+            left_numerator_bits,
+            right_denominator_bits,
+            right_numerator_bits,
+            left_denominator_bits,
+        ])?;
+        let left_numerator = left.numer() / &numerator_gcd;
+        let right_denominator = right.denom() / numerator_gcd;
+        let right_numerator = right.numer() / &denominator_gcd;
+        let left_denominator = left.denom() / denominator_gcd;
+        let numerator_bits =
+            product_bits_upper_bound(bigint_bits(&left_numerator), bigint_bits(&right_numerator))?;
+        let denominator_bits = product_bits_upper_bound(
+            bigint_bits(&left_denominator),
+            bigint_bits(&right_denominator),
+        )?;
+        self.preflight_value_bits(numerator_bits)?;
+        self.preflight_value_bits(denominator_bits)?;
+        self.charge_allocations(&[numerator_bits, denominator_bits])?;
+        let numerator = left_numerator * right_numerator;
+        let denominator = left_denominator * right_denominator;
+        debug_assert!(bigint_bits(&numerator) <= numerator_bits);
+        debug_assert!(bigint_bits(&denominator) <= denominator_bits);
+        let result = BigRational::new_raw(numerator, denominator);
+        self.observe_intermediate(&result)?;
+        Ok(result)
+    }
+
+    fn divide(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        if right.is_zero() {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        self.operation()?;
+        self.preflight_value_bits(rational_bits(left))?;
+        self.preflight_value_bits(rational_bits(right))?;
+        if left.is_zero() {
+            return self.zero();
+        }
+
+        let numerator_gcd = self.gcd_fallback(left.numer(), right.numer())?;
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.denom())?;
+        let left_numerator_bits = quotient_bits_upper_bound(left.numer(), &numerator_gcd)?;
+        let right_numerator_bits = quotient_bits_upper_bound(right.numer(), &numerator_gcd)?;
+        let right_denominator_bits = quotient_bits_upper_bound(right.denom(), &denominator_gcd)?;
+        let left_denominator_bits = quotient_bits_upper_bound(left.denom(), &denominator_gcd)?;
+        for bits in [
+            left_numerator_bits,
+            right_numerator_bits,
+            right_denominator_bits,
+            left_denominator_bits,
+        ] {
+            self.preflight_value_bits(bits)?;
+        }
+        self.charge_allocations(&[
+            left_numerator_bits,
+            right_numerator_bits,
+            right_denominator_bits,
+            left_denominator_bits,
+        ])?;
+        let left_numerator = left.numer() / &numerator_gcd;
+        let right_numerator = right.numer() / numerator_gcd;
+        let right_denominator = right.denom() / &denominator_gcd;
+        let left_denominator = left.denom() / denominator_gcd;
+        let numerator_bits = product_bits_upper_bound(
+            bigint_bits(&left_numerator),
+            bigint_bits(&right_denominator),
+        )?;
+        let denominator_bits = product_bits_upper_bound(
+            bigint_bits(&left_denominator),
+            bigint_bits(&right_numerator),
+        )?;
+        self.preflight_value_bits(numerator_bits)?;
+        self.preflight_value_bits(denominator_bits)?;
+        self.charge_allocations(&[numerator_bits, denominator_bits])?;
+        let mut numerator = left_numerator * right_denominator;
+        let mut denominator = left_denominator * right_numerator;
+        debug_assert!(bigint_bits(&numerator) <= numerator_bits);
+        debug_assert!(bigint_bits(&denominator) <= denominator_bits);
+        if denominator.is_negative() {
+            numerator = -numerator;
+            denominator = -denominator;
+        }
+        let result = BigRational::new_raw(numerator, denominator);
+        self.observe_intermediate(&result)?;
+        Ok(result)
+    }
+
+    fn compare(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+    ) -> Result<Ordering, ZeroThicknessAnalysisError> {
+        self.operation()?;
+        self.preflight_value_bits(rational_bits(left))?;
+        self.preflight_value_bits(rational_bits(right))?;
+        match (left.numer().sign(), right.numer().sign()) {
+            (Sign::Minus, Sign::NoSign | Sign::Plus) | (Sign::NoSign, Sign::Plus) => {
+                return Ok(Ordering::Less);
+            }
+            (Sign::NoSign | Sign::Plus, Sign::Minus) | (Sign::Plus, Sign::NoSign) => {
+                return Ok(Ordering::Greater);
+            }
+            (Sign::NoSign, Sign::NoSign) => return Ok(Ordering::Equal),
+            (Sign::Minus, Sign::Minus) | (Sign::Plus, Sign::Plus) => {}
+        }
+        if left.denom() == right.denom() {
+            return Ok(left.numer().cmp(right.numer()));
+        }
+
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.denom())?;
+        let left_multiplier_bits = quotient_bits_upper_bound(right.denom(), &denominator_gcd)?;
+        let right_multiplier_bits = quotient_bits_upper_bound(left.denom(), &denominator_gcd)?;
+        let left_product_bits =
+            product_bits_upper_bound(bigint_bits(left.numer()), left_multiplier_bits)?;
+        let right_product_bits =
+            product_bits_upper_bound(bigint_bits(right.numer()), right_multiplier_bits)?;
+        for bits in [
+            left_multiplier_bits,
+            right_multiplier_bits,
+            left_product_bits,
+            right_product_bits,
+        ] {
+            self.preflight_value_bits(bits)?;
+        }
+        self.charge_allocations(&[
+            left_multiplier_bits,
+            right_multiplier_bits,
+            left_product_bits,
+            right_product_bits,
+        ])?;
+        let left_multiplier = right.denom() / &denominator_gcd;
+        let right_multiplier = left.denom() / denominator_gcd;
+        let left_product = left.numer() * left_multiplier;
+        let right_product = right.numer() * right_multiplier;
+        debug_assert!(bigint_bits(&left_product) <= left_product_bits);
+        debug_assert!(bigint_bits(&right_product) <= right_product_bits);
+        Ok(left_product.cmp(&right_product))
+    }
+
+    fn equal(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+    ) -> Result<bool, ZeroThicknessAnalysisError> {
+        self.operation()?;
+        self.preflight_value_bits(rational_bits(left))?;
+        self.preflight_value_bits(rational_bits(right))?;
+        Ok(rational_structurally_eq(left, right))
+    }
+
+    fn observe_intermediate(
+        &mut self,
+        value: &BigRational,
+    ) -> Result<(), ZeroThicknessAnalysisError> {
+        let bits = rational_bits(value);
+        self.work.max_intermediate_bits = self.work.max_intermediate_bits.max(bits);
+        if bits > self.limits.max_rational_intermediate_bits {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        Ok(())
+    }
+
+    fn output(&mut self, value: &BigRational) -> Result<(), ZeroThicknessAnalysisError> {
+        let bits = rational_bits(value);
+        let storage = rational_storage_bits(value)?;
+        let total = self
+            .work
+            .total_output_bits
+            .checked_add(storage)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if bits > self.limits.max_rational_output_bits
+            || total > self.limits.max_total_rational_output_bits
+        {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        self.work.max_output_bits = self.work.max_output_bits.max(bits);
+        self.work.total_output_bits = total;
+        Ok(())
+    }
+}
+
+fn bigint_bits(value: &BigInt) -> usize {
+    value.bits() as usize
+}
+
+fn rational_bits(value: &BigRational) -> usize {
+    bigint_bits(value.numer()).max(bigint_bits(value.denom()))
+}
+
+fn rational_storage_bits(value: &BigRational) -> Result<usize, ZeroThicknessAnalysisError> {
+    bigint_bits(value.numer())
+        .checked_add(bigint_bits(value.denom()))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+/// Allocation-free equality for the canonical rational representation issued
+/// by this module. `Ratio::eq` delegates to rational ordering and may allocate
+/// for unlike denominators, so production predicates must compare the already
+/// normalized numerator and denominator fields directly.
+fn rational_structurally_eq(left: &BigRational, right: &BigRational) -> bool {
+    left.numer() == right.numer() && left.denom() == right.denom()
+}
+
+fn shifted_nonzero_bits(bits: usize, shift: usize) -> Result<usize, ZeroThicknessAnalysisError> {
+    if bits == 0 {
+        Ok(0)
+    } else {
+        bits.checked_add(shift)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+    }
+}
+
+fn product_bits_upper_bound(
+    left_bits: usize,
+    right_bits: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    if left_bits == 0 || right_bits == 0 {
+        return Ok(0);
+    }
+    left_bits
+        .checked_add(right_bits)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+fn sum_bits_upper_bound(
+    left_bits: usize,
+    right_bits: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    left_bits
+        .max(right_bits)
+        .checked_add(1)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+fn quotient_bits_upper_bound(
+    dividend: &BigInt,
+    divisor: &BigInt,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    if divisor.is_zero() {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    Ok(bigint_bits(dividend))
+}
+
+fn gcd_bits_upper_bound(left: &BigInt, right: &BigInt) -> usize {
+    match (left.is_zero(), right.is_zero()) {
+        (true, true) => 0,
+        (true, false) => bigint_bits(right),
+        (false, true) => bigint_bits(left),
+        (false, false) => bigint_bits(left).min(bigint_bits(right)),
+    }
+}
+
+fn try_array3<T>(
+    mut element: impl FnMut(usize) -> Result<T, ZeroThicknessAnalysisError>,
+) -> Result<[T; 3], ZeroThicknessAnalysisError> {
+    Ok([element(0)?, element(1)?, element(2)?])
+}
+
+#[cfg(test)]
+fn unlimited_rational_limits() -> ZeroThicknessGeometryLimits {
+    ZeroThicknessGeometryLimits {
+        max_boundary_vertices_per_face: usize::MAX,
+        max_total_boundary_vertices: usize::MAX,
+        max_triangles_per_face: usize::MAX,
+        max_total_triangles: usize::MAX,
+        max_triangulation_work_per_face: usize::MAX,
+        max_total_triangulation_work: usize::MAX,
+        max_registry_authentication_work: usize::MAX,
+        max_triangle_pairs_per_face_pair: usize::MAX,
+        max_total_triangle_pairs: usize::MAX,
+        max_boundary_relation_work_per_face_pair: usize::MAX,
+        max_total_boundary_relation_work: usize::MAX,
+        max_rational_input_bits: usize::MAX,
+        max_total_rational_input_storage_bits: usize::MAX,
+        max_total_rational_retained_clone_bits: usize::MAX,
+        max_rational_operations: usize::MAX,
+        max_rational_intermediate_bits: usize::MAX,
+        max_rational_gcd_fallback_calls: usize::MAX,
+        max_rational_gcd_fallback_input_bits: usize::MAX,
+        max_rational_allocations: usize::MAX,
+        max_rational_allocation_bits: usize::MAX,
+        max_total_rational_allocation_bits: usize::MAX,
+        max_rational_output_bits: usize::MAX,
+        max_total_rational_output_bits: usize::MAX,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestBoundaryVertex {
+    id: VertexId,
+    point: ExactPoint3,
+}
+
+#[cfg(test)]
 fn triangulate_rest_boundary(
     boundary: &[RestBoundaryVertex],
     max_boundary_vertices: usize,
     max_triangles: usize,
     max_work: usize,
+) -> Result<Vec<[usize; 3]>, ZeroThicknessAnalysisError> {
+    let limits = unlimited_rational_limits();
+    let mut meter = RationalWorkMeter::unlimited(&limits);
+    triangulate_rest_boundary_metered(
+        boundary,
+        max_boundary_vertices,
+        max_triangles,
+        max_work,
+        &mut meter,
+    )
+}
+
+fn triangulate_rest_boundary_metered(
+    boundary: &[RestBoundaryVertex],
+    max_boundary_vertices: usize,
+    max_triangles: usize,
+    max_work: usize,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<Vec<[usize; 3]>, ZeroThicknessAnalysisError> {
     if boundary.len() > max_boundary_vertices {
         return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
@@ -75,15 +878,16 @@ fn triangulate_rest_boundary(
         {
             return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
         }
-        let point = ExactPoint3::from_point(boundary[index].point);
-        if boundary[..index]
-            .iter()
-            .any(|previous| ExactPoint3::from_point(previous.point) == point)
-        {
-            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        for previous in &boundary[..index] {
+            if previous
+                .point
+                .equal_metered(&boundary[index].point, meter)?
+            {
+                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+            }
         }
     }
-    if !is_simple_rest_boundary(boundary) {
+    if !is_simple_rest_boundary(boundary, meter)? {
         return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
     }
 
@@ -92,8 +896,8 @@ fn triangulate_rest_boundary(
         .try_reserve_exact(boundary.len())
         .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
     active.extend(0..boundary.len());
-    remove_collinear_rest_vertices(boundary, &mut active)?;
-    if active.len() < 3 || !simplified_boundary_covers_original_edges(boundary, &active) {
+    remove_collinear_rest_vertices(boundary, &mut active, meter)?;
+    if active.len() < 3 || !simplified_boundary_covers_original_edges(boundary, &active, meter)? {
         return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
     }
     let mut simplified = Vec::new();
@@ -102,7 +906,7 @@ fn triangulate_rest_boundary(
         .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
     simplified.extend(active.iter().copied());
 
-    let polygon_area = indexed_polygon_double_area(boundary, &active);
+    let polygon_area = indexed_polygon_double_area(boundary, &active, meter)?;
     if polygon_area.is_zero() {
         return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
     }
@@ -120,10 +924,18 @@ fn triangulate_rest_boundary(
         .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
 
     while active.len() > 3 {
-        let ear_position = (0..active.len())
-            .filter(|position| is_exact_ear(boundary, &active, *position, positive_orientation))
-            .min_by_key(|position| boundary[active[*position]].id.canonical_bytes())
-            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        let mut ear_position: Option<usize> = None;
+        for position in 0..active.len() {
+            if is_exact_ear(boundary, &active, position, positive_orientation, meter)?
+                && ear_position.is_none_or(|selected| {
+                    boundary[active[position]].id.canonical_bytes()
+                        < boundary[active[selected]].id.canonical_bytes()
+                })
+            {
+                ear_position = Some(position);
+            }
+        }
+        let ear_position = ear_position.ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
         let previous = active[(ear_position + active.len() - 1) % active.len()];
         let current = active[ear_position];
         let next = active[(ear_position + 1) % active.len()];
@@ -148,6 +960,7 @@ fn triangulate_rest_boundary(
             &triangles,
             &polygon_area,
             positive_orientation,
+            meter,
         )?
     {
         return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
@@ -155,7 +968,10 @@ fn triangulate_rest_boundary(
     Ok(triangles)
 }
 
-fn is_simple_rest_boundary(boundary: &[RestBoundaryVertex]) -> bool {
+fn is_simple_rest_boundary(
+    boundary: &[RestBoundaryVertex],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
     for first in 0..boundary.len() {
         let first_next = (first + 1) % boundary.len();
         for second in (first + 1)..boundary.len() {
@@ -168,21 +984,23 @@ fn is_simple_rest_boundary(boundary: &[RestBoundaryVertex]) -> bool {
                 continue;
             }
             if exact_segments_intersect(
-                boundary[first].point,
-                boundary[first_next].point,
-                boundary[second].point,
-                boundary[second_next].point,
-            ) {
-                return false;
+                &boundary[first].point,
+                &boundary[first_next].point,
+                &boundary[second].point,
+                &boundary[second_next].point,
+                meter,
+            )? {
+                return Ok(false);
             }
         }
     }
-    !rest_polygon_double_area(boundary).is_zero()
+    Ok(!rest_polygon_double_area(boundary, meter)?.is_zero())
 }
 
 fn remove_collinear_rest_vertices(
     boundary: &[RestBoundaryVertex],
     active: &mut Vec<usize>,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<(), ZeroThicknessAnalysisError> {
     loop {
         let mut saw_collinear = false;
@@ -192,20 +1010,22 @@ fn remove_collinear_rest_vertices(
             let current = active[position];
             let next = active[(position + 1) % active.len()];
             if !exact_orientation(
-                boundary[previous].point,
-                boundary[current].point,
-                boundary[next].point,
-            )
+                &boundary[previous].point,
+                &boundary[current].point,
+                &boundary[next].point,
+                meter,
+            )?
             .is_zero()
             {
                 continue;
             }
             saw_collinear = true;
             if !exact_point_on_segment(
-                boundary[current].point,
-                boundary[previous].point,
-                boundary[next].point,
-            ) {
+                &boundary[current].point,
+                &boundary[previous].point,
+                &boundary[next].point,
+                meter,
+            )? {
                 continue;
             }
             if selected.is_none_or(|candidate| {
@@ -231,23 +1051,34 @@ fn remove_collinear_rest_vertices(
 fn simplified_boundary_covers_original_edges(
     boundary: &[RestBoundaryVertex],
     simplified: &[usize],
-) -> bool {
-    (0..boundary.len()).all(|index| {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    for index in 0..boundary.len() {
         let next = (index + 1) % boundary.len();
-        (0..simplified.len()).any(|edge| {
+        let mut covered = false;
+        for edge in 0..simplified.len() {
             let start = simplified[edge];
             let end = simplified[(edge + 1) % simplified.len()];
-            exact_point_on_segment(
-                boundary[index].point,
-                boundary[start].point,
-                boundary[end].point,
-            ) && exact_point_on_segment(
-                boundary[next].point,
-                boundary[start].point,
-                boundary[end].point,
-            )
-        })
-    })
+            if exact_point_on_segment(
+                &boundary[index].point,
+                &boundary[start].point,
+                &boundary[end].point,
+                meter,
+            )? && exact_point_on_segment(
+                &boundary[next].point,
+                &boundary[start].point,
+                &boundary[end].point,
+                meter,
+            )? {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn is_exact_ear(
@@ -255,31 +1086,35 @@ fn is_exact_ear(
     active: &[usize],
     position: usize,
     positive_orientation: bool,
-) -> bool {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
     let previous = active[(position + active.len() - 1) % active.len()];
     let current = active[position];
     let next = active[(position + 1) % active.len()];
     let orientation = exact_orientation(
-        boundary[previous].point,
-        boundary[current].point,
-        boundary[next].point,
-    );
+        &boundary[previous].point,
+        &boundary[current].point,
+        &boundary[next].point,
+        meter,
+    )?;
     if orientation.is_zero() || orientation.is_positive() != positive_orientation {
-        return false;
+        return Ok(false);
     }
-    if active.iter().copied().any(|candidate| {
-        candidate != previous
+    for candidate in active.iter().copied() {
+        if candidate != previous
             && candidate != current
             && candidate != next
             && exact_point_in_or_on_triangle(
-                boundary[candidate].point,
-                boundary[previous].point,
-                boundary[current].point,
-                boundary[next].point,
+                &boundary[candidate].point,
+                &boundary[previous].point,
+                &boundary[current].point,
+                &boundary[next].point,
                 positive_orientation,
-            )
-    }) {
-        return false;
+                meter,
+            )?
+        {
+            return Ok(false);
+        }
     }
     for edge in 0..active.len() {
         let start = active[edge];
@@ -288,15 +1123,16 @@ fn is_exact_ear(
             continue;
         }
         if exact_segments_intersect(
-            boundary[previous].point,
-            boundary[next].point,
-            boundary[start].point,
-            boundary[end].point,
-        ) {
-            return false;
+            &boundary[previous].point,
+            &boundary[next].point,
+            &boundary[start].point,
+            &boundary[end].point,
+            meter,
+        )? {
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 fn canonical_triangle_cycle(boundary: &[RestBoundaryVertex], triangle: [usize; 3]) -> [usize; 3] {
@@ -316,8 +1152,9 @@ fn triangulation_covers_boundary(
     triangles: &[[usize; 3]],
     polygon_area: &BigRational,
     positive_orientation: bool,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<bool, ZeroThicknessAnalysisError> {
-    let mut area = BigRational::zero();
+    let mut area = meter.zero()?;
     let Some(edge_capacity) = triangles.len().checked_mul(3) else {
         return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
     };
@@ -338,14 +1175,15 @@ fn triangulation_covers_boundary(
     boundary_edges.sort_unstable();
     for triangle in triangles {
         let triangle_area = exact_orientation(
-            boundary[triangle[0]].point,
-            boundary[triangle[1]].point,
-            boundary[triangle[2]].point,
-        );
+            &boundary[triangle[0]].point,
+            &boundary[triangle[1]].point,
+            &boundary[triangle[2]].point,
+            meter,
+        )?;
         if triangle_area.is_zero() || triangle_area.is_positive() != positive_orientation {
             return Ok(false);
         }
-        area += triangle_area;
+        area = meter.add(&area, &triangle_area)?;
         for edge in 0..3 {
             triangle_edges.push(canonical_index_edge(
                 triangle[edge],
@@ -371,7 +1209,7 @@ fn triangulation_covers_boundary(
         }
         position = end;
     }
-    Ok(area == *polygon_area)
+    meter.equal(&area, polygon_area)
 }
 
 const fn canonical_index_edge(first: usize, second: usize) -> (usize, usize) {
@@ -382,25 +1220,37 @@ const fn canonical_index_edge(first: usize, second: usize) -> (usize, usize) {
     }
 }
 
-fn indexed_polygon_double_area(boundary: &[RestBoundaryVertex], indices: &[usize]) -> BigRational {
-    (0..indices.len())
-        .map(|index| {
-            let current = ExactPoint3::from_point(boundary[indices[index]].point);
-            let next =
-                ExactPoint3::from_point(boundary[indices[(index + 1) % indices.len()]].point);
-            current.coordinate(0) * next.coordinate(2) - current.coordinate(2) * next.coordinate(0)
-        })
-        .sum()
+fn indexed_polygon_double_area(
+    boundary: &[RestBoundaryVertex],
+    indices: &[usize],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<BigRational, ZeroThicknessAnalysisError> {
+    let mut area = meter.zero()?;
+    for index in 0..indices.len() {
+        let current = &boundary[indices[index]].point;
+        let next = &boundary[indices[(index + 1) % indices.len()]].point;
+        let first = meter.multiply(current.coordinate(0), next.coordinate(2))?;
+        let second = meter.multiply(current.coordinate(2), next.coordinate(0))?;
+        let term = meter.subtract(&first, &second)?;
+        area = meter.add(&area, &term)?;
+    }
+    Ok(area)
 }
 
-fn rest_polygon_double_area(boundary: &[RestBoundaryVertex]) -> BigRational {
-    (0..boundary.len())
-        .map(|index| {
-            let current = ExactPoint3::from_point(boundary[index].point);
-            let next = ExactPoint3::from_point(boundary[(index + 1) % boundary.len()].point);
-            current.coordinate(0) * next.coordinate(2) - current.coordinate(2) * next.coordinate(0)
-        })
-        .sum()
+fn rest_polygon_double_area(
+    boundary: &[RestBoundaryVertex],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<BigRational, ZeroThicknessAnalysisError> {
+    let mut area = meter.zero()?;
+    for index in 0..boundary.len() {
+        let current = &boundary[index].point;
+        let next = &boundary[(index + 1) % boundary.len()].point;
+        let first = meter.multiply(current.coordinate(0), next.coordinate(2))?;
+        let second = meter.multiply(current.coordinate(2), next.coordinate(0))?;
+        let term = meter.subtract(&first, &second)?;
+        area = meter.add(&area, &term)?;
+    }
+    Ok(area)
 }
 
 fn estimated_triangulation_work(
@@ -426,59 +1276,79 @@ fn estimated_triangulation_work(
         .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
 }
 
-fn exact_orientation(first: Point3, second: Point3, third: Point3) -> BigRational {
-    let first = ExactPoint3::from_point(first);
-    let second = ExactPoint3::from_point(second);
-    let third = ExactPoint3::from_point(third);
-    projected_line_value(&first, &second, &third, 0, 2)
+fn exact_orientation(
+    first: &ExactPoint3,
+    second: &ExactPoint3,
+    third: &ExactPoint3,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<BigRational, ZeroThicknessAnalysisError> {
+    projected_line_value(first, second, third, 0, 2, meter)
 }
 
-fn exact_point_on_segment(point: Point3, start: Point3, end: Point3) -> bool {
-    if !exact_orientation(start, end, point).is_zero() {
-        return false;
+fn exact_point_on_segment(
+    point: &ExactPoint3,
+    start: &ExactPoint3,
+    end: &ExactPoint3,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    if !exact_orientation(start, end, point, meter)?.is_zero() {
+        return Ok(false);
     }
-    let point = ExactPoint3::from_point(point);
-    let start = ExactPoint3::from_point(start);
-    let end = ExactPoint3::from_point(end);
-    (0..3).all(|axis| {
-        let minimum = start.coordinate(axis).min(end.coordinate(axis));
-        let maximum = start.coordinate(axis).max(end.coordinate(axis));
-        minimum <= point.coordinate(axis) && point.coordinate(axis) <= maximum
-    })
+    for axis in 0..3 {
+        let (minimum, maximum) =
+            if meter.compare(start.coordinate(axis), end.coordinate(axis))? != Ordering::Greater {
+                (start.coordinate(axis), end.coordinate(axis))
+            } else {
+                (end.coordinate(axis), start.coordinate(axis))
+            };
+        if meter.compare(minimum, point.coordinate(axis))? == Ordering::Greater
+            || meter.compare(point.coordinate(axis), maximum)? == Ordering::Greater
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn exact_segments_intersect(
-    first_start: Point3,
-    first_end: Point3,
-    second_start: Point3,
-    second_end: Point3,
-) -> bool {
-    let first_first = exact_orientation(first_start, first_end, second_start);
-    let first_second = exact_orientation(first_start, first_end, second_end);
-    let second_first = exact_orientation(second_start, second_end, first_start);
-    let second_second = exact_orientation(second_start, second_end, first_end);
-    (first_first.is_zero() && exact_point_on_segment(second_start, first_start, first_end))
-        || (first_second.is_zero() && exact_point_on_segment(second_end, first_start, first_end))
-        || (second_first.is_zero() && exact_point_on_segment(first_start, second_start, second_end))
-        || (second_second.is_zero() && exact_point_on_segment(first_end, second_start, second_end))
+    first_start: &ExactPoint3,
+    first_end: &ExactPoint3,
+    second_start: &ExactPoint3,
+    second_end: &ExactPoint3,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    let first_first = exact_orientation(first_start, first_end, second_start, meter)?;
+    let first_second = exact_orientation(first_start, first_end, second_end, meter)?;
+    let second_first = exact_orientation(second_start, second_end, first_start, meter)?;
+    let second_second = exact_orientation(second_start, second_end, first_end, meter)?;
+    Ok((first_first.is_zero()
+        && exact_point_on_segment(second_start, first_start, first_end, meter)?)
+        || (first_second.is_zero()
+            && exact_point_on_segment(second_end, first_start, first_end, meter)?)
+        || (second_first.is_zero()
+            && exact_point_on_segment(first_start, second_start, second_end, meter)?)
+        || (second_second.is_zero()
+            && exact_point_on_segment(first_end, second_start, second_end, meter)?)
         || (first_first.is_positive() != first_second.is_positive()
-            && second_first.is_positive() != second_second.is_positive())
+            && second_first.is_positive() != second_second.is_positive()))
 }
 
 fn exact_point_in_or_on_triangle(
-    point: Point3,
-    first: Point3,
-    second: Point3,
-    third: Point3,
+    point: &ExactPoint3,
+    first: &ExactPoint3,
+    second: &ExactPoint3,
+    third: &ExactPoint3,
     positive_orientation: bool,
-) -> bool {
-    [
-        exact_orientation(first, second, point),
-        exact_orientation(second, third, point),
-        exact_orientation(third, first, point),
-    ]
-    .iter()
-    .all(|orientation| orientation.is_zero() || orientation.is_positive() == positive_orientation)
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    let orientations = [
+        exact_orientation(first, second, point, meter)?,
+        exact_orientation(second, third, point, meter)?,
+        exact_orientation(third, first, point, meter)?,
+    ];
+    Ok(orientations.iter().all(|orientation| {
+        orientation.is_zero() || orientation.is_positive() == positive_orientation
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,6 +1364,18 @@ pub(super) struct ZeroThicknessGeometryLimits {
     pub max_total_triangle_pairs: usize,
     pub max_boundary_relation_work_per_face_pair: usize,
     pub max_total_boundary_relation_work: usize,
+    pub max_rational_input_bits: usize,
+    pub max_total_rational_input_storage_bits: usize,
+    pub max_total_rational_retained_clone_bits: usize,
+    pub max_rational_operations: usize,
+    pub max_rational_intermediate_bits: usize,
+    pub max_rational_gcd_fallback_calls: usize,
+    pub max_rational_gcd_fallback_input_bits: usize,
+    pub max_rational_allocations: usize,
+    pub max_rational_allocation_bits: usize,
+    pub max_total_rational_allocation_bits: usize,
+    pub max_rational_output_bits: usize,
+    pub max_total_rational_output_bits: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -514,9 +1396,14 @@ struct AuthenticatedFace {
 
 #[derive(Debug)]
 pub(super) struct AuthenticatedZeroThicknessPose<'a> {
-    pose: &'a MaterialTreePose,
+    _pose: &'a MaterialTreePose,
     faces: Vec<AuthenticatedFace>,
-    limits: ZeroThicknessGeometryLimits,
+    pair_dispatches: Vec<Result<PairDispatch, ZeroThicknessAnalysisError>>,
+    #[allow(
+        dead_code,
+        reason = "retained for exact-limit auditing and future exact-tree admission diagnostics"
+    )]
+    rational_work: RationalWork,
     total_triangle_pairs: usize,
 }
 
@@ -529,21 +1416,21 @@ impl AuthenticatedZeroThicknessPose<'_> {
         if first_face_index >= second_face_index || second_face_index >= self.faces.len() {
             return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
         }
-        let first = &self.faces[first_face_index];
-        let second = &self.faces[second_face_index];
-        let topology = authenticate_face_pair_topology(self.pose, first, second)?;
-        aggregate_authenticated_face_pair(
-            first,
-            second,
-            &topology,
-            self.limits.max_triangle_pairs_per_face_pair,
-            self.limits.max_boundary_relation_work_per_face_pair,
-            self.pose.hinges().len(),
-        )
+        let index =
+            canonical_unordered_pair_index(self.faces.len(), first_face_index, second_face_index)?;
+        self.pair_dispatches
+            .get(index)
+            .copied()
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?
     }
 
     pub(super) const fn total_triangle_pairs(&self) -> usize {
         self.total_triangle_pairs
+    }
+
+    #[cfg(test)]
+    fn rational_work(&self) -> &RationalWork {
+        &self.rational_work
     }
 }
 
@@ -551,6 +1438,7 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
     pose: &MaterialTreePose,
     limits: ZeroThicknessGeometryLimits,
 ) -> Result<AuthenticatedZeroThicknessPose<'_>, ZeroThicknessAnalysisError> {
+    let mut meter = RationalWorkMeter::new(&limits);
     let face_ids = pose.face_ids();
     if face_ids.is_empty()
         || !face_ids
@@ -604,8 +1492,8 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
         let transform = pose
             .face_transform(face_id)
             .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
-        let exact_transform = ExactAffineTransform::from_transform(transform);
-        let material_normal = exact_transform.transformed_local_y();
+        let exact_transform = ExactAffineTransform::from_transform_metered(transform, &mut meter)?;
+        let material_normal = exact_transform.transformed_local_y(&mut meter)?;
         if material_normal.is_zero() {
             return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
         }
@@ -627,10 +1515,12 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
             // coplanar. Rounding each transformed vertex back to binary64
             // independently would destroy that invariant for four or more
             // vertices and could create false crossing evidence.
-            let current = exact_transform.apply_point(&ExactPoint3::from_point(rest));
+            let exact_rest = ExactPoint3::from_input_point(rest, &mut meter)?;
+            let current = exact_transform.apply_point_metered(&exact_rest, &mut meter)?;
+            current.observe_output(&mut meter)?;
             rest_boundary.push(RestBoundaryVertex {
                 id: vertex,
-                point: rest,
+                point: exact_rest,
             });
             boundary.push(AuthenticatedBoundaryVertex {
                 id: vertex,
@@ -638,11 +1528,12 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
                 current,
             });
         }
-        let triangle_indices = triangulate_rest_boundary(
+        let triangle_indices = triangulate_rest_boundary_metered(
             &rest_boundary,
             limits.max_boundary_vertices_per_face,
             limits.max_triangles_per_face,
             limits.max_triangulation_work_per_face,
+            &mut meter,
         )?;
         total_triangles = total_triangles
             .checked_add(triangle_indices.len())
@@ -655,14 +1546,16 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
             .try_reserve_exact(triangle_indices.len())
             .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
         for triangle in triangle_indices {
-            let points = triangle.map(|index| boundary[index].current.clone());
-            if ExactTriangle::from_exact_points(points.clone())
-                .normal
-                .is_zero()
-            {
+            let points = [
+                boundary[triangle[0]].current.clone_retained(&mut meter)?,
+                boundary[triangle[1]].current.clone_retained(&mut meter)?,
+                boundary[triangle[2]].current.clone_retained(&mut meter)?,
+            ];
+            let triangle = ExactTriangle::from_exact_points_metered(points, &mut meter)?;
+            if triangle.normal.is_zero() {
                 return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
             }
-            triangles.push(points);
+            triangles.push(triangle.points);
         }
         let mut edges = Vec::new();
         edges
@@ -725,12 +1618,82 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
         }
     }
 
+    let pair_capacity = faces
+        .len()
+        .checked_mul(faces.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let mut pair_dispatches = Vec::new();
+    pair_dispatches
+        .try_reserve_exact(pair_capacity)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for first in 0..faces.len() {
+        for second in (first + 1)..faces.len() {
+            let result = authenticate_face_pair_topology_metered(
+                pose,
+                &faces[first],
+                &faces[second],
+                &mut meter,
+            )
+            .and_then(|topology| {
+                aggregate_authenticated_face_pair_metered(
+                    &faces[first],
+                    &faces[second],
+                    &topology,
+                    limits.max_triangle_pairs_per_face_pair,
+                    limits.max_boundary_relation_work_per_face_pair,
+                    pose.hinges().len(),
+                    &mut meter,
+                )
+            });
+            if matches!(
+                result,
+                Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+            ) {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+            pair_dispatches.push(result);
+        }
+    }
+    if pair_dispatches.len() != pair_capacity {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let rational_work = meter.work;
     Ok(AuthenticatedZeroThicknessPose {
-        pose,
+        _pose: pose,
         faces,
-        limits,
+        pair_dispatches,
+        rational_work,
         total_triangle_pairs,
     })
+}
+
+fn canonical_unordered_pair_index(
+    face_count: usize,
+    first: usize,
+    second: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    if first >= second || second >= face_count {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let before = first
+        .checked_mul(
+            face_count
+                .checked_mul(2)
+                .and_then(|value| value.checked_sub(first))
+                .and_then(|value| value.checked_sub(1))
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?,
+        )
+        .and_then(|value| value.checked_div(2))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    before
+        .checked_add(
+            second
+                .checked_sub(first)
+                .and_then(|value| value.checked_sub(1))
+                .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?,
+        )
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
 }
 
 fn estimated_boundary_relation_work(
@@ -945,10 +1908,22 @@ fn edge_occurrences(
     Ok(result)
 }
 
+#[cfg(test)]
 fn authenticate_face_pair_topology(
     pose: &MaterialTreePose,
     first: &AuthenticatedFace,
     second: &AuthenticatedFace,
+) -> Result<AuthenticatedTopology, ZeroThicknessAnalysisError> {
+    let limits = unlimited_rational_limits();
+    let mut meter = RationalWorkMeter::unlimited(&limits);
+    authenticate_face_pair_topology_metered(pose, first, second, &mut meter)
+}
+
+fn authenticate_face_pair_topology_metered(
+    pose: &MaterialTreePose,
+    first: &AuthenticatedFace,
+    second: &AuthenticatedFace,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<AuthenticatedTopology, ZeroThicknessAnalysisError> {
     if first.id == second.id {
         return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
@@ -998,9 +1973,11 @@ fn authenticate_face_pair_topology(
     ) {
         ([], [], None) => Ok(AuthenticatedTopology::NoSharedFeature),
         ([(first_index, second_index)], [], None) => {
-            let first_point = first.boundary[*first_index].current.clone();
-            let second_point = second.boundary[*second_index].current.clone();
-            if first_point != second_point {
+            let first_point = first.boundary[*first_index].current.clone_retained(meter)?;
+            let second_point = second.boundary[*second_index]
+                .current
+                .clone_retained(meter)?;
+            if !first_point.equal_metered(&second_point, meter)? {
                 return Ok(AuthenticatedTopology::SharedVertexPoseMismatch);
             }
             Ok(AuthenticatedTopology::SharedVertex(first_point))
@@ -1032,8 +2009,12 @@ fn authenticate_face_pair_topology(
             {
                 return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
             }
-            if first_start.current != second_end.current
-                || first_end.current != second_start.current
+            if !first_start
+                .current
+                .equal_metered(&second_end.current, meter)?
+                || !first_end
+                    .current
+                    .equal_metered(&second_start.current, meter)?
             {
                 // Never epsilon-weld independently rounded hinge transforms.
                 // The source feature is authenticated, so the pair can still
@@ -1043,8 +2024,8 @@ fn authenticate_face_pair_topology(
                 return Ok(AuthenticatedTopology::SharedHingePoseMismatch);
             }
             Ok(AuthenticatedTopology::SharedHingeEdge {
-                start: first_start.current.clone(),
-                end: first_end.current.clone(),
+                start: first_start.current.clone_retained(meter)?,
+                end: first_end.current.clone_retained(meter)?,
             })
         }
         _ => Err(ZeroThicknessAnalysisError::EvidenceUnavailable),
@@ -1162,17 +2143,28 @@ struct FaceLineSlice {
     material_boundary: Vec<ExactInterval>,
 }
 
+#[cfg(test)]
 fn classify_face_level_line_intersection(
     first: &AuthenticatedFace,
     second: &AuthenticatedFace,
 ) -> Result<FaceLevelLineEvidence, ZeroThicknessAnalysisError> {
-    let Some(first_plane) = authenticated_face_support_plane(first) else {
+    let limits = unlimited_rational_limits();
+    let mut meter = RationalWorkMeter::unlimited(&limits);
+    classify_face_level_line_intersection_metered(first, second, &mut meter)
+}
+
+fn classify_face_level_line_intersection_metered(
+    first: &AuthenticatedFace,
+    second: &AuthenticatedFace,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<FaceLevelLineEvidence, ZeroThicknessAnalysisError> {
+    let Some(first_plane) = authenticated_face_support_plane(first, meter)? else {
         return Ok(FaceLevelLineEvidence::Indeterminate);
     };
-    let Some(second_plane) = authenticated_face_support_plane(second) else {
+    let Some(second_plane) = authenticated_face_support_plane(second, meter)? else {
         return Ok(FaceLevelLineEvidence::Indeterminate);
     };
-    let line_direction = first_plane.normal.cross(&second_plane.normal);
+    let line_direction = first_plane.normal.cross(&second_plane.normal, meter)?;
     let Some(axis) = line_direction
         .coordinates
         .iter()
@@ -1196,21 +2188,23 @@ fn classify_face_level_line_intersection(
         .try_reserve_exact(event_bound)
         .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
 
-    let Some(first_slice) = build_face_line_slice(first, &second_plane, axis, &mut events)? else {
+    let Some(first_slice) = build_face_line_slice(first, &second_plane, axis, &mut events, meter)?
+    else {
         return Ok(FaceLevelLineEvidence::Indeterminate);
     };
-    let Some(second_slice) = build_face_line_slice(second, &first_plane, axis, &mut events)? else {
+    let Some(second_slice) = build_face_line_slice(second, &first_plane, axis, &mut events, meter)?
+    else {
         return Ok(FaceLevelLineEvidence::Indeterminate);
     };
     if events.len() > event_bound
-        || !material_boundary_is_covered(&first_slice)
-        || !material_boundary_is_covered(&second_slice)
+        || !material_boundary_is_covered(&first_slice, meter)?
+        || !material_boundary_is_covered(&second_slice, meter)?
     {
         return Ok(FaceLevelLineEvidence::Indeterminate);
     }
 
-    events.sort_unstable();
-    events.dedup();
+    sort_rationals_metered(&mut events, meter)?;
+    dedup_sorted_rationals_metered(&mut events, meter)?;
     if events.len() < 2 {
         return Ok(FaceLevelLineEvidence::NoPositiveLine);
     }
@@ -1224,19 +2218,23 @@ fn classify_face_level_line_intersection(
         let [start, end] = event_pair else {
             return Ok(FaceLevelLineEvidence::Indeterminate);
         };
-        if start >= end {
+        if meter.compare(start, end)? != Ordering::Less {
             return Ok(FaceLevelLineEvidence::Indeterminate);
         }
-        let midpoint = (start + end) / BigRational::from_integer(BigInt::from(2));
+        let sum = meter.add(start, end)?;
+        let two = meter.positive_integer(2)?;
+        let midpoint = meter.divide(&sum, &two)?;
         if !exact_interval_union_contains(
             &first_slice.coverage,
             &midpoint,
             &mut first_coverage_cursor,
-        ) || !exact_interval_union_contains(
+            meter,
+        )? || !exact_interval_union_contains(
             &second_slice.coverage,
             &midpoint,
             &mut second_coverage_cursor,
-        ) {
+            meter,
+        )? {
             continue;
         }
         has_common_positive_cell = true;
@@ -1244,12 +2242,14 @@ fn classify_face_level_line_intersection(
             &first_slice.material_boundary,
             &midpoint,
             &mut first_boundary_cursor,
-        );
+            meter,
+        )?;
         let second_is_boundary = exact_interval_union_contains(
             &second_slice.material_boundary,
             &midpoint,
             &mut second_boundary_cursor,
-        );
+            meter,
+        )?;
         if !first_is_boundary && !second_is_boundary {
             return Ok(FaceLevelLineEvidence::Transversal);
         }
@@ -1262,26 +2262,51 @@ fn classify_face_level_line_intersection(
     })
 }
 
-fn authenticated_face_support_plane(face: &AuthenticatedFace) -> Option<ExactTriangle> {
-    let plane = ExactTriangle::from_exact_points(face.triangles.first()?.clone());
-    if plane.normal.is_zero()
-        || face
-            .boundary
-            .iter()
-            .any(|vertex| !plane.signed_plane_distance(&vertex.current).is_zero())
-        || face.triangles.iter().any(|points| {
-            let triangle = ExactTriangle::from_exact_points(points.clone());
-            triangle.normal.is_zero()
-                || triangle
-                    .points
-                    .iter()
-                    .any(|point| !plane.signed_plane_distance(point).is_zero())
-        })
-    {
-        None
-    } else {
-        Some(plane)
+fn authenticated_face_support_plane(
+    face: &AuthenticatedFace,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<ExactTriangle>, ZeroThicknessAnalysisError> {
+    let Some(first) = face.triangles.first() else {
+        return Ok(None);
+    };
+    let plane = ExactTriangle::from_exact_points_metered(
+        [
+            first[0].clone_retained(meter)?,
+            first[1].clone_retained(meter)?,
+            first[2].clone_retained(meter)?,
+        ],
+        meter,
+    )?;
+    if plane.normal.is_zero() {
+        return Ok(None);
     }
+    for vertex in &face.boundary {
+        if !plane
+            .signed_plane_distance_metered(&vertex.current, meter)?
+            .is_zero()
+        {
+            return Ok(None);
+        }
+    }
+    for points in &face.triangles {
+        let triangle = ExactTriangle::from_exact_points_metered(
+            [
+                points[0].clone_retained(meter)?,
+                points[1].clone_retained(meter)?,
+                points[2].clone_retained(meter)?,
+            ],
+            meter,
+        )?;
+        if triangle.normal.is_zero() {
+            return Ok(None);
+        }
+        for point in &triangle.points {
+            if !plane.signed_plane_distance_metered(point, meter)?.is_zero() {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(plane))
 }
 
 fn build_face_line_slice(
@@ -1289,29 +2314,36 @@ fn build_face_line_slice(
     other_plane: &ExactTriangle,
     axis: usize,
     events: &mut Vec<BigRational>,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<Option<FaceLineSlice>, ZeroThicknessAnalysisError> {
     let mut coverage = Vec::new();
     coverage
         .try_reserve_exact(face.triangles.len())
         .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
     for triangle in &face.triangles {
-        let triangle = ExactTriangle::from_exact_points(triangle.clone());
-        let distances = triangle
-            .points
-            .each_ref()
-            .map(|point| other_plane.signed_plane_distance(point));
+        let triangle = ExactTriangle::from_exact_points_metered(
+            [
+                triangle[0].clone_retained(meter)?,
+                triangle[1].clone_retained(meter)?,
+                triangle[2].clone_retained(meter)?,
+            ],
+            meter,
+        )?;
+        let distances = try_array3(|index| {
+            other_plane.signed_plane_distance_metered(&triangle.points[index], meter)
+        })?;
         if distances.iter().all(Zero::is_zero) {
             return Ok(None);
         }
-        let Some(cut) = triangle_plane_cut(&triangle, &distances) else {
+        let Some(cut) = triangle_plane_cut(&triangle, &distances, meter)? else {
             return Ok(None);
         };
         for point in &cut.points {
-            events.push(point.coordinate(axis).clone());
+            events.push(meter.clone_retained(point.coordinate(axis))?);
         }
         if cut.points.len() == 2 {
             let Some(interval) =
-                exact_interval_from_coordinates(&cut.points[0], &cut.points[1], axis)
+                exact_interval_from_coordinates(&cut.points[0], &cut.points[1], axis, meter)?
             else {
                 return Ok(None);
             };
@@ -1326,31 +2358,32 @@ fn build_face_line_slice(
     for index in 0..face.boundary.len() {
         let start = &face.boundary[index].current;
         let end = &face.boundary[(index + 1) % face.boundary.len()].current;
-        let start_distance = other_plane.signed_plane_distance(start);
-        let end_distance = other_plane.signed_plane_distance(end);
+        let start_distance = other_plane.signed_plane_distance_metered(start, meter)?;
+        let end_distance = other_plane.signed_plane_distance_metered(end, meter)?;
         if start_distance.is_zero() && end_distance.is_zero() {
-            let Some(interval) = exact_interval_from_coordinates(start, end, axis) else {
+            let Some(interval) = exact_interval_from_coordinates(start, end, axis, meter)? else {
                 return Ok(None);
             };
-            events.push(interval.start.clone());
-            events.push(interval.end.clone());
+            events.push(meter.clone_retained(&interval.start)?);
+            events.push(meter.clone_retained(&interval.end)?);
             material_boundary.push(interval);
         } else if start_distance.is_zero() {
-            events.push(start.coordinate(axis).clone());
+            events.push(meter.clone_retained(start.coordinate(axis))?);
         } else if end_distance.is_zero() {
-            events.push(end.coordinate(axis).clone());
-        } else if start_distance.signum() != end_distance.signum() {
-            let denominator = start_distance.clone() - end_distance;
+            events.push(meter.clone_retained(end.coordinate(axis))?);
+        } else if start_distance.is_positive() != end_distance.is_positive() {
+            let denominator = meter.subtract(&start_distance, &end_distance)?;
             if denominator.is_zero() {
                 return Ok(None);
             }
-            let parameter = start_distance / denominator;
-            events.push(start.interpolate(end, &parameter).coordinate(axis).clone());
+            let parameter = meter.divide(&start_distance, &denominator)?;
+            let point = start.interpolate_metered(end, &parameter, meter)?;
+            events.push(meter.clone_retained(point.coordinate(axis))?);
         }
     }
 
-    normalize_exact_intervals(&mut coverage);
-    normalize_exact_intervals(&mut material_boundary);
+    normalize_exact_intervals(&mut coverage, meter)?;
+    normalize_exact_intervals(&mut material_boundary, meter)?;
     Ok(Some(FaceLineSlice {
         coverage,
         material_boundary,
@@ -1361,10 +2394,11 @@ fn exact_interval_from_coordinates(
     start: &ExactPoint3,
     end: &ExactPoint3,
     axis: usize,
-) -> Option<ExactInterval> {
-    let first = start.coordinate(axis).clone();
-    let second = end.coordinate(axis).clone();
-    match first.cmp(&second) {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<ExactInterval>, ZeroThicknessAnalysisError> {
+    let first = meter.clone_retained(start.coordinate(axis))?;
+    let second = meter.clone_retained(end.coordinate(axis))?;
+    Ok(match meter.compare(&first, &second)? {
         Ordering::Less => Some(ExactInterval {
             start: first,
             end: second,
@@ -1374,24 +2408,25 @@ fn exact_interval_from_coordinates(
             end: first,
         }),
         Ordering::Equal => None,
-    }
+    })
 }
 
-fn normalize_exact_intervals(intervals: &mut Vec<ExactInterval>) {
-    intervals.sort_unstable_by(|first, second| {
-        first
-            .start
-            .cmp(&second.start)
-            .then_with(|| first.end.cmp(&second.end))
-    });
+fn normalize_exact_intervals(
+    intervals: &mut Vec<ExactInterval>,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<(), ZeroThicknessAnalysisError> {
+    sort_intervals_metered(intervals, meter)?;
     if intervals.is_empty() {
-        return;
+        return Ok(());
     }
     let mut write = 0;
     for read in 1..intervals.len() {
-        let candidate = intervals[read].clone();
-        if candidate.start <= intervals[write].end {
-            if candidate.end > intervals[write].end {
+        let candidate = ExactInterval {
+            start: meter.clone_retained(&intervals[read].start)?,
+            end: meter.clone_retained(&intervals[read].end)?,
+        };
+        if meter.compare(&candidate.start, &intervals[write].end)? != Ordering::Greater {
+            if meter.compare(&candidate.end, &intervals[write].end)? == Ordering::Greater {
                 intervals[write].end = candidate.end;
             }
         } else {
@@ -1400,39 +2435,149 @@ fn normalize_exact_intervals(intervals: &mut Vec<ExactInterval>) {
         }
     }
     intervals.truncate(write + 1);
+    Ok(())
 }
 
-fn material_boundary_is_covered(slice: &FaceLineSlice) -> bool {
+fn sort_rationals_metered(
+    values: &mut [BigRational],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<(), ZeroThicknessAnalysisError> {
+    let mut failure = None;
+    values.sort_unstable_by(|left, right| {
+        if failure.is_some() {
+            return Ordering::Equal;
+        }
+        match meter.compare(left, right) {
+            Ok(ordering) => ordering,
+            Err(error) => {
+                failure = Some(error);
+                Ordering::Equal
+            }
+        }
+    });
+    failure.map_or(Ok(()), Err)
+}
+
+fn dedup_sorted_rationals_metered(
+    values: &mut Vec<BigRational>,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<(), ZeroThicknessAnalysisError> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let mut write = 0;
+    for read in 1..values.len() {
+        if !meter.equal(&values[write], &values[read])? {
+            write += 1;
+            values.swap(write, read);
+        }
+    }
+    values.truncate(write + 1);
+    Ok(())
+}
+
+fn sort_intervals_metered(
+    values: &mut [ExactInterval],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<(), ZeroThicknessAnalysisError> {
+    let mut failure = None;
+    values.sort_unstable_by(|left, right| {
+        if failure.is_some() {
+            return Ordering::Equal;
+        }
+        let ordering = meter
+            .compare(&left.start, &right.start)
+            .and_then(|ordering| {
+                if ordering == Ordering::Equal {
+                    meter.compare(&left.end, &right.end)
+                } else {
+                    Ok(ordering)
+                }
+            });
+        match ordering {
+            Ok(ordering) => ordering,
+            Err(error) => {
+                failure = Some(error);
+                Ordering::Equal
+            }
+        }
+    });
+    failure.map_or(Ok(()), Err)
+}
+
+fn sort_rational_pairs_metered(
+    values: &mut [(BigRational, BigRational)],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<(), ZeroThicknessAnalysisError> {
+    let mut failure = None;
+    values.sort_unstable_by(|left, right| {
+        if failure.is_some() {
+            return Ordering::Equal;
+        }
+        let ordering = meter.compare(&left.0, &right.0).and_then(|ordering| {
+            if ordering == Ordering::Equal {
+                meter.compare(&left.1, &right.1)
+            } else {
+                Ok(ordering)
+            }
+        });
+        match ordering {
+            Ok(ordering) => ordering,
+            Err(error) => {
+                failure = Some(error);
+                Ordering::Equal
+            }
+        }
+    });
+    failure.map_or(Ok(()), Err)
+}
+
+fn material_boundary_is_covered(
+    slice: &FaceLineSlice,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
     let mut coverage_index = 0;
-    for boundary in &slice.material_boundary {
+    'boundaries: for boundary in &slice.material_boundary {
         while coverage_index < slice.coverage.len()
-            && slice.coverage[coverage_index].end < boundary.start
+            && meter.compare(&slice.coverage[coverage_index].end, &boundary.start)?
+                == Ordering::Less
         {
             coverage_index += 1;
         }
         let Some(coverage) = slice.coverage.get(coverage_index) else {
-            return false;
+            return Ok(false);
         };
-        if coverage.start > boundary.start || coverage.end < boundary.end {
-            return false;
+        if meter.compare(&coverage.start, &boundary.start)? == Ordering::Greater
+            || meter.compare(&coverage.end, &boundary.end)? == Ordering::Less
+        {
+            return Ok(false);
         }
+        continue 'boundaries;
     }
-    true
+    Ok(true)
 }
 
 fn exact_interval_union_contains(
     intervals: &[ExactInterval],
     coordinate: &BigRational,
     cursor: &mut usize,
-) -> bool {
-    while *cursor < intervals.len() && intervals[*cursor].end < *coordinate {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    while *cursor < intervals.len()
+        && meter.compare(&intervals[*cursor].end, coordinate)? == Ordering::Less
+    {
         *cursor += 1;
     }
-    intervals
-        .get(*cursor)
-        .is_some_and(|interval| interval.start <= *coordinate && *coordinate <= interval.end)
+    let Some(interval) = intervals.get(*cursor) else {
+        return Ok(false);
+    };
+    Ok(
+        meter.compare(&interval.start, coordinate)? != Ordering::Greater
+            && meter.compare(coordinate, &interval.end)? != Ordering::Greater,
+    )
 }
 
+#[cfg(test)]
 fn aggregate_authenticated_face_pair(
     first: &AuthenticatedFace,
     second: &AuthenticatedFace,
@@ -1440,6 +2585,28 @@ fn aggregate_authenticated_face_pair(
     max_triangle_pairs: usize,
     max_boundary_relation_work: usize,
     hinges: usize,
+) -> Result<PairDispatch, ZeroThicknessAnalysisError> {
+    let limits = unlimited_rational_limits();
+    let mut meter = RationalWorkMeter::unlimited(&limits);
+    aggregate_authenticated_face_pair_metered(
+        first,
+        second,
+        topology,
+        max_triangle_pairs,
+        max_boundary_relation_work,
+        hinges,
+        &mut meter,
+    )
+}
+
+fn aggregate_authenticated_face_pair_metered(
+    first: &AuthenticatedFace,
+    second: &AuthenticatedFace,
+    topology: &AuthenticatedTopology,
+    max_triangle_pairs: usize,
+    max_boundary_relation_work: usize,
+    hinges: usize,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<PairDispatch, ZeroThicknessAnalysisError> {
     if first.triangles.is_empty()
         || second.triangles.is_empty()
@@ -1483,17 +2650,32 @@ fn aggregate_authenticated_face_pair(
     }
 
     for first_triangle in &first.triangles {
-        let first_triangle = ExactTriangle::from_exact_points(first_triangle.clone());
+        let first_triangle = ExactTriangle::from_exact_points_metered(
+            [
+                first_triangle[0].clone_retained(meter)?,
+                first_triangle[1].clone_retained(meter)?,
+                first_triangle[2].clone_retained(meter)?,
+            ],
+            meter,
+        )?;
         for second_triangle in &second.triangles {
-            let second_triangle = ExactTriangle::from_exact_points(second_triangle.clone());
+            let second_triangle = ExactTriangle::from_exact_points_metered(
+                [
+                    second_triangle[0].clone_retained(meter)?,
+                    second_triangle[1].clone_retained(meter)?,
+                    second_triangle[2].clone_retained(meter)?,
+                ],
+                meter,
+            )?;
             analyzed = analyzed
                 .checked_add(1)
                 .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
-            match classify_triangle_intersection(&first_triangle, &second_triangle) {
+            match classify_triangle_intersection_metered(&first_triangle, &second_triangle, meter)?
+            {
                 ExactIntersection::Separated => {}
                 ExactIntersection::Point(point) => {
-                    if !exact_point_on_material_boundary(&point, first)
-                        && !exact_point_on_material_boundary(&point, second)
+                    if !exact_point_on_material_boundary(&point, first, meter)?
+                        && !exact_point_on_material_boundary(&point, second, meter)?
                     {
                         has_artificial_boundary_artifact = true;
                         continue;
@@ -1503,11 +2685,15 @@ fn aggregate_authenticated_face_pair(
                         .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
                     match topology {
                         AuthenticatedTopology::SharedVertex(shared) => {
-                            all_contacts_match_shared_feature &= point == *shared;
+                            all_contacts_match_shared_feature &=
+                                point.equal_metered(shared, meter)?;
                         }
                         AuthenticatedTopology::SharedHingeEdge { start, end } => {
-                            if let Some(parameter) = exact_segment_parameter(&point, start, end) {
-                                hinge_intervals.push((parameter.clone(), parameter));
+                            if let Some(parameter) =
+                                exact_segment_parameter(&point, start, end, meter)?
+                            {
+                                hinge_intervals
+                                    .push((meter.clone_retained(&parameter)?, parameter));
                             } else {
                                 all_contacts_match_shared_feature = false;
                             }
@@ -1522,9 +2708,9 @@ fn aggregate_authenticated_face_pair(
                 }
                 ExactIntersection::BoundaryLine { start, end } => {
                     let first_material_boundary =
-                        exact_segment_on_material_boundary(&start, &end, first)?;
+                        exact_segment_on_material_boundary(&start, &end, first, meter)?;
                     let second_material_boundary =
-                        exact_segment_on_material_boundary(&start, &end, second)?;
+                        exact_segment_on_material_boundary(&start, &end, second, meter)?;
                     if !first_material_boundary && !second_material_boundary {
                         // A triangle-local boundary can be an ear-clipping
                         // diagonal. Defer it to the exact whole-face interval
@@ -1545,11 +2731,13 @@ fn aggregate_authenticated_face_pair(
                             end: shared_end,
                         } => {
                             match (
-                                exact_segment_parameter(&start, shared_start, shared_end),
-                                exact_segment_parameter(&end, shared_start, shared_end),
+                                exact_segment_parameter(&start, shared_start, shared_end, meter)?,
+                                exact_segment_parameter(&end, shared_start, shared_end, meter)?,
                             ) {
                                 (Some(first_parameter), Some(second_parameter)) => {
-                                    if first_parameter <= second_parameter {
+                                    if meter.compare(&first_parameter, &second_parameter)?
+                                        != Ordering::Greater
+                                    {
                                         hinge_intervals.push((first_parameter, second_parameter));
                                     } else {
                                         hinge_intervals.push((second_parameter, first_parameter));
@@ -1578,7 +2766,7 @@ fn aggregate_authenticated_face_pair(
 
     let mut unresolved_artificial_boundary_artifact = has_artificial_boundary_artifact;
     if has_artificial_boundary_artifact && !has_transversal && !has_coplanar_area {
-        match classify_face_level_line_intersection(first, second)? {
+        match classify_face_level_line_intersection_metered(first, second, meter)? {
             FaceLevelLineEvidence::Transversal => {
                 has_transversal = true;
                 unresolved_artificial_boundary_artifact = false;
@@ -1625,7 +2813,8 @@ fn aggregate_authenticated_face_pair(
                     if exact_material_normals_are_cooriented(
                         &first.material_normal,
                         &second.material_normal,
-                    ) {
+                        meter,
+                    )? {
                         IntersectionEvidenceV2::SharedFeatureContact
                     } else {
                         IntersectionEvidenceV2::Indeterminate
@@ -1637,7 +2826,7 @@ fn aggregate_authenticated_face_pair(
             AuthenticatedTopology::SharedHingeEdge { .. } => {
                 if contact_count > 0
                     && all_contacts_match_shared_feature
-                    && exact_intervals_cover_unit_segment(&mut hinge_intervals)
+                    && exact_intervals_cover_unit_segment(&mut hinge_intervals, meter)?
                 {
                     IntersectionEvidenceV2::SharedFeatureContact
                 } else if contact_count == 0 {
@@ -1671,61 +2860,82 @@ fn generic_contact_evidence(point_contacts: usize, line_contacts: usize) -> Inte
     }
 }
 
-fn exact_material_normals_are_cooriented(first: &ExactVector3, second: &ExactVector3) -> bool {
-    first.dot(second) > exact_binary64_scalar(1.0e-10)
+fn exact_material_normals_are_cooriented(
+    first: &ExactVector3,
+    second: &ExactVector3,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    let dot = first.dot(second, meter)?;
+    let threshold = meter.input_binary64_scalar(1.0e-10)?;
+    Ok(meter.compare(&dot, &threshold)? == Ordering::Greater)
 }
 
 fn exact_segment_parameter(
     point: &ExactPoint3,
     start: &ExactPoint3,
     end: &ExactPoint3,
-) -> Option<BigRational> {
-    let direction = ExactVector3::between(start, end);
-    if direction.is_zero()
-        || !ExactVector3::between(start, point)
-            .cross(&direction)
-            .is_zero()
-    {
-        return None;
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<BigRational>, ZeroThicknessAnalysisError> {
+    let direction = ExactVector3::between(start, end, meter)?;
+    let offset = ExactVector3::between(start, point, meter)?;
+    if direction.is_zero() || !offset.cross(&direction, meter)?.is_zero() {
+        return Ok(None);
     }
-    let axis = (0..3).find(|axis| !direction.coordinates[*axis].is_zero())?;
-    let parameter =
-        (point.coordinate(axis) - start.coordinate(axis)) / &direction.coordinates[axis];
-    (parameter >= BigRational::zero() && parameter <= BigRational::one()).then_some(parameter)
+    let Some(axis) = (0..3).find(|axis| !direction.coordinates[*axis].is_zero()) else {
+        return Ok(None);
+    };
+    let numerator = meter.subtract(point.coordinate(axis), start.coordinate(axis))?;
+    let parameter = meter.divide(&numerator, &direction.coordinates[axis])?;
+    let zero = meter.zero()?;
+    let one = meter.one()?;
+    Ok((meter.compare(&parameter, &zero)? != Ordering::Less
+        && meter.compare(&parameter, &one)? != Ordering::Greater)
+        .then_some(parameter))
 }
 
 fn exact_unbounded_line_parameter(
     point: &ExactPoint3,
     start: &ExactPoint3,
     end: &ExactPoint3,
-) -> Option<BigRational> {
-    let direction = ExactVector3::between(start, end);
-    if direction.is_zero()
-        || !ExactVector3::between(start, point)
-            .cross(&direction)
-            .is_zero()
-    {
-        return None;
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<BigRational>, ZeroThicknessAnalysisError> {
+    let direction = ExactVector3::between(start, end, meter)?;
+    let offset = ExactVector3::between(start, point, meter)?;
+    if direction.is_zero() || !offset.cross(&direction, meter)?.is_zero() {
+        return Ok(None);
     }
-    let axis = (0..3).find(|axis| !direction.coordinates[*axis].is_zero())?;
-    Some((point.coordinate(axis) - start.coordinate(axis)) / &direction.coordinates[axis])
+    let Some(axis) = (0..3).find(|axis| !direction.coordinates[*axis].is_zero()) else {
+        return Ok(None);
+    };
+    let numerator = meter.subtract(point.coordinate(axis), start.coordinate(axis))?;
+    Ok(Some(
+        meter.divide(&numerator, &direction.coordinates[axis])?,
+    ))
 }
 
-fn exact_point_on_material_boundary(point: &ExactPoint3, face: &AuthenticatedFace) -> bool {
-    (0..face.boundary.len()).any(|index| {
+fn exact_point_on_material_boundary(
+    point: &ExactPoint3,
+    face: &AuthenticatedFace,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    for index in 0..face.boundary.len() {
         let start = &face.boundary[index].current;
         let end = &face.boundary[(index + 1) % face.boundary.len()].current;
-        exact_segment_parameter(point, start, end).is_some()
-    })
+        if exact_segment_parameter(point, start, end, meter)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn exact_segment_on_material_boundary(
     segment_start: &ExactPoint3,
     segment_end: &ExactPoint3,
     face: &AuthenticatedFace,
+    meter: &mut RationalWorkMeter<'_>,
 ) -> Result<bool, ZeroThicknessAnalysisError> {
-    if segment_start == segment_end {
-        return Ok(exact_point_on_material_boundary(segment_start, face));
+    if segment_start.equal_metered(segment_end, meter)? {
+        return exact_point_on_material_boundary(segment_start, face, meter);
     }
     let mut intervals = Vec::new();
     intervals
@@ -1735,45 +2945,58 @@ fn exact_segment_on_material_boundary(
         let edge_start = &face.boundary[index].current;
         let edge_end = &face.boundary[(index + 1) % face.boundary.len()].current;
         let (Some(first), Some(second)) = (
-            exact_unbounded_line_parameter(edge_start, segment_start, segment_end),
-            exact_unbounded_line_parameter(edge_end, segment_start, segment_end),
+            exact_unbounded_line_parameter(edge_start, segment_start, segment_end, meter)?,
+            exact_unbounded_line_parameter(edge_end, segment_start, segment_end, meter)?,
         ) else {
             continue;
         };
-        let (line_start, line_end) = if first <= second {
+        let (line_start, line_end) = if meter.compare(&first, &second)? != Ordering::Greater {
             (first, second)
         } else {
             (second, first)
         };
-        let start = line_start.max(BigRational::zero());
-        let end = line_end.min(BigRational::one());
-        if start <= end {
+        let zero = meter.zero()?;
+        let start = if meter.compare(&line_start, &zero)? == Ordering::Less {
+            zero
+        } else {
+            line_start
+        };
+        let one = meter.one()?;
+        let end = if meter.compare(&line_end, &one)? == Ordering::Greater {
+            one
+        } else {
+            line_end
+        };
+        if meter.compare(&start, &end)? != Ordering::Greater {
             intervals.push((start, end));
         }
     }
-    Ok(exact_intervals_cover_unit_segment(&mut intervals))
+    exact_intervals_cover_unit_segment(&mut intervals, meter)
 }
 
-fn exact_intervals_cover_unit_segment(intervals: &mut [(BigRational, BigRational)]) -> bool {
+fn exact_intervals_cover_unit_segment(
+    intervals: &mut [(BigRational, BigRational)],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
     if intervals.is_empty() {
-        return false;
+        return Ok(false);
     }
-    intervals.sort_unstable_by(|first, second| {
-        first.0.cmp(&second.0).then_with(|| first.1.cmp(&second.1))
-    });
-    if intervals[0].0 != BigRational::zero() {
-        return false;
+    sort_rational_pairs_metered(intervals, meter)?;
+    let zero = meter.zero()?;
+    if meter.compare(&intervals[0].0, &zero)? != Ordering::Equal {
+        return Ok(false);
     }
-    let mut covered = intervals[0].1.clone();
+    let mut covered = meter.clone_retained(&intervals[0].1)?;
     for (start, end) in &intervals[1..] {
-        if *start > covered {
-            return false;
+        if meter.compare(start, &covered)? == Ordering::Greater {
+            return Ok(false);
         }
-        if *end > covered {
-            covered = end.clone();
+        if meter.compare(end, &covered)? == Ordering::Greater {
+            covered = meter.clone_retained(end)?;
         }
     }
-    covered == BigRational::one()
+    let one = meter.one()?;
+    Ok(meter.compare(&covered, &one)? == Ordering::Equal)
 }
 
 #[cfg(test)]
@@ -1806,6 +3029,20 @@ struct ExactPoint3 {
 }
 
 impl ExactPoint3 {
+    fn from_input_point(
+        point: Point3,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
+        Ok(Self {
+            coordinates: [
+                meter.input_binary64_common_unit(point.x())?,
+                meter.input_binary64_common_unit(point.y())?,
+                meter.input_binary64_common_unit(point.z())?,
+            ],
+        })
+    }
+
+    #[cfg(test)]
     fn from_point(point: Point3) -> Self {
         Self {
             coordinates: [
@@ -1820,14 +3057,51 @@ impl ExactPoint3 {
         &self.coordinates[index]
     }
 
-    fn interpolate(&self, other: &Self, parameter: &BigRational) -> Self {
-        Self {
-            coordinates: std::array::from_fn(|index| {
-                self.coordinates[index].clone()
-                    + parameter
-                        * (other.coordinates[index].clone() - self.coordinates[index].clone())
-            }),
+    fn equal_metered(
+        &self,
+        other: &Self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<bool, ZeroThicknessAnalysisError> {
+        for (left, right) in self.coordinates.iter().zip(&other.coordinates) {
+            if !meter.equal(left, right)? {
+                return Ok(false);
+            }
         }
+        Ok(true)
+    }
+
+    fn clone_retained(
+        &self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
+        Ok(Self {
+            coordinates: try_array3(|index| meter.clone_retained(&self.coordinates[index]))?,
+        })
+    }
+
+    fn observe_output(
+        &self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<(), ZeroThicknessAnalysisError> {
+        for coordinate in &self.coordinates {
+            meter.output(coordinate)?;
+        }
+        Ok(())
+    }
+
+    fn interpolate_metered(
+        &self,
+        other: &Self,
+        parameter: &BigRational,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
+        Ok(Self {
+            coordinates: try_array3(|index| {
+                let delta = meter.subtract(&other.coordinates[index], &self.coordinates[index])?;
+                let scaled = meter.multiply(parameter, &delta)?;
+                meter.add(&self.coordinates[index], &scaled)
+            })?,
+        })
     }
 }
 
@@ -1838,32 +3112,63 @@ struct ExactAffineTransform {
 }
 
 impl ExactAffineTransform {
+    #[cfg(test)]
     fn from_transform(transform: RigidTransform) -> Self {
-        Self {
-            rotation: transform
-                .rotation_rows()
-                .map(|row| row.map(exact_binary64_scalar)),
-            translation: ExactPoint3::from_point(transform.translation()),
-        }
+        let limits = unlimited_rational_limits();
+        let mut meter = RationalWorkMeter::unlimited(&limits);
+        Self::from_transform_metered(transform, &mut meter).expect("unlimited exact test transform")
     }
 
+    fn from_transform_metered(
+        transform: RigidTransform,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
+        let rows = transform.rotation_rows();
+        Ok(Self {
+            rotation: [
+                try_array3(|column| meter.input_binary64_scalar(rows[0][column]))?,
+                try_array3(|column| meter.input_binary64_scalar(rows[1][column]))?,
+                try_array3(|column| meter.input_binary64_scalar(rows[2][column]))?,
+            ],
+            translation: ExactPoint3::from_input_point(transform.translation(), meter)?,
+        })
+    }
+
+    #[cfg(test)]
     fn apply_point(&self, point: &ExactPoint3) -> ExactPoint3 {
-        ExactPoint3 {
-            coordinates: std::array::from_fn(|row| {
-                self.translation.coordinates[row].clone()
-                    + (0..3)
-                        .map(|column| {
-                            self.rotation[row][column].clone() * point.coordinates[column].clone()
-                        })
-                        .sum::<BigRational>()
-            }),
-        }
+        let limits = unlimited_rational_limits();
+        let mut meter = RationalWorkMeter::unlimited(&limits);
+        self.apply_point_metered(point, &mut meter)
+            .expect("unlimited exact test affine application")
     }
 
-    fn transformed_local_y(&self) -> ExactVector3 {
-        ExactVector3 {
-            coordinates: std::array::from_fn(|row| self.rotation[row][1].clone()),
-        }
+    fn apply_point_metered(
+        &self,
+        point: &ExactPoint3,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<ExactPoint3, ZeroThicknessAnalysisError> {
+        Ok(ExactPoint3 {
+            coordinates: try_array3(|row| {
+                let mut coordinate = meter.clone_temporary(&self.translation.coordinates[row])?;
+                for column in 0..3 {
+                    let product =
+                        meter.multiply(&self.rotation[row][column], &point.coordinates[column])?;
+                    coordinate = meter.add(&coordinate, &product)?;
+                }
+                Ok(coordinate)
+            })?,
+        })
+    }
+
+    fn transformed_local_y(
+        &self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<ExactVector3, ZeroThicknessAnalysisError> {
+        let result = ExactVector3 {
+            coordinates: try_array3(|row| meter.clone_retained(&self.rotation[row][1]))?,
+        };
+        result.observe_output(meter)?;
+        Ok(result)
     }
 }
 
@@ -1873,28 +3178,61 @@ struct ExactVector3 {
 }
 
 impl ExactVector3 {
-    fn between(start: &ExactPoint3, end: &ExactPoint3) -> Self {
-        Self {
-            coordinates: std::array::from_fn(|index| {
-                end.coordinates[index].clone() - start.coordinates[index].clone()
-            }),
-        }
+    fn between(
+        start: &ExactPoint3,
+        end: &ExactPoint3,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
+        Ok(Self {
+            coordinates: try_array3(|index| {
+                meter.subtract(&end.coordinates[index], &start.coordinates[index])
+            })?,
+        })
     }
 
-    fn cross(&self, other: &Self) -> Self {
+    fn cross(
+        &self,
+        other: &Self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
         let [ax, ay, az] = &self.coordinates;
         let [bx, by, bz] = &other.coordinates;
-        Self {
-            coordinates: [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx],
-        }
+        let ay_bz = meter.multiply(ay, bz)?;
+        let az_by = meter.multiply(az, by)?;
+        let az_bx = meter.multiply(az, bx)?;
+        let ax_bz = meter.multiply(ax, bz)?;
+        let ax_by = meter.multiply(ax, by)?;
+        let ay_bx = meter.multiply(ay, bx)?;
+        Ok(Self {
+            coordinates: [
+                meter.subtract(&ay_bz, &az_by)?,
+                meter.subtract(&az_bx, &ax_bz)?,
+                meter.subtract(&ax_by, &ay_bx)?,
+            ],
+        })
     }
 
-    fn dot(&self, other: &Self) -> BigRational {
-        self.coordinates
-            .iter()
-            .zip(&other.coordinates)
-            .map(|(left, right)| left * right)
-            .sum()
+    fn dot(
+        &self,
+        other: &Self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        let mut result = meter.zero()?;
+        for (left, right) in self.coordinates.iter().zip(&other.coordinates) {
+            let product = meter.multiply(left, right)?;
+            result = meter.add(&result, &product)?;
+        }
+        Ok(result)
+    }
+
+    fn observe_output(
+        &self,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<(), ZeroThicknessAnalysisError> {
+        for coordinate in &self.coordinates {
+            meter.output(coordinate)?;
+        }
+        Ok(())
     }
 
     fn is_zero(&self) -> bool {
@@ -1915,16 +3253,40 @@ impl ExactTriangle {
         Self::from_exact_points(points)
     }
 
+    #[cfg(test)]
     fn from_exact_points(points: [ExactPoint3; 3]) -> Self {
-        let first_edge = ExactVector3::between(&points[0], &points[1]);
-        let second_edge = ExactVector3::between(&points[0], &points[2]);
-        let normal = first_edge.cross(&second_edge);
-        Self { points, normal }
+        let limits = unlimited_rational_limits();
+        let mut meter = RationalWorkMeter::unlimited(&limits);
+        Self::from_exact_points_metered(points, &mut meter).expect("unlimited exact test triangle")
     }
 
+    fn from_exact_points_metered(
+        points: [ExactPoint3; 3],
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<Self, ZeroThicknessAnalysisError> {
+        let first_edge = ExactVector3::between(&points[0], &points[1], meter)?;
+        let second_edge = ExactVector3::between(&points[0], &points[2], meter)?;
+        let normal = first_edge.cross(&second_edge, meter)?;
+        Ok(Self { points, normal })
+    }
+
+    fn signed_plane_distance_metered(
+        &self,
+        point: &ExactPoint3,
+        meter: &mut RationalWorkMeter<'_>,
+    ) -> Result<BigRational, ZeroThicknessAnalysisError> {
+        self.normal.dot(
+            &ExactVector3::between(&self.points[0], point, meter)?,
+            meter,
+        )
+    }
+
+    #[cfg(test)]
     fn signed_plane_distance(&self, point: &ExactPoint3) -> BigRational {
-        self.normal
-            .dot(&ExactVector3::between(&self.points[0], point))
+        let limits = unlimited_rational_limits();
+        let mut meter = RationalWorkMeter::unlimited(&limits);
+        self.signed_plane_distance_metered(point, &mut meter)
+            .expect("unlimited exact test plane distance")
     }
 }
 
@@ -1941,37 +3303,45 @@ enum ExactIntersection {
     Indeterminate,
 }
 
+#[cfg(test)]
 fn classify_triangle_intersection(
     first: &ExactTriangle,
     second: &ExactTriangle,
 ) -> ExactIntersection {
+    let limits = unlimited_rational_limits();
+    let mut meter = RationalWorkMeter::unlimited(&limits);
+    classify_triangle_intersection_metered(first, second, &mut meter)
+        .expect("unlimited exact test classification")
+}
+
+fn classify_triangle_intersection_metered(
+    first: &ExactTriangle,
+    second: &ExactTriangle,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<ExactIntersection, ZeroThicknessAnalysisError> {
     if first.normal.is_zero() || second.normal.is_zero() {
-        return ExactIntersection::Indeterminate;
+        return Ok(ExactIntersection::Indeterminate);
     }
 
-    let second_distances = second
-        .points
-        .each_ref()
-        .map(|point| first.signed_plane_distance(point));
+    let second_distances =
+        try_array3(|index| first.signed_plane_distance_metered(&second.points[index], meter))?;
     if strictly_same_side(&second_distances) {
-        return ExactIntersection::Separated;
+        return Ok(ExactIntersection::Separated);
     }
-    let first_distances = first
-        .points
-        .each_ref()
-        .map(|point| second.signed_plane_distance(point));
+    let first_distances =
+        try_array3(|index| second.signed_plane_distance_metered(&first.points[index], meter))?;
     if strictly_same_side(&first_distances) {
-        return ExactIntersection::Separated;
+        return Ok(ExactIntersection::Separated);
     }
 
     if second_distances.iter().all(Zero::is_zero) {
         if !first_distances.iter().all(Zero::is_zero) {
-            return ExactIntersection::Indeterminate;
+            return Ok(ExactIntersection::Indeterminate);
         }
-        return classify_coplanar_intersection(first, second);
+        return classify_coplanar_intersection(first, second, meter);
     }
 
-    classify_non_coplanar_intersection(first, second, &first_distances, &second_distances)
+    classify_non_coplanar_intersection(first, second, &first_distances, &second_distances, meter)
 }
 
 fn strictly_same_side(distances: &[BigRational; 3]) -> bool {
@@ -1985,45 +3355,59 @@ struct PlaneCut {
     is_boundary_edge: bool,
 }
 
-fn triangle_plane_cut(triangle: &ExactTriangle, distances: &[BigRational; 3]) -> Option<PlaneCut> {
+fn triangle_plane_cut(
+    triangle: &ExactTriangle,
+    distances: &[BigRational; 3],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<PlaneCut>, ZeroThicknessAnalysisError> {
     let zero_count = distances.iter().filter(|value| value.is_zero()).count();
     let mut points = Vec::new();
-    points.try_reserve_exact(2).ok()?;
+    points
+        .try_reserve_exact(2)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
 
     for (point, distance) in triangle.points.iter().zip(distances) {
-        if distance.is_zero() && !push_unique_bounded(&mut points, point.clone(), 2) {
-            return None;
+        if distance.is_zero()
+            && !push_unique_bounded(&mut points, point.clone_retained(meter)?, 2, meter)?
+        {
+            return Ok(None);
         }
     }
     for index in 0..3 {
         let next = (index + 1) % 3;
-        if distances[index].signum() == distances[next].signum()
+        if (distances[index].is_positive() && distances[next].is_positive())
+            || (distances[index].is_negative() && distances[next].is_negative())
             || distances[index].is_zero()
             || distances[next].is_zero()
         {
             continue;
         }
-        let denominator = distances[index].clone() - distances[next].clone();
+        let denominator = meter.subtract(&distances[index], &distances[next])?;
         if denominator.is_zero() {
-            return None;
+            return Ok(None);
         }
-        let parameter = distances[index].clone() / denominator;
+        let parameter = meter.divide(&distances[index], &denominator)?;
         if !push_unique_bounded(
             &mut points,
-            triangle.points[index].interpolate(&triangle.points[next], &parameter),
+            triangle.points[index].interpolate_metered(
+                &triangle.points[next],
+                &parameter,
+                meter,
+            )?,
             2,
-        ) {
-            return None;
+            meter,
+        )? {
+            return Ok(None);
         }
     }
 
     if points.len() > 2 {
-        return None;
+        return Ok(None);
     }
-    Some(PlaneCut {
+    Ok(Some(PlaneCut {
         points,
         is_boundary_edge: zero_count == 2,
-    })
+    }))
 }
 
 fn classify_non_coplanar_intersection(
@@ -2031,66 +3415,103 @@ fn classify_non_coplanar_intersection(
     second: &ExactTriangle,
     first_distances: &[BigRational; 3],
     second_distances: &[BigRational; 3],
-) -> ExactIntersection {
-    let Some(first_cut) = triangle_plane_cut(first, first_distances) else {
-        return ExactIntersection::Indeterminate;
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<ExactIntersection, ZeroThicknessAnalysisError> {
+    let Some(first_cut) = triangle_plane_cut(first, first_distances, meter)? else {
+        return Ok(ExactIntersection::Indeterminate);
     };
-    let Some(second_cut) = triangle_plane_cut(second, second_distances) else {
-        return ExactIntersection::Indeterminate;
+    let Some(second_cut) = triangle_plane_cut(second, second_distances, meter)? else {
+        return Ok(ExactIntersection::Indeterminate);
     };
     if first_cut.points.is_empty() || second_cut.points.is_empty() {
-        return ExactIntersection::Separated;
+        return Ok(ExactIntersection::Separated);
     }
 
-    let Some(axis) = varying_axis(&first_cut.points).or_else(|| varying_axis(&second_cut.points))
-    else {
-        return if first_cut.points[0] == second_cut.points[0] {
-            ExactIntersection::Point(first_cut.points[0].clone())
-        } else {
-            ExactIntersection::Separated
-        };
+    let axis = match varying_axis(&first_cut.points, meter)? {
+        Some(axis) => Some(axis),
+        None => varying_axis(&second_cut.points, meter)?,
     };
-    let first_interval = cut_interval(&first_cut, axis);
-    let second_interval = cut_interval(&second_cut, axis);
-    let overlap_start = first_interval.0.max(second_interval.0);
-    let overlap_end = first_interval.1.min(second_interval.1);
-    match overlap_start.cmp(&overlap_end) {
+    let Some(axis) = axis else {
+        return Ok(
+            if first_cut.points[0].equal_metered(&second_cut.points[0], meter)? {
+                ExactIntersection::Point(first_cut.points[0].clone_retained(meter)?)
+            } else {
+                ExactIntersection::Separated
+            },
+        );
+    };
+    let first_interval = cut_interval(&first_cut, axis, meter)?;
+    let second_interval = cut_interval(&second_cut, axis, meter)?;
+    let overlap_start = if meter.compare(&first_interval.0, &second_interval.0)? == Ordering::Less {
+        second_interval.0
+    } else {
+        first_interval.0
+    };
+    let overlap_end = if meter.compare(&first_interval.1, &second_interval.1)? == Ordering::Greater
+    {
+        second_interval.1
+    } else {
+        first_interval.1
+    };
+    Ok(match meter.compare(&overlap_start, &overlap_end)? {
         Ordering::Greater => ExactIntersection::Separated,
-        Ordering::Equal => point_at_coordinate(&first_cut, &second_cut, axis, &overlap_start)
-            .map_or(ExactIntersection::Indeterminate, ExactIntersection::Point),
+        Ordering::Equal => {
+            point_at_coordinate(&first_cut, &second_cut, axis, &overlap_start, meter)?
+                .map_or(ExactIntersection::Indeterminate, ExactIntersection::Point)
+        }
         Ordering::Less => {
             if !first_cut.is_boundary_edge && !second_cut.is_boundary_edge {
-                return ExactIntersection::Transversal;
+                return Ok(ExactIntersection::Transversal);
             }
-            let Some(start) = point_at_coordinate(&first_cut, &second_cut, axis, &overlap_start)
+            let Some(start) =
+                point_at_coordinate(&first_cut, &second_cut, axis, &overlap_start, meter)?
             else {
-                return ExactIntersection::Indeterminate;
+                return Ok(ExactIntersection::Indeterminate);
             };
-            let Some(end) = point_at_coordinate(&first_cut, &second_cut, axis, &overlap_end) else {
-                return ExactIntersection::Indeterminate;
+            let Some(end) =
+                point_at_coordinate(&first_cut, &second_cut, axis, &overlap_end, meter)?
+            else {
+                return Ok(ExactIntersection::Indeterminate);
             };
             ExactIntersection::BoundaryLine { start, end }
         }
+    })
+}
+
+fn varying_axis(
+    points: &[ExactPoint3],
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<usize>, ZeroThicknessAnalysisError> {
+    let Some(first) = points.first() else {
+        return Ok(None);
+    };
+    let Some(second) = points.get(1) else {
+        return Ok(None);
+    };
+    for index in 0..3 {
+        if !meter.equal(first.coordinate(index), second.coordinate(index))? {
+            return Ok(Some(index));
+        }
     }
+    Ok(None)
 }
 
-fn varying_axis(points: &[ExactPoint3]) -> Option<usize> {
-    let first = points.first()?;
-    let second = points.get(1)?;
-    (0..3).find(|index| first.coordinate(*index) != second.coordinate(*index))
-}
-
-fn cut_interval(cut: &PlaneCut, axis: usize) -> (BigRational, BigRational) {
-    let first = cut.points[0].coordinate(axis).clone();
-    let second = cut
-        .points
-        .get(1)
-        .map_or_else(|| first.clone(), |point| point.coordinate(axis).clone());
-    if first <= second {
+fn cut_interval(
+    cut: &PlaneCut,
+    axis: usize,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<(BigRational, BigRational), ZeroThicknessAnalysisError> {
+    let first = meter.clone_retained(cut.points[0].coordinate(axis))?;
+    let second = if let Some(point) = cut.points.get(1) {
+        meter.clone_retained(point.coordinate(axis))?
+    } else {
+        meter.clone_retained(&first)?
+    };
+    Ok(if meter.compare(&first, &second)? != Ordering::Greater {
         (first, second)
     } else {
         (second, first)
-    }
+    })
 }
 
 fn point_at_coordinate(
@@ -2098,39 +3519,50 @@ fn point_at_coordinate(
     second: &PlaneCut,
     axis: usize,
     coordinate: &BigRational,
-) -> Option<ExactPoint3> {
-    point_on_cut_at_coordinate(first, axis, coordinate)
-        .or_else(|| point_on_cut_at_coordinate(second, axis, coordinate))
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<ExactPoint3>, ZeroThicknessAnalysisError> {
+    if let Some(point) = point_on_cut_at_coordinate(first, axis, coordinate, meter)? {
+        Ok(Some(point))
+    } else {
+        point_on_cut_at_coordinate(second, axis, coordinate, meter)
+    }
 }
 
 fn point_on_cut_at_coordinate(
     cut: &PlaneCut,
     axis: usize,
     coordinate: &BigRational,
-) -> Option<ExactPoint3> {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<ExactPoint3>, ZeroThicknessAnalysisError> {
     let start = &cut.points[0];
     let Some(end) = cut.points.get(1) else {
-        return (start.coordinate(axis) == coordinate).then(|| start.clone());
+        return if meter.equal(start.coordinate(axis), coordinate)? {
+            Ok(Some(start.clone_retained(meter)?))
+        } else {
+            Ok(None)
+        };
     };
-    let denominator = end.coordinate(axis) - start.coordinate(axis);
+    let denominator = meter.subtract(end.coordinate(axis), start.coordinate(axis))?;
     if denominator.is_zero() {
-        return None;
+        return Ok(None);
     }
-    let parameter = (coordinate - start.coordinate(axis)) / denominator;
-    Some(start.interpolate(end, &parameter))
+    let numerator = meter.subtract(coordinate, start.coordinate(axis))?;
+    let parameter = meter.divide(&numerator, &denominator)?;
+    Ok(Some(start.interpolate_metered(end, &parameter, meter)?))
 }
 
 fn classify_coplanar_intersection(
     first: &ExactTriangle,
     second: &ExactTriangle,
-) -> ExactIntersection {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<ExactIntersection, ZeroThicknessAnalysisError> {
     let Some(drop_axis) = first
         .normal
         .coordinates
         .iter()
         .position(|component| !component.is_zero())
     else {
-        return ExactIntersection::Indeterminate;
+        return Ok(ExactIntersection::Indeterminate);
     };
     let [first_axis, second_axis] = projected_axes(drop_axis);
     let clip_orientation = projected_line_value(
@@ -2139,16 +3571,19 @@ fn classify_coplanar_intersection(
         &second.points[2],
         first_axis,
         second_axis,
-    );
+        meter,
+    )?;
     if clip_orientation.is_zero() {
-        return ExactIntersection::Indeterminate;
+        return Ok(ExactIntersection::Indeterminate);
     }
 
     let mut polygon = Vec::new();
-    if polygon.try_reserve_exact(3).is_err() {
-        return ExactIntersection::Indeterminate;
+    polygon
+        .try_reserve_exact(3)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for point in &first.points {
+        polygon.push(point.clone_retained(meter)?);
     }
-    polygon.extend(first.points.iter().cloned());
     for edge_index in 0..3 {
         let edge_start = &second.points[edge_index];
         let edge_end = &second.points[(edge_index + 1) % 3];
@@ -2159,32 +3594,34 @@ fn classify_coplanar_intersection(
             clip_orientation.is_positive(),
             first_axis,
             second_axis,
-        ) else {
-            return ExactIntersection::Indeterminate;
+            meter,
+        )?
+        else {
+            return Ok(ExactIntersection::Indeterminate);
         };
         polygon = clipped;
         if polygon.is_empty() {
-            return ExactIntersection::Separated;
+            return Ok(ExactIntersection::Separated);
         }
     }
-    if !deduplicate_polygon(&mut polygon) {
-        return ExactIntersection::Indeterminate;
+    if !deduplicate_polygon(&mut polygon, meter)? {
+        return Ok(ExactIntersection::Indeterminate);
     }
 
-    match polygon.as_slice() {
+    Ok(match polygon.as_slice() {
         [] => ExactIntersection::Separated,
-        [point] => ExactIntersection::Point(point.clone()),
-        [start, end] => line_or_point(start, end),
+        [point] => ExactIntersection::Point(point.clone_retained(meter)?),
+        [start, end] => line_or_point(start, end, meter)?,
         _ => {
-            let area = projected_polygon_double_area(&polygon, first_axis, second_axis);
+            let area = projected_polygon_double_area(&polygon, first_axis, second_axis, meter)?;
             if area.is_zero() {
-                collapsed_polygon_intersection(&polygon, first_axis, second_axis)
+                collapsed_polygon_intersection(&polygon, first_axis, second_axis, meter)?
                     .unwrap_or(ExactIntersection::Indeterminate)
             } else {
                 ExactIntersection::CoplanarArea
             }
         }
-    }
+    })
 }
 
 const fn projected_axes(drop_axis: usize) -> [usize; 2] {
@@ -2201,11 +3638,17 @@ fn projected_line_value(
     point: &ExactPoint3,
     first_axis: usize,
     second_axis: usize,
-) -> BigRational {
-    (end.coordinate(first_axis) - start.coordinate(first_axis))
-        * (point.coordinate(second_axis) - start.coordinate(second_axis))
-        - (end.coordinate(second_axis) - start.coordinate(second_axis))
-            * (point.coordinate(first_axis) - start.coordinate(first_axis))
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<BigRational, ZeroThicknessAnalysisError> {
+    let first_line = meter.subtract(end.coordinate(first_axis), start.coordinate(first_axis))?;
+    let first_point =
+        meter.subtract(point.coordinate(second_axis), start.coordinate(second_axis))?;
+    let second_line = meter.subtract(end.coordinate(second_axis), start.coordinate(second_axis))?;
+    let second_point =
+        meter.subtract(point.coordinate(first_axis), start.coordinate(first_axis))?;
+    let first_product = meter.multiply(&first_line, &first_point)?;
+    let second_product = meter.multiply(&second_line, &second_point)?;
+    meter.subtract(&first_product, &second_product)
 }
 
 fn clip_polygon_against_line(
@@ -2215,122 +3658,190 @@ fn clip_polygon_against_line(
     positive_inside: bool,
     first_axis: usize,
     second_axis: usize,
-) -> Option<Vec<ExactPoint3>> {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<Vec<ExactPoint3>>, ZeroThicknessAnalysisError> {
     if polygon.is_empty() {
-        return Some(Vec::new());
+        return Ok(Some(Vec::new()));
     }
     let mut result = Vec::new();
-    let result_bound = polygon.len().checked_add(1)?;
-    result.try_reserve_exact(result_bound).ok()?;
+    let result_bound = polygon
+        .len()
+        .checked_add(1)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    result
+        .try_reserve_exact(result_bound)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
 
     for index in 0..polygon.len() {
         let current = &polygon[index];
         let next = &polygon[(index + 1) % polygon.len()];
-        let current_value =
-            projected_line_value(line_start, line_end, current, first_axis, second_axis);
-        let next_value = projected_line_value(line_start, line_end, next, first_axis, second_axis);
+        let current_value = projected_line_value(
+            line_start,
+            line_end,
+            current,
+            first_axis,
+            second_axis,
+            meter,
+        )?;
+        let next_value =
+            projected_line_value(line_start, line_end, next, first_axis, second_axis, meter)?;
         let current_inside = is_inside(&current_value, positive_inside);
         let next_inside = is_inside(&next_value, positive_inside);
 
         if current_inside != next_inside {
-            let denominator = current_value.clone() - next_value.clone();
+            let denominator = meter.subtract(&current_value, &next_value)?;
             if denominator.is_zero() {
-                return None;
+                return Ok(None);
             }
-            let parameter = current_value / denominator;
+            let parameter = meter.divide(&current_value, &denominator)?;
             if !push_unique_bounded(
                 &mut result,
-                current.interpolate(next, &parameter),
+                current.interpolate_metered(next, &parameter, meter)?,
                 result_bound,
-            ) {
-                return None;
+                meter,
+            )? {
+                return Ok(None);
             }
         }
-        if next_inside && !push_unique_bounded(&mut result, next.clone(), result_bound) {
-            return None;
+        if next_inside
+            && !push_unique_bounded(
+                &mut result,
+                next.clone_retained(meter)?,
+                result_bound,
+                meter,
+            )?
+        {
+            return Ok(None);
         }
     }
-    if result.len() > 1 && result.first() == result.last() {
-        result.pop();
+    if result.len() > 1 {
+        let first = result
+            .first()
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        let last = result
+            .last()
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        if first.equal_metered(last, meter)? {
+            result.pop();
+        }
     }
-    Some(result)
+    Ok(Some(result))
 }
 
 fn is_inside(value: &BigRational, positive_inside: bool) -> bool {
     value.is_zero() || value.is_positive() == positive_inside
 }
 
-fn deduplicate_polygon(polygon: &mut Vec<ExactPoint3>) -> bool {
+fn deduplicate_polygon(
+    polygon: &mut Vec<ExactPoint3>,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
     let mut unique = Vec::new();
-    if unique.try_reserve_exact(polygon.len()).is_err() {
-        return false;
-    }
+    unique
+        .try_reserve_exact(polygon.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
     let bound = polygon.len();
     for point in polygon.drain(..) {
-        if !push_unique_bounded(&mut unique, point, bound) {
-            return false;
+        if !push_unique_bounded(&mut unique, point, bound, meter)? {
+            return Ok(false);
         }
     }
     *polygon = unique;
-    true
+    Ok(true)
 }
 
 fn projected_polygon_double_area(
     polygon: &[ExactPoint3],
     first_axis: usize,
     second_axis: usize,
-) -> BigRational {
-    (0..polygon.len())
-        .map(|index| {
-            let current = &polygon[index];
-            let next = &polygon[(index + 1) % polygon.len()];
-            current.coordinate(first_axis) * next.coordinate(second_axis)
-                - current.coordinate(second_axis) * next.coordinate(first_axis)
-        })
-        .sum()
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<BigRational, ZeroThicknessAnalysisError> {
+    let mut area = meter.zero()?;
+    for index in 0..polygon.len() {
+        let current = &polygon[index];
+        let next = &polygon[(index + 1) % polygon.len()];
+        let first = meter.multiply(current.coordinate(first_axis), next.coordinate(second_axis))?;
+        let second =
+            meter.multiply(current.coordinate(second_axis), next.coordinate(first_axis))?;
+        let term = meter.subtract(&first, &second)?;
+        area = meter.add(&area, &term)?;
+    }
+    Ok(area)
 }
 
 fn collapsed_polygon_intersection(
     polygon: &[ExactPoint3],
     first_axis: usize,
     second_axis: usize,
-) -> Option<ExactIntersection> {
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<Option<ExactIntersection>, ZeroThicknessAnalysisError> {
     let mut ordered = Vec::new();
-    ordered.try_reserve_exact(polygon.len()).ok()?;
+    ordered
+        .try_reserve_exact(polygon.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
     ordered.extend(polygon);
+    let mut failure = None;
     ordered.sort_unstable_by(|left, right| {
-        left.coordinate(first_axis)
-            .cmp(right.coordinate(first_axis))
-            .then_with(|| {
-                left.coordinate(second_axis)
-                    .cmp(right.coordinate(second_axis))
-            })
+        if failure.is_some() {
+            return Ordering::Equal;
+        }
+        let ordering = meter
+            .compare(left.coordinate(first_axis), right.coordinate(first_axis))
+            .and_then(|ordering| {
+                if ordering == Ordering::Equal {
+                    meter.compare(left.coordinate(second_axis), right.coordinate(second_axis))
+                } else {
+                    Ok(ordering)
+                }
+            });
+        match ordering {
+            Ok(ordering) => ordering,
+            Err(error) => {
+                failure = Some(error);
+                Ordering::Equal
+            }
+        }
     });
-    Some(match (ordered.first(), ordered.last()) {
-        (Some(start), Some(end)) => line_or_point(start, end),
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(Some(match (ordered.first(), ordered.last()) {
+        (Some(start), Some(end)) => line_or_point(start, end, meter)?,
         _ => ExactIntersection::Separated,
+    }))
+}
+
+fn line_or_point(
+    start: &ExactPoint3,
+    end: &ExactPoint3,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<ExactIntersection, ZeroThicknessAnalysisError> {
+    Ok(if start.equal_metered(end, meter)? {
+        ExactIntersection::Point(start.clone_retained(meter)?)
+    } else {
+        ExactIntersection::BoundaryLine {
+            start: start.clone_retained(meter)?,
+            end: end.clone_retained(meter)?,
+        }
     })
 }
 
-fn line_or_point(start: &ExactPoint3, end: &ExactPoint3) -> ExactIntersection {
-    if start == end {
-        ExactIntersection::Point(start.clone())
-    } else {
-        ExactIntersection::BoundaryLine {
-            start: start.clone(),
-            end: end.clone(),
+fn push_unique_bounded(
+    points: &mut Vec<ExactPoint3>,
+    point: ExactPoint3,
+    bound: usize,
+    meter: &mut RationalWorkMeter<'_>,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    for previous in points.iter() {
+        if previous.equal_metered(&point, meter)? {
+            return Ok(true);
         }
     }
-}
-
-fn push_unique_bounded(points: &mut Vec<ExactPoint3>, point: ExactPoint3, bound: usize) -> bool {
-    if points.contains(&point) {
-        true
-    } else if points.len() < bound {
+    if points.len() < bound {
         points.push(point);
-        true
+        Ok(true)
     } else {
-        false
+        Ok(false)
     }
 }
 
@@ -2389,12 +3900,14 @@ fn unordered_segment_eq(
 /// value. This is distinct from the common-unit point representation below:
 /// multiplying two common-unit values would introduce an extra `2^1074`
 /// scale and would not be an affine transform.
+#[cfg(test)]
 fn exact_binary64_scalar(value: f64) -> BigRational {
     exact_binary64(value) / BigRational::from_integer(BigInt::one() << 1074_usize)
 }
 
 /// Converts one finite binary64 coordinate into exact integer units of
 /// `2^-1074`. `Point3` has already rejected non-finite values.
+#[cfg(test)]
 fn exact_binary64(value: f64) -> BigRational {
     let bits = value.to_bits();
     let negative = bits >> 63 != 0;
@@ -2491,6 +4004,18 @@ mod tests {
             max_total_triangle_pairs: 16_384,
             max_boundary_relation_work_per_face_pair: 1_000_000,
             max_total_boundary_relation_work: 4_000_000,
+            max_rational_input_bits: 4_096,
+            max_total_rational_input_storage_bits: 16_777_216,
+            max_total_rational_retained_clone_bits: 134_217_728,
+            max_rational_operations: 10_000_000,
+            max_rational_intermediate_bits: 32_768,
+            max_rational_gcd_fallback_calls: 100_000,
+            max_rational_gcd_fallback_input_bits: 536_870_912,
+            max_rational_allocations: 1_000_000,
+            max_rational_allocation_bits: 65_536,
+            max_total_rational_allocation_bits: 1_073_741_824,
+            max_rational_output_bits: 32_768,
+            max_total_rational_output_bits: 33_554_432,
         }
     }
 
@@ -2668,7 +4193,7 @@ mod tests {
             .enumerate()
             .map(|(index, [x, z])| RestBoundaryVertex {
                 id: vertex_id(index as u64 + 1),
-                point: point(*x, 0.0, *z),
+                point: ExactPoint3::from_point(point(*x, 0.0, *z)),
             })
             .collect()
     }
@@ -2772,9 +4297,11 @@ mod tests {
             .expect("simple boundary");
             assert_eq!(triangles.len(), expected_count);
             assert!(triangles.iter().all(|triangle| {
-                !ExactTriangle::from_points(triangle.map(|index| boundary[index].point))
-                    .normal
-                    .is_zero()
+                !ExactTriangle::from_exact_points(
+                    triangle.map(|index| boundary[index].point.clone()),
+                )
+                .normal
+                .is_zero()
             }));
         }
     }
@@ -3320,6 +4847,461 @@ mod tests {
                 prepare_authenticated_zero_thickness_pose(&pose, limits),
                 Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
             ));
+        }
+    }
+
+    #[test]
+    fn rational_pose_meter_accepts_every_exact_limit_and_rejects_every_one_short_limit() {
+        fn pair_table(
+            analysis: &AuthenticatedZeroThicknessPose<'_>,
+        ) -> Result<Vec<PairDispatch>, ZeroThicknessAnalysisError> {
+            let mut table = Vec::new();
+            for first in 0..analysis.faces.len() {
+                for second in (first + 1)..analysis.faces.len() {
+                    table.push(analysis.dispatch_pair(first, second)?);
+                }
+            }
+            Ok(table)
+        }
+
+        let (_model, pose) = corner_v_model_and_pose();
+        let baseline = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("baseline metered geometry");
+        let baseline_table = pair_table(&baseline).expect("baseline complete pair table");
+        let work = baseline.rational_work().clone();
+        let mut lower = 0_usize;
+        let mut upper = work.max_preflight_bits.max(work.max_intermediate_bits);
+        while lower < upper {
+            let candidate = lower + (upper - lower) / 2;
+            let limits = ZeroThicknessGeometryLimits {
+                max_rational_intermediate_bits: candidate,
+                ..zero_thickness_limits()
+            };
+            if prepare_authenticated_zero_thickness_pose(&pose, limits).is_ok() {
+                upper = candidate;
+            } else {
+                lower = candidate + 1;
+            }
+        }
+        let required_intermediate = lower;
+
+        type LimitSetter = fn(&mut ZeroThicknessGeometryLimits, usize);
+        let boundaries: [(&str, usize, LimitSetter); 10] = [
+            ("input_bits", work.max_input_bits, |limits, value| {
+                limits.max_rational_input_bits = value
+            }),
+            (
+                "total_input_storage_bits",
+                work.total_input_storage_bits,
+                |limits, value| limits.max_total_rational_input_storage_bits = value,
+            ),
+            (
+                "total_retained_clone_bits",
+                work.total_retained_clone_bits,
+                |limits, value| limits.max_total_rational_retained_clone_bits = value,
+            ),
+            ("operations", work.operations, |limits, value| {
+                limits.max_rational_operations = value
+            }),
+            (
+                "rational_allocations",
+                work.rational_allocations,
+                |limits, value| limits.max_rational_allocations = value,
+            ),
+            (
+                "rational_allocation_bits",
+                work.max_rational_allocation_bits,
+                |limits, value| limits.max_rational_allocation_bits = value,
+            ),
+            (
+                "total_rational_allocation_bits",
+                work.total_rational_allocation_bits,
+                |limits, value| limits.max_total_rational_allocation_bits = value,
+            ),
+            (
+                "intermediate_bits",
+                required_intermediate,
+                |limits, value| limits.max_rational_intermediate_bits = value,
+            ),
+            ("output_bits", work.max_output_bits, |limits, value| {
+                limits.max_rational_output_bits = value
+            }),
+            (
+                "total_output_bits",
+                work.total_output_bits,
+                |limits, value| limits.max_total_rational_output_bits = value,
+            ),
+        ];
+
+        for (name, required, set) in boundaries {
+            assert!(required > 0, "{name} must be exercised by the fixture");
+            let mut exact = zero_thickness_limits();
+            set(&mut exact, required);
+            let exact_analysis = prepare_authenticated_zero_thickness_pose(&pose, exact)
+                .unwrap_or_else(|error| {
+                    panic!("{name} exact limit {required} must succeed: {error:?}")
+                });
+            assert_eq!(
+                pair_table(&exact_analysis).expect("exact-limit pair table"),
+                baseline_table,
+                "{name} exact limit must preserve every classification"
+            );
+
+            let mut one_short = zero_thickness_limits();
+            set(&mut one_short, required - 1);
+            assert!(
+                matches!(
+                    prepare_authenticated_zero_thickness_pose(&pose, one_short),
+                    Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+                ),
+                "{name} one-short limit {} must fail",
+                required - 1
+            );
+        }
+    }
+
+    #[test]
+    fn rational_gcd_limits_are_exact_and_one_short_and_arithmetic_failures_are_closed() {
+        fn gcd_case(
+            limits: &ZeroThicknessGeometryLimits,
+        ) -> Result<RationalWork, ZeroThicknessAnalysisError> {
+            let denominator = (BigInt::one() << 256_usize) + BigInt::one();
+            let left = BigRational::new_raw(BigInt::one(), denominator.clone());
+            let right = BigRational::new_raw(BigInt::one(), denominator);
+            let mut meter = RationalWorkMeter::new(limits);
+            let result = meter.add(&left, &right)?;
+            assert_eq!(
+                result,
+                BigRational::new(
+                    BigInt::from(2_u8),
+                    (BigInt::one() << 256_usize) + BigInt::one()
+                )
+            );
+            Ok(meter.work)
+        }
+
+        let mut generous = unlimited_rational_limits();
+        generous.max_rational_intermediate_bits = 300;
+        let baseline = gcd_case(&generous).expect("bounded refined GCD path");
+        assert_eq!(baseline.gcd_fallback_calls, 1);
+        assert!(baseline.gcd_fallback_input_bits > 0);
+        assert!(baseline.max_gcd_fallback_call_input_bits > 0);
+
+        let mut exact = generous;
+        exact.max_rational_gcd_fallback_calls = baseline.gcd_fallback_calls;
+        exact.max_rational_gcd_fallback_input_bits = baseline.gcd_fallback_input_bits;
+        assert!(gcd_case(&exact).is_ok());
+
+        let mut calls_one_short = exact;
+        calls_one_short.max_rational_gcd_fallback_calls = baseline.gcd_fallback_calls - 1;
+        assert_eq!(
+            gcd_case(&calls_one_short),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        let mut bits_one_short = exact;
+        bits_one_short.max_rational_gcd_fallback_input_bits = baseline.gcd_fallback_input_bits - 1;
+        assert_eq!(
+            gcd_case(&bits_one_short),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+
+        assert_eq!(
+            shifted_nonzero_bits(1, usize::MAX),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        let mut overflow_meter = RationalWorkMeter::new(&generous);
+        overflow_meter.work.operations = usize::MAX;
+        assert_eq!(
+            overflow_meter.add(&BigRational::one(), &BigRational::one()),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+
+        let mut division_meter = RationalWorkMeter::new(&generous);
+        assert_eq!(
+            division_meter.divide(&BigRational::one(), &BigRational::zero()),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+        assert_eq!(division_meter.work.operations, 0);
+    }
+
+    #[test]
+    fn rational_allocation_limits_cover_fast_fallback_sign_and_compare_paths() {
+        fn clone_fast_path(
+            limits: &ZeroThicknessGeometryLimits,
+        ) -> Result<RationalWork, ZeroThicknessAnalysisError> {
+            let mut meter = RationalWorkMeter::new(limits);
+            let result = meter.add(&BigRational::one(), &BigRational::zero())?;
+            assert_eq!(result, BigRational::one());
+            Ok(meter.work)
+        }
+
+        fn compare_fallback_path(
+            limits: &ZeroThicknessGeometryLimits,
+        ) -> Result<RationalWork, ZeroThicknessAnalysisError> {
+            let left = BigRational::new(BigInt::one(), BigInt::from(3_u8));
+            let right = BigRational::new(BigInt::from(2_u8), BigInt::from(5_u8));
+            let mut meter = RationalWorkMeter::new(limits);
+            assert_eq!(meter.compare(&left, &right)?, Ordering::Less);
+            Ok(meter.work)
+        }
+
+        fn all_primitive_paths(
+            limits: &ZeroThicknessGeometryLimits,
+        ) -> Result<RationalWork, ZeroThicknessAnalysisError> {
+            let mut meter = RationalWorkMeter::new(limits);
+            let zero = meter.zero()?;
+            let one = meter.one()?;
+            let two = meter.positive_integer(2)?;
+            let common = meter.input_binary64_common_unit(-1.5)?;
+            let scalar = meter.input_binary64_scalar(0.25)?;
+            let retained = meter.clone_retained(&common)?;
+            let negated = meter.negate_temporary(&retained)?;
+            let one_third = BigRational::new(BigInt::one(), BigInt::from(3_u8));
+            let one_half = BigRational::new(BigInt::one(), BigInt::from(2_u8));
+            let same_denominator = meter.add(&one_third, &one_third)?;
+            let unlike_denominator = meter.add(&one_third, &one_half)?;
+            let difference = meter.subtract(&same_denominator, &one_third)?;
+            let product = meter.multiply(&unlike_denominator, &negated)?;
+            let quotient = meter.divide(&product, &two)?;
+            assert_eq!(meter.compare(&difference, &one_third)?, Ordering::Equal);
+            assert!(meter.equal(&zero, &BigRational::zero())?);
+            assert_eq!(one, BigRational::one());
+            assert_eq!(scalar, BigRational::new(BigInt::one(), BigInt::from(4_u8)));
+            meter.output(&quotient)?;
+            Ok(meter.work)
+        }
+
+        for run in [
+            clone_fast_path
+                as fn(
+                    &ZeroThicknessGeometryLimits,
+                ) -> Result<RationalWork, ZeroThicknessAnalysisError>,
+            compare_fallback_path,
+            all_primitive_paths,
+        ] {
+            let generous = unlimited_rational_limits();
+            let baseline = run(&generous).expect("allocation baseline");
+            assert!(baseline.rational_allocations > 0);
+            assert!(baseline.max_rational_allocation_bits > 0);
+            assert!(baseline.total_rational_allocation_bits > 0);
+
+            let mut exact = generous;
+            exact.max_rational_allocations = baseline.rational_allocations;
+            exact.max_rational_allocation_bits = baseline.max_rational_allocation_bits;
+            exact.max_total_rational_allocation_bits = baseline.total_rational_allocation_bits;
+            assert!(run(&exact).is_ok(), "every exact allocation limit succeeds");
+
+            let mut one_short = exact;
+            one_short.max_rational_allocations -= 1;
+            assert_eq!(
+                run(&one_short),
+                Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+            );
+            one_short = exact;
+            one_short.max_rational_allocation_bits -= 1;
+            assert_eq!(
+                run(&one_short),
+                Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+            );
+            one_short = exact;
+            one_short.max_total_rational_allocation_bits -= 1;
+            assert_eq!(
+                run(&one_short),
+                Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+            );
+        }
+
+        let mut zero_intermediate = unlimited_rational_limits();
+        zero_intermediate.max_rational_intermediate_bits = 0;
+        let mut constant_meter = RationalWorkMeter::new(&zero_intermediate);
+        assert_eq!(
+            constant_meter.zero(),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(constant_meter.work.rational_allocations, 0);
+        let mut constant_meter = RationalWorkMeter::new(&zero_intermediate);
+        assert_eq!(
+            constant_meter.one(),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(constant_meter.work.rational_allocations, 0);
+
+        let mut no_allocations = unlimited_rational_limits();
+        no_allocations.max_rational_allocations = 0;
+        no_allocations.max_rational_allocation_bits = 0;
+        no_allocations.max_total_rational_allocation_bits = 0;
+        let mut sign_meter = RationalWorkMeter::new(&no_allocations);
+        assert_eq!(
+            sign_meter.compare(&BigRational::from_integer((-1).into()), &BigRational::one()),
+            Ok(Ordering::Less)
+        );
+        assert_eq!(sign_meter.work.operations, 1);
+        assert_eq!(sign_meter.work.rational_allocations, 0);
+
+        let unlimited = unlimited_rational_limits();
+        let mut overflow_meter = RationalWorkMeter::new(&unlimited);
+        overflow_meter.work.rational_allocations = usize::MAX;
+        let before = overflow_meter.work.clone();
+        assert_eq!(
+            overflow_meter.clone_temporary(&BigRational::one()),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            overflow_meter.work.rational_allocations,
+            before.rational_allocations
+        );
+        assert_eq!(
+            overflow_meter.work.total_rational_allocation_bits,
+            before.total_rational_allocation_bits
+        );
+
+        let mut overflow_meter = RationalWorkMeter::new(&unlimited);
+        overflow_meter.work.total_rational_allocation_bits = usize::MAX;
+        let before = overflow_meter.work.clone();
+        assert_eq!(
+            overflow_meter.clone_temporary(&BigRational::one()),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            overflow_meter.work.rational_allocations,
+            before.rational_allocations
+        );
+        assert_eq!(
+            overflow_meter.work.total_rational_allocation_bits,
+            before.total_rational_allocation_bits
+        );
+    }
+
+    #[test]
+    fn adversarial_16k_compare_is_allocation_bounded_and_canonical_equality_is_structural() {
+        let denominator = BigInt::one() << 16_384_usize;
+        let left = BigRational::new_raw(BigInt::one(), denominator.clone());
+        let right = BigRational::new_raw(BigInt::one(), denominator + BigInt::one());
+        let generous = unlimited_rational_limits();
+        let mut baseline_meter = RationalWorkMeter::new(&generous);
+        assert_eq!(baseline_meter.compare(&left, &right), Ok(Ordering::Greater));
+        let baseline = baseline_meter.work;
+        assert!(baseline.max_rational_allocation_bits >= 16_384);
+
+        let mut exact = generous;
+        exact.max_rational_allocations = baseline.rational_allocations;
+        exact.max_rational_allocation_bits = baseline.max_rational_allocation_bits;
+        exact.max_total_rational_allocation_bits = baseline.total_rational_allocation_bits;
+        let mut exact_meter = RationalWorkMeter::new(&exact);
+        assert_eq!(exact_meter.compare(&left, &right), Ok(Ordering::Greater));
+        assert_eq!(exact_meter.work, baseline);
+
+        let mut one_short = exact;
+        one_short.max_total_rational_allocation_bits -= 1;
+        let mut one_short_meter = RationalWorkMeter::new(&one_short);
+        assert_eq!(
+            one_short_meter.compare(&left, &right),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+
+        let half = BigRational::new(BigInt::one(), BigInt::from(2_u8));
+        let reduced_half = BigRational::new(BigInt::from(2_u8), BigInt::from(4_u8));
+        let mut equality_meter = RationalWorkMeter::new(&generous);
+        assert_eq!(equality_meter.equal(&half, &reduced_half), Ok(true));
+        assert_eq!(equality_meter.work.rational_allocations, 0);
+    }
+
+    #[test]
+    fn every_metered_rational_constructor_preserves_the_canonical_representation() {
+        fn assert_canonical(value: &BigRational) {
+            assert!(value.denom().is_positive());
+            assert_eq!(value.numer().gcd(value.denom()), BigInt::one());
+            if value.is_zero() {
+                assert_eq!(value.denom(), &BigInt::one());
+            }
+        }
+
+        let limits = unlimited_rational_limits();
+        let mut meter = RationalWorkMeter::new(&limits);
+        let mut values = vec![
+            meter.input_binary64_common_unit(-0.0).expect("common zero"),
+            meter
+                .input_binary64_common_unit(1.5)
+                .expect("common finite"),
+            meter
+                .input_binary64_common_unit(f64::from_bits(1))
+                .expect("common subnormal"),
+            meter.input_binary64_scalar(-1.5).expect("scalar finite"),
+            meter
+                .input_binary64_scalar(f64::from_bits(1))
+                .expect("scalar subnormal"),
+        ];
+        let one_third = BigRational::new(BigInt::one(), BigInt::from(3_u8));
+        let one_half = BigRational::new(BigInt::one(), BigInt::from(2_u8));
+        let negative_two_fifths = BigRational::new(BigInt::from(-2_i8), BigInt::from(5_u8));
+        values.push(meter.add(&one_third, &one_third).expect("same denominator"));
+        values.push(
+            meter
+                .add(&one_third, &one_half)
+                .expect("unlike denominator"),
+        );
+        values.push(
+            meter
+                .subtract(&one_half, &one_half)
+                .expect("cancel to zero"),
+        );
+        values.push(
+            meter
+                .multiply(&one_third, &negative_two_fifths)
+                .expect("cross-cancelled product"),
+        );
+        values.push(
+            meter
+                .divide(&negative_two_fifths, &one_third)
+                .expect("cross-cancelled quotient"),
+        );
+
+        for value in &values {
+            assert_canonical(value);
+            let dependency_clone = BigRational::new(value.numer().clone(), value.denom().clone());
+            assert_eq!(
+                rational_structurally_eq(value, &dependency_clone),
+                value.cmp(&dependency_clone) == Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_pair_dispatch_is_order_independent_and_never_mutates_the_global_meter() {
+        let (_model, pose) = corner_v_model_and_pose();
+        let analysis = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("fully prepared pair table");
+        let before = analysis.rational_work().clone();
+        let pairs = [(0, 1), (0, 2), (1, 2)];
+        let forward = pairs.map(|(first, second)| {
+            analysis
+                .dispatch_pair(first, second)
+                .expect("prepared canonical pair")
+        });
+        let reverse = [pairs[2], pairs[1], pairs[0]].map(|(first, second)| {
+            analysis
+                .dispatch_pair(first, second)
+                .expect("prepared reverse-order pair")
+        });
+        assert_eq!(forward, [reverse[2], reverse[1], reverse[0]]);
+        assert_eq!(
+            analysis.dispatch_pair(1, 0),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+        assert_eq!(analysis.rational_work(), &before);
+
+        for face_count in 2..32 {
+            let mut expected = 0;
+            for first in 0..face_count {
+                for second in (first + 1)..face_count {
+                    assert_eq!(
+                        canonical_unordered_pair_index(face_count, first, second),
+                        Ok(expected)
+                    );
+                    expected += 1;
+                }
+            }
+            assert_eq!(expected, face_count * (face_count - 1) / 2);
         }
     }
 

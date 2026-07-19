@@ -176,6 +176,18 @@ fn one_material_face_has_a_complete_zero_pair_proof_at_all_thicknesses() {
             max_total_triangle_pairs: 0,
             max_boundary_relation_work_per_face_pair: 0,
             max_total_boundary_relation_work: 0,
+            max_rational_input_bits: 0,
+            max_total_rational_input_storage_bits: 0,
+            max_total_rational_retained_clone_bits: 0,
+            max_rational_operations: 0,
+            max_rational_intermediate_bits: 0,
+            max_rational_gcd_fallback_calls: 0,
+            max_rational_gcd_fallback_input_bits: 0,
+            max_rational_allocations: 0,
+            max_rational_allocation_bits: 0,
+            max_total_rational_allocation_bits: 0,
+            max_rational_output_bits: 0,
+            max_total_rational_output_bits: 0,
         },
     )
     .expect("zero-pair proof does not allocate pair geometry");

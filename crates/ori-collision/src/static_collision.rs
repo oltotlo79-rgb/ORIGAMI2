@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::{
     TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
     zero_thickness::{
-        ZeroThicknessAnalysisError, ZeroThicknessGeometryLimits,
+        AuthenticatedZeroThicknessPose, ZeroThicknessAnalysisError, ZeroThicknessGeometryLimits,
         prepare_authenticated_zero_thickness_pose,
     },
 };
@@ -37,7 +37,9 @@ pub const NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1: &str =
 ///
 /// Boundary and triangle counts constrain storage. The triangulation and
 /// boundary-relation work fields separately constrain the exact synchronous
-/// predicates whose cost is superlinear in those counts. Every one-short or
+/// predicates whose cost is superlinear in those counts. Rational allocation
+/// fields bound the count, largest payload and aggregate payload bits of the
+/// exact kernel's logical BigInt/BigRational allocations. Every one-short or
 /// arithmetic-overflow case fails closed as `ResourceLimitExceeded`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaticCollisionLimits {
@@ -54,6 +56,18 @@ pub struct StaticCollisionLimits {
     pub max_total_triangle_pairs: usize,
     pub max_boundary_relation_work_per_face_pair: usize,
     pub max_total_boundary_relation_work: usize,
+    pub max_rational_input_bits: usize,
+    pub max_total_rational_input_storage_bits: usize,
+    pub max_total_rational_retained_clone_bits: usize,
+    pub max_rational_operations: usize,
+    pub max_rational_intermediate_bits: usize,
+    pub max_rational_gcd_fallback_calls: usize,
+    pub max_rational_gcd_fallback_input_bits: usize,
+    pub max_rational_allocations: usize,
+    pub max_rational_allocation_bits: usize,
+    pub max_total_rational_allocation_bits: usize,
+    pub max_rational_output_bits: usize,
+    pub max_total_rational_output_bits: usize,
 }
 
 impl Default for StaticCollisionLimits {
@@ -72,6 +86,18 @@ impl Default for StaticCollisionLimits {
             max_total_triangle_pairs: 1_000_000,
             max_boundary_relation_work_per_face_pair: 10_000_000,
             max_total_boundary_relation_work: 40_000_000,
+            max_rational_input_bits: 4_096,
+            max_total_rational_input_storage_bits: 536_870_912,
+            max_total_rational_retained_clone_bits: 4_294_967_296,
+            max_rational_operations: 1_000_000_000,
+            max_rational_intermediate_bits: 32_768,
+            max_rational_gcd_fallback_calls: 1_000_000,
+            max_rational_gcd_fallback_input_bits: 8_589_934_592,
+            max_rational_allocations: 1_000_000,
+            max_rational_allocation_bits: 65_536,
+            max_total_rational_allocation_bits: 1_073_741_824,
+            max_rational_output_bits: 32_768,
+            max_total_rational_output_bits: 1_073_741_824,
         }
     }
 }
@@ -310,63 +336,132 @@ pub fn prove_static_collision_geometry(
             max_boundary_relation_work_per_face_pair: limits
                 .max_boundary_relation_work_per_face_pair,
             max_total_boundary_relation_work: limits.max_total_boundary_relation_work,
+            max_rational_input_bits: limits.max_rational_input_bits,
+            max_total_rational_input_storage_bits: limits.max_total_rational_input_storage_bits,
+            max_total_rational_retained_clone_bits: limits.max_total_rational_retained_clone_bits,
+            max_rational_operations: limits.max_rational_operations,
+            max_rational_intermediate_bits: limits.max_rational_intermediate_bits,
+            max_rational_gcd_fallback_calls: limits.max_rational_gcd_fallback_calls,
+            max_rational_gcd_fallback_input_bits: limits.max_rational_gcd_fallback_input_bits,
+            max_rational_allocations: limits.max_rational_allocations,
+            max_rational_allocation_bits: limits.max_rational_allocation_bits,
+            max_total_rational_allocation_bits: limits.max_total_rational_allocation_bits,
+            max_rational_output_bits: limits.max_rational_output_bits,
+            max_total_rational_output_bits: limits.max_total_rational_output_bits,
         },
     )
     .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
+    let scan = scan_authenticated_zero_thickness_pairs(
+        &analysis,
+        face_count,
+        expected_unordered_face_pairs,
+    )?;
+    if scan.enumerated_unordered_face_pairs != expected_unordered_face_pairs {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    if scan.expected_triangle_pairs != analysis.total_triangle_pairs()
+        || scan.analyzed_triangle_pairs != analysis.total_triangle_pairs()
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+
+    // A blocking decision never short-circuits the canonical pair scan.
+    // Resource or evidence failures still fail immediately and atomically.
+    // Multi-face diagnostics cannot issue the public geometry proof yet:
+    // every material tree contains at least one shared hinge and the finite
+    // hinge model remains mandatory. Keeping the only proof constructor in
+    // the zero-pair branch above makes that boundary structural instead of
+    // depending on today's decision mix.
+    if scan.blocking_unordered_face_pairs > scan.enumerated_unordered_face_pairs {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    Err(StaticCollisionError::PairEvidenceUnavailable {
+        expected_unordered_face_pairs,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZeroThicknessDiagnosticScan {
+    enumerated_unordered_face_pairs: usize,
+    expected_triangle_pairs: usize,
+    analyzed_triangle_pairs: usize,
+    blocking_unordered_face_pairs: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZeroThicknessPairRecord {
+    expected_triangle_pairs: usize,
+    analyzed_triangle_pairs: usize,
+    is_blocking: bool,
+}
+
+fn scan_authenticated_zero_thickness_pairs(
+    analysis: &AuthenticatedZeroThicknessPose<'_>,
+    face_count: usize,
+    expected_unordered_face_pairs: usize,
+) -> Result<ZeroThicknessDiagnosticScan, StaticCollisionError> {
+    scan_zero_thickness_pair_records(
+        face_count,
+        expected_unordered_face_pairs,
+        |first_face_index, second_face_index| {
+            let dispatch = analysis
+                .dispatch_pair(first_face_index, second_face_index)
+                .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
+            if !dispatch.has_complete_coverage() {
+                return Err(StaticCollisionError::InconsistentMaterialPose);
+            }
+            let decision = dispatch.decision();
+            // Retain an explicit evidence read until the complete native
+            // diagnostic snapshot carries the value itself.
+            let _evidence = dispatch.evidence();
+            Ok(ZeroThicknessPairRecord {
+                expected_triangle_pairs: dispatch.expected_triangle_pairs(),
+                analyzed_triangle_pairs: dispatch.analyzed_triangle_pairs(),
+                is_blocking: !matches!(
+                    decision,
+                    TopologyContactDecision::Separated
+                        | TopologyContactDecision::Touching
+                        | TopologyContactDecision::AllowedSharedVertexContact
+                ),
+            })
+        },
+    )
+}
+
+fn scan_zero_thickness_pair_records(
+    face_count: usize,
+    expected_unordered_face_pairs: usize,
+    mut record_for: impl FnMut(usize, usize) -> Result<ZeroThicknessPairRecord, StaticCollisionError>,
+) -> Result<ZeroThicknessDiagnosticScan, StaticCollisionError> {
     let mut pair_work = UnorderedFacePairs::new(face_count);
     let mut expected_triangle_pairs = 0_usize;
     let mut analyzed_triangle_pairs = 0_usize;
+    let mut blocking_unordered_face_pairs = 0_usize;
     for (first_face_index, second_face_index) in pair_work.by_ref() {
-        let dispatch = analysis
-            .dispatch_pair(first_face_index, second_face_index)
-            .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
-        if !dispatch.has_complete_coverage() {
+        let record = record_for(first_face_index, second_face_index)?;
+        if record.expected_triangle_pairs != record.analyzed_triangle_pairs {
             return Err(StaticCollisionError::InconsistentMaterialPose);
         }
         expected_triangle_pairs = expected_triangle_pairs
-            .checked_add(dispatch.expected_triangle_pairs())
+            .checked_add(record.expected_triangle_pairs)
             .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
         analyzed_triangle_pairs = analyzed_triangle_pairs
-            .checked_add(dispatch.analyzed_triangle_pairs())
+            .checked_add(record.analyzed_triangle_pairs)
             .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
-        let _evidence = dispatch.evidence();
-        // Touching proves no zero-thickness penetration at this one static
-        // pose. It is deliberately not a continuous-motion permission.
-        if !matches!(
-            dispatch.decision(),
-            TopologyContactDecision::Separated
-                | TopologyContactDecision::Touching
-                | TopologyContactDecision::AllowedSharedVertexContact
-        ) {
-            return Err(StaticCollisionError::PairEvidenceUnavailable {
-                expected_unordered_face_pairs,
-            });
+        if record.is_blocking {
+            blocking_unordered_face_pairs = blocking_unordered_face_pairs
+                .checked_add(1)
+                .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
         }
     }
     if pair_work.enumerated() != expected_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
-    if expected_triangle_pairs != analysis.total_triangle_pairs()
-        || analyzed_triangle_pairs != analysis.total_triangle_pairs()
-    {
-        return Err(StaticCollisionError::InconsistentMaterialPose);
-    }
-
-    Ok(NativeStaticCollisionGeometryProof {
-        proof: Arc::new(StaticCollisionProof {
-            model: model.clone(),
-            pose: pose.clone(),
-            paper_thickness_bits: paper_thickness_mm.to_bits(),
-            proof_id: NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-            policy_id: TOPOLOGY_CONTACT_POLICY_V2,
-            kinematics_model_id: MATERIAL_TREE_KINEMATICS_MODEL_ID,
-            thickness_model_id: CENTERED_MID_SURFACE_THICKNESS_MODEL_V1,
-            face_count,
-            expected_unordered_face_pairs,
-            analyzed_unordered_face_pairs: pair_work.enumerated(),
-            expected_triangle_pairs,
-            analyzed_triangle_pairs,
-        }),
+    Ok(ZeroThicknessDiagnosticScan {
+        enumerated_unordered_face_pairs: pair_work.enumerated(),
+        expected_triangle_pairs,
+        analyzed_triangle_pairs,
+        blocking_unordered_face_pairs,
     })
 }
 
@@ -443,7 +538,27 @@ fn checked_unordered_pair_count(face_count: usize) -> Result<usize, StaticCollis
 
 #[cfg(test)]
 mod tests {
-    use super::{StaticCollisionError, UnorderedFacePairs, checked_unordered_pair_count};
+    use super::{
+        StaticCollisionError, StaticCollisionLimits, UnorderedFacePairs, ZeroThicknessPairRecord,
+        checked_unordered_pair_count, scan_zero_thickness_pair_records,
+    };
+
+    #[test]
+    fn default_rational_allocation_limits_are_finite_and_cover_one_value() {
+        let limits = StaticCollisionLimits::default();
+        assert_ne!(limits.max_rational_allocations, usize::MAX);
+        assert_ne!(limits.max_rational_allocation_bits, usize::MAX);
+        assert_ne!(limits.max_total_rational_allocation_bits, usize::MAX);
+        assert!(limits.max_rational_allocations > 0);
+        assert!(
+            limits.max_rational_allocation_bits
+                >= limits
+                    .max_rational_input_bits
+                    .max(limits.max_rational_intermediate_bits)
+                    .max(limits.max_rational_output_bits)
+        );
+        assert!(limits.max_total_rational_allocation_bits >= limits.max_rational_allocation_bits);
+    }
 
     #[test]
     fn unordered_pair_arithmetic_is_exact_and_overflow_safe() {
@@ -477,5 +592,84 @@ mod tests {
             }
             assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
         }
+    }
+
+    #[test]
+    fn diagnostic_scan_does_not_stop_after_the_first_blocking_pair() {
+        let mut visited = Vec::new();
+        let scan = scan_zero_thickness_pair_records(3, 3, |first, second| {
+            visited.push((first, second));
+            Ok(ZeroThicknessPairRecord {
+                expected_triangle_pairs: 2,
+                analyzed_triangle_pairs: 2,
+                is_blocking: visited.len() == 1,
+            })
+        })
+        .expect("complete diagnostic scan");
+
+        assert_eq!(visited, vec![(0, 1), (0, 2), (1, 2)]);
+        assert_eq!(scan.enumerated_unordered_face_pairs, 3);
+        assert_eq!(scan.expected_triangle_pairs, 6);
+        assert_eq!(scan.analyzed_triangle_pairs, 6);
+        assert_eq!(scan.blocking_unordered_face_pairs, 1);
+    }
+
+    #[test]
+    fn diagnostic_scan_rejects_incomplete_or_miscounted_coverage() {
+        assert_eq!(
+            scan_zero_thickness_pair_records(2, 1, |_, _| {
+                Ok(ZeroThicknessPairRecord {
+                    expected_triangle_pairs: 1,
+                    analyzed_triangle_pairs: 0,
+                    is_blocking: true,
+                })
+            }),
+            Err(StaticCollisionError::InconsistentMaterialPose)
+        );
+
+        let mut calls = 0;
+        assert_eq!(
+            scan_zero_thickness_pair_records(3, 2, |_, _| {
+                calls += 1;
+                Ok(ZeroThicknessPairRecord {
+                    expected_triangle_pairs: 1,
+                    analyzed_triangle_pairs: 1,
+                    is_blocking: false,
+                })
+            }),
+            Err(StaticCollisionError::InconsistentMaterialPose)
+        );
+        assert_eq!(
+            calls, 3,
+            "expected-pair mismatch is checked after the complete scan"
+        );
+    }
+
+    #[test]
+    fn diagnostic_scan_counts_nonblocking_pairs_and_rejects_total_overflow() {
+        let scan = scan_zero_thickness_pair_records(3, 3, |_, _| {
+            Ok(ZeroThicknessPairRecord {
+                expected_triangle_pairs: 1,
+                analyzed_triangle_pairs: 1,
+                is_blocking: false,
+            })
+        })
+        .expect("complete nonblocking diagnostic scan");
+        assert_eq!(scan.blocking_unordered_face_pairs, 0);
+
+        let mut calls = 0;
+        assert_eq!(
+            scan_zero_thickness_pair_records(3, 3, |_, _| {
+                calls += 1;
+                let count = if calls == 1 { usize::MAX } else { 1 };
+                Ok(ZeroThicknessPairRecord {
+                    expected_triangle_pairs: count,
+                    analyzed_triangle_pairs: count,
+                    is_blocking: false,
+                })
+            }),
+            Err(StaticCollisionError::ResourceLimitExceeded)
+        );
+        assert_eq!(calls, 2);
     }
 }

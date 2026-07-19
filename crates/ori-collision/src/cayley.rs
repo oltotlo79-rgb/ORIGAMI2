@@ -38,6 +38,9 @@ struct CayleyLimits {
     max_intermediate_bits: usize,
     max_gcd_fallback_calls: usize,
     max_gcd_fallback_input_bits: usize,
+    max_rational_allocations: usize,
+    max_rational_allocation_bits: usize,
+    max_total_rational_allocation_bits: usize,
     max_output_bits: usize,
 }
 
@@ -55,6 +58,9 @@ impl Default for CayleyLimits {
             max_intermediate_bits: 32_768,
             max_gcd_fallback_calls: 4_096,
             max_gcd_fallback_input_bits: 67_108_864,
+            max_rational_allocations: 1_000_000,
+            max_rational_allocation_bits: 65_536,
+            max_total_rational_allocation_bits: 1_073_741_824,
             max_output_bits: 16_384,
         }
     }
@@ -118,7 +124,204 @@ struct CayleyWork {
     gcd_fallback_calls: usize,
     gcd_fallback_input_bits: usize,
     max_gcd_fallback_call_input_bits: usize,
+    rational_allocations: usize,
+    max_rational_allocation_bits: usize,
+    total_rational_allocation_bits: usize,
     max_output_bits: usize,
+}
+
+impl CayleyWork {
+    fn checked_merge(
+        &self,
+        additional: &Self,
+        limits: &CayleyLimits,
+        total_term_limits: Option<TotalTermLimits>,
+        stage: CayleyStage,
+    ) -> Result<Self, CayleyError> {
+        let merged = Self {
+            interval_operations: checked_work_sum(
+                self.interval_operations,
+                additional.interval_operations,
+                stage,
+                "interval_operations",
+            )?,
+            machin_terms: checked_work_sum(
+                self.machin_terms,
+                additional.machin_terms,
+                stage,
+                "machin_terms",
+            )?,
+            max_machin_series_terms: self
+                .max_machin_series_terms
+                .max(additional.max_machin_series_terms),
+            trig_terms: checked_work_sum(
+                self.trig_terms,
+                additional.trig_terms,
+                stage,
+                "trig_terms",
+            )?,
+            max_trig_series_terms: self
+                .max_trig_series_terms
+                .max(additional.max_trig_series_terms),
+            sqrt_refinements: checked_work_sum(
+                self.sqrt_refinements,
+                additional.sqrt_refinements,
+                stage,
+                "sqrt_refinements",
+            )?,
+            max_sqrt_call_refinements: self
+                .max_sqrt_call_refinements
+                .max(additional.max_sqrt_call_refinements),
+            max_shift_bits: self.max_shift_bits.max(additional.max_shift_bits),
+            max_preflight_bits: self.max_preflight_bits.max(additional.max_preflight_bits),
+            max_observed_bits: self.max_observed_bits.max(additional.max_observed_bits),
+            gcd_fallback_calls: checked_work_sum(
+                self.gcd_fallback_calls,
+                additional.gcd_fallback_calls,
+                stage,
+                "gcd_fallback_calls",
+            )?,
+            gcd_fallback_input_bits: checked_work_sum(
+                self.gcd_fallback_input_bits,
+                additional.gcd_fallback_input_bits,
+                stage,
+                "gcd_fallback_input_bits",
+            )?,
+            max_gcd_fallback_call_input_bits: self
+                .max_gcd_fallback_call_input_bits
+                .max(additional.max_gcd_fallback_call_input_bits),
+            rational_allocations: checked_work_sum(
+                self.rational_allocations,
+                additional.rational_allocations,
+                stage,
+                "rational_allocations",
+            )?,
+            max_rational_allocation_bits: self
+                .max_rational_allocation_bits
+                .max(additional.max_rational_allocation_bits),
+            total_rational_allocation_bits: checked_work_sum(
+                self.total_rational_allocation_bits,
+                additional.total_rational_allocation_bits,
+                stage,
+                "total_rational_allocation_bits",
+            )?,
+            max_output_bits: self.max_output_bits.max(additional.max_output_bits),
+        };
+        merged.validate(limits, total_term_limits, stage)?;
+        Ok(merged)
+    }
+
+    fn validate(
+        &self,
+        limits: &CayleyLimits,
+        total_term_limits: Option<TotalTermLimits>,
+        stage: CayleyStage,
+    ) -> Result<(), CayleyError> {
+        for (actual, maximum, resource) in [
+            (
+                self.interval_operations,
+                limits.max_interval_operations,
+                "interval_operations",
+            ),
+            (
+                self.max_machin_series_terms,
+                limits.max_machin_terms_per_series,
+                "machin_terms",
+            ),
+            (
+                self.max_trig_series_terms,
+                limits.max_trig_terms_per_series,
+                "trig_terms",
+            ),
+            (
+                self.max_sqrt_call_refinements,
+                limits.max_sqrt_refinements,
+                "sqrt_refinements",
+            ),
+            (self.max_shift_bits, limits.max_shift_bits, "shift_bits"),
+            (
+                self.max_preflight_bits,
+                limits.max_intermediate_bits,
+                "intermediate_bits",
+            ),
+            (
+                self.gcd_fallback_calls,
+                limits.max_gcd_fallback_calls,
+                "gcd_fallback_calls",
+            ),
+            (
+                self.gcd_fallback_input_bits,
+                limits.max_gcd_fallback_input_bits,
+                "gcd_fallback_input_bits",
+            ),
+            (
+                self.max_gcd_fallback_call_input_bits,
+                limits.max_gcd_fallback_input_bits,
+                "gcd_fallback_input_bits",
+            ),
+            (
+                self.rational_allocations,
+                limits.max_rational_allocations,
+                "rational_allocations",
+            ),
+            (
+                self.max_rational_allocation_bits,
+                limits.max_rational_allocation_bits,
+                "rational_allocation_bits",
+            ),
+            (
+                self.total_rational_allocation_bits,
+                limits.max_total_rational_allocation_bits,
+                "total_rational_allocation_bits",
+            ),
+            (self.max_output_bits, limits.max_output_bits, "output_bits"),
+        ] {
+            if actual > maximum {
+                return Err(CayleyError::ResourceLimitExceeded { stage, resource });
+            }
+        }
+        let maximum_observed = limits.max_intermediate_bits.max(limits.max_output_bits);
+        if self.max_observed_bits > maximum_observed {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "observed_bits",
+            });
+        }
+        if self.machin_terms > limits.max_interval_operations {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "machin_terms",
+            });
+        }
+        if self.trig_terms > limits.max_interval_operations {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "trig_terms",
+            });
+        }
+        if self.sqrt_refinements > limits.max_interval_operations {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "sqrt_refinements",
+            });
+        }
+        if let Some(total) = total_term_limits {
+            for (actual, maximum, resource) in [
+                (self.machin_terms, total.machin_terms, "total_machin_terms"),
+                (self.trig_terms, total.trig_terms, "total_trig_terms"),
+                (
+                    self.sqrt_refinements,
+                    total.sqrt_refinements,
+                    "total_sqrt_refinements",
+                ),
+            ] {
+                if actual > maximum {
+                    return Err(CayleyError::ResourceLimitExceeded { stage, resource });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,6 +344,33 @@ impl<'a> WorkMeter<'a> {
             total_term_limits: None,
             work: CayleyWork::default(),
         }
+    }
+
+    fn resume(
+        limits: &'a CayleyLimits,
+        total_term_limits: Option<TotalTermLimits>,
+        consumed: &CayleyWork,
+        stage: CayleyStage,
+    ) -> Result<Self, CayleyError> {
+        let work =
+            CayleyWork::default().checked_merge(consumed, limits, total_term_limits, stage)?;
+        Ok(Self {
+            limits,
+            total_term_limits,
+            work,
+        })
+    }
+
+    fn merge_work(
+        &mut self,
+        additional: &CayleyWork,
+        stage: CayleyStage,
+    ) -> Result<(), CayleyError> {
+        let merged =
+            self.work
+                .checked_merge(additional, self.limits, self.total_term_limits, stage)?;
+        self.work = merged;
+        Ok(())
     }
 
     fn with_total_term_limits(
@@ -325,6 +555,139 @@ impl<'a> WorkMeter<'a> {
         self.preflight_value_bits(stage, shifted_bits)
     }
 
+    fn clone_rational(
+        &mut self,
+        value: &BigRational,
+        stage: CayleyStage,
+    ) -> Result<BigRational, CayleyError> {
+        // Copying performs no arithmetic or GCD work. Its CPU and memory cost
+        // is bounded independently by the allocation count and storage-bit
+        // limits, so it deliberately does not consume an interval operation.
+        self.preflight_value_bits(stage, rational_bits(value))?;
+        self.charge_rational_allocations(&[rational_storage_bits(value, stage)?], stage)?;
+        Ok(value.clone())
+    }
+
+    fn negate_rational(
+        &mut self,
+        value: &BigRational,
+        stage: CayleyStage,
+    ) -> Result<BigRational, CayleyError> {
+        // A sign change copies one canonical rational without changing its
+        // magnitude. The dedicated allocation budget is the complete work
+        // bound; no interval-arithmetic operation is consumed.
+        self.preflight_value_bits(stage, rational_bits(value))?;
+        self.charge_rational_allocations(&[rational_storage_bits(value, stage)?], stage)?;
+        Ok(-value)
+    }
+
+    fn compare_rational(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+        stage: CayleyStage,
+    ) -> Result<Ordering, CayleyError> {
+        self.operation(stage)?;
+        self.preflight_value_bits(stage, rational_bits(left))?;
+        self.preflight_value_bits(stage, rational_bits(right))?;
+        match (left.numer().sign(), right.numer().sign()) {
+            (Sign::Minus, Sign::NoSign | Sign::Plus) | (Sign::NoSign, Sign::Plus) => {
+                return Ok(Ordering::Less);
+            }
+            (Sign::NoSign | Sign::Plus, Sign::Minus) | (Sign::Plus, Sign::NoSign) => {
+                return Ok(Ordering::Greater);
+            }
+            (Sign::NoSign, Sign::NoSign) => return Ok(Ordering::Equal),
+            (Sign::Minus, Sign::Minus) | (Sign::Plus, Sign::Plus) => {}
+        }
+        if left.denom() == right.denom() {
+            return Ok(left.numer().cmp(right.numer()));
+        }
+        let denominator_gcd = self.gcd_fallback(left.denom(), right.denom(), stage)?;
+        let left_multiplier_bits =
+            quotient_bits_upper_bound(right.denom(), &denominator_gcd, stage)?;
+        let right_multiplier_bits =
+            quotient_bits_upper_bound(left.denom(), &denominator_gcd, stage)?;
+        let left_cross_bits =
+            product_bits_upper_bound(bigint_bits(left.numer()), left_multiplier_bits, stage)?;
+        let right_cross_bits =
+            product_bits_upper_bound(bigint_bits(right.numer()), right_multiplier_bits, stage)?;
+        for bits in [
+            left_multiplier_bits,
+            right_multiplier_bits,
+            left_cross_bits,
+            right_cross_bits,
+        ] {
+            self.preflight_value_bits(stage, bits)?;
+        }
+        self.charge_rational_allocations(
+            &[
+                left_multiplier_bits,
+                right_multiplier_bits,
+                left_cross_bits,
+                right_cross_bits,
+            ],
+            stage,
+        )?;
+        let left_multiplier = right.denom() / &denominator_gcd;
+        let right_multiplier = left.denom() / denominator_gcd;
+        debug_assert!(bigint_bits(&left_multiplier) <= left_multiplier_bits);
+        debug_assert!(bigint_bits(&right_multiplier) <= right_multiplier_bits);
+        let left_cross = left.numer() * left_multiplier;
+        let right_cross = right.numer() * right_multiplier;
+        debug_assert!(bigint_bits(&left_cross) <= left_cross_bits);
+        debug_assert!(bigint_bits(&right_cross) <= right_cross_bits);
+        Ok(left_cross.cmp(&right_cross))
+    }
+
+    fn charge_rational_allocations(
+        &mut self,
+        allocation_bits: &[usize],
+        stage: CayleyStage,
+    ) -> Result<(), CayleyError> {
+        let count = self
+            .work
+            .rational_allocations
+            .checked_add(allocation_bits.len())
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "rational_allocations",
+            })?;
+        if count > self.limits.max_rational_allocations {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage,
+                resource: "rational_allocations",
+            });
+        }
+        let mut total = self.work.total_rational_allocation_bits;
+        let mut maximum = self.work.max_rational_allocation_bits;
+        for bits in allocation_bits {
+            if *bits > self.limits.max_rational_allocation_bits {
+                return Err(CayleyError::ResourceLimitExceeded {
+                    stage,
+                    resource: "rational_allocation_bits",
+                });
+            }
+            total = total
+                .checked_add(*bits)
+                .ok_or(CayleyError::ResourceLimitExceeded {
+                    stage,
+                    resource: "total_rational_allocation_bits",
+                })?;
+            if total > self.limits.max_total_rational_allocation_bits {
+                return Err(CayleyError::ResourceLimitExceeded {
+                    stage,
+                    resource: "total_rational_allocation_bits",
+                });
+            }
+            maximum = maximum.max(*bits);
+        }
+        self.work.rational_allocations = count;
+        self.work.max_rational_allocation_bits = maximum;
+        self.work.total_rational_allocation_bits = total;
+        Ok(())
+    }
+
     fn gcd_fallback(
         &mut self,
         left: &BigInt,
@@ -401,6 +764,25 @@ impl<'a> WorkMeter<'a> {
         right: &BigRational,
         stage: CayleyStage,
     ) -> Result<BigRational, CayleyError> {
+        self.add_or_subtract_rational(left, right, false, stage)
+    }
+
+    fn subtract_rational(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+        stage: CayleyStage,
+    ) -> Result<BigRational, CayleyError> {
+        self.add_or_subtract_rational(left, right, true, stage)
+    }
+
+    fn add_or_subtract_rational(
+        &mut self,
+        left: &BigRational,
+        right: &BigRational,
+        subtract: bool,
+        stage: CayleyStage,
+    ) -> Result<BigRational, CayleyError> {
         self.operation(stage)?;
         let raw_left_product = bigint_bits(left.numer())
             .checked_add(bigint_bits(right.denom()))
@@ -430,14 +812,14 @@ impl<'a> WorkMeter<'a> {
         if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
             self.preflight_value_bits(stage, raw_numerator)?;
             self.preflight_value_bits(stage, raw_denominator)?;
-            let result = left + right;
+            let result = if subtract { left - right } else { left + right };
             self.observe_rational(stage, &result)?;
             return Ok(result);
         }
 
-        // `num-rational` adds over the LCM rather than over the raw product.
-        // Only enter this more expensive path when the conservative fast-path
-        // bound would reject an operation.
+        // `num-rational` adds and subtracts over the LCM rather than over the
+        // raw product. Only enter this more expensive path when the
+        // conservative fast-path bound would reject an operation.
         let (left_multiplier, right_multiplier) = if left.denom() == right.denom() {
             (BigInt::one(), BigInt::one())
         } else {
@@ -458,19 +840,14 @@ impl<'a> WorkMeter<'a> {
         let left_numerator = left.numer() * &left_multiplier;
         let right_numerator = right.numer() * &right_multiplier;
         let denominator = left.denom() * left_multiplier;
-        let result =
-            self.normalize_refined_rational(left_numerator + right_numerator, denominator, stage)?;
+        let numerator = if subtract {
+            left_numerator - right_numerator
+        } else {
+            left_numerator + right_numerator
+        };
+        let result = self.normalize_refined_rational(numerator, denominator, stage)?;
         self.observe_rational(stage, &result)?;
         Ok(result)
-    }
-
-    fn subtract_rational(
-        &mut self,
-        left: &BigRational,
-        right: &BigRational,
-        stage: CayleyStage,
-    ) -> Result<BigRational, CayleyError> {
-        self.add_rational(left, &-right, stage)
     }
 
     fn multiply_rational(
@@ -3115,13 +3492,39 @@ fn bigint_bits(value: &BigInt) -> usize {
     value.bits() as usize
 }
 
+fn rational_storage_bits(value: &BigRational, stage: CayleyStage) -> Result<usize, CayleyError> {
+    bigint_bits(value.numer())
+        .checked_add(bigint_bits(value.denom()))
+        .ok_or(CayleyError::ResourceLimitExceeded {
+            stage,
+            resource: "rational_allocation_bits",
+        })
+}
+
+fn checked_work_sum(
+    current: usize,
+    additional: usize,
+    stage: CayleyStage,
+    resource: &'static str,
+) -> Result<usize, CayleyError> {
+    current
+        .checked_add(additional)
+        .ok_or(CayleyError::ResourceLimitExceeded { stage, resource })
+}
+
 fn refined_product_bits(
     left: &BigInt,
     right: &BigInt,
     stage: CayleyStage,
 ) -> Result<usize, CayleyError> {
-    let left_bits = bigint_bits(left);
-    let right_bits = bigint_bits(right);
+    product_bits_upper_bound(bigint_bits(left), bigint_bits(right), stage)
+}
+
+fn product_bits_upper_bound(
+    left_bits: usize,
+    right_bits: usize,
+    stage: CayleyStage,
+) -> Result<usize, CayleyError> {
     if left_bits == 0 || right_bits == 0 {
         return Ok(0);
     }
@@ -3137,6 +3540,25 @@ fn refined_product_bits(
             stage,
             resource: "intermediate_bits",
         })
+}
+
+fn quotient_bits_upper_bound(
+    dividend: &BigInt,
+    divisor: &BigInt,
+    stage: CayleyStage,
+) -> Result<usize, CayleyError> {
+    let dividend_bits = bigint_bits(dividend);
+    let divisor_bits = bigint_bits(divisor);
+    if divisor_bits == 0 {
+        return Err(CayleyError::InvariantFailure { stage });
+    }
+    if dividend_bits == 0 {
+        return Ok(0);
+    }
+    dividend_bits
+        .checked_sub(divisor_bits)
+        .and_then(|bits| bits.checked_add(1))
+        .ok_or(CayleyError::InvariantFailure { stage })
 }
 
 fn rational_bits(value: &BigRational) -> usize {
@@ -4530,6 +4952,663 @@ mod tests {
         ));
         assert_eq!(meter.work.sqrt_refinements, 1);
         assert_eq!(meter.work.interval_operations, 3);
+    }
+
+    fn merge_work_fixtures() -> (CayleyWork, CayleyWork, CayleyWork) {
+        let first = CayleyWork {
+            interval_operations: 11,
+            machin_terms: 2,
+            max_machin_series_terms: 2,
+            trig_terms: 3,
+            max_trig_series_terms: 2,
+            sqrt_refinements: 1,
+            max_sqrt_call_refinements: 1,
+            max_shift_bits: 7,
+            max_preflight_bits: 13,
+            max_observed_bits: 15,
+            gcd_fallback_calls: 2,
+            gcd_fallback_input_bits: 17,
+            max_gcd_fallback_call_input_bits: 9,
+            rational_allocations: 3,
+            max_rational_allocation_bits: 11,
+            total_rational_allocation_bits: 24,
+            max_output_bits: 10,
+        };
+        let second = CayleyWork {
+            interval_operations: 19,
+            machin_terms: 5,
+            max_machin_series_terms: 4,
+            trig_terms: 2,
+            max_trig_series_terms: 1,
+            sqrt_refinements: 3,
+            max_sqrt_call_refinements: 2,
+            max_shift_bits: 9,
+            max_preflight_bits: 19,
+            max_observed_bits: 18,
+            gcd_fallback_calls: 3,
+            gcd_fallback_input_bits: 23,
+            max_gcd_fallback_call_input_bits: 12,
+            rational_allocations: 4,
+            max_rational_allocation_bits: 13,
+            total_rational_allocation_bits: 31,
+            max_output_bits: 14,
+        };
+        let expected = CayleyWork {
+            interval_operations: 30,
+            machin_terms: 7,
+            max_machin_series_terms: 4,
+            trig_terms: 5,
+            max_trig_series_terms: 2,
+            sqrt_refinements: 4,
+            max_sqrt_call_refinements: 2,
+            max_shift_bits: 9,
+            max_preflight_bits: 19,
+            max_observed_bits: 18,
+            gcd_fallback_calls: 5,
+            gcd_fallback_input_bits: 40,
+            max_gcd_fallback_call_input_bits: 12,
+            rational_allocations: 7,
+            max_rational_allocation_bits: 13,
+            total_rational_allocation_bits: 55,
+            max_output_bits: 14,
+        };
+        (first, second, expected)
+    }
+
+    fn exact_merge_limits(expected: &CayleyWork) -> (CayleyLimits, TotalTermLimits) {
+        let mut limits = limits();
+        limits.max_interval_operations = expected.interval_operations;
+        limits.max_machin_terms_per_series = expected.max_machin_series_terms;
+        limits.max_trig_terms_per_series = expected.max_trig_series_terms;
+        limits.max_sqrt_refinements = expected.max_sqrt_call_refinements;
+        limits.max_shift_bits = expected.max_shift_bits;
+        limits.max_intermediate_bits = expected.max_preflight_bits;
+        limits.max_gcd_fallback_calls = expected.gcd_fallback_calls;
+        limits.max_gcd_fallback_input_bits = expected.gcd_fallback_input_bits;
+        limits.max_rational_allocations = expected.rational_allocations;
+        limits.max_rational_allocation_bits = expected.max_rational_allocation_bits;
+        limits.max_total_rational_allocation_bits = expected.total_rational_allocation_bits;
+        limits.max_output_bits = expected.max_output_bits;
+        let totals = TotalTermLimits {
+            machin_terms: expected.machin_terms,
+            trig_terms: expected.trig_terms,
+            sqrt_refinements: expected.sqrt_refinements,
+        };
+        (limits, totals)
+    }
+
+    #[test]
+    fn checked_work_resume_and_merge_are_monotonic_and_accept_exact_limits() {
+        let (first, second, expected) = merge_work_fixtures();
+        let (limits, totals) = exact_merge_limits(&expected);
+        let mut meter =
+            WorkMeter::resume(&limits, Some(totals), &first, CayleyStage::Containment).unwrap();
+        assert_eq!(meter.work, first);
+        meter.merge_work(&second, CayleyStage::Containment).unwrap();
+        assert_eq!(meter.work, expected);
+
+        for (before, after) in [
+            (first.interval_operations, expected.interval_operations),
+            (first.machin_terms, expected.machin_terms),
+            (first.trig_terms, expected.trig_terms),
+            (first.sqrt_refinements, expected.sqrt_refinements),
+            (first.gcd_fallback_calls, expected.gcd_fallback_calls),
+            (
+                first.gcd_fallback_input_bits,
+                expected.gcd_fallback_input_bits,
+            ),
+            (first.rational_allocations, expected.rational_allocations),
+            (
+                first.total_rational_allocation_bits,
+                expected.total_rational_allocation_bits,
+            ),
+        ] {
+            assert!(after >= before);
+        }
+        for (before, after) in [
+            (
+                first.max_machin_series_terms,
+                expected.max_machin_series_terms,
+            ),
+            (first.max_trig_series_terms, expected.max_trig_series_terms),
+            (
+                first.max_sqrt_call_refinements,
+                expected.max_sqrt_call_refinements,
+            ),
+            (first.max_shift_bits, expected.max_shift_bits),
+            (first.max_preflight_bits, expected.max_preflight_bits),
+            (first.max_observed_bits, expected.max_observed_bits),
+            (
+                first.max_gcd_fallback_call_input_bits,
+                expected.max_gcd_fallback_call_input_bits,
+            ),
+            (
+                first.max_rational_allocation_bits,
+                expected.max_rational_allocation_bits,
+            ),
+            (first.max_output_bits, expected.max_output_bits),
+        ] {
+            assert!(after >= before);
+        }
+    }
+
+    #[test]
+    fn checked_work_merge_rejects_every_one_short_limit_without_mutation() {
+        let (first, second, expected) = merge_work_fixtures();
+        let (exact, totals) = exact_merge_limits(&expected);
+
+        macro_rules! one_short_limit {
+            ($field:ident, $resource:literal) => {{
+                let mut one_short = exact;
+                one_short.$field -= 1;
+                assert!(matches!(
+                    first.checked_merge(
+                        &second,
+                        &one_short,
+                        Some(totals),
+                        CayleyStage::Containment
+                    ),
+                    Err(CayleyError::ResourceLimitExceeded {
+                        resource: $resource,
+                        ..
+                    })
+                ));
+            }};
+        }
+        one_short_limit!(max_interval_operations, "interval_operations");
+        one_short_limit!(max_machin_terms_per_series, "machin_terms");
+        one_short_limit!(max_trig_terms_per_series, "trig_terms");
+        one_short_limit!(max_sqrt_refinements, "sqrt_refinements");
+        one_short_limit!(max_shift_bits, "shift_bits");
+        one_short_limit!(max_intermediate_bits, "intermediate_bits");
+        one_short_limit!(max_gcd_fallback_calls, "gcd_fallback_calls");
+        one_short_limit!(max_gcd_fallback_input_bits, "gcd_fallback_input_bits");
+        one_short_limit!(max_rational_allocations, "rational_allocations");
+        one_short_limit!(max_rational_allocation_bits, "rational_allocation_bits");
+        one_short_limit!(
+            max_total_rational_allocation_bits,
+            "total_rational_allocation_bits"
+        );
+        one_short_limit!(max_output_bits, "output_bits");
+
+        for (one_short, resource) in [
+            (
+                TotalTermLimits {
+                    machin_terms: totals.machin_terms - 1,
+                    ..totals
+                },
+                "total_machin_terms",
+            ),
+            (
+                TotalTermLimits {
+                    trig_terms: totals.trig_terms - 1,
+                    ..totals
+                },
+                "total_trig_terms",
+            ),
+            (
+                TotalTermLimits {
+                    sqrt_refinements: totals.sqrt_refinements - 1,
+                    ..totals
+                },
+                "total_sqrt_refinements",
+            ),
+        ] {
+            assert!(matches!(
+                first.checked_merge(
+                    &second,
+                    &exact,
+                    Some(one_short),
+                    CayleyStage::Containment
+                ),
+                Err(CayleyError::ResourceLimitExceeded {
+                    resource: actual,
+                    ..
+                }) if actual == resource
+            ));
+        }
+
+        let mut meter =
+            WorkMeter::resume(&exact, Some(totals), &first, CayleyStage::Containment).unwrap();
+        let before = meter.work.clone();
+        let oversized = CayleyWork {
+            interval_operations: expected.interval_operations,
+            ..CayleyWork::default()
+        };
+        assert!(
+            meter
+                .merge_work(&oversized, CayleyStage::Containment)
+                .is_err()
+        );
+        assert_eq!(meter.work, before);
+    }
+
+    #[test]
+    fn checked_work_merge_rejects_usize_overflow_for_every_additive_counter() {
+        let mut limits = limits();
+        limits.max_interval_operations = usize::MAX;
+        limits.max_gcd_fallback_calls = usize::MAX;
+        limits.max_gcd_fallback_input_bits = usize::MAX;
+        limits.max_rational_allocations = usize::MAX;
+        limits.max_total_rational_allocation_bits = usize::MAX;
+
+        macro_rules! overflow {
+            ($field:ident, $resource:literal) => {{
+                let left = CayleyWork {
+                    $field: usize::MAX,
+                    ..CayleyWork::default()
+                };
+                let right = CayleyWork {
+                    $field: 1,
+                    ..CayleyWork::default()
+                };
+                assert!(matches!(
+                    left.checked_merge(&right, &limits, None, CayleyStage::Containment),
+                    Err(CayleyError::ResourceLimitExceeded {
+                        resource: $resource,
+                        ..
+                    })
+                ));
+            }};
+        }
+        overflow!(interval_operations, "interval_operations");
+        overflow!(machin_terms, "machin_terms");
+        overflow!(trig_terms, "trig_terms");
+        overflow!(sqrt_refinements, "sqrt_refinements");
+        overflow!(gcd_fallback_calls, "gcd_fallback_calls");
+        overflow!(gcd_fallback_input_bits, "gcd_fallback_input_bits");
+        overflow!(rational_allocations, "rational_allocations");
+        overflow!(
+            total_rational_allocation_bits,
+            "total_rational_allocation_bits"
+        );
+    }
+
+    fn adversarial_rationals_16k() -> (BigRational, BigRational) {
+        let left = BigRational::new(
+            BigInt::one() << 16_383_usize,
+            (BigInt::one() << 16_382_usize) + BigInt::one(),
+        );
+        let right = BigRational::new(
+            (BigInt::one() << 16_383_usize) + BigInt::one(),
+            BigInt::one() << 16_382_usize,
+        );
+        assert_eq!(rational_bits(&left), 16_384);
+        assert_eq!(rational_bits(&right), 16_384);
+        (left, right)
+    }
+
+    #[test]
+    fn rational_clone_and_negate_charge_before_allocating_16k_values() {
+        let (left, right) = adversarial_rationals_16k();
+        let mut generous = limits();
+        generous.max_intermediate_bits = 16_384;
+        let mut baseline = WorkMeter::new(&generous);
+        assert_eq!(
+            baseline
+                .clone_rational(&left, CayleyStage::Containment)
+                .unwrap(),
+            left
+        );
+        assert_eq!(
+            baseline
+                .negate_rational(&right, CayleyStage::Containment)
+                .unwrap(),
+            -right.clone()
+        );
+        assert_eq!(baseline.work.rational_allocations, 2);
+        assert_eq!(baseline.work.interval_operations, 0);
+        assert_eq!(baseline.work.gcd_fallback_calls, 0);
+        assert!(baseline.work.max_rational_allocation_bits >= 16_384);
+        assert!(
+            baseline.work.total_rational_allocation_bits
+                >= baseline.work.max_rational_allocation_bits
+        );
+
+        let mut exact = generous;
+        exact.max_rational_allocations = baseline.work.rational_allocations;
+        exact.max_rational_allocation_bits = baseline.work.max_rational_allocation_bits;
+        exact.max_total_rational_allocation_bits = baseline.work.total_rational_allocation_bits;
+        let mut exact_meter = WorkMeter::new(&exact);
+        exact_meter
+            .clone_rational(&left, CayleyStage::Containment)
+            .unwrap();
+        exact_meter
+            .negate_rational(&right, CayleyStage::Containment)
+            .unwrap();
+        assert_eq!(exact_meter.work, baseline.work);
+
+        let mut one_short = exact;
+        one_short.max_rational_allocations -= 1;
+        let mut meter = WorkMeter::new(&one_short);
+        meter
+            .clone_rational(&left, CayleyStage::Containment)
+            .unwrap();
+        let before = meter.work.clone();
+        assert!(matches!(
+            meter.negate_rational(&right, CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.rational_allocations, before.rational_allocations);
+        assert_eq!(
+            meter.work.total_rational_allocation_bits,
+            before.total_rational_allocation_bits
+        );
+
+        let mut one_short = exact;
+        one_short.max_rational_allocation_bits -= 1;
+        let mut meter = WorkMeter::new(&one_short);
+        assert!(matches!(
+            meter.clone_rational(&left, CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocation_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.rational_allocations, 0);
+
+        let mut one_short = exact;
+        one_short.max_total_rational_allocation_bits -= 1;
+        let mut meter = WorkMeter::new(&one_short);
+        meter
+            .clone_rational(&left, CayleyStage::Containment)
+            .unwrap();
+        let before = meter.work.clone();
+        assert!(matches!(
+            meter.negate_rational(&right, CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_rational_allocation_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.rational_allocations, before.rational_allocations);
+        assert_eq!(
+            meter.work.total_rational_allocation_bits,
+            before.total_rational_allocation_bits
+        );
+
+        let mut one_short = exact;
+        one_short.max_intermediate_bits -= 1;
+        let mut meter = WorkMeter::new(&one_short);
+        assert!(matches!(
+            meter.clone_rational(&left, CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "intermediate_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.rational_allocations, 0);
+        assert_eq!(meter.work.total_rational_allocation_bits, 0);
+    }
+
+    #[test]
+    fn rational_allocation_charge_overflow_is_atomic() {
+        let mut unlimited = limits();
+        unlimited.max_rational_allocations = usize::MAX;
+        unlimited.max_rational_allocation_bits = usize::MAX;
+        unlimited.max_total_rational_allocation_bits = usize::MAX;
+
+        let mut count_meter = WorkMeter::new(&unlimited);
+        count_meter.work.rational_allocations = usize::MAX;
+        let count_before = count_meter.work.clone();
+        assert!(matches!(
+            count_meter.charge_rational_allocations(&[1], CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "rational_allocations",
+                ..
+            })
+        ));
+        assert_eq!(count_meter.work, count_before);
+
+        let mut total_meter = WorkMeter::new(&unlimited);
+        total_meter.work.total_rational_allocation_bits = usize::MAX;
+        let total_before = total_meter.work.clone();
+        assert!(matches!(
+            total_meter.charge_rational_allocations(&[1], CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_rational_allocation_bits",
+                ..
+            })
+        ));
+        assert_eq!(total_meter.work, total_before);
+    }
+
+    #[test]
+    fn rational_compare_charges_both_cross_products_before_allocating() {
+        let (left, right) = adversarial_rationals_16k();
+        let mut generous = limits();
+        generous.max_intermediate_bits = 32_768;
+        let mut baseline = WorkMeter::new(&generous);
+        assert_eq!(
+            baseline
+                .compare_rational(&left, &right, CayleyStage::Containment)
+                .unwrap(),
+            left.cmp(&right)
+        );
+        assert_eq!(baseline.work.interval_operations, 1);
+        assert_eq!(baseline.work.gcd_fallback_calls, 1);
+        assert_eq!(baseline.work.rational_allocations, 4);
+        assert!(baseline.work.max_preflight_bits >= 32_767);
+
+        let mut exact = generous;
+        exact.max_interval_operations = baseline.work.interval_operations;
+        exact.max_intermediate_bits = baseline.work.max_preflight_bits;
+        exact.max_gcd_fallback_calls = baseline.work.gcd_fallback_calls;
+        exact.max_gcd_fallback_input_bits = baseline.work.gcd_fallback_input_bits;
+        exact.max_rational_allocations = baseline.work.rational_allocations;
+        exact.max_rational_allocation_bits = baseline.work.max_rational_allocation_bits;
+        exact.max_total_rational_allocation_bits = baseline.work.total_rational_allocation_bits;
+        let mut exact_meter = WorkMeter::new(&exact);
+        assert_eq!(
+            exact_meter
+                .compare_rational(&left, &right, CayleyStage::Containment)
+                .unwrap(),
+            left.cmp(&right)
+        );
+        assert_eq!(exact_meter.work, baseline.work);
+
+        for (one_short, resource) in [
+            (
+                {
+                    let mut value = exact;
+                    value.max_interval_operations -= 1;
+                    value
+                },
+                "interval_operations",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.max_intermediate_bits -= 1;
+                    value
+                },
+                "intermediate_bits",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.max_gcd_fallback_calls -= 1;
+                    value
+                },
+                "gcd_fallback_calls",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.max_gcd_fallback_input_bits -= 1;
+                    value
+                },
+                "gcd_fallback_input_bits",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.max_rational_allocations -= 1;
+                    value
+                },
+                "rational_allocations",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.max_rational_allocation_bits -= 1;
+                    value
+                },
+                "rational_allocation_bits",
+            ),
+            (
+                {
+                    let mut value = exact;
+                    value.max_total_rational_allocation_bits -= 1;
+                    value
+                },
+                "total_rational_allocation_bits",
+            ),
+        ] {
+            let mut meter = WorkMeter::new(&one_short);
+            assert!(matches!(
+                meter.compare_rational(&left, &right, CayleyStage::Containment),
+                Err(CayleyError::ResourceLimitExceeded {
+                    resource: actual,
+                    ..
+                }) if actual == resource
+            ));
+            assert_eq!(meter.work.rational_allocations, 0);
+            assert_eq!(meter.work.total_rational_allocation_bits, 0);
+        }
+    }
+
+    #[test]
+    fn rational_compare_preflights_gcd_reduced_cross_products() {
+        let shared_denominator = BigInt::one() << 16_000_usize;
+        let left = BigRational::new(
+            (BigInt::one() << 16_000_usize) + BigInt::one(),
+            BigInt::from(3_u8) * &shared_denominator,
+        );
+        let right = BigRational::new(
+            (BigInt::one() << 16_000_usize) + BigInt::from(3_u8),
+            BigInt::from(5_u8) * shared_denominator,
+        );
+        let raw_cross_bits =
+            refined_product_bits(left.numer(), right.denom(), CayleyStage::Containment).unwrap();
+
+        let mut generous = limits();
+        generous.max_intermediate_bits = raw_cross_bits;
+        let mut baseline = WorkMeter::new(&generous);
+        assert_eq!(
+            baseline
+                .compare_rational(&left, &right, CayleyStage::Containment)
+                .unwrap(),
+            left.cmp(&right)
+        );
+        assert_eq!(baseline.work.interval_operations, 1);
+        assert_eq!(baseline.work.gcd_fallback_calls, 1);
+        assert!(baseline.work.max_preflight_bits < raw_cross_bits);
+
+        let mut reduced_only = generous;
+        reduced_only.max_intermediate_bits = baseline.work.max_preflight_bits;
+        let mut meter = WorkMeter::new(&reduced_only);
+        assert_eq!(
+            meter
+                .compare_rational(&left, &right, CayleyStage::Containment)
+                .unwrap(),
+            left.cmp(&right)
+        );
+        assert_eq!(meter.work, baseline.work);
+    }
+
+    #[test]
+    fn rational_compare_fast_paths_do_not_consume_gcd_or_allocation_budgets() {
+        let cases = [
+            (
+                BigRational::from_integer(BigInt::from(-1_i8)),
+                BigRational::from_integer(BigInt::from(2_u8)),
+            ),
+            (
+                BigRational::zero(),
+                BigRational::from_integer(BigInt::from(2_u8)),
+            ),
+            (BigRational::zero(), BigRational::zero()),
+            (
+                BigRational::new(BigInt::one(), BigInt::from(7_u8)),
+                BigRational::new(BigInt::from(2_u8), BigInt::from(7_u8)),
+            ),
+            (
+                BigRational::new(BigInt::from(-2_i8), BigInt::from(7_u8)),
+                BigRational::new(BigInt::from(-1_i8), BigInt::from(7_u8)),
+            ),
+        ];
+        for (left, right) in cases {
+            let mut strict = limits();
+            strict.max_gcd_fallback_calls = 0;
+            strict.max_gcd_fallback_input_bits = 0;
+            strict.max_rational_allocations = 0;
+            strict.max_rational_allocation_bits = 0;
+            strict.max_total_rational_allocation_bits = 0;
+            let mut meter = WorkMeter::new(&strict);
+            assert_eq!(
+                meter
+                    .compare_rational(&left, &right, CayleyStage::Containment)
+                    .unwrap(),
+                left.cmp(&right)
+            );
+            assert_eq!(meter.work.interval_operations, 1);
+            assert_eq!(meter.work.gcd_fallback_calls, 0);
+            assert_eq!(meter.work.rational_allocations, 0);
+            assert_eq!(meter.work.total_rational_allocation_bits, 0);
+        }
+    }
+
+    #[test]
+    fn rational_compare_fast_paths_still_preflight_both_inputs() {
+        let left = BigRational::new(BigInt::one() << 64_usize, BigInt::one());
+        let right = BigRational::new(BigInt::one() << 65_usize, BigInt::one());
+        let mut strict = limits();
+        strict.max_intermediate_bits = 64;
+        strict.max_gcd_fallback_calls = 0;
+        strict.max_rational_allocations = 0;
+        let mut meter = WorkMeter::new(&strict);
+        assert!(matches!(
+            meter.compare_rational(&left, &right, CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "intermediate_bits",
+                ..
+            })
+        ));
+        assert_eq!(meter.work.gcd_fallback_calls, 0);
+        assert_eq!(meter.work.rational_allocations, 0);
+    }
+
+    #[test]
+    fn subtract_16k_value_does_not_allocate_a_negated_operand() {
+        let (left, right) = adversarial_rationals_16k();
+        let mut exact = limits();
+        exact.max_intermediate_bits = 32_768;
+        exact.max_rational_allocations = 0;
+        exact.max_rational_allocation_bits = 0;
+        exact.max_total_rational_allocation_bits = 0;
+        let mut meter = WorkMeter::new(&exact);
+        assert_eq!(
+            meter
+                .subtract_rational(&left, &right, CayleyStage::Containment)
+                .unwrap(),
+            &left - &right
+        );
+        assert_eq!(meter.work.rational_allocations, 0);
+        assert_eq!(meter.work.total_rational_allocation_bits, 0);
+
+        let mut one_short = exact;
+        one_short.max_intermediate_bits = meter.work.max_preflight_bits - 1;
+        assert!(matches!(
+            WorkMeter::new(&one_short).subtract_rational(&left, &right, CayleyStage::Containment),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "intermediate_bits",
+                ..
+            })
+        ));
     }
 
     #[test]

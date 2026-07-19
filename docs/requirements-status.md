@@ -78,7 +78,7 @@
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
-| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。衝突分類v1の4×10を凍結し、正厚境界面接触を独立させたv2の4×11全組合せ表、frontend/native共通の正規corpusと純粋decision表、canonical cell完全照合、VAL-003 certificate生成、および同一slot/certificate identity・単調generation・lock保持commit closureを持つprivate layer-order capabilityは完成した。表示・投影から分離したnative tree kinematics、material/observation型分離、private issuer identity、完全角度列を持つ非永続semantic `AppliedPoseV1`、編集履歴の`PreserveCurrent`/`Restore`意味論、desktopのcurrent pose certificate/capabilityと全本番変異経路のgeneration失効も完成した。native静的衝突は単一面zero-pairの下位幾何proofまでで、current pose certificateへの再結合、複数面の幾何証拠・全pair coverage・有限ヒンジcorridor、連続衝突、cell-order transportとの結合、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
+| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。衝突分類v1の4×10を凍結し、正厚境界面接触を独立させたv2の4×11全組合せ表、frontend/native共通の正規corpusと純粋decision表、canonical cell完全照合、VAL-003 certificate生成、および同一slot/certificate identity・単調generation・lock保持commit closureを持つprivate layer-order capabilityは完成した。表示・投影から分離したnative tree kinematics、material/observation型分離、private issuer identity、完全角度列を持つ非永続semantic `AppliedPoseV1`、編集履歴の`PreserveCurrent`/`Restore`意味論、desktopのcurrent pose certificate/capabilityと全本番変異経路のgeneration失効も完成した。native静的衝突は単一面zero-pairについてcurrent pose certificateへ再結合した限定Cまで完成し、厚さ0のexact triangle classifier基盤も完成した。複数面の認証済み単純境界・決定論的三角形分割・全pair coverage、正厚証拠、有限ヒンジcorridor、連続衝突、cell-order transportとの結合、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
 
 ## 折り手順
 

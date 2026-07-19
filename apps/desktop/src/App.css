@@ -1271,6 +1271,158 @@ html[data-theme='dark'] .svg-import-loss-badge {
   font-size: 11px;
 }
 .property-actions button.danger { color: #a73535; border-color: #d9a7a7; }
+.project-layers-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.project-layers-heading h2 { margin-bottom: 0; }
+.project-layers-heading span { color: var(--muted); font-size: 11px; }
+.project-layer-note {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.project-layer-status {
+  margin: 8px 0 0;
+  border-left: 3px solid;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.project-layer-status.is-busy {
+  border-color: #1671b8;
+  background: rgb(239 247 255 / 70%);
+  color: #165f99;
+}
+.project-layer-status.is-error {
+  border-color: #b34141;
+  background: rgb(255 239 239 / 90%);
+  color: #9f3030;
+  font-weight: 650;
+}
+.project-layer-create {
+  margin-top: 9px;
+}
+.project-layer-create fieldset {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.project-layer-create legend {
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.project-layer-create label {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.project-layer-create input,
+.project-layer-create select,
+.project-layer-rename input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 5px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font: inherit;
+}
+.project-layer-create button,
+.project-layer-rename button,
+.project-layer-row-actions button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 7px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+}
+.project-layer-create button { justify-self: end; }
+.project-layer-create :disabled,
+.project-layer-rename :disabled,
+.project-layer-row-actions :disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+.project-layer-list {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.project-layer-list > li {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-strong);
+}
+.project-layer-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  min-width: 0;
+}
+.project-layer-summary strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.project-layer-kind,
+.project-layer-default,
+.project-layer-assignment-count {
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 9px;
+}
+.project-layer-default {
+  background: rgb(31 111 162 / 13%);
+  color: #195e8a;
+  font-weight: 700;
+}
+.project-layer-rename {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}
+.project-layer-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.project-layer-row-actions button[aria-pressed='true'] {
+  border-color: #31704e;
+  background: rgb(225 244 233 / 90%);
+  color: #285f42;
+}
+.project-layer-row-actions button.danger {
+  border-color: #d9a7a7;
+  color: #a73535;
+}
+.project-layer-unavailable {
+  align-self: center;
+  color: var(--muted);
+  font-size: 10px;
+}
 .geometric-constraints-heading {
   display: flex;
   align-items: baseline;
@@ -1922,6 +2074,29 @@ html[data-theme='dark'] .field-error { color: #ffb4ab; }
 html[data-theme='dark'] .history-limit-control [role='alert'] {
   background: #4a2929;
   color: #f1b7b7;
+}
+html[data-theme='dark'] .project-layer-status.is-busy {
+  border-color: #75bcd2;
+  background: #173947;
+  color: #b7e7f5;
+}
+html[data-theme='dark'] .project-layer-status.is-error {
+  border-color: #df8585;
+  background: #4a2929;
+  color: #ffb7b7;
+}
+html[data-theme='dark'] .project-layer-default {
+  background: #174b5d;
+  color: #d1f3ff;
+}
+html[data-theme='dark'] .project-layer-row-actions button[aria-pressed='true'] {
+  border-color: #78bb94;
+  background: #204632;
+  color: #bce6cc;
+}
+html[data-theme='dark'] .project-layer-row-actions button.danger {
+  border-color: #bd7777;
+  color: #ffb7b7;
 }
 html[data-theme='dark'] .recovery-autosave-warning {
   border-color: #d89a4f;

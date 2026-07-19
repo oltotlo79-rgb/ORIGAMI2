@@ -7,6 +7,7 @@ export const MAX_PROJECT_LAYER_INDEX_EDGES = 100_000
 export const MAX_LAYER_NAME_CHARS = 120
 export const DEFAULT_PROJECT_LAYER_ID =
   '00000000-0000-4000-8000-000000000001' as const
+export const DEFAULT_PROJECT_LAYER_NAME = 'Crease Pattern' as const
 
 export type LayerContentKindV1 =
   | 'crease_pattern'
@@ -29,6 +30,19 @@ export type ProjectLayerDocumentV1 = Readonly<{
   layers: readonly LayerRecordV1[]
   edge_assignments: readonly EdgeLayerAssignmentV1[]
 }>
+
+export const DEFAULT_PROJECT_LAYER_DOCUMENT_V1: ProjectLayerDocumentV1 =
+  Object.freeze({
+    schema_version: PROJECT_LAYER_SCHEMA_VERSION,
+    layers: Object.freeze([
+      Object.freeze({
+        id: DEFAULT_PROJECT_LAYER_ID,
+        name: DEFAULT_PROJECT_LAYER_NAME,
+        content_kind: 'crease_pattern' as const,
+      }),
+    ]),
+    edge_assignments: Object.freeze([]),
+  })
 
 /**
  * Detaches and validates the exact LIN-004 V1 wire document.
@@ -76,8 +90,8 @@ export function normalizeProjectLayerDocument(
         !layer
         || !isCanonicalNonNilUuid(layer.id)
         || typeof layer.name !== 'string'
-        || !isLayerName(layer.name)
-        || !isLayerContentKind(layer.content_kind)
+        || !isProjectLayerName(layer.name)
+        || !isProjectLayerContentKind(layer.content_kind)
         || layerKinds.has(layer.id)
         || (
           layer.id === DEFAULT_PROJECT_LAYER_ID
@@ -142,13 +156,16 @@ export function normalizeProjectLayerDocument(
   }
 }
 
-function isLayerContentKind(value: unknown): value is LayerContentKindV1 {
+export function isProjectLayerContentKind(
+  value: unknown,
+): value is LayerContentKindV1 {
   return value === 'crease_pattern'
     || value === 'annotation'
     || value === 'underlay'
 }
 
-function isLayerName(value: string): boolean {
+export function isProjectLayerName(value: unknown): value is string {
+  if (typeof value !== 'string') return false
   if (
     value.length > MAX_LAYER_NAME_CHARS * 2
     || value.trim().length === 0

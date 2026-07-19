@@ -32,6 +32,7 @@ import { LanguageControl } from './components/LanguageControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
+import { ProjectLayerPanel } from './components/ProjectLayerPanel'
 import { RecoveryAutosaveStatusBanner } from './components/RecoveryAutosaveStatusBanner'
 import { RecoveryDialog } from './components/RecoveryDialog'
 import { RecoveryStartupOverlay } from './components/RecoveryStartupOverlay'
@@ -47,6 +48,7 @@ import {
   analyzeProjectTopology,
   applyFoldImport,
   applySvgImport,
+  assignEdgeToProjectLayer,
   beginInstructionExportGeneration,
   cancelCreasePatternExport,
   cancelFoldImport,
@@ -55,10 +57,13 @@ import {
   connectEdgeIntersection,
   connectIntersectionCluster,
   connectTJunction,
+  createProjectLayer,
+  deleteProjectLayer,
   generateBenchmarkPattern,
   getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
+  moveProjectLayer,
   moveVertex,
   newProject,
   openProject,
@@ -67,6 +72,7 @@ import {
   previewInstructionExport,
   previewSvgImport,
   redo,
+  renameProjectLayer,
   removeBoundaryVertex,
   removeEdge,
   removeGeometricConstraint,
@@ -111,6 +117,11 @@ import type {
   SvgImportSettingsValidation,
 } from './lib/svgImport'
 import { normalizeGeometricConstraintDocument } from './lib/geometricConstraints'
+import {
+  DEFAULT_PROJECT_LAYER_DOCUMENT_V1,
+  normalizeProjectLayerDocument,
+  type LayerContentKindV1,
+} from './lib/projectLayers'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
 import {
@@ -438,6 +449,8 @@ function App() {
   const [historyLimitRetrySequence, setHistoryLimitRetrySequence] = useState(0)
   const [geometricConstraintDocumentInvalid, setGeometricConstraintDocumentInvalid] =
     useState(false)
+  const [projectLayerDocumentInvalid, setProjectLayerDocumentInvalid] =
+    useState(false)
   const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
     () => isNativeCoreAvailable()
@@ -659,7 +672,12 @@ function App() {
       : snapshot.geometric_constraints
     const geometricConstraints = normalizeGeometricConstraintDocument(rawConstraints)
     const constraintDocumentInvalid = geometricConstraints === null
-    if (constraintDocumentInvalid) {
+    const projectLayers = normalizeProjectLayerDocument(
+      snapshot.project_layers,
+      snapshot.crease_pattern.edges,
+    )
+    const layerDocumentInvalid = projectLayers === null
+    if (constraintDocumentInvalid || layerDocumentInvalid) {
       reportUnexpected('app.validation')
     }
     const admittedSnapshot: ProjectSnapshot = {
@@ -668,6 +686,8 @@ function App() {
         schema_version: 1,
         constraints: [],
       },
+      project_layers:
+        projectLayers ?? DEFAULT_PROJECT_LAYER_DOCUMENT_V1,
     }
     topologyRequestIdRef.current += 1
     latestSnapshotRef.current = admittedSnapshot
@@ -678,6 +698,7 @@ function App() {
     }, forceReplacement)
     setNativeSnapshot(admittedSnapshot)
     setGeometricConstraintDocumentInvalid(constraintDocumentInvalid)
+    setProjectLayerDocumentInvalid(layerDocumentInvalid)
     setValidation(null)
     setTopologyResponse(null)
     setTopologyStatus(appMessage({
@@ -1612,6 +1633,114 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+
+  const runProjectLayerEdit = useCallback((
+    action: (
+      projectId: string,
+      revision: number,
+      projectInstanceId: string,
+      baseSnapshot: ProjectSnapshot,
+    ) => Promise<ProjectSnapshot>,
+  ) => runNativeEdit((projectId, revision, projectInstanceId) => {
+    const baseSnapshot = latestSnapshotRef.current
+    if (
+      !baseSnapshot
+      || baseSnapshot.project_instance_id !== projectInstanceId
+      || baseSnapshot.project_id !== projectId
+      || baseSnapshot.revision !== revision
+    ) return Promise.reject(new Error('stale layer mutation base'))
+    return action(
+      projectId,
+      revision,
+      projectInstanceId,
+      baseSnapshot,
+    )
+  }), [runNativeEdit])
+
+  const createLayerFromPanel = useCallback((
+    name: string,
+    contentKind: LayerContentKindV1,
+  ) => runProjectLayerEdit((
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+  ) => createProjectLayer(
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+    name,
+    contentKind,
+  )), [runProjectLayerEdit])
+
+  const renameLayerFromPanel = useCallback((
+    layerId: string,
+    name: string,
+  ) => runProjectLayerEdit((
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+  ) => renameProjectLayer(
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+    layerId,
+    name,
+  )), [runProjectLayerEdit])
+
+  const moveLayerFromPanel = useCallback((
+    layerId: string,
+    targetIndex: number,
+  ) => runProjectLayerEdit((
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+  ) => moveProjectLayer(
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+    layerId,
+    targetIndex,
+  )), [runProjectLayerEdit])
+
+  const deleteLayerFromPanel = useCallback((
+    layerId: string,
+  ) => runProjectLayerEdit((
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+  ) => deleteProjectLayer(
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+    layerId,
+  )), [runProjectLayerEdit])
+
+  const assignSelectedEdgeToLayer = useCallback((
+    layerId: string,
+  ) => {
+    if (!selectedLine || benchmarkRun) return Promise.resolve(false)
+    return runProjectLayerEdit((
+      projectId,
+      revision,
+      projectInstanceId,
+      baseSnapshot,
+    ) => assignEdgeToProjectLayer(
+      projectId,
+      revision,
+      projectInstanceId,
+      baseSnapshot,
+      selectedLine.id,
+      layerId,
+    ))
+  }, [benchmarkRun, runProjectLayerEdit, selectedLine])
 
   const addSelectedEdgeOrientationConstraint = useCallback((
     orientation: 'horizontal' | 'vertical',
@@ -3967,6 +4096,24 @@ function App() {
               </p>
             )}
           </section>
+          {nativeSnapshot && !benchmarkRun && (
+            <ProjectLayerPanel
+              document={nativeSnapshot.project_layers}
+              bindingKey={[
+                nativeSnapshot.project_instance_id,
+                nativeSnapshot.project_id,
+                nativeSnapshot.revision,
+              ].join(':')}
+              selectedEdgeId={selectedLine?.id ?? null}
+              disabled={coreBusy || recoveryBlocking}
+              documentInvalid={projectLayerDocumentInvalid}
+              onCreate={createLayerFromPanel}
+              onRename={renameLayerFromPanel}
+              onMove={moveLayerFromPanel}
+              onDelete={deleteLayerFromPanel}
+              onAssignSelectedEdge={assignSelectedEdgeToLayer}
+            />
+          )}
           {nativeSnapshot && !benchmarkRun && (
             <GeometricConstraintPanel
               document={nativeSnapshot.geometric_constraints ?? {

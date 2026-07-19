@@ -61,8 +61,8 @@ use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
-    LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId,
-    ProjectLayerDocumentV1, RgbaColor, VertexId,
+    LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP,
+    Paper, Point2, ProjectId, ProjectLayerDocumentV1, RgbaColor, VertexId,
 };
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
@@ -1866,6 +1866,205 @@ fn remove_edge(
         expected_project_id,
         expected_revision,
         Command::RemoveEdge { id },
+    )
+}
+
+#[tauri::command]
+fn create_project_layer(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    name: String,
+    content_kind: LayerContentKindV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    create_project_layer_in_project(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        name,
+        content_kind,
+    )
+}
+
+fn create_project_layer_in_project(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    name: String,
+    content_kind: LayerContentKindV1,
+) -> Result<ProjectSnapshot, String> {
+    ensure_expected_project(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let target_index = project.editor.project_layers().layers.len();
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::CreateLayer {
+            layer: LayerRecordV1 {
+                id: LayerId::new(),
+                name,
+                content_kind,
+            },
+            target_index,
+        },
+    )
+}
+
+#[tauri::command]
+fn rename_project_layer(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+    name: String,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    rename_project_layer_in_project(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        layer,
+        name,
+    )
+}
+
+fn rename_project_layer_in_project(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+    name: String,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::RenameLayer { layer, name },
+    )
+}
+
+#[tauri::command]
+fn move_project_layer(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+    target_index: usize,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    move_project_layer_in_project(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        layer,
+        target_index,
+    )
+}
+
+fn move_project_layer_in_project(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+    target_index: usize,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::MoveLayer {
+            layer,
+            target_index,
+        },
+    )
+}
+
+#[tauri::command]
+fn delete_project_layer(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    delete_project_layer_in_project(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        layer,
+    )
+}
+
+fn delete_project_layer_in_project(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::DeleteLayer { layer },
+    )
+}
+
+#[tauri::command]
+fn assign_edge_to_project_layer(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    layer: LayerId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    assign_edge_to_project_layer_in_project(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        edge,
+        layer,
+    )
+}
+
+fn assign_edge_to_project_layer_in_project(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    edge: EdgeId,
+    layer: LayerId,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AssignEdgeToLayer { edge, layer },
     )
 }
 
@@ -5063,6 +5262,11 @@ pub fn run() {
             remove_vertex,
             add_edge,
             remove_edge,
+            create_project_layer,
+            rename_project_layer,
+            move_project_layer,
+            delete_project_layer,
+            assign_edge_to_project_layer,
             add_edge_orientation_constraint,
             remove_geometric_constraint,
             undo,
@@ -5779,6 +5983,122 @@ mod tests {
         reopened.editor.redo(3).expect("redo reopened assignment");
         assert_eq!(reopened.document(), document);
         assert!(!reopened.is_dirty());
+    }
+
+    #[test]
+    fn project_layer_ipc_helpers_guard_binding_and_apply_every_supported_mutation() {
+        let mut project = initial_project_state();
+        let project_instance_id = project.instance_id;
+        let project_id = project.project_id;
+        let edge = project.editor.pattern().edges[0].id;
+        let original_document = project.document();
+
+        assert!(
+            create_project_layer_in_project(
+                &mut project,
+                ProjectId::new(),
+                project_id,
+                0,
+                "Foreign".to_owned(),
+                LayerContentKindV1::CreasePattern,
+            )
+            .is_err()
+        );
+        assert_eq!(project.document(), original_document);
+        assert_eq!(project.editor.revision(), 0);
+
+        let created_crease = create_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            0,
+            "Details".to_owned(),
+            LayerContentKindV1::CreasePattern,
+        )
+        .expect("create crease-pattern layer");
+        let crease_layer = created_crease.project_layers.layers[1].id;
+        assert_eq!(created_crease.revision, 1);
+
+        let created_annotation = create_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            1,
+            "Notes".to_owned(),
+            LayerContentKindV1::Annotation,
+        )
+        .expect("create empty annotation layer");
+        let annotation_layer = created_annotation.project_layers.layers[2].id;
+        assert_eq!(
+            created_annotation.project_layers.layers[2].content_kind,
+            LayerContentKindV1::Annotation
+        );
+
+        let renamed = rename_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            2,
+            crease_layer,
+            "Primary folds".to_owned(),
+        )
+        .expect("rename project layer");
+        assert_eq!(renamed.project_layers.layers[1].name, "Primary folds");
+
+        let moved = move_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            3,
+            annotation_layer,
+            0,
+        )
+        .expect("move project layer");
+        assert_eq!(moved.project_layers.layers[0].id, annotation_layer);
+
+        let assigned = assign_edge_to_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            4,
+            edge,
+            crease_layer,
+        )
+        .expect("assign selected edge to crease-pattern layer");
+        assert_eq!(assigned.project_layers.layer_for_edge(edge), crease_layer);
+
+        let deleted = delete_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            5,
+            crease_layer,
+        )
+        .expect("delete project layer");
+        assert_eq!(
+            deleted.project_layers.layer_for_edge(edge),
+            ori_domain::DEFAULT_PROJECT_LAYER_ID
+        );
+        assert!(
+            deleted
+                .project_layers
+                .layers
+                .iter()
+                .all(|layer| layer.id != crease_layer)
+        );
+
+        assert!(
+            delete_project_layer_in_project(
+                &mut project,
+                project_instance_id,
+                project_id,
+                6,
+                ori_domain::DEFAULT_PROJECT_LAYER_ID,
+            )
+            .is_err()
+        );
+        assert_eq!(project.editor.revision(), 6);
+        assert_eq!(project.editor.project_layers(), &deleted.project_layers);
     }
 
     #[test]

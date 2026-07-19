@@ -30,7 +30,16 @@ import {
   type GeometricConstraintPreflightResultV1,
   type GeometricConstraintRecordV1,
 } from './geometricConstraints.ts'
-import type { ProjectLayerDocumentV1 } from './projectLayers.ts'
+import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
+import { isExpectedNativeEditSnapshot } from './projectSnapshotBinding.ts'
+import {
+  isProjectLayerContentKind,
+  isProjectLayerName,
+  MAX_PROJECT_LAYERS,
+  normalizeProjectLayerDocument,
+  type LayerContentKindV1,
+  type ProjectLayerDocumentV1,
+} from './projectLayers.ts'
 
 export type {
   EdgeLayerAssignmentV1,
@@ -114,6 +123,34 @@ export type ProjectSnapshot = {
     }
   }
   fold_model_fingerprint: string
+}
+
+export type ProjectLayerMutationErrorCode =
+  | 'invalid_request'
+  | 'native_unavailable'
+  | 'invalid_response'
+  | 'stale_response'
+
+const PROJECT_LAYER_MUTATION_ERROR_MESSAGES:
+Readonly<Record<ProjectLayerMutationErrorCode, string>> = Object.freeze({
+  invalid_request: 'レイヤー操作の変更条件が正しくありません。',
+  native_unavailable: 'レイヤー操作をデスクトップ機能で処理できませんでした。',
+  invalid_response: 'レイヤー操作の応答を確認できませんでした。',
+  stale_response: '現在とは異なるプロジェクト状態のレイヤー操作応答を拒否しました。',
+})
+
+/**
+ * Fixed, redacted boundary failure for layer mutations. Native rejection
+ * strings and malformed response data are never retained on this error.
+ */
+export class ProjectLayerMutationError extends Error {
+  readonly code: ProjectLayerMutationErrorCode
+
+  constructor(code: ProjectLayerMutationErrorCode) {
+    super(PROJECT_LAYER_MUTATION_ERROR_MESSAGES[code])
+    this.name = 'ProjectLayerMutationError'
+    this.code = code
+  }
 }
 
 export type InstructionHingeAngle = {
@@ -808,6 +845,225 @@ export function removeEdge(
   })
 }
 
+export function createProjectLayer(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  baseSnapshot: ProjectSnapshot,
+  name: string,
+  contentKind: LayerContentKindV1,
+) {
+  if (
+    !isProjectLayerMutationBinding(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerName(name)
+    || !isProjectLayerContentKind(contentKind)
+  ) return rejectProjectLayerMutation('invalid_request')
+
+  return invoke<unknown>('create_project_layer', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    name,
+    contentKind,
+  }).then(
+    (value) => admitProjectLayerMutationSnapshot(
+      value,
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    ),
+    () => {
+      throw new ProjectLayerMutationError('native_unavailable')
+    },
+  )
+}
+
+export function renameProjectLayer(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  baseSnapshot: ProjectSnapshot,
+  layer: string,
+  name: string,
+) {
+  if (
+    !isProjectLayerMutationBinding(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isCanonicalNonNilUuid(layer)
+    || !isProjectLayerName(name)
+  ) return rejectProjectLayerMutation('invalid_request')
+
+  return invoke<unknown>('rename_project_layer', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    layer,
+    name,
+  }).then(
+    (value) => admitProjectLayerMutationSnapshot(
+      value,
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    ),
+    () => {
+      throw new ProjectLayerMutationError('native_unavailable')
+    },
+  )
+}
+
+export function moveProjectLayer(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  baseSnapshot: ProjectSnapshot,
+  layer: string,
+  targetIndex: number,
+) {
+  if (
+    !isProjectLayerMutationBinding(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isCanonicalNonNilUuid(layer)
+    || !Number.isSafeInteger(targetIndex)
+    || targetIndex < 0
+    || targetIndex >= MAX_PROJECT_LAYERS
+  ) return rejectProjectLayerMutation('invalid_request')
+
+  return invoke<unknown>('move_project_layer', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    layer,
+    targetIndex,
+  }).then(
+    (value) => admitProjectLayerMutationSnapshot(
+      value,
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    ),
+    () => {
+      throw new ProjectLayerMutationError('native_unavailable')
+    },
+  )
+}
+
+export function deleteProjectLayer(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  baseSnapshot: ProjectSnapshot,
+  layer: string,
+) {
+  if (
+    !isProjectLayerMutationBinding(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isCanonicalNonNilUuid(layer)
+  ) return rejectProjectLayerMutation('invalid_request')
+
+  return invoke<unknown>('delete_project_layer', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    layer,
+  }).then(
+    (value) => admitProjectLayerMutationSnapshot(
+      value,
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    ),
+    () => {
+      throw new ProjectLayerMutationError('native_unavailable')
+    },
+  )
+}
+
+export function assignEdgeToProjectLayer(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  baseSnapshot: ProjectSnapshot,
+  edge: string,
+  layer: string,
+) {
+  if (
+    !isProjectLayerMutationBinding(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isCanonicalNonNilUuid(edge)
+    || !isCanonicalNonNilUuid(layer)
+  ) return rejectProjectLayerMutation('invalid_request')
+
+  return invoke<unknown>('assign_edge_to_project_layer', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    edge,
+    layer,
+  }).then(
+    (value) => admitProjectLayerMutationSnapshot(
+      value,
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    ),
+    () => {
+      throw new ProjectLayerMutationError('native_unavailable')
+    },
+  )
+}
+
 export function addEdgeOrientationConstraint(
   expectedProjectId: string,
   expectedRevision: number,
@@ -1001,4 +1257,291 @@ export function connectTJunction(
     firstEdge,
     secondEdge,
   })
+}
+
+const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
+  'project_instance_id',
+  'project_id',
+  'name',
+  'current_path',
+  'revision',
+  'saved_revision',
+  'is_dirty',
+  'paper',
+  'crease_pattern',
+  'instruction_timeline',
+  'numeric_expressions',
+  'geometric_constraints',
+  'project_layers',
+  'fold_model_fingerprint',
+  'can_undo',
+  'can_redo',
+  'cutting_allowed',
+] as const
+
+function normalizeProjectLayerMutationBaseSnapshot(
+  value: unknown,
+): ProjectSnapshot | null {
+  const record = exactCoreDataRecord(
+    value,
+    PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS,
+  )
+  if (
+    !record
+    || !isCanonicalNonNilUuid(record.project_instance_id)
+    || !isCanonicalNonNilUuid(record.project_id)
+    || typeof record.name !== 'string'
+    || (
+      record.current_path !== null
+      && typeof record.current_path !== 'string'
+    )
+    || !isProjectRevision(record.revision)
+    || (
+      record.saved_revision !== null
+      && !isProjectRevision(record.saved_revision)
+    )
+    || typeof record.is_dirty !== 'boolean'
+    || !isCoreDataRecord(record.paper)
+    || !isCoreDataRecord(record.instruction_timeline)
+    || !isCoreDataRecord(record.numeric_expressions)
+    || !isCoreDataRecord(record.geometric_constraints)
+    || typeof record.fold_model_fingerprint !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(record.fold_model_fingerprint)
+    || typeof record.can_undo !== 'boolean'
+    || typeof record.can_redo !== 'boolean'
+    || typeof record.cutting_allowed !== 'boolean'
+  ) return null
+
+  const creasePattern = exactCoreDataRecord(
+    record.crease_pattern,
+    ['vertices', 'edges'] as const,
+  )
+  if (
+    !creasePattern
+    || !Array.isArray(creasePattern.vertices)
+    || !Array.isArray(creasePattern.edges)
+  ) return null
+  const projectLayers = normalizeProjectLayerDocument(
+    record.project_layers,
+    creasePattern.edges as readonly Readonly<{ id: string }>[],
+  )
+  if (!projectLayers) return null
+
+  return Object.freeze({
+    project_instance_id: record.project_instance_id,
+    project_id: record.project_id,
+    name: record.name,
+    current_path: record.current_path,
+    revision: record.revision,
+    saved_revision: record.saved_revision,
+    is_dirty: record.is_dirty,
+    paper: record.paper as ProjectSnapshot['paper'],
+    crease_pattern:
+      record.crease_pattern as ProjectSnapshot['crease_pattern'],
+    instruction_timeline:
+      record.instruction_timeline as ProjectSnapshot['instruction_timeline'],
+    numeric_expressions:
+      record.numeric_expressions as ProjectSnapshot['numeric_expressions'],
+    geometric_constraints:
+      record.geometric_constraints as ProjectSnapshot['geometric_constraints'],
+    project_layers: projectLayers,
+    fold_model_fingerprint: record.fold_model_fingerprint,
+    can_undo: record.can_undo,
+    can_redo: record.can_redo,
+    cutting_allowed: record.cutting_allowed,
+  })
+}
+
+/**
+ * Admits only the fields a layer command may change and merges them into the
+ * already-admitted current snapshot. Unverified response geometry, paper,
+ * timeline, constraints, and expression objects are deliberately ignored.
+ */
+export function normalizeProjectLayerMutationSnapshot(
+  value: unknown,
+  baseSnapshot: ProjectSnapshot,
+): ProjectSnapshot | null {
+  const base = normalizeProjectLayerMutationBaseSnapshot(baseSnapshot)
+  const record = exactCoreDataRecord(
+    value,
+    PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS,
+  )
+  if (
+    !base
+    || !record
+    || record.project_instance_id !== base.project_instance_id
+    || record.project_id !== base.project_id
+    || record.name !== base.name
+    || record.current_path !== base.current_path
+    || !isProjectRevision(record.revision)
+    || record.saved_revision !== base.saved_revision
+    || typeof record.is_dirty !== 'boolean'
+    || record.fold_model_fingerprint !== base.fold_model_fingerprint
+    || typeof record.can_undo !== 'boolean'
+    || typeof record.can_redo !== 'boolean'
+    || record.cutting_allowed !== base.cutting_allowed
+  ) return null
+
+  const projectLayers = normalizeProjectLayerDocument(
+    record.project_layers,
+    base.crease_pattern.edges,
+  )
+  if (!projectLayers) return null
+
+  return Object.freeze({
+    project_instance_id: base.project_instance_id,
+    project_id: base.project_id,
+    name: base.name,
+    current_path: base.current_path,
+    revision: record.revision,
+    saved_revision: base.saved_revision,
+    is_dirty: record.is_dirty,
+    paper: base.paper,
+    crease_pattern: base.crease_pattern,
+    instruction_timeline: base.instruction_timeline,
+    numeric_expressions: base.numeric_expressions,
+    geometric_constraints: base.geometric_constraints,
+    project_layers: projectLayers,
+    fold_model_fingerprint: base.fold_model_fingerprint,
+    can_undo: record.can_undo,
+    can_redo: record.can_redo,
+    cutting_allowed: base.cutting_allowed,
+  })
+}
+
+export function admitProjectLayerMutationSnapshot(
+  value: unknown,
+  baseSnapshot: ProjectSnapshot,
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  previousRevision: number,
+): ProjectSnapshot {
+  if (
+    !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      previousRevision,
+    )
+  ) throw new ProjectLayerMutationError('invalid_request')
+  if (
+    isStaleProjectLayerMutationResponse(
+      value,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      previousRevision,
+    )
+  ) throw new ProjectLayerMutationError('stale_response')
+  const snapshot = normalizeProjectLayerMutationSnapshot(value, baseSnapshot)
+  if (!snapshot) throw new ProjectLayerMutationError('invalid_response')
+  if (
+    !isExpectedNativeEditSnapshot(
+      snapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      previousRevision,
+    )
+  ) throw new ProjectLayerMutationError('stale_response')
+  return snapshot
+}
+
+function isStaleProjectLayerMutationResponse(
+  value: unknown,
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  previousRevision: number,
+) {
+  const record = snapshotCoreDataRecord(value)
+  if (
+    !record
+    || !isCanonicalNonNilUuid(record.project_instance_id)
+    || !isCanonicalNonNilUuid(record.project_id)
+    || !isProjectRevision(record.revision)
+  ) return false
+  return record.project_instance_id !== expectedProjectInstanceId
+    || record.project_id !== expectedProjectId
+    || record.revision !== previousRevision + 1
+}
+
+function isProjectLayerMutationBaseSnapshot(
+  value: unknown,
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+): value is ProjectSnapshot {
+  const snapshot = normalizeProjectLayerMutationBaseSnapshot(value)
+  return snapshot !== null
+    && snapshot.project_instance_id === expectedProjectInstanceId
+    && snapshot.project_id === expectedProjectId
+    && snapshot.revision === expectedRevision
+}
+
+function rejectProjectLayerMutation(
+  code: ProjectLayerMutationErrorCode,
+): Promise<never> {
+  return Promise.reject(new ProjectLayerMutationError(code))
+}
+
+function isProjectLayerMutationBinding(
+  expectedProjectInstanceId: unknown,
+  expectedProjectId: unknown,
+  expectedRevision: unknown,
+): boolean {
+  return isCanonicalNonNilUuid(expectedProjectInstanceId)
+    && isCanonicalNonNilUuid(expectedProjectId)
+    && isProjectRevision(expectedRevision)
+    && expectedRevision < Number.MAX_SAFE_INTEGER
+}
+
+function isProjectRevision(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && !Object.is(value, -0)
+}
+
+function isCoreDataRecord(value: unknown): value is Record<string, unknown> {
+  return snapshotCoreDataRecord(value) !== null
+}
+
+function exactCoreDataRecord<const Keys extends readonly string[]>(
+  value: unknown,
+  expectedKeys: Keys,
+): Readonly<Record<Keys[number], unknown>> | null {
+  const record = snapshotCoreDataRecord(value)
+  if (!record) return null
+  const actualKeys = Object.keys(record)
+  return actualKeys.length === expectedKeys.length
+    && expectedKeys.every((key) => Object.hasOwn(record, key))
+    ? record as Readonly<Record<Keys[number], unknown>>
+    : null
+}
+
+function snapshotCoreDataRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  try {
+    if (
+      value === null
+      || typeof value !== 'object'
+      || Array.isArray(value)
+    ) return null
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return null
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const snapshot = Object.create(null) as Record<string, unknown>
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== 'string') return null
+      const descriptor = descriptors[key]
+      if (
+        !descriptor
+        || !('value' in descriptor)
+        || !descriptor.enumerable
+      ) return null
+      snapshot[key] = descriptor.value
+    }
+    return snapshot
+  } catch {
+    return null
+  }
 }

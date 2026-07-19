@@ -2463,6 +2463,7 @@ dependencies = [
 name = "origami2-desktop"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "ori-collision",
  "ori-core",
  "ori-domain",

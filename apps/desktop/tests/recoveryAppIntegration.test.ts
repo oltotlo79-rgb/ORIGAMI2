@@ -4,6 +4,10 @@ import test from 'node:test'
 
 const appSource = read('../src/App.tsx')
 const overlaySource = read('../src/components/RecoveryStartupOverlay.tsx')
+const autosaveStatusSource = read(
+  '../src/lib/recoveryAutosaveStatusClient.ts',
+)
+const appCss = read('../src/App.css')
 
 test('native startup single-flights one snapshot with strict recovery discovery', () => {
   assert.match(
@@ -243,6 +247,53 @@ test('modal, keyboard, file, edit, and close guards all include recovery', () =>
     /coreOperationRef\.current\s*&& !windowCloseHandshakeStateRef\.current\.interaction_locked/u,
   )
   assert.match(closeGuard, /closeHandshake\.handle\(event\)/u)
+})
+
+test('autosave persistence health uses a guarded five-second poll and an independent persistent warning', () => {
+  assert.match(
+    appSource,
+    /createRecoveryAutosaveStatusPoller,\s*type RecoveryAutosaveMonitorView/u,
+  )
+  assert.match(
+    appSource,
+    /useState<RecoveryAutosaveMonitorView>\(\(\) => \(\s*isNativeCoreAvailable\(\)\s*\? \{ kind: 'checking' \}\s*: \{ kind: 'inactive' \}/u,
+  )
+  const polling = section(
+    appSource,
+    '  useEffect(() => {\n    const nativeAvailable = isNativeCoreAvailable()',
+    "  useEffect(() => {\n    if (!isNativeCoreAvailable()) {\n      setHistoryLimitLoadState",
+  )
+  assert.match(
+    polling,
+    /if \(!nativeAvailable \|\| recoveryStartup\.kind !== 'ready'\) return/u,
+  )
+  assert.match(polling, /onChange: setRecoveryAutosaveMonitor/u)
+  assert.match(polling, /document\.visibilityState === 'visible'/u)
+  assert.match(polling, /window\.addEventListener\('focus'/u)
+  assert.match(polling, /poller\.dispose\(\)/u)
+  assert.doesNotMatch(polling, /setCoreStatus|String\(|catch\s*\(\s*\w+/u)
+
+  assert.match(
+    appSource,
+    /<RecoveryAutosaveStatusBanner view=\{recoveryAutosaveMonitor\} \/>/u,
+  )
+  assert.match(
+    autosaveStatusSource,
+    /RECOVERY_AUTOSAVE_STATUS_POLL_INTERVAL_MS = 5_000/u,
+  )
+  assert.match(
+    autosaveStatusSource,
+    /nativeInvoke\('get_recovery_autosave_status'\)/u,
+  )
+  assert.doesNotMatch(
+    autosaveStatusSource,
+    /@tauri-apps\/api\/event|(?:raw_)?error:|current_path|project_id/u,
+  )
+  assert.match(appCss, /\.recovery-autosave-warning \{\s*position: fixed;/u)
+  assert.match(
+    appCss,
+    /\.recovery-autosave-warning\.is-persistence-failed/u,
+  )
 })
 
 function read(relativePath: string) {

@@ -84,8 +84,8 @@ use project_persistence::{
 use project_persistence::{commit_unix_staged_project_file, prepare_staged_file};
 use recovery::{
     ExitRecoveryAuthorization, ExitRecoveryDisposition, PreparedWindowCloseSettlement,
-    RecoveryRuntime, cancel_window_close_prepare, discard_recovery, get_recovery_candidate,
-    prepare_window_close, restore_recovery, start_recovery_autosave_timer,
+    RecoveryRuntime, cancel_window_close_prepare, discard_recovery, get_recovery_autosave_status,
+    get_recovery_candidate, prepare_window_close, restore_recovery, start_recovery_autosave_timer,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -4918,6 +4918,7 @@ pub fn run() {
             get_history_entry_limit,
             set_history_entry_limit,
             get_recovery_candidate,
+            get_recovery_autosave_status,
             restore_recovery,
             discard_recovery,
             prepare_window_close,

@@ -179,6 +179,27 @@ pub(super) enum GetRecoveryCandidateResponse {
     },
 }
 
+/// Redacted process-local health of the automatic recovery writer.
+///
+/// This boundary deliberately exposes neither storage paths nor internal
+/// error categories. `transition_id` changes only when the status changes, so
+/// a renderer can suppress repeated announcements without learning how many
+/// recovery operations have occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RecoveryAutosaveHealthStatus {
+    PendingFirstAttempt,
+    Operational,
+    PersistenceFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct GetRecoveryAutosaveStatusResponse {
+    pub(super) schema_version: u32,
+    pub(super) status: RecoveryAutosaveHealthStatus,
+    pub(super) transition_id: u32,
+}
+
 /// `restore_recovery` accepts one top-level Tauri argument named `request`
 /// whose value is exactly this object.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -484,6 +505,8 @@ struct RecoveryRuntimeState {
     in_flight_operation: Option<u64>,
     automatic_writes_stopped: bool,
     prepared_window_close: Option<PreparedWindowClose>,
+    autosave_health_status: RecoveryAutosaveHealthStatus,
+    autosave_health_transition_id: u32,
 }
 
 impl RecoveryRuntimeState {
@@ -496,6 +519,8 @@ impl RecoveryRuntimeState {
             in_flight_operation: None,
             automatic_writes_stopped: false,
             prepared_window_close: None,
+            autosave_health_status: RecoveryAutosaveHealthStatus::PendingFirstAttempt,
+            autosave_health_transition_id: 0,
         }
     }
 
@@ -513,6 +538,27 @@ impl RecoveryRuntimeState {
         self.next_operation_id = operation_id;
         self.in_flight_operation = Some(operation_id);
         Ok(operation_id)
+    }
+
+    fn record_autosave_health(&mut self, requested: RecoveryAutosaveHealthStatus) {
+        if self.autosave_health_status == requested
+            || self.autosave_health_transition_id == u32::MAX
+        {
+            return;
+        }
+
+        let next = self
+            .autosave_health_transition_id
+            .checked_add(1)
+            .expect("the exhausted transition ID is handled above");
+        self.autosave_health_transition_id = next;
+        if next == u32::MAX {
+            // Reserve the terminal transition as a visible fail-closed latch.
+            // It can never wrap to make an older renderer response look new.
+            self.autosave_health_status = RecoveryAutosaveHealthStatus::PersistenceFailed;
+            return;
+        }
+        self.autosave_health_status = requested;
     }
 }
 
@@ -1013,6 +1059,39 @@ impl RecoveryRuntime {
         })
     }
 
+    fn autosave_health_response(
+        &self,
+    ) -> Result<GetRecoveryAutosaveStatusResponse, RecoveryStorageError> {
+        let state = self.lock_state()?;
+        Ok(GetRecoveryAutosaveStatusResponse {
+            schema_version: RECOVERY_SCHEMA_VERSION,
+            status: state.autosave_health_status,
+            transition_id: state.autosave_health_transition_id,
+        })
+    }
+
+    fn record_autosave_observation(
+        &self,
+        observation: &Result<RecoveryAutosaveOutcome, RecoveryStorageError>,
+    ) {
+        let status = match observation {
+            Ok(
+                RecoveryAutosaveOutcome::Stored
+                | RecoveryAutosaveOutcome::Cleared
+                | RecoveryAutosaveOutcome::Duplicate,
+            ) => RecoveryAutosaveHealthStatus::Operational,
+            Err(_) => RecoveryAutosaveHealthStatus::PersistenceFailed,
+            Ok(
+                RecoveryAutosaveOutcome::StartupDecisionPending
+                | RecoveryAutosaveOutcome::AutomaticWritesStopped
+                | RecoveryAutosaveOutcome::Superseded,
+            ) => return,
+        };
+        if let Ok(mut state) = self.lock_state() {
+            state.record_autosave_health(status);
+        }
+    }
+
     /// Performs bounded file reinspection without holding either the project
     /// or recovery runtime lock.
     fn prepare_restore(
@@ -1452,18 +1531,22 @@ fn run_recovery_autosave_tick(
     project_state: &AppState,
     recovery: &RecoveryRuntime,
 ) -> Result<RecoveryAutosaveOutcome, RecoveryStorageError> {
-    // Required lock order: project -> recovery operation gate -> recovery
-    // state. The gate remains held after the project snapshot is detached,
-    // while the project lock is released before any slot I/O.
-    let project = project_state
-        .0
-        .lock()
-        .map_err(|_| RecoveryStorageError::StateUnavailable)?;
-    let operation = recovery.lock_operation_gate()?;
-    let capture = RecoveryRuntime::capture_autosave(&project);
-    drop(project);
-    let outcome = recovery.autosave(capture);
-    drop(operation);
+    let outcome = (|| {
+        // Required lock order: project -> recovery operation gate -> recovery
+        // state. The gate remains held after the project snapshot is detached,
+        // while the project lock is released before any slot I/O.
+        let project = project_state
+            .0
+            .lock()
+            .map_err(|_| RecoveryStorageError::StateUnavailable)?;
+        let operation = recovery.lock_operation_gate()?;
+        let capture = RecoveryRuntime::capture_autosave(&project);
+        drop(project);
+        let outcome = recovery.autosave(capture);
+        drop(operation);
+        outcome
+    })();
+    recovery.record_autosave_observation(&outcome);
     outcome
 }
 
@@ -1477,7 +1560,9 @@ pub(super) fn start_recovery_autosave_timer(
                 std::thread::sleep(RECOVERY_AUTOSAVE_INTERVAL);
                 let project_state = app_handle.state::<AppState>();
                 let recovery = app_handle.state::<RecoveryRuntime>();
-                let _ = run_recovery_autosave_tick(&project_state, &recovery);
+                // The tick records its redacted health transition before it
+                // returns. Its internal error category never crosses into UI.
+                let _observed = run_recovery_autosave_tick(&project_state, &recovery);
             }
         })
         .map_err(|_| RecoveryStorageError::StorageUnavailable)?;
@@ -1490,6 +1575,15 @@ pub(super) fn get_recovery_candidate(
 ) -> Result<GetRecoveryCandidateResponse, String> {
     recovery
         .candidate_response()
+        .map_err(|_| RECOVERY_COMMAND_FAILED_MESSAGE.to_owned())
+}
+
+#[tauri::command]
+pub(super) fn get_recovery_autosave_status(
+    recovery: State<'_, RecoveryRuntime>,
+) -> Result<GetRecoveryAutosaveStatusResponse, String> {
+    recovery
+        .autosave_health_response()
         .map_err(|_| RECOVERY_COMMAND_FAILED_MESSAGE.to_owned())
 }
 
@@ -1707,6 +1801,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(none, json!({"schema_version": 1, "status": "none"}));
+        assert_eq!(
+            serde_json::to_value(GetRecoveryAutosaveStatusResponse {
+                schema_version: RECOVERY_SCHEMA_VERSION,
+                status: RecoveryAutosaveHealthStatus::PendingFirstAttempt,
+                transition_id: 0,
+            })
+            .unwrap(),
+            json!({
+                "schema_version": 1,
+                "status": "pending_first_attempt",
+                "transition_id": 0
+            })
+        );
 
         let invalid = serde_json::to_value(GetRecoveryCandidateResponse::Invalid {
             schema_version: RECOVERY_SCHEMA_VERSION,
@@ -2540,6 +2647,121 @@ mod tests {
             RecoveryAutosaveOutcome::Duplicate
         );
         assert_eq!(io.calls(), vec!["store:dirty"]);
+    }
+
+    #[test]
+    fn autosave_health_reports_redacted_failure_once_and_recovers_after_durable_retry() {
+        let directory = TestDirectory::new("autosave-health");
+        let io = Arc::new(MemoryRecoveryIo::new(None));
+        let storage = RecoveryStorage::with_io(directory.path(), Arc::clone(&io));
+        let runtime = RecoveryRuntime::with_storage(storage, RecoveryStartup::None);
+        let app_state = AppState::new(crate::initial_project_state());
+
+        assert_eq!(
+            runtime.autosave_health_response().unwrap(),
+            GetRecoveryAutosaveStatusResponse {
+                schema_version: RECOVERY_SCHEMA_VERSION,
+                status: RecoveryAutosaveHealthStatus::PendingFirstAttempt,
+                transition_id: 0,
+            }
+        );
+
+        io.fail_next_clear();
+        assert!(run_recovery_autosave_tick(&app_state, &runtime).is_err());
+        let failed = runtime.autosave_health_response().unwrap();
+        assert_eq!(
+            failed,
+            GetRecoveryAutosaveStatusResponse {
+                schema_version: RECOVERY_SCHEMA_VERSION,
+                status: RecoveryAutosaveHealthStatus::PersistenceFailed,
+                transition_id: 1,
+            }
+        );
+        let failed_wire = serde_json::to_value(failed).unwrap();
+        assert_eq!(
+            failed_wire,
+            json!({
+                "schema_version": 1,
+                "status": "persistence_failed",
+                "transition_id": 1
+            })
+        );
+        for forbidden in ["path", "error", "generation", "project_id", "revision"] {
+            assert!(
+                failed_wire.get(forbidden).is_none(),
+                "health response leaked {forbidden}"
+            );
+        }
+
+        io.fail_next_clear();
+        assert!(run_recovery_autosave_tick(&app_state, &runtime).is_err());
+        assert_eq!(
+            runtime.autosave_health_response().unwrap(),
+            failed,
+            "a repeated failure must not create another UI announcement"
+        );
+
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::Cleared
+        );
+        assert_eq!(
+            runtime.autosave_health_response().unwrap(),
+            GetRecoveryAutosaveStatusResponse {
+                schema_version: RECOVERY_SCHEMA_VERSION,
+                status: RecoveryAutosaveHealthStatus::Operational,
+                transition_id: 2,
+            }
+        );
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::Duplicate
+        );
+        assert_eq!(runtime.autosave_health_response().unwrap().transition_id, 2);
+    }
+
+    #[test]
+    fn autosave_health_ignores_non_attempts_and_latches_failed_without_id_wrap() {
+        let directory = TestDirectory::new("autosave-health-non-attempt");
+        let recovered = document("pending");
+        let io = Arc::new(MemoryRecoveryIo::new(Some(recovered.clone())));
+        let storage = RecoveryStorage::with_io(directory.path(), io);
+        let runtime = RecoveryRuntime::with_storage(
+            storage,
+            RecoveryStartup::Available(RecoveryStartupCandidate {
+                document: Box::new(recovered),
+                updated_at_unix_ms: None,
+            }),
+        );
+        let app_state = AppState::new(ProjectState::new_unsaved(
+            "blocked".to_owned(),
+            CreasePattern::empty(),
+            Paper::default(),
+        ));
+        assert_eq!(
+            run_recovery_autosave_tick(&app_state, &runtime).unwrap(),
+            RecoveryAutosaveOutcome::StartupDecisionPending
+        );
+        assert_eq!(
+            runtime.autosave_health_response().unwrap().status,
+            RecoveryAutosaveHealthStatus::PendingFirstAttempt
+        );
+
+        let mut state = runtime.lock_state().unwrap();
+        state.autosave_health_status = RecoveryAutosaveHealthStatus::PendingFirstAttempt;
+        state.autosave_health_transition_id = u32::MAX - 1;
+        state.record_autosave_health(RecoveryAutosaveHealthStatus::Operational);
+        assert_eq!(
+            state.autosave_health_status,
+            RecoveryAutosaveHealthStatus::PersistenceFailed
+        );
+        assert_eq!(state.autosave_health_transition_id, u32::MAX);
+        state.record_autosave_health(RecoveryAutosaveHealthStatus::Operational);
+        assert_eq!(
+            state.autosave_health_status,
+            RecoveryAutosaveHealthStatus::PersistenceFailed
+        );
+        assert_eq!(state.autosave_health_transition_id, u32::MAX);
     }
 
     struct BlockingMemoryIo {

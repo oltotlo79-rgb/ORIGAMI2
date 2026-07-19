@@ -47,6 +47,31 @@ button { color: inherit; }
   color: var(--text);
 }
 
+.recovery-autosave-warning {
+  position: fixed;
+  top: 54px;
+  left: 50%;
+  z-index: 15;
+  width: min(720px, calc(100vw - 32px));
+  padding: 10px 14px;
+  transform: translateX(-50%);
+  border: 1px solid #b56a22;
+  border-left-width: 5px;
+  border-radius: 7px;
+  background: #fff2d9;
+  box-shadow: 0 8px 24px rgb(36 27 15 / .2);
+  color: #713c0e;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: center;
+}
+.recovery-autosave-warning.is-persistence-failed {
+  border-color: #b13e47;
+  background: #f9e2e2;
+  color: #812832;
+}
+
 .titlebar {
   display: flex;
   align-items: center;
@@ -1875,6 +1900,16 @@ html[data-theme='dark'] .field-error { color: #ffb4ab; }
 html[data-theme='dark'] .history-limit-control [role='alert'] {
   background: #4a2929;
   color: #f1b7b7;
+}
+html[data-theme='dark'] .recovery-autosave-warning {
+  border-color: #d89a4f;
+  background: #49351f;
+  color: #ffe0a8;
+}
+html[data-theme='dark'] .recovery-autosave-warning.is-persistence-failed {
+  border-color: #ff8a93;
+  background: #4a292d;
+  color: #ffc0c5;
 }
 html[data-theme='dark'] .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }
 html[data-theme='dark'] .dialog-error { background: #4a2929; color: #f1b7b7; }

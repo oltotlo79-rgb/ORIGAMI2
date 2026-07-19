@@ -31,6 +31,7 @@ import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
+import { RecoveryAutosaveStatusBanner } from './components/RecoveryAutosaveStatusBanner'
 import { RecoveryDialog } from './components/RecoveryDialog'
 import { RecoveryStartupOverlay } from './components/RecoveryStartupOverlay'
 import { SvgImportDialog } from './components/SvgImportDialog'
@@ -122,6 +123,10 @@ import {
   type RecoveryCandidateAvailable,
   type RecoveryCandidateInvalid,
 } from './lib/recoveryClient'
+import {
+  createRecoveryAutosaveStatusPoller,
+  type RecoveryAutosaveMonitorView,
+} from './lib/recoveryAutosaveStatusClient'
 import {
   historyLimitClient,
   type HistoryLimitSettings,
@@ -316,6 +321,12 @@ function App() {
       ? { kind: 'checking' }
       : { kind: 'ready' },
   )
+  const [recoveryAutosaveMonitor, setRecoveryAutosaveMonitor] =
+    useState<RecoveryAutosaveMonitorView>(() => (
+      isNativeCoreAvailable()
+        ? { kind: 'checking' }
+        : { kind: 'inactive' }
+    ))
   const [recoveryActionBusy, setRecoveryActionBusy] = useState(false)
   const [recoveryActionError, setRecoveryActionError] = useState(false)
   const [historyLimitLoadState, setHistoryLimitLoadState] =
@@ -1110,6 +1121,29 @@ function App() {
     recoveryStartupStartedRef.current = true
     void checkRecoveryStartup(false)
   }, [checkRecoveryStartup, getProjectSnapshot])
+
+  useEffect(() => {
+    const nativeAvailable = isNativeCoreAvailable()
+    if (!nativeAvailable || recoveryStartup.kind !== 'ready') return
+
+    const poller = createRecoveryAutosaveStatusPoller({
+      nativeAvailable,
+      onChange: setRecoveryAutosaveMonitor,
+    })
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') poller.refresh()
+    }
+    const refreshWhenFocused = () => poller.refresh()
+    poller.start()
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    window.addEventListener('focus', refreshWhenFocused)
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      window.removeEventListener('focus', refreshWhenFocused)
+      poller.dispose()
+    }
+  }, [recoveryStartup.kind])
 
   useEffect(() => {
     if (!isNativeCoreAvailable()) {
@@ -2675,6 +2709,7 @@ function App() {
 
   return (
     <main className="app-shell" style={workspaceLayoutStyle}>
+      <RecoveryAutosaveStatusBanner view={recoveryAutosaveMonitor} />
       <header className="titlebar" inert={modalOpen}>
         <div className="brand-mark" aria-hidden="true">◇</div>
         <strong>ORIGAMI2</strong>

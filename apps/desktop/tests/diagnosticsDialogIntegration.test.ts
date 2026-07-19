@@ -58,8 +58,16 @@ test('dialog errors remain fixed and the UI has no automatic sharing capability'
   )
   assert.match(dialogSource, /診断情報を準備できませんでした/u)
   assert.match(dialogSource, /診断JSONを保存できませんでした/u)
-  assert.match(dialogSource, /role=\{state\.saveError \? 'alert' : 'status'\}/u)
-  assert.match(dialogSource, /aria-live=\{state\.saveError \? 'assertive' : 'polite'\}/u)
+  assert.match(dialogSource, /notice: DiagnosticsNotice \| null/u)
+  assert.match(
+    dialogSource,
+    /role=\{state\.notice === 'save_failed' \? 'alert' : 'status'\}/u,
+  )
+  assert.match(
+    dialogSource,
+    /aria-live=\{state\.notice === 'save_failed' \? 'assertive' : 'polite'\}/u,
+  )
+  assert.match(dialogSource, /Diagnostics JSON could not be saved/u)
 })
 
 test('focus, Escape, stale requests, and responsive overflow are explicitly bounded', () => {

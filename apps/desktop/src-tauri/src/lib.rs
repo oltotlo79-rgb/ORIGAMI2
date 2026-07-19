@@ -49,7 +49,8 @@ use ori_core::{
 use ori_domain::{
     CreasePattern, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
-    MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId, RgbaColor, VertexId,
+    LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP, Paper, Point2, ProjectId, RgbaColor,
+    VertexId,
 };
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
@@ -1620,6 +1621,22 @@ fn update_paper_properties(
             back_color,
             cutting_allowed,
         },
+    )
+}
+
+#[tauri::command]
+fn set_length_display_unit(
+    state: State<'_, AppState>,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    unit: LengthDisplayUnit,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_id,
+        expected_revision,
+        Command::SetLengthDisplayUnit { unit },
     )
 }
 
@@ -4353,6 +4370,7 @@ pub fn run() {
             move_instruction_step,
             set_cutting_allowed,
             update_paper_properties,
+            set_length_display_unit,
             resize_rectangular_paper,
             split_edge,
             connect_edge_intersection,
@@ -5760,6 +5778,53 @@ mod tests {
         assert!(project.is_dirty());
         project.editor.redo(4).expect("redo to saved content");
         assert!(!project.is_dirty());
+    }
+
+    #[test]
+    fn length_display_unit_follows_snapshot_dirty_history_and_fingerprint_contracts() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let original_document = project.document();
+        let fingerprint = project.editor.fold_model_fingerprint_v1();
+        let reference_edge = project.editor.pattern().edges[0].id;
+
+        let response = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::SetLengthDisplayUnit {
+                unit: LengthDisplayUnit::PaperEdgeRatio { reference_edge },
+            },
+        )
+        .expect("set native length display unit");
+
+        assert_eq!(response.revision, 1);
+        assert!(response.is_dirty);
+        assert!(response.can_undo);
+        assert!(!response.can_redo);
+        assert_eq!(
+            response.paper.length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio { reference_edge }
+        );
+        assert_eq!(response.fold_model_fingerprint, fingerprint);
+        assert_eq!(project.editor.fold_model_fingerprint_v1(), fingerprint);
+        assert_eq!(
+            project.document().paper.length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio { reference_edge }
+        );
+
+        project.editor.undo(1).expect("undo display unit");
+        assert_eq!(project.document(), original_document);
+        assert!(!project.is_dirty());
+        assert_eq!(project.editor.fold_model_fingerprint_v1(), fingerprint);
+
+        project.editor.redo(2).expect("redo display unit");
+        assert!(project.is_dirty());
+        assert_eq!(
+            project.editor.paper().length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio { reference_edge }
+        );
+        assert_eq!(project.editor.fold_model_fingerprint_v1(), fingerprint);
     }
 
     #[test]

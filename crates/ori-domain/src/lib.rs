@@ -112,6 +112,24 @@ pub const DEFAULT_PAPER_THICKNESS_MM: f64 = 0.10;
 pub const DEFAULT_PAPER_FRONT_COLOR: RgbaColor = RgbaColor::opaque(255, 255, 255);
 pub const DEFAULT_PAPER_BACK_COLOR: RgbaColor = RgbaColor::opaque(248, 248, 245);
 
+/// Unit used only when presenting or accepting user-visible lengths.
+///
+/// Persisted geometry and every interchange boundary remain millimetre based.
+/// The paper-edge ratio is a live scale whose value `1` is the current length
+/// of one explicitly selected boundary edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LengthDisplayUnit {
+    #[default]
+    #[serde(rename = "mm")]
+    Millimeter,
+    #[serde(rename = "cm")]
+    Centimeter,
+    #[serde(rename = "inch")]
+    Inch,
+    #[serde(rename = "paper_edge_ratio")]
+    PaperEdgeRatio { reference_edge: EdgeId },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Paper {
@@ -123,6 +141,9 @@ pub struct Paper {
     /// domain-validation workflow; the JSON codec's number representation is
     /// the interchange boundary rather than a reason to mutate design data.
     pub thickness_mm: f64,
+    /// User-facing display preference; physical and persisted geometry remains
+    /// millimetre based regardless of this value.
+    pub length_display_unit: LengthDisplayUnit,
     pub cutting_allowed: bool,
     pub front: PaperAppearance,
     pub back: PaperAppearance,
@@ -133,6 +154,7 @@ impl Default for Paper {
         Self {
             boundary_vertices: Vec::new(),
             thickness_mm: DEFAULT_PAPER_THICKNESS_MM,
+            length_display_unit: LengthDisplayUnit::Millimeter,
             cutting_allowed: false,
             front: PaperAppearance {
                 color: DEFAULT_PAPER_FRONT_COLOR,
@@ -1008,10 +1030,40 @@ mod tests {
         let paper = Paper::default();
         assert!(paper.boundary_vertices.is_empty());
         assert_eq!(paper.thickness_mm, 0.10);
+        assert_eq!(paper.length_display_unit, LengthDisplayUnit::Millimeter);
         assert!(!paper.cutting_allowed);
         assert_eq!(paper.front.color, DEFAULT_PAPER_FRONT_COLOR);
         assert_eq!(paper.back.color, DEFAULT_PAPER_BACK_COLOR);
         assert_eq!(paper.front.texture_asset, None);
         assert_eq!(paper.back.texture_asset, None);
+    }
+
+    #[test]
+    fn length_display_units_have_a_stable_json_contract() {
+        let reference_edge: EdgeId =
+            serde_json::from_str(r#""00112233-4455-6677-8899-aabbccddeeff""#)
+                .expect("fixed edge ID");
+
+        for (unit, expected) in [
+            (LengthDisplayUnit::Millimeter, r#""mm""#),
+            (LengthDisplayUnit::Centimeter, r#""cm""#),
+            (LengthDisplayUnit::Inch, r#""inch""#),
+            (
+                LengthDisplayUnit::PaperEdgeRatio { reference_edge },
+                r#"{"paper_edge_ratio":{"reference_edge":"00112233-4455-6677-8899-aabbccddeeff"}}"#,
+            ),
+        ] {
+            let json = serde_json::to_string(&unit).expect("serialize display unit");
+            assert_eq!(json, expected);
+            let restored: LengthDisplayUnit =
+                serde_json::from_str(&json).expect("deserialize display unit");
+            assert_eq!(restored, unit);
+        }
+    }
+
+    #[test]
+    fn legacy_paper_without_display_unit_defaults_to_millimetres() {
+        let paper: Paper = serde_json::from_str("{}").expect("deserialize legacy paper");
+        assert_eq!(paper.length_display_unit, LengthDisplayUnit::Millimeter);
     }
 }

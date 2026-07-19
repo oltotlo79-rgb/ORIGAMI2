@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 use crate::applied_pose::AppliedPoseV1;
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, InstructionPose, InstructionStep, InstructionStepId,
-    InstructionTimeline, InstructionTimelineValidationError, Paper, Point2, RgbaColor, Vertex,
-    VertexId, validate_instruction_timeline,
+    InstructionTimeline, InstructionTimelineValidationError, LengthDisplayUnit, Paper, Point2,
+    RgbaColor, Vertex, VertexId, validate_instruction_timeline,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -73,6 +73,9 @@ pub enum Command {
         front_color: RgbaColor,
         back_color: RgbaColor,
         cutting_allowed: bool,
+    },
+    SetLengthDisplayUnit {
+        unit: LengthDisplayUnit,
     },
     ResizeRectangularPaper {
         width_mm: f64,
@@ -170,6 +173,12 @@ pub enum CommandError {
     PaperThicknessNegative,
     #[error("cutting cannot be disabled while cut edge {edge:?} exists")]
     CutEdgesPreventDisabling { edge: EdgeId },
+    #[error("edge {edge:?} is not a valid paper-length display reference")]
+    LengthDisplayReferenceEdgeInvalid { edge: EdgeId },
+    #[error("boundary edge {edge:?} is the active paper-length display reference")]
+    LengthDisplayReferenceEdgeMutationBlocked { edge: EdgeId },
+    #[error("moving this vertex would invalidate paper-length reference edge {edge:?}")]
+    LengthDisplayReferenceEdgeWouldBecomeInvalid { edge: EdgeId },
     #[error("paper width must be finite")]
     PaperWidthNotFinite,
     #[error("paper width must be greater than zero")]
@@ -457,6 +466,9 @@ enum Inverse {
         front_color: RgbaColor,
         back_color: RgbaColor,
         cutting_allowed: bool,
+    },
+    RestoreLengthDisplayUnit {
+        unit: LengthDisplayUnit,
     },
     RestoreVertexPositions {
         vertices: Vec<(VertexId, Point2)>,
@@ -1339,6 +1351,7 @@ impl EditorState {
                 let index = self
                     .vertex_index(id)
                     .ok_or(CommandError::VertexNotFound(id))?;
+                self.ensure_length_display_reference_survives_vertex_move(id, position)?;
                 let previous = self.pattern.vertices[index].position;
                 self.pattern.vertices[index].position = position;
                 Ok(Inverse::Command(Command::MoveVertex {
@@ -1434,6 +1447,14 @@ impl EditorState {
                 self.paper.back.color = back_color;
                 self.paper.cutting_allowed = cutting_allowed;
                 Ok(inverse)
+            }
+            Command::SetLengthDisplayUnit { unit } => {
+                if let LengthDisplayUnit::PaperEdgeRatio { reference_edge } = unit {
+                    self.validated_length_display_reference_edge_length(reference_edge)?;
+                }
+                let previous = self.paper.length_display_unit;
+                self.paper.length_display_unit = unit;
+                Ok(Inverse::RestoreLengthDisplayUnit { unit: previous })
             }
             Command::ResizeRectangularPaper {
                 width_mm,
@@ -1667,6 +1688,8 @@ impl EditorState {
                 });
             }
         }
+        self.ensure_length_display_reference_edge_not_mutated(kept_edge.id)?;
+        self.ensure_length_display_reference_edge_not_mutated(removed_edge.id)?;
 
         if let Some(edge) = self
             .pattern
@@ -2230,6 +2253,7 @@ impl EditorState {
                     vertex: *junction_vertex,
                 });
             }
+            self.ensure_length_display_reference_edge_not_mutated(interior_edge.id)?;
             Some((boundary_index, self.paper.boundary_vertices.clone()))
         } else {
             None
@@ -2405,6 +2429,7 @@ impl EditorState {
                 });
             }
         };
+        self.ensure_length_display_reference_edge_not_mutated(edge_id)?;
 
         let start_index = self
             .vertex_index(original_edge.start)
@@ -2735,6 +2760,157 @@ impl EditorState {
         Ok(())
     }
 
+    fn validated_length_display_reference_edge_length(
+        &self,
+        reference_edge: EdgeId,
+    ) -> Result<f64, CommandError> {
+        let invalid = || CommandError::LengthDisplayReferenceEdgeInvalid {
+            edge: reference_edge,
+        };
+        let mut matching_edges = self
+            .pattern
+            .edges
+            .iter()
+            .filter(|edge| edge.id == reference_edge);
+        let edge = matching_edges.next().ok_or_else(invalid)?;
+        if matching_edges.next().is_some() || edge.kind != EdgeKind::Boundary {
+            return Err(invalid());
+        }
+        if self
+            .pattern
+            .edges
+            .iter()
+            .filter(|candidate| {
+                candidate.kind == EdgeKind::Boundary
+                    && undirected_endpoints_match(
+                        candidate.start,
+                        candidate.end,
+                        edge.start,
+                        edge.end,
+                    )
+            })
+            .count()
+            != 1
+        {
+            return Err(invalid());
+        }
+
+        if self.paper.boundary_vertices.len() < 3
+            || self
+                .paper
+                .boundary_vertices
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len()
+                != self.paper.boundary_vertices.len()
+        {
+            return Err(invalid());
+        }
+        let mut matching_boundary_segments = 0_usize;
+        for (index, start) in self.paper.boundary_vertices.iter().copied().enumerate() {
+            let end =
+                self.paper.boundary_vertices[(index + 1) % self.paper.boundary_vertices.len()];
+            if undirected_endpoints_match(edge.start, edge.end, start, end) {
+                matching_boundary_segments += 1;
+            }
+        }
+        if matching_boundary_segments != 1 {
+            return Err(invalid());
+        }
+
+        let unique_position = |vertex_id: VertexId| {
+            let mut matches = self
+                .pattern
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.id == vertex_id);
+            let vertex = matches.next().ok_or_else(invalid)?;
+            if matches.next().is_some()
+                || !vertex.position.x.is_finite()
+                || !vertex.position.y.is_finite()
+            {
+                return Err(invalid());
+            }
+            Ok(vertex.position)
+        };
+        let start = unique_position(edge.start)?;
+        let end = unique_position(edge.end)?;
+        let length = (end.x - start.x).hypot(end.y - start.y);
+        if !length.is_finite() || length <= 0.0 {
+            return Err(invalid());
+        }
+        Ok(length)
+    }
+
+    fn ensure_length_display_reference_edge_not_mutated(
+        &self,
+        edge: EdgeId,
+    ) -> Result<(), CommandError> {
+        if matches!(
+            self.paper.length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio { reference_edge }
+                if reference_edge == edge
+        ) {
+            Err(CommandError::LengthDisplayReferenceEdgeMutationBlocked { edge })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_length_display_reference_survives_vertex_move(
+        &self,
+        vertex: VertexId,
+        candidate: Point2,
+    ) -> Result<(), CommandError> {
+        let LengthDisplayUnit::PaperEdgeRatio { reference_edge } = self.paper.length_display_unit
+        else {
+            return Ok(());
+        };
+        // An already malformed persisted reference remains editable so the
+        // user can repair it or switch back to an absolute unit. Once a valid
+        // reference is active, however, an ordinary vertex move must not make
+        // the display scale undefined.
+        if self
+            .validated_length_display_reference_edge_length(reference_edge)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let edge = self
+            .pattern
+            .edges
+            .iter()
+            .find(|edge| edge.id == reference_edge)
+            .expect("a validated display reference has one edge record");
+        let other = if edge.start == vertex {
+            edge.end
+        } else if edge.end == vertex {
+            edge.start
+        } else {
+            return Ok(());
+        };
+        let other_position = self
+            .pattern
+            .vertices
+            .iter()
+            .find(|candidate| candidate.id == other)
+            .expect("a validated display reference has both endpoint records")
+            .position;
+        let length = (candidate.x - other_position.x).hypot(candidate.y - other_position.y);
+        if !candidate.x.is_finite()
+            || !candidate.y.is_finite()
+            || !length.is_finite()
+            || length <= 0.0
+        {
+            Err(CommandError::LengthDisplayReferenceEdgeWouldBecomeInvalid {
+                edge: reference_edge,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     fn ensure_cutting_can_be_set(&self, allowed: bool) -> Result<(), CommandError> {
         if self.paper.cutting_allowed
             && !allowed
@@ -2774,6 +2950,9 @@ impl EditorState {
                 self.paper.front.color = *front_color;
                 self.paper.back.color = *back_color;
                 self.paper.cutting_allowed = *cutting_allowed;
+            }
+            Inverse::RestoreLengthDisplayUnit { unit } => {
+                self.paper.length_display_unit = *unit;
             }
             Inverse::RestoreVertexPositions { vertices } => {
                 debug_assert_eq!(vertices.len(), self.pattern.vertices.len());
@@ -3131,6 +3310,7 @@ impl Command {
             | Self::RemoveBoundaryVertex { .. } => true,
             Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
+            | Self::SetLengthDisplayUnit { .. }
             | Self::AddInstructionStep { .. }
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
@@ -3161,7 +3341,9 @@ impl Command {
                 settings: false,
                 instructions: false,
             },
-            Self::SetCuttingAllowed { .. } | Self::UpdatePaperProperties { .. } => Changes {
+            Self::SetCuttingAllowed { .. }
+            | Self::UpdatePaperProperties { .. }
+            | Self::SetLengthDisplayUnit { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
@@ -3356,6 +3538,12 @@ impl Inverse {
                 instructions: false,
             },
             Self::RestorePaperProperties { .. } => Changes {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                settings: true,
+                instructions: false,
+            },
+            Self::RestoreLengthDisplayUnit { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: true,
@@ -4805,6 +4993,468 @@ mod tests {
         assert_eq!(editor.paper().front.texture_asset, Some(front_texture));
         assert_eq!(editor.paper().back.texture_asset, Some(back_texture));
         assert!(editor.paper().cutting_allowed);
+    }
+
+    #[test]
+    fn length_display_unit_is_undoable_and_ratio_uses_a_live_boundary_edge() {
+        let (mut editor, original_pattern, original_paper) = simple_rectangular_editor();
+        let reference_edge = original_pattern.edges[0].id;
+        let fingerprint = editor.fold_model_fingerprint_v1();
+
+        let result = editor
+            .execute(
+                0,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::PaperEdgeRatio { reference_edge },
+                },
+            )
+            .expect("select valid boundary reference");
+
+        assert_eq!(result.revision, 1);
+        assert!(result.settings_changed);
+        assert!(result.changed_vertices.is_empty());
+        assert!(result.changed_edges.is_empty());
+        assert_eq!(
+            editor.paper().length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio { reference_edge }
+        );
+        assert_eq!(editor.fold_model_fingerprint_v1(), fingerprint);
+
+        let endpoint = original_pattern.edges[0].end;
+        editor
+            .execute(
+                1,
+                Command::MoveVertex {
+                    id: endpoint,
+                    position: Point2::new(125.0, 0.0),
+                },
+            )
+            .expect("reference endpoint can move");
+        editor
+            .execute(
+                2,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::PaperEdgeRatio { reference_edge },
+                },
+            )
+            .expect("moved reference is revalidated at its live length");
+
+        editor.undo(3).expect("undo repeated ratio setting");
+        editor.undo(4).expect("undo reference endpoint move");
+        editor.undo(5).expect("undo ratio setting");
+        assert_eq!(editor.pattern(), &original_pattern);
+        assert_eq!(editor.paper(), &original_paper);
+        editor.redo(6).expect("redo ratio setting");
+        assert_eq!(
+            editor.paper().length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio { reference_edge }
+        );
+    }
+
+    #[test]
+    fn absolute_length_display_units_do_not_require_geometry() {
+        for unit in [
+            LengthDisplayUnit::Millimeter,
+            LengthDisplayUnit::Centimeter,
+            LengthDisplayUnit::Inch,
+        ] {
+            let mut editor = EditorState::new(CreasePattern::empty());
+            let result = editor
+                .execute(0, Command::SetLengthDisplayUnit { unit })
+                .expect("absolute display unit");
+            assert!(result.settings_changed);
+            assert_eq!(editor.paper().length_display_unit, unit);
+            editor.undo(1).expect("undo absolute display unit");
+            assert_eq!(
+                editor.paper().length_display_unit,
+                LengthDisplayUnit::Millimeter
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_ratio_references_are_rejected_atomically() {
+        fn assert_invalid(mut editor: EditorState, reference_edge: EdgeId) {
+            let before = editor_state_snapshot(&editor);
+            let error = editor
+                .execute(
+                    0,
+                    Command::SetLengthDisplayUnit {
+                        unit: LengthDisplayUnit::PaperEdgeRatio { reference_edge },
+                    },
+                )
+                .expect_err("invalid display reference must fail");
+            assert_eq!(
+                error,
+                CommandError::LengthDisplayReferenceEdgeInvalid {
+                    edge: reference_edge
+                }
+            );
+            assert_eq!(editor_state_snapshot(&editor), before);
+        }
+
+        let (_, pattern, paper) = simple_rectangular_editor();
+        assert_invalid(
+            EditorState::with_paper(pattern.clone(), paper.clone()),
+            EdgeId::new(),
+        );
+
+        let mut non_boundary = pattern.clone();
+        let auxiliary = Edge {
+            id: EdgeId::new(),
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Auxiliary,
+        };
+        non_boundary.edges.push(auxiliary.clone());
+        assert_invalid(
+            EditorState::with_paper(non_boundary, paper.clone()),
+            auxiliary.id,
+        );
+
+        let mut duplicate = pattern.clone();
+        duplicate.edges.push(pattern.edges[0].clone());
+        assert_invalid(
+            EditorState::with_paper(duplicate, paper.clone()),
+            pattern.edges[0].id,
+        );
+
+        let mut duplicate_carrier = pattern.clone();
+        duplicate_carrier.edges.push(Edge {
+            id: EdgeId::new(),
+            ..pattern.edges[0].clone()
+        });
+        assert_invalid(
+            EditorState::with_paper(duplicate_carrier, paper.clone()),
+            pattern.edges[0].id,
+        );
+
+        let mut detached = pattern.clone();
+        let detached_edge = Edge {
+            id: EdgeId::new(),
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Boundary,
+        };
+        detached.edges.push(detached_edge.clone());
+        assert_invalid(
+            EditorState::with_paper(detached, paper.clone()),
+            detached_edge.id,
+        );
+
+        let mut collapsed = pattern.clone();
+        let reference_edge = collapsed.edges[0].clone();
+        let start_position = collapsed
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == reference_edge.start)
+            .expect("reference start")
+            .position;
+        collapsed
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == reference_edge.end)
+            .expect("reference end")
+            .position = start_position;
+        assert_invalid(
+            EditorState::with_paper(collapsed, paper.clone()),
+            reference_edge.id,
+        );
+
+        let mut missing_endpoint = pattern.clone();
+        missing_endpoint
+            .vertices
+            .retain(|vertex| vertex.id != reference_edge.end);
+        assert_invalid(
+            EditorState::with_paper(missing_endpoint, paper.clone()),
+            reference_edge.id,
+        );
+
+        let mut duplicate_endpoint = pattern.clone();
+        duplicate_endpoint.vertices.push(
+            duplicate_endpoint
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == reference_edge.end)
+                .expect("reference endpoint")
+                .clone(),
+        );
+        assert_invalid(
+            EditorState::with_paper(duplicate_endpoint, paper.clone()),
+            reference_edge.id,
+        );
+
+        let mut non_finite_endpoint = pattern.clone();
+        non_finite_endpoint
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == reference_edge.end)
+            .expect("reference endpoint")
+            .position
+            .x = f64::INFINITY;
+        assert_invalid(
+            EditorState::with_paper(non_finite_endpoint, paper.clone()),
+            reference_edge.id,
+        );
+
+        let mut overflowing_length = pattern.clone();
+        overflowing_length
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == reference_edge.start)
+            .expect("reference start")
+            .position
+            .x = -f64::MAX;
+        overflowing_length
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == reference_edge.end)
+            .expect("reference end")
+            .position
+            .x = f64::MAX;
+        assert_invalid(
+            EditorState::with_paper(overflowing_length, paper.clone()),
+            reference_edge.id,
+        );
+
+        let mut multiply_matched_paper = paper;
+        multiply_matched_paper.boundary_vertices = vec![
+            reference_edge.start,
+            reference_edge.end,
+            reference_edge.start,
+            pattern.edges[1].end,
+        ];
+        assert_invalid(
+            EditorState::with_paper(pattern, multiply_matched_paper),
+            reference_edge.id,
+        );
+    }
+
+    #[test]
+    fn a_valid_ratio_reference_cannot_be_collapsed_or_made_non_finite() {
+        for invalid_position in [
+            Point2::new(0.0, 0.0),
+            Point2::new(f64::NAN, 0.0),
+            Point2::new(f64::MAX, f64::MAX),
+        ] {
+            let (mut editor, pattern, _) = simple_rectangular_editor();
+            let edge = pattern.edges[0].clone();
+            editor
+                .execute(
+                    0,
+                    Command::SetLengthDisplayUnit {
+                        unit: LengthDisplayUnit::PaperEdgeRatio {
+                            reference_edge: edge.id,
+                        },
+                    },
+                )
+                .expect("set ratio reference");
+            let before = editor_state_snapshot(&editor);
+
+            let error = editor
+                .execute(
+                    1,
+                    Command::MoveVertex {
+                        id: edge.end,
+                        position: invalid_position,
+                    },
+                )
+                .expect_err("invalid reference move must fail");
+
+            assert_eq!(
+                error,
+                CommandError::LengthDisplayReferenceEdgeWouldBecomeInvalid { edge: edge.id }
+            );
+            assert_eq!(editor_state_snapshot(&editor), before);
+        }
+    }
+
+    #[test]
+    fn reference_edge_split_and_removal_are_blocked_without_rebasing() {
+        let (mut split_editor, split_pattern, _) = simple_rectangular_editor();
+        let split_reference = split_pattern.edges[0].id;
+        split_editor
+            .execute(
+                0,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::PaperEdgeRatio {
+                        reference_edge: split_reference,
+                    },
+                },
+            )
+            .expect("set split reference");
+        let before_split = editor_state_snapshot(&split_editor);
+        let split_error = split_editor
+            .execute(
+                1,
+                Command::SplitBoundaryEdge {
+                    edge: split_reference,
+                    new_vertex: VertexId::new(),
+                    new_edge: EdgeId::new(),
+                    fraction: 0.5,
+                },
+            )
+            .expect_err("reference split must fail");
+        assert_eq!(
+            split_error,
+            CommandError::LengthDisplayReferenceEdgeMutationBlocked {
+                edge: split_reference
+            }
+        );
+        assert_eq!(editor_state_snapshot(&split_editor), before_split);
+
+        for reference_index in [0, 1] {
+            let (mut remove_editor, remove_pattern, remove_paper) = simple_rectangular_editor();
+            let reference = remove_pattern.edges[reference_index].id;
+            remove_editor
+                .execute(
+                    0,
+                    Command::SetLengthDisplayUnit {
+                        unit: LengthDisplayUnit::PaperEdgeRatio {
+                            reference_edge: reference,
+                        },
+                    },
+                )
+                .expect("set removal reference");
+            let before_remove = editor_state_snapshot(&remove_editor);
+            let error = remove_editor
+                .execute(
+                    1,
+                    Command::RemoveBoundaryVertex {
+                        vertex: remove_paper.boundary_vertices[1],
+                    },
+                )
+                .expect_err("adjacent reference removal must fail");
+            assert_eq!(
+                error,
+                CommandError::LengthDisplayReferenceEdgeMutationBlocked { edge: reference }
+            );
+            assert_eq!(editor_state_snapshot(&remove_editor), before_remove);
+        }
+    }
+
+    #[test]
+    fn ratio_reference_is_direction_independent_and_non_reference_split_still_works() {
+        let (_, mut pattern, paper) = simple_rectangular_editor();
+        let original_reference = pattern.edges[0].clone();
+        pattern.edges[0] = Edge {
+            start: original_reference.end,
+            end: original_reference.start,
+            ..original_reference
+        };
+        let reference = pattern.edges[0].id;
+        let split_target = pattern.edges[1].id;
+        let new_vertex = VertexId::new();
+        let new_edge = EdgeId::new();
+        let mut editor = EditorState::with_paper(pattern, paper);
+
+        editor
+            .execute(
+                0,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::PaperEdgeRatio {
+                        reference_edge: reference,
+                    },
+                },
+            )
+            .expect("reversed boundary reference");
+        editor
+            .execute(
+                1,
+                Command::SplitBoundaryEdge {
+                    edge: split_target,
+                    new_vertex,
+                    new_edge,
+                    fraction: 0.5,
+                },
+            )
+            .expect("non-reference boundary split");
+
+        assert_eq!(
+            editor.paper().length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio {
+                reference_edge: reference
+            }
+        );
+        assert!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .any(|edge| edge.id == new_edge)
+        );
+        assert!(editor.paper().boundary_vertices.contains(&new_vertex));
+    }
+
+    #[test]
+    fn boundary_t_junction_cannot_split_the_ratio_reference() {
+        let (mut editor, _, _, boundary, stem, _) = boundary_t_junction_editor(0);
+        editor
+            .execute(
+                0,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::PaperEdgeRatio {
+                        reference_edge: boundary.id,
+                    },
+                },
+            )
+            .expect("set T-junction reference");
+        let before = editor_state_snapshot(&editor);
+
+        let error = editor
+            .execute(
+                1,
+                Command::ConnectTJunction {
+                    first_edge: boundary.id,
+                    second_edge: stem.id,
+                    new_edge: EdgeId::new(),
+                },
+            )
+            .expect_err("T-junction must not split reference");
+
+        assert_eq!(
+            error,
+            CommandError::LengthDisplayReferenceEdgeMutationBlocked { edge: boundary.id }
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+    }
+
+    #[test]
+    fn malformed_loaded_ratio_can_switch_to_millimetres_and_undo_exactly() {
+        let missing_reference = EdgeId::new();
+        let paper = Paper {
+            length_display_unit: LengthDisplayUnit::PaperEdgeRatio {
+                reference_edge: missing_reference,
+            },
+            ..Paper::default()
+        };
+        let mut editor = EditorState::with_paper(CreasePattern::empty(), paper);
+
+        editor
+            .execute(
+                0,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::Millimeter,
+                },
+            )
+            .expect("repair malformed display unit");
+        assert_eq!(
+            editor.paper().length_display_unit,
+            LengthDisplayUnit::Millimeter
+        );
+
+        editor.undo(1).expect("undo repair exactly");
+        assert_eq!(
+            editor.paper().length_display_unit,
+            LengthDisplayUnit::PaperEdgeRatio {
+                reference_edge: missing_reference
+            }
+        );
+        editor.redo(2).expect("redo repair");
+        assert_eq!(
+            editor.paper().length_display_unit,
+            LengthDisplayUnit::Millimeter
+        );
     }
 
     #[test]
@@ -10908,6 +11558,18 @@ mod tests {
         editor
             .execute(3, Command::SetCuttingAllowed { allowed: false })
             .expect("cutting setting");
+        assert_eq!(editor.current_applied_pose(), Some(&second_pose));
+
+        editor
+            .execute(
+                4,
+                Command::SetLengthDisplayUnit {
+                    unit: LengthDisplayUnit::Inch,
+                },
+            )
+            .expect("length display setting");
+        assert_eq!(editor.current_applied_pose(), Some(&second_pose));
+        editor.undo(5).expect("undo length display setting");
         assert_eq!(editor.current_applied_pose(), Some(&second_pose));
     }
 

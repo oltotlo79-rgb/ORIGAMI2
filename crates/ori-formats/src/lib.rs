@@ -173,8 +173,8 @@ pub fn read_project_json(bytes: &[u8]) -> Result<ProjectDocument, FormatError> {
 mod tests {
     use ori_domain::{
         AssetId, Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
-        InstructionPoseModel, InstructionStep, InstructionStepId, PaperAppearance, Point2,
-        RgbaColor, Vertex, VertexId,
+        InstructionPoseModel, InstructionStep, InstructionStepId, LengthDisplayUnit,
+        PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
     };
 
     use super::*;
@@ -266,6 +266,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_json_without_length_display_unit_defaults_to_millimetres() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize project value");
+        value["paper"]
+            .as_object_mut()
+            .expect("paper is a JSON object")
+            .remove("length_display_unit");
+        let bytes = serde_json::to_vec(&value).expect("serialize legacy project");
+
+        let restored = read_project_json(&bytes).expect("read legacy project");
+        assert_eq!(
+            restored.paper.length_display_unit,
+            LengthDisplayUnit::Millimeter
+        );
+    }
+
+    #[test]
     fn legacy_json_without_instruction_timeline_uses_empty_default() {
         let document = sample_document();
         let mut value = serde_json::to_value(&document).expect("serialize project value");
@@ -319,6 +336,9 @@ mod tests {
         original.paper = Paper {
             boundary_vertices,
             thickness_mm: 0.235,
+            length_display_unit: LengthDisplayUnit::PaperEdgeRatio {
+                reference_edge: original.crease_pattern.edges[0].id,
+            },
             cutting_allowed: true,
             front: PaperAppearance {
                 color: RgbaColor {
@@ -344,6 +364,10 @@ mod tests {
         let restored = read_project_json(&bytes).expect("read project with paper");
 
         assert_eq!(restored.paper, original.paper);
+        assert_eq!(
+            restored.paper.length_display_unit,
+            original.paper.length_display_unit
+        );
         assert_eq!(restored.paper.front.texture_asset, Some(front_texture));
         assert_eq!(restored.paper.back.texture_asset, Some(back_texture));
     }

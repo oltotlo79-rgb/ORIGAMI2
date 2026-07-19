@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   formatPaperThicknessInput,
+  stepPaperThicknessFromMillimetres,
   stepPaperThicknessInput,
 } from '../src/lib/paperThicknessInput.ts'
 
@@ -72,6 +73,52 @@ test('paper thickness stepping leaves empty malformed and non-finite input uncha
   }
 })
 
+test('every converted step retains the exact same physical binary64 as mm', () => {
+  const scales = [
+    ['mm', 1],
+    ['cm', 10],
+    ['inch', 25.4],
+    ['horizontal paper-edge ratio', 400],
+    ['vertical paper-edge ratio', 200],
+  ] as const
+  for (const source of [
+    0,
+    0.075,
+    0.1,
+    0.10000000000000002,
+    0.30000000000000004,
+    3,
+  ]) {
+    for (const direction of ['up', 'down'] as const) {
+      const millimetreStep = stepPaperThicknessFromMillimetres(
+        source,
+        direction,
+        1,
+      )
+      assert.ok(millimetreStep)
+      for (const [label, scale] of scales) {
+        const convertedStep = stepPaperThicknessFromMillimetres(
+          source,
+          direction,
+          scale,
+        )
+        assert.ok(convertedStep, `${label} must produce a step`)
+        assert.ok(
+          Object.is(
+            convertedStep.millimetres,
+            millimetreStep.millimetres,
+          ),
+          `${label} must preserve the exact mm result for ${source} ${direction}`,
+        )
+        assert.equal(
+          convertedStep.displayValue,
+          String(convertedStep.millimetres / scale),
+        )
+      }
+    }
+  }
+})
+
 test('both paper thickness controls use exact custom steps and retain direct input', () => {
   const appSource = readFileSync(
     new URL('../src/App.tsx', import.meta.url),
@@ -92,8 +139,8 @@ test('both paper thickness controls use exact custom steps and retain direct inp
   assert.match(componentSource, /aria-label="紙厚"/u)
   assert.match(
     componentSource,
-    /useEffect\(\(\) => \{\s*setValue\(initialValue\)\s*\}, \[initialValue\]\)/u,
-    'an opened project with a different thickness must refresh the control',
+    /useEffect\(\(\) => \{\s*setState\(\{\s*dirty: false,\s*steppedMillimetres: null,\s*value: initialValue,[\s\S]*?\}, \[initialValue, sourceToken\]\)/u,
+    'a new source token must refresh display, dirty state, and exact step evidence',
   )
   assert.doesNotMatch(
     componentSource,
@@ -102,7 +149,7 @@ test('both paper thickness controls use exact custom steps and retain direct inp
   assert.match(appSource, /initialValue="0\.10"/u)
   assert.match(
     appSource,
-    /initialValue=\{formatPaperThicknessInput\([\s\S]*?nativeSnapshot\?\.paper\.thickness_mm,[\s\S]*?\)\}/u,
+    /initialValue=\{lengthDisplayUnit\.effectiveUnit === 'mm'[\s\S]*?formatPaperThicknessInput\([\s\S]*?nativeSnapshot\?\.paper\.thickness_mm[\s\S]*?: formatLengthInput\([\s\S]*?lengthDisplayUnit/u,
   )
   assert.match(
     componentSource,
@@ -111,16 +158,24 @@ test('both paper thickness controls use exact custom steps and retain direct inp
   assert.match(componentSource, /onClick=\{\(\) => applyStep\('up'\)\}/u)
   assert.match(componentSource, /onClick=\{\(\) => applyStep\('down'\)\}/u)
   assert.match(
+    componentSource,
+    /data-paper-thickness-stepped-millimetres/u,
+  )
+  assert.match(componentSource, /aria-describedby=\{stepDescriptionId\}/u)
+  assert.match(
     appSource,
     /<form onSubmit=\{submitNewProject\} noValidate>/u,
     'the new-project form must not reject finer directly typed precision as a step mismatch',
   )
-  assert.equal(
-    (appSource.match(
-      /!thicknessInput \|\| !Number\.isFinite\(thicknessMm\) \|\| thicknessMm < 0/gu,
-    ) ?? []).length,
-    2,
-    'both forms must reject an empty, non-finite, or negative thickness',
+  assert.match(
+    appSource,
+    /thicknessMm === null \|\| thicknessMm < 0/u,
+    'the converted paper-properties field must reject empty, non-finite, and negative values',
+  )
+  assert.match(
+    appSource,
+    /!thicknessInput \|\| !Number\.isFinite\(thicknessMm\) \|\| thicknessMm < 0/u,
+    'the millimetre-only new-project field must reject empty, non-finite, and negative values',
   )
   assert.match(cssSource, /input::-(?:webkit-inner-spin-button|webkit-outer-spin-button)/u)
 })

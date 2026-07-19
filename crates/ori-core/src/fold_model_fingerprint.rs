@@ -20,7 +20,9 @@ pub fn fold_model_fingerprint_v1(pattern: &CreasePattern, paper: &Paper) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ori_domain::{Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId};
+    use ori_domain::{
+        Edge, EdgeId, EdgeKind, LengthDisplayUnit, Point2, ProjectId, Vertex, VertexId,
+    };
 
     fn fixture() -> (CreasePattern, Paper) {
         let first = VertexId::new();
@@ -139,12 +141,15 @@ mod tests {
     }
 
     #[test]
-    fn appearance_is_outside_the_fingerprint_domain() {
+    fn presentation_settings_are_outside_the_fingerprint_domain() {
         let (pattern, paper) = fixture();
         let expected = fold_model_fingerprint_v1(&pattern, &paper);
         let mut changed = paper.clone();
         changed.front.color.red = 1;
         changed.back.color.alpha = 2;
+        changed.length_display_unit = LengthDisplayUnit::PaperEdgeRatio {
+            reference_edge: pattern.edges[0].id,
+        };
 
         assert_eq!(fold_model_fingerprint_v1(&pattern, &changed), expected);
     }

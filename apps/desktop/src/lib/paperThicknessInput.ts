@@ -25,6 +25,11 @@ export function formatPaperThicknessInput(
 
 export type PaperThicknessStepDirection = 'up' | 'down'
 
+export type PaperThicknessPhysicalStep = Readonly<{
+  displayValue: string
+  millimetres: number
+}>
+
 /**
  * Applies one exact decimal 0.01 mm step without snapping the current value to
  * a hundredth-of-a-millimetre grid.
@@ -37,8 +42,66 @@ export type PaperThicknessStepDirection = 'up' | 'down'
 export function stepPaperThicknessInput(
   value: string,
   direction: PaperThicknessStepDirection,
+  millimetresPerUnit = 1,
 ): string {
   if (direction !== 'up' && direction !== 'down') return value
+  if (
+    !Number.isFinite(millimetresPerUnit)
+    || millimetresPerUnit <= 0
+  ) return value
+  if (millimetresPerUnit === 1) {
+    return stepPaperThicknessMillimetreText(value, direction)
+  }
+
+  const displayed = Number(value)
+  if (!value.trim() || !Number.isFinite(displayed)) return value
+  const millimetres = displayed * millimetresPerUnit
+  const stepped = stepPaperThicknessFromMillimetres(
+    millimetres,
+    direction,
+    millimetresPerUnit,
+  )
+  return stepped?.displayValue ?? value
+}
+
+/**
+ * Steps from the authoritative physical value and returns that exact stepped
+ * binary64 value separately from its display-unit representation.
+ *
+ * The separate physical value is required because for some units there is no
+ * display binary64 whose multiplication by the unit scale reproduces the
+ * stepped millimetre value (for example 0.11 mm in centimetres).
+ */
+export function stepPaperThicknessFromMillimetres(
+  sourceMillimetres: number,
+  direction: PaperThicknessStepDirection,
+  millimetresPerUnit: number,
+): PaperThicknessPhysicalStep | null {
+  if (
+    !Number.isFinite(sourceMillimetres)
+    || !Number.isFinite(millimetresPerUnit)
+    || millimetresPerUnit <= 0
+    || (direction !== 'up' && direction !== 'down')
+  ) return null
+
+  const steppedMillimetreText = stepPaperThicknessMillimetreText(
+    String(sourceMillimetres),
+    direction,
+  )
+  const millimetres = Number(steppedMillimetreText)
+  if (!Number.isFinite(millimetres)) return null
+  const displayed = millimetres / millimetresPerUnit
+  if (!Number.isFinite(displayed)) return null
+  return Object.freeze({
+    displayValue: String(Object.is(displayed, -0) ? 0 : displayed),
+    millimetres: Object.is(millimetres, -0) ? 0 : millimetres,
+  })
+}
+
+function stepPaperThicknessMillimetreText(
+  value: string,
+  direction: PaperThicknessStepDirection,
+): string {
   const parsed = parseFiniteDecimal(value)
   if (!parsed) return value
   if (parsed.negative && parsed.coefficient !== 0n) return '0.00'

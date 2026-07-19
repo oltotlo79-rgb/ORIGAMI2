@@ -739,6 +739,28 @@ mod tests {
     }
 
     #[test]
+    fn reads_legacy_ori2_without_length_display_unit_as_millimetres() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize document");
+        value["paper"]
+            .as_object_mut()
+            .expect("paper object")
+            .remove("length_display_unit");
+        let project = serde_json::to_vec(&value).expect("serialize legacy project");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let restored = read_project_ori2(&bytes).expect("read legacy .ori2");
+        assert_eq!(
+            restored.paper.length_display_unit,
+            ori_domain::LengthDisplayUnit::Millimeter
+        );
+    }
+
+    #[test]
     fn rejects_unknown_required_feature_but_accepts_known_timeline_feature() {
         let project = write_project_json(&sample_document()).expect("project JSON");
         let known_manifest = manifest_for_features(
@@ -833,6 +855,9 @@ mod tests {
                 .map(|vertex| vertex.id)
                 .collect(),
             thickness_mm: 0.075,
+            length_display_unit: ori_domain::LengthDisplayUnit::PaperEdgeRatio {
+                reference_edge: original.crease_pattern.edges[0].id,
+            },
             cutting_allowed: true,
             front: PaperAppearance {
                 color: RgbaColor {
@@ -858,6 +883,10 @@ mod tests {
         let restored = read_project_ori2(&bytes).expect("read .ori2 with paper");
 
         assert_eq!(restored.paper, original.paper);
+        assert_eq!(
+            restored.paper.length_display_unit,
+            original.paper.length_display_unit
+        );
         assert_eq!(restored.paper.front.texture_asset, Some(front_texture));
         assert_eq!(restored.paper.back.texture_asset, Some(back_texture));
     }

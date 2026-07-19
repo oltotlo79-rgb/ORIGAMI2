@@ -4,6 +4,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { RgbaColor } from '../lib/coreClient'
 import { reportUnexpected } from '../lib/diagnosticsRuntime'
 import {
+  formatLength,
+  MILLIMETRE_LENGTH_DISPLAY_UNIT,
+  type ResolvedLengthDisplayUnit,
+} from '../lib/lengthUnit'
+import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
   resolveSingleFoldAnchor,
@@ -174,6 +179,7 @@ type FoldPreviewProps = {
   frontColor?: RgbaColor | null
   backColor?: RgbaColor | null
   thicknessMm?: number | null
+  lengthDisplayUnit?: ResolvedLengthDisplayUnit
 }
 
 type PreviewRuntime = {
@@ -463,6 +469,7 @@ export function FoldPreview({
   frontColor,
   backColor,
   thicknessMm,
+  lengthDisplayUnit = MILLIMETRE_LENGTH_DISPLAY_UNIT,
 }: FoldPreviewProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const runtimeRef = useRef<PreviewRuntime | null>(null)
@@ -3694,12 +3701,12 @@ export function FoldPreview({
   }
 
   const thicknessNote = !hasAuthoritativeThickness
-    ? `紙厚入力が無効なため3D表示のみ ${formatMillimetres(safeThicknessMm)} mm（衝突判定には不使用）`
+    ? `紙厚入力が無効なため3D表示のみ ${formatLength(safeThicknessMm, lengthDisplayUnit)}（衝突判定には不使用）`
     : thicknessIsEmphasised
-      ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示は視認用の最小厚、衝突判定は入力紙厚を使用）`
+      ? `紙厚 ${formatLength(safeThicknessMm, lengthDisplayUnit)}（3D表示は視認用の最小厚、衝突判定は入力紙厚を使用）`
       : thicknessIsLimited
-        ? `紙厚 ${formatMillimetres(safeThicknessMm)} mm（3D表示厚を上限調整、衝突判定は入力紙厚を使用）`
-        : `紙厚 ${formatMillimetres(safeThicknessMm)} mm`
+        ? `紙厚 ${formatLength(safeThicknessMm, lengthDisplayUnit)}（3D表示厚を上限調整、衝突判定は入力紙厚を使用）`
+        : `紙厚 ${formatLength(safeThicknessMm, lengthDisplayUnit)}`
   const unavailableMessage = model && renderError
     ? renderError
     : statusMessage ?? '面・ヒンジ解析を待っています'
@@ -4623,8 +4630,4 @@ function isNonNegativeFinite(value: number | null | undefined): value is number 
 
 function isFoldPreviewAngle(value: number) {
   return Number.isFinite(value) && value >= 0 && value <= 180
-}
-
-function formatMillimetres(value: number) {
-  return value.toLocaleString('ja-JP', { maximumFractionDigits: 3 })
 }

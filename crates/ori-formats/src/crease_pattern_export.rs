@@ -704,7 +704,7 @@ const fn canonical_zero(value: f64) -> f64 {
 mod tests {
     use std::collections::BTreeSet;
 
-    use ori_domain::{Edge, EdgeId, Vertex, VertexId};
+    use ori_domain::{Edge, EdgeId, LengthDisplayUnit, Vertex, VertexId};
 
     use super::*;
     use crate::{
@@ -837,6 +837,37 @@ mod tests {
             assert_eq!(first.media_type, media_type);
             assert_eq!(first.file_extension, extension);
             assert!(first.has_cuts);
+        }
+    }
+
+    #[test]
+    fn display_unit_never_changes_external_export_bytes() {
+        let (pattern, paper) = sample_pattern();
+        for format in [
+            CreasePatternExportFormat::Fold12,
+            CreasePatternExportFormat::Svg,
+            CreasePatternExportFormat::Pdf17,
+            CreasePatternExportFormat::Dxf2007Ascii,
+        ] {
+            let baseline = export_crease_pattern(format, "units", &pattern, &paper)
+                .expect("baseline export")
+                .bytes;
+            for unit in [
+                LengthDisplayUnit::Centimeter,
+                LengthDisplayUnit::Inch,
+                LengthDisplayUnit::PaperEdgeRatio {
+                    reference_edge: pattern.edges[0].id,
+                },
+            ] {
+                let changed = Paper {
+                    length_display_unit: unit,
+                    ..paper.clone()
+                };
+                let bytes = export_crease_pattern(format, "units", &pattern, &changed)
+                    .expect("unit-independent export")
+                    .bytes;
+                assert_eq!(bytes, baseline, "{format:?} must remain millimetre based");
+            }
         }
     }
 

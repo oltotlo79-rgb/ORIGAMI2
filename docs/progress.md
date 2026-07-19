@@ -2,18 +2,18 @@
 
 ## 完成率
 
-**全体完成率: 約37.2%（2026-07-19、暫定の重み付き概算）**
+**全体完成率: 約37.6%（2026-07-19、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前の追跡値36.90%に対し、表示中の完全姿勢をnative authorityへ適用し、同じproject instance・revision・pose generationへ束縛した厳密静的衝突診断を3D画面へ接続したため、「3D折り・紙厚・衝突」を50%から52%へ更新した。差分0.34ポイント（全体比率17% × 2ポイント）を加えた37.24%を小数第1位へ丸めて表示している。これは読み取り診断と安全認定遮断までの加算であり、native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力は計上していない。入力値自体が概数なので、37.24%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値37.24%に対し、PRJ-008のmm/cm/inch/紙辺比を保存・編集・主要な長さ表示へ接続し、「プロジェクト・保存・履歴」を40%から45%へ更新した。差分0.40ポイント（全体比率8% × 5ポイント）を加えた37.64%を小数第1位へ丸めて表示している。privateな正厚三角柱交差核は利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、37.64%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
 | 領域 | 全体比率 | 現在の領域進捗 | 全体への寄与 | 状態 |
 |---|---:|---:|---:|---|
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
-| プロジェクト・保存・履歴 | 8% | 40% | 3.20% | 原子的編集、差分Undo/Redoの固定128件上限、`.ori2`保存は実装。利用者設定、履歴永続化、自動保存、クラッシュ復旧は未着手 |
+| プロジェクト・保存・履歴 | 8% | 45% | 3.60% | 原子的編集、差分Undo/Redo、`.ori2`保存に加え、project単位のmm/cm/inch/紙辺比と換算編集を実装。履歴上限設定、履歴永続化、自動保存、クラッシュ復旧を残す |
 | 2D展開図エディター | 15% | 50% | 7.50% | 基本編集と9種スナップは実装。面編集、数式作図、レイヤー、対称編集を残す |
 | 数式・幾何制約 | 9% | 0% | 0.00% | EDT-004/005/008/009の数式入力、式保持、11種制約、矛盾特定は未着手。3D衝突用の数値計算はこの領域へ計上しない |
 | 3D折り・紙厚・衝突 | 17% | 52% | 8.84% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持に加え、同一native姿勢へ束縛した厳密静的診断と安全認定不可・判定保留の表示を接続。正厚の本番証明、native連続停止、専用層順3D表示、折り重ね、閉路、切断由来を残す |
@@ -22,10 +22,12 @@
 | 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
 | 多言語・設定・配布・QA | 5% | 40% | 2.00% | frontend/Rustの自動回帰、Windows/macOS CI、環境・作品情報を含まないredacted diagnosticsの端末内保存・正確な内容確認・同一JSON手動保存を実装。i18n、設定、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **37.24%** | — |
+| **合計** | **100%** | — | **37.64%** | — |
 
 ## 完了
 
+- PRJ-008の長さ表示単位をprojectへ保存し、mm、cm、inch、選択した一意な輪郭辺を1とする紙辺比を、紙寸法、2D計測、頂点・線座標、紙厚、3D紙厚説明へ一貫して適用した。内部幾何とnative IPCはmm正本を維持する。紙辺比の無効参照は自動rebaseせず警告とmm修復表示へ閉じ、基準辺の分割・削除をCoreで原子的に拒否する。未編集のbinary64 mm値はsource tokenで保持し、換算表示中の紙厚stepも表示値の再乗算でなく元の物理mm値へdecimal 0.01 mmを適用する。輪郭参照候補は1,024辺getter回帰を含む線形indexで収集し、FOLD/SVG/PDF/DXF bytes不変、保存互換、Undo/Redo、dirty、fingerprint、3D意味姿勢、DOM/a11y、browser MCPのmm→cm・水平/垂直紙辺比を回帰した。PRJ-008を未着手から実装済みへ更新し、現在のMUST集計を33 / 27 / 27、完成率を37.64%（表示37.6%）とした
+- 正厚のprivate phase 2-Aとして、2個のexact三角柱を各6頂点・5閉半空間で検証し、10平面の全120三つ組をCramer法で解く完全閉交差kernelを追加した。全10-plane membership、canonical dedup、affine rank、正体積、対向support facet indexを返し、呼出側の同一累積budgetに対してA局所hard capをliveに強制して実測deltaだけをresetなしでmergeする。全counter exact/one-short、先行large maximum、overflowを含むrelease回帰とClippyを通し、独立監査はCritical / High / Medium / Lowすべて0件だった。production分類、有限hinge corridor包含、direct-lift F側証明、safe certificate、UIは未接続なので完成率には加算していない
 - コミット`8edfd1b`の[CI #248](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29683004348)は、frontend、Windows/macOS Rust、Windows/macOS bundleの全5 jobを9分16秒で完走した。Windows成果物は`ORIGAMI2-windows-nsis-29683004348`（12,875,420 bytes）、SHA-256は`525dcf6082a062eea771e5e76b62dc2c408686746717a9effbee0ae08d846cec`。macOSはオーナー決定どおり自動ビルド・CI検証だけを維持し、実機検証には計上しない
 - heavyなnative姿勢apply・静的診断を、project置換では作り直せない`AppState`所有のprocess-wide RAII worker gateへ通した。busy中のapply・診断は固定のredacted errorで拒否し、project、current/pending pose authority、generationを一切変更しない。permitはblocking closureへmoveするため、待機futureがcancelされてもworker実行中は解放されず、通常完了・`Err`・panic/JoinErrorの各経路で解放される。blocking診断は失敗時にも元の非Cloneなexact B capabilityを保持し、project→poseの固定lock順で再検証したclosure内だけでbinding付きDTOを構成する。同角度再apply、編集、reopen、別slotでstaleになった結果はbindingなしの`pose_authority_unavailable`へ閉じ、旧姿勢へ赤・緑どちらの表示も結び直さない
 - bit-exactな紙厚`+0.0`のproduction blocking肯定を、三角形どうしのCayley exact `E`＋direct-lift `F` dual gateによる横断に加え、全pair・全triangle-pair・canonical face registry・exact pose instanceを認証済みのzero-thickness集約が証明する180度の共面正面積重なり、および少なくとも一方が非三角whole material faceである横断へ拡張した。共有頂点・共有辺上だけの点接触・線接触・共有要素接触は肯定へ昇格せず、三角形どうしの横断は旧exact集約だけでdual gateを迂回できない。Rust公開variant名は互換性のため`ProvenTransversalPenetration`を維持する一方、desktop wireは`proven_zero_thickness_penetration`、`provenPenetratingPairs`、`firstProvenPenetratingPair`へ一般化し、旧DTO field/reasonをstrict parserで拒否する。UI文言も「ゼロ厚み面貫通・重なり」へ統一した。`-0.0`、正厚、有限共有ヒンジ、正厚の層ずらし・連続経路は未完成であり、MUST集計32 / 27 / 28と完成率37.2%は変更しない
@@ -77,7 +79,7 @@
 - project identity、revision、version付きSHA-256 fold model fingerprint、proof modelをprovenanceへ束縛し、同revisionへ戻るABA、project再open、同一IDの別内容、旧job完了をstaleとして拒否する。source snapshotとactive/completion/current layer-orderは同一`Arc` bindingを共有し、pointer identityも照合する
 - 1〜300秒の時間制限、単調phase、上限付き件数、利用者中止、panicを閉じた失敗へ変換するnative background workerとUI panelを接続した。source件数はfingerprint・topology構築前に上限確認し、超過時だけcurrent job/層順slotへ触れない未登録の不明結果を即時返す
 - coreはimmutable geometryからtopologyと局所必要条件を独立に再生成して入力artifactと完全一致を確認し、exact平面配置・重なりcell・facewise制約・反復DFS・certificate再検証を行う。証明構築、検証、serializationを合わせたstorage budgetとchecked overflowを持ち、上限・deadline・cancel到達時は候補証明を公開しない
-- VAL-003/005/006/007/009を実装済みへ更新した。MUST 87件の現在集計は実装済み32・部分実装27・未着手28。SIM-010と専用の層順3D viewerは未着手のままで、完成扱いしていない
+- VAL-003/005/006/007/009を実装済みへ更新した。当該checkpointのMUST 87件集計は実装済み32・部分実装27・未着手28。SIM-010と専用の層順3D viewerは未着手のままで、完成扱いしていない
 - commit `48f4de6`の[CI #213](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29643184224)でfrontend、Windows/macOS Rust、Windows NSIS bundle、macOS `.app` bundleの全jobが成功。Windows配布物では同梱Noto Sans JPとOFLのSHA-256、外向き通信を遮断した折り図生成、外部parserによるPDF・SVG ZIP監査を通し、折り図書き出しcheckpointを採用
 - 折り手順timelineから、説明・注意事項・固定3D図を載せたA4複数ページPDFとページ別SVG画像ZIPを書き出す利用者経路を追加。INS-010を部分実装へ更新し、当該checkpoint時点のMUST 87件集計を実装済み27・部分実装31・未着手29とした
 - 書き出し前の形式・ページ数・警告確認、revisionに固定した一度限りの生成、進捗表示、native保存ダイアログと原子的保存、取消後の再試行を接続。初版で省略する滑らかな連続動作、折る方向の矢印、手指guide、照明・影・透明表現を明示する
@@ -430,5 +432,5 @@
 1. exact rational Cayley回転によるwatertight rigid poseをversion付きで構成し、全共有ヒンジ線の一致、面内距離、直交性、角度包含および表示姿勢との差を証明する。完成までは斜め共有featureのraw姿勢不一致を判定保留へ閉じる
 2. nativeの衝突分類v2 4×11純粋表へ、正厚証拠と有限ヒンジcorridorを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
 3. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
-4. MUST 87件のstatus表を各checkpointで維持し、履歴永続化・復旧、i18n、単位、レイヤーの未着手MUSTをbreadth-firstで進める
+4. MUST 87件のstatus表を各checkpointで維持し、履歴永続化・復旧、i18n、レイヤーの未着手MUSTをbreadth-firstで進める
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、ネイティブE2E、終了時保護を進める。macOSは自動ビルド・CI検証だけを継続する

@@ -14,6 +14,8 @@ import { FoldPreview } from './components/FoldPreview'
 import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
+import { LengthUnitControl } from './components/LengthUnitControl'
+import { LengthValueInput } from './components/LengthValueInput'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import {
   addEdge,
@@ -49,6 +51,7 @@ import {
   saveProjectAs,
   saveCreasePatternExport,
   saveInstructionExport,
+  setLengthDisplayUnit,
   splitBoundaryEdge,
   splitEdge,
   undo,
@@ -98,6 +101,17 @@ import {
 import type { InstructionStepPresentation } from './lib/instructionTimeline'
 import { formatPaperThicknessInput } from './lib/paperThicknessInput'
 import { PaperThicknessInput } from './components/PaperThicknessInput'
+import {
+  collectBoundaryLengthReferences,
+  formatLength,
+  formatLengthInput,
+  formatLengthPoint,
+  formatLengthValue,
+  MILLIMETRE_LENGTH_DISPLAY_UNIT,
+  ratioReferenceAxis,
+  readLengthInputMillimetres,
+  resolveLengthDisplayUnit,
+} from './lib/lengthUnit'
 import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
@@ -460,10 +474,22 @@ function App() {
     () => resolvePaperPolygon(nativeSnapshot),
     [nativeSnapshot],
   )
+  const boundaryLengthReferences = useMemo(
+    () => collectBoundaryLengthReferences(nativeSnapshot),
+    [nativeSnapshot],
+  )
+  const lengthDisplayUnit = useMemo(
+    () => resolveLengthDisplayUnit(nativeSnapshot, boundaryLengthReferences),
+    [boundaryLengthReferences, nativeSnapshot],
+  )
+  const displayedLengthUnit = benchmarkRun
+    ? MILLIMETRE_LENGTH_DISPLAY_UNIT
+    : lengthDisplayUnit
   const rectangularPaperSize = useMemo(
     () => resolveRectangularPaperSize(nativeSnapshot),
     [nativeSnapshot],
   )
+  const rectangularRatioReferenceAxis = ratioReferenceAxis(lengthDisplayUnit)
   const foldPreviewModel = useMemo(
     () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
     [nativeSnapshot, topologyResponse],
@@ -639,7 +665,13 @@ function App() {
     })
   }
   const paperSizeLabel = paperBounds
-    ? `${formatMillimetres(paperBounds.maxX - paperBounds.minX)} × ${formatMillimetres(paperBounds.maxY - paperBounds.minY)} mm`
+    ? `${formatLengthValue(
+        paperBounds.maxX - paperBounds.minX,
+        lengthDisplayUnit,
+      )} × ${formatLength(
+        paperBounds.maxY - paperBounds.minY,
+        lengthDisplayUnit,
+      )}`
     : '寸法不明'
   const paperCenter = paperBounds
     ? {
@@ -655,10 +687,11 @@ function App() {
         rgbaToHex(nativeSnapshot.paper.front.color),
         rgbaToHex(nativeSnapshot.paper.back.color),
         nativeSnapshot.paper.cutting_allowed,
+        lengthDisplayUnit.key,
       ].join(':')
     : 'paper-unavailable'
   const paperResizeFormKey = nativeSnapshot && rectangularPaperSize
-    ? `${nativeSnapshot.project_id}:${rectangularPaperSize.width}:${rectangularPaperSize.height}`
+    ? `${nativeSnapshot.project_id}:${rectangularPaperSize.width}:${rectangularPaperSize.height}:${lengthDisplayUnit.key}`
     : `${nativeSnapshot?.project_id ?? 'paper-unavailable'}:not-rectangular`
   const snapStatusLabel = SNAP_OPTIONS
     .filter(({ kind }) => snapSettings[kind])
@@ -1131,11 +1164,27 @@ function App() {
 
   function submitVertexPosition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedVertex) return
-    const form = new FormData(event.currentTarget)
-    const x = Number(form.get('x'))
-    const y = Number(form.get('y'))
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    const current = latestSnapshotRef.current
+    if (!current || !selectedVertex) return
+    const currentVertices = current.crease_pattern.vertices.filter(
+      (vertex) => vertex.id === selectedVertex.id,
+    )
+    if (currentVertices.length !== 1) return
+    const currentVertex = currentVertices[0]
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const x = readLengthInputMillimetres(
+      event.currentTarget,
+      'x_display',
+      currentVertex.position.x,
+      currentUnit,
+    )
+    const y = readLengthInputMillimetres(
+      event.currentTarget,
+      'y_display',
+      currentVertex.position.y,
+      currentUnit,
+    )
+    if (x === null || y === null) {
       setCoreStatus('座標には有限の数値を入力してください')
       return
     }
@@ -1149,11 +1198,16 @@ function App() {
     if (!current || coreOperationRef.current) return
 
     const form = new FormData(event.currentTarget)
-    const thicknessInput = String(form.get('thickness_mm') ?? '').trim()
-    const thicknessMm = Number(thicknessInput)
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const thicknessMm = readLengthInputMillimetres(
+      event.currentTarget,
+      'thickness_display',
+      current.paper.thickness_mm,
+      currentUnit,
+    )
     const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
     const backColor = parseHexColor(String(form.get('back_color') ?? ''))
-    if (!thicknessInput || !Number.isFinite(thicknessMm) || thicknessMm < 0) {
+    if (thicknessMm === null || thicknessMm < 0) {
       setCoreStatus('紙厚には0以上の有限の数値を入力してください')
       return
     }
@@ -1175,27 +1229,49 @@ function App() {
     event.preventDefault()
     const current = latestSnapshotRef.current
     if (!current || coreOperationRef.current) return
-    if (!resolveRectangularPaperSize(current)) {
+    const currentSize = resolveRectangularPaperSize(current)
+    if (!currentSize) {
       setCoreStatus('現在の紙は軸平行な長方形ではないため、サイズを変更できません')
       return
     }
 
-    const form = new FormData(event.currentTarget)
-    const widthInput = String(form.get('width_mm') ?? '').trim()
-    const heightInput = String(form.get('height_mm') ?? '').trim()
-    const widthMm = Number(widthInput)
-    const heightMm = Number(heightInput)
-    if (!widthInput || !Number.isFinite(widthMm) || widthMm <= 0) {
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const referenceAxis = ratioReferenceAxis(currentUnit)
+    const widthMm = referenceAxis === 'width'
+      ? currentSize.width
+      : readLengthInputMillimetres(
+          event.currentTarget,
+          'width_display',
+          currentSize.width,
+          currentUnit,
+        )
+    const heightMm = referenceAxis === 'height'
+      ? currentSize.height
+      : readLengthInputMillimetres(
+          event.currentTarget,
+          'height_display',
+          currentSize.height,
+          currentUnit,
+        )
+    if (widthMm === null || widthMm <= 0) {
       setCoreStatus('用紙の幅には0より大きい有限の数値を入力してください')
       return
     }
-    if (!heightInput || !Number.isFinite(heightMm) || heightMm <= 0) {
+    if (heightMm === null || heightMm <= 0) {
       setCoreStatus('用紙の高さには0より大きい有限の数値を入力してください')
       return
     }
 
     void runNativeEdit((projectId, revision) =>
       resizeRectangularPaper(projectId, revision, widthMm, heightMm))
+  }
+
+  function changeLengthDisplayUnit(
+    unit: Parameters<typeof setLengthDisplayUnit>[2],
+  ) {
+    if (coreOperationRef.current) return
+    void runNativeEdit((projectId, revision) =>
+      setLengthDisplayUnit(projectId, revision, unit))
   }
 
   async function runValidation() {
@@ -2184,7 +2260,10 @@ function App() {
               selectedVertexId={selectedVertexId}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
-              measurementLabel={formatLineMeasurementLabel(selectedLineMeasurement)}
+              measurementLabel={formatLineMeasurementLabel(
+                selectedLineMeasurement,
+                displayedLengthUnit,
+              )}
               snapSettings={snapSettings}
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
@@ -2288,6 +2367,7 @@ function App() {
               frontColor={nativeSnapshot?.paper.front.color}
               backColor={nativeSnapshot?.paper.back.color}
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
+              lengthDisplayUnit={lengthDisplayUnit}
             />
             <div className="fixed-face-control">
               <label htmlFor="fixed-face">固定面</label>
@@ -2423,11 +2503,25 @@ function App() {
                 <dl>
                   <div><dt>ID</dt><dd>{selectedLine.id}</dd></div>
                   <div><dt>種類</dt><dd>{lineKindLabel(selectedLine.kind)}</dd></div>
-                  <div><dt>始点</dt><dd>{selectedLine.x1}, {selectedLine.y1}</dd></div>
-                  <div><dt>終点</dt><dd>{selectedLine.x2}, {selectedLine.y2}</dd></div>
-                  <div><dt>ΔX</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.deltaX, ' mm')}</dd></div>
-                  <div><dt>ΔY</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.deltaY, ' mm')}</dd></div>
-                  <div><dt>長さ</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.length, ' mm')}</dd></div>
+                  <div>
+                    <dt>始点</dt>
+                    <dd>{formatLengthPoint(
+                      selectedLine.x1,
+                      selectedLine.y1,
+                      displayedLengthUnit,
+                    )}</dd>
+                  </div>
+                  <div>
+                    <dt>終点</dt>
+                    <dd>{formatLengthPoint(
+                      selectedLine.x2,
+                      selectedLine.y2,
+                      displayedLengthUnit,
+                    )}</dd>
+                  </div>
+                  <div><dt>ΔX</dt><dd>{formatLength(selectedLineMeasurement?.deltaX, displayedLengthUnit)}</dd></div>
+                  <div><dt>ΔY</dt><dd>{formatLength(selectedLineMeasurement?.deltaY, displayedLengthUnit)}</dd></div>
+                  <div><dt>長さ</dt><dd>{formatLength(selectedLineMeasurement?.length, displayedLengthUnit)}</dd></div>
                   <div><dt>角度</dt><dd>{formatMeasurementValue(selectedLineMeasurement?.angleDegrees, '°', 2)}</dd></div>
                 </dl>
                 {benchmarkRun ? (
@@ -2487,28 +2581,28 @@ function App() {
                   <div><dt>種類</dt><dd>頂点</dd></div>
                 </dl>
                 <form
-                  key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}`}
+                  key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}:${lengthDisplayUnit.key}`}
                   className="coordinate-form"
                   onSubmit={submitVertexPosition}
                 >
                   <label className="field">
-                    X
-                    <input
-                      name="x"
-                      type="number"
-                      step="any"
+                    {`X (${lengthDisplayUnit.label})`}
+                    <LengthValueInput
+                      name="x_display"
                       disabled={coreBusy}
-                      defaultValue={selectedVertex.position.x}
+                      initialMillimetres={selectedVertex.position.x}
+                      unit={lengthDisplayUnit}
+                      ariaLabel={`頂点のX座標 (${lengthDisplayUnit.label})`}
                     />
                   </label>
                   <label className="field">
-                    Y
-                    <input
-                      name="y"
-                      type="number"
-                      step="any"
+                    {`Y (${lengthDisplayUnit.label})`}
+                    <LengthValueInput
+                      name="y_display"
                       disabled={coreBusy}
-                      defaultValue={selectedVertex.position.y}
+                      initialMillimetres={selectedVertex.position.y}
+                      unit={lengthDisplayUnit}
+                      ariaLabel={`頂点のY座標 (${lengthDisplayUnit.label})`}
                     />
                   </label>
                   <div className="property-actions">
@@ -2752,6 +2846,12 @@ function App() {
           />
           <section>
             <h2>紙</h2>
+            <LengthUnitControl
+              unit={lengthDisplayUnit}
+              references={boundaryLengthReferences}
+              disabled={coreBusy || !nativeSnapshot}
+              onChange={changeLengthDisplayUnit}
+            />
             <form
               key={paperFormKey}
               className="paper-properties-form"
@@ -2762,12 +2862,20 @@ function App() {
                 <label htmlFor="paper-thickness-mm">厚さ</label>
                 <PaperThicknessInput
                   id="paper-thickness-mm"
-                  initialValue={formatPaperThicknessInput(
-                    nativeSnapshot?.paper.thickness_mm,
-                  )}
+                  name="thickness_display"
+                  initialValue={lengthDisplayUnit.effectiveUnit === 'mm'
+                    ? formatPaperThicknessInput(
+                        nativeSnapshot?.paper.thickness_mm,
+                      )
+                    : formatLengthInput(
+                        nativeSnapshot?.paper.thickness_mm,
+                        lengthDisplayUnit,
+                      )}
+                  sourceMillimetres={nativeSnapshot?.paper.thickness_mm}
+                  unit={lengthDisplayUnit}
                   disabled={coreBusy || !nativeSnapshot}
                 />
-                <span>mm</span>
+                <span>{lengthDisplayUnit.label}</span>
               </div>
               <div className="paper-color-fields">
                 <label className="paper-color-field">
@@ -2815,31 +2923,31 @@ function App() {
                 <div className="paper-size-fields">
                   <label className="field">
                     <span>幅</span>
-                    <input
-                      name="width_mm"
-                      type="number"
-                      min="0"
-                      step="any"
-                      defaultValue={rectangularPaperSize?.width ?? ''}
+                    <LengthValueInput
+                      name="width_display"
+                      minimumMillimetres={0}
+                      initialMillimetres={rectangularPaperSize?.width ?? 0}
+                      unit={lengthDisplayUnit}
+                      readOnly={rectangularRatioReferenceAxis === 'width'}
                       required
                       disabled={coreBusy || !rectangularPaperSize}
-                      aria-label="用紙の幅"
+                      ariaLabel={`用紙の幅 (${lengthDisplayUnit.label})`}
                     />
-                    <span>mm</span>
+                    <span>{lengthDisplayUnit.label}</span>
                   </label>
                   <label className="field">
                     <span>高さ</span>
-                    <input
-                      name="height_mm"
-                      type="number"
-                      min="0"
-                      step="any"
-                      defaultValue={rectangularPaperSize?.height ?? ''}
+                    <LengthValueInput
+                      name="height_display"
+                      minimumMillimetres={0}
+                      initialMillimetres={rectangularPaperSize?.height ?? 0}
+                      unit={lengthDisplayUnit}
+                      readOnly={rectangularRatioReferenceAxis === 'height'}
                       required
                       disabled={coreBusy || !rectangularPaperSize}
-                      aria-label="用紙の高さ"
+                      ariaLabel={`用紙の高さ (${lengthDisplayUnit.label})`}
                     />
-                    <span>mm</span>
+                    <span>{lengthDisplayUnit.label}</span>
                   </label>
                 </div>
                 {!rectangularPaperSize && (
@@ -2850,6 +2958,14 @@ function App() {
                 <p className="paper-size-note">
                   サイズ変更時は、折り線を含むすべての頂点を左上基準で比例変換します。
                 </p>
+                {rectangularRatioReferenceAxis && (
+                  <p className="paper-size-note">
+                    紙辺比では基準辺と平行な
+                    {rectangularRatioReferenceAxis === 'width' ? '幅' : '高さ'}
+                    は 1 のまま読み取り専用です。直交する寸法だけを変更し、
+                    基準辺の物理長は維持します。
+                  </p>
+                )}
                 <div className="property-actions">
                   <button
                     type="submit"
@@ -3416,10 +3532,6 @@ function resolveRectangularPaperSize(
   return { width, height }
 }
 
-function formatMillimetres(value: number) {
-  return value.toLocaleString('ja-JP', { maximumFractionDigits: 3 })
-}
-
 type LineMeasurement = {
   deltaX: number
   deltaY: number
@@ -3479,9 +3591,12 @@ function formatAngleDegrees(value: number) {
   return String(Number(value.toFixed(6)))
 }
 
-function formatLineMeasurementLabel(measurement: LineMeasurement | null) {
+function formatLineMeasurementLabel(
+  measurement: LineMeasurement | null,
+  unit: ReturnType<typeof resolveLengthDisplayUnit>,
+) {
   if (!measurement) return '計測不可'
-  return `${formatMeasurementValue(measurement.length, ' mm')} / ${formatMeasurementValue(measurement.angleDegrees, '°', 2)}`
+  return `${formatLength(measurement.length, unit)} / ${formatMeasurementValue(measurement.angleDegrees, '°', 2)}`
 }
 
 function rgbaToCss(color: RgbaColor | undefined) {

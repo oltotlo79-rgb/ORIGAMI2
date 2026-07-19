@@ -48,9 +48,16 @@ export type RgbaColor = {
   alpha: number
 }
 
+export type LengthDisplayUnit =
+  | 'mm'
+  | 'cm'
+  | 'inch'
+  | { paper_edge_ratio: { reference_edge: string } }
+
 export type PaperSnapshot = {
   boundary_vertices: string[]
   thickness_mm: number
+  length_display_unit: LengthDisplayUnit
   cutting_allowed: boolean
   front: { color: RgbaColor; texture_asset: string | null }
   back: { color: RgbaColor; texture_asset: string | null }
@@ -722,6 +729,18 @@ export function updatePaperProperties(
     frontColor: settings.frontColor,
     backColor: settings.backColor,
     cuttingAllowed: settings.cuttingAllowed,
+  })
+}
+
+export function setLengthDisplayUnit(
+  expectedProjectId: string,
+  expectedRevision: number,
+  unit: LengthDisplayUnit,
+) {
+  return invoke<ProjectSnapshot>('set_length_display_unit', {
+    expectedProjectId,
+    expectedRevision,
+    unit,
   })
 }
 

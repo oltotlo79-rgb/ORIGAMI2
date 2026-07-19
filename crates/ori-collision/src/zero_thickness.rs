@@ -4947,8 +4947,10 @@ mod tests {
                     StaticCollisionLimits::default(),
                 )
                 .expect_err("positive-thickness midpoint pose must remain blocking"),
-                StaticCollisionError::PairEvidenceUnavailable {
+                StaticCollisionError::ProvenPositiveThicknessPenetration {
                     expected_unordered_face_pairs: 3,
+                    proven_positive_thickness_pairs: 1,
+                    first_proven_positive_thickness_pair: only_non_hinge_face_pair(&midpoint_model),
                 },
                 "midpoint-mountain:{thickness}"
             );

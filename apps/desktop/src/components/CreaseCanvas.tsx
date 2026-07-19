@@ -11,7 +11,6 @@ import {
   type AngleSnapConfig,
   type AngleSnapTarget,
   type ParallelSnapReference,
-  type SnapKind,
   type SnapPoint,
   type SnapSpatialIndex,
   type SnapSettings,
@@ -27,6 +26,21 @@ import {
   isSupportedIntersectionTarget,
   type VertexPlacement,
 } from '../lib/vertexPlacement'
+import {
+  creaseCanvasAngleGuideLabel,
+  creaseCanvasGuideDetailLabel,
+  creaseCanvasSnapKindLabel,
+  creaseCanvasText,
+  creaseCanvasTitle,
+  localizeCreaseCanvasMeasurementLabel,
+  type CreaseCanvasGuideDetail,
+} from '../lib/creaseCanvasPresentation.ts'
+import {
+  localeStore as defaultLocaleStore,
+  useLocale,
+  type Locale,
+  type LocaleStore,
+} from '../lib/i18n.ts'
 
 export type CreaseLine = {
   id: string
@@ -98,6 +112,7 @@ type Props = {
   disabled?: boolean
   renderMetricsRequestId?: string | number | null
   onRenderMetrics?: (metrics: CreaseCanvasRenderMetrics) => void
+  localeStore?: LocaleStore
 }
 
 type Vertex = { id: string; x: number; y: number }
@@ -136,7 +151,7 @@ type ViewTransform = {
 type SnapGuide = {
   rawPoint: SnapPoint
   target: AdditionSnapTarget
-  label?: string
+  detail?: CreaseCanvasGuideDetail
 }
 
 type AdditionSnapResolution =
@@ -165,18 +180,6 @@ const RENDER_METRICS_SAMPLE_FRAME_COUNT = 30
 const EMPTY_VALIDATION_VERTEX_HIGHLIGHTS: ReadonlyMap<string, ValidationVertexHighlight> =
   new Map()
 
-const SNAP_KIND_LABELS: Record<SnapKind, string> = {
-  vertex: '頂点',
-  intersection: '交点',
-  midpoint: '中点',
-  horizontal: '水平',
-  vertical: '垂直',
-  parallel: '平行',
-  angle: '角度',
-  edge: '辺',
-  grid: 'グリッド',
-}
-
 export function CreaseCanvas({
   lines,
   vertices = [],
@@ -202,7 +205,9 @@ export function CreaseCanvas({
   disabled = false,
   renderMetricsRequestId = null,
   onRenderMetrics,
+  localeStore: localeStore_ = defaultLocaleStore,
 }: Props) {
+  const locale = useLocale(localeStore_)
   const resolvedPaperBounds = resolvePaperBounds(paperBounds)
   const drawablePaperPolygon = useMemo(
     () => resolveDrawablePaperPolygon(paperPolygon),
@@ -484,7 +489,7 @@ export function CreaseCanvas({
             : transform.top + 20
           drawMeasurementLabel(
             context,
-            measurementLabel ?? '計測不可',
+            localizeCreaseCanvasMeasurementLabel(measurementLabel, locale),
             labelX,
             labelY,
             canvasRect.width,
@@ -500,6 +505,7 @@ export function CreaseCanvas({
           snapGuide,
           canvasRect.width,
           canvasRect.height,
+          locale,
         )
       }
     }
@@ -566,6 +572,7 @@ export function CreaseCanvas({
     dragPreview,
     lineDrawBatches,
     lines,
+    locale,
     measurementLabel,
     paperColor,
     parallelReference,
@@ -861,15 +868,15 @@ export function CreaseCanvas({
         ? {
             rawPoint: { x: pointer.x, y: pointer.y },
             target,
-            label: target.kind === 'intersection'
+            detail: target.kind === 'intersection'
               && target.classification === 'cluster'
-              ? '交点クラスタ'
+              ? 'intersection-cluster'
               : target.kind === 'intersection'
                 && target.classification === 't-junction'
                 && target.sourceEdges.some(
                   ({ id }) => intersectionLinesById.get(id)?.kind === 'boundary',
                 )
-                ? '輪郭T字'
+                ? 'boundary-t-junction'
                 : undefined,
           }
         : null)
@@ -948,9 +955,10 @@ export function CreaseCanvas({
     <canvas
       ref={canvasRef}
       className={`crease-canvas tool-${tool}${dragPreview ? ' is-dragging' : ''}${disabled ? ' is-disabled' : ''}`}
-      aria-label="展開図編集キャンバス"
+      aria-label={creaseCanvasText(locale, 'ariaLabel')}
       aria-describedby={ariaDescribedBy}
       aria-disabled={disabled}
+      title={creaseCanvasTitle(locale, disabled)}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -959,7 +967,7 @@ export function CreaseCanvas({
       onLostPointerCapture={handleLostPointerCapture}
       onPointerLeave={handlePointerLeave}
     >
-      展開図。選択ツールでは頂点をドラッグして移動できます。
+      {creaseCanvasText(locale, 'fallback')}
     </canvas>
   )
 }
@@ -1455,6 +1463,7 @@ function drawSnapGuide(
   guide: SnapGuide,
   canvasWidth: number,
   canvasHeight: number,
+  locale: Locale,
 ) {
   if (!Number.isFinite(canvasWidth) || !Number.isFinite(canvasHeight)) return
   const target = mapPaperPoint(transform, guide.target.point.x, guide.target.point.y)
@@ -1517,9 +1526,15 @@ function drawSnapGuide(
   context.lineTo(target.x, target.y + 10)
   context.stroke()
 
-  const label = guide.label ?? (guide.target.kind === 'angle'
-    ? `角度 ${guide.target.angleSide === 'counterclockwise' ? '+' : '-'}${formatGuideAngle(guide.target.angleDegrees)}°`
-    : SNAP_KIND_LABELS[guide.target.kind])
+  const label = guide.detail
+    ? creaseCanvasGuideDetailLabel(locale, guide.detail)
+    : guide.target.kind === 'angle'
+      ? creaseCanvasAngleGuideLabel(
+          locale,
+          guide.target.angleSide,
+          guide.target.angleDegrees,
+        )
+      : creaseCanvasSnapKindLabel(locale, guide.target.kind)
   context.font = '600 10px system-ui, sans-serif'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
@@ -1545,12 +1560,6 @@ function drawSnapGuide(
   context.fillStyle = '#ffffff'
   context.fillText(label, labelX, labelY)
   context.restore()
-}
-
-function formatGuideAngle(value: number) {
-  if (!Number.isFinite(value)) return '—'
-  if (value !== 0 && Math.abs(value) < 0.001) return value.toExponential(2)
-  return String(Number(value.toFixed(3)))
 }
 
 function drawAngleReferenceGuide(

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createFoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose.ts'
+import {
+  createFoldPreviewAppliedPoseSnapshot,
+  foldPreviewAppliedPoseKey,
+} from '../src/lib/foldPreviewAppliedPose.ts'
 
 test('creates a deeply detached applied-pose observation without runtime authority', () => {
   const input = {
@@ -44,6 +47,40 @@ test('accepts all observable motion states and planar empty poses', () => {
       state,
     })?.state, state)
   }
+})
+
+test('pose identity is hinge-order independent but geometry sensitive', () => {
+  const first = createFoldPreviewAppliedPoseSnapshot({
+    projectId: 'project',
+    revision: 3,
+    fixedFaceId: 'face',
+    hingeAngles: [
+      { edgeId: 'hinge-b', angleDegrees: 20 },
+      { edgeId: 'hinge-a', angleDegrees: 10 },
+    ],
+    state: 'stable',
+  })
+  const reorderedAndMoving = createFoldPreviewAppliedPoseSnapshot({
+    projectId: 'project',
+    revision: 3,
+    fixedFaceId: 'face',
+    hingeAngles: [
+      { edgeId: 'hinge-a', angleDegrees: 10 },
+      { edgeId: 'hinge-b', angleDegrees: 20 },
+    ],
+    state: 'running',
+  })
+  const changed = reorderedAndMoving && {
+    ...reorderedAndMoving,
+    hingeAngles: [
+      { edgeId: 'hinge-a', angleDegrees: 11 },
+      { edgeId: 'hinge-b', angleDegrees: 20 },
+    ],
+  }
+
+  assert.equal(foldPreviewAppliedPoseKey(first), foldPreviewAppliedPoseKey(reorderedAndMoving))
+  assert.notEqual(foldPreviewAppliedPoseKey(first), foldPreviewAppliedPoseKey(changed))
+  assert.equal(foldPreviewAppliedPoseKey(null), null)
 })
 
 test('rejects malformed identities, revisions, angles, duplicates, and unknown states', () => {

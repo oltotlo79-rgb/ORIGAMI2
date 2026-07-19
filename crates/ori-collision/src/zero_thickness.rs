@@ -4160,6 +4160,30 @@ mod tests {
         .expect("midpoint mountain model")
     }
 
+    fn only_non_hinge_face_pair(model: &MaterialTreeKinematicsModel) -> [FaceId; 2] {
+        let mut pairs = model
+            .face_ids()
+            .iter()
+            .copied()
+            .enumerate()
+            .flat_map(|(first_index, first)| {
+                model.face_ids()[first_index + 1..]
+                    .iter()
+                    .copied()
+                    .map(move |second| [first, second])
+            })
+            .filter(|pair| {
+                !model.hinges().iter().any(|hinge| {
+                    let mut hinge_pair = [hinge.left_face(), hinge.right_face()];
+                    hinge_pair.sort_unstable_by_key(FaceId::canonical_bytes);
+                    hinge_pair == *pair
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pairs.len(), 1, "three-face V has one non-hinge pair");
+        pairs.pop().expect("non-hinge pair")
+    }
+
     fn solve_two_hinge_pose(
         model: &MaterialTreeKinematicsModel,
         angle_degrees: [f64; 2],
@@ -4754,6 +4778,7 @@ mod tests {
             StaticCollisionError::ProvenTransversalPenetration {
                 expected_unordered_face_pairs: 3,
                 proven_transversal_pairs: 1,
+                first_proven_transversal_pair: only_non_hinge_face_pair(&midpoint_model),
             },
         );
         for thickness in [0.1, 1.0, 3.0] {

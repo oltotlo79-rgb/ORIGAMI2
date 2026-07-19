@@ -4,7 +4,7 @@ use ori_collision::{
     TOPOLOGY_CONTACT_POLICY_V2, prove_static_collision_geometry,
 };
 use ori_domain::{
-    CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId,
+    CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
 };
 use ori_kinematics::{
     CanonicalHingeAngles, HingeAngle, MATERIAL_TREE_KINEMATICS_MODEL_ID,
@@ -199,6 +199,30 @@ fn corner_mountain_valley_400mm_fixture(reverse_source_collections: bool) -> Two
         &[(0, 2, EdgeKind::Mountain), (0, 4, EdgeKind::Valley)],
         reverse_source_collections,
     )
+}
+
+fn only_non_hinge_face_pair(model: &MaterialTreeKinematicsModel) -> [FaceId; 2] {
+    let mut pairs = model
+        .face_ids()
+        .iter()
+        .copied()
+        .enumerate()
+        .flat_map(|(first_index, first)| {
+            model.face_ids()[first_index + 1..]
+                .iter()
+                .copied()
+                .map(move |second| [first, second])
+        })
+        .filter(|pair| {
+            !model.hinges().iter().any(|hinge| {
+                let mut hinge_pair = [hinge.left_face(), hinge.right_face()];
+                hinge_pair.sort_unstable_by_key(FaceId::canonical_bytes);
+                hinge_pair == *pair
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pairs.len(), 1, "three-face V has one non-hinge pair");
+    pairs.pop().expect("non-hinge pair")
 }
 
 fn model(fixture: &Fixture) -> MaterialTreeKinematicsModel {
@@ -429,6 +453,7 @@ fn multi_face_pose_is_blocking_until_every_pair_has_native_evidence() {
 fn public_entry_reports_midpoint_transversal_matrix_without_collection_or_root_bias() {
     for reverse_source_collections in [false, true] {
         let fixture = midpoint_mountain_400mm_fixture(reverse_source_collections);
+        let expected_proven_pair = only_non_hinge_face_pair(&fixture.model);
         for (angle, proven_transversal_pairs) in
             [(90.0, 0), (91.0, 0), (135.0, 1), (179.0, 1), (180.0, 0)]
         {
@@ -457,6 +482,7 @@ fn public_entry_reports_midpoint_transversal_matrix_without_collection_or_root_b
                     StaticCollisionError::ProvenTransversalPenetration {
                         expected_unordered_face_pairs: 3,
                         proven_transversal_pairs,
+                        first_proven_transversal_pair: expected_proven_pair,
                     }
                 } else {
                     StaticCollisionError::PairEvidenceUnavailable {
@@ -596,6 +622,7 @@ fn transversal_affirmative_result_is_gated_to_bit_exact_positive_zero() {
         StaticCollisionError::ProvenTransversalPenetration {
             expected_unordered_face_pairs: 3,
             proven_transversal_pairs: 1,
+            first_proven_transversal_pair: only_non_hinge_face_pair(&fixture.model),
         },
     );
 }

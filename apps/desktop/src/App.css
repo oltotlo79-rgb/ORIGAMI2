@@ -746,6 +746,7 @@ button { color: inherit; }
   pointer-events: none;
 }
 .fold-preview-collision,
+.fold-preview-native-collision,
 .fold-preview-motion,
 .fold-preview-correction {
   min-width: 0;
@@ -766,6 +767,48 @@ button { color: inherit; }
 .fold-preview-collision.has-topology-allowance { border-color: rgb(22 113 184 / 45%); color: #165f99; }
 .fold-preview-collision.has-contact { border-color: rgb(190 101 40 / 55%); background: rgb(255 247 238 / 92%); color: #9a4b1f; }
 .fold-preview-collision[data-collision-risk="blocking"] { border-color: rgb(179 65 65 / 72%); background: rgb(255 239 239 / 96%); color: #9f3030; font-weight: 700; box-shadow: 0 0 0 1px rgb(179 65 65 / 16%); }
+.fold-preview-native-collision.is-idle { border-color: rgb(82 97 109 / 40%); color: #52616d; }
+.fold-preview-native-collision.is-checking { border-color: rgb(22 113 184 / 52%); color: #165f99; }
+.fold-preview-native-collision.is-certified { border-color: rgb(40 114 73 / 55%); background: rgb(240 251 245 / 94%); color: #287249; font-weight: 650; }
+.fold-preview-native-collision.is-blocked,
+.fold-preview-native-collision.is-indeterminate,
+.fold-preview-native-collision.is-unavailable {
+  border-color: rgb(179 65 65 / 72%);
+  background: rgb(255 239 239 / 96%);
+  color: #9f3030;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgb(179 65 65 / 16%);
+}
+.fold-preview-native-collision.has-retry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fold-preview-native-collision-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fold-preview-native-collision-retry {
+  flex: 0 0 auto;
+  min-block-size: 24px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.fold-preview-native-collision-retry:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+.fold-preview-native-collision-retry:focus-visible {
+  outline: 2px solid #0b65a5;
+  outline-offset: 1px;
+}
 .fold-preview-motion-detail {
   position: absolute;
   bottom: 34px;

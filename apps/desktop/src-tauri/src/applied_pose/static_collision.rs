@@ -16,13 +16,15 @@ use ori_collision::{
     NativeStaticCollisionGeometryProof, StaticCollisionError, StaticCollisionLimits,
     TOPOLOGY_CONTACT_POLICY_V2, prove_static_collision_geometry,
 };
-use ori_domain::ProjectId;
+use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::{
     MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialTreeKinematicsModel, MaterialTreePose,
 };
+use serde::Serialize;
 
 use super::{
-    CurrentAppliedPoseCapability, current_applied_pose_capability_matches_locked_slot,
+    CurrentAppliedPoseBindingResponse, CurrentAppliedPoseCapability,
+    current_applied_pose_capability_matches_locked_slot,
     current_applied_pose_certificate_is_internally_consistent, current_applied_pose_claims_match,
 };
 use crate::{AppState, ProjectState, lock_project};
@@ -59,6 +61,51 @@ impl Error for CurrentStaticCollisionError {
         }
     }
 }
+
+/// Read-only production result. Only a successfully minted, still-current C
+/// certificate may produce `CertifiedNonblocking`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CurrentStaticCollisionDiagnosticStatus {
+    CertifiedNonblocking,
+    Blocking,
+    Unavailable,
+}
+
+/// Stable, redacted reason categories for IPC. Internal error text and exact
+/// arithmetic evidence never cross the command boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CurrentStaticCollisionDiagnosticReason {
+    ProvenTransversalPenetration,
+    EvidenceUnavailable,
+    ResourceLimitExceeded,
+    InconsistentState,
+    PoseAuthorityUnavailable,
+}
+
+/// Canonically ordered identity of the first proven transversal face pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CurrentStaticCollisionFacePair {
+    first_face_id: FaceId,
+    second_face_id: FaceId,
+}
+
+/// Sanitized static-collision diagnosis for the current native pose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CurrentStaticCollisionDiagnosticResponse {
+    binding: Option<CurrentAppliedPoseBindingResponse>,
+    status: CurrentStaticCollisionDiagnosticStatus,
+    reason: Option<CurrentStaticCollisionDiagnosticReason>,
+    expected_unordered_face_pairs: Option<usize>,
+    proven_transversal_pairs: Option<usize>,
+    first_proven_transversal_pair: Option<CurrentStaticCollisionFacePair>,
+}
+
+const CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE: &str =
+    "現在の衝突判定を完了できませんでした。もう一度実行してください。";
 
 struct CurrentStaticCollisionClaims {
     project_instance_id: ProjectId,
@@ -180,6 +227,159 @@ pub(crate) fn certify_current_static_collision(
     };
     let prepared = prepare_static_collision(capability, limits)?;
     mint_current_static_collision(app_state, prepared)
+}
+
+/// Runs the current-pose static diagnosis away from both live locks and
+/// returns only stable, redacted categories. The certificate is intentionally
+/// ephemeral because this command is observation-only.
+pub(crate) async fn inspect_current_static_collision(
+    app_state: &AppState,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    inspect_current_static_collision_with_limits(app_state, StaticCollisionLimits::default()).await
+}
+
+async fn inspect_current_static_collision_with_limits(
+    app_state: &AppState,
+    limits: StaticCollisionLimits,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let capability = match capture_current_pose_capability(app_state) {
+        Ok(Some(capability)) => capability,
+        Ok(None) => {
+            return Ok(CurrentStaticCollisionDiagnosticResponse::pose_unavailable(
+                None,
+            ));
+        }
+        Err(error) => return diagnostic_response_from_error(error, None),
+    };
+    let binding = CurrentAppliedPoseBindingResponse::from_claims(&capability.claims);
+    let prepared =
+        tauri::async_runtime::spawn_blocking(move || prepare_static_collision(capability, limits))
+            .await
+            .map_err(|_| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
+
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => return diagnostic_response_from_error(error, Some(binding)),
+    };
+    match mint_current_static_collision(app_state, prepared) {
+        Ok(Some(certificate)) => {
+            let response =
+                CurrentStaticCollisionDiagnosticResponse::certified_nonblocking(&certificate);
+            drop(certificate);
+            Ok(response)
+        }
+        Ok(None) => Ok(CurrentStaticCollisionDiagnosticResponse::pose_unavailable(
+            None,
+        )),
+        Err(error) => diagnostic_response_from_error(error, Some(binding)),
+    }
+}
+
+impl CurrentStaticCollisionDiagnosticResponse {
+    fn certified_nonblocking(certificate: &CurrentStaticCollisionCertificate) -> Self {
+        Self {
+            binding: Some(CurrentAppliedPoseBindingResponse::from_claims(
+                &certificate.certificate.pose_capability.claims,
+            )),
+            status: CurrentStaticCollisionDiagnosticStatus::CertifiedNonblocking,
+            reason: None,
+            expected_unordered_face_pairs: Some(
+                certificate
+                    .certificate
+                    .geometry_proof
+                    .expected_unordered_face_pairs(),
+            ),
+            proven_transversal_pairs: Some(0),
+            first_proven_transversal_pair: None,
+        }
+    }
+
+    const fn pose_unavailable(binding: Option<CurrentAppliedPoseBindingResponse>) -> Self {
+        Self {
+            binding,
+            status: CurrentStaticCollisionDiagnosticStatus::Unavailable,
+            reason: Some(CurrentStaticCollisionDiagnosticReason::PoseAuthorityUnavailable),
+            expected_unordered_face_pairs: None,
+            proven_transversal_pairs: None,
+            first_proven_transversal_pair: None,
+        }
+    }
+
+    const fn blocking(
+        binding: Option<CurrentAppliedPoseBindingResponse>,
+        reason: CurrentStaticCollisionDiagnosticReason,
+    ) -> Self {
+        Self {
+            binding,
+            status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+            reason: Some(reason),
+            expected_unordered_face_pairs: None,
+            proven_transversal_pairs: None,
+            first_proven_transversal_pair: None,
+        }
+    }
+}
+
+fn diagnostic_response_from_error(
+    error: CurrentStaticCollisionError,
+    binding: Option<CurrentAppliedPoseBindingResponse>,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let response = match error {
+        CurrentStaticCollisionError::LockUnavailable => {
+            return Err(CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned());
+        }
+        CurrentStaticCollisionError::PoseAuthorityUnavailable => {
+            CurrentStaticCollisionDiagnosticResponse::pose_unavailable(None)
+        }
+        CurrentStaticCollisionError::InternalInconsistency => {
+            CurrentStaticCollisionDiagnosticResponse::blocking(
+                binding,
+                CurrentStaticCollisionDiagnosticReason::InconsistentState,
+            )
+        }
+        CurrentStaticCollisionError::GeometryBlocking(error) => match error {
+            StaticCollisionError::PoseIssuerMismatch
+            | StaticCollisionError::InvalidPaperThickness
+            | StaticCollisionError::InconsistentMaterialPose => {
+                CurrentStaticCollisionDiagnosticResponse::blocking(
+                    binding,
+                    CurrentStaticCollisionDiagnosticReason::InconsistentState,
+                )
+            }
+            StaticCollisionError::ResourceLimitExceeded => {
+                CurrentStaticCollisionDiagnosticResponse::blocking(
+                    binding,
+                    CurrentStaticCollisionDiagnosticReason::ResourceLimitExceeded,
+                )
+            }
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            } => CurrentStaticCollisionDiagnosticResponse {
+                binding,
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::EvidenceUnavailable),
+                expected_unordered_face_pairs: Some(expected_unordered_face_pairs),
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            },
+            StaticCollisionError::ProvenTransversalPenetration {
+                expected_unordered_face_pairs,
+                proven_transversal_pairs,
+                first_proven_transversal_pair: [first_face_id, second_face_id],
+            } => CurrentStaticCollisionDiagnosticResponse {
+                binding,
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::ProvenTransversalPenetration),
+                expected_unordered_face_pairs: Some(expected_unordered_face_pairs),
+                proven_transversal_pairs: Some(proven_transversal_pairs),
+                first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
+                    first_face_id,
+                    second_face_id,
+                }),
+            },
+        },
+    };
+    Ok(response)
 }
 
 /// Revalidates the embedded B capability and runs an observation-only action
@@ -431,7 +631,9 @@ mod tests {
 
     use ori_collision::{StaticCollisionError, prove_static_collision_geometry};
     use ori_core::{Command, create_rectangular_sheet};
-    use ori_domain::{Edge, EdgeId, EdgeKind, Paper, Point2, VertexId};
+    use ori_domain::{
+        CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, Vertex, VertexId,
+    };
     use ori_kinematics::{CanonicalHingeAngles, MaterialTreeKinematicsModel, TreeKinematicsLimits};
 
     use super::*;
@@ -449,6 +651,78 @@ mod tests {
 
     fn no_hinge_project() -> ProjectState {
         no_hinge_project_with_thickness(Paper::default().thickness_mm)
+    }
+
+    fn midpoint_mountain_400mm_project() -> (ProjectState, [EdgeId; 2]) {
+        let coordinates = [
+            (0.0, 0.0),
+            (200.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 400.0),
+            (0.0, 400.0),
+        ];
+        let vertices = coordinates
+            .into_iter()
+            .map(|(x, y)| Vertex {
+                id: VertexId::new(),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = [EdgeId::new(), EdgeId::new()];
+        edges.extend([
+            Edge {
+                id: hinges[0],
+                start: boundary[1],
+                end: boundary[4],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: hinges[1],
+                start: boundary[1],
+                end: boundary[3],
+                kind: EdgeKind::Mountain,
+            },
+        ]);
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            thickness_mm: 0.0,
+            ..Paper::default()
+        };
+        (ProjectState::new_with_paper(pattern, paper), hinges)
+    }
+
+    fn only_non_hinge_face_pair(model: &MaterialTreeKinematicsModel) -> [FaceId; 2] {
+        let mut pairs = model
+            .face_ids()
+            .iter()
+            .copied()
+            .enumerate()
+            .flat_map(|(first_index, first)| {
+                model.face_ids()[first_index + 1..]
+                    .iter()
+                    .copied()
+                    .map(move |second| [first, second])
+            })
+            .filter(|pair| {
+                !model.hinges().iter().any(|hinge| {
+                    let mut hinge_pair = [hinge.left_face(), hinge.right_face()];
+                    hinge_pair.sort_unstable_by_key(FaceId::canonical_bytes);
+                    hinge_pair == *pair
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pairs.len(), 1, "three-face V has one non-hinge pair");
+        pairs.pop().expect("non-hinge pair")
     }
 
     fn request_for(project: &ProjectState) -> NativePoseRequest {
@@ -512,6 +786,13 @@ mod tests {
             .expect("capture")
             .expect("current pose");
         prepare_static_collision(capability, StaticCollisionLimits::default()).expect("proof")
+    }
+
+    fn current_binding(state: &AppState) -> CurrentAppliedPoseBindingResponse {
+        let capability = capture_current_pose_capability(state)
+            .expect("capture")
+            .expect("current pose");
+        CurrentAppliedPoseBindingResponse::from_claims(&capability.claims)
     }
 
     #[test]
@@ -791,39 +1072,116 @@ mod tests {
     }
 
     #[test]
-    fn proven_transversal_penetration_remains_blocking_before_certificate_mint() {
-        let geometry_error = StaticCollisionError::ProvenTransversalPenetration {
-            expected_unordered_face_pairs: 3,
-            proven_transversal_pairs: 1,
+    fn actual_midpoint_transversal_penetration_blocks_before_certificate_c_can_be_minted() {
+        let (project, hinges) = midpoint_mountain_400mm_project();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .expect("three-face midpoint topology")
+            .clone();
+        assert_eq!(topology.faces.len(), 3);
+        let mut complete_hinge_angles = hinges
+            .into_iter()
+            .map(|edge_id| NativePoseHingeAngleRequest {
+                edge_id,
+                angle_degrees: 135.0,
+            })
+            .collect::<Vec<_>>();
+        complete_hinge_angles.sort_by_key(|angle| angle.edge_id.canonical_bytes());
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(topology.faces[0].id),
+            complete_hinge_angles,
         };
-        let mapped = map_static_collision_error(geometry_error.clone());
-
+        let state = AppState(Mutex::new(project));
+        let applied = tauri::async_runtime::block_on(
+            crate::applied_pose::apply_current_native_pose(&state, request),
+        )
+        .expect("production native-pose adoption");
+        let applied_encoded = serde_json::to_value(applied).expect("serialize apply response");
         assert_eq!(
-            mapped,
-            CurrentStaticCollisionError::GeometryBlocking(geometry_error.clone())
+            applied_encoded["binding"]["poseGeneration"], "1",
+            "the public generation token must not lose u64 precision in JavaScript"
         );
-        assert_eq!(
-            std::error::Error::source(&mapped)
-                .and_then(|source| source.downcast_ref::<StaticCollisionError>()),
-            Some(&geometry_error)
-        );
+        let expected_pair = {
+            let capability = capture_current_pose_capability(&state)
+                .expect("capture")
+                .expect("current production pose");
+            assert_eq!(
+                applied.binding,
+                CurrentAppliedPoseBindingResponse::from_claims(&capability.claims)
+            );
+            only_non_hinge_face_pair(capability.claims.model.as_ref())
+        };
+        let expected_binding = applied.binding;
 
-        let mut mint_reached = false;
-        let certification: Result<Option<CurrentStaticCollisionCertificate>, _> =
-            Err::<NativeStaticCollisionGeometryProof, _>(mapped).map(|_| {
-                mint_reached = true;
-                None
-            });
-        assert!(!mint_reached, "blocking geometry must stop before C mint");
-        assert!(matches!(
-            certification,
-            Err(CurrentStaticCollisionError::GeometryBlocking(
+        let error = match certify_current_static_collision(&state, StaticCollisionLimits::default())
+        {
+            Ok(_) => panic!("proven transversal must not mint certificate C"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            CurrentStaticCollisionError::GeometryBlocking(
                 StaticCollisionError::ProvenTransversalPenetration {
                     expected_unordered_face_pairs: 3,
                     proven_transversal_pairs: 1,
+                    first_proven_transversal_pair: expected_pair,
                 },
-            ))
-        ));
+            ),
+            "a real proven transversal must return before Prepared C or certificate C exists"
+        );
+
+        let diagnosis = tauri::async_runtime::block_on(
+            inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
+        )
+        .expect("redacted production diagnosis");
+        assert_eq!(
+            diagnosis,
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(expected_binding),
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::ProvenTransversalPenetration,),
+                expected_unordered_face_pairs: Some(3),
+                proven_transversal_pairs: Some(1),
+                first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
+                    first_face_id: expected_pair[0],
+                    second_face_id: expected_pair[1],
+                }),
+            }
+        );
+        let encoded = serde_json::to_value(diagnosis).expect("serialize diagnosis");
+        assert_eq!(encoded["status"], "blocking");
+        assert_eq!(encoded["reason"], "proven_transversal_penetration");
+        assert_eq!(encoded["expectedUnorderedFacePairs"], 3);
+        assert_eq!(encoded["provenTransversalPairs"], 1);
+        assert_eq!(encoded["binding"]["poseGeneration"], "1");
+        assert_eq!(
+            encoded["firstProvenTransversalPair"]["firstFaceId"],
+            serde_json::to_value(expected_pair[0]).expect("serialize first face")
+        );
+        assert_eq!(
+            encoded["firstProvenTransversalPair"]["secondFaceId"],
+            serde_json::to_value(expected_pair[1]).expect("serialize second face")
+        );
+        let object = encoded.as_object().expect("diagnosis object");
+        assert_eq!(object.len(), 6, "IPC schema must stay narrow and redacted");
+        for forbidden in [
+            "coordinates",
+            "transform",
+            "geometryProof",
+            "internalError",
+            "message",
+        ] {
+            assert!(
+                !object.contains_key(forbidden),
+                "raw internal field leaked: {forbidden}"
+            );
+        }
     }
 
     #[test]
@@ -856,6 +1214,7 @@ mod tests {
         };
         adopt_request(&mut project, request);
         let state = AppState(Mutex::new(project));
+        let binding = current_binding(&state);
 
         assert!(matches!(
             certify_current_static_collision(&state, StaticCollisionLimits::default()),
@@ -865,5 +1224,120 @@ mod tests {
                 },
             ))
         ));
+
+        assert_eq!(
+            tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
+                &state,
+                StaticCollisionLimits::default(),
+            ))
+            .expect("evidence-unavailable diagnosis"),
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(binding),
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::EvidenceUnavailable),
+                expected_unordered_face_pairs: Some(1),
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            },
+            "unresolved pair evidence must never become a safe success"
+        );
+    }
+
+    #[test]
+    fn production_diagnosis_only_reports_safe_after_c_mint_and_fails_closed_otherwise() {
+        let mut safe_project = no_hinge_project();
+        adopt_no_hinge_pose(&mut safe_project);
+        let safe_state = AppState(Mutex::new(safe_project));
+        let safe_binding = current_binding(&safe_state);
+        assert_eq!(
+            tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
+                &safe_state,
+                StaticCollisionLimits::default(),
+            ))
+            .expect("certified diagnosis"),
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(safe_binding),
+                status: CurrentStaticCollisionDiagnosticStatus::CertifiedNonblocking,
+                reason: None,
+                expected_unordered_face_pairs: Some(0),
+                proven_transversal_pairs: Some(0),
+                first_proven_transversal_pair: None,
+            }
+        );
+
+        assert_eq!(
+            tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
+                &safe_state,
+                StaticCollisionLimits {
+                    max_faces: 0,
+                    ..StaticCollisionLimits::default()
+                },
+            ))
+            .expect("resource diagnosis"),
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(safe_binding),
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::ResourceLimitExceeded),
+                expected_unordered_face_pairs: None,
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            },
+            "resource exhaustion must never become a safe success"
+        );
+
+        let unavailable_state = AppState(Mutex::new(no_hinge_project()));
+        assert_eq!(
+            tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
+                &unavailable_state,
+                StaticCollisionLimits::default(),
+            ))
+            .expect("unavailable diagnosis"),
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: None,
+                status: CurrentStaticCollisionDiagnosticStatus::Unavailable,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::PoseAuthorityUnavailable),
+                expected_unordered_face_pairs: None,
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            }
+        );
+
+        assert_eq!(
+            diagnostic_response_from_error(
+                CurrentStaticCollisionError::InternalInconsistency,
+                Some(safe_binding),
+            )
+            .expect("inconsistent diagnosis"),
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(safe_binding),
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::InconsistentState),
+                expected_unordered_face_pairs: None,
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            },
+            "internal inconsistency must remain blocking"
+        );
+        assert_eq!(
+            diagnostic_response_from_error(
+                CurrentStaticCollisionError::PoseAuthorityUnavailable,
+                Some(safe_binding),
+            )
+            .expect("stale pose diagnosis"),
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: None,
+                status: CurrentStaticCollisionDiagnosticStatus::Unavailable,
+                reason: Some(CurrentStaticCollisionDiagnosticReason::PoseAuthorityUnavailable),
+                expected_unordered_face_pairs: None,
+                proven_transversal_pairs: None,
+                first_proven_transversal_pair: None,
+            },
+            "an unavailable result must not claim that a stale pose binding is current"
+        );
+        assert_eq!(
+            diagnostic_response_from_error(CurrentStaticCollisionError::LockUnavailable, None),
+            Err(CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned()),
+            "operational errors expose one fixed sanitized message"
+        );
     }
 }

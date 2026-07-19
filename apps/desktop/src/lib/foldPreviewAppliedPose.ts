@@ -59,6 +59,28 @@ export function createFoldPreviewAppliedPoseSnapshot(value: {
   })
 }
 
+/**
+ * Produces a state-independent identity for the geometry currently painted by
+ * FoldPreview. Hinge order is canonicalized to match the native pose request,
+ * while motion state is gated separately so a running pose can never reuse a
+ * terminal certificate.
+ */
+export function foldPreviewAppliedPoseKey(
+  pose: FoldPreviewAppliedPoseSnapshot | null,
+): string | null {
+  if (pose === null) return null
+  const snapshot = createFoldPreviewAppliedPoseSnapshot(pose)
+  if (snapshot === null) return null
+  const hingeAngles = [...snapshot.hingeAngles].sort((left, right) =>
+    compareCodeUnits(left.edgeId, right.edgeId))
+  return JSON.stringify({
+    projectId: snapshot.projectId,
+    revision: snapshot.revision,
+    fixedFaceId: snapshot.fixedFaceId,
+    hingeAngles,
+  })
+}
+
 function validState(value: unknown): value is FoldPreviewAppliedPoseState {
   return value === 'stable'
     || value === 'running'
@@ -88,6 +110,12 @@ function validIdentity(value: unknown): value is string {
     ) return false
   }
   return true
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -18,7 +18,11 @@ const timelineSource = readFileSync(
 test('FoldPreview publishes rendered endpoints instead of requested controls', () => {
   assert.match(
     previewSource,
-    /angleDegrees:\s*contextualMotionState\.applied/u,
+    /angleDegrees:\s*currentSingleAppliedAngle/u,
+  )
+  assert.match(
+    previewSource,
+    /state:\s*appliedPoseState\(currentSingleMotionStatus\)/u,
   )
   assert.match(
     previewSource,

@@ -3938,6 +3938,7 @@ fn try_array3<T>(
 }
 
 mod containment;
+mod positive_thickness;
 
 pub(crate) use containment::{
     ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,

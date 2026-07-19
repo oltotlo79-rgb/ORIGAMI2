@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ori_domain::FaceId;
 use ori_kinematics::{
     MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialTreeKinematicsModel, MaterialTreePose,
 };
@@ -133,6 +134,11 @@ pub enum StaticCollisionError {
     ProvenTransversalPenetration {
         expected_unordered_face_pairs: usize,
         proven_transversal_pairs: usize,
+        /// First proven pair in canonical `FaceId` byte order.
+        ///
+        /// This is geometry identity only. It contains no coordinates,
+        /// transforms, arithmetic evidence, or internal diagnostic text.
+        first_proven_transversal_pair: [FaceId; 2],
     },
 }
 
@@ -476,16 +482,24 @@ fn finish_proven_transversal_scan(
     scan: ProvenTransversalScanSummary,
     expected_unordered_face_pairs: usize,
 ) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    let first_pair_is_canonical = scan
+        .first_proven_transversal_pair
+        .is_none_or(|(first, second)| first.canonical_bytes() < second.canonical_bytes());
     if scan.enumerated_pairs != expected_unordered_face_pairs
         || scan.proven_transversal_pairs > scan.enumerated_pairs
         || (scan.proven_transversal_pairs == 0) != scan.first_proven_transversal_pair.is_none()
+        || !first_pair_is_canonical
     {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
     if scan.proven_transversal_pairs > 0 {
+        let (first, second) = scan
+            .first_proven_transversal_pair
+            .ok_or(StaticCollisionError::InconsistentMaterialPose)?;
         return Err(StaticCollisionError::ProvenTransversalPenetration {
             expected_unordered_face_pairs,
             proven_transversal_pairs: scan.proven_transversal_pairs,
+            first_proven_transversal_pair: [first, second],
         });
     }
     Err(StaticCollisionError::PairEvidenceUnavailable {
@@ -670,6 +684,8 @@ fn checked_unordered_pair_count(face_count: usize) -> Result<usize, StaticCollis
 
 #[cfg(test)]
 mod tests {
+    use ori_domain::FaceId;
+
     use super::{
         ProvenTransversalScanError, ProvenTransversalScanSummary, StaticCollisionError,
         StaticCollisionLimits, UnorderedFacePairs, ZeroThicknessAnalysisWork,
@@ -810,6 +826,24 @@ mod tests {
 
     #[test]
     fn transversal_summary_and_error_mapping_fail_closed() {
+        let mut proven_pair = [FaceId::new(), FaceId::new()];
+        proven_pair.sort_unstable_by_key(FaceId::canonical_bytes);
+        assert_eq!(
+            finish_proven_transversal_scan(
+                ProvenTransversalScanSummary {
+                    enumerated_pairs: 3,
+                    proven_transversal_pairs: 1,
+                    first_proven_transversal_pair: Some((proven_pair[0], proven_pair[1])),
+                },
+                3,
+            )
+            .expect_err("affirmative pair remains blocking"),
+            StaticCollisionError::ProvenTransversalPenetration {
+                expected_unordered_face_pairs: 3,
+                proven_transversal_pairs: 1,
+                first_proven_transversal_pair: proven_pair,
+            }
+        );
         assert_eq!(
             finish_proven_transversal_scan(
                 ProvenTransversalScanSummary {
@@ -840,6 +874,11 @@ mod tests {
                 proven_transversal_pairs: 1,
                 first_proven_transversal_pair: None,
             },
+            ProvenTransversalScanSummary {
+                enumerated_pairs: 3,
+                proven_transversal_pairs: 1,
+                first_proven_transversal_pair: Some((proven_pair[1], proven_pair[0])),
+            },
         ] {
             assert_eq!(
                 finish_proven_transversal_scan(summary, 3)
@@ -864,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn transversal_budget_subtracts_legacy_additive_work_and_preserves_shape_caps() {
+    fn transversal_budget_subtracts_legacy_ledgers_and_preserves_only_nonadditive_caps() {
         let limits = StaticCollisionLimits::default();
         let spent = ZeroThicknessAnalysisWork {
             total_triangles: 11,
@@ -925,6 +964,31 @@ mod tests {
         assert_eq!(
             remaining.max_total_boundary_vertices,
             limits.max_total_boundary_vertices
+        );
+        assert_eq!(remaining.max_faces, limits.max_faces);
+        assert_eq!(
+            remaining.max_unordered_face_pairs,
+            limits.max_unordered_face_pairs
+        );
+        assert_eq!(
+            remaining.max_boundary_vertices_per_face,
+            limits.max_boundary_vertices_per_face
+        );
+        assert_eq!(
+            remaining.max_rational_input_bits,
+            limits.max_rational_input_bits
+        );
+        assert_eq!(
+            remaining.max_rational_intermediate_bits,
+            limits.max_rational_intermediate_bits
+        );
+        assert_eq!(
+            remaining.max_rational_allocation_bits,
+            limits.max_rational_allocation_bits
+        );
+        assert_eq!(
+            remaining.max_rational_output_bits,
+            limits.max_rational_output_bits
         );
         assert_eq!(
             remaining.max_total_rational_input_storage_bits,

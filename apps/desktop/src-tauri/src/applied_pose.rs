@@ -12,12 +12,13 @@
 
 mod static_collision;
 
-// C is sealed for the following native collision stages before it has a
-// production command consumer.
+// C remains sealed from mutation authority. The read-only production command
+// receives only the redacted DTO below.
 #[allow(unused_imports)]
 pub(super) use static_collision::{
-    CurrentStaticCollisionCertificate, CurrentStaticCollisionError, CurrentStaticCollisionView,
-    certify_current_static_collision, with_revalidated_current_static_collision_certificate,
+    CurrentStaticCollisionCertificate, CurrentStaticCollisionDiagnosticResponse,
+    CurrentStaticCollisionError, CurrentStaticCollisionView, certify_current_static_collision,
+    inspect_current_static_collision, with_revalidated_current_static_collision_certificate,
 };
 
 use std::{
@@ -36,7 +37,7 @@ use ori_kinematics::{
     CanonicalHingeAngles, HingeAngle, MATERIAL_TREE_KINEMATICS_MODEL_ID,
     MaterialTreeKinematicsModel, MaterialTreePose, TreeKinematicsLimits,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 
 use super::{AppState, ProjectState, lock_project};
 
@@ -58,6 +59,35 @@ pub(super) struct NativePoseRequest {
 pub(super) struct NativePoseHingeAngleRequest {
     pub(super) edge_id: EdgeId,
     pub(super) angle_degrees: f64,
+}
+
+/// Stable identity of one adopted native pose. The frontend uses this binding
+/// to reject a diagnosis returned for an older concurrent apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CurrentAppliedPoseBindingResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pose_generation: u64,
+}
+
+/// Redacted success response for the production native-pose adoption command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApplyCurrentNativePoseResponse {
+    binding: CurrentAppliedPoseBindingResponse,
+}
+
+const APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE: &str =
+    "現在の3D姿勢を適用できませんでした。もう一度実行してください。";
+
+fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.collect_str(value)
 }
 
 /// Fixed-category failure at the native applied-pose authority boundary.
@@ -260,6 +290,48 @@ impl CurrentAppliedPoseView<'_> {
     pub(super) const fn contact_policy_id(&self) -> &'static str {
         self.certificate.claims.contact_policy_id
     }
+}
+
+impl CurrentAppliedPoseBindingResponse {
+    fn from_claims(claims: &CurrentAppliedPoseClaims) -> Self {
+        Self {
+            project_instance_id: claims.project_instance_id,
+            project_id: claims.project_id,
+            revision: claims.revision,
+            pose_generation: claims.generation,
+        }
+    }
+}
+
+/// Captures an untrusted complete-pose request under the project lock,
+/// performs topology and kinematics work in a blocking worker, then adopts it
+/// only if the exact project instance and revision are still current.
+pub(crate) async fn apply_current_native_pose(
+    app_state: &AppState,
+    request: NativePoseRequest,
+) -> Result<ApplyCurrentNativePoseResponse, String> {
+    let (authority, captured) = {
+        let project =
+            lock_project(app_state).map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+        let authority = project.applied_pose_authority.clone();
+        let captured = authority
+            .capture_request(&project, request)
+            .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+        (authority, captured)
+    };
+    let prepared = tauri::async_runtime::spawn_blocking(move || captured.prepare())
+        .await
+        .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?
+        .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+
+    let mut project =
+        lock_project(app_state).map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+    let capability = authority
+        .commit_prepared(&mut project, prepared)
+        .map_err(|_| APPLY_CURRENT_NATIVE_POSE_FAILED_MESSAGE)?;
+    Ok(ApplyCurrentNativePoseResponse {
+        binding: CurrentAppliedPoseBindingResponse::from_claims(&capability.claims),
+    })
 }
 
 impl CurrentAppliedPoseAuthority {
@@ -984,6 +1056,19 @@ mod tests {
             fixed_face_id: None,
             complete_hinge_angles: Vec::new(),
         }
+    }
+
+    #[test]
+    fn public_pose_binding_serializes_generation_without_javascript_precision_loss() {
+        let binding = CurrentAppliedPoseBindingResponse {
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            revision: 7,
+            pose_generation: u64::MAX,
+        };
+        let encoded = serde_json::to_value(binding).expect("serialize pose binding");
+        assert_eq!(encoded["revision"], 7);
+        assert_eq!(encoded["poseGeneration"], u64::MAX.to_string());
     }
 
     fn adopt_no_hinge_pose(

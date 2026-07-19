@@ -17,7 +17,12 @@ use std::{
     },
 };
 
-use applied_pose::{CurrentAppliedPoseAuthority, commit_project_replacement};
+use applied_pose::{
+    ApplyCurrentNativePoseResponse, CurrentAppliedPoseAuthority,
+    CurrentStaticCollisionDiagnosticResponse, NativePoseRequest,
+    apply_current_native_pose as apply_current_native_pose_authority, commit_project_replacement,
+    inspect_current_static_collision as inspect_current_static_collision_authority,
+};
 use crease_export::{
     CreaseExportState, cancel_crease_pattern_export, preview_crease_pattern_export,
     save_crease_pattern_export,
@@ -336,6 +341,7 @@ struct BenchmarkEdge {
 
 #[derive(Debug, Serialize)]
 struct ProjectSnapshot {
+    project_instance_id: ProjectId,
     project_id: ProjectId,
     name: String,
     current_path: Option<String>,
@@ -713,6 +719,23 @@ fn new_project(
 #[tauri::command]
 async fn validate_project(state: State<'_, AppState>) -> Result<ValidationSnapshot, String> {
     validate_project_with_worker(&state, |input| Ok(analyze_validation_input(input))).await
+}
+
+#[tauri::command]
+async fn apply_current_native_pose(
+    state: State<'_, AppState>,
+    request: NativePoseRequest,
+) -> Result<ApplyCurrentNativePoseResponse, String> {
+    apply_current_native_pose_authority(&state, request).await
+}
+
+/// Read-only native diagnosis. Geometry work runs without the project or pose
+/// lock, and the response contains fixed categories plus face IDs only.
+#[tauri::command]
+async fn inspect_current_static_collision(
+    state: State<'_, AppState>,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    inspect_current_static_collision_authority(&state).await
 }
 
 const VALIDATION_ANALYSIS_FAILED_MESSAGE: &str =
@@ -2619,6 +2642,7 @@ fn finish_topology_response(
 
 fn snapshot(project: &ProjectState) -> ProjectSnapshot {
     ProjectSnapshot {
+        project_instance_id: project.instance_id,
         project_id: project.project_id,
         name: project.name.clone(),
         current_path: project
@@ -4235,6 +4259,8 @@ pub fn run() {
             project_snapshot,
             new_project,
             validate_project,
+            apply_current_native_pose,
+            inspect_current_static_collision,
             analyze_project_topology,
             begin_global_flat_foldability,
             get_global_flat_foldability_progress,

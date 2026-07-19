@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { RgbaColor } from '../lib/coreClient'
@@ -38,6 +38,8 @@ import {
   type CollisionSummary,
 } from '../lib/foldPreviewCollisionView'
 import { FoldPreviewCollisionBadge } from './FoldPreviewCollisionBadge'
+import { PoseBoundNativeStaticCollisionBadge } from './NativeStaticCollisionBadge'
+import type { NativeStaticCollisionViewState } from '../lib/nativeStaticCollisionView'
 import {
   createFoldPreviewContinuousMotionRunner,
   type FoldPreviewContinuousMotionRunner,
@@ -164,6 +166,9 @@ type FoldPreviewProps = {
   onRequestFoldAngle?: (angleDegrees: number) => void
   onCommitHingeFoldAngle?: (edgeId: string, angleDegrees: number) => void
   onAppliedPoseChange?: (pose: FoldPreviewAppliedPoseSnapshot | null) => void
+  nativeCollisionState?: NativeStaticCollisionViewState
+  nativeCollisionObservedPose?: FoldPreviewAppliedPoseSnapshot | null
+  onRetryNativeCollision?: () => void
   model?: FoldPreviewModel | null
   statusMessage?: string
   frontColor?: RgbaColor | null
@@ -450,6 +455,9 @@ export function FoldPreview({
   onRequestFoldAngle,
   onCommitHingeFoldAngle,
   onAppliedPoseChange,
+  nativeCollisionState,
+  nativeCollisionObservedPose,
+  onRetryNativeCollision,
   model,
   statusMessage,
   frontColor,
@@ -3820,6 +3828,58 @@ export function FoldPreview({
       && model.kinematics.kind === 'tree'
       ? contextualTreeMotionState
       : null
+  const currentSingleAppliedAngle = currentSingleMotionState?.applied ?? null
+  const currentSingleMotionStatus = currentSingleMotionState?.status
+  const currentTreeMotionStatus = contextualTreeMotionState?.status
+  const renderedAppliedPose = useMemo(() => {
+    if (!model || renderError) return null
+    if (model.kind === 'planar') {
+      return createFoldPreviewAppliedPoseSnapshot({
+        projectId: model.projectId,
+        revision: model.revision,
+        fixedFaceId: null,
+        hingeAngles: [],
+        state: 'stable',
+      })
+    }
+    if (model.kind === 'single_fold') {
+      if (
+        currentSingleAppliedAngle === null
+        || currentSingleMotionStatus === undefined
+        || !resolvedFixedFaceId
+      ) return null
+      return createFoldPreviewAppliedPoseSnapshot({
+        projectId: model.projectId,
+        revision: model.revision,
+        fixedFaceId: resolvedFixedFaceId,
+        hingeAngles: [{
+          edgeId: model.hinge.edgeId,
+          angleDegrees: currentSingleAppliedAngle,
+        }],
+        state: appliedPoseState(currentSingleMotionStatus),
+      })
+    }
+    if (
+      model.kinematics.kind !== 'tree'
+      || !renderedTreePose
+      || !resolvedFixedFaceId
+    ) return null
+    return createFoldPreviewAppliedPoseSnapshot({
+      projectId: model.projectId,
+      revision: model.revision,
+      fixedFaceId: resolvedFixedFaceId,
+      hingeAngles: renderedTreePose.appliedAngles,
+      state: appliedPoseState(currentTreeMotionStatus),
+    })
+  }, [
+    currentSingleAppliedAngle,
+    currentSingleMotionStatus,
+    currentTreeMotionStatus,
+    model,
+    renderError,
+    renderedTreePose,
+    resolvedFixedFaceId,
+  ])
   useEffect(() => {
     const publish = (snapshot: FoldPreviewAppliedPoseSnapshot | null) => {
       try {
@@ -3829,61 +3889,9 @@ export function FoldPreview({
         // renderer or its collision-authorized motion.
       }
     }
-    if (!model || renderError) {
-      publish(null)
-      return
-    }
-    if (model.kind === 'planar') {
-      publish(createFoldPreviewAppliedPoseSnapshot({
-        projectId: model.projectId,
-        revision: model.revision,
-        fixedFaceId: null,
-        hingeAngles: [],
-        state: 'stable',
-      }))
-      return () => publish(null)
-    }
-    if (model.kind === 'single_fold') {
-      if (!contextualMotionState || !resolvedFixedFaceId) {
-        publish(null)
-        return
-      }
-      publish(createFoldPreviewAppliedPoseSnapshot({
-        projectId: model.projectId,
-        revision: model.revision,
-        fixedFaceId: resolvedFixedFaceId,
-        hingeAngles: [{
-          edgeId: model.hinge.edgeId,
-          angleDegrees: contextualMotionState.applied,
-        }],
-        state: appliedPoseState(contextualMotionState.status),
-      }))
-      return () => publish(null)
-    }
-    if (
-      model.kinematics.kind !== 'tree'
-      || !renderedTreePose
-      || !resolvedFixedFaceId
-    ) {
-      publish(null)
-      return
-    }
-    publish(createFoldPreviewAppliedPoseSnapshot({
-      projectId: model.projectId,
-      revision: model.revision,
-      fixedFaceId: resolvedFixedFaceId,
-      hingeAngles: renderedTreePose.appliedAngles,
-      state: appliedPoseState(contextualTreeMotionState?.status),
-    }))
+    publish(renderedAppliedPose)
     return () => publish(null)
-  }, [
-    contextualMotionState,
-    contextualTreeMotionState,
-    model,
-    renderError,
-    renderedTreePose,
-    resolvedFixedFaceId,
-  ])
+  }, [renderedAppliedPose])
   const motionFaceLabels: readonly FoldPreviewMotionFaceLabel[] =
     model?.kind === 'single_fold'
     || (
@@ -4328,6 +4336,14 @@ export function FoldPreview({
               summary={currentCollisionSummary}
               description={collisionDescription}
             />
+            {nativeCollisionState ? (
+              <PoseBoundNativeStaticCollisionBadge
+                state={nativeCollisionState}
+                observedPose={nativeCollisionObservedPose ?? null}
+                renderedPose={renderedAppliedPose}
+                onRetry={onRetryNativeCollision}
+              />
+            ) : null}
             {motionView ? (
               <span
                 className={`fold-preview-motion ${motionBadgeClass}`}

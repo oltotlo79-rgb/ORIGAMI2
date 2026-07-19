@@ -57,6 +57,7 @@ export type PaperSnapshot = {
 }
 
 export type ProjectSnapshot = {
+  project_instance_id: string
   project_id: string
   name: string
   current_path: string | null

@@ -38,8 +38,9 @@ measured envelopeはexact pointer/pose authorityとdirect-lift各点のradius内
 だけで、独立per-face boxを共有点へweldしたり貫通幾何へ使ったりしない。
 400 mm実fixtureでは角起点V字の正順/逆順・全root・指定全角度を貫通0、中点起点を
 135/179度だけ貫通、90/91/180度は`Unresolved`として固定した。入力厚さはbit表現まで
-`+0.0`だけを許可する。正厚、共有ヒンジ、polygon material face、public safe proof、
-desktop current-pose診断・production UI・SIM-010への接続は未実装であり、
+`+0.0`だけを許可する。このprivate scan checkpoint時点では、正厚、共有ヒンジ、
+polygon material face、public safe proof、desktop current-pose診断・production UI・
+SIM-010への接続は未実装であり、
 SIM-010の状態と完成率は変更しない。
 
 2026-07-19追記: Cayley有理核はallocation件数・個別bit・総bitを含む有限workの
@@ -73,8 +74,35 @@ clampし、逐次残量と構造aggregate preflightを共有する。旧exact sn
 角起点山谷Vの指定8角度を正逆source collection・全3 rootで肯定0件、辺中点山山Vの
 135/179度だけを肯定1件、90/91/180度を判定保留として固定した。`-0.0`と正厚はこの
 肯定経路へ入らない。正厚証拠、有限ヒンジcorridor、連続衝突、場所別層順transport、
-原子的`ApplyStackedFold`および利用者向け理由表示は未完成なので、MUST集計、
+原子的`ApplyStackedFold`および利用者向け理由表示はこの公開入口checkpoint時点では
+未完成なので、MUST集計、
 SIM-010の未着手状態、完成率36.9%は変更しない。
+
+2026-07-19追記: 表示中の完全姿勢をproject instance・project ID・revision・固定面・
+全hinge角度とともにnative current-pose authorityへ適用するproduction commandと、
+同じpose generationへ束縛した読み取り専用の静的衝突診断commandを接続した。
+generationはJavaScript精度を失わない10進文字列で返し、frontendはapplyと診断の
+binding 4項目が完全一致した結果だけを採用する。FoldPreviewが同じrenderで算出した
+実描画姿勢keyを親の観測姿勢keyと照合し、新姿勢または移動中姿勢の最初のpaintから
+旧い緑表示を隠す。native apply・診断は1 transactionずつ直列実行し、待機要求は
+同一姿勢をまとめながら最新の異なる姿勢だけへcoalesceする。C certificate発行後だけ
+「横断貫通なし」、証明済み横断は「安全認定不可」とし、証拠不足・資源上限・
+状態不整合は理由をバッジ本文にも表示する。確認中・姿勢確定待ちは`status` / `polite`、
+終端blockingだけは`alert` / `assertive`とし、実行失敗時は現表示姿勢を明示的に
+再試行できる。
+診断は操作を巻き戻す権限を持たず、native連続停止は未接続である。
+
+正厚については、exact lift後の半紙厚、有限軸、unit・軸直交のco-oriented材料法線、
+`cos²(θ/2) > 2^-52`、`h² <= L² cos²(θ/2)`を証明するprivate scalarに加え、
+1ヒンジ・2三角形面限定で、同じexact poseのissuer/version、左右共有辺の逆向き境界、
+rest支持線の対向材料半平面、current共有端点、local `+Y`列、少なくとも一方の
+三角形が有限軸区間内にあることを再認証するborrow tokenを追加した。tokenは
+発行時の紙厚bit列を保持し、同一exact object・左右面/hinge index・同一紙厚bit列へ
+private consumerが再結合できる場合だけ利用できる。全三角形対の
+完全交差集合corridor包含、E/F位置・法線誤差、polygon・多ヒンジがそろうまで
+本番許容へ接続しない。このprivate基盤は加算せず、利用者向けnative現在姿勢診断の
+接続だけを3D領域へ計上して全体完成率を37.2%へ更新した。
+MUST行の状態集計は **実装済み32 / 部分実装27 / 未着手28** のままである。
 
 ## プロジェクトと紙
 
@@ -124,7 +152,7 @@ SIM-010の未着手状態、完成率36.9%は変更しない。
 | VAL-001 | 実装済み | 幾何・topology検証とUI結果表示 |
 | VAL-002 | 部分実装 | 紙内部の単一頂点・ゼロ厚モデルで川崎・前川条件を全頂点へ検証し、対象外・構造遮断・次数上限と両条件の根拠をUI表示。指定山谷の局所十分性、他の局所条件、厚さモデルを残す |
 | VAL-003 | 実装済み | 凸material face対象の`convex_faces_facewise_v1`で、時間制限つきの可・不可・不明3値判定と、証明済みの場所別`facewise_layer_order_v1`をUIから実行・確認できる。厚さ、連続折り経路、対象外形状は保証せず、不明へ分離する |
-| VAL-004 | 部分実装 | 選択1ヒンジの線形CCDでは衝突直前停止と理由表示が動作。有限ヒンジで層ずらしが必要になる深角も専用理由で判定不能停止する。全3D折り操作経路への適用を残す |
+| VAL-004 | 部分実装 | 選択1ヒンジの線形CCDでは衝突直前停止と理由表示が動作。加えて表示済みnative姿勢の厚さ`+0.0`横断貫通を厳密診断し、安全認定不可・判定保留を表示する。native診断自体による連続経路停止、正厚、全3D折り操作経路への適用を残す |
 | VAL-005 | 実装済み | 全体平坦折り判定で1〜300秒の時間制限を選択でき、単調phase・経過時間・上限付き件数を表示する。時間切れは不可でなく不明として返す |
 | VAL-006 | 実装済み | 全体平坦折りpanelから実行中jobを中止でき、協調checkpointと世代照合により中止・再中止・旧job完了を現在結果へ混入させない |
 | VAL-007 | 実装済み | immutable snapshot取得後にproject lockを解放し、native background workerで解析する。編集とUI操作を継続でき、進捗はpollingで受け取る |
@@ -140,11 +168,11 @@ SIM-010の未着手状態、完成率36.9%は変更しない。
 | SIM-003 | 部分実装 | 3D把持は選択1ヒンジ回転へ限定 |
 | SIM-004 | 実装済み | 固定面選択、reroot、従属面連動 |
 | SIM-005 | 実装済み | 表示厚と判定厚を分離し、正式仕様`centered_mid_surface_v1`で衝突へ反映。有限ヒンジ長を超えるcorridorは層ずらし未再現として判定不能へ退避 |
-| SIM-006 | 部分実装 | 1ヒンジの安全停止・原因表示あり。全操作経路には未対応 |
+| SIM-006 | 部分実装 | 1ヒンジの安全停止・原因表示に加え、同一generationへ束縛したnative静的診断を3D画面へ表示。native診断は読み取り専用で、全操作経路の適用遮断・巻戻しには未対応 |
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
-| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。さらにcanonical exact `E`と、同じissuer-bound poseのbinary64 affine像をactual-mmへ直接liftした実在triangleの双方をzero-width横断で照合するprivate scanを、三角形material face・厚さ`+0.0`限定で実装し、native公開静的衝突入口へblocking専用で接続した。pointer-bound measured envelopeはauthorityとdirect-lift containmentだけを再検証し、boxを肯定幾何へ使わない。topologyを内部導出して全canonical pairを一つのatomic meterで走査し、400 mmの角起点/中点fixtureを正逆source collection・全root・指定角度で固定した。正厚、共有ヒンジ、polygon material face、H64既定上限内の完全成功、renderer、public safe proof、desktop current-pose診断・production UI、有限ヒンジcorridor、連続衝突、cell-order transport、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
+| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。canonical exact `E`と同じissuer-bound binary64姿勢をactual-mmへ直接liftした実在triangleのzero-width横断scanをnative公開静的入口へblocking専用で接続し、desktopのcurrent-pose apply・同generation診断・production警告UIまで到達した。正厚では有限半径scalarに加え、1ヒンジ・2三角形面限定で逆向き共有境界、対向材料半平面、current共有端点、local材料法線、有限軸方向範囲およびbit-exactな紙厚を同じexact poseへ束縛するprivate tokenまで固定した。全三角形対の完全交差集合corridor包含、E/F位置・法線誤差、正厚の本番証明、共有ヒンジ一般、polygon material face、H64既定上限内の完全成功、native連続衝突、cell-order transport、原子的`ApplyStackedFold` commandは未実装である。これらの完成前は折り重ねUIへ着手しない |
 
 ## 折り手順
 

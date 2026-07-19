@@ -85,6 +85,16 @@ import type {
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
+import {
+  createNativeStaticCollisionInspectionCoordinator,
+  createNativeStaticCollisionNativeTransport,
+  nativeStaticCollisionPoseKey,
+  type NativeStaticCollisionPose,
+} from './lib/nativeStaticCollisionNative'
+import {
+  selectBoundNativeStaticCollisionView,
+  type BoundNativeStaticCollisionView,
+} from './lib/nativeStaticCollisionView'
 import type { InstructionStepPresentation } from './lib/instructionTimeline'
 import { formatPaperThicknessInput } from './lib/paperThicknessInput'
 import { PaperThicknessInput } from './components/PaperThicknessInput'
@@ -137,6 +147,13 @@ const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> =
   { kind: 'angle', label: '角度' },
 ]
 
+const nativeStaticCollisionTransport =
+  createNativeStaticCollisionNativeTransport()
+const nativeStaticCollisionCoordinator =
+  createNativeStaticCollisionInspectionCoordinator(
+    nativeStaticCollisionTransport,
+  )
+
 type BenchmarkRun = Readonly<{
   requestId: number
   requestedEdgeCount: number
@@ -173,6 +190,15 @@ function App() {
   })
   const [appliedFoldPose, setAppliedFoldPose] =
     useState<FoldPreviewAppliedPoseSnapshot | null>(null)
+  const [boundNativeStaticCollisionView, setBoundNativeStaticCollisionView] =
+    useState<BoundNativeStaticCollisionView>({
+      requestKey: null,
+      view: { kind: 'idle' },
+    })
+  const [
+    nativeStaticCollisionRetrySequence,
+    setNativeStaticCollisionRetrySequence,
+  ] = useState(0)
   const [manualPoseChangeSequence, setManualPoseChangeSequence] = useState(0)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatus, setBenchmarkStatus] = useState('未実行')
@@ -259,6 +285,35 @@ function App() {
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
+  const nativeStaticCollisionRequest = useMemo(() => {
+    const project = nativeSnapshot
+    const pose = appliedFoldPose
+    if (
+      !isNativeCoreAvailable()
+      || !project
+      || !pose
+      || pose.state === 'running'
+      || pose.projectId !== project.project_id
+      || pose.revision !== project.revision
+    ) return null
+    const request: NativeStaticCollisionPose = {
+      projectInstanceId: project.project_instance_id,
+      projectId: project.project_id,
+      revision: project.revision,
+      fixedFaceId: pose.fixedFaceId,
+      completeHingeAngles: pose.hingeAngles.map((angle) => ({
+        edgeId: angle.edgeId,
+        angleDegrees: angle.angleDegrees,
+      })),
+    }
+    const requestKey = nativeStaticCollisionPoseKey(request)
+    return requestKey ? { requestKey, request } : null
+  }, [appliedFoldPose, nativeSnapshot])
+  const nativeStaticCollisionState = selectBoundNativeStaticCollisionView(
+    appliedFoldPose?.state === 'running',
+    nativeStaticCollisionRequest?.requestKey ?? null,
+    boundNativeStaticCollisionView,
+  )
   const modalOpen = newProjectOpen
     || diagnosticsDialogOpen
     || foldImportPreview !== null
@@ -647,6 +702,44 @@ function App() {
         setCoreStatus(`コアエラー: ${String(error)}`)
       })
   }, [applySnapshot])
+
+  useEffect(() => {
+    const current = nativeStaticCollisionRequest
+    if (!current) {
+      setBoundNativeStaticCollisionView({
+        requestKey: null,
+        view: { kind: 'idle' },
+      })
+      return
+    }
+
+    let disposed = false
+    setBoundNativeStaticCollisionView({
+      requestKey: current.requestKey,
+      view: { kind: 'checking' },
+    })
+    void nativeStaticCollisionCoordinator
+      .inspectLatest(current.request)
+      .then((diagnostic) => {
+        if (!disposed) {
+          setBoundNativeStaticCollisionView({
+            requestKey: current.requestKey,
+            view: { kind: 'ready', diagnostic },
+          })
+        }
+      }).catch(() => {
+        if (!disposed) {
+          setBoundNativeStaticCollisionView({
+            requestKey: current.requestKey,
+            view: { kind: 'failed' },
+          })
+        }
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [nativeStaticCollisionRequest, nativeStaticCollisionRetrySequence])
 
   useEffect(() => {
     if (!isNativeCoreAvailable() || !nativeSnapshot) return
@@ -2174,6 +2267,22 @@ function App() {
                   : undefined
               }
               onAppliedPoseChange={setAppliedFoldPose}
+              nativeCollisionState={
+                isNativeCoreAvailable() && foldPreviewModel
+                  ? nativeStaticCollisionState
+                  : undefined
+              }
+              nativeCollisionObservedPose={appliedFoldPose}
+              onRetryNativeCollision={() => {
+                const current = nativeStaticCollisionRequest
+                if (!current) return
+                setBoundNativeStaticCollisionView({
+                  requestKey: current.requestKey,
+                  view: { kind: 'checking' },
+                })
+                setNativeStaticCollisionRetrySequence((current) =>
+                  current === Number.MAX_SAFE_INTEGER ? 0 : current + 1)
+              }}
               model={foldPreviewModel}
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}

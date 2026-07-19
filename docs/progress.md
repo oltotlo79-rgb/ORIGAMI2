@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約37.9%（2026-07-19、暫定の重み付き概算）**
+**全体完成率: 約38.0%（2026-07-19、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値37.79%に対し、UI-005のライト・ダーク・OS連動とUI-006のWindows/macOS共通標準ショートカットを利用者経路へ接続し、「多言語・設定・配布・QA」を40%から42%へ更新した。差分0.10ポイント（全体比率5% × 2ポイント）を加えた37.89%を小数第1位へ丸めて表示している。privateな正厚三角柱交差核とexact E有限ヒンジ回廊証明、UI未接続の数式評価基盤は利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、37.89%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値37.89%に対し、UI-004のパネル位置・大きさ変更と端末保存を利用者経路へ接続し、「多言語・設定・配布・QA」を42%から44%へ更新した。差分0.10ポイント（全体比率5% × 2ポイント）を加えた37.99%を小数第1位へ丸めて表示している。privateな正厚三角柱交差核とexact E/F有限ヒンジ回廊証明、UI未接続の数式評価基盤は利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、37.99%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -20,12 +20,13 @@
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
 | 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
-| 多言語・設定・配布・QA | 5% | 42% | 2.10% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、ライト/ダーク/OS連動、Windows/macOS標準shortcutを実装。i18n、設定拡張、更新、GitHub Releases配布を残す |
+| 多言語・設定・配布・QA | 5% | 44% | 2.20% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、ライト/ダーク/OS連動、Windows/macOS標準shortcut、保存可能な作業レイアウトを実装。i18n、shortcut変更、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **37.89%** | — |
+| **合計** | **100%** | — | **37.99%** | — |
 
 ## 完了
 
+- UI-004として、2D/3Dの左右順序、プロパティパネルの左右位置、2D領域比率、プロパティ幅、折り手順高さを利用者が変更できる実グリッドへ接続した。3本の境界はpointer drag、方向を考慮した矢印キー、Home/End、double click初期化に対応し、ARIA separatorの方向・最小値・最大値・現在値・操作対象を公開する。設定は厳密なversion 1 allowlist、1,024 byte上限、数値範囲を検証して`origami2.workspace-layout`へ例外安全に保存し、不正・旧・過大データは既定配置へ閉じる。全体初期化と個別位置変更をステータスバーから行え、モーダル表示中は新しいタイムライン境界も操作不能にした。frontend Node 1,091件、DOM 68件、lint、production build、diff-checkを通し、browser MCPで3領域の実寸変化、2D/3D・プロパティの左右移動、keyboard resize、保存wire、再読込復元、初期化、console error 0を実画面確認した。UI-004を未着手から実装済みへ更新し、現在のMUST集計を37 / 24 / 26、完成率を37.99%（表示38.0%）とした
 - UI-005として、`system / light / dark`だけを受理する端末theme store、`origami2.theme`への例外安全な保存、React mount前の初期適用、system時だけの`matchMedia`追従、manual時の購読解除とdisposeを実装した。ステータスバーのnative selectとpoliteな実効テーマ表示、`html[data-theme]`へ限定したdark CSS、native controlの`color-scheme`を接続し、dark主要tokenは文字4.5:1・UI境界/線3:1以上を自動回帰した。UI-006として、Ctrl/Cmd+N/O/S/Shift+Sを新規・開く・保存・別名保存へ接続し、既存のUndo/Redo・3D操作と合わせてWindows/macOSの同一pure resolverとARIA shortcutを維持した。repeat、IME、Alt、Ctrl+Meta同時、入力欄、modal、busy、不正eventは安全側で無視する。frontend Node 1079件、DOM 63件、lint、production buildを通し、browser MCPでsystem→dark→light→system、`data-theme`、`color-scheme`、localStorage、再読込永続化、Ctrl+Nのdialog、全ARIA mappingを実画面確認した。UI-005/006を部分実装から実装済みへ更新し、現在のMUST集計を36 / 24 / 27、完成率を37.89%（表示37.9%）とした
 - LIN-003として、Boundary（実線）、Mountain（一点鎖線）、Valley（破線）、Auxiliary（丸端点線）、Cut（二点鎖線）の5線種を共通定義へ集約し、2D Canvas、FOLD/SVG取込プレビュー、SVG書き出しへ一貫して適用した。色に依存せず白黒でも相互識別でき、Canvas色は白い紙面に対して3:1以上のコントラストを保つ。SVG取込では`stroke-linecap`のcascade、継承、`!important`と`butt/round/square`別groupをRust parserからTauri DTO、strict TypeScript parser、実見本まで伝搬し、不正値・旧wire・過大入力・生値反射を安全側で拒否する。frontend Node 1063件、DOM 60件、`ori-formats` 148件、desktop native 241件、lint、production build、Cargo check、Clippy、fmt、diff-checkを通過し、独立監査はCritical / High / Medium / Lowすべて0件だった。browser MCPでも5線種の実computed style、白い取込紙面、丸端点線を確認した。LIN-003を部分実装から実装済みへ更新し、現在のMUST集計を34 / 26 / 27、完成率を37.79%（表示37.8%）とした
 - PRJ-008の長さ表示単位をprojectへ保存し、mm、cm、inch、選択した一意な輪郭辺を1とする紙辺比を、紙寸法、2D計測、頂点・線座標、紙厚、3D紙厚説明へ一貫して適用した。内部幾何とnative IPCはmm正本を維持する。紙辺比の無効参照は自動rebaseせず警告とmm修復表示へ閉じ、基準辺の分割・削除をCoreで原子的に拒否する。未編集のbinary64 mm値はsource tokenで保持し、換算表示中の紙厚stepも表示値の再乗算でなく元の物理mm値へdecimal 0.01 mmを適用する。輪郭参照候補は1,024辺getter回帰を含む線形indexで収集し、FOLD/SVG/PDF/DXF bytes不変、保存互換、Undo/Redo、dirty、fingerprint、3D意味姿勢、DOM/a11y、browser MCPのmm→cm・水平/垂直紙辺比を回帰した。PRJ-008を未着手から実装済みへ更新し、現在のMUST集計を33 / 27 / 27、完成率を37.64%（表示37.6%）とした

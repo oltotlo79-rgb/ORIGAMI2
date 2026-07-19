@@ -117,10 +117,18 @@ test('the FOLD modal makes all background regions inert', () => {
   )
   assert.equal(
     appSource.match(/inert=\{modalOpen\}/gu)?.length,
-    4,
+    5,
+    'titlebar, workspace, timeline separator, timeline, and statusbar must all be inert',
   )
   assert.match(appSource, /<header className="titlebar" inert=\{modalOpen\}>/u)
-  assert.match(appSource, /<section className="workspace" inert=\{modalOpen\}>/u)
+  assert.match(
+    appSource,
+    /<section className="workspace" inert=\{modalOpen\}[^>]*>/u,
+  )
+  assert.match(
+    appSource,
+    /<div className="workspace-timeline-separator" inert=\{modalOpen\}>/u,
+  )
   assert.match(
     appSource,
     /<InstructionTimelinePanel[\s\S]*?inert=\{modalOpen\}/u,

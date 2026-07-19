@@ -1,5 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
+  type CSSProperties,
   type FormEvent,
   useCallback,
   useEffect,
@@ -7,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react'
 import {
   CreaseCanvas,
@@ -26,6 +28,8 @@ import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import { ThemeControl } from './components/ThemeControl'
+import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
+import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import {
   addEdge,
   addVertex,
@@ -157,6 +161,7 @@ import { createGlobalFlatFoldabilityNativeTransport } from './lib/globalFlatFold
 import { reportUnexpected } from './lib/diagnosticsRuntime'
 import { isDiagnosticsShareAvailable } from './lib/diagnosticsShare'
 import { resolveFileKeyboardShortcut } from './lib/fileKeyboardShortcut'
+import { workspaceLayoutStore } from './lib/workspaceLayout'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -200,7 +205,27 @@ type FixedFaceChoice = Readonly<{
   faceId: string | null
 }>
 
+type WorkspaceLayoutStyle = CSSProperties & {
+  '--workspace-editor-two-d-share': string
+  '--workspace-editor-three-d-share': string
+  '--workspace-inspector-width': string
+  '--workspace-timeline-height': string
+}
+
 function App() {
+  const workspaceLayout = useSyncExternalStore(
+    workspaceLayoutStore.subscribe,
+    workspaceLayoutStore.getSnapshot,
+    workspaceLayoutStore.getServerSnapshot,
+  )
+  const workspaceLayoutStyle: WorkspaceLayoutStyle = {
+    '--workspace-editor-two-d-share':
+      `${workspaceLayout.editorTwoDPercent}fr`,
+    '--workspace-editor-three-d-share':
+      `${100 - workspaceLayout.editorTwoDPercent}fr`,
+    '--workspace-inspector-width': `${workspaceLayout.inspectorWidthPx}px`,
+    '--workspace-timeline-height': `${workspaceLayout.timelineHeightPx}px`,
+  }
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [foldAngle, setFoldAngle] = useState(52)
@@ -2129,7 +2154,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={workspaceLayoutStyle}>
       <header className="titlebar" inert={modalOpen}>
         <div className="brand-mark" aria-hidden="true">◇</div>
         <strong>ORIGAMI2</strong>
@@ -2247,7 +2272,7 @@ function App() {
         </nav>
       </header>
 
-      <section className="workspace" inert={modalOpen}>
+      <section className="workspace" inert={modalOpen} id="workspace-main" data-inspector-side={workspaceLayout.inspectorSide}>
         <aside className="tool-rail" aria-label="作図ツール">
           {[
             ['select', '↖', '選択'],
@@ -2276,8 +2301,12 @@ function App() {
           ))}
         </aside>
 
-        <section className="editor-grid">
-          <article className="panel crease-panel">
+        <section
+          id="workspace-editor-panels"
+          className="editor-grid"
+          data-panel-order={workspaceLayout.panelOrder}
+        >
+          <article id="crease-editor-panel" className="panel crease-panel">
             <div className="panel-heading">
               <span>2D 展開図</span>
               <span className="panel-meta">
@@ -2340,7 +2369,9 @@ function App() {
             />
           </article>
 
-          <article className="panel preview-panel">
+          <WorkspaceLayoutSeparator kind="editor" />
+
+          <article id="fold-preview-panel" className="panel preview-panel">
             <div className="panel-heading">
               <span>3D プレビュー</span>
               <span className={foldPreviewStatusClass}>{foldPreviewStatus}</span>
@@ -2530,7 +2561,9 @@ function App() {
           </article>
         </section>
 
-        <aside className="inspector panel">
+        <WorkspaceLayoutSeparator kind="inspector" />
+
+        <aside id="workspace-inspector-panel" className="inspector panel">
           <div className="panel-heading">プロパティ</div>
           <section>
             <h2>選択要素</h2>
@@ -3141,6 +3174,10 @@ function App() {
         </aside>
       </section>
 
+      <div className="workspace-timeline-separator" inert={modalOpen}>
+        <WorkspaceLayoutSeparator kind="timeline" />
+      </div>
+
       <InstructionTimelinePanel
         snapshot={nativeSnapshot}
         appliedPose={appliedFoldPose}
@@ -3367,6 +3404,7 @@ function App() {
         <span>{coreStatus}</span>
         <span>スナップ: {snapStatusLabel}</span>
         <span className="status-spacer" />
+        <WorkspaceLayoutControl />
         <ThemeControl />
         {isDiagnosticsShareAvailable() && (
           <button

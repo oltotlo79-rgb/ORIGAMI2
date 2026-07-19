@@ -15,7 +15,12 @@ test('the native-only status action opens one modal that makes every background 
   assert.match(appSource, />\s*診断情報\s*</u)
   assert.equal(
     appSource.match(/inert=\{modalOpen\}/gu)?.length,
-    4,
+    5,
+    'titlebar, workspace, timeline separator, timeline, and statusbar must all be inert',
+  )
+  assert.match(
+    appSource,
+    /<div className="workspace-timeline-separator" inert=\{modalOpen\}>/u,
   )
   assert.match(
     appSource,

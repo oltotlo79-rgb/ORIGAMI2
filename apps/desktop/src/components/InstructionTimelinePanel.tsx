@@ -486,7 +486,11 @@ export function InstructionTimelinePanel({
   )
 
   return (
-    <section className="timeline panel" inert={inert}>
+    <section
+      id="instruction-timeline-panel"
+      className="timeline panel"
+      inert={inert}
+    >
       <div className="timeline-controls">
         <button
           type="button"

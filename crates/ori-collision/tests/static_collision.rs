@@ -153,7 +153,34 @@ fn one_material_face_has_a_complete_zero_pair_proof_at_all_thicknesses() {
         assert_eq!(proof.face_count(), 1);
         assert_eq!(proof.expected_unordered_face_pairs(), 0);
         assert_eq!(proof.analyzed_unordered_face_pairs(), 0);
+        assert_eq!(proof.expected_triangle_pairs(), 0);
+        assert_eq!(proof.analyzed_triangle_pairs(), 0);
     }
+
+    let pose = model.solve(None, &no_angles()).expect("planar pose");
+    let proof = prove_static_collision_geometry(
+        &model,
+        &pose,
+        fixture.paper.thickness_mm,
+        StaticCollisionLimits {
+            max_faces: 1,
+            max_unordered_face_pairs: 0,
+            max_boundary_vertices_per_face: 0,
+            max_total_boundary_vertices: 0,
+            max_triangles_per_face: 0,
+            max_total_triangles: 0,
+            max_triangulation_work_per_face: 0,
+            max_total_triangulation_work: 0,
+            max_registry_authentication_work: 0,
+            max_triangle_pairs_per_face_pair: 0,
+            max_total_triangle_pairs: 0,
+            max_boundary_relation_work_per_face_pair: 0,
+            max_total_boundary_relation_work: 0,
+        },
+    )
+    .expect("zero-pair proof does not allocate pair geometry");
+    assert_eq!(proof.expected_triangle_pairs(), 0);
+    assert_eq!(proof.analyzed_triangle_pairs(), 0);
 }
 
 #[test]
@@ -231,6 +258,7 @@ fn invalid_thickness_and_resource_exhaustion_never_issue_a_proof() {
             StaticCollisionLimits {
                 max_faces: 0,
                 max_unordered_face_pairs: 0,
+                ..StaticCollisionLimits::default()
             },
         ),
         StaticCollisionError::ResourceLimitExceeded,
@@ -271,6 +299,7 @@ fn multi_face_pose_is_blocking_until_every_pair_has_native_evidence() {
             StaticCollisionLimits {
                 max_faces: usize::MAX,
                 max_unordered_face_pairs: 0,
+                ..StaticCollisionLimits::default()
             },
         ),
         StaticCollisionError::ResourceLimitExceeded,

@@ -1,4 +1,4 @@
-//! Exact zero-thickness evidence boundary for one authenticated triangle pair.
+//! Exact zero-thickness evidence boundary for authenticated material faces.
 //!
 //! This module is deliberately private. `TopologyRelation` and
 //! `IntersectionEvidenceV2` are public policy labels, not certificates, so a
@@ -6,36 +6,1010 @@
 //! dispatcher through this boundary.
 //!
 //! `ori-kinematics` exposes a read-only canonical face-boundary registry from
-//! the exact private source retained by `MaterialTreePose`. Production
-//! construction nevertheless remains blocked until collision owns a
-//! deterministic authenticated triangulation and proves complete
-//! triangle-by-triangle coverage for each whole face pair. Treating an
-//! arbitrary polygon as one triangle would create a false-safe proof.
+//! the exact private source retained by `MaterialTreePose`; its prepared-tree
+//! boundary has already passed exact simple-polygon, distinct-coordinate and
+//! non-zero-edge validation. This module independently revalidates the
+//! collision-facing registries, deterministically ear-clips each whole face in
+//! exact binary64 arithmetic, and proves complete triangle-pair coverage.
+//!
+//! A triangle edge is not automatically a material boundary: lower-dimensional
+//! contact on an ear-clipping diagonal is checked against both authenticated
+//! outer boundaries. If that face-level relation cannot be proved, the result
+//! is `Indeterminate`, never a false-safe `Touching`. Shared-vertex allowances
+//! require every contact to be the one authenticated vertex. Shared-hinge
+//! contact requires complete coverage of the authenticated edge and still
+//! returns `RequiresHingeModel`; no finite hinge exception is granted here.
+//! The exact affine lift preserves each face plane but deliberately does not
+//! weld independently solved face transforms. A noncardinal shared endpoint
+//! that is not bit-exact under both affine images is blocking
+//! `EvidenceUnavailable`; canonical watertight hinge geometry is a later
+//! prerequisite for the finite hinge model.
 
 use std::cmp::Ordering;
 
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
-use ori_kinematics::{MaterialTreePose, Point3};
+use num_traits::{One, Signed, Zero};
+use ori_domain::{EdgeId, FaceId, VertexId};
+use ori_kinematics::{MaterialTreePose, Point3, RigidTransform};
 
 use crate::{
     IntersectionEvidenceV2, TopologyContactDecision, TopologyRelation,
     classify_runtime_topology_contact_v2,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ZeroThicknessAnalysisError {
+    EvidenceUnavailable,
+    ResourceLimitExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RestBoundaryVertex {
+    id: VertexId,
+    point: Point3,
+}
+
+fn triangulate_rest_boundary(
+    boundary: &[RestBoundaryVertex],
+    max_boundary_vertices: usize,
+    max_triangles: usize,
+    max_work: usize,
+) -> Result<Vec<[usize; 3]>, ZeroThicknessAnalysisError> {
+    if boundary.len() > max_boundary_vertices {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    }
+    if boundary.len() < 3 {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    if estimated_triangulation_work(boundary.len())? > max_work {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    }
+    for index in 0..boundary.len() {
+        if boundary[..index]
+            .iter()
+            .any(|previous| previous.id == boundary[index].id)
+        {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let point = ExactPoint3::from_point(boundary[index].point);
+        if boundary[..index]
+            .iter()
+            .any(|previous| ExactPoint3::from_point(previous.point) == point)
+        {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+    }
+    if !is_simple_rest_boundary(boundary) {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+
+    let mut active = Vec::new();
+    active
+        .try_reserve_exact(boundary.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    active.extend(0..boundary.len());
+    remove_collinear_rest_vertices(boundary, &mut active)?;
+    if active.len() < 3 || !simplified_boundary_covers_original_edges(boundary, &active) {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let mut simplified = Vec::new();
+    simplified
+        .try_reserve_exact(active.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    simplified.extend(active.iter().copied());
+
+    let polygon_area = indexed_polygon_double_area(boundary, &active);
+    if polygon_area.is_zero() {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let positive_orientation = polygon_area.is_positive();
+    let expected_triangles = active
+        .len()
+        .checked_sub(2)
+        .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+    if expected_triangles > max_triangles {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    }
+    let mut triangles = Vec::new();
+    triangles
+        .try_reserve_exact(expected_triangles)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+
+    while active.len() > 3 {
+        let ear_position = (0..active.len())
+            .filter(|position| is_exact_ear(boundary, &active, *position, positive_orientation))
+            .min_by_key(|position| boundary[active[*position]].id.canonical_bytes())
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        let previous = active[(ear_position + active.len() - 1) % active.len()];
+        let current = active[ear_position];
+        let next = active[(ear_position + 1) % active.len()];
+        triangles.push(canonical_triangle_cycle(
+            boundary,
+            [previous, current, next],
+        ));
+        active.remove(ear_position);
+    }
+    triangles.push(canonical_triangle_cycle(
+        boundary,
+        [active[0], active[1], active[2]],
+    ));
+    triangles.sort_unstable_by_key(|triangle| {
+        triangle.map(|index| boundary[index].id.canonical_bytes())
+    });
+
+    if triangles.len() != expected_triangles
+        || !triangulation_covers_boundary(
+            boundary,
+            &simplified,
+            &triangles,
+            &polygon_area,
+            positive_orientation,
+        )?
+    {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    Ok(triangles)
+}
+
+fn is_simple_rest_boundary(boundary: &[RestBoundaryVertex]) -> bool {
+    for first in 0..boundary.len() {
+        let first_next = (first + 1) % boundary.len();
+        for second in (first + 1)..boundary.len() {
+            let second_next = (second + 1) % boundary.len();
+            if first == second
+                || first == second_next
+                || first_next == second
+                || first_next == second_next
+            {
+                continue;
+            }
+            if exact_segments_intersect(
+                boundary[first].point,
+                boundary[first_next].point,
+                boundary[second].point,
+                boundary[second_next].point,
+            ) {
+                return false;
+            }
+        }
+    }
+    !rest_polygon_double_area(boundary).is_zero()
+}
+
+fn remove_collinear_rest_vertices(
+    boundary: &[RestBoundaryVertex],
+    active: &mut Vec<usize>,
+) -> Result<(), ZeroThicknessAnalysisError> {
+    loop {
+        let mut saw_collinear = false;
+        let mut selected: Option<usize> = None;
+        for position in 0..active.len() {
+            let previous = active[(position + active.len() - 1) % active.len()];
+            let current = active[position];
+            let next = active[(position + 1) % active.len()];
+            if !exact_orientation(
+                boundary[previous].point,
+                boundary[current].point,
+                boundary[next].point,
+            )
+            .is_zero()
+            {
+                continue;
+            }
+            saw_collinear = true;
+            if !exact_point_on_segment(
+                boundary[current].point,
+                boundary[previous].point,
+                boundary[next].point,
+            ) {
+                continue;
+            }
+            if selected.is_none_or(|candidate| {
+                boundary[current].id.canonical_bytes()
+                    < boundary[active[candidate]].id.canonical_bytes()
+            }) {
+                selected = Some(position);
+            }
+        }
+        if !saw_collinear {
+            return Ok(());
+        }
+        let Some(position) = selected else {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        };
+        active.remove(position);
+        if active.len() < 3 {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+    }
+}
+
+fn simplified_boundary_covers_original_edges(
+    boundary: &[RestBoundaryVertex],
+    simplified: &[usize],
+) -> bool {
+    (0..boundary.len()).all(|index| {
+        let next = (index + 1) % boundary.len();
+        (0..simplified.len()).any(|edge| {
+            let start = simplified[edge];
+            let end = simplified[(edge + 1) % simplified.len()];
+            exact_point_on_segment(
+                boundary[index].point,
+                boundary[start].point,
+                boundary[end].point,
+            ) && exact_point_on_segment(
+                boundary[next].point,
+                boundary[start].point,
+                boundary[end].point,
+            )
+        })
+    })
+}
+
+fn is_exact_ear(
+    boundary: &[RestBoundaryVertex],
+    active: &[usize],
+    position: usize,
+    positive_orientation: bool,
+) -> bool {
+    let previous = active[(position + active.len() - 1) % active.len()];
+    let current = active[position];
+    let next = active[(position + 1) % active.len()];
+    let orientation = exact_orientation(
+        boundary[previous].point,
+        boundary[current].point,
+        boundary[next].point,
+    );
+    if orientation.is_zero() || orientation.is_positive() != positive_orientation {
+        return false;
+    }
+    if active.iter().copied().any(|candidate| {
+        candidate != previous
+            && candidate != current
+            && candidate != next
+            && exact_point_in_or_on_triangle(
+                boundary[candidate].point,
+                boundary[previous].point,
+                boundary[current].point,
+                boundary[next].point,
+                positive_orientation,
+            )
+    }) {
+        return false;
+    }
+    for edge in 0..active.len() {
+        let start = active[edge];
+        let end = active[(edge + 1) % active.len()];
+        if start == previous || start == next || end == previous || end == next {
+            continue;
+        }
+        if exact_segments_intersect(
+            boundary[previous].point,
+            boundary[next].point,
+            boundary[start].point,
+            boundary[end].point,
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+fn canonical_triangle_cycle(boundary: &[RestBoundaryVertex], triangle: [usize; 3]) -> [usize; 3] {
+    let start = (0..3)
+        .min_by_key(|position| boundary[triangle[*position]].id.canonical_bytes())
+        .unwrap_or(0);
+    [
+        triangle[start],
+        triangle[(start + 1) % 3],
+        triangle[(start + 2) % 3],
+    ]
+}
+
+fn triangulation_covers_boundary(
+    boundary: &[RestBoundaryVertex],
+    simplified: &[usize],
+    triangles: &[[usize; 3]],
+    polygon_area: &BigRational,
+    positive_orientation: bool,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    let mut area = BigRational::zero();
+    let Some(edge_capacity) = triangles.len().checked_mul(3) else {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    };
+    let mut triangle_edges = Vec::new();
+    triangle_edges
+        .try_reserve_exact(edge_capacity)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let mut boundary_edges = Vec::new();
+    boundary_edges
+        .try_reserve_exact(simplified.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for edge in 0..simplified.len() {
+        boundary_edges.push(canonical_index_edge(
+            simplified[edge],
+            simplified[(edge + 1) % simplified.len()],
+        ));
+    }
+    boundary_edges.sort_unstable();
+    for triangle in triangles {
+        let triangle_area = exact_orientation(
+            boundary[triangle[0]].point,
+            boundary[triangle[1]].point,
+            boundary[triangle[2]].point,
+        );
+        if triangle_area.is_zero() || triangle_area.is_positive() != positive_orientation {
+            return Ok(false);
+        }
+        area += triangle_area;
+        for edge in 0..3 {
+            triangle_edges.push(canonical_index_edge(
+                triangle[edge],
+                triangle[(edge + 1) % 3],
+            ));
+        }
+    }
+    triangle_edges.sort_unstable();
+    let mut position = 0;
+    while position < triangle_edges.len() {
+        let edge = triangle_edges[position];
+        let mut end = position + 1;
+        while end < triangle_edges.len() && triangle_edges[end] == edge {
+            end += 1;
+        }
+        let expected = if boundary_edges.binary_search(&edge).is_ok() {
+            1
+        } else {
+            2
+        };
+        if end - position != expected {
+            return Ok(false);
+        }
+        position = end;
+    }
+    Ok(area == *polygon_area)
+}
+
+const fn canonical_index_edge(first: usize, second: usize) -> (usize, usize) {
+    if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
+fn indexed_polygon_double_area(boundary: &[RestBoundaryVertex], indices: &[usize]) -> BigRational {
+    (0..indices.len())
+        .map(|index| {
+            let current = ExactPoint3::from_point(boundary[indices[index]].point);
+            let next =
+                ExactPoint3::from_point(boundary[indices[(index + 1) % indices.len()]].point);
+            current.coordinate(0) * next.coordinate(2) - current.coordinate(2) * next.coordinate(0)
+        })
+        .sum()
+}
+
+fn rest_polygon_double_area(boundary: &[RestBoundaryVertex]) -> BigRational {
+    (0..boundary.len())
+        .map(|index| {
+            let current = ExactPoint3::from_point(boundary[index].point);
+            let next = ExactPoint3::from_point(boundary[(index + 1) % boundary.len()].point);
+            current.coordinate(0) * next.coordinate(2) - current.coordinate(2) * next.coordinate(0)
+        })
+        .sum()
+}
+
+fn estimated_triangulation_work(
+    boundary_vertices: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    let square = boundary_vertices
+        .checked_mul(boundary_vertices)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let cube = square
+        .checked_mul(boundary_vertices)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    cube.checked_mul(4)
+        .and_then(|value| {
+            square
+                .checked_mul(12)
+                .and_then(|extra| value.checked_add(extra))
+        })
+        .and_then(|value| {
+            boundary_vertices
+                .checked_mul(32)
+                .and_then(|extra| value.checked_add(extra))
+        })
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+fn exact_orientation(first: Point3, second: Point3, third: Point3) -> BigRational {
+    let first = ExactPoint3::from_point(first);
+    let second = ExactPoint3::from_point(second);
+    let third = ExactPoint3::from_point(third);
+    projected_line_value(&first, &second, &third, 0, 2)
+}
+
+fn exact_point_on_segment(point: Point3, start: Point3, end: Point3) -> bool {
+    if !exact_orientation(start, end, point).is_zero() {
+        return false;
+    }
+    let point = ExactPoint3::from_point(point);
+    let start = ExactPoint3::from_point(start);
+    let end = ExactPoint3::from_point(end);
+    (0..3).all(|axis| {
+        let minimum = start.coordinate(axis).min(end.coordinate(axis));
+        let maximum = start.coordinate(axis).max(end.coordinate(axis));
+        minimum <= point.coordinate(axis) && point.coordinate(axis) <= maximum
+    })
+}
+
+fn exact_segments_intersect(
+    first_start: Point3,
+    first_end: Point3,
+    second_start: Point3,
+    second_end: Point3,
+) -> bool {
+    let first_first = exact_orientation(first_start, first_end, second_start);
+    let first_second = exact_orientation(first_start, first_end, second_end);
+    let second_first = exact_orientation(second_start, second_end, first_start);
+    let second_second = exact_orientation(second_start, second_end, first_end);
+    (first_first.is_zero() && exact_point_on_segment(second_start, first_start, first_end))
+        || (first_second.is_zero() && exact_point_on_segment(second_end, first_start, first_end))
+        || (second_first.is_zero() && exact_point_on_segment(first_start, second_start, second_end))
+        || (second_second.is_zero() && exact_point_on_segment(first_end, second_start, second_end))
+        || (first_first.is_positive() != first_second.is_positive()
+            && second_first.is_positive() != second_second.is_positive())
+}
+
+fn exact_point_in_or_on_triangle(
+    point: Point3,
+    first: Point3,
+    second: Point3,
+    third: Point3,
+    positive_orientation: bool,
+) -> bool {
+    [
+        exact_orientation(first, second, point),
+        exact_orientation(second, third, point),
+        exact_orientation(third, first, point),
+    ]
+    .iter()
+    .all(|orientation| orientation.is_zero() || orientation.is_positive() == positive_orientation)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ZeroThicknessGeometryLimits {
+    pub max_boundary_vertices_per_face: usize,
+    pub max_total_boundary_vertices: usize,
+    pub max_triangles_per_face: usize,
+    pub max_total_triangles: usize,
+    pub max_triangulation_work_per_face: usize,
+    pub max_total_triangulation_work: usize,
+    pub max_registry_authentication_work: usize,
+    pub max_triangle_pairs_per_face_pair: usize,
+    pub max_total_triangle_pairs: usize,
+    pub max_boundary_relation_work_per_face_pair: usize,
+    pub max_total_boundary_relation_work: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AuthenticatedBoundaryVertex {
+    id: VertexId,
+    rest: Point3,
+    current: ExactPoint3,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AuthenticatedFace {
+    id: FaceId,
+    boundary: Vec<AuthenticatedBoundaryVertex>,
+    edges: Vec<EdgeId>,
+    triangles: Vec<[ExactPoint3; 3]>,
+}
+
+#[derive(Debug)]
+pub(super) struct AuthenticatedZeroThicknessPose<'a> {
+    pose: &'a MaterialTreePose,
+    faces: Vec<AuthenticatedFace>,
+    limits: ZeroThicknessGeometryLimits,
+    total_triangle_pairs: usize,
+}
+
+impl AuthenticatedZeroThicknessPose<'_> {
+    pub(super) fn dispatch_pair(
+        &self,
+        first_face_index: usize,
+        second_face_index: usize,
+    ) -> Result<PairDispatch, ZeroThicknessAnalysisError> {
+        if first_face_index >= second_face_index || second_face_index >= self.faces.len() {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let first = &self.faces[first_face_index];
+        let second = &self.faces[second_face_index];
+        let topology = authenticate_face_pair_topology(self.pose, first, second)?;
+        aggregate_authenticated_face_pair(
+            first,
+            second,
+            &topology,
+            self.limits.max_triangle_pairs_per_face_pair,
+        )
+    }
+
+    pub(super) const fn total_triangle_pairs(&self) -> usize {
+        self.total_triangle_pairs
+    }
+}
+
+pub(super) fn prepare_authenticated_zero_thickness_pose(
+    pose: &MaterialTreePose,
+    limits: ZeroThicknessGeometryLimits,
+) -> Result<AuthenticatedZeroThicknessPose<'_>, ZeroThicknessAnalysisError> {
+    let face_ids = pose.face_ids();
+    if face_ids.is_empty()
+        || !face_ids
+            .windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let mut faces = Vec::new();
+    faces
+        .try_reserve_exact(face_ids.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let mut total_boundary_vertices = 0_usize;
+    let mut total_triangles = 0_usize;
+    let mut total_triangulation_work = 0_usize;
+
+    for face_id in face_ids.iter().copied() {
+        let boundary_view = pose
+            .face_boundary(face_id)
+            .filter(|boundary| pose.owns_face_boundary(*boundary))
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        if boundary_view.face() != face_id
+            || boundary_view.vertices().len() != boundary_view.edges().len()
+            || boundary_view.vertices().len() < 3
+        {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let boundary_count = boundary_view.vertices().len();
+        if boundary_count > limits.max_boundary_vertices_per_face {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        let triangulation_work = estimated_triangulation_work(boundary_count)?;
+        if triangulation_work > limits.max_triangulation_work_per_face {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        total_triangulation_work = total_triangulation_work
+            .checked_add(triangulation_work)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if total_triangulation_work > limits.max_total_triangulation_work {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        total_boundary_vertices = total_boundary_vertices
+            .checked_add(boundary_count)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if total_boundary_vertices > limits.max_total_boundary_vertices {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        if has_duplicate_ids(boundary_view.vertices()) || has_duplicate_ids(boundary_view.edges()) {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let transform = pose
+            .face_transform(face_id)
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        let exact_transform = ExactAffineTransform::from_transform(transform);
+        let mut rest_boundary = Vec::new();
+        rest_boundary
+            .try_reserve_exact(boundary_count)
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        let mut boundary = Vec::new();
+        boundary
+            .try_reserve_exact(boundary_count)
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        for vertex in boundary_view.vertices().iter().copied() {
+            let rest = pose
+                .vertex_position(vertex)
+                .filter(|point| point.y() == 0.0)
+                .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+            // Applying the binary64 matrix in exact rational arithmetic keeps
+            // every vertex of one rigid material face constructively
+            // coplanar. Rounding each transformed vertex back to binary64
+            // independently would destroy that invariant for four or more
+            // vertices and could create false crossing evidence.
+            let current = exact_transform.apply_point(&ExactPoint3::from_point(rest));
+            rest_boundary.push(RestBoundaryVertex {
+                id: vertex,
+                point: rest,
+            });
+            boundary.push(AuthenticatedBoundaryVertex {
+                id: vertex,
+                rest,
+                current,
+            });
+        }
+        let triangle_indices = triangulate_rest_boundary(
+            &rest_boundary,
+            limits.max_boundary_vertices_per_face,
+            limits.max_triangles_per_face,
+            limits.max_triangulation_work_per_face,
+        )?;
+        total_triangles = total_triangles
+            .checked_add(triangle_indices.len())
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        if total_triangles > limits.max_total_triangles {
+            return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+        }
+        let mut triangles = Vec::new();
+        triangles
+            .try_reserve_exact(triangle_indices.len())
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        for triangle in triangle_indices {
+            let points = triangle.map(|index| boundary[index].current.clone());
+            if ExactTriangle::from_exact_points(points.clone())
+                .normal
+                .is_zero()
+            {
+                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+            }
+            triangles.push(points);
+        }
+        let mut edges = Vec::new();
+        edges
+            .try_reserve_exact(boundary_view.edges().len())
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        edges.extend_from_slice(boundary_view.edges());
+        faces.push(AuthenticatedFace {
+            id: face_id,
+            boundary,
+            edges,
+            triangles,
+        });
+    }
+
+    let registry_authentication_work = estimated_registry_authentication_work(
+        total_boundary_vertices,
+        pose.hinges().len(),
+        faces.len(),
+    )?;
+    if registry_authentication_work > limits.max_registry_authentication_work {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    }
+    validate_authenticated_hinge_and_edge_registries(pose, &faces)?;
+    let mut total_triangle_pairs = 0_usize;
+    let mut total_boundary_relation_work = 0_usize;
+    for first in 0..faces.len() {
+        for second in (first + 1)..faces.len() {
+            let pair_count = faces[first]
+                .triangles
+                .len()
+                .checked_mul(faces[second].triangles.len())
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+            if pair_count > limits.max_triangle_pairs_per_face_pair {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+            total_triangle_pairs = total_triangle_pairs
+                .checked_add(pair_count)
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+            if total_triangle_pairs > limits.max_total_triangle_pairs {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+            let boundary_relation_work = estimated_boundary_relation_work(
+                pair_count,
+                faces[first].boundary.len(),
+                faces[second].boundary.len(),
+                pose.hinges().len(),
+            )?;
+            if boundary_relation_work > limits.max_boundary_relation_work_per_face_pair {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+            total_boundary_relation_work = total_boundary_relation_work
+                .checked_add(boundary_relation_work)
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+            if total_boundary_relation_work > limits.max_total_boundary_relation_work {
+                return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+            }
+        }
+    }
+
+    Ok(AuthenticatedZeroThicknessPose {
+        pose,
+        faces,
+        limits,
+        total_triangle_pairs,
+    })
+}
+
+fn estimated_boundary_relation_work(
+    triangle_pairs: usize,
+    first_boundary_vertices: usize,
+    second_boundary_vertices: usize,
+    hinges: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    fn sort_scan_work(vertices: usize) -> Option<usize> {
+        let log_factor = usize::BITS.checked_sub(vertices.max(1).leading_zeros())? as usize;
+        vertices.checked_mul(log_factor.checked_add(1)?)
+    }
+    let classification_work = sort_scan_work(first_boundary_vertices)
+        .and_then(|first| {
+            sort_scan_work(second_boundary_vertices).and_then(|second| first.checked_add(second))
+        })
+        .and_then(|per_pair| triangle_pairs.checked_mul(per_pair));
+    let topology_work = first_boundary_vertices
+        .checked_mul(second_boundary_vertices)
+        .and_then(|shared_vertices| shared_vertices.checked_mul(2))
+        .and_then(|shared_features| shared_features.checked_add(hinges));
+    classification_work
+        .and_then(|classification| {
+            topology_work.and_then(|topology| classification.checked_add(topology))
+        })
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+fn estimated_registry_authentication_work(
+    total_boundary_vertices: usize,
+    hinges: usize,
+    faces: usize,
+) -> Result<usize, ZeroThicknessAnalysisError> {
+    // Conservative upper bound for the loops below:
+    // - B²: one full edge-occurrence scan for every boundary edge;
+    // - 2BH: one full occurrence scan for every hinge plus the hinge lookup
+    //   repeated for every boundary edge;
+    // - H²: worst-case hinge-transform registry lookup;
+    // - 2HF: both face-membership scans for every hinge;
+    // - linear terms: canonical-order, occurrence and branch overhead.
+    // Keep this formula and its fixed 10/2/3 = 201 contract test together.
+    let boundary_square = total_boundary_vertices
+        .checked_mul(total_boundary_vertices)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let boundary_hinge_twice = total_boundary_vertices
+        .checked_mul(hinges)
+        .and_then(|work| work.checked_mul(2))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let hinge_square = hinges
+        .checked_mul(hinges)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let hinge_face_twice = hinges
+        .checked_mul(faces)
+        .and_then(|work| work.checked_mul(2))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    let hinge_overhead = hinges
+        .checked_mul(16)
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    boundary_square
+        .checked_add(boundary_hinge_twice)
+        .and_then(|work| work.checked_add(hinge_square))
+        .and_then(|work| work.checked_add(hinge_face_twice))
+        .and_then(|work| work.checked_add(hinge_overhead))
+        .and_then(|work| work.checked_add(total_boundary_vertices))
+        .and_then(|work| work.checked_add(faces))
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+}
+
+fn has_duplicate_ids<T: Copy + Eq>(values: &[T]) -> bool {
+    (0..values.len()).any(|index| values[..index].contains(&values[index]))
+}
+
+fn validate_authenticated_hinge_and_edge_registries(
+    pose: &MaterialTreePose,
+    faces: &[AuthenticatedFace],
+) -> Result<(), ZeroThicknessAnalysisError> {
+    if !pose
+        .hinges()
+        .windows(2)
+        .all(|pair| pair[0].edge().canonical_bytes() < pair[1].edge().canonical_bytes())
+    {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    for hinge in pose.hinges() {
+        if hinge.left_face() == hinge.right_face()
+            || faces.iter().all(|face| face.id != hinge.left_face())
+            || faces.iter().all(|face| face.id != hinge.right_face())
+            || pose.hinge_parent_transform(hinge.edge()).is_none()
+        {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let occurrences = edge_occurrences(faces, hinge.edge())?;
+        if occurrences.len() != 2 {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+        let left = occurrences
+            .iter()
+            .find(|occurrence| occurrence.face == hinge.left_face())
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        let right = occurrences
+            .iter()
+            .find(|occurrence| occurrence.face == hinge.right_face())
+            .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
+        if left.start_id != right.end_id
+            || left.end_id != right.start_id
+            || left.start_rest != hinge.start()
+            || left.end_rest != hinge.end()
+            || right.start_rest != hinge.end()
+            || right.end_rest != hinge.start()
+        {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+    }
+
+    for face in faces {
+        for edge in face.edges.iter().copied() {
+            let occurrences = edge_occurrences(faces, edge)?;
+            let hinges = pose
+                .hinges()
+                .iter()
+                .filter(|hinge| hinge.edge() == edge)
+                .count();
+            if !matches!((occurrences.len(), hinges), (1, 0) | (2, 1)) {
+                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AuthenticatedEdgeOccurrence {
+    face: FaceId,
+    start_id: VertexId,
+    end_id: VertexId,
+    start_rest: Point3,
+    end_rest: Point3,
+}
+
+fn edge_occurrences(
+    faces: &[AuthenticatedFace],
+    edge: EdgeId,
+) -> Result<Vec<AuthenticatedEdgeOccurrence>, ZeroThicknessAnalysisError> {
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(3)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for face in faces {
+        for (index, candidate) in face.edges.iter().copied().enumerate() {
+            if candidate != edge || result.len() == 3 {
+                continue;
+            }
+            let start = &face.boundary[index];
+            let end = &face.boundary[(index + 1) % face.boundary.len()];
+            result.push(AuthenticatedEdgeOccurrence {
+                face: face.id,
+                start_id: start.id,
+                end_id: end.id,
+                start_rest: start.rest,
+                end_rest: end.rest,
+            });
+        }
+    }
+    Ok(result)
+}
+
+fn authenticate_face_pair_topology(
+    pose: &MaterialTreePose,
+    first: &AuthenticatedFace,
+    second: &AuthenticatedFace,
+) -> Result<AuthenticatedTopology, ZeroThicknessAnalysisError> {
+    if first.id == second.id {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let mut shared_vertices = Vec::new();
+    shared_vertices
+        .try_reserve_exact(3)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for (first_index, first_vertex) in first.boundary.iter().enumerate() {
+        for (second_index, second_vertex) in second.boundary.iter().enumerate() {
+            if first_vertex.id == second_vertex.id {
+                if shared_vertices.len() == 3 {
+                    return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+                }
+                shared_vertices.push((first_index, second_index));
+            }
+        }
+    }
+    let mut shared_edges = Vec::new();
+    shared_edges
+        .try_reserve_exact(2)
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for (first_index, first_edge) in first.edges.iter().enumerate() {
+        for (second_index, second_edge) in second.edges.iter().enumerate() {
+            if first_edge == second_edge {
+                if shared_edges.len() == 2 {
+                    return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+                }
+                shared_edges.push((first_index, second_index, *first_edge));
+            }
+        }
+    }
+    let mut connecting_hinge = None;
+    for hinge in pose.hinges() {
+        if !unordered_face_pair_eq(first.id, second.id, hinge.left_face(), hinge.right_face()) {
+            continue;
+        }
+        if connecting_hinge.replace(hinge).is_some() {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
+    }
+
+    match (
+        shared_vertices.as_slice(),
+        shared_edges.as_slice(),
+        connecting_hinge,
+    ) {
+        ([], [], None) => Ok(AuthenticatedTopology::NoSharedFeature),
+        ([(first_index, second_index)], [], None) => {
+            let first_point = first.boundary[*first_index].current.clone();
+            let second_point = second.boundary[*second_index].current.clone();
+            if first_point != second_point {
+                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+            }
+            Ok(AuthenticatedTopology::SharedVertex(first_point))
+        }
+        (
+            [(first_first, second_first), (first_second, second_second)],
+            [(first_edge_index, second_edge_index, edge)],
+            Some(hinge),
+        ) if *edge == hinge.edge() => {
+            let first_start = &first.boundary[*first_edge_index];
+            let first_end = &first.boundary[(*first_edge_index + 1) % first.boundary.len()];
+            let second_start = &second.boundary[*second_edge_index];
+            let second_end = &second.boundary[(*second_edge_index + 1) % second.boundary.len()];
+            let shared_ids = [
+                (
+                    first.boundary[*first_first].id,
+                    second.boundary[*second_first].id,
+                ),
+                (
+                    first.boundary[*first_second].id,
+                    second.boundary[*second_second].id,
+                ),
+            ];
+            if !shared_ids
+                .iter()
+                .all(|(first_id, second_id)| first_id == second_id)
+                || first_start.id != second_end.id
+                || first_end.id != second_start.id
+                || first_start.current != second_end.current
+                || first_end.current != second_start.current
+            {
+                // Never epsilon-weld independently rounded hinge transforms.
+                // Until one canonical watertight shared-feature source exists,
+                // disagreement is blocking rather than an allowance.
+                return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+            }
+            Ok(AuthenticatedTopology::SharedHingeEdge {
+                start: first_start.current.clone(),
+                end: first_end.current.clone(),
+            })
+        }
+        _ => Err(ZeroThicknessAnalysisError::EvidenceUnavailable),
+    }
+}
+
+fn unordered_face_pair_eq(
+    first: FaceId,
+    second: FaceId,
+    candidate_first: FaceId,
+    candidate_second: FaceId,
+) -> bool {
+    (first == candidate_first && second == candidate_second)
+        || (first == candidate_second && second == candidate_first)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "production construction is deliberately blocked until authenticated triangulation and complete triangle-pair coverage exist"
+        reason = "SameFace exists only for adversarial classifier tests; canonical runtime pair indexes reject it before construction"
     )
 )]
 enum AuthenticatedTopology {
     NoSharedFeature,
-    SharedVertex(Point3),
-    SharedHingeEdge { start: Point3, end: Point3 },
+    SharedVertex(ExactPoint3),
+    SharedHingeEdge {
+        start: ExactPoint3,
+        end: ExactPoint3,
+    },
     SameFace,
 }
 
@@ -51,6 +1025,7 @@ impl AuthenticatedTopology {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 struct AuthenticatedTrianglePair {
     first: [Point3; 3],
     second: [Point3; 3],
@@ -61,6 +1036,8 @@ struct AuthenticatedTrianglePair {
 pub(super) struct PairDispatch {
     evidence: IntersectionEvidenceV2,
     decision: TopologyContactDecision,
+    expected_triangle_pairs: usize,
+    analyzed_triangle_pairs: usize,
 }
 
 impl PairDispatch {
@@ -71,41 +1048,308 @@ impl PairDispatch {
     pub(super) const fn decision(&self) -> TopologyContactDecision {
         self.decision
     }
+
+    pub(super) const fn expected_triangle_pairs(&self) -> usize {
+        self.expected_triangle_pairs
+    }
+
+    pub(super) const fn analyzed_triangle_pairs(&self) -> usize {
+        self.analyzed_triangle_pairs
+    }
+
+    pub(super) const fn has_complete_coverage(&self) -> bool {
+        self.expected_triangle_pairs == self.analyzed_triangle_pairs
+    }
 }
 
-/// Attempts to derive and dispatch one pair from the pose's private source.
-///
-/// `None` is a blocking absence of evidence, never separation. Although the
-/// pose now exposes provenance-bearing canonical face boundaries, there is
-/// intentionally no production constructor for `AuthenticatedTrianglePair`
-/// until deterministic triangulation and complete face-pair aggregation are
-/// implemented. A future constructor must authenticate shared `VertexId` and
-/// `EdgeId` values against the hinge registry; caller-provided topology labels
-/// remain ineligible.
-pub(super) fn dispatch_material_pose_pair(
-    pose: &MaterialTreePose,
-    first_face_index: usize,
-    second_face_index: usize,
-) -> Option<PairDispatch> {
-    let pair = authenticated_triangle_pair_from_pose(pose, first_face_index, second_face_index)?;
-    Some(dispatch_authenticated_zero_thickness_pair(&pair))
+fn aggregate_authenticated_face_pair(
+    first: &AuthenticatedFace,
+    second: &AuthenticatedFace,
+    topology: &AuthenticatedTopology,
+    max_triangle_pairs: usize,
+) -> Result<PairDispatch, ZeroThicknessAnalysisError> {
+    if first.triangles.is_empty()
+        || second.triangles.is_empty()
+        || matches!(topology, AuthenticatedTopology::SameFace)
+    {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+    let expected = first
+        .triangles
+        .len()
+        .checked_mul(second.triangles.len())
+        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    if expected > max_triangle_pairs {
+        return Err(ZeroThicknessAnalysisError::ResourceLimitExceeded);
+    }
+
+    let mut analyzed = 0_usize;
+    let mut has_transversal = false;
+    let mut has_coplanar_area = false;
+    let mut has_indeterminate = false;
+    let mut point_contacts = 0_usize;
+    let mut line_contacts = 0_usize;
+    let mut all_contacts_match_shared_feature = true;
+    let mut hinge_intervals = Vec::new();
+    if matches!(topology, AuthenticatedTopology::SharedHingeEdge { .. }) {
+        hinge_intervals
+            .try_reserve_exact(expected)
+            .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    }
+
+    for first_triangle in &first.triangles {
+        let first_triangle = ExactTriangle::from_exact_points(first_triangle.clone());
+        for second_triangle in &second.triangles {
+            let second_triangle = ExactTriangle::from_exact_points(second_triangle.clone());
+            analyzed = analyzed
+                .checked_add(1)
+                .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+            match classify_triangle_intersection(&first_triangle, &second_triangle) {
+                ExactIntersection::Separated => {}
+                ExactIntersection::Point(point) => {
+                    if !exact_point_on_material_boundary(&point, first)
+                        && !exact_point_on_material_boundary(&point, second)
+                    {
+                        has_indeterminate = true;
+                        continue;
+                    }
+                    point_contacts = point_contacts
+                        .checked_add(1)
+                        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+                    match topology {
+                        AuthenticatedTopology::SharedVertex(shared) => {
+                            all_contacts_match_shared_feature &= point == *shared;
+                        }
+                        AuthenticatedTopology::SharedHingeEdge { start, end } => {
+                            if let Some(parameter) = exact_segment_parameter(&point, start, end) {
+                                hinge_intervals.push((parameter.clone(), parameter));
+                            } else {
+                                all_contacts_match_shared_feature = false;
+                            }
+                        }
+                        AuthenticatedTopology::NoSharedFeature
+                        | AuthenticatedTopology::SameFace => {}
+                    }
+                }
+                ExactIntersection::BoundaryLine { start, end } => {
+                    let first_material_boundary =
+                        exact_segment_on_material_boundary(&start, &end, first)?;
+                    let second_material_boundary =
+                        exact_segment_on_material_boundary(&start, &end, second)?;
+                    if !first_material_boundary && !second_material_boundary {
+                        // Safe interim classification for an ear-diagonal
+                        // artifact. A future positive Transversal proof must
+                        // build the exact relative-interior interval union for
+                        // both whole faces and prove a strict positive-length
+                        // overlap; "not wholly boundary" alone is insufficient.
+                        has_indeterminate = true;
+                        continue;
+                    }
+                    line_contacts = line_contacts
+                        .checked_add(1)
+                        .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+                    match topology {
+                        AuthenticatedTopology::SharedVertex(_) => {
+                            all_contacts_match_shared_feature = false;
+                        }
+                        AuthenticatedTopology::SharedHingeEdge {
+                            start: shared_start,
+                            end: shared_end,
+                        } => {
+                            match (
+                                exact_segment_parameter(&start, shared_start, shared_end),
+                                exact_segment_parameter(&end, shared_start, shared_end),
+                            ) {
+                                (Some(first_parameter), Some(second_parameter)) => {
+                                    if first_parameter <= second_parameter {
+                                        hinge_intervals.push((first_parameter, second_parameter));
+                                    } else {
+                                        hinge_intervals.push((second_parameter, first_parameter));
+                                    }
+                                }
+                                _ => all_contacts_match_shared_feature = false,
+                            }
+                        }
+                        AuthenticatedTopology::NoSharedFeature
+                        | AuthenticatedTopology::SameFace => {}
+                    }
+                }
+                ExactIntersection::CoplanarArea => has_coplanar_area = true,
+                ExactIntersection::Transversal => has_transversal = true,
+                ExactIntersection::Indeterminate => has_indeterminate = true,
+            }
+        }
+    }
+    if analyzed != expected {
+        return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+    }
+
+    let evidence = if has_transversal {
+        IntersectionEvidenceV2::TransversalCrossing
+    } else if has_coplanar_area {
+        IntersectionEvidenceV2::CoplanarAreaOverlap
+    } else if has_indeterminate {
+        IntersectionEvidenceV2::Indeterminate
+    } else {
+        let contact_count = point_contacts
+            .checked_add(line_contacts)
+            .ok_or(ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+        match topology {
+            AuthenticatedTopology::NoSharedFeature => {
+                generic_contact_evidence(point_contacts, line_contacts)
+            }
+            AuthenticatedTopology::SharedVertex(_) => {
+                if contact_count > 0 && all_contacts_match_shared_feature {
+                    IntersectionEvidenceV2::SharedFeatureContact
+                } else if contact_count == 0 {
+                    IntersectionEvidenceV2::Indeterminate
+                } else {
+                    generic_contact_evidence(point_contacts, line_contacts)
+                }
+            }
+            AuthenticatedTopology::SharedHingeEdge { .. } => {
+                if contact_count > 0
+                    && all_contacts_match_shared_feature
+                    && exact_intervals_cover_unit_segment(&mut hinge_intervals)
+                {
+                    IntersectionEvidenceV2::SharedFeatureContact
+                } else if contact_count == 0 {
+                    IntersectionEvidenceV2::Indeterminate
+                } else {
+                    generic_contact_evidence(point_contacts, line_contacts)
+                }
+            }
+            AuthenticatedTopology::SameFace => IntersectionEvidenceV2::Indeterminate,
+        }
+    };
+    Ok(PairDispatch {
+        evidence,
+        decision: classify_runtime_topology_contact_v2(topology.relation(), evidence),
+        expected_triangle_pairs: expected,
+        analyzed_triangle_pairs: analyzed,
+    })
 }
 
-fn authenticated_triangle_pair_from_pose(
-    pose: &MaterialTreePose,
-    first_face_index: usize,
-    second_face_index: usize,
-) -> Option<AuthenticatedTrianglePair> {
-    let _ = (pose, first_face_index, second_face_index);
-    None
+fn generic_contact_evidence(point_contacts: usize, line_contacts: usize) -> IntersectionEvidenceV2 {
+    if line_contacts > 0 {
+        IntersectionEvidenceV2::BoundaryLineContact
+    } else if point_contacts > 0 {
+        IntersectionEvidenceV2::PointContact
+    } else {
+        IntersectionEvidenceV2::Separated
+    }
 }
 
+fn exact_segment_parameter(
+    point: &ExactPoint3,
+    start: &ExactPoint3,
+    end: &ExactPoint3,
+) -> Option<BigRational> {
+    let direction = ExactVector3::between(start, end);
+    if direction.is_zero()
+        || !ExactVector3::between(start, point)
+            .cross(&direction)
+            .is_zero()
+    {
+        return None;
+    }
+    let axis = (0..3).find(|axis| !direction.coordinates[*axis].is_zero())?;
+    let parameter =
+        (point.coordinate(axis) - start.coordinate(axis)) / &direction.coordinates[axis];
+    (parameter >= BigRational::zero() && parameter <= BigRational::one()).then_some(parameter)
+}
+
+fn exact_unbounded_line_parameter(
+    point: &ExactPoint3,
+    start: &ExactPoint3,
+    end: &ExactPoint3,
+) -> Option<BigRational> {
+    let direction = ExactVector3::between(start, end);
+    if direction.is_zero()
+        || !ExactVector3::between(start, point)
+            .cross(&direction)
+            .is_zero()
+    {
+        return None;
+    }
+    let axis = (0..3).find(|axis| !direction.coordinates[*axis].is_zero())?;
+    Some((point.coordinate(axis) - start.coordinate(axis)) / &direction.coordinates[axis])
+}
+
+fn exact_point_on_material_boundary(point: &ExactPoint3, face: &AuthenticatedFace) -> bool {
+    (0..face.boundary.len()).any(|index| {
+        let start = &face.boundary[index].current;
+        let end = &face.boundary[(index + 1) % face.boundary.len()].current;
+        exact_segment_parameter(point, start, end).is_some()
+    })
+}
+
+fn exact_segment_on_material_boundary(
+    segment_start: &ExactPoint3,
+    segment_end: &ExactPoint3,
+    face: &AuthenticatedFace,
+) -> Result<bool, ZeroThicknessAnalysisError> {
+    if segment_start == segment_end {
+        return Ok(exact_point_on_material_boundary(segment_start, face));
+    }
+    let mut intervals = Vec::new();
+    intervals
+        .try_reserve_exact(face.boundary.len())
+        .map_err(|_| ZeroThicknessAnalysisError::ResourceLimitExceeded)?;
+    for index in 0..face.boundary.len() {
+        let edge_start = &face.boundary[index].current;
+        let edge_end = &face.boundary[(index + 1) % face.boundary.len()].current;
+        let (Some(first), Some(second)) = (
+            exact_unbounded_line_parameter(edge_start, segment_start, segment_end),
+            exact_unbounded_line_parameter(edge_end, segment_start, segment_end),
+        ) else {
+            continue;
+        };
+        let (line_start, line_end) = if first <= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let start = line_start.max(BigRational::zero());
+        let end = line_end.min(BigRational::one());
+        if start <= end {
+            intervals.push((start, end));
+        }
+    }
+    Ok(exact_intervals_cover_unit_segment(&mut intervals))
+}
+
+fn exact_intervals_cover_unit_segment(intervals: &mut [(BigRational, BigRational)]) -> bool {
+    if intervals.is_empty() {
+        return false;
+    }
+    intervals.sort_unstable_by(|first, second| {
+        first.0.cmp(&second.0).then_with(|| first.1.cmp(&second.1))
+    });
+    if intervals[0].0 != BigRational::zero() {
+        return false;
+    }
+    let mut covered = intervals[0].1.clone();
+    for (start, end) in &intervals[1..] {
+        if *start > covered {
+            return false;
+        }
+        if *end > covered {
+            covered = end.clone();
+        }
+    }
+    covered == BigRational::one()
+}
+
+#[cfg(test)]
 fn dispatch_authenticated_zero_thickness_pair(pair: &AuthenticatedTrianglePair) -> PairDispatch {
     let topology = pair.topology.relation();
     if matches!(topology, TopologyRelation::SameFace) {
         return PairDispatch {
             evidence: IntersectionEvidenceV2::Indeterminate,
             decision: TopologyContactDecision::Indeterminate,
+            expected_triangle_pairs: 1,
+            analyzed_triangle_pairs: 1,
         };
     }
 
@@ -116,6 +1360,8 @@ fn dispatch_authenticated_zero_thickness_pair(pair: &AuthenticatedTrianglePair) 
     PairDispatch {
         evidence,
         decision: classify_runtime_topology_contact_v2(topology, evidence),
+        expected_triangle_pairs: 1,
+        analyzed_triangle_pairs: 1,
     }
 }
 
@@ -145,6 +1391,36 @@ impl ExactPoint3 {
                 self.coordinates[index].clone()
                     + parameter
                         * (other.coordinates[index].clone() - self.coordinates[index].clone())
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactAffineTransform {
+    rotation: [[BigRational; 3]; 3],
+    translation: ExactPoint3,
+}
+
+impl ExactAffineTransform {
+    fn from_transform(transform: RigidTransform) -> Self {
+        Self {
+            rotation: transform
+                .rotation_rows()
+                .map(|row| row.map(exact_binary64_scalar)),
+            translation: ExactPoint3::from_point(transform.translation()),
+        }
+    }
+
+    fn apply_point(&self, point: &ExactPoint3) -> ExactPoint3 {
+        ExactPoint3 {
+            coordinates: std::array::from_fn(|row| {
+                self.translation.coordinates[row].clone()
+                    + (0..3)
+                        .map(|column| {
+                            self.rotation[row][column].clone() * point.coordinates[column].clone()
+                        })
+                        .sum::<BigRational>()
             }),
         }
     }
@@ -192,8 +1468,13 @@ struct ExactTriangle {
 }
 
 impl ExactTriangle {
+    #[cfg(test)]
     fn from_points(points: [Point3; 3]) -> Self {
         let points = points.map(ExactPoint3::from_point);
+        Self::from_exact_points(points)
+    }
+
+    fn from_exact_points(points: [ExactPoint3; 3]) -> Self {
         let first_edge = ExactVector3::between(&points[0], &points[1]);
         let second_edge = ExactVector3::between(&points[0], &points[2]);
         let normal = first_edge.cross(&second_edge);
@@ -576,7 +1857,7 @@ fn collapsed_polygon_intersection(
     let mut ordered = Vec::new();
     ordered.try_reserve_exact(polygon.len()).ok()?;
     ordered.extend(polygon);
-    ordered.sort_by(|left, right| {
+    ordered.sort_unstable_by(|left, right| {
         left.coordinate(first_axis)
             .cmp(right.coordinate(first_axis))
             .then_with(|| {
@@ -612,6 +1893,7 @@ fn push_unique_bounded(points: &mut Vec<ExactPoint3>, point: ExactPoint3, bound:
     }
 }
 
+#[cfg(test)]
 fn evidence_for_authenticated_topology(
     intersection: ExactIntersection,
     topology: &AuthenticatedTopology,
@@ -622,7 +1904,7 @@ fn evidence_for_authenticated_topology(
             if matches!(
                 topology,
                 AuthenticatedTopology::SharedVertex(shared)
-                    if point == ExactPoint3::from_point(*shared)
+                    if point == *shared
             ) =>
         {
             IntersectionEvidenceV2::SharedFeatureContact
@@ -637,8 +1919,8 @@ fn evidence_for_authenticated_topology(
                 } if unordered_segment_eq(
                     &start,
                     &end,
-                    &ExactPoint3::from_point(*shared_start),
-                    &ExactPoint3::from_point(*shared_end),
+                    shared_start,
+                    shared_end,
                 )
             ) =>
         {
@@ -651,6 +1933,7 @@ fn evidence_for_authenticated_topology(
     }
 }
 
+#[cfg(test)]
 fn unordered_segment_eq(
     first_start: &ExactPoint3,
     first_end: &ExactPoint3,
@@ -659,6 +1942,14 @@ fn unordered_segment_eq(
 ) -> bool {
     (first_start == second_start && first_end == second_end)
         || (first_start == second_end && first_end == second_start)
+}
+
+/// Converts one finite binary64 matrix coefficient into its exact scalar
+/// value. This is distinct from the common-unit point representation below:
+/// multiplying two common-unit values would introduce an extra `2^1074`
+/// scale and would not be an affine transform.
+fn exact_binary64_scalar(value: f64) -> BigRational {
+    exact_binary64(value) / BigRational::from_integer(BigInt::one() << 1074_usize)
 }
 
 /// Converts one finite binary64 coordinate into exact integer units of
@@ -682,6 +1973,14 @@ fn exact_binary64(value: f64) -> BigRational {
 
 #[cfg(test)]
 mod tests {
+    use ori_domain::{
+        CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId,
+    };
+    use ori_kinematics::{
+        CanonicalHingeAngles, HingeAngle, MaterialTreeKinematicsModel, TreeKinematicsLimits,
+    };
+    use ori_topology::{FaceExtractionInput, analyze_faces};
+
     use super::*;
 
     const TRIANGLE_PERMUTATIONS: [[usize; 3]; 6] = [
@@ -701,12 +2000,990 @@ mod tests {
         points.map(|[x, y, z]| point(x, y, z))
     }
 
+    fn vertex_id(index: u64) -> VertexId {
+        serde_json::from_str(&format!("\"00000000-0000-4000-8000-{index:012x}\""))
+            .expect("fixed vertex id")
+    }
+
+    fn edge_id(index: u64) -> EdgeId {
+        serde_json::from_str(&format!("\"00000000-0000-4000-9000-{index:012x}\""))
+            .expect("fixed edge id")
+    }
+
+    fn face_id(index: u64) -> FaceId {
+        serde_json::from_str(&format!("\"00000000-0000-4000-a000-{index:012x}\""))
+            .expect("fixed face id")
+    }
+
+    fn project_id() -> ProjectId {
+        serde_json::from_str("\"00000000-0000-4000-b000-000000000001\"").expect("fixed project id")
+    }
+
+    fn domain_vertex(index: u64, x: f64, y: f64) -> Vertex {
+        Vertex {
+            id: vertex_id(index),
+            position: Point2::new(x, y),
+        }
+    }
+
+    fn domain_edge(index: u64, start: VertexId, end: VertexId, kind: EdgeKind) -> Edge {
+        Edge {
+            id: edge_id(index),
+            start,
+            end,
+            kind,
+        }
+    }
+
+    fn zero_thickness_limits() -> ZeroThicknessGeometryLimits {
+        ZeroThicknessGeometryLimits {
+            max_boundary_vertices_per_face: 64,
+            max_total_boundary_vertices: 256,
+            max_triangles_per_face: 62,
+            max_total_triangles: 256,
+            max_triangulation_work_per_face: 10_000_000,
+            max_total_triangulation_work: 40_000_000,
+            max_registry_authentication_work: 1_000_000,
+            max_triangle_pairs_per_face_pair: 4_096,
+            max_total_triangle_pairs: 16_384,
+            max_boundary_relation_work_per_face_pair: 1_000_000,
+            max_total_boundary_relation_work: 4_000_000,
+        }
+    }
+
+    fn corner_v_model_and_pose() -> (MaterialTreeKinematicsModel, MaterialTreePose) {
+        let vertices = vec![
+            domain_vertex(1, 0.0, 0.0),
+            domain_vertex(2, 10.0, 0.0),
+            domain_vertex(3, 10.0, 5.0),
+            domain_vertex(4, 10.0, 10.0),
+            domain_vertex(5, 5.0, 10.0),
+            domain_vertex(6, 0.0, 10.0),
+        ];
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| {
+                domain_edge(
+                    index as u64 + 1,
+                    boundary[index],
+                    boundary[(index + 1) % boundary.len()],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect::<Vec<_>>();
+        let first_hinge = domain_edge(7, boundary[0], boundary[2], EdgeKind::Mountain);
+        let second_hinge = domain_edge(8, boundary[0], boundary[4], EdgeKind::Valley);
+        edges.extend([first_hinge.clone(), second_hinge.clone()]);
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: project_id(),
+            source_revision: 11,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let topology = report.snapshot.expect("corner V topology");
+        let model = MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("corner V model");
+        let angles = CanonicalHingeAngles::new(vec![
+            HingeAngle::new(first_hinge.id, 0.0).expect("first angle"),
+            HingeAngle::new(second_hinge.id, 0.0).expect("second angle"),
+        ])
+        .expect("canonical V angles");
+        let pose = model
+            .solve(Some(model.face_ids()[0]), &angles)
+            .expect("planar V pose");
+        (model, pose)
+    }
+
+    fn midpoint_mountain_model() -> MaterialTreeKinematicsModel {
+        let vertices = vec![
+            domain_vertex(21, 0.0, 0.0),
+            domain_vertex(22, 5.0, 0.0),
+            domain_vertex(23, 10.0, 0.0),
+            domain_vertex(24, 10.0, 10.0),
+            domain_vertex(25, 0.0, 10.0),
+        ];
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| {
+                domain_edge(
+                    index as u64 + 21,
+                    boundary[index],
+                    boundary[(index + 1) % boundary.len()],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect::<Vec<_>>();
+        edges.push(domain_edge(
+            26,
+            boundary[1],
+            boundary[3],
+            EdgeKind::Mountain,
+        ));
+        edges.push(domain_edge(
+            27,
+            boundary[1],
+            boundary[4],
+            EdgeKind::Mountain,
+        ));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: project_id(),
+            source_revision: 12,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("midpoint topology"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("midpoint mountain model")
+    }
+
+    fn rest_boundary(points: &[[f64; 2]]) -> Vec<RestBoundaryVertex> {
+        points
+            .iter()
+            .enumerate()
+            .map(|(index, [x, z])| RestBoundaryVertex {
+                id: vertex_id(index as u64 + 1),
+                point: point(*x, 0.0, *z),
+            })
+            .collect()
+    }
+
+    /// Synthetic geometry for testing the private face-level aggregate only.
+    ///
+    /// Production never accepts this constructor: topology is authenticated
+    /// separately from `MaterialTreePose`. Distinct per-face ID ranges keep
+    /// even these untrusted fixtures consistent with `NoSharedFeature`.
+    fn synthetic_untrusted_face(
+        id: FaceId,
+        boundary_points: &[[f64; 3]],
+        triangle_indices: &[[usize; 3]],
+    ) -> AuthenticatedFace {
+        let id_offset = u64::from(id.canonical_bytes()[15]) * 100;
+        let boundary = boundary_points
+            .iter()
+            .enumerate()
+            .map(|(index, [x, y, z])| AuthenticatedBoundaryVertex {
+                id: vertex_id(id_offset + index as u64 + 1),
+                rest: point(*x, *y, *z),
+                current: ExactPoint3::from_point(point(*x, *y, *z)),
+            })
+            .collect::<Vec<_>>();
+        let edges = (0..boundary.len())
+            .map(|index| edge_id(id_offset + index as u64 + 1))
+            .collect::<Vec<_>>();
+        let triangles = triangle_indices
+            .iter()
+            .map(|indices| indices.map(|index| boundary[index].current.clone()))
+            .collect();
+        AuthenticatedFace {
+            id,
+            boundary,
+            edges,
+            triangles,
+        }
+    }
+
     fn no_shared(first: [[f64; 3]; 3], second: [[f64; 3]; 3]) -> PairDispatch {
         dispatch_authenticated_zero_thickness_pair(&AuthenticatedTrianglePair {
             first: triangle(first),
             second: triangle(second),
             topology: AuthenticatedTopology::NoSharedFeature,
         })
+    }
+
+    const fn single_dispatch(
+        evidence: IntersectionEvidenceV2,
+        decision: TopologyContactDecision,
+    ) -> PairDispatch {
+        PairDispatch {
+            evidence,
+            decision,
+            expected_triangle_pairs: 1,
+            analyzed_triangle_pairs: 1,
+        }
+    }
+
+    #[test]
+    fn exact_triangulation_covers_convex_concave_and_collinear_boundaries() {
+        let cases = [
+            (
+                rest_boundary(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]),
+                2,
+            ),
+            (
+                rest_boundary(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [2.0, 2.0], [0.0, 4.0]]),
+                3,
+            ),
+            (
+                rest_boundary(&[[0.0, 0.0], [2.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]),
+                2,
+            ),
+        ];
+
+        for (boundary, expected_count) in cases {
+            let triangles = triangulate_rest_boundary(
+                &boundary,
+                boundary.len(),
+                boundary.len() - 2,
+                usize::MAX,
+            )
+            .expect("simple boundary");
+            assert_eq!(triangles.len(), expected_count);
+            assert!(triangles.iter().all(|triangle| {
+                !ExactTriangle::from_points(triangle.map(|index| boundary[index].point))
+                    .normal
+                    .is_zero()
+            }));
+        }
+    }
+
+    #[test]
+    fn exact_triangulation_is_cycle_invariant_and_rejects_invalid_or_underbounded_work() {
+        let boundary = rest_boundary(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [2.0, 2.0], [0.0, 4.0]]);
+        let expected = triangulate_rest_boundary(&boundary, 5, 3, usize::MAX)
+            .expect("baseline concave triangulation")
+            .into_iter()
+            .map(|triangle| triangle.map(|index| boundary[index].id.canonical_bytes()))
+            .collect::<Vec<_>>();
+        for rotation in 0..boundary.len() {
+            let mut rotated = boundary.clone();
+            rotated.rotate_left(rotation);
+            let actual = triangulate_rest_boundary(&rotated, 5, 3, usize::MAX)
+                .expect("rotated concave triangulation")
+                .into_iter()
+                .map(|triangle| triangle.map(|index| rotated[index].id.canonical_bytes()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "rotation {rotation}");
+        }
+
+        assert_eq!(
+            triangulate_rest_boundary(&boundary, 4, 3, usize::MAX),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            triangulate_rest_boundary(&boundary, 5, 2, usize::MAX),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        let required_work = estimated_triangulation_work(boundary.len()).expect("small work");
+        assert_eq!(
+            triangulate_rest_boundary(&boundary, 5, 3, required_work - 1),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+
+        let bow_tie = rest_boundary(&[[0.0, 0.0], [4.0, 4.0], [0.0, 4.0], [4.0, 0.0]]);
+        assert_eq!(
+            triangulate_rest_boundary(&bow_tie, 4, 2, usize::MAX),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+        let mut duplicate_coordinate =
+            rest_boundary(&[[0.0, 0.0], [4.0, 0.0], [4.0, 0.0], [0.0, 4.0]]);
+        duplicate_coordinate[2].id = vertex_id(99);
+        assert_eq!(
+            triangulate_rest_boundary(&duplicate_coordinate, 4, 2, usize::MAX),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+        assert_eq!(
+            estimated_triangulation_work(usize::MAX),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            estimated_boundary_relation_work(usize::MAX, usize::MAX, usize::MAX, usize::MAX),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            estimated_registry_authentication_work(usize::MAX, usize::MAX, usize::MAX),
+            Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn authenticated_corner_v_proves_vertex_only_contact_and_blocks_both_hinges() {
+        let (_model, pose) = corner_v_model_and_pose();
+        let analysis = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("authenticated corner V geometry");
+        assert_eq!(analysis.faces.len(), 3);
+
+        let mut allowed_vertices = 0;
+        let mut required_hinges = 0;
+        let mut expected_triangle_pairs = 0_usize;
+        let mut analyzed_triangle_pairs = 0_usize;
+        for first in 0..analysis.faces.len() {
+            for second in (first + 1)..analysis.faces.len() {
+                let dispatch = analysis
+                    .dispatch_pair(first, second)
+                    .expect("complete authenticated pair");
+                assert!(dispatch.has_complete_coverage());
+                expected_triangle_pairs += dispatch.expected_triangle_pairs();
+                analyzed_triangle_pairs += dispatch.analyzed_triangle_pairs();
+                match dispatch.decision() {
+                    TopologyContactDecision::AllowedSharedVertexContact => {
+                        allowed_vertices += 1;
+                        assert_eq!(
+                            dispatch.evidence(),
+                            IntersectionEvidenceV2::SharedFeatureContact
+                        );
+                    }
+                    TopologyContactDecision::RequiresHingeModel => {
+                        required_hinges += 1;
+                        assert_eq!(
+                            dispatch.evidence(),
+                            IntersectionEvidenceV2::SharedFeatureContact
+                        );
+                    }
+                    other => panic!("unexpected corner V classification: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(allowed_vertices, 1);
+        assert_eq!(required_hinges, 2);
+        assert_eq!(expected_triangle_pairs, analysis.total_triangle_pairs());
+        assert_eq!(analyzed_triangle_pairs, analysis.total_triangle_pairs());
+        assert_eq!(
+            analysis.dispatch_pair(0, 0),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+        assert_eq!(
+            analysis.dispatch_pair(1, 0),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+        assert_eq!(
+            analysis.dispatch_pair(0, analysis.faces.len()),
+            Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+        );
+    }
+
+    #[test]
+    fn authenticated_corner_v_shared_vertex_stays_nonpenetrating_across_reported_angles() {
+        let (model, _planar_pose) = corner_v_model_and_pose();
+        let hinges = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        assert_eq!(hinges.len(), 2);
+        for [first_angle, second_angle] in [[10.0, 0.0], [45.0, 45.0], [91.0, 91.0], [135.0, 135.0]]
+        {
+            let angles = CanonicalHingeAngles::new(vec![
+                HingeAngle::new(hinges[0], first_angle).expect("first V angle"),
+                HingeAngle::new(hinges[1], second_angle).expect("second V angle"),
+            ])
+            .expect("canonical V angles");
+            let pose = model
+                .solve(Some(model.face_ids()[0]), &angles)
+                .expect("folded V pose");
+            let analysis =
+                prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+                    .expect("authenticated folded V geometry");
+            let results = (0..analysis.faces.len())
+                .flat_map(|first| {
+                    ((first + 1)..analysis.faces.len()).map(move |second| (first, second))
+                })
+                .map(|(first, second)| (first, second, analysis.dispatch_pair(first, second)))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|(_, _, dispatch)| {
+                        dispatch.as_ref().is_ok_and(|dispatch| {
+                            dispatch.decision()
+                                == TopologyContactDecision::AllowedSharedVertexContact
+                        })
+                    })
+                    .count(),
+                1,
+                "{first_angle}/{second_angle}: {results:?}"
+            );
+            assert!(
+                results.iter().all(|(_, _, dispatch)| {
+                    dispatch.as_ref().map_or(true, |dispatch| {
+                        dispatch.decision() != TopologyContactDecision::Penetrating
+                    })
+                }),
+                "{first_angle}/{second_angle}: {results:?}"
+            );
+            assert!(results.iter().all(|(_, _, dispatch)| {
+                matches!(
+                    dispatch,
+                    Ok(PairDispatch {
+                        decision: TopologyContactDecision::AllowedSharedVertexContact
+                            | TopologyContactDecision::RequiresHingeModel,
+                        ..
+                    }) | Err(ZeroThicknessAnalysisError::EvidenceUnavailable)
+                )
+            }));
+        }
+    }
+
+    #[test]
+    fn exact_affine_pose_image_preserves_whole_face_coplanarity() {
+        let (model, _planar_pose) = corner_v_model_and_pose();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .zip([37.0, 73.0])
+                .map(|(hinge, angle)| HingeAngle::new(hinge.edge(), angle).expect("angle"))
+                .collect(),
+        )
+        .expect("canonical angles");
+        let pose = model
+            .solve(Some(model.face_ids()[0]), &angles)
+            .expect("noncardinal pose");
+        let mut checked_nontriangle = false;
+        for face in pose.face_ids().iter().copied() {
+            let boundary = pose.face_boundary(face).expect("source boundary");
+            if boundary.vertices().len() < 4 {
+                continue;
+            }
+            let transform = ExactAffineTransform::from_transform(
+                pose.face_transform(face).expect("face transform"),
+            );
+            let points = boundary
+                .vertices()
+                .iter()
+                .map(|vertex| {
+                    transform.apply_point(&ExactPoint3::from_point(
+                        pose.vertex_position(*vertex).expect("rest position"),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let mut plane = None;
+            'triples: for first in 0..points.len() {
+                for second in (first + 1)..points.len() {
+                    for third in (second + 1)..points.len() {
+                        let triangle = ExactTriangle::from_exact_points([
+                            points[first].clone(),
+                            points[second].clone(),
+                            points[third].clone(),
+                        ]);
+                        if !triangle.normal.is_zero() {
+                            plane = Some(triangle);
+                            break 'triples;
+                        }
+                    }
+                }
+            }
+            let plane = plane.expect("nondegenerate face plane");
+            assert!(
+                points
+                    .iter()
+                    .all(|point| plane.signed_plane_distance(point).is_zero())
+            );
+            checked_nontriangle = true;
+        }
+        assert!(checked_nontriangle);
+    }
+
+    #[test]
+    fn noncardinal_slanted_hinge_disagreement_is_explicitly_blocking() {
+        let (model, _planar_pose) = corner_v_model_and_pose();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .zip([37.0, 0.0])
+                .map(|(hinge, angle)| HingeAngle::new(hinge.edge(), angle).expect("angle"))
+                .collect(),
+        )
+        .expect("canonical angles");
+        let pose = model
+            .solve(Some(model.face_ids()[0]), &angles)
+            .expect("noncardinal slanted-hinge pose");
+        let analysis = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("authenticated faces");
+        let results = (0..analysis.faces.len())
+            .flat_map(|first| {
+                ((first + 1)..analysis.faces.len()).map(move |second| (first, second))
+            })
+            .map(|(first, second)| analysis.dispatch_pair(first, second))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| {
+                    result.as_ref().is_ok_and(|dispatch| {
+                        dispatch.decision() == TopologyContactDecision::AllowedSharedVertexContact
+                    })
+                })
+                .count(),
+            1,
+            "{results:?}"
+        );
+        assert!(
+            results.iter().any(|result| {
+                matches!(result, Err(ZeroThicknessAnalysisError::EvidenceUnavailable))
+            }),
+            "non-watertight slanted hinge must not receive an epsilon allowance: {results:?}"
+        );
+    }
+
+    #[test]
+    fn authenticated_corner_v_at_full_fold_reports_real_area_overlap() {
+        let (model, _planar_pose) = corner_v_model_and_pose();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 180.0).expect("full fold"))
+                .collect(),
+        )
+        .expect("canonical full-fold angles");
+        let pose = model
+            .solve(Some(model.face_ids()[0]), &angles)
+            .expect("full-fold V pose");
+        let analysis = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("authenticated full-fold faces");
+        let mut shared_vertex_pairs = 0;
+        for first in 0..analysis.faces.len() {
+            for second in (first + 1)..analysis.faces.len() {
+                let first_face = &analysis.faces[first];
+                let second_face = &analysis.faces[second];
+                let shared_vertices = first_face
+                    .boundary
+                    .iter()
+                    .filter(|vertex| {
+                        second_face
+                            .boundary
+                            .iter()
+                            .any(|candidate| candidate.id == vertex.id)
+                    })
+                    .count();
+                let shared_edges = first_face
+                    .edges
+                    .iter()
+                    .filter(|edge| second_face.edges.contains(edge))
+                    .count();
+                if shared_vertices != 1 || shared_edges != 0 {
+                    continue;
+                }
+                let topology = authenticate_face_pair_topology(&pose, first_face, second_face)
+                    .expect("authenticated full-fold topology");
+                if !matches!(topology, AuthenticatedTopology::SharedVertex(_)) {
+                    continue;
+                }
+                shared_vertex_pairs += 1;
+                let dispatch = analysis
+                    .dispatch_pair(first, second)
+                    .expect("complete full-fold vertex pair");
+                assert_eq!(
+                    dispatch.evidence(),
+                    IntersectionEvidenceV2::CoplanarAreaOverlap
+                );
+                assert_eq!(dispatch.decision(), TopologyContactDecision::Penetrating);
+            }
+        }
+        assert_eq!(shared_vertex_pairs, 1);
+    }
+
+    #[test]
+    fn authenticated_midpoint_mountain_pair_never_silently_reports_safe_when_deeply_folded() {
+        let model = midpoint_mountain_model();
+        for angle in [90.0, 135.0, 179.0] {
+            let angles = CanonicalHingeAngles::new(
+                model
+                    .hinges()
+                    .iter()
+                    .map(|hinge| HingeAngle::new(hinge.edge(), angle).expect("mountain angle"))
+                    .collect(),
+            )
+            .expect("canonical mountain angles");
+            let pose = model
+                .solve(Some(model.face_ids()[0]), &angles)
+                .expect("folded midpoint pose");
+            let analysis =
+                prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+                    .expect("authenticated midpoint faces");
+            let mut outer_pairs = 0;
+            for first in 0..analysis.faces.len() {
+                for second in (first + 1)..analysis.faces.len() {
+                    let first_face = &analysis.faces[first];
+                    let second_face = &analysis.faces[second];
+                    let shared_vertices = first_face
+                        .boundary
+                        .iter()
+                        .filter(|vertex| {
+                            second_face
+                                .boundary
+                                .iter()
+                                .any(|candidate| candidate.id == vertex.id)
+                        })
+                        .count();
+                    let shared_edges = first_face
+                        .edges
+                        .iter()
+                        .filter(|edge| second_face.edges.contains(edge))
+                        .count();
+                    if shared_vertices != 1 || shared_edges != 0 {
+                        continue;
+                    }
+                    outer_pairs += 1;
+                    match analysis.dispatch_pair(first, second) {
+                        Ok(dispatch) => assert!(
+                            matches!(
+                                dispatch.decision(),
+                                TopologyContactDecision::Penetrating
+                                    | TopologyContactDecision::Indeterminate
+                            ),
+                            "{angle}: {dispatch:?}"
+                        ),
+                        Err(ZeroThicknessAnalysisError::EvidenceUnavailable) => {}
+                        Err(error) => panic!("{angle}: unexpected resource failure: {error:?}"),
+                    }
+                }
+            }
+            assert_eq!(outer_pairs, 1, "{angle}");
+        }
+    }
+
+    #[test]
+    fn authenticated_pose_limits_are_checked_at_every_one_short_boundary() {
+        let (_model, pose) = corner_v_model_and_pose();
+        let baseline = prepare_authenticated_zero_thickness_pose(&pose, zero_thickness_limits())
+            .expect("baseline authenticated geometry");
+        let maximum_boundary = baseline
+            .faces
+            .iter()
+            .map(|face| face.boundary.len())
+            .max()
+            .expect("face");
+        let total_boundary = baseline
+            .faces
+            .iter()
+            .map(|face| face.boundary.len())
+            .sum::<usize>();
+        let maximum_triangles = baseline
+            .faces
+            .iter()
+            .map(|face| face.triangles.len())
+            .max()
+            .expect("face");
+        let total_triangles = baseline
+            .faces
+            .iter()
+            .map(|face| face.triangles.len())
+            .sum::<usize>();
+        let maximum_triangulation_work = baseline
+            .faces
+            .iter()
+            .map(|face| estimated_triangulation_work(face.boundary.len()).expect("small face work"))
+            .max()
+            .expect("face");
+        let total_triangulation_work = baseline
+            .faces
+            .iter()
+            .map(|face| estimated_triangulation_work(face.boundary.len()).expect("small face work"))
+            .sum::<usize>();
+        let pair_metrics = (0..baseline.faces.len())
+            .flat_map(|first| {
+                ((first + 1)..baseline.faces.len()).map(move |second| (first, second))
+            })
+            .map(|(first, second)| {
+                let triangle_pairs =
+                    baseline.faces[first].triangles.len() * baseline.faces[second].triangles.len();
+                let boundary_work = estimated_boundary_relation_work(
+                    triangle_pairs,
+                    baseline.faces[first].boundary.len(),
+                    baseline.faces[second].boundary.len(),
+                    pose.hinges().len(),
+                )
+                .expect("small boundary work");
+                (triangle_pairs, boundary_work)
+            })
+            .collect::<Vec<_>>();
+        let maximum_triangle_pairs = pair_metrics
+            .iter()
+            .map(|(triangle_pairs, _)| *triangle_pairs)
+            .max()
+            .expect("pair");
+        let maximum_boundary_work = pair_metrics
+            .iter()
+            .map(|(_, boundary_work)| *boundary_work)
+            .max()
+            .expect("pair");
+        let total_boundary_work = pair_metrics
+            .iter()
+            .map(|(_, boundary_work)| *boundary_work)
+            .sum::<usize>();
+        assert_eq!(total_boundary, 10);
+        assert_eq!(pose.hinges().len(), 2);
+        assert_eq!(baseline.faces.len(), 3);
+        const REGISTRY_AUTHENTICATION_WORK_CONTRACT: usize =
+            10 * 10 + 2 * 10 * 2 + 2 * 2 + 2 * 3 * 2 + 2 * 16 + 10 + 3;
+        assert_eq!(REGISTRY_AUTHENTICATION_WORK_CONTRACT, 201);
+        assert_eq!(
+            estimated_registry_authentication_work(10, 2, 3),
+            Ok(REGISTRY_AUTHENTICATION_WORK_CONTRACT)
+        );
+
+        for limits in [
+            ZeroThicknessGeometryLimits {
+                max_boundary_vertices_per_face: maximum_boundary - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_total_boundary_vertices: total_boundary - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_triangles_per_face: maximum_triangles - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_total_triangles: total_triangles - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_triangulation_work_per_face: maximum_triangulation_work - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_total_triangulation_work: total_triangulation_work - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_registry_authentication_work: REGISTRY_AUTHENTICATION_WORK_CONTRACT - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_triangle_pairs_per_face_pair: maximum_triangle_pairs - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_total_triangle_pairs: baseline.total_triangle_pairs() - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_boundary_relation_work_per_face_pair: maximum_boundary_work - 1,
+                ..zero_thickness_limits()
+            },
+            ZeroThicknessGeometryLimits {
+                max_total_boundary_relation_work: total_boundary_work - 1,
+                ..zero_thickness_limits()
+            },
+        ] {
+            assert!(matches!(
+                prepare_authenticated_zero_thickness_pose(&pose, limits),
+                Err(ZeroThicknessAnalysisError::ResourceLimitExceeded)
+            ));
+        }
+    }
+
+    #[test]
+    fn face_pair_aggregation_preserves_all_exact_diagnostics_and_order() {
+        let first = synthetic_untrusted_face(
+            face_id(1),
+            &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let cases = [
+            (
+                synthetic_untrusted_face(
+                    face_id(2),
+                    &[[3.0, 3.0, 0.0], [4.0, 3.0, 0.0], [3.0, 4.0, 0.0]],
+                    &[[0, 1, 2]],
+                ),
+                IntersectionEvidenceV2::Separated,
+                TopologyContactDecision::Separated,
+            ),
+            (
+                synthetic_untrusted_face(
+                    face_id(2),
+                    &[[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, -1.0, 0.0]],
+                    &[[0, 1, 2]],
+                ),
+                IntersectionEvidenceV2::PointContact,
+                TopologyContactDecision::Touching,
+            ),
+            (
+                synthetic_untrusted_face(
+                    face_id(2),
+                    &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, -1.0, 0.0]],
+                    &[[0, 1, 2]],
+                ),
+                IntersectionEvidenceV2::BoundaryLineContact,
+                TopologyContactDecision::Touching,
+            ),
+            (
+                synthetic_untrusted_face(
+                    face_id(2),
+                    &[[0.5, 0.5, 0.0], [1.5, 0.25, 0.0], [0.25, 1.5, 0.0]],
+                    &[[0, 1, 2]],
+                ),
+                IntersectionEvidenceV2::CoplanarAreaOverlap,
+                TopologyContactDecision::Penetrating,
+            ),
+            (
+                synthetic_untrusted_face(
+                    face_id(2),
+                    &[[0.5, 0.25, -1.0], [0.5, 0.25, 1.0], [0.5, 1.5, 0.0]],
+                    &[[0, 1, 2]],
+                ),
+                IntersectionEvidenceV2::TransversalCrossing,
+                TopologyContactDecision::Penetrating,
+            ),
+        ];
+        for (second, evidence, decision) in cases {
+            let forward = aggregate_authenticated_face_pair(
+                &first,
+                &second,
+                &AuthenticatedTopology::NoSharedFeature,
+                1,
+            )
+            .expect("forward aggregate");
+            let reverse = aggregate_authenticated_face_pair(
+                &second,
+                &first,
+                &AuthenticatedTopology::NoSharedFeature,
+                1,
+            )
+            .expect("reverse aggregate");
+            assert_eq!(forward, single_dispatch(evidence, decision));
+            assert_eq!(reverse, forward);
+            assert!(forward.has_complete_coverage());
+        }
+    }
+
+    #[test]
+    fn face_pair_aggregate_never_allows_wrong_vertex_or_partial_hinge_contact() {
+        let first = synthetic_untrusted_face(
+            face_id(11),
+            &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let point_second = synthetic_untrusted_face(
+            face_id(12),
+            &[[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, -1.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let wrong_vertex = aggregate_authenticated_face_pair(
+            &first,
+            &point_second,
+            &AuthenticatedTopology::SharedVertex(ExactPoint3::from_point(point(0.0, 2.0, 0.0))),
+            1,
+        )
+        .expect("complete wrong-vertex aggregate");
+        assert_eq!(
+            wrong_vertex.evidence(),
+            IntersectionEvidenceV2::PointContact
+        );
+        assert_eq!(wrong_vertex.decision(), TopologyContactDecision::Touching);
+
+        let partial_line = synthetic_untrusted_face(
+            face_id(13),
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, -1.0, 0.0]],
+            &[[0, 1, 2]],
+        );
+        let partial_hinge = aggregate_authenticated_face_pair(
+            &first,
+            &partial_line,
+            &AuthenticatedTopology::SharedHingeEdge {
+                start: ExactPoint3::from_point(point(0.0, 0.0, 0.0)),
+                end: ExactPoint3::from_point(point(2.0, 0.0, 0.0)),
+            },
+            1,
+        )
+        .expect("complete partial-hinge aggregate");
+        assert_eq!(
+            partial_hinge.evidence(),
+            IntersectionEvidenceV2::BoundaryLineContact
+        );
+        assert_eq!(
+            partial_hinge.decision(),
+            TopologyContactDecision::Indeterminate
+        );
+    }
+
+    #[test]
+    fn triangulation_diagonal_contact_never_becomes_false_safe_touching() {
+        let square = synthetic_untrusted_face(
+            face_id(1),
+            &[
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 0.0, 2.0],
+                [0.0, 0.0, 2.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        let crossing = synthetic_untrusted_face(
+            face_id(2),
+            &[[0.0, -1.0, 0.0], [2.0, -1.0, 2.0], [1.0, 1.0, 1.0]],
+            &[[0, 1, 2]],
+        );
+        let dispatch = aggregate_authenticated_face_pair(
+            &square,
+            &crossing,
+            &AuthenticatedTopology::NoSharedFeature,
+            2,
+        )
+        .expect("complete internal-diagonal aggregate");
+        assert_eq!(dispatch.evidence(), IntersectionEvidenceV2::Indeterminate);
+        assert_eq!(dispatch.decision(), TopologyContactDecision::Indeterminate);
+        assert_eq!(dispatch.expected_triangle_pairs(), 2);
+        assert_eq!(dispatch.analyzed_triangle_pairs(), 2);
+
+        let mut reversed_square = square.clone();
+        reversed_square.triangles.reverse();
+        let reverse = aggregate_authenticated_face_pair(
+            &crossing,
+            &reversed_square,
+            &AuthenticatedTopology::NoSharedFeature,
+            2,
+        )
+        .expect("reordered internal-diagonal aggregate");
+        assert_eq!(reverse, dispatch);
+
+        let audited_horizontal_square = synthetic_untrusted_face(
+            face_id(3),
+            &[
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        let audited_vertical_square = synthetic_untrusted_face(
+            face_id(4),
+            &[
+                [0.0, 0.0, -1.0],
+                [2.0, 2.0, -1.0],
+                [2.0, 2.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        let audited = aggregate_authenticated_face_pair(
+            &audited_horizontal_square,
+            &audited_vertical_square,
+            &AuthenticatedTopology::NoSharedFeature,
+            4,
+        )
+        .expect("complete four-pair diagonal aggregate");
+        assert_eq!(audited.evidence(), IntersectionEvidenceV2::Indeterminate);
+        assert_eq!(audited.decision(), TopologyContactDecision::Indeterminate);
+        assert_eq!(audited.expected_triangle_pairs(), 4);
+        assert_eq!(audited.analyzed_triangle_pairs(), 4);
     }
 
     fn permute(points: [[f64; 3]; 3], permutation: [usize; 3]) -> [[f64; 3]; 3] {
@@ -762,7 +3039,7 @@ mod tests {
                             permute(first, first_permutation),
                             permute(second, second_permutation)
                         ),
-                        PairDispatch { evidence, decision },
+                        single_dispatch(evidence, decision),
                         "{evidence:?}:{first_permutation:?}:{second_permutation:?}"
                     );
                     assert_eq!(
@@ -770,7 +3047,7 @@ mod tests {
                             permute(second, second_permutation),
                             permute(first, first_permutation)
                         ),
-                        PairDispatch { evidence, decision },
+                        single_dispatch(evidence, decision),
                         "swapped:{evidence:?}:{first_permutation:?}:{second_permutation:?}"
                     );
                 }
@@ -782,10 +3059,10 @@ mod tests {
     fn intersecting_support_planes_with_disjoint_cut_intervals_are_separated() {
         let horizontal = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]];
         let vertical = [[3.0, 0.0, -1.0], [3.0, 0.0, 1.0], [3.0, 1.0, 0.0]];
-        let expected = PairDispatch {
-            evidence: IntersectionEvidenceV2::Separated,
-            decision: TopologyContactDecision::Separated,
-        };
+        let expected = single_dispatch(
+            IntersectionEvidenceV2::Separated,
+            TopologyContactDecision::Separated,
+        );
         assert_eq!(no_shared(horizontal, vertical), expected);
         assert_eq!(no_shared(vertical, horizontal), expected);
     }
@@ -797,14 +3074,16 @@ mod tests {
         let point_pair = AuthenticatedTrianglePair {
             first,
             second: point_second,
-            topology: AuthenticatedTopology::SharedVertex(point(2.0, 0.0, 0.0)),
+            topology: AuthenticatedTopology::SharedVertex(ExactPoint3::from_point(point(
+                2.0, 0.0, 0.0,
+            ))),
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&point_pair),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::SharedFeatureContact,
-                decision: TopologyContactDecision::AllowedSharedVertexContact,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::SharedFeatureContact,
+                TopologyContactDecision::AllowedSharedVertexContact,
+            )
         );
 
         let line_second = triangle([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, -1.0, 0.0]]);
@@ -812,16 +3091,16 @@ mod tests {
             first,
             second: line_second,
             topology: AuthenticatedTopology::SharedHingeEdge {
-                start: point(0.0, 0.0, 0.0),
-                end: point(2.0, 0.0, 0.0),
+                start: ExactPoint3::from_point(point(0.0, 0.0, 0.0)),
+                end: ExactPoint3::from_point(point(2.0, 0.0, 0.0)),
             },
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&hinge_pair),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::SharedFeatureContact,
-                decision: TopologyContactDecision::RequiresHingeModel,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::SharedFeatureContact,
+                TopologyContactDecision::RequiresHingeModel,
+            )
         );
     }
 
@@ -832,14 +3111,16 @@ mod tests {
         let wrong_vertex = AuthenticatedTrianglePair {
             first,
             second: point_second,
-            topology: AuthenticatedTopology::SharedVertex(point(0.0, 2.0, 0.0)),
+            topology: AuthenticatedTopology::SharedVertex(ExactPoint3::from_point(point(
+                0.0, 2.0, 0.0,
+            ))),
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&wrong_vertex),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::PointContact,
-                decision: TopologyContactDecision::Touching,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::PointContact,
+                TopologyContactDecision::Touching,
+            )
         );
 
         let line_second = triangle([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, -1.0, 0.0]]);
@@ -847,29 +3128,31 @@ mod tests {
             first,
             second: line_second,
             topology: AuthenticatedTopology::SharedHingeEdge {
-                start: point(0.0, 0.0, 0.0),
-                end: point(3.0, 0.0, 0.0),
+                start: ExactPoint3::from_point(point(0.0, 0.0, 0.0)),
+                end: ExactPoint3::from_point(point(3.0, 0.0, 0.0)),
             },
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&partial_hinge),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::BoundaryLineContact,
-                decision: TopologyContactDecision::Indeterminate,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::BoundaryLineContact,
+                TopologyContactDecision::Indeterminate,
+            )
         );
 
         let area_overlap = AuthenticatedTrianglePair {
             first,
             second: triangle([[0.5, 0.5, 0.0], [1.5, 0.25, 0.0], [0.25, 1.5, 0.0]]),
-            topology: AuthenticatedTopology::SharedVertex(point(0.0, 0.0, 0.0)),
+            topology: AuthenticatedTopology::SharedVertex(ExactPoint3::from_point(point(
+                0.0, 0.0, 0.0,
+            ))),
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&area_overlap),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::CoplanarAreaOverlap,
-                decision: TopologyContactDecision::Penetrating,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::CoplanarAreaOverlap,
+                TopologyContactDecision::Penetrating,
+            )
         );
     }
 
@@ -883,10 +3166,10 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&same_face),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::Indeterminate,
-                decision: TopologyContactDecision::Indeterminate,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::Indeterminate,
+                TopologyContactDecision::Indeterminate,
+            )
         );
 
         let degenerate = no_shared(
@@ -895,10 +3178,10 @@ mod tests {
         );
         assert_eq!(
             degenerate,
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::Indeterminate,
-                decision: TopologyContactDecision::Indeterminate,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::Indeterminate,
+                TopologyContactDecision::Indeterminate,
+            )
         );
     }
 
@@ -917,12 +3200,34 @@ mod tests {
             exact_binary64(f64::MAX),
             BigRational::from_integer(BigInt::from((1_u64 << 53) - 1) << 2045_usize)
         );
+        assert_eq!(exact_binary64_scalar(1.0), BigRational::one());
+        let source = ExactPoint3::from_point(point(0.1, -2.5, f64::from_bits(1)));
+        assert_eq!(
+            ExactAffineTransform::from_transform(RigidTransform::identity()).apply_point(&source),
+            source
+        );
     }
 
     #[test]
     fn subnormal_and_near_maximum_coordinates_keep_exact_classification() {
         let subnormal = f64::from_bits(1);
         let twice_subnormal = f64::from_bits(2);
+        assert_eq!(
+            triangulate_rest_boundary(
+                &rest_boundary(&[
+                    [0.0, 0.0],
+                    [twice_subnormal, 0.0],
+                    [twice_subnormal, twice_subnormal],
+                    [0.0, twice_subnormal],
+                ]),
+                4,
+                2,
+                usize::MAX,
+            )
+            .expect("subnormal square")
+            .len(),
+            2
+        );
         assert_eq!(
             no_shared(
                 [
@@ -936,15 +3241,31 @@ mod tests {
                     [twice_subnormal, -subnormal, 0.0],
                 ],
             ),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::PointContact,
-                decision: TopologyContactDecision::Touching,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::PointContact,
+                TopologyContactDecision::Touching,
+            )
         );
 
         let maximum = f64::MAX;
         let previous = f64::from_bits(maximum.to_bits() - 1);
         let before_previous = f64::from_bits(maximum.to_bits() - 2);
+        assert_eq!(
+            triangulate_rest_boundary(
+                &rest_boundary(&[
+                    [previous, previous],
+                    [maximum, previous],
+                    [maximum, maximum],
+                    [previous, maximum],
+                ]),
+                4,
+                2,
+                usize::MAX,
+            )
+            .expect("near-maximum square")
+            .len(),
+            2
+        );
         assert_eq!(
             no_shared(
                 [
@@ -958,10 +3279,10 @@ mod tests {
                     [-maximum, -before_previous, 0.0],
                 ],
             ),
-            PairDispatch {
-                evidence: IntersectionEvidenceV2::Separated,
-                decision: TopologyContactDecision::Separated,
-            }
+            single_dispatch(
+                IntersectionEvidenceV2::Separated,
+                TopologyContactDecision::Separated,
+            )
         );
     }
 }

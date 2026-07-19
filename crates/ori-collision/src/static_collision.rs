@@ -7,7 +7,10 @@ use thiserror::Error;
 
 use crate::{
     TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
-    zero_thickness::dispatch_material_pose_pair,
+    zero_thickness::{
+        ZeroThicknessAnalysisError, ZeroThicknessGeometryLimits,
+        prepare_authenticated_zero_thickness_pose,
+    },
 };
 
 /// Initial paper-thickness interpretation used by native collision geometry.
@@ -15,10 +18,14 @@ pub const CENTERED_MID_SURFACE_THICKNESS_MODEL_V1: &str = "centered_mid_surface_
 
 /// First opaque native static-collision geometry-proof format.
 ///
-/// Version 1 initially admits only the complete zero-pair proof for a
-/// no-hinge, single-material-face pose. Multi-face poses fail closed until the
-/// native pair evidence generator, positive-thickness SAT and finite shared
-/// hinge corridor are available.
+/// Version 1 admits only the complete zero-pair proof for a no-hinge,
+/// single-material-face pose. Exact zero-thickness multi-face diagnostics now
+/// authenticate and scan every face and triangle pair, but every valid
+/// multi-face material tree contains a shared hinge. That pair remains
+/// blocking until canonical watertight shared-feature geometry and its finite
+/// hinge model exist. Positive-thickness pairs are also still blocking. The
+/// public success set therefore has not expanded and the proof identifier
+/// remains V1.
 ///
 /// This proof does not claim that the pose is current for a project. A
 /// stronger authority boundary must bind the exact proof object to the exact
@@ -27,10 +34,26 @@ pub const NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1: &str =
     "native_static_collision_geometry_proof_v1";
 
 /// Hard bounds applied before a native static analysis may allocate or scan.
+///
+/// Boundary and triangle counts constrain storage. The triangulation and
+/// boundary-relation work fields separately constrain the exact synchronous
+/// predicates whose cost is superlinear in those counts. Every one-short or
+/// arithmetic-overflow case fails closed as `ResourceLimitExceeded`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaticCollisionLimits {
     pub max_faces: usize,
     pub max_unordered_face_pairs: usize,
+    pub max_boundary_vertices_per_face: usize,
+    pub max_total_boundary_vertices: usize,
+    pub max_triangles_per_face: usize,
+    pub max_total_triangles: usize,
+    pub max_triangulation_work_per_face: usize,
+    pub max_total_triangulation_work: usize,
+    pub max_registry_authentication_work: usize,
+    pub max_triangle_pairs_per_face_pair: usize,
+    pub max_total_triangle_pairs: usize,
+    pub max_boundary_relation_work_per_face_pair: usize,
+    pub max_total_boundary_relation_work: usize,
 }
 
 impl Default for StaticCollisionLimits {
@@ -38,6 +61,17 @@ impl Default for StaticCollisionLimits {
         Self {
             max_faces: 10_001,
             max_unordered_face_pairs: 50_000_000,
+            max_boundary_vertices_per_face: 4_096,
+            max_total_boundary_vertices: 50_000,
+            max_triangles_per_face: 4_094,
+            max_total_triangles: 50_000,
+            max_triangulation_work_per_face: 100_000_000,
+            max_total_triangulation_work: 500_000_000,
+            max_registry_authentication_work: 10_000_000,
+            max_triangle_pairs_per_face_pair: 250_000,
+            max_total_triangle_pairs: 1_000_000,
+            max_boundary_relation_work_per_face_pair: 10_000_000,
+            max_total_boundary_relation_work: 40_000_000,
         }
     }
 }
@@ -58,7 +92,7 @@ pub enum StaticCollisionError {
     #[error("the material pose registry is internally inconsistent")]
     InconsistentMaterialPose,
     #[error(
-        "native pair evidence is not yet available for all {expected_unordered_face_pairs} unordered face pairs"
+        "static collision did not establish a nonblocking result for all {expected_unordered_face_pairs} unordered face pairs"
     )]
     PairEvidenceUnavailable {
         expected_unordered_face_pairs: usize,
@@ -77,6 +111,8 @@ struct StaticCollisionProof {
     face_count: usize,
     expected_unordered_face_pairs: usize,
     analyzed_unordered_face_pairs: usize,
+    expected_triangle_pairs: usize,
+    analyzed_triangle_pairs: usize,
 }
 
 /// Opaque geometry proof that one exact native material pose completed static
@@ -160,14 +196,33 @@ impl NativeStaticCollisionGeometryProof {
     pub fn analyzed_unordered_face_pairs(&self) -> usize {
         self.proof.analyzed_unordered_face_pairs
     }
+
+    /// Number of authenticated triangle pairs required by the complete
+    /// face-pair analysis. The current public multi-face proof remains
+    /// blocking at every tree hinge until the finite hinge model exists.
+    #[must_use]
+    pub fn expected_triangle_pairs(&self) -> usize {
+        self.proof.expected_triangle_pairs
+    }
+
+    /// Number of authenticated triangle pairs actually classified.
+    #[must_use]
+    pub fn analyzed_triangle_pairs(&self) -> usize {
+        self.proof.analyzed_triangle_pairs
+    }
 }
 
 /// Proves static collision geometry for one exact native material pose.
 ///
 /// The current implementation intentionally succeeds only for the complete
 /// zero-pair case: exactly one material face and no material hinge. A
-/// multi-face pose returns a blocking error until all unordered pairs have
-/// authenticated topology, intersection and finite-hinge evidence.
+/// zero-thickness multi-face pose runs authenticated whole-face diagnostics,
+/// but returns a blocking error at penetration, indeterminate evidence or the
+/// mandatory shared-hinge pair. Positive-thickness pairs remain blocking.
+///
+/// Static `Touching` is admissible only as evidence of zero penetration at
+/// this exact pose. Continuous fold execution must still stop at its first
+/// touching time; this proof does not authorize motion through contact.
 pub fn prove_static_collision_geometry(
     model: &MaterialTreeKinematicsModel,
     pose: &MaterialTreePose,
@@ -218,15 +273,65 @@ pub fn prove_static_collision_geometry(
         });
     }
 
-    let mut pair_work = UnorderedFacePairs::new(face_count);
-    for (first_face_index, second_face_index) in pair_work.by_ref() {
-        let Some(dispatch) = dispatch_material_pose_pair(pose, first_face_index, second_face_index)
-        else {
-            return Err(StaticCollisionError::PairEvidenceUnavailable {
+    if expected_unordered_face_pairs == 0 {
+        // `bind_pose` above proves this came from a private PreparedTree.
+        // Material-tree preparation exact-validates every paper and face
+        // boundary before it can issue either the model or this pose, so the
+        // allocation-free zero-pair proof does not bypass source validity.
+        return Ok(NativeStaticCollisionGeometryProof {
+            proof: Arc::new(StaticCollisionProof {
+                model: model.clone(),
+                pose: pose.clone(),
+                paper_thickness_bits: paper_thickness_mm.to_bits(),
+                proof_id: NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
+                policy_id: TOPOLOGY_CONTACT_POLICY_V2,
+                kinematics_model_id: MATERIAL_TREE_KINEMATICS_MODEL_ID,
+                thickness_model_id: CENTERED_MID_SURFACE_THICKNESS_MODEL_V1,
+                face_count,
                 expected_unordered_face_pairs,
-            });
-        };
+                analyzed_unordered_face_pairs: 0,
+                expected_triangle_pairs: 0,
+                analyzed_triangle_pairs: 0,
+            }),
+        });
+    }
+    let analysis = prepare_authenticated_zero_thickness_pose(
+        pose,
+        ZeroThicknessGeometryLimits {
+            max_boundary_vertices_per_face: limits.max_boundary_vertices_per_face,
+            max_total_boundary_vertices: limits.max_total_boundary_vertices,
+            max_triangles_per_face: limits.max_triangles_per_face,
+            max_total_triangles: limits.max_total_triangles,
+            max_triangulation_work_per_face: limits.max_triangulation_work_per_face,
+            max_total_triangulation_work: limits.max_total_triangulation_work,
+            max_registry_authentication_work: limits.max_registry_authentication_work,
+            max_triangle_pairs_per_face_pair: limits.max_triangle_pairs_per_face_pair,
+            max_total_triangle_pairs: limits.max_total_triangle_pairs,
+            max_boundary_relation_work_per_face_pair: limits
+                .max_boundary_relation_work_per_face_pair,
+            max_total_boundary_relation_work: limits.max_total_boundary_relation_work,
+        },
+    )
+    .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
+    let mut pair_work = UnorderedFacePairs::new(face_count);
+    let mut expected_triangle_pairs = 0_usize;
+    let mut analyzed_triangle_pairs = 0_usize;
+    for (first_face_index, second_face_index) in pair_work.by_ref() {
+        let dispatch = analysis
+            .dispatch_pair(first_face_index, second_face_index)
+            .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
+        if !dispatch.has_complete_coverage() {
+            return Err(StaticCollisionError::InconsistentMaterialPose);
+        }
+        expected_triangle_pairs = expected_triangle_pairs
+            .checked_add(dispatch.expected_triangle_pairs())
+            .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
+        analyzed_triangle_pairs = analyzed_triangle_pairs
+            .checked_add(dispatch.analyzed_triangle_pairs())
+            .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
         let _evidence = dispatch.evidence();
+        // Touching proves no zero-thickness penetration at this one static
+        // pose. It is deliberately not a continuous-motion permission.
         if !matches!(
             dispatch.decision(),
             TopologyContactDecision::Separated
@@ -239,6 +344,11 @@ pub fn prove_static_collision_geometry(
         }
     }
     if pair_work.enumerated() != expected_unordered_face_pairs {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    if expected_triangle_pairs != analysis.total_triangle_pairs()
+        || analyzed_triangle_pairs != analysis.total_triangle_pairs()
+    {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
 
@@ -254,8 +364,26 @@ pub fn prove_static_collision_geometry(
             face_count,
             expected_unordered_face_pairs,
             analyzed_unordered_face_pairs: pair_work.enumerated(),
+            expected_triangle_pairs,
+            analyzed_triangle_pairs,
         }),
     })
+}
+
+fn map_zero_thickness_error(
+    error: ZeroThicknessAnalysisError,
+    expected_unordered_face_pairs: usize,
+) -> StaticCollisionError {
+    match error {
+        ZeroThicknessAnalysisError::EvidenceUnavailable => {
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            }
+        }
+        ZeroThicknessAnalysisError::ResourceLimitExceeded => {
+            StaticCollisionError::ResourceLimitExceeded
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

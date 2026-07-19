@@ -2,6 +2,7 @@ import type {
   LengthDisplayUnit,
   ProjectSnapshot,
 } from './coreClient.ts'
+import type { Locale } from './i18n.ts'
 
 export type AbsoluteLengthDisplayUnit = 'mm' | 'cm' | 'inch'
 
@@ -245,35 +246,60 @@ export function formatLengthInput(
 export function formatLengthValue(
   valueMm: number | null | undefined,
   unit: ResolvedLengthDisplayUnit,
+  locale: Locale,
   maximumFractionDigits = defaultMaximumFractionDigits(unit),
 ): string {
-  if (typeof valueMm !== 'number' || !Number.isFinite(valueMm)) return '計測不可'
+  if (typeof valueMm !== 'number' || !Number.isFinite(valueMm)) {
+    return unavailableLengthText(locale)
+  }
   const displayed = lengthMillimetresToDisplay(valueMm, unit)
-  if (!Number.isFinite(displayed)) return '計測不可'
-  return normalizeNegativeZero(displayed).toLocaleString('ja-JP', {
+  if (!Number.isFinite(displayed)) return unavailableLengthText(locale)
+  return normalizeNegativeZero(displayed).toLocaleString(
+    locale === 'en' ? 'en-US' : 'ja-JP',
+    {
     maximumFractionDigits,
-  })
+    },
+  )
 }
 
 export function formatLength(
   valueMm: number | null | undefined,
   unit: ResolvedLengthDisplayUnit,
+  locale: Locale,
   maximumFractionDigits = defaultMaximumFractionDigits(unit),
 ): string {
-  const value = formatLengthValue(valueMm, unit, maximumFractionDigits)
-  return value === '計測不可' ? value : `${value} ${unit.label}`
+  const value = formatLengthValue(
+    valueMm,
+    unit,
+    locale,
+    maximumFractionDigits,
+  )
+  return value === unavailableLengthText(locale)
+    ? value
+    : `${value} ${lengthDisplayUnitLabel(unit, locale)}`
 }
 
 export function formatLengthPoint(
   xMm: number | null | undefined,
   yMm: number | null | undefined,
   unit: ResolvedLengthDisplayUnit,
+  locale: Locale,
 ): string {
-  const x = formatLengthValue(xMm, unit)
-  const y = formatLengthValue(yMm, unit)
-  return x === '計測不可' || y === '計測不可'
-    ? '計測不可'
-    : `(${x}, ${y}) ${unit.label}`
+  const unavailable = unavailableLengthText(locale)
+  const x = formatLengthValue(xMm, unit, locale)
+  const y = formatLengthValue(yMm, unit, locale)
+  return x === unavailable || y === unavailable
+    ? unavailable
+    : `(${x}, ${y}) ${lengthDisplayUnitLabel(unit, locale)}`
+}
+
+export function lengthDisplayUnitLabel(
+  unit: ResolvedLengthDisplayUnit,
+  locale: Locale,
+) {
+  return unit.mode === 'paper_edge_ratio'
+    ? locale === 'en' ? 'paper-edge ratio' : '紙辺比'
+    : unit.label
 }
 
 export function lengthInputSourceToken(
@@ -377,6 +403,10 @@ function defaultMaximumFractionDigits(unit: ResolvedLengthDisplayUnit) {
   if (unit.effectiveUnit === 'inch') return 5
   if (unit.effectiveUnit === 'cm') return 4
   return 3
+}
+
+function unavailableLengthText(locale: Locale) {
+  return locale === 'en' ? 'Unavailable' : '計測不可'
 }
 
 function canonicalEndpointPair(first: string, second: string) {

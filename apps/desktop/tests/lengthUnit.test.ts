@@ -6,6 +6,9 @@ import {
   collectBoundaryLengthReferences,
   formatLength,
   formatLengthInput,
+  formatLengthPoint,
+  formatLengthValue,
+  lengthDisplayUnitLabel,
   lengthDisplayToMillimetres,
   lengthMillimetresToDisplay,
   makePaperEdgeRatioUnit,
@@ -47,7 +50,13 @@ test('paper-edge ratio resolves only a unique valid cyclic boundary edge', () =>
   assert.equal(unit.reference.edgeId, 'e-top')
   assert.equal(ratioReferenceAxis(unit), 'width')
   assert.equal(formatLengthInput(200, unit), '0.5')
-  assert.equal(formatLength(400, unit), '1 紙辺比')
+  assert.equal(formatLength(400, unit, 'ja'), '1 紙辺比')
+  assert.equal(formatLength(400, unit, 'en'), '1 paper-edge ratio')
+  assert.equal(lengthDisplayUnitLabel(unit, 'ja'), '紙辺比')
+  assert.equal(lengthDisplayUnitLabel(unit, 'en'), 'paper-edge ratio')
+  assert.equal(formatLengthValue(Number.NaN, unit, 'ja'), '計測不可')
+  assert.equal(formatLengthValue(Number.NaN, unit, 'en'), 'Unavailable')
+  assert.equal(formatLengthPoint(200, null, unit, 'en'), 'Unavailable')
 
   const vertical = resolveLengthDisplayUnit(
     project(makePaperEdgeRatioUnit('e-right')),
@@ -71,7 +80,8 @@ test('paper-edge ratio scale follows the same edge and never silently rebases', 
   assert.equal(invalid.invalidReferenceEdgeId, 'deleted-edge')
   assert.equal(invalid.effectiveUnit, 'mm')
   assert.equal(invalid.millimetresPerUnit, 1)
-  assert.equal(formatLength(12.5, invalid), '12.5 mm')
+  assert.equal(formatLength(12.5, invalid, 'ja'), '12.5 mm')
+  assert.equal(formatLength(12.5, invalid, 'en'), '12.5 mm')
 })
 
 test('ambiguous IDs, duplicated carrier segments and zero lengths fail closed', () => {

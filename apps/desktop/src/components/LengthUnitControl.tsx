@@ -97,6 +97,7 @@ export function LengthUnitControl({
                   length: formatLength(
                     reference.lengthMm,
                     MILLIMETRE_LENGTH_DISPLAY_UNIT,
+                    locale,
                   ),
                 })}
               </option>

@@ -122,9 +122,141 @@ export function foldImportTargetLabel(
     ?.label ?? target
 }
 
+export function foldImportWarningMessage(
+  warning: unknown,
+  locale: Locale = 'ja',
+) {
+  const category = classifyFoldImportWarning(warning)
+  if (locale === 'ja') {
+    return category === null
+      ? '取り込まれないFOLD情報があります。'
+      : warning as string
+  }
+  switch (category) {
+    case 'missing_spec':
+      return 'The FOLD specification version is missing, so the file will be interpreted conservatively within the supported range.'
+    case 'unit_needs_scale':
+      return 'The file has no unit information that can be converted to physical size. Enter the millimetres per FOLD unit.'
+    case 'ignored_metadata':
+      return 'Some FOLD metadata will not be imported.'
+    case 'invalid_title':
+      return 'The title in the FOLD file does not meet the work-name requirements, so the default name will be used.'
+    case 'flat_crease':
+      return 'F (flat crease) has no equivalent line type and must be converted to an auxiliary line or excluded.'
+    case 'unassigned':
+      return 'U (unassigned) must be mapped to a mountain fold, valley fold, auxiliary line, or exclusion.'
+    case 'face_join':
+      return 'J (face join) has no equivalent line type and must be converted to an auxiliary line or excluded.'
+    default:
+      return 'Some FOLD information will not be imported.'
+  }
+}
+
+export function foldImportPreviewFileName(
+  nativeLabel: unknown,
+  locale: Locale = 'ja',
+) {
+  if (
+    typeof nativeLabel === 'string'
+    && nativeLabel !== '選択したFOLDファイル'
+    && nativeLabel !== 'Selected FOLD file'
+    && isSafeFoldImportFileName(nativeLabel)
+  ) {
+    return nativeLabel
+  }
+  return locale === 'en' ? 'Selected FOLD file' : '選択したFOLDファイル'
+}
+
+export function isFoldImportFallbackName(value: unknown): value is string {
+  return value === 'FOLDインポート' || value === 'FOLD import'
+}
+
+export function foldImportSuggestedName(
+  value: string,
+  locale: Locale = 'ja',
+) {
+  if (!isFoldImportFallbackName(value)) return value
+  return locale === 'en' ? 'FOLD import' : 'FOLDインポート'
+}
+
 export function foldImportTargetOptions(assignment: FoldAssignmentCode) {
   const allowed = new Set(TARGETS_BY_ASSIGNMENT[assignment])
   return FOLD_IMPORT_TARGET_OPTIONS.filter(({ value }) => allowed.has(value))
+}
+
+type FoldImportWarningCategory =
+  | 'missing_spec'
+  | 'unit_needs_scale'
+  | 'ignored_metadata'
+  | 'invalid_title'
+  | 'flat_crease'
+  | 'unassigned'
+  | 'face_join'
+
+const FOLD_IGNORED_METADATA_LABELS = new Set([
+  '複数フレーム',
+  '作成ソフト情報',
+  '作者情報',
+  '説明',
+  'ファイル分類',
+  'フレーム分類',
+  'フレーム属性',
+  'フレーム名',
+  'フレーム継承',
+  '面情報（辺から再計算）',
+  '重なり順',
+  '折り角度',
+  '辺長メタデータ',
+  'フレーム変換',
+])
+
+function classifyFoldImportWarning(
+  warning: unknown,
+): FoldImportWarningCategory | null {
+  if (typeof warning !== 'string') return null
+  switch (warning) {
+    case 'FOLD仕様バージョンの記載がありません。対応範囲として慎重に解釈します。':
+      return 'missing_spec'
+    case '実寸へ換算できる単位情報がないため、1単位あたりのmm値を指定してください。':
+      return 'unit_needs_scale'
+    case 'FOLD内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。':
+      return 'invalid_title'
+    case 'F（平らな折り筋）は同じ意味の線種がないため、補助線または除外へ変換します。':
+      return 'flat_crease'
+    case 'U（未割当）は山折り・谷折り・補助線・除外のいずれかを選ぶ必要があります。':
+      return 'unassigned'
+    case 'J（面の結合）は同じ意味の線種がないため、補助線または除外へ変換します。':
+      return 'face_join'
+    default: {
+      const ignored = /^取り込まないFOLD情報: ([^。\r\n]{1,500})。$/u
+        .exec(warning)
+      if (!ignored) return null
+      const labels = ignored[1].split('、')
+      return labels.length > 0 && labels.every((label) => (
+        FOLD_IGNORED_METADATA_LABELS.has(label)
+        || isBoundedUnknownFoldMetadataCount(label)
+      ))
+        ? 'ignored_metadata'
+        : null
+    }
+  }
+}
+
+function isBoundedUnknownFoldMetadataCount(value: string) {
+  const count = /^その他の拡張フィールド([0-9]{1,20})件$/u.exec(value)
+  return count !== null
+    && Number.isSafeInteger(Number(count[1]))
+    && Number(count[1]) > 0
+}
+
+function isSafeFoldImportFileName(value: string) {
+  const characters = [...value]
+  return characters.length > 0
+    && characters.length <= 255
+    && value !== '.'
+    && value !== '..'
+    && !/[\\/:]/u.test(value)
+    && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)
 }
 
 export function isAllowedFoldImportTarget(

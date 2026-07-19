@@ -3631,7 +3631,7 @@ export function FoldPreview({
     hasAuthoritativeThickness,
     thicknessIsEmphasised,
     thicknessIsLimited,
-    formattedLength: formatLength(safeThicknessMm, lengthDisplayUnit),
+    formattedLength: formatLength(safeThicknessMm, lengthDisplayUnit, locale),
     lengthDisplayUnit,
   }, locale)
   const unavailableMessage = model && renderError

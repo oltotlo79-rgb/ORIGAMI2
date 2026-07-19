@@ -155,6 +155,7 @@ import {
   formatLengthInput,
   formatLengthPoint,
   formatLengthValue,
+  lengthDisplayUnitLabel,
   MILLIMETRE_LENGTH_DISPLAY_UNIT,
   ratioReferenceAxis,
   readLengthInputMillimetres,
@@ -1207,13 +1208,19 @@ function App() {
       return { projectId, values }
     })
   }
+  const lengthDisplayUnitLabelText = lengthDisplayUnitLabel(
+    lengthDisplayUnit,
+    locale,
+  )
   const paperSizeLabel = paperBounds
     ? `${formatLengthValue(
         paperBounds.maxX - paperBounds.minX,
         lengthDisplayUnit,
+        locale,
       )} × ${formatLength(
         paperBounds.maxY - paperBounds.minY,
         lengthDisplayUnit,
+        locale,
       )}`
     : text({ ja: '寸法不明', en: 'Unknown dimensions' })
   const paperCenter = paperBounds
@@ -3769,6 +3776,7 @@ function App() {
                       selectedLine.x1,
                       selectedLine.y1,
                       displayedLengthUnit,
+                      locale,
                     )}</dd>
                   </div>
                   <div>
@@ -3777,13 +3785,14 @@ function App() {
                       selectedLine.x2,
                       selectedLine.y2,
                       displayedLengthUnit,
+                      locale,
                     )}</dd>
                   </div>
-                  <div><dt>ΔX</dt><dd>{formatLength(selectedLineMeasurement?.deltaX, displayedLengthUnit)}</dd></div>
-                  <div><dt>ΔY</dt><dd>{formatLength(selectedLineMeasurement?.deltaY, displayedLengthUnit)}</dd></div>
+                  <div><dt>ΔX</dt><dd>{formatLength(selectedLineMeasurement?.deltaX, displayedLengthUnit, locale)}</dd></div>
+                  <div><dt>ΔY</dt><dd>{formatLength(selectedLineMeasurement?.deltaY, displayedLengthUnit, locale)}</dd></div>
                   <div>
                     <dt>{text({ ja: '長さ', en: 'Length' })}</dt>
-                    <dd>{formatLength(selectedLineMeasurement?.length, displayedLengthUnit)}</dd>
+                    <dd>{formatLength(selectedLineMeasurement?.length, displayedLengthUnit, locale)}</dd>
                   </div>
                   <div>
                     <dt>{text({ ja: '角度', en: 'Angle' })}</dt>
@@ -3890,7 +3899,7 @@ function App() {
                   onSubmit={submitVertexPosition}
                 >
                   <label className="field">
-                    {`X (${lengthDisplayUnit.label})`}
+                    {`X (${lengthDisplayUnitLabelText})`}
                     <LengthValueInput
                       name="x_display"
                       disabled={coreBusy}
@@ -3899,11 +3908,11 @@ function App() {
                       ariaLabel={formattedText({
                         ja: '頂点のX座標 ({unit})',
                         en: 'Vertex X coordinate ({unit})',
-                      }, { unit: lengthDisplayUnit.label })}
+                      }, { unit: lengthDisplayUnitLabelText })}
                     />
                   </label>
                   <label className="field">
-                    {`Y (${lengthDisplayUnit.label})`}
+                    {`Y (${lengthDisplayUnitLabelText})`}
                     <LengthValueInput
                       name="y_display"
                       disabled={coreBusy}
@@ -3912,7 +3921,7 @@ function App() {
                       ariaLabel={formattedText({
                         ja: '頂点のY座標 ({unit})',
                         en: 'Vertex Y coordinate ({unit})',
-                      }, { unit: lengthDisplayUnit.label })}
+                      }, { unit: lengthDisplayUnitLabelText })}
                     />
                   </label>
                   <div className="property-actions">
@@ -4332,7 +4341,7 @@ function App() {
                   unit={lengthDisplayUnit}
                   disabled={coreBusy || !nativeSnapshot}
                 />
-                <span>{lengthDisplayUnit.label}</span>
+                <span>{lengthDisplayUnitLabelText}</span>
               </div>
               <div className="paper-color-fields">
                 <label className="paper-color-field">
@@ -4394,9 +4403,9 @@ function App() {
                       ariaLabel={formattedText({
                         ja: '用紙の幅 ({unit})',
                         en: 'Paper width ({unit})',
-                      }, { unit: lengthDisplayUnit.label })}
+                      }, { unit: lengthDisplayUnitLabelText })}
                     />
-                    <span>{lengthDisplayUnit.label}</span>
+                    <span>{lengthDisplayUnitLabelText}</span>
                   </label>
                   <label className="field">
                     <span>{text({ ja: '高さ', en: 'Height' })}</span>
@@ -4411,9 +4420,9 @@ function App() {
                       ariaLabel={formattedText({
                         ja: '用紙の高さ ({unit})',
                         en: 'Paper height ({unit})',
-                      }, { unit: lengthDisplayUnit.label })}
+                      }, { unit: lengthDisplayUnitLabelText })}
                     />
-                    <span>{lengthDisplayUnit.label}</span>
+                    <span>{lengthDisplayUnitLabelText}</span>
                   </label>
                 </div>
                 {!rectangularPaperSize && (
@@ -5484,7 +5493,7 @@ function formatLineMeasurementLabel(
       en: 'Unavailable',
     })
   }
-  return `${formatLength(measurement.length, unit)} / ${
+  return `${formatLength(measurement.length, unit, locale)} / ${
     formatMeasurementValue(measurement.angleDegrees, '°', 2, locale)
   }`
 }

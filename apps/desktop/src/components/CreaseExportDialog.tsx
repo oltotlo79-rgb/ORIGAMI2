@@ -9,6 +9,7 @@ import {
   CREASE_PATTERN_EXPORT_FORMATS,
   creasePatternExportAssignmentRows,
   creasePatternExportFormatLabel,
+  creasePatternExportWarningMessage,
   formatCreasePatternExportBytes,
   isCreasePatternExportFormat,
   type CreasePatternExportFormat,
@@ -323,7 +324,7 @@ export function CreaseExportDialog({
                 </div>
                 <div>
                   <dt>{copy.metadata.size}</dt>
-                  <dd>{formatCreasePatternExportBytes(preview.byte_count)}</dd>
+                  <dd>{formatCreasePatternExportBytes(preview.byte_count, locale)}</dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.geometry}</dt>
@@ -372,7 +373,13 @@ export function CreaseExportDialog({
                   <>
                     <ul>
                       {preview.warnings.map((warning, index) => (
-                        <li key={`${index}:${warning}`}>{warning}</li>
+                        <li key={index}>
+                          {creasePatternExportWarningMessage(
+                            warning,
+                            preview.format,
+                            locale,
+                          )}
+                        </li>
                       ))}
                     </ul>
                     <label>

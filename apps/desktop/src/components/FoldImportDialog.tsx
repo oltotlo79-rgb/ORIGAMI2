@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   foldAssignmentLabel,
+  foldImportPreviewFileName,
+  foldImportSuggestedName,
   foldImportTargetOptions,
   foldImportTargetLabel,
+  foldImportWarningMessage,
   foldPreviewBounds,
   initialFoldImportMapping,
+  isFoldImportFallbackName,
   isValidFoldImportName,
   parseFoldImportScale,
   unresolvedFoldAssignments,
@@ -123,6 +127,12 @@ export function FoldImportDialog({
   const copy = FOLD_IMPORT_COPY[locale]
   const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   const [name, setName] = useState(preview.suggested_name)
+  const [usesFallbackName, setUsesFallbackName] = useState(
+    () => isFoldImportFallbackName(preview.suggested_name),
+  )
+  const displayedName = usesFallbackName
+    ? foldImportSuggestedName(preview.suggested_name, locale)
+    : name
   const [scaleInput, setScaleInput] = useState(
     preview.default_mm_per_unit === null ? '' : String(preview.default_mm_per_unit),
   )
@@ -136,7 +146,7 @@ export function FoldImportDialog({
   const nameInputRef = useRef<HTMLInputElement>(null)
   const scale = parseFoldImportScale(scaleInput)
   const unresolved = unresolvedFoldAssignments(preview.assignments, mapping)
-  const nameIsValid = isValidFoldImportName(name)
+  const nameIsValid = isValidFoldImportName(displayedName)
   const canImport = !busy
     && nameIsValid
     && scale !== null
@@ -186,7 +196,7 @@ export function FoldImportDialog({
     if (!canImport || scale === null) return
     onImport({
       importId: preview.import_id,
-      name: name.trim(),
+      name: displayedName.trim(),
       mmPerUnit: scale,
       mappings: mapping,
     })
@@ -258,7 +268,10 @@ export function FoldImportDialog({
               )}
             </div>
             <dl className="fold-import-metadata">
-              <div><dt>{copy.metadata.file}</dt><dd>{preview.file_name}</dd></div>
+              <div>
+                <dt>{copy.metadata.file}</dt>
+                <dd>{foldImportPreviewFileName(preview.file_name, locale)}</dd>
+              </div>
               <div>
                 <dt>{copy.metadata.specification}</dt>
                 <dd>{preview.file_spec ?? copy.unspecified}</dd>
@@ -295,12 +308,15 @@ export function FoldImportDialog({
               <span>{copy.name}</span>
               <input
                 ref={nameInputRef}
-                value={name}
+                value={displayedName}
                 maxLength={120}
                 disabled={busy}
                 aria-invalid={!nameIsValid}
                 aria-describedby={!nameIsValid ? 'fold-import-name-help' : undefined}
-                onChange={(event) => setName(event.target.value)}
+                onChange={(event) => {
+                  setUsesFallbackName(false)
+                  setName(event.target.value)
+                }}
               />
               {!nameIsValid && (
                 <small id="fold-import-name-help">
@@ -395,7 +411,9 @@ export function FoldImportDialog({
             <section className="fold-import-warnings" aria-labelledby="fold-import-warnings-title">
               <h3 id="fold-import-warnings-title">{copy.warningTitle}</h3>
               <ul>
-                {preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+                {preview.warnings.map((warning, index) => (
+                  <li key={index}>{foldImportWarningMessage(warning, locale)}</li>
+                ))}
               </ul>
               <label className="dialog-check">
                 <input

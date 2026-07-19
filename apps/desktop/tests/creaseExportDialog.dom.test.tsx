@@ -33,8 +33,8 @@ const PREVIEW: CreasePatternExportPreview = {
   },
   has_cuts: true,
   warnings: [
-    '紙の色・厚み・テクスチャはFOLD 1.2出力に含まれません。',
-    '折り手順と現在の3D表示姿勢は出力に含まれません。',
+    '紙の表裏色・厚み・テクスチャはFOLD 1.2出力に含まれません。',
+    '現在の3D表示姿勢とカメラ状態はFOLD 1.2出力に含まれません。',
   ],
 }
 
@@ -81,7 +81,16 @@ describe('CreaseExportDialog DOM interactions', () => {
   it('translates the complete static export review and numeric labels live', () => {
     localeStore.initialize()
     localeStore.setLocale('en')
-    renderDialog({ preview: { ...PREVIEW, warnings: [] } })
+    renderDialog({
+      preview: {
+        ...PREVIEW,
+        suggested_file_name: 'crane.fold',
+        warnings: [
+          ...PREVIEW.warnings,
+          String.raw`C:\Users\alice\private-project.ori2`,
+        ],
+      },
+    })
 
     expect(screen.getByRole('dialog', {
       name: 'Review format and information loss',
@@ -96,6 +105,18 @@ describe('CreaseExportDialog DOM interactions', () => {
     expect(screen.getByText(
       'FOLD 1.2 · 2D creasePattern · coordinates in mm',
     )).toBeTruthy()
+    expect(screen.getByText(
+      'The front and back paper colors, thickness, and texture are not included in the FOLD 1.2 export.',
+    )).toBeTruthy()
+    expect(screen.getByText(
+      'The current 3D pose and camera state are not included in the FOLD 1.2 export.',
+    )).toBeTruthy()
+    expect(screen.getByText(
+      'Some project information is not included in this export.',
+    )).toBeTruthy()
+    expect(document.body.textContent).not.toMatch(
+      /(?:[ぁ-んァ-ン一-龯]|alice|private-project)/u,
+    )
     expect(screen.getByRole('button', {
       name: 'Choose destination and export…',
     })).toBeTruthy()

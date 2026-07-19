@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   foldAssignmentLabel,
+  foldImportPreviewFileName,
+  foldImportSuggestedName,
   foldImportTargetLabel,
   foldImportTargetOptions,
+  foldImportWarningMessage,
   foldPreviewBounds,
   initialFoldImportMapping,
   isAllowedFoldImportTarget,
@@ -61,6 +64,72 @@ test('FOLD assignment targets preserve direct meanings and constrain lossy choic
   assert.equal(foldImportTargetLabel('auxiliary'), '補助線')
   assert.equal(foldImportTargetLabel('auxiliary', 'en'), 'Auxiliary line')
   assert.equal(foldImportTargetLabel('ignore', 'en'), 'Do not import')
+})
+
+test('native FOLD warnings and fallback names localize without exposing unknown text', () => {
+  assert.equal(
+    foldImportWarningMessage(
+      'FOLD仕様バージョンの記載がありません。対応範囲として慎重に解釈します。',
+      'en',
+    ),
+    'The FOLD specification version is missing, so the file will be interpreted conservatively within the supported range.',
+  )
+  assert.equal(
+    foldImportWarningMessage(
+      'F（平らな折り筋）は同じ意味の線種がないため、補助線または除外へ変換します。',
+      'en',
+    ),
+    'F (flat crease) has no equivalent line type and must be converted to an auxiliary line or excluded.',
+  )
+  assert.equal(
+    foldImportWarningMessage(
+      '取り込まないFOLD情報: ファイル分類、その他の拡張フィールド2件。',
+      'en',
+    ),
+    'Some FOLD metadata will not be imported.',
+  )
+
+  const privateWarning = String.raw`C:\Users\alice\private.fold`
+  const fallback = foldImportWarningMessage(privateWarning, 'en')
+  assert.equal(fallback, 'Some FOLD information will not be imported.')
+  assert.doesNotMatch(fallback, /alice|private|[ぁ-んァ-ン一-龯]/u)
+  const japaneseFallback = foldImportWarningMessage(privateWarning, 'ja')
+  assert.equal(japaneseFallback, '取り込まれないFOLD情報があります。')
+  assert.doesNotMatch(japaneseFallback, /alice|private/u)
+  const disguisedPrivateWarning =
+    String.raw`取り込まないFOLD情報: C:\Users\alice\private.fold。`
+  assert.equal(
+    foldImportWarningMessage(disguisedPrivateWarning, 'ja'),
+    '取り込まれないFOLD情報があります。',
+  )
+  assert.equal(
+    foldImportWarningMessage(disguisedPrivateWarning, 'en'),
+    'Some FOLD information will not be imported.',
+  )
+
+  assert.equal(foldImportSuggestedName('FOLDインポート', 'en'), 'FOLD import')
+  assert.equal(foldImportSuggestedName('FOLDインポート', 'ja'), 'FOLDインポート')
+  assert.equal(foldImportSuggestedName('鶴', 'en'), '鶴')
+  assert.equal(
+    foldImportPreviewFileName('選択したFOLDファイル', 'en'),
+    'Selected FOLD file',
+  )
+  assert.equal(foldImportPreviewFileName('crane.fold', 'en'), 'crane.fold')
+  assert.equal(
+    foldImportPreviewFileName(String.raw`C:\Users\alice\private.fold`, 'en'),
+    'Selected FOLD file',
+  )
+  for (const deceptive of [
+    'private\u0085.fold',
+    'private\u202e.dlof',
+    'private\u2028.fold',
+    'private\u2029.fold',
+  ]) {
+    assert.equal(
+      foldImportPreviewFileName(deceptive, 'en'),
+      'Selected FOLD file',
+    )
+  }
 })
 
 test('invalid or missing mappings remain unresolved', () => {

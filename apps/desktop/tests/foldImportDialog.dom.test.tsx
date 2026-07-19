@@ -37,7 +37,9 @@ const PREVIEW: FoldImportPreview = {
     { start: 0, end: 2, assignment: 'M' },
   ],
   preview_truncated: false,
-  warnings: ['layers metadata is not imported'],
+  warnings: [
+    'F（平らな折り筋）は同じ意味の線種がないため、補助線または除外へ変換します。',
+  ],
 }
 
 afterEach(() => {
@@ -82,7 +84,17 @@ describe('FoldImportDialog', () => {
   it('translates labels, mapping options, counts, and actions live', () => {
     localeStore.initialize()
     localeStore.setLocale('en')
-    renderDialog()
+    renderDialog({
+      preview: {
+        ...PREVIEW,
+        file_name: '選択したFOLDファイル',
+        suggested_name: 'FOLDインポート',
+        warnings: [
+          ...PREVIEW.warnings,
+          String.raw`C:\Users\alice\private.fold`,
+        ],
+      },
+    })
 
     expect(screen.getByRole('dialog', {
       name: 'Review line types and scale',
@@ -93,6 +105,18 @@ describe('FoldImportDialog', () => {
     expect(screen.getByText('3 vertices · 3 edges')).toBeTruthy()
     expect(screen.getByText('B · Paper boundary')).toBeTruthy()
     expect(screen.getByText('Paper boundary (fixed)')).toBeTruthy()
+    expect(screen.getByText('Selected FOLD file')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'Work name' }))
+      .toHaveProperty('value', 'FOLD import')
+    expect(screen.getByText(
+      'F (flat crease) has no equivalent line type and must be converted to an auxiliary line or excluded.',
+    )).toBeTruthy()
+    expect(screen.getByText(
+      'Some FOLD information will not be imported.',
+    )).toBeTruthy()
+    expect(document.body.textContent).not.toMatch(
+      /(?:[ぁ-んァ-ン一-龯]|alice|private\.fold)/u,
+    )
     const flatMapping = screen.getByRole('combobox', {
       name: 'F · Flat crease mapping',
     }) as HTMLSelectElement
@@ -107,6 +131,8 @@ describe('FoldImportDialog', () => {
       name: '線種と縮尺を確認',
     })).toBeTruthy()
     expect(screen.getByRole('button', { name: '取り込む' })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '作品名' }))
+      .toHaveProperty('value', 'FOLDインポート')
   })
 
   it('keeps invalid fields blocking and protects a busy import from Escape', () => {

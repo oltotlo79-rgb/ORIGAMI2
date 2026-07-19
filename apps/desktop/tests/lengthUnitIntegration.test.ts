@@ -12,16 +12,27 @@ test('App applies one snapshot display unit to every authoring length surface', 
     app,
     /setLengthDisplayUnit\(projectId, revision, projectInstanceId, unit\)/u,
   )
-  assert.match(app, /paperSizeLabel[\s\S]*?formatLengthValue\(/u)
+  assert.match(
+    app,
+    /paperSizeLabel[\s\S]*?formatLengthValue\([\s\S]*?lengthDisplayUnit,[\s\S]*?locale,[\s\S]*?formatLength\([\s\S]*?lengthDisplayUnit,[\s\S]*?locale/u,
+  )
   assert.match(app, /measurementLabel=\{formatLineMeasurementLabel\([\s\S]*?displayedLengthUnit/u)
-  assert.match(app, /formatLengthPoint\([\s\S]*?displayedLengthUnit/u)
+  assert.match(app, /formatLengthPoint\([\s\S]*?displayedLengthUnit,[\s\S]*?locale/u)
   assert.match(app, /name="x_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
   assert.match(app, /name="y_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
   assert.match(app, /name="thickness_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
   assert.match(app, /name="width_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
   assert.match(app, /name="height_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
   assert.match(app, /lengthDisplayUnit=\{lengthDisplayUnit\}/u)
-  assert.match(preview, /formatLength\(safeThicknessMm, lengthDisplayUnit\)/u)
+  assert.match(
+    preview,
+    /formatLength\(safeThicknessMm, lengthDisplayUnit, locale\)/u,
+  )
+  assert.match(
+    app,
+    /lengthDisplayUnitLabel\(\s*lengthDisplayUnit,\s*locale,\s*\)/u,
+  )
+  assert.doesNotMatch(app, /lengthDisplayUnit\.label/u)
 })
 
 test('converted editing crosses the native boundary only as millimetres', () => {

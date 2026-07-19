@@ -74,7 +74,16 @@ test('the toolbar performs file selection before opening one explicit mapping mo
   assert.match(dialogSource, /unresolvedFoldAssignments\(preview\.assignments, mapping\)/u)
   assert.match(
     dialogSource,
-    /onImport\(\{\s*importId: preview\.import_id,\s*name: name\.trim\(\),\s*mmPerUnit: scale,\s*mappings: mapping,\s*\}\)/u,
+    /onImport\(\{\s*importId: preview\.import_id,\s*name: displayedName\.trim\(\),\s*mmPerUnit: scale,\s*mappings: mapping,\s*\}\)/u,
+  )
+  assert.match(
+    dialogSource,
+    /foldImportPreviewFileName\(preview\.file_name, locale\)/u,
+  )
+  assert.match(dialogSource, /foldImportWarningMessage\(warning, locale\)/u)
+  assert.match(
+    dialogSource,
+    /foldImportSuggestedName\(preview\.suggested_name, locale\)/u,
   )
   assert.match(foldImportSource, /export type FoldImportSettings[\s\S]*?importId: string/u)
   assert.doesNotMatch(

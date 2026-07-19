@@ -649,22 +649,23 @@ external format ↔ format adapter ↔ ORIGAMI2 project/domain
 native file dialog
   → 16 MiB上限付きread
   → strict/bounded parse
-  → geometry・単一境界検証
+  → geometry・固定境界または外周候補検証
   → 1世代だけmemory stage
-  → preview / scale / assignment / warning確認
-  → 同一bytes再parse・再変換
+  → preview / scale / boundary / assignment / warning確認
+  → 同一bytes再parse・候補ID再検証・再変換
   → project instance・ID・revision照合
   → 新規未保存projectへatomic replace
 ```
 
-- `vertices_coords`、`edges_vertices`、`edges_assignment`を必須とし、2D座標、parallel array、添字、有限性、退化・重複・交差、単一の単純`B`境界をRust adapterで検証する。3D `foldedForm`、非ゼロZ、穴・複数紙・複数frameは拒否する。
+- `vertices_coords`と`edges_vertices`を必須とし、`edges_assignment`の省略時は全辺を`U`として警告する。記載されたassignmentのparallel array、2D座標、添字、有限性、退化・重複、交差候補上限をRust adapterで検証する。3D `foldedForm`、非ゼロZ、穴・複数紙・複数frameは未対応とする。
+- 全`B`辺が単一の単純・正面積閉路を作る場合だけ、その境界を固定する。`B`が欠落または不成立の場合は、共有端点以外で交差しない平面グラフの面巡回から、全source頂点を含む検証済み外周候補を最大64件まで決定論的に列挙し、利用者の明示選択を要求する。最大面積、凸包、線種、格納順から境界を推測しない。選択候補の辺はboundaryへ上書きし、候補外のsource `B`辺は取り込まない。
 - `mm`、`cm`、`m`、`in`、`pt`、`um`、`nm`はmm換算値を提示し、単位なし、`unit`、独自単位は利用者へmm/単位の入力を要求する。提示値を含め、適用する有限・正の倍率は確認画面で変更できる。
-- `B`はboundary、`M`はmountain、`V`はvalleyへ固定する。`C`はcut/ignore、`F`と`J`はauxiliary/ignore、`U`はmountain/valley/auxiliary/ignoreから選択し、曖昧なassignmentを自動決定しない。
-- previewは最大5,000辺に制限するが、用紙境界を先に含め、他assignmentを決定論的に抽出する。表示の省略は変換対象を省略しない。
+- 有効な単一`B`閉路はboundary、`M`はmountain、`V`はvalleyへ固定する。`C`はcut/ignore、`F`と`J`はauxiliary/ignore、`U`はmountain/valley/auxiliary/ignoreから選択し、曖昧なassignmentを自動決定しない。選択した外周候補の辺は元assignmentよりboundaryを優先する。
+- previewは最大5,000辺に制限するが、検証済み外周候補の辺を先に含め、他assignmentを決定論的に抽出する。候補一覧と完全な辺索引は別に保持し、表示の省略は候補選択または変換対象を省略しない。
 - 面、折り角度、frame metadataなど永続化しない情報は具体名を警告し、明示確認を適用条件とする。未知JSONの内容、実ファイル名、path、raw JSONはWebViewへ渡さない。
-- stageはopaque ID、開始時のproject instance・ID・revision、検証対象bytesだけを保持する。適用直前の再照合に失敗したstale結果、変換失敗、取消ではprojectを変更しない。
+- stageはopaque ID、開始時のproject instance・ID・revision、検証対象bytesだけを保持する。外周候補IDはpreview-localとして現在のstage内でだけ解釈し、適用時に同一bytesを再解析して候補集合への所属を再検証する。適用直前の再照合に失敗したstale結果、変換失敗、取消ではprojectを変更しない。
 - 成功時は履歴、手順、保存先、保存済みbaselineを引き継がず、revision 0・dirtyの新規projectへ一度だけ置換する。旧projectへ戻るUndoは作らない。
-- 上限はファイル16 MiB、頂点1万、辺1万、境界1,414辺、交差候補100万件、変換後の内部包含判定100万件とする。未知JSONは展開・保持せず読み捨て、縮尺適用後にも作業量と幾何を再検証する。
+- 上限はファイル16 MiB、頂点1万、辺1万、境界1,414辺、外周候補64件、交差候補100万件、変換後の内部包含判定100万件とする。未知JSONは展開・保持せず読み捨て、縮尺適用後にも作業量と幾何を再検証する。
 
 ### 12.2 SVG取込
 

@@ -52,6 +52,7 @@ mod ef_boundary;
 mod exact_e_corridor;
 mod exact_prism;
 mod shared_hinge_corridor_admission;
+mod shared_hinge_topology_margin;
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
@@ -1407,6 +1408,14 @@ mod tests {
         SharedHingeCorridorAdmissionResultV1, SharedHingeCorridorAdmissionWorkV1,
         analyze_shared_hinge_corridor_admission_v1, revalidate_shared_hinge_corridor_admission_v1,
     };
+    use super::shared_hinge_topology_margin::{
+        SharedHingeNativeExactTopologyMarginAnalysisV1,
+        SharedHingeNativeExactTopologyMarginCapabilityV1,
+        SharedHingeNativeExactTopologyMarginErrorV1, SharedHingeNativeExactTopologyMarginLimitsV1,
+        SharedHingeNativeExactTopologyMarginResultV1, SharedHingeNativeExactTopologyMarginWorkV1,
+        analyze_shared_hinge_native_exact_topology_margin_v1,
+        revalidate_shared_hinge_native_exact_topology_margin_v1,
+    };
     use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1519,6 +1528,22 @@ mod tests {
         coordinates: [(f64, f64); 4],
         namespace_index: u64,
     ) -> MaterialTreeKinematicsModel {
+        two_triangle_model_with_all_options(
+            assignment,
+            reordered_sources,
+            false,
+            coordinates,
+            namespace_index,
+        )
+    }
+
+    fn two_triangle_model_with_all_options(
+        assignment: EdgeKind,
+        reordered_sources: bool,
+        reversed_hinge_endpoints: bool,
+        coordinates: [(f64, f64); 4],
+        namespace_index: u64,
+    ) -> MaterialTreeKinematicsModel {
         assert!(matches!(assignment, EdgeKind::Mountain | EdgeKind::Valley));
         let mut vertices = coordinates
             .into_iter()
@@ -1536,7 +1561,12 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        edges.push(triangular_edge(5, boundary[0], boundary[2], assignment));
+        let (hinge_start, hinge_end) = if reversed_hinge_endpoints {
+            (boundary[2], boundary[0])
+        } else {
+            (boundary[0], boundary[2])
+        };
+        edges.push(triangular_edge(5, hinge_start, hinge_end, assignment));
         if reordered_sources {
             vertices.reverse();
             edges.reverse();
@@ -3055,6 +3085,21 @@ mod tests {
             panic!("direct-F affine corridor must be a contained unadmitted diagnostic");
         };
         diagnostic
+    }
+
+    fn topology_margin_capability<'a, 'prerequisite, 'ef, 'exact, 'pose>(
+        analysis: &'a SharedHingeNativeExactTopologyMarginAnalysisV1<
+            'prerequisite,
+            'ef,
+            'exact,
+            'pose,
+        >,
+    ) -> &'a SharedHingeNativeExactTopologyMarginCapabilityV1<'prerequisite, 'ef, 'exact, 'pose>
+    {
+        analysis
+            .authenticated_capability_and_work()
+            .expect("native exact topology margin")
+            .0
     }
 
     #[test]
@@ -7494,6 +7539,693 @@ mod tests {
                 .authenticated_admission_capability_and_work()
                 .is_some()
         );
+        assert_eq!(projected.work, baseline.work);
+    }
+
+    #[test]
+    fn native_exact_topology_margin_400mm_matrix_covers_all_orders_roots_and_angles() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let models = [
+            (
+                "mountain/source",
+                two_triangle_model_with_options(EdgeKind::Mountain, false, square, 801),
+            ),
+            (
+                "mountain/reordered",
+                two_triangle_model_with_options(EdgeKind::Mountain, true, square, 802),
+            ),
+            (
+                "valley/source",
+                two_triangle_model_with_options(EdgeKind::Valley, false, square, 803),
+            ),
+            (
+                "valley/reordered",
+                two_triangle_model_with_options(EdgeKind::Valley, true, square, 804),
+            ),
+            (
+                "mountain/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Mountain, false, true, square, 811),
+            ),
+            (
+                "mountain/reordered/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Mountain, true, true, square, 812),
+            ),
+            (
+                "valley/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Valley, false, true, square, 813),
+            ),
+            (
+                "valley/reordered/reversed-endpoints",
+                two_triangle_model_with_all_options(EdgeKind::Valley, true, true, square, 814),
+            ),
+        ];
+        let mut measured = 0_usize;
+        for (fixture, model) in &models {
+            for root in model.face_ids() {
+                for thickness in [0.1, 1.0, 3.0] {
+                    for angle in [10.0, 90.0, 135.0, 179.0] {
+                        let pose = triangular_pose_with_root(model, angle, *root);
+                        let bound = model.bind_pose(&pose).unwrap();
+                        let exact = triangular_exact_pose(model, &pose);
+                        let prerequisite_analysis =
+                            authenticated_ef_prerequisite(&exact, thickness);
+                        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+                            &prerequisite_analysis.result
+                        else {
+                            panic!("{fixture}, {root:?}, {thickness}, {angle}: prerequisite");
+                        };
+                        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                            prerequisite,
+                            &exact,
+                            bound,
+                            thickness,
+                            AxisAlignedEfBoundaryLimits::default(),
+                        )
+                        .unwrap();
+                        let ef = ef_capability(&ef_analysis);
+                        let analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact,
+                            bound,
+                            thickness,
+                            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+                        )
+                        .unwrap();
+                        let capability = analysis
+                            .authenticated_capability_and_work()
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "{fixture}, {root:?}, {thickness}, {angle}: {:?}",
+                                    analysis.result
+                                )
+                            })
+                            .0;
+                        assert!(
+                            revalidate_shared_hinge_native_exact_topology_margin_v1(
+                                capability,
+                                prerequisite,
+                                ef,
+                                &exact,
+                                bound,
+                                thickness,
+                            )
+                            .is_some()
+                        );
+                        assert_eq!(
+                            capability.relative_margin(),
+                            &fraction(1, 1_i64 << 44),
+                            "binary64 epsilon × 256 is the exact version factor"
+                        );
+                        assert!(capability.point_margin_mm().is_positive());
+                        for component in 0..10 {
+                            assert!(
+                                capability.corridor_component_error()[component]
+                                    <= capability.corridor_component_margin()[component],
+                                "{fixture}, {root:?}, {thickness}, {angle}: corridor {component}"
+                            );
+                        }
+                        assert_eq!(
+                            capability.corridor_component_margin()[7],
+                            integer(0),
+                            "the exact lift of one thickness is identical on E and F"
+                        );
+                        measured += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(measured, 192);
+
+        let mut flat = 0_usize;
+        for (fixture, model) in &models {
+            for root in model.face_ids() {
+                for thickness in [0.1, 1.0, 3.0] {
+                    let pose = triangular_pose_with_root(model, 180.0, *root);
+                    let bound = model.bind_pose(&pose).unwrap();
+                    let exact = triangular_exact_pose(model, &pose);
+                    let prerequisite_analysis = authenticated_ef_prerequisite(&exact, thickness);
+                    let analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+                        &prerequisite_analysis,
+                        None,
+                        &exact,
+                        bound,
+                        thickness,
+                        SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+                    )
+                    .unwrap();
+                    assert!(
+                        matches!(
+                            analysis.result,
+                            SharedHingeNativeExactTopologyMarginResultV1::LayerOffsetUnmodeled
+                        ),
+                        "{fixture}, {root:?}, {thickness}"
+                    );
+                    assert_eq!(
+                        analysis.work,
+                        SharedHingeNativeExactTopologyMarginWorkV1::default()
+                    );
+                    flat += 1;
+                }
+            }
+        }
+        assert_eq!(flat, 48);
+    }
+
+    #[test]
+    fn native_exact_topology_margin_rejects_regeneration_aba_foreign_ulp_and_all_sealed_scalars() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let independent_exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let duplicate_prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let SingleTriangularHingePrerequisiteResult::Authenticated(duplicate_prerequisite) =
+            &duplicate_prerequisite_analysis.result
+        else {
+            panic!("duplicate prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let duplicate_ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let duplicate_ef = ef_capability(&duplicate_ef_analysis);
+        let mut analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let duplicate_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        let capability = topology_margin_capability(&analysis);
+        let duplicate_capability = topology_margin_capability(&duplicate_analysis);
+        assert!(!std::ptr::eq(capability, duplicate_capability));
+        assert!(
+            revalidate_shared_hinge_native_exact_topology_margin_v1(
+                capability,
+                prerequisite,
+                ef,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+        for (name, rejected) in [
+            (
+                "independently issued prerequisite",
+                revalidate_shared_hinge_native_exact_topology_margin_v1(
+                    capability,
+                    duplicate_prerequisite,
+                    ef,
+                    &exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+            (
+                "independently issued E/F boundary",
+                revalidate_shared_hinge_native_exact_topology_margin_v1(
+                    capability,
+                    prerequisite,
+                    duplicate_ef,
+                    &exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+            (
+                "independently regenerated exact pose",
+                revalidate_shared_hinge_native_exact_topology_margin_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    &independent_exact,
+                    bound,
+                    0.1,
+                ),
+            ),
+        ] {
+            assert!(rejected.is_none(), "{name}");
+        }
+
+        let aba_pose = triangular_pose(&model, 135.0);
+        let aba_bound = model.bind_pose(&aba_pose).unwrap();
+        let rerooted_pose = triangular_pose_with_root(&model, 135.0, model.face_ids()[1]);
+        let rerooted_bound = model.bind_pose(&rerooted_pose).unwrap();
+        let one_ulp_pose = triangular_pose(&model, next_up(135.0));
+        let one_ulp_bound = model.bind_pose(&one_ulp_pose).unwrap();
+        for (name, mismatched_bound) in [
+            ("same-angle ABA", aba_bound),
+            ("different root", rerooted_bound),
+            ("one-ULP angle", one_ulp_bound),
+        ] {
+            assert!(
+                revalidate_shared_hinge_native_exact_topology_margin_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    &exact,
+                    mismatched_bound,
+                    0.1,
+                )
+                .is_none(),
+                "{name}"
+            );
+        }
+        assert!(
+            revalidate_shared_hinge_native_exact_topology_margin_v1(
+                capability,
+                prerequisite,
+                ef,
+                &exact,
+                bound,
+                next_up(0.1),
+            )
+            .is_none()
+        );
+        let foreign = two_triangle_model_with_options(
+            EdgeKind::Mountain,
+            false,
+            [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)],
+            805,
+        );
+        let foreign_pose = triangular_pose(&foreign, 135.0);
+        let foreign_bound = foreign.bind_pose(&foreign_pose).unwrap();
+        assert!(
+            revalidate_shared_hinge_native_exact_topology_margin_v1(
+                capability,
+                prerequisite,
+                ef,
+                &exact,
+                foreign_bound,
+                0.1,
+            )
+            .is_none()
+        );
+
+        let scalar_count = capability.scalar_count_for_test();
+        let _ = capability;
+        for scalar in 0..scalar_count {
+            let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                &mut analysis.result
+            else {
+                panic!("topology-margin capability");
+            };
+            capability.adjust_scalar_for_test(scalar, 1);
+            let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                &analysis.result
+            else {
+                panic!("topology-margin capability");
+            };
+            assert!(
+                revalidate_shared_hinge_native_exact_topology_margin_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    &exact,
+                    bound,
+                    0.1,
+                )
+                .is_none(),
+                "sealed scalar {scalar}"
+            );
+            let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                &mut analysis.result
+            else {
+                panic!("topology-margin capability");
+            };
+            capability.adjust_scalar_for_test(scalar, -1);
+        }
+        assert!(
+            scalar_count >= 100,
+            "all bound topology scalars are visited"
+        );
+
+        let mut changed_coefficients = 0_usize;
+        for face in 0..2 {
+            for coefficient in 0..12 {
+                let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                    &mut analysis.result
+                else {
+                    panic!("topology-margin capability");
+                };
+                capability.flip_face_transform_bit_for_test(face, coefficient);
+                let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                    &analysis.result
+                else {
+                    panic!("topology-margin capability");
+                };
+                assert!(
+                    revalidate_shared_hinge_native_exact_topology_margin_v1(
+                        capability,
+                        prerequisite,
+                        ef,
+                        &exact,
+                        bound,
+                        0.1,
+                    )
+                    .is_none(),
+                    "face {face}, coefficient {coefficient}"
+                );
+                let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                    &mut analysis.result
+                else {
+                    panic!("topology-margin capability");
+                };
+                capability.flip_face_transform_bit_for_test(face, coefficient);
+                changed_coefficients += 1;
+            }
+        }
+        for coefficient in 0..12 {
+            let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                &mut analysis.result
+            else {
+                panic!("topology-margin capability");
+            };
+            capability.flip_hinge_parent_transform_bit_for_test(coefficient);
+            let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                &analysis.result
+            else {
+                panic!("topology-margin capability");
+            };
+            assert!(
+                revalidate_shared_hinge_native_exact_topology_margin_v1(
+                    capability,
+                    prerequisite,
+                    ef,
+                    &exact,
+                    bound,
+                    0.1,
+                )
+                .is_none(),
+                "hinge-parent coefficient {coefficient}"
+            );
+            let SharedHingeNativeExactTopologyMarginResultV1::Measured(capability) =
+                &mut analysis.result
+            else {
+                panic!("topology-margin capability");
+            };
+            capability.flip_hinge_parent_transform_bit_for_test(coefficient);
+            changed_coefficients += 1;
+        }
+        assert_eq!(changed_coefficients, 36);
+        let restored = topology_margin_capability(&analysis);
+        assert!(
+            revalidate_shared_hinge_native_exact_topology_margin_v1(
+                restored,
+                prerequisite,
+                ef,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+
+        let original = analysis.work.corridor_component_scans;
+        analysis.work.corridor_component_scans += 1;
+        assert!(analysis.authenticated_capability_and_work().is_none());
+        analysis.work.corridor_component_scans = original;
+        assert!(analysis.authenticated_capability_and_work().is_some());
+    }
+
+    #[test]
+    fn native_exact_topology_margin_reauthenticates_every_upstream_ef_scalar() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let scalar_count = {
+            let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                prerequisite,
+                &exact,
+                bound,
+                0.1,
+                AxisAlignedEfBoundaryLimits::default(),
+            )
+            .unwrap();
+            ef_capability(&ef_analysis).scalar_count_for_test()
+        };
+        assert_eq!(scalar_count, 36);
+        for scalar in 0..scalar_count {
+            let mut ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                prerequisite,
+                &exact,
+                bound,
+                0.1,
+                AxisAlignedEfBoundaryLimits::default(),
+            )
+            .unwrap();
+            ef_analysis
+                .capability
+                .as_mut()
+                .expect("E/F capability")
+                .adjust_scalar_for_test(scalar, 1);
+            let rejected = analyze_shared_hinge_native_exact_topology_margin_v1(
+                &prerequisite_analysis,
+                ef_analysis.capability.as_ref(),
+                &exact,
+                bound,
+                0.1,
+                SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    rejected.result,
+                    SharedHingeNativeExactTopologyMarginResultV1::Unresolved
+                ),
+                "E/F scalar {scalar}"
+            );
+            assert_eq!(
+                rejected.work.ef_scalar_reauthentications, 36,
+                "the complete E/F scalar set is scanned before rejection"
+            );
+        }
+    }
+
+    fn topology_margin_limits_from_work(
+        work: &SharedHingeNativeExactTopologyMarginWorkV1,
+    ) -> SharedHingeNativeExactTopologyMarginLimitsV1 {
+        SharedHingeNativeExactTopologyMarginLimitsV1 {
+            max_authenticated_faces: work.authenticated_faces,
+            max_authenticated_hinges: work.authenticated_hinges,
+            max_prerequisite_revalidations: work.prerequisite_revalidations,
+            max_ef_boundary_revalidations: work.ef_boundary_revalidations,
+            max_root_bindings: work.root_bindings,
+            max_angle_bindings: work.angle_bindings,
+            max_face_identity_bindings: work.face_identity_bindings,
+            max_hinge_identity_bindings: work.hinge_identity_bindings,
+            max_endpoint_identity_bindings: work.endpoint_identity_bindings,
+            max_source_boundary_occurrences: work.source_boundary_occurrences,
+            max_source_coordinate_lifts: work.source_coordinate_lifts,
+            max_transform_scalar_lifts: work.transform_scalar_lifts,
+            max_face_transform_bit_bindings: work.face_transform_bit_bindings,
+            max_hinge_parent_transform_bit_bindings: work.hinge_parent_transform_bit_bindings,
+            max_mid_surface_reconstructions: work.mid_surface_reconstructions,
+            max_normal_reconstructions: work.normal_reconstructions,
+            max_solid_vertex_constructions: work.solid_vertex_constructions,
+            max_topology_coordinate_tests: work.topology_coordinate_tests,
+            max_shared_endpoint_component_tests: work.shared_endpoint_component_tests,
+            max_point_component_error_tests: work.point_component_error_tests,
+            max_normal_component_error_tests: work.normal_component_error_tests,
+            max_solid_component_error_tests: work.solid_component_error_tests,
+            max_ef_scalar_reauthentications: work.ef_scalar_reauthentications,
+            max_local_scale_component_scans: work.local_scale_component_scans,
+            max_corridor_component_scans: work.corridor_component_scans,
+            exact: cayley_limits_from_observed_work(&work.exact),
+        }
+    }
+
+    #[test]
+    fn native_exact_topology_margin_all_structural_and_exact_limits_are_exact_and_one_short() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let baseline = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(baseline.authenticated_capability_and_work().is_some());
+        let exact_limits = topology_margin_limits_from_work(&baseline.work);
+        let exact_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            exact_limits,
+        )
+        .unwrap();
+        assert!(exact_analysis.authenticated_capability_and_work().is_some());
+        assert_eq!(exact_analysis.work, baseline.work);
+
+        let assert_one_short =
+            |resource: &str, limits: SharedHingeNativeExactTopologyMarginLimitsV1| {
+                assert!(
+                    matches!(
+                        analyze_shared_hinge_native_exact_topology_margin_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact,
+                            bound,
+                            0.1,
+                            limits,
+                        ),
+                        Err(SharedHingeNativeExactTopologyMarginErrorV1::ResourceLimitExceeded)
+                    ),
+                    "{resource}"
+                );
+            };
+        macro_rules! structural_one_short {
+            ($field:ident) => {
+                if exact_limits.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.$field -= 1;
+                    assert_one_short(stringify!($field), limits);
+                }
+            };
+        }
+        structural_one_short!(max_authenticated_faces);
+        structural_one_short!(max_authenticated_hinges);
+        structural_one_short!(max_prerequisite_revalidations);
+        structural_one_short!(max_ef_boundary_revalidations);
+        structural_one_short!(max_root_bindings);
+        structural_one_short!(max_angle_bindings);
+        structural_one_short!(max_face_identity_bindings);
+        structural_one_short!(max_hinge_identity_bindings);
+        structural_one_short!(max_endpoint_identity_bindings);
+        structural_one_short!(max_source_boundary_occurrences);
+        structural_one_short!(max_source_coordinate_lifts);
+        structural_one_short!(max_transform_scalar_lifts);
+        structural_one_short!(max_face_transform_bit_bindings);
+        structural_one_short!(max_hinge_parent_transform_bit_bindings);
+        structural_one_short!(max_mid_surface_reconstructions);
+        structural_one_short!(max_normal_reconstructions);
+        structural_one_short!(max_solid_vertex_constructions);
+        structural_one_short!(max_topology_coordinate_tests);
+        structural_one_short!(max_shared_endpoint_component_tests);
+        structural_one_short!(max_point_component_error_tests);
+        structural_one_short!(max_normal_component_error_tests);
+        structural_one_short!(max_solid_component_error_tests);
+        structural_one_short!(max_ef_scalar_reauthentications);
+        structural_one_short!(max_local_scale_component_scans);
+        structural_one_short!(max_corridor_component_scans);
+
+        macro_rules! exact_one_short {
+            ($field:ident) => {
+                if exact_limits.exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.exact.$field -= 1;
+                    assert_one_short(concat!("exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        exact_one_short!(max_interval_operations);
+        exact_one_short!(max_shift_bits);
+        exact_one_short!(max_intermediate_bits);
+        exact_one_short!(max_gcd_fallback_calls);
+        exact_one_short!(max_gcd_fallback_input_bits);
+        exact_one_short!(max_rational_allocations);
+        exact_one_short!(max_rational_allocation_bits);
+        exact_one_short!(max_total_rational_allocation_bits);
+
+        let oversized = SharedHingeNativeExactTopologyMarginLimitsV1 {
+            max_authenticated_faces: usize::MAX,
+            max_authenticated_hinges: usize::MAX,
+            max_prerequisite_revalidations: usize::MAX,
+            max_ef_boundary_revalidations: usize::MAX,
+            max_root_bindings: usize::MAX,
+            max_angle_bindings: usize::MAX,
+            max_face_identity_bindings: usize::MAX,
+            max_hinge_identity_bindings: usize::MAX,
+            max_endpoint_identity_bindings: usize::MAX,
+            max_source_boundary_occurrences: usize::MAX,
+            max_source_coordinate_lifts: usize::MAX,
+            max_transform_scalar_lifts: usize::MAX,
+            max_face_transform_bit_bindings: usize::MAX,
+            max_hinge_parent_transform_bit_bindings: usize::MAX,
+            max_mid_surface_reconstructions: usize::MAX,
+            max_normal_reconstructions: usize::MAX,
+            max_solid_vertex_constructions: usize::MAX,
+            max_topology_coordinate_tests: usize::MAX,
+            max_shared_endpoint_component_tests: usize::MAX,
+            max_point_component_error_tests: usize::MAX,
+            max_normal_component_error_tests: usize::MAX,
+            max_solid_component_error_tests: usize::MAX,
+            max_ef_scalar_reauthentications: usize::MAX,
+            max_local_scale_component_scans: usize::MAX,
+            max_corridor_component_scans: usize::MAX,
+            exact: oversized_cayley_limits(),
+        };
+        let projected = analyze_shared_hinge_native_exact_topology_margin_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            oversized,
+        )
+        .unwrap();
+        assert!(projected.authenticated_capability_and_work().is_some());
         assert_eq!(projected.work, baseline.work);
     }
 }

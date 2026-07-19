@@ -222,6 +222,71 @@ pub(super) struct AxisAlignedEfBoundaryCapabilityV1<'prerequisite, 'exact, 'pose
     pub(super) solid_linf_bound_mm: BigRational,
 }
 
+#[cfg(test)]
+impl AxisAlignedEfBoundaryCapabilityV1<'_, '_, '_> {
+    pub(super) const fn scalar_count_for_test(&self) -> usize {
+        FACE_COUNT * 12 + 12
+    }
+
+    pub(super) fn adjust_scalar_for_test(&mut self, target: usize, delta: i64) {
+        let delta = BigRational::from_integer(delta.into());
+        let mut current = 0_usize;
+        let mut found = false;
+        for face in &mut self.faces {
+            for values in [
+                &mut face.point_component_bound_mm,
+                &mut face.normal_component_bound,
+                &mut face.solid_component_bound_mm,
+            ] {
+                for value in values {
+                    if current == target {
+                        *value += &delta;
+                        found = true;
+                    }
+                    current += 1;
+                }
+            }
+            for value in [
+                &mut face.point_linf_bound_mm,
+                &mut face.normal_linf_bound,
+                &mut face.solid_linf_bound_mm,
+            ] {
+                if current == target {
+                    *value += &delta;
+                    found = true;
+                }
+                current += 1;
+            }
+        }
+        for values in [
+            &mut self.point_component_bound_mm,
+            &mut self.normal_component_bound,
+            &mut self.solid_component_bound_mm,
+        ] {
+            for value in values {
+                if current == target {
+                    *value += &delta;
+                    found = true;
+                }
+                current += 1;
+            }
+        }
+        for value in [
+            &mut self.point_linf_bound_mm,
+            &mut self.normal_linf_bound,
+            &mut self.solid_linf_bound_mm,
+        ] {
+            if current == target {
+                *value += &delta;
+                found = true;
+            }
+            current += 1;
+        }
+        assert_eq!(current, self.scalar_count_for_test());
+        assert!(found, "E/F scalar {target} must exist");
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct RevalidatedAxisAlignedEfBoundaryCapabilityV1<
     'capability,

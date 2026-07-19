@@ -8,7 +8,7 @@ import {
   MILLIMETRE_LENGTH_DISPLAY_UNIT,
   type ResolvedLengthDisplayUnit,
 } from '../lib/lengthUnit'
-import { useLocale } from '../lib/i18n.ts'
+import { useLocale, type LocaleStore } from '../lib/i18n.ts'
 import {
   collectFoldTreeDependentFaces,
   rerootFoldPreviewTree,
@@ -73,6 +73,19 @@ import {
 import {
   type FoldPreviewHingeAngle,
 } from '../lib/foldPreviewKinematics'
+import {
+  describeFoldPreviewCorrectionAnalysis,
+  describeFoldPreviewKeyboardAnnouncement,
+  describeFoldPreviewRenderError,
+  describeFoldPreviewStatus,
+  describeFoldPreviewThickness,
+  describeFoldPreviewTreeAngles,
+  foldPreviewText,
+  formatFoldPreviewAngle,
+  normalizeFoldPreviewKeyboardAnnouncement,
+  type FoldPreviewKeyboardAnnouncement,
+  type FoldPreviewRenderErrorCode,
+} from '../lib/foldPreviewPresentation.ts'
 import {
   createFoldPreviewKeyboardCoordinator,
   type FoldPreviewKeyboardCoordinator,
@@ -181,6 +194,7 @@ type FoldPreviewProps = {
   backColor?: RgbaColor | null
   thicknessMm?: number | null
   lengthDisplayUnit?: ResolvedLengthDisplayUnit
+  localeStore?: LocaleStore
 }
 
 type PreviewRuntime = {
@@ -246,7 +260,7 @@ type TreeContextualMotionState = Readonly<{
 type KeyboardSelectionAnnouncement = Readonly<{
   model: FoldPreviewModel
   sequence: number
-  text: string
+  announcement: FoldPreviewKeyboardAnnouncement
 }>
 
 type TreeMotionBinding = {
@@ -263,13 +277,6 @@ type TreeMotionBinding = {
   activeEvidenceContext: FoldPreviewTreeBlockingSampleDetailContext | null
   disposed: boolean
 }
-
-type CorrectionAnalysisView = Readonly<{
-  badgeText: string
-  badgeClass: string
-  accessibleText: string
-  liveText: string
-}>
 
 type AngleDragPresentation = Readonly<{
   state: 'idle' | 'armed' | 'dragging'
@@ -361,86 +368,6 @@ function createCorrectionAnalysisPolicy(
   })
 }
 
-function describeCorrectionAnalysis(
-  state: FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
-): CorrectionAnalysisView {
-  switch (state.status) {
-    case 'idle':
-      return {
-        badgeText: '待機',
-        badgeClass: 'is-idle',
-        accessibleText:
-          '補正解析は待機中です。衝突で停止し、完全な解析根拠を得た場合だけ候補を調べます。',
-        liveText: '',
-      }
-    case 'working': {
-      const phaseText = correctionAnalysisPhaseText(state.phase)
-      return {
-        badgeText: `作業中・${phaseText}`,
-        badgeClass: 'is-working',
-        accessibleText:
-          `補正解析は作業中です。${phaseText}。解析結果は3D表示や設計データへ自動適用されません。`,
-        liveText:
-          '補正候補の解析を開始しました。結果は3D表示や設計データへ自動適用されません。',
-      }
-    }
-    case 'stale':
-      return {
-        badgeText: '古い結果を破棄済み',
-        badgeClass: 'is-stale',
-        accessibleText:
-          '姿勢または設計条件が変わったため、以前の補正解析を破棄しました。',
-        liveText:
-          '姿勢または設計条件が変わったため、以前の補正解析を破棄しました。',
-      }
-    case 'no_candidate':
-      return {
-        badgeText: '対応範囲内で候補なし',
-        badgeClass: 'is-no-candidate',
-        accessibleText:
-          '現在の単一ヒンジ補正解析の対応範囲内では、認定できる候補が見つかりませんでした。折り不可能であることを意味しません。',
-        liveText:
-          '現在の補正解析の対応範囲内では候補が見つかりませんでした。折り不可能であることを意味しません。',
-      }
-    case 'indeterminate':
-      return {
-        badgeText: '判定不能（安全側停止）',
-        badgeClass: 'is-indeterminate',
-        accessibleText:
-          '補正解析は安全に判定を完了できなかったため停止しました。候補なしや折り不可能とは区別されます。',
-        liveText:
-          '補正解析は判定不能として安全側に停止しました。候補なしや折り不可能とは区別されます。',
-      }
-    case 'certified':
-      return {
-        badgeText: state.presentation.badgeText,
-        badgeClass: 'is-certified',
-        accessibleText: state.presentation.accessibleText,
-        liveText: state.presentation.accessibleText,
-      }
-  }
-}
-
-function correctionAnalysisPhaseText(
-  phase: Extract<
-    FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
-    { status: 'working' }
-  >['phase'],
-) {
-  switch (phase) {
-    case 'preparing':
-      return '準備中'
-    case 'static_candidate_preparation':
-      return '静的候補の準備中'
-    case 'static_candidate_analysis':
-      return '静的候補を確認中'
-    case 'candidate_path_preparation':
-      return '経路確認の準備中'
-    case 'candidate_path_analysis':
-      return '連続経路を確認中'
-  }
-}
-
 function staleCorrectionAnalysisState(
   state: FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState,
 ): FoldPreviewTreeSingleHingeCorrectionAnalysisCoordinatorState {
@@ -471,12 +398,14 @@ export function FoldPreview({
   backColor,
   thicknessMm,
   lengthDisplayUnit = MILLIMETRE_LENGTH_DISPLAY_UNIT,
+  localeStore: localeStore_,
 }: FoldPreviewProps) {
-  const locale = useLocale()
+  const locale = useLocale(localeStore_)
   const hostRef = useRef<HTMLDivElement>(null)
   const runtimeRef = useRef<PreviewRuntime | null>(null)
   const descriptionId = useId()
-  const [renderError, setRenderError] = useState<string | null>(null)
+  const [renderError, setRenderError] =
+    useState<FoldPreviewRenderErrorCode | null>(null)
   const [collisionSummary, setCollisionSummary] = useState<CollisionSummary | null>(null)
   const [motionSnapshot, setMotionSnapshot] = useState<ContextualMotionState | null>(null)
   const [treeMotionSnapshot, setTreeMotionSnapshot] =
@@ -615,7 +544,7 @@ export function FoldPreview({
       || (model.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !treeKinematics)
     ) {
       runtimeRef.current = null
-      setRenderError('固定面を安全に解決できませんでした')
+      setRenderError('fixed_face_unavailable')
       return
     }
 
@@ -656,7 +585,7 @@ export function FoldPreview({
     } catch {
       reportUnexpected('fold_preview.geometry')
       for (const geometry of geometries) attemptCleanup(() => geometry.dispose())
-      setRenderError('3D面を安全に三角形化できませんでした')
+      setRenderError('geometry_unavailable')
       return
     }
 
@@ -1343,7 +1272,7 @@ export function FoldPreview({
         } catch {
           reportUnexpected('fold_preview.render')
           dispose()
-          setRenderError('3Dカメラ操作を安全に継続できませんでした')
+          setRenderError('camera_unavailable')
         }
       }
       createdControls.addEventListener('change', controlsChangeHandler)
@@ -1382,7 +1311,7 @@ export function FoldPreview({
               )
             ) {
               dispose()
-              setRenderError('3D描画を安全に継続できませんでした')
+              setRenderError('render_unavailable')
               return
             }
             setMotionSnapshot({
@@ -1634,7 +1563,7 @@ export function FoldPreview({
             || (!wasCurrent && !treeBindingIsCurrent(binding))
           ) return
           dispose()
-          setRenderError('木構造の折り経路を安全に継続できませんでした')
+          setRenderError('tree_motion_unavailable')
         }
         const executeTreeRuntimePlan = (
           binding: TreeMotionBinding,
@@ -1748,9 +1677,7 @@ export function FoldPreview({
             if (!applied || !completed) {
               if (!disposed) {
                 dispose()
-                setRenderError(
-                  '木構造の折り姿勢を安全に適用できませんでした',
-                )
+                setRenderError('tree_pose_application_failed')
               }
               return false
             }
@@ -1761,9 +1688,7 @@ export function FoldPreview({
               reportUnexpected('fold_preview.render')
               if (!disposed) {
                 dispose()
-                setRenderError(
-                  '木構造の折り姿勢を安全に描画できませんでした',
-                )
+                setRenderError('tree_pose_render_failed')
               }
               return false
             }
@@ -2178,7 +2103,7 @@ export function FoldPreview({
             () => {
               if (disposed) return
               dispose()
-              setRenderError('3D描画を安全に継続できませんでした')
+              setRenderError('render_unavailable')
             },
           )
         const ensureTreeDirectPoseFrameTask = () => {
@@ -2305,7 +2230,7 @@ export function FoldPreview({
           () => {
             if (disposed) return
             dispose()
-            setRenderError('3D描画を安全に継続できませんでした')
+            setRenderError('render_unavailable')
           },
         )
         poseFrameTask = createdPoseFrameTask
@@ -3588,7 +3513,7 @@ export function FoldPreview({
           setKeyboardSelectionAnnouncement((current) => ({
             model,
             sequence: (current?.sequence ?? 0) + 1,
-            text,
+            announcement: normalizeFoldPreviewKeyboardAnnouncement(text),
           }))
         },
         cameraControls: createdControls,
@@ -3596,7 +3521,7 @@ export function FoldPreview({
         onCameraFailure: () => {
           reportUnexpected('fold_preview.camera')
           dispose()
-          setRenderError('3Dカメラ操作を安全に継続できませんでした')
+          setRenderError('camera_unavailable')
         },
       })
       keyboardCoordinator = createdKeyboardCoordinator
@@ -3621,7 +3546,7 @@ export function FoldPreview({
         } catch {
           reportUnexpected('fold_preview.resize')
           dispose()
-          setRenderError('3D描画を安全に継続できませんでした')
+          setRenderError('render_unavailable')
         }
       }
       observer = typeof ResizeObserver === 'undefined'
@@ -3632,7 +3557,7 @@ export function FoldPreview({
     } catch {
       reportUnexpected('fold_preview.scene_initialization')
       dispose()
-      setRenderError('このPCで3D描画を開始できませんでした')
+      setRenderError('scene_initialization_failed')
       return
     }
 
@@ -3660,7 +3585,7 @@ export function FoldPreview({
     } catch {
       reportUnexpected('fold_preview.pose_schedule')
       runtime.dispose()
-      setRenderError('3D描画を安全に継続できませんでした')
+      setRenderError('render_unavailable')
     }
   }, [
     safeAngle,
@@ -3685,7 +3610,7 @@ export function FoldPreview({
     } catch {
       reportUnexpected('fold_preview.selection_render')
       runtime.dispose()
-      setRenderError('3D選択表示を安全に継続できませんでした')
+      setRenderError('selection_render_failed')
     }
   }, [selectedHingeId])
 
@@ -3698,20 +3623,20 @@ export function FoldPreview({
     } catch {
       reportUnexpected('fold_preview.camera')
       runtime.dispose()
-      setRenderError('3Dカメラ操作を安全に継続できませんでした')
+      setRenderError('camera_unavailable')
     }
   }
 
-  const thicknessNote = !hasAuthoritativeThickness
-    ? `紙厚入力が無効なため3D表示のみ ${formatLength(safeThicknessMm, lengthDisplayUnit)}（衝突判定には不使用）`
-    : thicknessIsEmphasised
-      ? `紙厚 ${formatLength(safeThicknessMm, lengthDisplayUnit)}（3D表示は視認用の最小厚、衝突判定は入力紙厚を使用）`
-      : thicknessIsLimited
-        ? `紙厚 ${formatLength(safeThicknessMm, lengthDisplayUnit)}（3D表示厚を上限調整、衝突判定は入力紙厚を使用）`
-        : `紙厚 ${formatLength(safeThicknessMm, lengthDisplayUnit)}`
+  const thicknessNote = describeFoldPreviewThickness({
+    hasAuthoritativeThickness,
+    thicknessIsEmphasised,
+    thicknessIsLimited,
+    formattedLength: formatLength(safeThicknessMm, lengthDisplayUnit),
+    lengthDisplayUnit,
+  }, locale)
   const unavailableMessage = model && renderError
-    ? renderError
-    : statusMessage ?? '面・ヒンジ解析を待っています'
+    ? describeFoldPreviewRenderError(renderError, locale)
+    : describeFoldPreviewStatus(statusMessage, locale)
   const renderedTreePose =
     model?.kind === 'fold_graph'
     && model.kinematics.kind === 'tree'
@@ -3723,8 +3648,8 @@ export function FoldPreview({
       ? renderedTreePoseSnapshot
       : null
   const treeAngleNote = renderedTreePose
-    ? describeTreeAngles(renderedTreePose.appliedAngles, 0)
-    : '姿勢を準備中'
+    ? describeFoldPreviewTreeAngles(renderedTreePose.appliedAngles, 0, locale)
+    : foldPreviewText(locale, '姿勢を準備中', 'Preparing pose')
   const previewHingeIds = model?.kind === 'single_fold'
     ? [model.hinge.edgeId]
     : model?.kind === 'fold_graph'
@@ -3736,8 +3661,20 @@ export function FoldPreview({
   const fixedFaceIndex = model && resolvedFixedFaceId
     ? model.faces.findIndex((face) => face.id === resolvedFixedFaceId)
     : -1
-  const fixedFaceLabel = fixedFaceIndex >= 0 ? `固定面 ${fixedFaceIndex + 1}` : null
-  const fixedFaceNote = fixedFaceLabel ? `・${fixedFaceLabel}` : ''
+  const fixedFaceLabel = fixedFaceIndex >= 0
+    ? foldPreviewText(
+        locale,
+        `固定面 ${fixedFaceIndex + 1}`,
+        `Fixed face ${fixedFaceIndex + 1}`,
+      )
+    : null
+  const fixedFaceNote = fixedFaceLabel
+    ? foldPreviewText(
+        locale,
+        `・${fixedFaceLabel}`,
+        ` · ${fixedFaceLabel}`,
+      )
+    : ''
   const contextualMotionState = model?.kind === 'single_fold'
     && singleFoldMotionContextKey
     && motionSnapshot?.contextKey === singleFoldMotionContextKey
@@ -3787,8 +3724,9 @@ export function FoldPreview({
     || correctionAnalysisContextIsCurrent
       ? correctionAnalysisState
       : staleCorrectionAnalysisState(correctionAnalysisState)
-  const correctionAnalysisView = describeCorrectionAnalysis(
+  const correctionAnalysisView = describeFoldPreviewCorrectionAnalysis(
     currentCorrectionAnalysisState,
+    locale,
   )
   const certifiedCorrectionPresentation =
     currentCorrectionAnalysisState.status === 'certified'
@@ -3910,7 +3848,11 @@ export function FoldPreview({
       ? model.faces.map((face, index) => ({
           id: face.id,
           number: index + 1,
-          label: `面 ${index + 1}${face.id === resolvedFixedFaceId ? '（固定）' : ''}`,
+          label: foldPreviewText(
+            locale,
+            `面 ${index + 1}${face.id === resolvedFixedFaceId ? '（固定）' : ''}`,
+            `Face ${index + 1}${face.id === resolvedFixedFaceId ? ' (fixed)' : ''}`,
+          ),
         }))
       : []
   const motionView = (
@@ -3921,7 +3863,7 @@ export function FoldPreview({
       && treeCommitAvailable
     )
   ) && !renderError
-    ? describeFoldPreviewContinuousMotion(currentMotionState)
+    ? describeFoldPreviewContinuousMotion(currentMotionState, locale)
     : null
   const motionDetail = (
     model?.kind === 'single_fold'
@@ -3940,6 +3882,7 @@ export function FoldPreview({
           && model.kinematics.kind === 'tree'
           ? contextualTreeMotionSnapshot?.evidenceContext ?? undefined
           : undefined,
+        locale,
       )
     : null
   const angleDragTarget = angleDragPresentation.state === 'dragging'
@@ -3948,12 +3891,24 @@ export function FoldPreview({
   const physicalGrabIsActive =
     angleDragPresentation.mapping === FOLD_PREVIEW_PHYSICAL_GRAB_MAPPING
   const angleDragActionLabel = physicalGrabIsActive
-    ? '紙面ドラッグ'
-    : '上下ドラッグ'
+    ? foldPreviewText(locale, '紙面ドラッグ', 'Paper drag')
+    : foldPreviewText(locale, '上下ドラッグ', 'Vertical drag')
+  const angleDragTargetText = angleDragTarget === null
+    ? null
+    : formatFoldPreviewAngle(angleDragTarget, locale)
+  const displayedAngleText = formatFoldPreviewAngle(displayedAngle, locale)
   const motionBadgeText = angleDragTarget !== null
-    ? `${angleDragActionLabel}目標 ${formatAngle(angleDragTarget)}°・表示 ${formatAngle(displayedAngle)}° / 離すと検証`
+    ? foldPreviewText(
+        locale,
+        `${angleDragActionLabel}目標 ${angleDragTargetText}°・表示 ${displayedAngleText}° / 離すと検証`,
+        `${angleDragActionLabel} target ${angleDragTargetText}° · displayed ${displayedAngleText}° / release to verify`,
+      )
     : angleDragPresentation.state === 'armed'
-      ? `${angleDragActionLabel}待機・表示 ${formatAngle(displayedAngle)}°`
+      ? foldPreviewText(
+          locale,
+          `${angleDragActionLabel}待機・表示 ${displayedAngleText}°`,
+          `${angleDragActionLabel} ready · displayed ${displayedAngleText}°`,
+        )
       : motionView?.badgeText
   const motionBadgeClass = angleDragPresentation.state === 'idle'
     ? motionView?.badgeClass
@@ -3987,33 +3942,62 @@ export function FoldPreview({
     locale,
   )
   const previewPoseNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
-    ? `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}`
+    ? foldPreviewText(
+        locale,
+        `${model.faces.length}面・${model.hinges.length}ヒンジを${treeAngleNote}${fixedFaceNote}`,
+        `${model.faces.length} faces · ${model.hinges.length} hinges · ${treeAngleNote}${fixedFaceNote}`,
+      )
     : model?.kind === 'fold_graph'
-      ? `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階`
+      ? foldPreviewText(
+          locale,
+          `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階`,
+          `${model.faces.length} faces · ${model.hinges.length} hinges · planar inspection stage because of cycle constraints`,
+        )
       : model?.kind === 'single_fold' && fixedFaceLabel
         ? fixedFaceLabel
         : thicknessNote
+  const noteSeparator = foldPreviewText(locale, '・', ' · ')
   const basePreviewNote = previewPoseNote === thicknessNote
-    ? `${previewPoseNote}・${collisionNote}`
-    : `${previewPoseNote}・${collisionNote}・${thicknessNote}`
+    ? `${previewPoseNote}${noteSeparator}${collisionNote}`
+    : `${previewPoseNote}${noteSeparator}${collisionNote}${noteSeparator}${thicknessNote}`
   const hingeKeyboardSelectionAvailable =
     Boolean(onSelectHinge) && previewHingeIds.length > 0
   const faceKeyboardSelectionAvailable =
     Boolean(onChooseFixedFace) && Boolean(model?.faces.length)
   const keyboardSelectionNote = hingeKeyboardSelectionAvailable
     && faceKeyboardSelectionAvailable
-    ? '・H/Shift+Hでヒンジ、F/Shift+Fで固定面'
+    ? foldPreviewText(
+        locale,
+        '・H/Shift+Hでヒンジ、F/Shift+Fで固定面',
+        ' · H/Shift+H: hinge; F/Shift+F: fixed face',
+      )
     : hingeKeyboardSelectionAvailable
-      ? '・H/Shift+Hでヒンジ'
+      ? foldPreviewText(
+          locale,
+          '・H/Shift+Hでヒンジ',
+          ' · H/Shift+H: hinge',
+        )
       : faceKeyboardSelectionAvailable
-        ? '・F/Shift+Fで固定面'
+        ? foldPreviewText(
+            locale,
+            '・F/Shift+Fで固定面',
+            ' · F/Shift+F: fixed face',
+          )
         : ''
   const foldOperationPreviewNote = model?.kind === 'single_fold'
-    ? `${onRequestFoldAngle ? '移動面ドラッグで物理目標・折り目の上下ドラッグで角度指定・' : ''}${basePreviewNote}・ドラッグ中の姿勢は未変更・中央面・単一線形経路のみ`
+    ? foldPreviewText(
+        locale,
+        `${onRequestFoldAngle ? '移動面ドラッグで物理目標・折り目の上下ドラッグで角度指定・' : ''}${basePreviewNote}・ドラッグ中の姿勢は未変更・中央面・単一線形経路のみ`,
+        `${onRequestFoldAngle ? 'Drag the moving face for a physical target · drag the crease vertically to set the angle · ' : ''}${basePreviewNote} · the pose is unchanged while dragging · middle-surface, single linear path only`,
+      )
     : model?.kind === 'fold_graph'
       && model.kinematics.kind === 'tree'
       && treeCommitAvailable
-      ? `選択ヒンジの従属面ドラッグで物理目標・${basePreviewNote}・ドラッグ中の姿勢は未変更・選択ヒンジ単一経路のみ`
+      ? foldPreviewText(
+          locale,
+          `選択ヒンジの従属面ドラッグで物理目標・${basePreviewNote}・ドラッグ中の姿勢は未変更・選択ヒンジ単一経路のみ`,
+          `Drag a dependent face of the selected hinge for a physical target · ${basePreviewNote} · the pose is unchanged while dragging · selected-hinge single path only`,
+        )
       : basePreviewNote
   const previewNote = `${foldOperationPreviewNote}${keyboardSelectionNote}`
   const collisionDescription = describeCollisionSummary(
@@ -4023,48 +4007,132 @@ export function FoldPreview({
     locale,
   )
   const correctionAnalysisDescription = treeCorrectionAnalysisAvailable
-    ? `。${correctionAnalysisView.accessibleText}`
+    ? foldPreviewText(
+        locale,
+        `。${correctionAnalysisView.accessibleText}`,
+        `. ${correctionAnalysisView.accessibleText}`,
+      )
     : ''
+  const safeAngleText = formatFoldPreviewAngle(safeAngle, locale)
+  const motionDetailDescription = motionDetail
+    ? foldPreviewText(
+        locale,
+        `。${motionDetail.summaryText}`,
+        `. ${motionDetail.summaryText}`,
+      )
+    : ''
+  const motionViewDescription = motionView
+    ? foldPreviewText(
+        locale,
+        `、${motionView.accessibleText}`,
+        `. ${motionView.accessibleText}`,
+      )
+    : ''
+  const unverifiedTargetDescription = angleDragTargetText === null
+    ? ''
+    : foldPreviewText(
+        locale,
+        `、${angleDragActionLabel}中の未確認目標角 ${angleDragTargetText}度。この目標角はポインターを離して経路検証が完了するまで3Dへ適用しません`,
+        `. Unverified target during ${angleDragActionLabel.toLocaleLowerCase('en-US')}: ${angleDragTargetText} degrees. This target is not applied to the 3D view until the pointer is released and path verification completes`,
+      )
   const previewImageDescription = model?.kind === 'single_fold' && !renderError
-    ? `実展開図の3D折りプレビュー、表示角 ${displayedAngle}度、指定角 ${safeAngle}度${angleDragTarget === null ? '' : `、${angleDragActionLabel}中の未確認目標角 ${angleDragTarget}度。この目標角はポインターを離して経路検証が完了するまで3Dへ適用しません`}${fixedFaceNote}、${motionView?.accessibleText ?? ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}、${collisionDescription}、${thicknessNote}`
+    ? foldPreviewText(
+        locale,
+        `実展開図の3D折りプレビュー、表示角 ${displayedAngleText}度、指定角 ${safeAngleText}度${unverifiedTargetDescription}${fixedFaceNote}${motionViewDescription}${motionDetailDescription}、${collisionDescription}、${thicknessNote}`,
+        `3D fold preview of the actual crease pattern. Displayed angle: ${displayedAngleText} degrees. Requested angle: ${safeAngleText} degrees${unverifiedTargetDescription}${fixedFaceNote}${motionViewDescription}${motionDetailDescription}. ${collisionDescription}. ${thicknessNote}.`,
+      )
     : model?.kind === 'fold_graph' && model.kinematics.kind === 'tree' && !renderError
-      ? `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}${motionView ? `、${motionView.accessibleText}` : ''}${motionDetail ? `。${motionDetail.summaryText}` : ''}${correctionAnalysisDescription}、${collisionDescription}、${thicknessNote}`
+      ? foldPreviewText(
+          locale,
+          `実展開図の木構造複数面3D折りプレビュー、${model.faces.length}面・${model.hinges.length}ヒンジ、${treeAngleNote}${fixedFaceNote}${motionViewDescription}${motionDetailDescription}${correctionAnalysisDescription}、${collisionDescription}、${thicknessNote}`,
+          `Multi-face tree-structure 3D fold preview of the actual crease pattern. ${model.faces.length} faces and ${model.hinges.length} hinges. ${treeAngleNote}${fixedFaceNote}${motionViewDescription}${motionDetailDescription}${correctionAnalysisDescription}. ${collisionDescription}. ${thicknessNote}.`,
+        )
       : model?.kind === 'fold_graph' && !renderError
-        ? `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${collisionDescription}、${thicknessNote}`
+        ? foldPreviewText(
+            locale,
+            `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${collisionDescription}、${thicknessNote}`,
+            `Multi-face planar 3D inspection of the actual crease pattern. ${model.faces.length} faces and ${model.hinges.length} hinges. Folding motion is not applied because of cycle constraints. ${collisionDescription}. ${thicknessNote}.`,
+          )
     : model?.kind === 'planar' && !renderError
-      ? `実展開図の平面3Dプレビュー、${collisionDescription}、${thicknessNote}`
-      : `3D折りプレビューは利用できません。${unavailableMessage}`
+      ? foldPreviewText(
+          locale,
+          `実展開図の平面3Dプレビュー、${collisionDescription}、${thicknessNote}`,
+          `Planar 3D preview of the actual crease pattern. ${collisionDescription}. ${thicknessNote}.`,
+        )
+      : foldPreviewText(
+          locale,
+          `3D折りプレビューは利用できません。${unavailableMessage}`,
+          `The 3D fold preview is unavailable. ${unavailableMessage}`,
+        )
   const selectionDescription = onSelectHinge && onChooseFixedFace
-    ? '。3D上のヒンジをクリックして選択し、面をクリックして固定面を変更できます'
+    ? foldPreviewText(
+        locale,
+        '。3D上のヒンジをクリックして選択し、面をクリックして固定面を変更できます',
+        ' Click a hinge in the 3D view to select it, or click a face to change the fixed face.',
+      )
     : onSelectHinge
-      ? '。3D上のヒンジをクリックして選択できます'
+      ? foldPreviewText(
+          locale,
+          '。3D上のヒンジをクリックして選択できます',
+          ' Click a hinge in the 3D view to select it.',
+        )
       : onChooseFixedFace
-        ? '。3D上の面をクリックして固定面を変更できます'
+        ? foldPreviewText(
+            locale,
+            '。3D上の面をクリックして固定面を変更できます',
+            ' Click a face in the 3D view to change the fixed face.',
+          )
         : ''
   const keyboardSelectionDescription =
     hingeKeyboardSelectionAvailable || faceKeyboardSelectionAvailable
-      ? `。3Dビューにフォーカス中、${hingeKeyboardSelectionAvailable
-        ? `Hで次、Shift+Hで前のヒンジを選択し、Escapeで解除できます。現在は${selectedHingeIndex >= 0
-          ? `ヒンジ ${selectedHingeIndex + 1}/${previewHingeIds.length}`
-          : 'ヒンジ未選択'}`
-        : ''}${hingeKeyboardSelectionAvailable && faceKeyboardSelectionAvailable
-          ? '。'
-          : ''}${faceKeyboardSelectionAvailable
-          ? `Fで次、Shift+Fで前の面を固定面にできます。現在は${fixedFaceIndex >= 0 && model
-            ? `固定面 ${fixedFaceIndex + 1}/${model.faces.length}`
-            : '固定面未選択'}`
-          : ''}`
+      ? foldPreviewText(
+          locale,
+          `。3Dビューにフォーカス中、${hingeKeyboardSelectionAvailable
+            ? `Hで次、Shift+Hで前のヒンジを選択し、Escapeで解除できます。現在は${selectedHingeIndex >= 0
+              ? `ヒンジ ${selectedHingeIndex + 1}/${previewHingeIds.length}`
+              : 'ヒンジ未選択'}`
+            : ''}${hingeKeyboardSelectionAvailable && faceKeyboardSelectionAvailable
+            ? '。'
+            : ''}${faceKeyboardSelectionAvailable
+            ? `Fで次、Shift+Fで前の面を固定面にできます。現在は${fixedFaceIndex >= 0 && model
+              ? `固定面 ${fixedFaceIndex + 1}/${model.faces.length}`
+              : '固定面未選択'}`
+            : ''}`,
+          ` With focus in the 3D view, ${hingeKeyboardSelectionAvailable
+            ? `press H for the next hinge, Shift+H for the previous hinge, or Escape to clear the selection. Current selection: ${selectedHingeIndex >= 0
+              ? `hinge ${selectedHingeIndex + 1} of ${previewHingeIds.length}`
+              : 'no hinge selected'}`
+            : ''}${hingeKeyboardSelectionAvailable && faceKeyboardSelectionAvailable
+            ? '. '
+            : ''}${faceKeyboardSelectionAvailable
+            ? `press F for the next fixed face or Shift+F for the previous one. Current selection: ${fixedFaceIndex >= 0 && model
+              ? `fixed face ${fixedFaceIndex + 1} of ${model.faces.length}`
+              : 'no fixed face selected'}`
+            : ''}.`,
+        )
       : ''
   const angleDragDescription =
     model?.kind === 'single_fold' && onRequestFoldAngle
-      ? '。3D上で移動する紙面の表または裏をつかんでドラッグすると、紙の回転軌道から折り角目標を作れます。折り目の上下ドラッグでは、上方向で増加、下方向で減少する角度パラメータ操作ができます。どちらの目標もドラッグ中は未確認で、ポインターを離して連続経路を確認した後にだけ3D表示へ適用されます。Altキーを押したドラッグはカメラ操作になります。キーボードでは下の指定折り量入力を使用できます'
+      ? foldPreviewText(
+          locale,
+          '。3D上で移動する紙面の表または裏をつかんでドラッグすると、紙の回転軌道から折り角目標を作れます。折り目の上下ドラッグでは、上方向で増加、下方向で減少する角度パラメータ操作ができます。どちらの目標もドラッグ中は未確認で、ポインターを離して連続経路を確認した後にだけ3D表示へ適用されます。Altキーを押したドラッグはカメラ操作になります。キーボードでは下の指定折り量入力を使用できます',
+          ' Drag the front or back of the moving paper face to create a fold-angle target from the paper’s rotation path. Drag the crease upward to increase or downward to decrease the angle parameter. Targets remain unverified while dragging and are applied to the 3D view only after release and continuous-path verification. Hold Alt while dragging to control the camera. Keyboard users can use the requested-fold input below.',
+        )
       : model?.kind === 'fold_graph'
         && model.kinematics.kind === 'tree'
         && treeCommitAvailable
-        ? '。3D上で選択ヒンジから先の紙面の表または裏をつかんでドラッグすると、そのヒンジだけの折り角目標を作れます。目標はドラッグ中は未確認で、ポインターを離して複数面の連続経路を確認した後にだけ3D表示と角度入力へ確定されます'
+        ? foldPreviewText(
+            locale,
+            '。3D上で選択ヒンジから先の紙面の表または裏をつかんでドラッグすると、そのヒンジだけの折り角目標を作れます。目標はドラッグ中は未確認で、ポインターを離して複数面の連続経路を確認した後にだけ3D表示と角度入力へ確定されます',
+            ' Drag the front or back of a paper face beyond the selected hinge to create a target for that hinge only. The target remains unverified while dragging and is committed to the 3D view and angle input only after release and multi-face continuous-path verification.',
+          )
         : ''
   const cameraDescription = model && !renderError
-    ? `。マウスは${angleDragDescription ? '紙面と折り目の折り操作以外の場所を' : ''}左ドラッグで回転、ホイールまたは中ドラッグで拡大縮小、右ドラッグで平行移動できます。タッチは${angleDragDescription ? '紙面と折り目の折り操作以外を' : ''}1本指で回転、2本指で拡大縮小と平行移動ができます。キーボードは矢印キーで平行移動、Shiftと矢印キーで回転、プラスとマイナスで拡大縮小、Homeまたは0で視点をリセットできます`
+    ? foldPreviewText(
+        locale,
+        `。マウスは${angleDragDescription ? '紙面と折り目の折り操作以外の場所を' : ''}左ドラッグで回転、ホイールまたは中ドラッグで拡大縮小、右ドラッグで平行移動できます。タッチは${angleDragDescription ? '紙面と折り目の折り操作以外を' : ''}1本指で回転、2本指で拡大縮小と平行移動ができます。キーボードは矢印キーで平行移動、Shiftと矢印キーで回転、プラスとマイナスで拡大縮小、Homeまたは0で視点をリセットできます`,
+        ` Mouse controls: left-drag ${angleDragDescription ? 'outside paper and crease fold controls ' : ''}to rotate, wheel or middle-drag to zoom, and right-drag to pan. Touch controls: one-finger drag ${angleDragDescription ? 'outside paper and crease fold controls ' : ''}to rotate, and two fingers to zoom and pan. Keyboard controls: arrow keys to pan, Shift+arrow keys to rotate, plus and minus to zoom, and Home or 0 to reset the view.`,
+      )
     : ''
   const previewDescription =
     `${previewImageDescription}${selectionDescription}${keyboardSelectionDescription}${angleDragDescription}${cameraDescription}`
@@ -4096,12 +4164,18 @@ export function FoldPreview({
   const keyboardSelectionAnnouncementFirstChannel =
     currentKeyboardSelectionAnnouncement
     && currentKeyboardSelectionAnnouncement.sequence % 2 === 0
-      ? currentKeyboardSelectionAnnouncement.text
+      ? describeFoldPreviewKeyboardAnnouncement(
+          currentKeyboardSelectionAnnouncement.announcement,
+          locale,
+        )
       : ''
   const keyboardSelectionAnnouncementSecondChannel =
     currentKeyboardSelectionAnnouncement
     && currentKeyboardSelectionAnnouncement.sequence % 2 === 1
-      ? currentKeyboardSelectionAnnouncement.text
+      ? describeFoldPreviewKeyboardAnnouncement(
+          currentKeyboardSelectionAnnouncement.announcement,
+          locale,
+        )
       : ''
   const treePhysicalGrabAvailable = treeCorrectionAnalysisAvailable
   const motionPresentationAvailable =
@@ -4325,13 +4399,19 @@ export function FoldPreview({
         ? currentCollisionSummary.indeterminateInteractions
         : undefined}
       role="group"
-      aria-label="3D折りプレビュー"
+      aria-label={foldPreviewText(
+        locale,
+        '3D折りプレビュー',
+        '3D fold preview',
+      )}
     >
       <div
         ref={hostRef}
         className="fold-preview-viewport"
         role={previewAvailable ? 'region' : 'img'}
-        aria-label={previewAvailable ? '3Dビュー' : previewDescription}
+        aria-label={previewAvailable
+          ? foldPreviewText(locale, '3Dビュー', '3D view')
+          : previewDescription}
         aria-describedby={previewAvailable ? descriptionId : undefined}
         aria-keyshortcuts={previewAvailable
           ? keyboardShortcutTokens.join(' ')
@@ -4346,6 +4426,7 @@ export function FoldPreview({
             <FoldPreviewCollisionBadge
               summary={currentCollisionSummary}
               description={collisionDescription}
+              localeStore={localeStore_}
             />
             {nativeCollisionState ? (
               <PoseBoundNativeStaticCollisionBadge
@@ -4353,6 +4434,7 @@ export function FoldPreview({
                 observedPose={nativeCollisionObservedPose ?? null}
                 renderedPose={renderedAppliedPose}
                 onRetry={onRetryNativeCollision}
+                localeStore={localeStore_}
               />
             ) : null}
             {motionView ? (
@@ -4363,7 +4445,11 @@ export function FoldPreview({
                   ? motionView.accessibleText
                   : motionBadgeText}
               >
-                移動経路｜{motionBadgeText}
+                {foldPreviewText(
+                  locale,
+                  `移動経路｜${motionBadgeText}`,
+                  `Motion path | ${motionBadgeText}`,
+                )}
               </span>
             ) : null}
             {treeCorrectionAnalysisAvailable ? (
@@ -4372,7 +4458,11 @@ export function FoldPreview({
                 aria-hidden="true"
                 title={correctionAnalysisView.accessibleText}
               >
-                補正解析｜{correctionAnalysisView.badgeText}
+                {foldPreviewText(
+                  locale,
+                  `補正解析｜${correctionAnalysisView.badgeText}`,
+                  `Correction analysis | ${correctionAnalysisView.badgeText}`,
+                )}
               </span>
             ) : null}
           </div>
@@ -4433,9 +4523,13 @@ export function FoldPreview({
         className="fold-preview-reset"
         disabled={!previewAvailable}
         onClick={resetView}
-        title="カメラを初期位置へ戻す"
+        title={foldPreviewText(
+          locale,
+          'カメラを初期位置へ戻す',
+          'Return the camera to its initial position',
+        )}
       >
-        視点をリセット
+        {foldPreviewText(locale, '視点をリセット', 'Reset view')}
       </button>
     </div>
   )
@@ -4583,26 +4677,6 @@ function applyFoldRotation(
   pivot.matrix.copy(matrix)
   pivot.matrixWorldNeedsUpdate = true
   return true
-}
-
-function describeTreeAngles(
-  hingeAngles: readonly FoldPreviewHingeAngle[] | undefined,
-  uniformAngle: number,
-) {
-  if (!hingeAngles || hingeAngles.length === 0) return `一括 ${formatAngle(uniformAngle)}度`
-  const values = hingeAngles.map(({ angleDegrees }) => angleDegrees)
-  if (!values.every((value) => Number.isFinite(value) && value >= 0 && value <= 180)) {
-    return '個別角度'
-  }
-  const minimum = Math.min(...values)
-  const maximum = Math.max(...values)
-  return minimum === maximum
-    ? `全ヒンジ ${formatAngle(minimum)}度`
-    : `個別 ${formatAngle(minimum)}〜${formatAngle(maximum)}度`
-}
-
-function formatAngle(value: number) {
-  return value.toLocaleString('ja-JP', { maximumFractionDigits: 1 })
 }
 
 function resolveColor(color: RgbaColor | null | undefined, fallback: number) {

@@ -1,6 +1,7 @@
 import type {
   FoldPreviewContinuousMotionRunnerState,
 } from './foldPreviewContinuousMotionRunner'
+import type { Locale } from './i18n.ts'
 
 export type FoldPreviewContinuousMotionView = Readonly<{
   status:
@@ -17,22 +18,29 @@ export type FoldPreviewContinuousMotionView = Readonly<{
   terminalAnnouncement: string | null
 }>
 
-const LIMITATION =
-  '中央面基準の単一ヒンジ線形経路に限る判定で、実際の折り癖と層ずれは含みません'
-
 /**
  * Converts the continuous runner's safety state into deliberately qualified
- * Japanese UI copy. A missing or malformed snapshot never reads as safe.
+ * UI copy. A missing or malformed snapshot never reads as safe.
  */
 export function describeFoldPreviewContinuousMotion(
   state: FoldPreviewContinuousMotionRunnerState | null,
+  locale: Locale = 'ja',
 ): FoldPreviewContinuousMotionView {
+  const limitation = localized(
+    locale,
+    '中央面基準の単一ヒンジ線形経路に限る判定で、実際の折り癖と層ずれは含みません',
+    'This check covers only a middle-surface, single-hinge linear path; actual crease memory and layer offsets are not included.',
+  )
   if (!state) {
     return view(
       'preparing',
       'is-pending',
-      '経路判定を準備中',
-      `単一ヒンジの連続経路判定を準備しています。${LIMITATION}`,
+      localized(locale, '経路判定を準備中', 'Preparing path check'),
+      localized(
+        locale,
+        `単一ヒンジの連続経路判定を準備しています。${limitation}`,
+        `Preparing the single-hinge continuous-path check. ${limitation}`,
+      ),
     )
   }
   if (
@@ -43,8 +51,12 @@ export function describeFoldPreviewContinuousMotion(
     return view(
       'unavailable',
       'is-unavailable',
-      '経路判定不能',
-      `連続経路の角度状態が不正なため判定を利用できません。${LIMITATION}`,
+      localized(locale, '経路判定不能', 'Path check unavailable'),
+      localized(
+        locale,
+        `連続経路の角度状態が不正なため判定を利用できません。${limitation}`,
+        `The continuous-path angle state is invalid, so the check is unavailable. ${limitation}`,
+      ),
     )
   }
 
@@ -56,16 +68,32 @@ export function describeFoldPreviewContinuousMotion(
     return view(
       'idle',
       'is-pending',
-      `経路判定待機・表示 ${applied}°`,
-      `単一ヒンジの連続経路判定は待機中です。現在の表示角は${applied}度です。${LIMITATION}`,
+      localized(
+        locale,
+        `経路判定待機・表示 ${applied}°`,
+        `Path check waiting · displayed ${applied}°`,
+      ),
+      localized(
+        locale,
+        `単一ヒンジの連続経路判定は待機中です。現在の表示角は${applied}度です。${limitation}`,
+        `The single-hinge continuous-path check is waiting. The current displayed angle is ${applied} degrees. ${limitation}`,
+      ),
     )
   }
   if (state.status === 'running' && requested !== null) {
     return view(
       'running',
       'is-running',
-      `経路検証中・表示 ${applied}° / 指定 ${requested}°`,
-      `指定角${requested}度への連続経路を検証中です。現在の表示角は${applied}度です。判定完了までは経路確認済みとして扱いません。${LIMITATION}`,
+      localized(
+        locale,
+        `経路検証中・表示 ${applied}° / 指定 ${requested}°`,
+        `Checking path · displayed ${applied}° / requested ${requested}°`,
+      ),
+      localized(
+        locale,
+        `指定角${requested}度への連続経路を検証中です。現在の表示角は${applied}度です。判定完了までは経路確認済みとして扱いません。${limitation}`,
+        `Checking the continuous path to the requested angle of ${requested} degrees. The current displayed angle is ${applied} degrees. The path is not treated as verified until the check completes. ${limitation}`,
+      ),
     )
   }
   if (
@@ -75,12 +103,19 @@ export function describeFoldPreviewContinuousMotion(
     && validClearResult(state.result)
     && state.applied === state.requested
   ) {
-    const text =
-      `指定角${requested}度までの連続経路を確認しました。表示角は${applied}度です。${LIMITATION}`
+    const text = localized(
+      locale,
+      `指定角${requested}度までの連続経路を確認しました。表示角は${applied}度です。${limitation}`,
+      `The continuous path to the requested angle of ${requested} degrees was verified. The displayed angle is ${applied} degrees. ${limitation}`,
+    )
     return view(
       'clear',
       'is-clear',
-      `中央面・単一経路確認済み・表示 ${applied}°`,
+      localized(
+        locale,
+        `中央面・単一経路確認済み・表示 ${applied}°`,
+        `Middle surface · single path verified · displayed ${applied}°`,
+      ),
       text,
       text,
     )
@@ -96,33 +131,54 @@ export function describeFoldPreviewContinuousMotion(
       state.result.certifiedSafeThrough === 0
       && state.result.unsafeBracket[1] === 0
     ) {
-      const text =
-        `開始姿勢で衝突を検出しました。表示角は${applied}度ですが、安全確認済みの姿勢として扱いません。${LIMITATION}`
+      const text = localized(
+        locale,
+        `開始姿勢で衝突を検出しました。表示角は${applied}度ですが、安全確認済みの姿勢として扱いません。${limitation}`,
+        `A collision was detected at the starting pose. The displayed angle is ${applied} degrees, but this pose is not treated as safety-verified. ${limitation}`,
+      )
       return view(
         'blocked',
         'is-blocked',
-        `開始姿勢で衝突・安全確認なし / 指定 ${requested}°`,
+        localized(
+          locale,
+          `開始姿勢で衝突・安全確認なし / 指定 ${requested}°`,
+          `Collision at starting pose · not safety-verified / requested ${requested}°`,
+        ),
         text,
         text,
       )
     }
     if (state.result.certifiedSafeThrough === 0) {
-      const text =
-        `開始姿勢の点判定は通過しましたが、開始角からの未確認範囲で衝突姿勢を検出したため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${LIMITATION}`
+      const text = localized(
+        locale,
+        `開始姿勢の点判定は通過しましたが、開始角からの未確認範囲で衝突姿勢を検出したため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${limitation}`,
+        `The starting-pose point check passed, but a collision pose was found in the unverified range immediately after the starting angle, so no safe continuous-path movement could be certified. Motion cannot continue from the displayed angle of ${applied} degrees. ${limitation}`,
+      )
       return view(
         'blocked',
         'is-blocked',
-        `開始角からの範囲で衝突・移動なし / 指定 ${requested}°`,
+        localized(
+          locale,
+          `開始角からの範囲で衝突・移動なし / 指定 ${requested}°`,
+          `Collision in range after start · no movement / requested ${requested}°`,
+        ),
         text,
         text,
       )
     }
-    const text =
-      `指定角${requested}度への探索区間内で衝突姿勢を検出したため、最後に経路を確認できた${applied}度で停止しました。衝突開始角は確定していません。${LIMITATION}`
+    const text = localized(
+      locale,
+      `指定角${requested}度への探索区間内で衝突姿勢を検出したため、最後に経路を確認できた${applied}度で停止しました。衝突開始角は確定していません。${limitation}`,
+      `A collision pose was found in the search interval toward ${requested} degrees, so motion stopped at ${applied} degrees, the last path-verified angle. The exact collision-onset angle is not known. ${limitation}`,
+    )
     return view(
       'blocked',
       'is-blocked',
-      `経路確認済み境界で停止・表示 ${applied}° / 指定 ${requested}°`,
+      localized(
+        locale,
+        `経路確認済み境界で停止・表示 ${applied}° / 指定 ${requested}°`,
+        `Stopped at verified path boundary · displayed ${applied}° / requested ${requested}°`,
+      ),
       text,
       text,
     )
@@ -133,12 +189,19 @@ export function describeFoldPreviewContinuousMotion(
     && state.result === null
     && validReason(state.reason)
   ) {
-    const text =
-      `指定角${requested}度への経路判定を開始または継続できないため、現在の表示角${applied}度から進めません。表示角は安全確認済みとして扱いません。${LIMITATION}`
+    const text = localized(
+      locale,
+      `指定角${requested}度への経路判定を開始または継続できないため、現在の表示角${applied}度から進めません。表示角は安全確認済みとして扱いません。${limitation}`,
+      `The path check toward ${requested} degrees could not start or continue, so motion cannot proceed from the current displayed angle of ${applied} degrees. The displayed pose is not treated as safety-verified. ${limitation}`,
+    )
     return view(
       'indeterminate',
       'is-indeterminate',
-      `経路判定不能・表示 ${applied}° / 指定 ${requested}°`,
+      localized(
+        locale,
+        `経路判定不能・表示 ${applied}° / 指定 ${requested}°`,
+        `Path indeterminate · displayed ${applied}° / requested ${requested}°`,
+      ),
       text,
       text,
     )
@@ -154,33 +217,54 @@ export function describeFoldPreviewContinuousMotion(
       state.result.certifiedSafeThrough === 0
       && state.result.unresolvedBracket[1] === 0
     ) {
-      const text =
-        `開始姿勢を判定できないため、現在の表示角${applied}度から進めません。表示角は安全確認済みとして扱いません。${LIMITATION}`
+      const text = localized(
+        locale,
+        `開始姿勢を判定できないため、現在の表示角${applied}度から進めません。表示角は安全確認済みとして扱いません。${limitation}`,
+        `The starting pose could not be classified, so motion cannot proceed from the current displayed angle of ${applied} degrees. The displayed pose is not treated as safety-verified. ${limitation}`,
+      )
       return view(
         'indeterminate',
         'is-indeterminate',
-        `開始姿勢を判定不能・安全確認なし / 指定 ${requested}°`,
+        localized(
+          locale,
+          `開始姿勢を判定不能・安全確認なし / 指定 ${requested}°`,
+          `Starting pose indeterminate · not safety-verified / requested ${requested}°`,
+        ),
         text,
         text,
       )
     }
     if (state.result.certifiedSafeThrough === 0) {
-      const text =
-        `開始姿勢の点判定は通過しましたが、開始角からの未確認範囲を確認できないため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${LIMITATION}`
+      const text = localized(
+        locale,
+        `開始姿勢の点判定は通過しましたが、開始角からの未確認範囲を確認できないため、連続経路として安全な移動量を確認できません。表示角${applied}度から進めません。${limitation}`,
+        `The starting-pose point check passed, but the unverified range immediately after the starting angle could not be resolved, so no safe continuous-path movement could be certified. Motion cannot continue from the displayed angle of ${applied} degrees. ${limitation}`,
+      )
       return view(
         'indeterminate',
         'is-indeterminate',
-        `開始角からの範囲を判定不能・移動なし / 指定 ${requested}°`,
+        localized(
+          locale,
+          `開始角からの範囲を判定不能・移動なし / 指定 ${requested}°`,
+          `Range after start indeterminate · no movement / requested ${requested}°`,
+        ),
         text,
         text,
       )
     }
-    const text =
-      `指定角${requested}度までの安全を確認できないため、最後に経路を確認できた${applied}度で停止しました。${LIMITATION}`
+    const text = localized(
+      locale,
+      `指定角${requested}度までの安全を確認できないため、最後に経路を確認できた${applied}度で停止しました。${limitation}`,
+      `Safety could not be verified through the requested angle of ${requested} degrees, so motion stopped at ${applied} degrees, the last path-verified angle. ${limitation}`,
+    )
     return view(
       'indeterminate',
       'is-indeterminate',
-      `経路を確認できず停止・表示 ${applied}° / 指定 ${requested}°`,
+      localized(
+        locale,
+        `経路を確認できず停止・表示 ${applied}° / 指定 ${requested}°`,
+        `Stopped because path was indeterminate · displayed ${applied}° / requested ${requested}°`,
+      ),
       text,
       text,
     )
@@ -188,9 +272,21 @@ export function describeFoldPreviewContinuousMotion(
   return view(
     'unavailable',
     'is-unavailable',
-    `経路判定停止・表示 ${applied}°`,
-    `単一ヒンジの連続経路判定は利用できません。現在の表示角は${applied}度です。${LIMITATION}`,
+    localized(
+      locale,
+      `経路判定停止・表示 ${applied}°`,
+      `Path check stopped · displayed ${applied}°`,
+    ),
+    localized(
+      locale,
+      `単一ヒンジの連続経路判定は利用できません。現在の表示角は${applied}度です。${limitation}`,
+      `The single-hinge continuous-path check is unavailable. The current displayed angle is ${applied} degrees. ${limitation}`,
+    ),
   )
+}
+
+function localized(locale: Locale, ja: string, en: string) {
+  return locale === 'en' ? en : ja
 }
 
 function view(

@@ -4,6 +4,7 @@ import type {
 import type {
   FoldPreviewHingeAngle,
 } from './foldPreviewKinematics'
+import type { Locale } from './i18n.ts'
 import {
   createFoldPreviewTreeSceneCollisionPoseKey,
 } from './foldPreviewTreeScenePose.ts'
@@ -226,6 +227,7 @@ export function describeFoldPreviewContinuousMotionDetail(
   faceLabels: readonly FoldPreviewMotionFaceLabel[] = [],
   blockingSampleContext: FoldPreviewTreeBlockingSampleDetailContext | null =
     null,
+  locale: Locale = 'ja',
 ): FoldPreviewContinuousMotionDetail | null {
   try {
     const start = state?.start
@@ -264,12 +266,13 @@ export function describeFoldPreviewContinuousMotionDetail(
         blocker,
         blockingEvidence,
         labels,
+        locale,
       )
     }
 
     if (status !== 'indeterminate' || !validReason(reason)) return null
     if (result === null) {
-      return runnerFailureDetail(path, applied, reason)
+      return runnerFailureDetail(path, applied, reason, locale)
     }
     const terminal = normalizeIndeterminateResult(result)
     if (
@@ -277,7 +280,7 @@ export function describeFoldPreviewContinuousMotionDetail(
       || reason !== terminal.reason
       || applied !== angleAt(path, terminal.certifiedSafeThrough)
     ) return null
-    return indeterminateDetail(path, applied, terminal)
+    return indeterminateDetail(path, applied, terminal, locale)
   } catch {
     return null
   }
@@ -296,6 +299,7 @@ function blockedDetail(
   blocker: NormalizedBlocker | null,
   blockingEvidence: FoldPreviewMotionBlockingEvidence | null,
   labels: ReadonlyMap<string, FoldPreviewMotionFaceLabel>,
+  locale: Locale,
 ): FoldPreviewContinuousMotionDetail {
   const bracket = pathBracket(path, terminal.bracket)
   const certification = certificationFor(
@@ -307,51 +311,85 @@ function blockedDetail(
   const secondFace = blocker ? labels.get(blocker.secondFaceId) ?? null : null
   const faceText = firstFace && secondFace
     ? `${firstFace.label} ↔ ${secondFace.label}`
-    : '対象面の対応を確認できません'
+    : localized(
+        locale,
+        '対象面の対応を確認できません',
+        'The affected faces could not be matched.',
+      )
   const classification = blocker
-    ? describeBlocker(blocker)
-    : '衝突姿勢を検出しましたが、相互作用の詳細は取得できません'
+    ? describeBlocker(blocker, locale)
+    : localized(
+        locale,
+        '衝突姿勢を検出しましたが、相互作用の詳細は取得できません',
+        'A collision pose was detected, but interaction details are unavailable.',
+      )
   const intervalText = bracket.progress[0] === bracket.progress[1]
     ? `${formatAngle(bracket.anglesInPathOrder[0])}°`
     : `${formatAngle(bracket.anglesInPathOrder[0])}° → ${formatAngle(bracket.anglesInPathOrder[1])}°`
   const rows = freezeRows([
-    userRow('開始角', `${formatAngle(path.startDegrees)}°`),
-    userRow('指定角', `${formatAngle(path.requestedDegrees)}°`),
-    userRow('実表示角', `${formatAngle(displayDegrees)}°`),
+    userRow(
+      localized(locale, '開始角', 'Starting angle'),
+      `${formatAngle(path.startDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '指定角', 'Requested angle'),
+      `${formatAngle(path.requestedDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '実表示角', 'Actual displayed angle'),
+      `${formatAngle(displayDegrees)}°`,
+    ),
     userRow(
       bracket.progress[0] === bracket.progress[1]
-        ? '衝突検出角度'
-        : '衝突姿勢を含む探索角度範囲',
+        ? localized(locale, '衝突検出角度', 'Collision-detection angle')
+        : localized(
+            locale,
+            '衝突姿勢を含む探索角度範囲',
+            'Search-angle range containing a collision pose',
+          ),
       intervalText,
     ),
-    userRow('対象面ペア', faceText),
-    userRow('分類', classification),
+    userRow(localized(locale, '対象面ペア', 'Affected face pair'), faceText),
+    userRow(localized(locale, '分類', 'Classification'), classification),
     ...(blockingEvidence
       ? describeBlockingEvidenceRows(
           blockingEvidence,
           firstFace,
           secondFace,
+          locale,
         )
       : []),
     diagnosticRow(
-      '経路進捗',
-      `${formatProgress(terminal.certifiedSafeThrough)} まで確認`,
+      localized(locale, '経路進捗', 'Path progress'),
+      localized(
+        locale,
+        `${formatProgress(terminal.certifiedSafeThrough, locale)} まで確認`,
+        `Verified through ${formatProgress(terminal.certifiedSafeThrough, locale)}`,
+      ),
     ),
     diagnosticRow(
-      '内部診断コード',
+      localized(locale, '内部診断コード', 'Internal diagnostic code'),
       'motion_blocked',
     ),
-    diagnosticRow('判定量', describeStats(terminal.stats)),
+    diagnosticRow(
+      localized(locale, '判定量', 'Check counts'),
+      describeStats(terminal.stats, locale),
+    ),
   ])
-  const summaryText = rows
-    .filter((row) => row.kind === 'user')
-    .map((row) => `${row.label}は${row.value}`)
-    .join('。')
+  const summaryText = summarizeRows(rows, locale)
   return Object.freeze({
     kind: 'blocked',
     title: terminal.bracket[0] === 0 && terminal.bracket[1] === 0
-      ? '開始姿勢の衝突詳細'
-      : '移動経路の停止詳細',
+      ? localized(
+          locale,
+          '開始姿勢の衝突詳細',
+          'Starting-pose collision details',
+        )
+      : localized(
+          locale,
+          '移動経路の停止詳細',
+          'Motion-path stop details',
+        ),
     path,
     displayDegrees,
     certification,
@@ -379,6 +417,7 @@ function indeterminateDetail(
     reason: string
     stats: MotionStats
   }>,
+  locale: Locale,
 ): FoldPreviewContinuousMotionDetail {
   const bracket = pathBracket(path, terminal.bracket)
   const certification = certificationFor(
@@ -391,32 +430,63 @@ function indeterminateDetail(
     ? `${formatAngle(bracket.anglesInPathOrder[0])}°`
     : `${formatAngle(bracket.anglesInPathOrder[0])}° → ${formatAngle(bracket.anglesInPathOrder[1])}°`
   const rows = freezeRows([
-    userRow('開始角', `${formatAngle(path.startDegrees)}°`),
-    userRow('指定角', `${formatAngle(path.requestedDegrees)}°`),
-    userRow('実表示角', `${formatAngle(displayDegrees)}°`),
+    userRow(
+      localized(locale, '開始角', 'Starting angle'),
+      `${formatAngle(path.startDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '指定角', 'Requested angle'),
+      `${formatAngle(path.requestedDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '実表示角', 'Actual displayed angle'),
+      `${formatAngle(displayDegrees)}°`,
+    ),
     userRow(
       bracket.progress[0] === bracket.progress[1]
-        ? '判定不能角度'
-        : '安全を確認できない角度範囲',
+        ? localized(locale, '判定不能角度', 'Indeterminate angle')
+        : localized(
+            locale,
+            '安全を確認できない角度範囲',
+            'Angle range whose safety could not be verified',
+          ),
       intervalText,
     ),
-    userRow('停止理由', describeReason(reasonCode)),
-    diagnosticRow(
-      '経路進捗',
-      `${formatProgress(terminal.certifiedSafeThrough)} まで確認`,
+    userRow(
+      localized(locale, '停止理由', 'Stop reason'),
+      describeReason(reasonCode, locale),
     ),
-    diagnosticRow('内部診断コード', reasonCode),
-    diagnosticRow('判定量', describeStats(terminal.stats)),
+    diagnosticRow(
+      localized(locale, '経路進捗', 'Path progress'),
+      localized(
+        locale,
+        `${formatProgress(terminal.certifiedSafeThrough, locale)} まで確認`,
+        `Verified through ${formatProgress(terminal.certifiedSafeThrough, locale)}`,
+      ),
+    ),
+    diagnosticRow(
+      localized(locale, '内部診断コード', 'Internal diagnostic code'),
+      reasonCode,
+    ),
+    diagnosticRow(
+      localized(locale, '判定量', 'Check counts'),
+      describeStats(terminal.stats, locale),
+    ),
   ])
-  const summaryText = rows
-    .filter((row) => row.kind === 'user')
-    .map((row) => `${row.label}は${row.value}`)
-    .join('。')
+  const summaryText = summarizeRows(rows, locale)
   return Object.freeze({
     kind: 'indeterminate',
     title: terminal.bracket[0] === 0 && terminal.bracket[1] === 0
-      ? '開始姿勢の判定不能詳細'
-      : '移動経路の判定停止詳細',
+      ? localized(
+          locale,
+          '開始姿勢の判定不能詳細',
+          'Starting-pose indeterminate details',
+        )
+      : localized(
+          locale,
+          '移動経路の判定停止詳細',
+          'Motion-path indeterminate stop details',
+        ),
     path,
     displayDegrees,
     certification,
@@ -439,22 +509,39 @@ function runnerFailureDetail(
   path: FoldPreviewMotionPath,
   displayDegrees: number,
   rawReason: string,
+  locale: Locale,
 ): FoldPreviewContinuousMotionDetail {
   const reasonCode = knownReasonCode(rawReason)
   const rows = freezeRows([
-    userRow('開始角', `${formatAngle(path.startDegrees)}°`),
-    userRow('指定角', `${formatAngle(path.requestedDegrees)}°`),
-    userRow('保持中の表示角', `${formatAngle(displayDegrees)}°`),
-    userRow('停止理由', describeReason(reasonCode)),
-    diagnosticRow('内部診断コード', reasonCode),
+    userRow(
+      localized(locale, '開始角', 'Starting angle'),
+      `${formatAngle(path.startDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '指定角', 'Requested angle'),
+      `${formatAngle(path.requestedDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '保持中の表示角', 'Held displayed angle'),
+      `${formatAngle(displayDegrees)}°`,
+    ),
+    userRow(
+      localized(locale, '停止理由', 'Stop reason'),
+      describeReason(reasonCode, locale),
+    ),
+    diagnosticRow(
+      localized(locale, '内部診断コード', 'Internal diagnostic code'),
+      reasonCode,
+    ),
   ])
-  const summaryText = rows
-    .filter((row) => row.kind === 'user')
-    .map((row) => `${row.label}は${row.value}`)
-    .join('。')
+  const summaryText = summarizeRows(rows, locale)
   return Object.freeze({
     kind: 'indeterminate',
-    title: '移動経路を開始できない理由',
+    title: localized(
+      locale,
+      '移動経路を開始できない理由',
+      'Why the motion path could not start',
+    ),
     path,
     displayDegrees,
     certification: Object.freeze({
@@ -1227,77 +1314,147 @@ function describeBlockingEvidenceRows(
   evidence: FoldPreviewMotionBlockingEvidence,
   firstFace: FoldPreviewMotionFaceLabel | null,
   secondFace: FoldPreviewMotionFaceLabel | null,
+  locale: Locale,
 ): readonly FoldPreviewMotionDetailRow[] {
   const trianglePair = firstFace && secondFace
-    ? `${firstFace.label}の三角形 ${evidence.firstTriangleNumber} ↔ ${secondFace.label}の三角形 ${evidence.secondTriangleNumber}`
-    : `第1面側の三角形 ${evidence.firstTriangleNumber} ↔ 第2面側の三角形 ${evidence.secondTriangleNumber}`
+    ? localized(
+        locale,
+        `${firstFace.label}の三角形 ${evidence.firstTriangleNumber} ↔ ${secondFace.label}の三角形 ${evidence.secondTriangleNumber}`,
+        `${firstFace.label} triangle ${evidence.firstTriangleNumber} ↔ ${secondFace.label} triangle ${evidence.secondTriangleNumber}`,
+      )
+    : localized(
+        locale,
+        `第1面側の三角形 ${evidence.firstTriangleNumber} ↔ 第2面側の三角形 ${evidence.secondTriangleNumber}`,
+        `First-face triangle ${evidence.firstTriangleNumber} ↔ second-face triangle ${evidence.secondTriangleNumber}`,
+      )
   const normalUniqueness = evidence.normal.uniqueness === 'unique'
-    ? '一意'
-    : '同率候補の1つ'
+    ? localized(locale, '一意', 'unique')
+    : localized(locale, '同率候補の1つ', 'one of tied candidates')
   const coverage = evidence.coverage
   const scanStatus = coverage.authoritativePairScanComplete
-    ? '全ペア走査完了'
-    : '早期停止を含む'
+    ? localized(locale, '全ペア走査完了', 'all-pair scan complete')
+    : localized(locale, '早期停止を含む', 'includes early stop')
   return [
     userRow(
-      '解析行列の扱い',
-      '保存した危険側の面行列は3D表示の更新に使用していません',
+      localized(locale, '解析行列の扱い', 'Analysis-matrix handling'),
+      localized(
+        locale,
+        '保存した危険側の面行列は3D表示の更新に使用していません',
+        'The stored unsafe-side face matrices were not used to update the 3D view.',
+      ),
     ),
     userRow(
-      '危険解析角度',
+      localized(locale, '危険解析角度', 'Unsafe analysis angle'),
       `${formatAngle(evidence.unsafeAnalysisDegrees)}°`,
     ),
-    userRow('局所三角形ペア', trianglePair),
     userRow(
-      '位置候補数',
-      `${evidence.positionCandidateCount}点`,
+      localized(locale, '局所三角形ペア', 'Local triangle pair'),
+      trianglePair,
     ),
     userRow(
-      '局所分離方向',
-      `(${formatEvidenceNumber(evidence.normal.x)}, ${formatEvidenceNumber(evidence.normal.y)}, ${formatEvidenceNumber(evidence.normal.z)})・${normalUniqueness}`,
+      localized(locale, '位置候補数', 'Position candidates'),
+      localized(
+        locale,
+        `${evidence.positionCandidateCount}点`,
+        `${evidence.positionCandidateCount} points`,
+      ),
     ),
     userRow(
-      '局所分離距離',
-      `${formatEvidenceNumber(evidence.escapeDistance)}（3Dモデル座標）`,
+      localized(locale, '局所分離方向', 'Local separation direction'),
+      localized(
+        locale,
+        `(${formatEvidenceNumber(evidence.normal.x)}, ${formatEvidenceNumber(evidence.normal.y)}, ${formatEvidenceNumber(evidence.normal.z)})・${normalUniqueness}`,
+        `(${formatEvidenceNumber(evidence.normal.x)}, ${formatEvidenceNumber(evidence.normal.y)}, ${formatEvidenceNumber(evidence.normal.z)}) · ${normalUniqueness}`,
+      ),
     ),
     userRow(
-      '証拠の範囲',
-      '選択した三角柱1組だけの局所候補です',
+      localized(locale, '局所分離距離', 'Local separation distance'),
+      localized(
+        locale,
+        `${formatEvidenceNumber(evidence.escapeDistance)}（3Dモデル座標）`,
+        `${formatEvidenceNumber(evidence.escapeDistance)} (3D model coordinates)`,
+      ),
     ),
     userRow(
-      '自動適用可否',
-      'この局所分離方向・距離は自動適用できません',
+      localized(locale, '証拠の範囲', 'Evidence scope'),
+      localized(
+        locale,
+        '選択した三角柱1組だけの局所候補です',
+        'This is a local candidate for only the selected pair of triangular prisms.',
+      ),
+    ),
+    userRow(
+      localized(locale, '自動適用可否', 'Automatic application'),
+      localized(
+        locale,
+        'この局所分離方向・距離は自動適用できません',
+        'This local separation direction and distance cannot be applied automatically.',
+      ),
     ),
     diagnosticRow(
-      '証拠取得範囲',
-      `${scanStatus}・対象 ${coverage.eligiblePairCount}・試行 ${coverage.attemptedPairCount}・取得 ${coverage.capturedPairCount}・導出不可 ${coverage.unavailablePairCount}・上限省略 ${coverage.omittedByLimitCount}`,
+      localized(locale, '証拠取得範囲', 'Evidence collection coverage'),
+      localized(
+        locale,
+        `${scanStatus}・対象 ${coverage.eligiblePairCount}・試行 ${coverage.attemptedPairCount}・取得 ${coverage.capturedPairCount}・導出不可 ${coverage.unavailablePairCount}・上限省略 ${coverage.omittedByLimitCount}`,
+        `${scanStatus} · eligible ${coverage.eligiblePairCount} · attempted ${coverage.attemptedPairCount} · captured ${coverage.capturedPairCount} · unavailable ${coverage.unavailablePairCount} · omitted by limit ${coverage.omittedByLimitCount}`,
+      ),
     ),
   ]
 }
 
-function describeBlocker(blocker: NormalizedBlocker) {
+function describeBlocker(blocker: NormalizedBlocker, locale: Locale) {
   if (blocker.relation === 'non_adjacent') {
     return blocker.geometryClass === 'penetrating'
-      ? '非隣接面間の体積貫通'
-      : '非隣接面間の境界接触'
+      ? localized(
+          locale,
+          '非隣接面間の体積貫通',
+          'Volumetric penetration between non-adjacent faces',
+        )
+      : localized(
+          locale,
+          '非隣接面間の境界接触',
+          'Boundary contact between non-adjacent faces',
+        )
   }
   return blocker.hingeDecision === 'outside_hinge_penetration'
-    ? '共有ヒンジの許容領域外で体積貫通'
-    : '共有ヒンジの許容領域外で境界接触'
+    ? localized(
+        locale,
+        '共有ヒンジの許容領域外で体積貫通',
+        'Volumetric penetration outside the shared-hinge allowance',
+      )
+    : localized(
+        locale,
+        '共有ヒンジの許容領域外で境界接触',
+        'Boundary contact outside the shared-hinge allowance',
+      )
 }
 
-function describeReason(reasonCode: string) {
+function describeReason(reasonCode: string, locale: Locale) {
   if (reasonCode === 'hinge_layer_offset_unmodeled') {
-    return '紙厚による層ずらしを初版では再現しないため、この角度以降は安全を判定できませんでした'
+    return localized(
+      locale,
+      '紙厚による層ずらしを初版では再現しないため、この角度以降は安全を判定できませんでした',
+      'Safety beyond this angle could not be determined because the first release does not reproduce thickness-driven layer offsets.',
+    )
   }
   if (reasonCode === 'work_limit' || reasonCode === 'uncertified_interval') {
-    return '計算上限内で経路区間の安全を確認できませんでした'
+    return localized(
+      locale,
+      '計算上限内で経路区間の安全を確認できませんでした',
+      'The path interval could not be verified as safe within the calculation limits.',
+    )
   }
   if (
     reasonCode.startsWith('hinge_')
     || reasonCode === 'hinge_decision_unavailable'
     || reasonCode === 'non_adjacent_geometry_indeterminate'
-  ) return '接触モデルまたは数値境界を確定できませんでした'
+  ) {
+    return localized(
+      locale,
+      '接触モデルまたは数値境界を確定できませんでした',
+      'The contact model or numerical boundary could not be resolved.',
+    )
+  }
   if (
     reasonCode.includes('numerical')
     || reasonCode.includes('interpolated')
@@ -1305,22 +1462,48 @@ function describeReason(reasonCode: string) {
     || reasonCode === 'midpoint_pose_unavailable'
     || reasonCode === 'pose_unavailable'
     || reasonCode === 'point_collision_unavailable'
-  ) return '数値計算の安全条件を満たせませんでした'
+  ) {
+    return localized(
+      locale,
+      '数値計算の安全条件を満たせませんでした',
+      'The numerical safety conditions could not be satisfied.',
+    )
+  }
   if (
     reasonCode.startsWith('job_factory_')
     || reasonCode === 'scheduler_error'
-  ) return '現在の入力では経路判定を開始できませんでした'
+  ) {
+    return localized(
+      locale,
+      '現在の入力では経路判定を開始できませんでした',
+      'The path check could not start with the current input.',
+    )
+  }
   if (
     reasonCode === 'job_step_error'
     || reasonCode === 'malformed_job_step'
     || reasonCode === 'non_monotonic_certified_time'
     || reasonCode === 'chronology_error'
     || reasonCode === 'contradictory_interval_certificate'
-  ) return '経路判定結果の整合性を確認できませんでした'
-  if (reasonCode === 'unclassified') {
-    return '未分類の内部理由により経路の安全を確定できませんでした'
+  ) {
+    return localized(
+      locale,
+      '経路判定結果の整合性を確認できませんでした',
+      'The consistency of the path-check result could not be verified.',
+    )
   }
-  return '経路の安全を確定できませんでした'
+  if (reasonCode === 'unclassified') {
+    return localized(
+      locale,
+      '未分類の内部理由により経路の安全を確定できませんでした',
+      'Path safety could not be determined because of an unclassified internal reason.',
+    )
+  }
+  return localized(
+    locale,
+    '経路の安全を確定できませんでした',
+    'Path safety could not be determined.',
+  )
 }
 
 function knownReasonCode(value: string) {
@@ -1332,8 +1515,12 @@ function knownReasonCode(value: string) {
   return 'unclassified'
 }
 
-function describeStats(stats: MotionStats) {
-  return `区間 ${stats.intervalTests}・姿勢点 ${stats.pointTests}・再利用 ${stats.pointCacheHits}・最大深さ ${stats.maximumDepthReached}`
+function describeStats(stats: MotionStats, locale: Locale) {
+  return localized(
+    locale,
+    `区間 ${stats.intervalTests}・姿勢点 ${stats.pointTests}・再利用 ${stats.pointCacheHits}・最大深さ ${stats.maximumDepthReached}`,
+    `intervals ${stats.intervalTests} · pose points ${stats.pointTests} · cache hits ${stats.pointCacheHits} · maximum depth ${stats.maximumDepthReached}`,
+  )
 }
 
 function angleAt(path: FoldPreviewMotionPath, progress: number) {
@@ -1375,6 +1562,20 @@ function userRow(label: string, value: string): FoldPreviewMotionDetailRow {
 
 function diagnosticRow(label: string, value: string): FoldPreviewMotionDetailRow {
   return { label, value, kind: 'diagnostic' }
+}
+
+function summarizeRows(
+  rows: readonly FoldPreviewMotionDetailRow[],
+  locale: Locale,
+) {
+  const userRows = rows.filter((row) => row.kind === 'user')
+  return locale === 'en'
+    ? userRows.map((row) => `${row.label}: ${row.value}`).join('. ')
+    : userRows.map((row) => `${row.label}は${row.value}`).join('。')
+}
+
+function localized(locale: Locale, ja: string, en: string) {
+  return locale === 'en' ? en : ja
 }
 
 function validNonTerminalTime(value: unknown): value is number {
@@ -1491,10 +1692,13 @@ function formatEvidenceNumber(value: number) {
     : rounded.toFixed(6).replace(/0+$/u, '').replace(/\.$/u, '')
 }
 
-function formatProgress(value: number) {
-  return `${(value * 100).toLocaleString('ja-JP', {
+function formatProgress(value: number, locale: Locale) {
+  return `${(value * 100).toLocaleString(
+    locale === 'en' ? 'en-US' : 'ja-JP',
+    {
     maximumFractionDigits: 3,
-  })}%`
+    },
+  )}%`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

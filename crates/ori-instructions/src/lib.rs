@@ -4,6 +4,21 @@
 //! portable instruction exports. It deliberately does not inspect the
 //! interactive Three.js scene, the current viewport, or GPU pixels.
 
+mod fold_technique_file;
+
+pub use fold_technique_file::{
+    FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1,
+    FoldTechniqueCapabilityV1, FoldTechniqueChoiceOptionV1, FoldTechniqueComparisonV1,
+    FoldTechniqueExecutionSupportV1, FoldTechniqueFileDocumentV1, FoldTechniqueFileError,
+    FoldTechniqueFileV1, FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1,
+    FoldTechniqueOperationV1, FoldTechniqueParameterBindingV1, FoldTechniqueParameterDefinitionV1,
+    FoldTechniqueParameterLiteralV1, FoldTechniqueParameterTypeV1,
+    FoldTechniquePreconditionDefinitionV1, FoldTechniquePreconditionV1, FoldTechniqueSinkKindV1,
+    FoldTechniqueSourceV1, FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
+    MAX_FOLD_TECHNIQUE_FILE_BYTES, read_fold_technique_file_v1, validate_fold_technique_file_v1,
+    write_fold_technique_file_v1,
+};
+
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},

@@ -9,8 +9,9 @@ repository.workspace = true
 ori-domain = { path = "../ori-domain" }
 ori-kinematics = { path = "../ori-kinematics" }
 ori-topology = { path = "../ori-topology" }
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 sha2 = "0.10.9"

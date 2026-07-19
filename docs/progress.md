@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約38.1%（2026-07-19、暫定の重み付き概算）**
+**全体完成率: 約38.6%（2026-07-19、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値37.99%に対し、UI-007の主要shortcut変更・重複検出・端末保存を利用者経路へ接続し、「多言語・設定・配布・QA」を44%から46%へ更新した。差分0.10ポイント（全体比率5% × 2ポイント）を加えた38.09%を小数第1位へ丸めて表示している。privateな正厚三角柱交差核とexact E/F有限ヒンジ回廊証明、UI未接続の`ori-numeric`数式評価基盤は利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、38.09%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値38.09%に対し、資源制限付き高精度数式評価を新規用紙の幅・高さ、native正式採用、`.ori2`保存・読込検証、式/評価値切替へ接続し、「数式・幾何制約」を0%から6%へ更新した。差分0.54ポイント（全体比率9% × 6ポイント）を加えた38.63%を小数第1位へ丸めて表示している。privateな正厚三角柱交差核とexact E/F有限ヒンジ回廊証明、UI未接続の幾何制約基盤は利用者経路へ未接続なので加算していない。native診断による操作の巻戻し・連続経路停止、正厚の本番証明、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力も計上していない。入力値自体が概数なので、38.63%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -15,17 +15,18 @@
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
 | プロジェクト・保存・履歴 | 8% | 45% | 3.60% | 原子的編集、差分Undo/Redo、`.ori2`保存に加え、project単位のmm/cm/inch/紙辺比と換算編集を実装。履歴上限設定、履歴永続化、自動保存、クラッシュ復旧を残す |
 | 2D展開図エディター | 15% | 51% | 7.65% | 基本編集、9種スナップ、画面・取込・SVG書出で統一した白黒識別可能な5線種を実装。面編集、数式作図、レイヤー、対称編集を残す |
-| 数式・幾何制約 | 9% | 0% | 0.00% | EDT-004/005/008/009の数式入力、式保持、11種制約、矛盾特定は未着手。3D衝突用の数値計算はこの領域へ計上しない |
+| 数式・幾何制約 | 9% | 6% | 0.54% | 新規用紙の幅・高さで高精度数式入力、式保存、読込時再検証、式/評価値切替を接続。既存幾何の数式入力・式駆動更新、11種制約の利用者経路、矛盾表示を残す |
 | 3D折り・紙厚・衝突 | 17% | 52% | 8.84% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持に加え、同一native姿勢へ束縛した厳密静的診断と安全認定不可・判定保留の表示を接続。正厚の本番証明、native連続停止、専用層順3D表示、折り重ね、閉路、切断由来を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
 | 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
 | 多言語・設定・配布・QA | 5% | 46% | 2.30% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、ライト/ダーク/OS連動、Windows/macOS標準shortcut、主要shortcutの変更・重複検出、保存可能な作業レイアウトを実装。i18n、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **38.09%** | — |
+| **合計** | **100%** | — | **38.63%** | — |
 
 ## 完了
 
+- EDT-004/005の最初の利用者向け縦切りとして、新規プロジェクトの紙幅・紙高へ、小数・分数・平方根・π・四則演算・括弧を含む数式入力を接続した。frontendの評価値は正式値にせず、nativeが両式を192 bitで再評価し、正の同一または隣接binary64保証区間だけを原子的に採用する。原式と採用値はversion固定の作成時metadataとして`.ori2`へ保存し、required featureで旧実装の黙った破棄を防ぎ、open時は再評価したbit一致を既存project置換前に検証する。式/評価値の切替、blur/Enter評価、IME、Escape、StrictMode、stale応答、固定error表示を実装した。独立監査で発見した、同一project ID/revisionを再openした際のABA置換、一時的worker競合の破損誤分類、無制限frontend待機列、上限確認前の文字列処理を、project instance束縛、busy専用文言、実行中1件＋最新待機1件、4,096 code-unit事前拒否と`maxLength`で修正し、残存Critical / High / Medium / Lowをすべて0件とした。frontend Node 1,122件、DOM 81件、desktop native 255件、`ori-formats` release 154件、lint、production build、Clippy、fmt、diff-checkが成功した。EDT-004/005を未着手から部分実装へ更新し、MUST集計を38 / 26 / 23、完成率を38.63%（表示38.6%）とした
 - 正厚のprivate Phase 2-C C2として、保存済みbinary64 affine姿勢`F`の左右faceをcanonical source座標`[d,u_i,e_y]`から各5閉halfspaceへ厳密変換し、`P_F`の全頂点×10条件を先に完全走査した後だけ、10平面の全120三つ組、45 normal pair×両符号・全900 recession membership、parent metric `G=(A^-1)^T A^-1`の軸・最遠半径をBigRationalで証明する診断を追加した。既存literal-FのOutside要約はauthorityとして信用せず、同じissuer内で実三角柱のexact交差を再走査する。共有hingeのadmission policyとnative exact topology marginは未実装・未承認であり、endpoint一致だけでも全boundary point/normal/solid関係を証明できないため、C2は`ContainedUnadmitted`診断だけを発行し、Capability/Certificate型とCertified variantを持たない。400 mmの山谷・source順・両root・厚さ0.1/1/3 mm・0/10/90/135/179度120姿勢は全件`ContainedUnadmitted`、endpoint mismatchの角度別合計は`[0,24,24,24,24]`、180度24姿勢はC2 workなしの`LayerOffsetUnmodeled`となった。1e12/1e15 mm巨大pivot、全36 transform bit、ABA/foreign issuer/root/角度/紙厚、完全走査、bounded/unbounded、scale/order/shear、`R=L/R>L`、全structural/prism/literal/local/cumulative exact counterのobserved exact・one-short、work一回加算とsealを回帰し、`ori-collision` release 216件、integration 11件、policy 2件、doc 1件を通した。独立監査で見つけたresource error分類と将来production gate用回帰の文書差2件を訂正し、残存Critical / High / Medium / Lowはすべて0件とした。production衝突分類、safe set、UI、折り重ねへは未接続なので、MUST集計38 / 24 / 25と完成率38.09%は変更していない
 - コミット`1f6a441`の[CI #261](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29690899134)は、frontend、Windows/macOS Rust、Windows/macOS bundleの全5 jobを12分33秒で完走した。Windows正式版向けbundleは4分54秒、macOS自動build検証は1分59秒で成功し、資源制限付き高精度数式IPCを含むworkspaceと配布buildの整合を確認した
 - 高精度数式評価をTauriの`evaluate_numeric_expression`へ接続し、unknown fieldを拒否するversion固定request、32–512 bitの精度境界、4,096 byteのUTF-8原文上限、process全体で1件だけのblocking worker gate、固定error categoryを実装した。厳密な有理端点はnative外へ出さず、binary64候補を元の有理数と比較して必要な側だけ1 ULP外へ補正した有限保証区間と、32 byte以下のcanonical科学表記だけを返す。frontendはplain data objectと完全一致field集合、finite値、端点順序、表示文字列、原文・精度echoを厳密検証し、hostile Proxy・accessor・同期/非同期例外・改変済み既知error・stale応答を固定categoryへ閉じる。独立監査で発見したtyped Tauri引数のframework側raw error経路と、`instanceof`自体がthrowするhostile rejection経路をcommand内decodeとfresh bounded errorで修正し、残存Critical / High / Medium / Lowはすべて0件とした。releaseの`ori-numeric` 27件、desktop native 10件、frontend Node 1,118件、DOM 72件、Clippy、fmt、oxlint、production buildが成功した。入力欄・editor command・project schema・solverにはまだ接続していないため、EDT-004/005の状態、MUST集計38 / 24 / 25、完成率38.09%は変更していない

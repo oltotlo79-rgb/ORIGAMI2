@@ -38,9 +38,9 @@ pub use instruction_export::{
 };
 pub use ori2::{
     CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER,
-    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2Limits,
-    Ori2Manifest, Ori2ProjectEntry, read_project_ori2, read_project_ori2_with_limits,
-    write_project_ori2, write_project_ori2_with_limits,
+    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH,
+    ORI2_PROJECT_PATH, Ori2Limits, Ori2Manifest, Ori2ProjectEntry, read_project_ori2,
+    read_project_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use svg::{
     SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,
@@ -52,6 +52,50 @@ pub use svg::{
 };
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
+pub const PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION: u32 = 1;
+pub const MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES: usize = 4_096;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RectangularPaperCreationExpressions {
+    pub schema_version: u32,
+    pub width_source: String,
+    pub height_source: String,
+    pub adopted_width_mm: f64,
+    pub adopted_height_mm: f64,
+}
+
+impl RectangularPaperCreationExpressions {
+    #[must_use]
+    pub fn new(
+        width_source: impl Into<String>,
+        height_source: impl Into<String>,
+        adopted_width_mm: f64,
+        adopted_height_mm: f64,
+    ) -> Self {
+        Self {
+            schema_version: PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION,
+            width_source: width_source.into(),
+            height_source: height_source.into(),
+            adopted_width_mm,
+            adopted_height_mm,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectNumericExpressions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rectangular_paper_creation: Option<RectangularPaperCreationExpressions>,
+}
+
+impl ProjectNumericExpressions {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.rectangular_paper_creation.is_none()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectDocument {
@@ -63,6 +107,8 @@ pub struct ProjectDocument {
     pub crease_pattern: CreasePattern,
     #[serde(default)]
     pub instruction_timeline: InstructionTimeline,
+    #[serde(default, skip_serializing_if = "ProjectNumericExpressions::is_empty")]
+    pub numeric_expressions: ProjectNumericExpressions,
 }
 
 impl ProjectDocument {
@@ -75,6 +121,7 @@ impl ProjectDocument {
             paper: Paper::default(),
             crease_pattern,
             instruction_timeline: InstructionTimeline::default(),
+            numeric_expressions: ProjectNumericExpressions::default(),
         }
     }
 }
@@ -151,10 +198,13 @@ pub enum FormatError {
     ManifestProjectVersionMismatch { manifest: u32, project: u32 },
     #[error("folding instruction timeline is invalid: {0}")]
     InvalidInstructionTimeline(#[from] InstructionTimelineValidationError),
+    #[error("project numeric-expression metadata is invalid")]
+    InvalidNumericExpressions,
 }
 
 pub fn write_project_json(document: &ProjectDocument) -> Result<Vec<u8>, FormatError> {
     validate_instruction_timeline(&document.instruction_timeline)?;
+    validate_numeric_expressions(&document.numeric_expressions)?;
     Ok(serde_json::to_vec_pretty(document)?)
 }
 
@@ -167,7 +217,33 @@ pub fn read_project_json(bytes: &[u8]) -> Result<ProjectDocument, FormatError> {
         });
     }
     validate_instruction_timeline(&document.instruction_timeline)?;
+    validate_numeric_expressions(&document.numeric_expressions)?;
     Ok(document)
+}
+
+fn validate_numeric_expressions(
+    expressions: &ProjectNumericExpressions,
+) -> Result<(), FormatError> {
+    let Some(rectangular) = &expressions.rectangular_paper_creation else {
+        return Ok(());
+    };
+    if rectangular.schema_version != PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION
+        || !valid_numeric_expression_source(&rectangular.width_source)
+        || !valid_numeric_expression_source(&rectangular.height_source)
+        || !rectangular.adopted_width_mm.is_finite()
+        || rectangular.adopted_width_mm <= 0.0
+        || !rectangular.adopted_height_mm.is_finite()
+        || rectangular.adopted_height_mm <= 0.0
+    {
+        return Err(FormatError::InvalidNumericExpressions);
+    }
+    Ok(())
+}
+
+fn valid_numeric_expression_source(source: &str) -> bool {
+    !source.trim().is_empty()
+        && source.len() <= MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES
+        && !source.chars().any(char::is_control)
 }
 
 #[cfg(test)]
@@ -246,6 +322,28 @@ mod tests {
     }
 
     #[test]
+    fn json_round_trip_preserves_versioned_creation_dimension_expressions() {
+        let mut original = sample_document();
+        original.numeric_expressions.rectangular_paper_creation =
+            Some(RectangularPaperCreationExpressions::new(
+                "200 * sqrt(2)",
+                "400 / 3",
+                282.842_712_474_619,
+                133.333_333_333_333_34,
+            ));
+
+        let bytes = write_project_json(&original).expect("write expressions");
+        let restored = read_project_json(&bytes).expect("read expressions");
+
+        assert_eq!(restored.numeric_expressions, original.numeric_expressions);
+        assert!(
+            String::from_utf8(bytes)
+                .expect("JSON is UTF-8")
+                .contains("\"schema_version\": 1")
+        );
+    }
+
+    #[test]
     fn new_project_uses_default_paper() {
         let document = ProjectDocument::new("Blank", CreasePattern::empty());
         assert_eq!(document.paper, Paper::default());
@@ -295,6 +393,60 @@ mod tests {
 
         let restored = read_project_json(&bytes).expect("read legacy project");
         assert!(restored.instruction_timeline.steps.is_empty());
+    }
+
+    #[test]
+    fn legacy_json_without_numeric_expressions_migrates_to_an_empty_binding() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize project value");
+        value
+            .as_object_mut()
+            .expect("project is a JSON object")
+            .remove("numeric_expressions");
+        let bytes = serde_json::to_vec(&value).expect("serialize legacy project");
+
+        let restored = read_project_json(&bytes).expect("read legacy project");
+        assert!(restored.numeric_expressions.is_empty());
+        let rewritten = write_project_json(&restored).expect("rewrite migrated project");
+        assert!(
+            !String::from_utf8(rewritten)
+                .expect("JSON is UTF-8")
+                .contains("numeric_expressions")
+        );
+    }
+
+    #[test]
+    fn reader_and_writer_reject_invalid_numeric_expression_metadata() {
+        for invalid in [
+            RectangularPaperCreationExpressions {
+                schema_version: PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION + 1,
+                width_source: "400".to_owned(),
+                height_source: "400".to_owned(),
+                adopted_width_mm: 400.0,
+                adopted_height_mm: 400.0,
+            },
+            RectangularPaperCreationExpressions::new(" ", "400", 400.0, 400.0),
+            RectangularPaperCreationExpressions::new("400", "1\n+ 2", 400.0, 400.0),
+            RectangularPaperCreationExpressions::new("400", "400", 0.0, 400.0),
+            RectangularPaperCreationExpressions::new(
+                "1".repeat(MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES + 1),
+                "400",
+                400.0,
+                400.0,
+            ),
+        ] {
+            let mut document = sample_document();
+            document.numeric_expressions.rectangular_paper_creation = Some(invalid);
+            assert!(matches!(
+                write_project_json(&document),
+                Err(FormatError::InvalidNumericExpressions)
+            ));
+            let bytes = serde_json::to_vec(&document).expect("serialize invalid direct fixture");
+            assert!(matches!(
+                read_project_json(&bytes),
+                Err(FormatError::InvalidNumericExpressions)
+            ));
+        }
     }
 
     #[test]

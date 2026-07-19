@@ -80,6 +80,15 @@ export type ProjectSnapshot = {
   can_redo: boolean
   cutting_allowed: boolean
   instruction_timeline: InstructionTimeline
+  numeric_expressions?: {
+    rectangular_paper_creation?: {
+      schema_version: 1
+      width_source: string
+      height_source: string
+      adopted_width_mm: number
+      adopted_height_mm: number
+    }
+  }
   fold_model_fingerprint: string
 }
 
@@ -110,8 +119,8 @@ export type InstructionTimeline = {
 
 export type NewProjectSettings = {
   name: string
-  widthMm: number
-  heightMm: number
+  widthExpression: string
+  heightExpression: string
   thicknessMm: number
   cuttingAllowed: boolean
   frontColor: RgbaColor
@@ -630,16 +639,18 @@ export function moveInstructionStep(
 }
 
 export function newProject(
+  expectedProjectInstanceId: string,
   expectedProjectId: string,
   expectedRevision: number,
   settings: NewProjectSettings,
 ) {
   return invoke<ProjectSnapshot>('new_project', {
+    expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     name: settings.name,
-    widthMm: settings.widthMm,
-    heightMm: settings.heightMm,
+    widthExpression: settings.widthExpression,
+    heightExpression: settings.heightExpression,
     thicknessMm: settings.thicknessMm,
     cuttingAllowed: settings.cuttingAllowed,
     frontColor: settings.frontColor,

@@ -64,13 +64,15 @@ test('paper-edge ratio resize keeps the reference-parallel physical dimension', 
   assert.match(app, /基準辺の物理長は維持します/u)
 })
 
-test('benchmark, new-project, and import contracts remain explicitly millimetres', () => {
+test('benchmark, expression-backed new-project, and import contracts remain explicitly millimetres', () => {
   assert.match(
     app,
     /const displayedLengthUnit = benchmarkRun\s*\?\s*MILLIMETRE_LENGTH_DISPLAY_UNIT/u,
   )
-  assert.equal((app.match(/name="width_mm"/gu) ?? []).length, 1)
-  assert.equal((app.match(/name="height_mm"/gu) ?? []).length, 1)
+  assert.equal((app.match(/name="width_expression"/gu) ?? []).length, 1)
+  assert.equal((app.match(/name="height_expression"/gu) ?? []).length, 1)
+  assert.match(app, /ariaLabel="用紙の幅の式 \(mm\)"/u)
+  assert.match(app, /ariaLabel="用紙の高さの式 \(mm\)"/u)
   assert.match(
     app,
     /validation\.width_mm\.toLocaleString\(\)[\s\S]*?validation\.height_mm\.toLocaleString\(\)[\s\S]*?\} mm/u,

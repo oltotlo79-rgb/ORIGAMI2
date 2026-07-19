@@ -2,11 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  adoptPositiveAdjacentInterval,
   createNumericExpressionNativeTransport,
+  evaluatePositiveMillimetreExpression,
   MAX_NUMERIC_EXPRESSION_SOURCE_BYTES,
+  numericExpressionNativeErrorCategory,
   NumericExpressionNativeError,
   NUMERIC_EXPRESSION_SCHEMA,
   parseNumericExpressionResponseDto,
+  type NumericExpressionEvaluation,
+  type NumericExpressionNativeTransport,
 } from '../src/lib/numericExpressionNative.ts'
 
 function display(value: number): string {
@@ -113,6 +118,53 @@ test('request bounds reject oversize, non-scalar text, and invalid precision bef
     )
   }
   assert.equal(calls, 0)
+})
+
+test('oversize source is rejected before TextEncoder and hostile encoding stays closed', async () => {
+  const OriginalTextEncoder = globalThis.TextEncoder
+  let encoderConstructions = 0
+  const hostileTextEncoder = new Proxy(OriginalTextEncoder, {
+    construct() {
+      encoderConstructions += 1
+      throw new Error('C:\\private\\text-encoder.txt')
+    },
+  })
+  Object.defineProperty(globalThis, 'TextEncoder', {
+    configurable: true,
+    writable: true,
+    value: hostileTextEncoder,
+  })
+  let calls = 0
+  const transport = createNumericExpressionNativeTransport(() => {
+    calls += 1
+    return response()
+  })
+  try {
+    await assert.rejects(
+      transport.evaluate(
+        'x'.repeat(MAX_NUMERIC_EXPRESSION_SOURCE_BYTES + 1),
+        96,
+      ),
+      hasNumericExpressionCategory('invalid_request'),
+    )
+    assert.equal(encoderConstructions, 0)
+
+    await assert.rejects(
+      transport.evaluate(
+        'x'.repeat(MAX_NUMERIC_EXPRESSION_SOURCE_BYTES),
+        96,
+      ),
+      hasNumericExpressionCategory('invalid_request'),
+    )
+    assert.equal(encoderConstructions, 1)
+    assert.equal(calls, 0)
+  } finally {
+    Object.defineProperty(globalThis, 'TextEncoder', {
+      configurable: true,
+      writable: true,
+      value: OriginalTextEncoder,
+    })
+  }
 })
 
 test('UTF-8 scalar source accepts the exact byte ceiling without code-unit ambiguity', async () => {
@@ -266,6 +318,21 @@ test('known local errors are copied into a fresh bounded error', async () => {
   )
 })
 
+test('error-category extraction contains hostile instanceof and proxy traps', () => {
+  const hostile = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error('C:\\private\\instanceof-trap.txt')
+    },
+  })
+  assert.equal(numericExpressionNativeErrorCategory(hostile), null)
+  assert.equal(
+    numericExpressionNativeErrorCategory(
+      new NumericExpressionNativeError('invalid_expression'),
+    ),
+    'invalid_expression',
+  )
+})
+
 test('browser default never attempts native evaluation and returns one safe category', async () => {
   const transport = createNumericExpressionNativeTransport()
   await assert.rejects(
@@ -276,3 +343,114 @@ test('browser default never attempts native evaluation and returns one safe cate
     ),
   )
 })
+
+test('millimetre adoption accepts only positive exact or adjacent-f64 enclosures', async () => {
+  assert.equal(adoptPositiveAdjacentInterval(400, 400), 400)
+  for (const [lower, upper] of [
+    [floatFromBits(1n), floatFromBits(2n)],
+    [1, 1.0000000000000002],
+    [floatFromBits(floatBits(2) - 1n), 2],
+    [floatFromBits(floatBits(Number.MAX_VALUE) - 1n), Number.MAX_VALUE],
+  ] as const) {
+    assert.equal(
+      Object.is(adoptPositiveAdjacentInterval(lower, upper), lower),
+      true,
+    )
+  }
+  assert.equal(adoptPositiveAdjacentInterval(1, 1.0000000000000004), null)
+  assert.equal(adoptPositiveAdjacentInterval(0, Number.MIN_VALUE), null)
+  assert.equal(adoptPositiveAdjacentInterval(-1, -1), null)
+  assert.equal(adoptPositiveAdjacentInterval(2, 1), null)
+
+  const transport = createNumericExpressionNativeTransport((_command, arguments_) => {
+    const request = (arguments_?.request ?? {}) as Record<string, unknown>
+    return response({
+      source: request.source,
+      requestedPrecisionBits: request.precisionBits,
+      lowerBound: 400,
+      upperBound: 400,
+      lowerDisplay: display(400),
+      upperDisplay: display(400),
+    })
+  })
+  const adopted = await evaluatePositiveMillimetreExpression('200 * 2', transport)
+  assert.equal(adopted.value, 400)
+  assert.equal(adopted.source, '200 * 2')
+  assert.equal(adopted.evaluation.requestedPrecisionBits, 192)
+  assert.equal(Object.isFrozen(adopted), true)
+})
+
+test('user-input burst keeps one running and only the latest pending native job', async () => {
+  const calls: string[] = []
+  let resolveFirst: ((value: NumericExpressionEvaluation) => void) | undefined
+  const firstResponse = new Promise<NumericExpressionEvaluation>((resolve) => {
+    resolveFirst = resolve
+  })
+  const transport: NumericExpressionNativeTransport = {
+    evaluate(source, precisionBits) {
+      calls.push(source)
+      if (source === '1') return firstResponse
+      return Promise.resolve(adoptableResponse(source, precisionBits))
+    },
+  }
+
+  const first = evaluatePositiveMillimetreExpression('1', transport)
+  assert.deepEqual(calls, ['1'])
+
+  let latest = evaluatePositiveMillimetreExpression('2', transport)
+  const staleAssertions: Array<Promise<void>> = []
+  for (let value = 3; value <= 32; value += 1) {
+    staleAssertions.push(assert.rejects(
+      latest,
+      hasNumericExpressionCategory('stale_response'),
+    ))
+    latest = evaluatePositiveMillimetreExpression(String(value), transport)
+  }
+  assert.deepEqual(calls, ['1'], 'pending jobs must not invoke native')
+
+  resolveFirst?.(adoptableResponse('1', 192))
+  const [firstResult, latestResult] = await Promise.all([first, latest])
+  await Promise.all(staleAssertions)
+
+  assert.equal(firstResult.source, '1')
+  assert.equal(latestResult.source, '32')
+  assert.deepEqual(calls, ['1', '32'])
+})
+
+function adoptableResponse(
+  source: string,
+  requestedPrecisionBits: number,
+): NumericExpressionEvaluation {
+  return {
+    schema: NUMERIC_EXPRESSION_SCHEMA,
+    source,
+    requestedPrecisionBits,
+    exact: true,
+    operations: 1,
+    lowerBound: 400,
+    upperBound: 400,
+    lowerDisplay: display(400),
+    upperDisplay: display(400),
+  }
+}
+
+function hasNumericExpressionCategory(category: string) {
+  return (error: unknown) => (
+    error instanceof NumericExpressionNativeError
+    && error.category === category
+  )
+}
+
+function floatBits(value: number): bigint {
+  const buffer = new ArrayBuffer(8)
+  const view = new DataView(buffer)
+  view.setFloat64(0, value, false)
+  return view.getBigUint64(0, false)
+}
+
+function floatFromBits(bits: bigint): number {
+  const buffer = new ArrayBuffer(8)
+  const view = new DataView(buffer)
+  view.setBigUint64(0, bits, false)
+  return view.getFloat64(0, false)
+}

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const NUMERIC_EXPRESSION_SCHEMA: &str = "origami2.numeric-expression-evaluation.v1";
 const MAX_DISPLAY_BYTES: usize = 32;
+pub(super) const USER_INPUT_PRECISION_BITS: u16 = 192;
 static NUMERIC_EXPRESSION_WORKER_GATE: NumericExpressionWorkerGate =
     NumericExpressionWorkerGate::new();
 
@@ -76,6 +77,43 @@ pub(super) struct NumericExpressionCommandError {
 impl NumericExpressionCommandError {
     const fn new(category: NumericExpressionErrorCategory) -> Self {
         Self { category }
+    }
+
+    pub(super) const fn user_input_message(self) -> &'static str {
+        match self.category {
+            NumericExpressionErrorCategory::InvalidRequest => {
+                "numeric expression request is invalid"
+            }
+            NumericExpressionErrorCategory::InvalidExpression => "numeric expression is invalid",
+            NumericExpressionErrorCategory::ResourceLimit => {
+                "numeric expression exceeded its resource limit"
+            }
+            NumericExpressionErrorCategory::ResultOutOfRange => {
+                "numeric expression cannot be adopted as a positive millimetre value"
+            }
+            NumericExpressionErrorCategory::InternalFailure => {
+                "numeric expression evaluation failed internally"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PositiveMillimetrePairError {
+    WorkerBusy,
+    Evaluation(NumericExpressionCommandError),
+}
+
+impl PositiveMillimetrePairError {
+    pub(super) const fn is_worker_busy(self) -> bool {
+        matches!(self, Self::WorkerBusy)
+    }
+
+    pub(super) const fn user_input_message(self) -> &'static str {
+        match self {
+            Self::WorkerBusy => "numeric expression evaluation is already in progress",
+            Self::Evaluation(error) => error.user_input_message(),
+        }
     }
 }
 
@@ -215,6 +253,80 @@ fn evaluate_request(
     })
 }
 
+pub(super) fn evaluate_positive_millimetre_pair(
+    width_source: String,
+    height_source: String,
+) -> Result<(f64, f64), PositiveMillimetrePairError> {
+    let permit = NUMERIC_EXPRESSION_WORKER_GATE
+        .try_acquire()
+        .ok_or(PositiveMillimetrePairError::WorkerBusy)?;
+    run_guarded_worker(permit, || {
+        evaluate_positive_millimetre_pair_in_current_worker(width_source, height_source)
+    })
+    .map_err(PositiveMillimetrePairError::Evaluation)
+}
+
+pub(super) async fn evaluate_positive_millimetre_pair_in_worker(
+    width_source: String,
+    height_source: String,
+) -> Result<(f64, f64), PositiveMillimetrePairError> {
+    let permit = NUMERIC_EXPRESSION_WORKER_GATE
+        .try_acquire()
+        .ok_or(PositiveMillimetrePairError::WorkerBusy)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_guarded_worker(permit, || {
+            evaluate_positive_millimetre_pair_in_current_worker(width_source, height_source)
+        })
+    })
+    .await
+    .map_err(|_| {
+        PositiveMillimetrePairError::Evaluation(NumericExpressionCommandError::new(
+            NumericExpressionErrorCategory::InternalFailure,
+        ))
+    })?
+    .map_err(PositiveMillimetrePairError::Evaluation)
+}
+
+fn evaluate_positive_millimetre_pair_in_current_worker(
+    width_source: String,
+    height_source: String,
+) -> Result<(f64, f64), NumericExpressionCommandError> {
+    Ok((
+        evaluate_positive_millimetre_expression(width_source)?,
+        evaluate_positive_millimetre_expression(height_source)?,
+    ))
+}
+
+fn evaluate_positive_millimetre_expression(
+    source: String,
+) -> Result<f64, NumericExpressionCommandError> {
+    if source.trim().is_empty() || source.chars().any(char::is_control) {
+        return Err(NumericExpressionCommandError::new(
+            NumericExpressionErrorCategory::InvalidRequest,
+        ));
+    }
+    let response = evaluate_request(NumericExpressionRequest {
+        source,
+        precision_bits: USER_INPUT_PRECISION_BITS,
+    })?;
+    adopt_positive_adjacent_interval(response.lower_bound, response.upper_bound).ok_or_else(|| {
+        NumericExpressionCommandError::new(NumericExpressionErrorCategory::ResultOutOfRange)
+    })
+}
+
+fn adopt_positive_adjacent_interval(lower: f64, upper: f64) -> Option<f64> {
+    if !lower.is_finite() || !upper.is_finite() || lower <= 0.0 || lower > upper {
+        return None;
+    }
+    if lower == upper {
+        return Some(lower);
+    }
+    if upper.to_bits().checked_sub(lower.to_bits()) != Some(1) {
+        return None;
+    }
+    Some(lower)
+}
+
 const fn normalize_zero(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
@@ -305,6 +417,47 @@ mod tests {
             Err(NumericExpressionCommandError::new(
                 NumericExpressionErrorCategory::ResultOutOfRange
             ))
+        );
+        let busy = PositiveMillimetrePairError::WorkerBusy;
+        let invalid = PositiveMillimetrePairError::Evaluation(NumericExpressionCommandError::new(
+            NumericExpressionErrorCategory::InvalidExpression,
+        ));
+        assert!(busy.is_worker_busy());
+        assert!(!invalid.is_worker_busy());
+        assert_ne!(busy.user_input_message(), invalid.user_input_message());
+    }
+
+    #[test]
+    fn positive_millimetre_adoption_accepts_exact_and_one_ulp_enclosures_only() {
+        assert_eq!(
+            evaluate_positive_millimetre_expression("400".to_owned()).unwrap(),
+            400.0
+        );
+        let irrational =
+            evaluate_positive_millimetre_expression("100 * sqrt(2)".to_owned()).unwrap();
+        assert!(irrational.is_finite());
+        assert!(irrational > 141.0 && irrational < 142.0);
+
+        assert_eq!(adopt_positive_adjacent_interval(1.0, 1.0), Some(1.0));
+        for (lower, upper) in [
+            (f64::from_bits(1), f64::from_bits(2)),
+            (1.0, f64::from_bits(1.0_f64.to_bits() + 1)),
+            (f64::from_bits(2.0_f64.to_bits() - 1), 2.0),
+            (f64::from_bits(f64::MAX.to_bits() - 1), f64::MAX),
+        ] {
+            assert_eq!(
+                adopt_positive_adjacent_interval(lower, upper),
+                Some(lower),
+                "adjacent adoption is the positive lower bound at bits {:016x}",
+                lower.to_bits()
+            );
+        }
+        assert!(adopt_positive_adjacent_interval(0.0, f64::MIN_POSITIVE).is_none());
+        assert!(adopt_positive_adjacent_interval(-1.0, -1.0).is_none());
+        assert!(adopt_positive_adjacent_interval(2.0, 1.0).is_none());
+        assert!(adopt_positive_adjacent_interval(1.0, f64::INFINITY).is_none());
+        assert!(
+            adopt_positive_adjacent_interval(1.0, f64::from_bits(1.0_f64.to_bits() + 2),).is_none()
         );
     }
 

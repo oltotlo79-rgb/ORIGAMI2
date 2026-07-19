@@ -179,6 +179,64 @@ button { color: inherit; }
   color: var(--text);
 }
 .number-with-unit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+.numeric-expression-input {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.numeric-expression-input > input {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--border-dark);
+  border-radius: 5px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.numeric-expression-status {
+  display: flex;
+  min-height: 1.45em;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.numeric-expression-rejected { color: #a33f3f; }
+.numeric-expression-accepted { color: #267343; }
+.numeric-expression-display-toggle {
+  flex: none;
+  padding: 1px 4px;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  font: inherit;
+  text-decoration: underline;
+}
+.creation-dimension-expression-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.creation-dimension-expression-summary button {
+  flex: none;
+  padding: 1px 4px;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  font: inherit;
+  text-decoration: underline;
+}
 .paper-thickness-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 20px;
@@ -1673,6 +1731,8 @@ html[data-theme='dark'] :is(.chip.active, .chip[aria-pressed="true"]) { color: #
 html[data-theme='dark'] .field-error { color: #ffb4ab; }
 html[data-theme='dark'] .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }
 html[data-theme='dark'] .dialog-error { background: #4a2929; color: #f1b7b7; }
+html[data-theme='dark'] .numeric-expression-rejected { color: #ffb4ab; }
+html[data-theme='dark'] .numeric-expression-accepted { color: #8ed5a6; }
 html[data-theme='dark'] .keyboard-shortcut-error {
   border-left-color: #ff8a93;
   background: #4a292d;

@@ -18,6 +18,7 @@ import {
   type PaperPolygonPoint,
 } from './components/CreaseCanvas'
 import { CreaseExportDialog } from './components/CreaseExportDialog'
+import { CreationDimensionExpressionSummary } from './components/CreationDimensionExpressionSummary'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
@@ -27,6 +28,7 @@ import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
+import { NumericExpressionInput } from './components/NumericExpressionInput'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import { ThemeControl } from './components/ThemeControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
@@ -168,6 +170,10 @@ import {
   resolveConfiguredKeyboardShortcut,
 } from './lib/keyboardShortcutSettings'
 import { workspaceLayoutStore } from './lib/workspaceLayout'
+import {
+  evaluatePositiveMillimetreExpression,
+  numericExpressionNativeErrorCategory,
+} from './lib/numericExpressionNative'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -535,6 +541,8 @@ function App() {
     () => resolveRectangularPaperSize(nativeSnapshot),
     [nativeSnapshot],
   )
+  const creationDimensionExpression =
+    nativeSnapshot?.numeric_expressions?.rectangular_paper_creation
   const rectangularRatioReferenceAxis = ratioReferenceAxis(lengthDisplayUnit)
   const foldPreviewModel = useMemo(
     () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
@@ -1393,8 +1401,8 @@ function App() {
 
     const form = new FormData(event.currentTarget)
     const name = String(form.get('name') ?? '').trim()
-    const widthMm = Number(form.get('width_mm'))
-    const heightMm = Number(form.get('height_mm'))
+    const widthExpression = String(form.get('width_expression') ?? '')
+    const heightExpression = String(form.get('height_expression') ?? '')
     const thicknessInput = String(form.get('thickness_mm') ?? '').trim()
     const thicknessMm = Number(thicknessInput)
     const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
@@ -1408,12 +1416,12 @@ function App() {
       setNewProjectError('作品名は制御文字を含まない120文字以内にしてください。')
       return
     }
-    if (!Number.isFinite(widthMm) || widthMm <= 0) {
-      setNewProjectError('幅には0より大きい有限の数値を入力してください。')
+    if (!widthExpression.trim()) {
+      setNewProjectError('幅の式を入力してください。')
       return
     }
-    if (!Number.isFinite(heightMm) || heightMm <= 0) {
-      setNewProjectError('高さには0より大きい有限の数値を入力してください。')
+    if (!heightExpression.trim()) {
+      setNewProjectError('高さの式を入力してください。')
       return
     }
     if (!thicknessInput || !Number.isFinite(thicknessMm) || thicknessMm < 0) {
@@ -1434,15 +1442,22 @@ function App() {
     setNewProjectError(null)
     setCancelInteractionToken((token) => token + 1)
     try {
-      const snapshot = await newProject(current.project_id, current.revision, {
-        name,
-        widthMm,
-        heightMm,
-        thicknessMm,
-        cuttingAllowed: form.get('cutting_allowed') === 'on',
-        frontColor,
-        backColor,
-      })
+      await evaluatePositiveMillimetreExpression(widthExpression)
+      await evaluatePositiveMillimetreExpression(heightExpression)
+      const snapshot = await newProject(
+        current.project_instance_id,
+        current.project_id,
+        current.revision,
+        {
+          name,
+          widthExpression,
+          heightExpression,
+          thicknessMm,
+          cuttingAllowed: form.get('cutting_allowed') === 'on',
+          frontColor,
+          backColor,
+        },
+      )
       applySnapshot(snapshot, true)
       setValidation(null)
       setSelectedLineId(null)
@@ -1453,7 +1468,8 @@ function App() {
       setNewProjectOpen(false)
       setCoreStatus(`「${snapshot.name}」を作成しました。保存先はまだ設定されていません。`)
     } catch (error) {
-      const message = String(error)
+      const message = newProjectExpressionErrorMessage(error)
+        ?? '新しいプロジェクトを作成できませんでした。'
       setNewProjectError(`作成できませんでした: ${message}`)
       setCoreStatus(`新規作成エラー: ${message}`)
     } finally {
@@ -3040,6 +3056,10 @@ function App() {
                 <p className="paper-size-note">
                   サイズ変更時は、折り線を含むすべての頂点を左上基準で比例変換します。
                 </p>
+                <CreationDimensionExpressionSummary
+                  key={nativeSnapshot?.project_id ?? 'no-project'}
+                  binding={creationDimensionExpression}
+                />
                 {rectangularRatioReferenceAxis && (
                   <p className="paper-size-note">
                     紙辺比では基準辺と平行な
@@ -3251,33 +3271,23 @@ function App() {
                 <div className="dialog-grid two-columns">
                   <label className="dialog-field">
                     <span>幅</span>
-                    <span className="number-with-unit">
-                      <input
-                        name="width_mm"
-                        type="number"
-                        defaultValue="400"
-                        min="0"
-                        step="any"
-                        required
-                        disabled={coreBusy}
-                      />
-                      mm
-                    </span>
+                    <NumericExpressionInput
+                      id="new-project-width-expression"
+                      name="width_expression"
+                      defaultSource="400"
+                      disabled={coreBusy}
+                      ariaLabel="用紙の幅の式 (mm)"
+                    />
                   </label>
                   <label className="dialog-field">
                     <span>高さ</span>
-                    <span className="number-with-unit">
-                      <input
-                        name="height_mm"
-                        type="number"
-                        defaultValue="400"
-                        min="0"
-                        step="any"
-                        required
-                        disabled={coreBusy}
-                      />
-                      mm
-                    </span>
+                    <NumericExpressionInput
+                      id="new-project-height-expression"
+                      name="height_expression"
+                      defaultSource="400"
+                      disabled={coreBusy}
+                      ariaLabel="用紙の高さの式 (mm)"
+                    />
                   </label>
                 </div>
               </fieldset>
@@ -3718,6 +3728,27 @@ function hasControlCharacter(value: string) {
     const codePoint = character.codePointAt(0) ?? 0
     return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
   })
+}
+
+function newProjectExpressionErrorMessage(error: unknown) {
+  const category = numericExpressionNativeErrorCategory(error)
+  if (!category) return null
+  switch (category) {
+    case 'invalid_request':
+      return '幅または高さの式が空か、入力上限を超えています。'
+    case 'invalid_expression':
+      return '幅または高さの式を解釈できません。'
+    case 'resource_limit':
+      return '幅または高さの式が複雑すぎるため評価を中止しました。'
+    case 'result_out_of_range':
+      return '幅または高さを正のmm値として安全に採用できません。'
+    case 'native_unavailable':
+      return '式を使った新規作成はデスクトップ版で利用できます。'
+    case 'invalid_response':
+    case 'stale_response':
+    case 'internal_failure':
+      return '幅または高さの評価結果を採用できませんでした。'
+  }
 }
 
 function isEditingText(target: EventTarget | null) {

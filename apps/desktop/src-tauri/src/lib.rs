@@ -40,7 +40,10 @@ use instruction_export::{
     InstructionExportState, begin_instruction_export, cancel_instruction_export,
     get_instruction_export_progress, preview_instruction_export, save_instruction_export,
 };
-use numeric_expression::evaluate_numeric_expression;
+use numeric_expression::{
+    PositiveMillimetrePairError, evaluate_numeric_expression, evaluate_positive_millimetre_pair,
+    evaluate_positive_millimetre_pair_in_worker,
+};
 use ori_core::{
     BoundaryEdgeRef, Command, EditorState, EditorTopology, IntersectionEdgeTarget,
     JunctionVertexIntent, LocalFlatFoldabilityReport, PaperValidationIssue, PointPolygonRelation,
@@ -57,10 +60,10 @@ use ori_domain::{
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldConversionOptions,
     FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning, ProjectDocument,
-    SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
-    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
-    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind, read_fold_preview,
-    read_svg_preview,
+    ProjectNumericExpressions, RectangularPaperCreationExpressions, SvgBoundaryCandidateId,
+    SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern, SvgGroupMapping,
+    SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox,
+    SvgStyleGroupId, SvgWarningKind, read_fold_preview, read_svg_preview,
 };
 #[cfg(test)]
 use project_persistence::{
@@ -131,6 +134,12 @@ const SVG_FILE_TOO_LARGE_MESSAGE: &str = "選択されたSVGファイルはサ�
 const SVG_FILE_READ_FAILED_MESSAGE: &str = "選択されたSVGファイルを読み込めませんでした。";
 const SVG_FILE_INVALID_MESSAGE: &str =
     "選択されたSVGファイルが破損しているか、対応していない形式です。";
+const PROJECT_OPEN_TASK_FAILED_MESSAGE: &str =
+    "プロジェクトの読み込み処理を完了できませんでした。もう一度実行してください。";
+const PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE: &str =
+    "保存された作成時サイズ式を検証できませんでした。";
+const PROJECT_NUMERIC_EXPRESSIONS_BUSY_MESSAGE: &str =
+    "作成時サイズ式を評価中です。少し待ってからもう一度開いてください。";
 #[cfg(target_os = "macos")]
 const MACOS_QUIT_MENU_ID: &str = "origami2_quit";
 
@@ -282,6 +291,7 @@ struct ProjectState {
     /// The authority has its own slot so the global lock order remains
     /// `project -> pose -> layer order`. It is never persisted.
     applied_pose_authority: CurrentAppliedPoseAuthority,
+    numeric_expressions: ProjectNumericExpressions,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
 }
@@ -301,6 +311,7 @@ impl ProjectState {
             current_path: None,
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            numeric_expressions: ProjectNumericExpressions::default(),
             saved_revision: None,
             saved_document: None,
         };
@@ -320,6 +331,7 @@ impl ProjectState {
             current_path: None,
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            numeric_expressions: ProjectNumericExpressions::default(),
             saved_revision: None,
             saved_document: None,
         }
@@ -327,6 +339,7 @@ impl ProjectState {
 
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
         let saved_document = document.clone();
+        let numeric_expressions = document.numeric_expressions;
         let editor = EditorState::with_document_parts(
             document.crease_pattern,
             document.paper,
@@ -339,6 +352,7 @@ impl ProjectState {
             current_path: Some(current_path),
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            numeric_expressions,
             saved_document: Some(saved_document),
             editor,
         }
@@ -352,6 +366,7 @@ impl ProjectState {
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
+            numeric_expressions: self.numeric_expressions.clone(),
         }
     }
 
@@ -365,6 +380,7 @@ impl ProjectState {
             || saved.paper != *self.editor.paper()
             || saved.crease_pattern != *self.editor.pattern()
             || saved.instruction_timeline != *self.editor.instruction_timeline()
+            || saved.numeric_expressions != self.numeric_expressions
     }
 }
 
@@ -410,6 +426,7 @@ struct ProjectSnapshot {
     paper: Paper,
     crease_pattern: CreasePattern,
     instruction_timeline: InstructionTimeline,
+    numeric_expressions: ProjectNumericExpressions,
     fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
@@ -649,6 +666,10 @@ struct ProjectTopologyResponse {
 
 struct NewProjectParameters {
     name: String,
+    width_expression: String,
+    height_expression: String,
+    /// Certified native values adopted from the two expressions before the
+    /// project mutex is acquired. These fields never cross the IPC boundary.
     width_mm: f64,
     height_mm: f64,
     thickness_mm: f64,
@@ -747,25 +768,35 @@ fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, Strin
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-fn new_project(
+async fn new_project(
     state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     name: String,
-    width_mm: f64,
-    height_mm: f64,
+    width_expression: String,
+    height_expression: String,
     thickness_mm: f64,
     cutting_allowed: bool,
     front_color: RgbaColor,
     back_color: RgbaColor,
 ) -> Result<ProjectSnapshot, String> {
+    let (width_mm, height_mm) = evaluate_positive_millimetre_pair_in_worker(
+        width_expression.clone(),
+        height_expression.clone(),
+    )
+    .await
+    .map_err(|error| error.user_input_message().to_owned())?;
     let mut project = lock_project(&state)?;
     replace_with_new_project(
         &mut project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         NewProjectParameters {
             name,
+            width_expression,
+            height_expression,
             width_mm,
             height_mm,
             thickness_mm,
@@ -884,7 +915,9 @@ async fn open_project(
         .simplified()
         .into_path()
         .map_err(|_| "選択されたファイルはローカルファイルではありません。".to_owned())?;
-    let loaded = load_project_file(path)?;
+    let loaded = tauri::async_runtime::spawn_blocking(move || load_project_file(path))
+        .await
+        .map_err(|_| PROJECT_OPEN_TASK_FAILED_MESSAGE.to_owned())??;
 
     let mut project = lock_project(&state)?;
     apply_loaded_project_file(
@@ -2257,17 +2290,17 @@ fn execute_command(
 
 fn replace_with_new_project(
     project: &mut ProjectState,
+    expected_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     parameters: NewProjectParameters,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_project_identity(project, expected_project_id)?;
-    if project.editor.revision() != expected_revision {
-        return Err(format!(
-            "expected revision {expected_revision}, but the current revision is {}",
-            project.editor.revision()
-        ));
-    }
+    ensure_expected_project(
+        project,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
 
     let replacement = create_new_project_state(parameters)?;
     commit_project_replacement(project, replacement).map_err(|error| error.to_string())?;
@@ -2292,7 +2325,15 @@ fn create_new_project_state(parameters: NewProjectParameters) -> Result<ProjectS
         return Err("the generated paper failed final validation".to_owned());
     }
 
-    Ok(ProjectState::new_unsaved(name, pattern, paper))
+    let mut project = ProjectState::new_unsaved(name, pattern, paper);
+    project.numeric_expressions.rectangular_paper_creation =
+        Some(RectangularPaperCreationExpressions::new(
+            parameters.width_expression,
+            parameters.height_expression,
+            parameters.width_mm,
+            parameters.height_mm,
+        ));
+    Ok(project)
 }
 
 fn normalize_project_name(name: &str) -> Result<String, String> {
@@ -2731,6 +2772,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         paper: project.editor.paper().clone(),
         crease_pattern: project.editor.pattern().clone(),
         instruction_timeline: project.editor.instruction_timeline().clone(),
+        numeric_expressions: project.numeric_expressions.clone(),
         fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -2843,7 +2885,33 @@ fn save_project_to_destination(
 
 fn load_project_file(path: PathBuf) -> Result<LoadedProjectFile, String> {
     let document = load_document_from_path(&path)?;
+    validate_loaded_numeric_expression_bindings(&document)?;
     Ok(LoadedProjectFile { path, document })
+}
+
+fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Result<(), String> {
+    let Some(binding) = &document.numeric_expressions.rectangular_paper_creation else {
+        return Ok(());
+    };
+    let (width_mm, height_mm) = evaluate_positive_millimetre_pair(
+        binding.width_source.clone(),
+        binding.height_source.clone(),
+    )
+    .map_err(map_loaded_numeric_expression_error)?;
+    if width_mm.to_bits() != binding.adopted_width_mm.to_bits()
+        || height_mm.to_bits() != binding.adopted_height_mm.to_bits()
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    Ok(())
+}
+
+fn map_loaded_numeric_expression_error(error: PositiveMillimetrePairError) -> String {
+    if error.is_worker_busy() {
+        PROJECT_NUMERIC_EXPRESSIONS_BUSY_MESSAGE.to_owned()
+    } else {
+        PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned()
+    }
 }
 
 fn apply_loaded_project_file(
@@ -4514,6 +4582,8 @@ mod tests {
     fn new_project_parameters() -> NewProjectParameters {
         NewProjectParameters {
             name: "  Test sheet  ".to_owned(),
+            width_expression: "210".to_owned(),
+            height_expression: "297".to_owned(),
             width_mm: 210.0,
             height_mm: 297.0,
             thickness_mm: 0.2,
@@ -5702,6 +5772,24 @@ mod tests {
         assert_eq!(project.editor.paper().back.color, expected_back);
         assert_eq!(project.editor.paper().front.texture_asset, None);
         assert_eq!(project.editor.paper().back.texture_asset, None);
+        let creation_expressions = project
+            .numeric_expressions
+            .rectangular_paper_creation
+            .as_ref()
+            .expect("new project keeps both creation expressions");
+        assert_eq!(creation_expressions.schema_version, 1);
+        assert_eq!(creation_expressions.width_source, "210");
+        assert_eq!(creation_expressions.height_source, "297");
+        assert_eq!(creation_expressions.adopted_width_mm, 210.0);
+        assert_eq!(creation_expressions.adopted_height_mm, 297.0);
+        assert_eq!(
+            response.numeric_expressions, project.numeric_expressions,
+            "snapshot and persisted document share the same bounded metadata"
+        );
+        assert_eq!(
+            project.document().numeric_expressions,
+            project.numeric_expressions
+        );
         assert_eq!(
             project.editor.pattern().vertices[2].position,
             Point2::new(210.0, 297.0)
@@ -5718,6 +5806,86 @@ mod tests {
         assert!(response.cutting_allowed);
         assert!(!response.can_undo);
         assert!(!response.can_redo);
+    }
+
+    #[test]
+    fn loaded_numeric_expressions_are_re_evaluated_against_saved_adopted_values() {
+        assert_eq!(
+            map_loaded_numeric_expression_error(PositiveMillimetrePairError::WorkerBusy),
+            PROJECT_NUMERIC_EXPRESSIONS_BUSY_MESSAGE
+        );
+        let project =
+            create_new_project_state(new_project_parameters()).expect("valid new project");
+        let document = project.document();
+        validate_loaded_numeric_expression_bindings(&document)
+            .expect("untampered expressions remain loadable");
+
+        let mut changed_source = document.clone();
+        changed_source
+            .numeric_expressions
+            .rectangular_paper_creation
+            .as_mut()
+            .expect("creation expressions")
+            .width_source = "211".to_owned();
+        assert_eq!(
+            validate_loaded_numeric_expression_bindings(&changed_source),
+            Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())
+        );
+
+        let mut changed_value = document.clone();
+        changed_value
+            .numeric_expressions
+            .rectangular_paper_creation
+            .as_mut()
+            .expect("creation expressions")
+            .adopted_height_mm = 298.0;
+        assert_eq!(
+            validate_loaded_numeric_expression_bindings(&changed_value),
+            Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())
+        );
+
+        let mut legacy = document;
+        legacy.numeric_expressions = ProjectNumericExpressions::default();
+        validate_loaded_numeric_expression_bindings(&legacy)
+            .expect("legacy projects without expressions migrate safely");
+    }
+
+    #[test]
+    fn creation_expressions_follow_document_dirty_state_without_entering_editor_undo_history() {
+        let mut project =
+            create_new_project_state(new_project_parameters()).expect("valid new project");
+        let project_id = project.project_id;
+        let saved_document = project.document();
+        let saved_expressions = project.numeric_expressions.clone();
+        project.saved_document = Some(saved_document.clone());
+        project.saved_revision = Some(project.editor.revision());
+        assert!(!project.is_dirty());
+
+        let resized = execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::ResizeRectangularPaper {
+                width_mm: 420.0,
+                height_mm: 594.0,
+            },
+        )
+        .expect("resize paper");
+        assert!(resized.is_dirty);
+        assert_eq!(project.numeric_expressions, saved_expressions);
+
+        project.editor.undo(1).expect("undo resize");
+        assert_eq!(project.document(), saved_document);
+        assert_eq!(project.numeric_expressions, saved_expressions);
+        assert!(!project.is_dirty());
+
+        project
+            .numeric_expressions
+            .rectangular_paper_creation
+            .as_mut()
+            .expect("creation expressions")
+            .width_source = "210 + 0".to_owned();
+        assert!(project.is_dirty());
     }
 
     #[test]
@@ -7029,11 +7197,17 @@ mod tests {
     #[test]
     fn new_project_replaces_only_the_expected_unchanged_project() {
         let mut project = initial_project_state();
+        let old_instance_id = project.instance_id;
         let old_project_id = project.project_id;
 
-        let response =
-            replace_with_new_project(&mut project, old_project_id, 0, new_project_parameters())
-                .expect("replace current project");
+        let response = replace_with_new_project(
+            &mut project,
+            old_instance_id,
+            old_project_id,
+            0,
+            new_project_parameters(),
+        )
+        .expect("replace current project");
 
         assert_ne!(response.project_id, old_project_id);
         assert_eq!(response.project_id, project.project_id);
@@ -7050,34 +7224,86 @@ mod tests {
     #[test]
     fn new_project_errors_leave_existing_state_untouched() {
         let mut project = initial_project_state();
+        let instance_id = project.instance_id;
         let project_id = project.project_id;
         let before = project_state_signature(&project);
 
         assert!(
-            replace_with_new_project(&mut project, ProjectId::new(), 0, new_project_parameters(),)
-                .is_err()
+            replace_with_new_project(
+                &mut project,
+                instance_id,
+                ProjectId::new(),
+                0,
+                new_project_parameters(),
+            )
+            .is_err()
         );
         assert_eq!(project_state_signature(&project), before);
 
         assert!(
-            replace_with_new_project(&mut project, project_id, 1, new_project_parameters())
-                .is_err()
+            replace_with_new_project(
+                &mut project,
+                instance_id,
+                project_id,
+                1,
+                new_project_parameters(),
+            )
+            .is_err()
         );
         assert_eq!(project_state_signature(&project), before);
 
         let mut invalid_name = new_project_parameters();
         invalid_name.name = " \0 ".to_owned();
-        assert!(replace_with_new_project(&mut project, project_id, 0, invalid_name).is_err());
+        assert!(
+            replace_with_new_project(&mut project, instance_id, project_id, 0, invalid_name)
+                .is_err()
+        );
         assert_eq!(project_state_signature(&project), before);
 
         let mut invalid_dimensions = new_project_parameters();
         invalid_dimensions.width_mm = 0.0;
-        assert!(replace_with_new_project(&mut project, project_id, 0, invalid_dimensions).is_err());
+        assert!(
+            replace_with_new_project(&mut project, instance_id, project_id, 0, invalid_dimensions,)
+                .is_err()
+        );
         assert_eq!(project_state_signature(&project), before);
 
         let mut invalid_thickness = new_project_parameters();
         invalid_thickness.thickness_mm = f64::NAN;
-        assert!(replace_with_new_project(&mut project, project_id, 0, invalid_thickness).is_err());
+        assert!(
+            replace_with_new_project(&mut project, instance_id, project_id, 0, invalid_thickness,)
+                .is_err()
+        );
+        assert_eq!(project_state_signature(&project), before);
+    }
+
+    #[test]
+    fn delayed_new_project_rejects_same_document_revision_after_reopen_aba() {
+        let mut project = initial_project_state();
+        let stale_instance_id = project.instance_id;
+        let expected_project_id = project.project_id;
+        let expected_revision = project.editor.revision();
+        let document = project.document();
+
+        project = ProjectState::from_document(document, PathBuf::from("same-project.ori2"));
+        assert_eq!(project.project_id, expected_project_id);
+        assert_eq!(project.editor.revision(), expected_revision);
+        assert_ne!(project.instance_id, stale_instance_id);
+        let before = project_state_signature(&project);
+
+        let error = replace_with_new_project(
+            &mut project,
+            stale_instance_id,
+            expected_project_id,
+            expected_revision,
+            new_project_parameters(),
+        )
+        .expect_err("reopened ABA instance must reject delayed new-project work");
+
+        assert_eq!(
+            error,
+            "the open project instance changed while the file dialog was open"
+        );
         assert_eq!(project_state_signature(&project), before);
     }
 

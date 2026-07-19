@@ -16,6 +16,7 @@ pub const CURRENT_ORI2_CONTAINER_VERSION: u32 = 1;
 pub const ORI2_MANIFEST_PATH: &str = "manifest.json";
 pub const ORI2_PROJECT_PATH: &str = "project.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
+pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
 
 const REQUIRED_ENTRY_COUNT: usize = 2;
 const ORI2_DEFLATE_LEVEL: i64 = 6;
@@ -117,11 +118,13 @@ pub fn write_project_ori2_with_limits(
         limits.max_project_size,
     )?;
 
-    let required_features = if document.instruction_timeline.steps.is_empty() {
-        Vec::new()
-    } else {
-        vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()]
-    };
+    let mut required_features = Vec::new();
+    if !document.instruction_timeline.steps.is_empty() {
+        required_features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
+    }
+    if !document.numeric_expressions.is_empty() {
+        required_features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
+    }
     let manifest = Ori2Manifest::new(&project_bytes, document.format_version, required_features);
     let manifest_bytes =
         serde_json::to_vec_pretty(&manifest).map_err(FormatError::InvalidManifestJson)?;
@@ -244,6 +247,16 @@ pub fn read_project_ori2_with_limits(
     {
         return Err(FormatError::MissingRequiredFeature {
             feature: ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+        });
+    }
+    if !project.numeric_expressions.is_empty()
+        && !manifest
+            .required_features
+            .iter()
+            .any(|feature| feature == ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1)
+    {
+        return Err(FormatError::MissingRequiredFeature {
+            feature: ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
         });
     }
     Ok(project)
@@ -405,7 +418,12 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
     let unsupported_features = manifest
         .required_features
         .iter()
-        .filter(|feature| feature.as_str() != ORI2_FEATURE_INSTRUCTION_TIMELINE_V1)
+        .filter(|feature| {
+            !matches!(
+                feature.as_str(),
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1 | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
+            )
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !unsupported_features.is_empty() {
@@ -713,6 +731,27 @@ mod tests {
     }
 
     #[test]
+    fn ori2_preserves_numeric_expressions_and_declares_the_required_feature() {
+        let mut original = sample_document();
+        original.numeric_expressions.rectangular_paper_creation =
+            Some(crate::RectangularPaperCreationExpressions::new(
+                "200 * sqrt(2)",
+                "400 / 3",
+                282.842_712_474_619,
+                133.333_333_333_333_34,
+            ));
+
+        let bytes = write_project_ori2(&original).expect("write expressions");
+        let manifest = manifest_from_archive(&bytes);
+        assert_eq!(
+            manifest.required_features,
+            vec![ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned()]
+        );
+        let restored = read_project_ori2(&bytes).expect("read expressions");
+        assert_eq!(restored.numeric_expressions, original.numeric_expressions);
+    }
+
+    #[test]
     fn ori2_without_instructions_does_not_require_timeline_feature() {
         let bytes = write_project_ori2(&sample_document()).expect("write project");
         let manifest = manifest_from_archive(&bytes);
@@ -736,6 +775,25 @@ mod tests {
 
         let restored = read_project_ori2(&bytes).expect("read legacy .ori2");
         assert!(restored.instruction_timeline.steps.is_empty());
+    }
+
+    #[test]
+    fn reads_legacy_ori2_without_numeric_expressions() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize document");
+        value
+            .as_object_mut()
+            .expect("project object")
+            .remove("numeric_expressions");
+        let project = serde_json::to_vec(&value).expect("serialize legacy project");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let restored = read_project_ori2(&bytes).expect("read legacy .ori2");
+        assert!(restored.numeric_expressions.is_empty());
     }
 
     #[test]
@@ -810,6 +868,28 @@ mod tests {
             error,
             FormatError::MissingRequiredFeature {
                 feature: ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_numeric_expression_content_without_required_manifest_feature() {
+        let mut document = sample_document();
+        document.numeric_expressions.rectangular_paper_creation = Some(
+            crate::RectangularPaperCreationExpressions::new("400", "400", 400.0, 400.0),
+        );
+        let project = write_project_json(&document).expect("project JSON");
+        let manifest = manifest_for(&project);
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let error = read_project_ori2(&bytes).expect_err("numeric-expression feature is required");
+        assert!(matches!(
+            error,
+            FormatError::MissingRequiredFeature {
+                feature: ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
             }
         ));
     }

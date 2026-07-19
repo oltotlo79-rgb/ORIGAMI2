@@ -6,6 +6,7 @@ export const MIN_NUMERIC_EXPRESSION_PRECISION_BITS = 32
 export const MAX_NUMERIC_EXPRESSION_PRECISION_BITS = 512
 export const MAX_NUMERIC_EXPRESSION_SOURCE_BYTES = 4_096
 export const MAX_NUMERIC_EXPRESSION_OPERATIONS = 20_000
+export const USER_INPUT_NUMERIC_EXPRESSION_PRECISION_BITS = 192
 
 const MAX_DISPLAY_BYTES = 32
 const RESPONSE_KEYS = [
@@ -64,6 +65,22 @@ export type NumericExpressionNativeTransport = Readonly<{
   ): Promise<NumericExpressionEvaluation>
 }>
 
+export type AdoptedMillimetreExpression = Readonly<{
+  source: string
+  value: number
+  evaluation: NumericExpressionEvaluation
+}>
+
+type UserInputEvaluationJob = Readonly<{
+  source: string
+  transport: NumericExpressionNativeTransport
+  resolve(value: AdoptedMillimetreExpression): void
+  reject(error: NumericExpressionNativeError | unknown): void
+}>
+
+let userInputEvaluationRunning = false
+let latestPendingUserInputEvaluation: UserInputEvaluationJob | null = null
+
 export function createNumericExpressionNativeTransport(
   nativeInvoke: NumericExpressionNativeInvoke = defaultNativeInvoke,
 ): NumericExpressionNativeTransport {
@@ -105,6 +122,77 @@ export function createNumericExpressionNativeTransport(
       return response
     },
   })
+}
+
+export function evaluatePositiveMillimetreExpression(
+  source: string,
+  transport: NumericExpressionNativeTransport =
+    createNumericExpressionNativeTransport(),
+): Promise<AdoptedMillimetreExpression> {
+  if (!validSource(source)) {
+    return Promise.reject(new NumericExpressionNativeError('invalid_request'))
+  }
+  return new Promise((resolve, reject) => {
+    const job: UserInputEvaluationJob = {
+      source,
+      transport,
+      resolve,
+      reject,
+    }
+    if (!userInputEvaluationRunning) {
+      userInputEvaluationRunning = true
+      void runUserInputEvaluation(job)
+      return
+    }
+    latestPendingUserInputEvaluation?.reject(
+      new NumericExpressionNativeError('stale_response'),
+    )
+    latestPendingUserInputEvaluation = job
+  })
+}
+
+async function runUserInputEvaluation(job: UserInputEvaluationJob) {
+  try {
+    const evaluation = await job.transport.evaluate(
+      job.source,
+      USER_INPUT_NUMERIC_EXPRESSION_PRECISION_BITS,
+    )
+    const value = adoptPositiveAdjacentInterval(
+      evaluation.lowerBound,
+      evaluation.upperBound,
+    )
+    if (value === null) {
+      throw new NumericExpressionNativeError('result_out_of_range')
+    }
+    job.resolve(Object.freeze({ source: job.source, value, evaluation }))
+  } catch (error) {
+    job.reject(error)
+  } finally {
+    const next = latestPendingUserInputEvaluation
+    latestPendingUserInputEvaluation = null
+    if (next) {
+      void runUserInputEvaluation(next)
+    } else {
+      userInputEvaluationRunning = false
+    }
+  }
+}
+
+export function adoptPositiveAdjacentInterval(
+  lower: number,
+  upper: number,
+): number | null {
+  if (
+    !Number.isFinite(lower)
+    || !Number.isFinite(upper)
+    || lower <= 0
+    || lower > upper
+    || Object.is(lower, -0)
+    || Object.is(upper, -0)
+  ) return null
+  if (lower === upper) return lower
+  if (nextUpPositive(lower) !== upper) return null
+  return lower
 }
 
 export function parseNumericExpressionResponseDto(
@@ -150,7 +238,11 @@ function validRequest(
 }
 
 function validSource(value: unknown): value is string {
-  if (typeof value !== 'string' || hasUnpairedSurrogate(value)) return false
+  if (
+    typeof value !== 'string'
+    || value.length > MAX_NUMERIC_EXPRESSION_SOURCE_BYTES
+    || hasUnpairedSurrogate(value)
+  ) return false
   const byteLength = utf8ByteLength(value)
   return byteLength !== null
     && byteLength <= MAX_NUMERIC_EXPRESSION_SOURCE_BYTES
@@ -196,6 +288,24 @@ function canonicalScientificDisplay(value: number): string {
   return value.toExponential(17).replace('e+', 'e')
 }
 
+function nextUpPositive(value: number): number | null {
+  if (!Number.isFinite(value) || value <= 0) return null
+  const buffer = new ArrayBuffer(8)
+  const view = new DataView(buffer)
+  view.setFloat64(0, value, false)
+  const high = view.getUint32(0, false)
+  const low = view.getUint32(4, false)
+  if (low === 0xffff_ffff) {
+    if (high === 0x7fef_ffff) return Number.POSITIVE_INFINITY
+    view.setUint32(0, high + 1, false)
+    view.setUint32(4, 0, false)
+  } else {
+    view.setUint32(4, low + 1, false)
+  }
+  const result = view.getFloat64(0, false)
+  return Number.isFinite(result) ? result : null
+}
+
 function parseNativeErrorCategory(
   value: unknown,
 ): Exclude<
@@ -216,7 +326,7 @@ function parseNativeErrorCategory(
   }
 }
 
-function numericExpressionNativeErrorCategory(
+export function numericExpressionNativeErrorCategory(
   value: unknown,
 ): NumericExpressionErrorCategory | null {
   try {

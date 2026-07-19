@@ -35,7 +35,8 @@ const MAX_DEDUP_COMPARISONS: usize = MAX_CANDIDATE_VERTICES * (MAX_CANDIDATE_VER
 const MAX_AFFINE_RANK_TESTS: usize = MAX_CANDIDATE_VERTICES;
 const MAX_SUPPORT_PLANE_VERTEX_TESTS: usize = HALFSPACE_COUNT * MAX_CANDIDATE_VERTICES;
 const MAX_SUPPORT_PAIR_TESTS: usize = 25;
-const INPUT_RATIONALS: usize = PRISM_COUNT * (3 * 3 + 3 + 1);
+const PREBUILT_INPUT_RATIONALS: usize = PRISM_COUNT * 6 * 3;
+const MAX_INPUT_RATIONALS: usize = PREBUILT_INPUT_RATIONALS;
 
 /// Exact mid-surface description of one right triangular prism.
 ///
@@ -56,6 +57,22 @@ pub(super) struct ExactTriangularPrismView<'a> {
     pub(super) mid_surface: [&'a ExactPoint3; 3],
     pub(super) material_normal: &'a ExactVector3,
     pub(super) half_thickness: &'a BigRational,
+}
+
+/// Six exact vertices of one affine triangular prism.
+///
+/// This is a separate private entry for the direct-`F` phase.  Lifting a
+/// non-cardinal binary64 rotation matrix produces rational columns that are
+/// generally neither exactly unit length nor exactly orthogonal.  Weakening
+/// the canonical-`E` constructor's unit/perpendicular preconditions would
+/// therefore erase an important proof boundary.  Instead, the direct-`F`
+/// consumer reconstructs and authenticates all six `mid_surface +/- h*n`
+/// vertices before borrowing them here.  This kernel still independently
+/// proves a non-degenerate translated triangular prism and validates every
+/// closed facet and incidence before intersection.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ExactPrebuiltTriangularPrismView<'a> {
+    pub(super) vertices: [&'a ExactPoint3; 6],
 }
 
 impl ExactTriangularPrismInput {
@@ -115,9 +132,9 @@ impl Default for ExactPrismLimits {
             max_affine_rank_tests: MAX_AFFINE_RANK_TESTS,
             max_support_plane_vertex_tests: MAX_SUPPORT_PLANE_VERTEX_TESTS,
             max_support_pair_tests: MAX_SUPPORT_PAIR_TESTS,
-            max_input_rationals: INPUT_RATIONALS,
+            max_input_rationals: MAX_INPUT_RATIONALS,
             max_input_rational_storage_bits: exact.max_intermediate_bits,
-            max_total_input_storage_bits: INPUT_RATIONALS * exact.max_intermediate_bits,
+            max_total_input_storage_bits: MAX_INPUT_RATIONALS * exact.max_intermediate_bits,
             exact,
         }
     }
@@ -373,6 +390,45 @@ pub(super) fn analyze_exact_prism_pair_with_meter_v1(
     result
 }
 
+/// Shared-meter entry for two direct-`F` affine triangular prisms.
+///
+/// The canonical-`E` entry above deliberately remains stricter.  This
+/// alternate private entry accepts only six already reconstructed vertices
+/// per prism, revalidates that each bottom triangle is one common non-zero
+/// translation of its top triangle, and then uses the identical validated
+/// halfspace, complete 120-plane-triple, rank, and opposing-support kernel.
+pub(super) fn analyze_exact_prebuilt_prism_pair_with_meter_v1(
+    first: ExactPrebuiltTriangularPrismView<'_>,
+    second: ExactPrebuiltTriangularPrismView<'_>,
+    limits: ExactPrismLimits,
+    work: &mut ExactPrismWork,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ExactPrismIntersectionReport>, CayleyError> {
+    let limits = limits.projected();
+    if !structural_work_is_empty(work) {
+        return Err(CayleyError::InvariantFailure { stage: STAGE });
+    }
+    let exact_start = meter.work.clone();
+    preflight_exact_prism_capacity(
+        &exact_start,
+        &limits.exact,
+        meter.limits,
+        meter.total_term_limits,
+    )?;
+    let mut local_meter = WorkMeter::new(&limits.exact);
+    let result =
+        calculate_exact_prebuilt_prism_pair(first, second, &limits, work, &mut local_meter);
+    let exact_delta = local_meter.work;
+    let expected_end =
+        exact_start.checked_merge(&exact_delta, meter.limits, meter.total_term_limits, STAGE)?;
+    meter.merge_work(&exact_delta, STAGE)?;
+    if meter.work != expected_end {
+        return Err(CayleyError::InvariantFailure { stage: STAGE });
+    }
+    work.exact = exact_delta;
+    result
+}
+
 fn calculate_exact_prism_pair(
     first: ExactTriangularPrismView<'_>,
     second: ExactTriangularPrismView<'_>,
@@ -392,6 +448,31 @@ fn calculate_exact_prism_pair(
         return Ok(None);
     };
     let Some(second) = build_validated_prism(&second, 1, limits, work, meter)? else {
+        return Ok(None);
+    };
+    let report = intersect_validated_prisms(&first, &second, limits, work, meter)?;
+    Ok(Some(report))
+}
+
+fn calculate_exact_prebuilt_prism_pair(
+    first: ExactPrebuiltTriangularPrismView<'_>,
+    second: ExactPrebuiltTriangularPrismView<'_>,
+    limits: &ExactPrismLimits,
+    work: &mut ExactPrismWork,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ExactPrismIntersectionReport>, CayleyError> {
+    charge_fixed_geometry(work, limits)?;
+
+    let Some(first) = prepare_prebuilt_prism_input(first, limits, work, meter)? else {
+        return Ok(None);
+    };
+    let Some(second) = prepare_prebuilt_prism_input(second, limits, work, meter)? else {
+        return Ok(None);
+    };
+    let Some(first) = build_validated_prebuilt_prism(first, 0, limits, work, meter)? else {
+        return Ok(None);
+    };
+    let Some(second) = build_validated_prebuilt_prism(second, 1, limits, work, meter)? else {
         return Ok(None);
     };
     let report = intersect_validated_prisms(&first, &second, limits, work, meter)?;
@@ -642,6 +723,25 @@ fn prepare_prism_input(
     }))
 }
 
+fn prepare_prebuilt_prism_input(
+    input: ExactPrebuiltTriangularPrismView<'_>,
+    limits: &ExactPrismLimits,
+    work: &mut ExactPrismWork,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<[ExactPoint3; 6]>, CayleyError> {
+    let mut vertices = Vec::with_capacity(6);
+    for vertex in input.vertices {
+        let Some(vertex) = prepare_point_input(vertex, limits, work, meter)? else {
+            return Ok(None);
+        };
+        vertices.push(vertex);
+    }
+    vertices
+        .try_into()
+        .map(Some)
+        .map_err(|_| CayleyError::InvariantFailure { stage: STAGE })
+}
+
 fn prepare_point_input(
     point: &ExactPoint3,
     limits: &ExactPrismLimits,
@@ -774,6 +874,60 @@ fn build_validated_prism(
         exact_offset_point(&input.mid_surface[1], &material_offset, false, meter)?,
         exact_offset_point(&input.mid_surface[2], &material_offset, false, meter)?,
     ];
+    let centroid = exact_triangle_centroid(&input.mid_surface, meter)?;
+    build_validated_prism_from_vertices(vertices, centroid, prism_index, limits, work, meter)
+}
+
+fn build_validated_prebuilt_prism(
+    vertices: [ExactPoint3; 6],
+    prism_index: usize,
+    limits: &ExactPrismLimits,
+    work: &mut ExactPrismWork,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ExactTriangularPrism>, CayleyError> {
+    let translation = exact_between(&vertices[0], &vertices[3], meter)?;
+    if exact_vector_is_zero(&translation) {
+        return Ok(None);
+    }
+    for pair in [(1, 4), (2, 5)] {
+        let observed = exact_between(&vertices[pair.0], &vertices[pair.1], meter)?;
+        if observed != translation {
+            return Ok(None);
+        }
+    }
+    let two = BigRational::from_integer(2.into());
+    let mid_surface = [
+        exact_midpoint(&vertices[0], &vertices[3], &two, meter)?,
+        exact_midpoint(&vertices[1], &vertices[4], &two, meter)?,
+        exact_midpoint(&vertices[2], &vertices[5], &two, meter)?,
+    ];
+    let centroid = exact_triangle_centroid(&mid_surface, meter)?;
+    build_validated_prism_from_vertices(vertices, centroid, prism_index, limits, work, meter)
+}
+
+fn exact_midpoint(
+    first: &ExactPoint3,
+    second: &ExactPoint3,
+    two: &BigRational,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactPoint3, CayleyError> {
+    Ok(ExactPoint3 {
+        coordinates: try_array3(|axis| {
+            let sum =
+                meter.add_rational(&first.coordinates[axis], &second.coordinates[axis], STAGE)?;
+            meter.divide_rational(&sum, two, STAGE)
+        })?,
+    })
+}
+
+fn build_validated_prism_from_vertices(
+    vertices: [ExactPoint3; 6],
+    centroid: ExactPoint3,
+    prism_index: usize,
+    limits: &ExactPrismLimits,
+    work: &mut ExactPrismWork,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ExactTriangularPrism>, CayleyError> {
     charge_counter(
         &mut work.prism_volume_tests,
         limits.max_prism_volume_tests,
@@ -787,7 +941,6 @@ fn build_validated_prism(
     if signed_six_volume.is_zero() {
         return Ok(None);
     }
-    let centroid = exact_triangle_centroid(&input.mid_surface, meter)?;
     let facet_vertices: [&[usize]; 5] = [
         &[0, 1, 2],
         &[3, 4, 5],
@@ -1411,6 +1564,66 @@ mod tests {
         assert_eq!(
             kind(&first, &volume),
             ExactPrismIntersectionKind::PositiveVolume
+        );
+    }
+
+    #[test]
+    fn direct_f_prebuilt_entry_does_not_weaken_exact_e_unit_normal_precondition() {
+        let non_unit = ExactTriangularPrismInput {
+            mid_surface: [point(0, 0, 0), point(2, 0, 0), point(0, 2, 0)],
+            material_normal: vector(0, 0, 2),
+            half_thickness: integer(1),
+        };
+        let legacy = report(&non_unit, &non_unit);
+        assert!(
+            legacy.intersection.is_none(),
+            "the canonical-E constructor must keep rejecting a non-unit rational lift"
+        );
+
+        let vertices = [
+            point(0, 0, 2),
+            point(2, 0, 2),
+            point(0, 2, 2),
+            point(0, 0, -2),
+            point(2, 0, -2),
+            point(0, 2, -2),
+        ];
+        let view = ExactPrebuiltTriangularPrismView {
+            vertices: std::array::from_fn(|index| &vertices[index]),
+        };
+        let limits = ExactPrismLimits::default();
+        let mut work = ExactPrismWork::default();
+        let mut meter = WorkMeter::new(&limits.exact);
+        let intersection = analyze_exact_prebuilt_prism_pair_with_meter_v1(
+            view, view, limits, &mut work, &mut meter,
+        )
+        .unwrap()
+        .expect("validated six-vertex affine prisms");
+        assert_eq!(
+            intersection.kind(),
+            ExactPrismIntersectionKind::PositiveVolume
+        );
+        assert_eq!(work.input_rationals, 36);
+        assert_eq!(work.plane_triples, 120);
+
+        let mut malformed = vertices.clone();
+        malformed[4].coordinates[0] += integer(1);
+        let malformed_view = ExactPrebuiltTriangularPrismView {
+            vertices: std::array::from_fn(|index| &malformed[index]),
+        };
+        let mut malformed_work = ExactPrismWork::default();
+        let mut malformed_meter = WorkMeter::new(&limits.exact);
+        assert!(
+            analyze_exact_prebuilt_prism_pair_with_meter_v1(
+                malformed_view,
+                view,
+                limits,
+                &mut malformed_work,
+                &mut malformed_meter,
+            )
+            .unwrap()
+            .is_none(),
+            "each bottom vertex must share one exact translation from its top vertex"
         );
     }
 

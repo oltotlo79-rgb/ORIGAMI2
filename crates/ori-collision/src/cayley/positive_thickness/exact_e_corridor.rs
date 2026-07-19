@@ -232,6 +232,7 @@ pub(super) struct ExactEFiniteHingeCorridorCapabilityV1<'prerequisite, 'ef, 'exa
     hinge_index: usize,
     interaction_kind: ExactEFiniteHingeInteractionKind,
     geometry: ExactEFiniteHingeCorridorGeometry,
+    sealed_work: Option<ExactEFiniteHingeCorridorWork>,
 }
 
 impl ExactEFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_> {
@@ -249,6 +250,10 @@ impl ExactEFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_> {
 
     pub(super) fn cosine_half_squared(&self) -> &BigRational {
         &self.geometry.cosine_half_squared
+    }
+
+    pub(super) fn sealed_work(&self) -> Option<&ExactEFiniteHingeCorridorWork> {
+        self.sealed_work.as_ref()
     }
 }
 
@@ -288,6 +293,26 @@ pub(super) struct ExactEFiniteHingeCorridorAnalysis<'prerequisite, 'ef, 'exact, 
     pub(super) work: ExactEFiniteHingeCorridorWork,
 }
 
+impl<'prerequisite, 'ef, 'exact, 'pose>
+    ExactEFiniteHingeCorridorAnalysis<'prerequisite, 'ef, 'exact, 'pose>
+{
+    pub(super) fn authenticated_contained_capability_and_work(
+        &self,
+    ) -> Option<(
+        &ExactEFiniteHingeCorridorCapabilityV1<'prerequisite, 'ef, 'exact, 'pose>,
+        &ExactEFiniteHingeCorridorWork,
+    )> {
+        let ExactEFiniteHingeCorridorResult::Contained(capability) = &self.result else {
+            return None;
+        };
+        let sealed_work = capability.sealed_work()?;
+        if sealed_work != &self.work {
+            return None;
+        }
+        Some((capability.as_ref(), sealed_work))
+    }
+}
+
 /// Rejoins phase 1 and the E/F binding, then proves the complete exact-E
 /// intersection against the closed finite corridor.
 ///
@@ -318,7 +343,12 @@ pub(super) fn analyze_exact_e_finite_hinge_corridor_v1<'prerequisite, 'ef, 'exac
     );
     work.exact = meter.work;
     match result {
-        Ok(result) => Ok(ExactEFiniteHingeCorridorAnalysis { result, work }),
+        Ok(mut result) => {
+            if let ExactEFiniteHingeCorridorResult::Contained(capability) = &mut result {
+                capability.sealed_work = Some(work.clone());
+            }
+            Ok(ExactEFiniteHingeCorridorAnalysis { result, work })
+        }
         Err(CayleyError::ResourceLimitExceeded { .. }) => {
             Err(ExactEFiniteHingeCorridorError::ResourceLimitExceeded)
         }
@@ -463,6 +493,7 @@ fn calculate_exact_e_finite_hinge_corridor_v1<'prerequisite, 'ef, 'exact, 'pose>
             hinge_index,
             interaction_kind,
             geometry,
+            sealed_work: None,
         },
     )))
 }
@@ -907,6 +938,7 @@ pub(super) fn revalidate_exact_e_finite_hinge_corridor_v1<
     >,
 > {
     if !positive_finite_binary64(paper_thickness_mm)
+        || capability.sealed_work().is_none()
         || !std::ptr::eq(capability.prerequisite, prerequisite)
         || !std::ptr::eq(capability.ef_boundary, ef_boundary)
         || !std::ptr::eq(capability.exact, exact)

@@ -5,8 +5,12 @@
 //! `FiniteRadiusScalarFits` value only proves that the analytic centered-slab
 //! radius is finite and no longer than the supplied exact finite hinge
 //! segment.  Private child phases now construct the complete exact-`E` prism
-//! intersection and prove its containment in one closed finite corridor, but
-//! still issue no production collision or safe-set authority.
+//! intersection and prove its containment in one closed finite corridor.
+//! A further child independently reconstructs the literal direct-lift
+//! binary64 affine pose `F`, scans its complete prism intersection, and
+//! reports strict corridor outside without tolerance.  Neither child issues
+//! production collision or safe-set authority; the non-unit affine `F`
+//! corridor generalization remains a separately versioned future gate.
 //! The complete positive-thickness path stays private until later code also
 //! proves all of the following:
 //!
@@ -41,6 +45,7 @@ use super::{
     rational_storage_bits, try_array3, verify_exact_rotation,
 };
 
+mod direct_f_corridor;
 mod ef_boundary;
 mod exact_e_corridor;
 mod exact_prism;
@@ -1368,6 +1373,12 @@ mod tests {
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
+    use super::direct_f_corridor::{
+        DirectFFiniteHingeCorridorAnalysis, DirectFFiniteHingeCorridorCapabilityV1,
+        DirectFFiniteHingeCorridorError, DirectFFiniteHingeCorridorLimits,
+        DirectFFiniteHingeCorridorResult, DirectFFiniteHingeCorridorWork,
+        analyze_direct_f_finite_hinge_corridor_v1, revalidate_direct_f_finite_hinge_corridor_v1,
+    };
     use super::ef_boundary::{
         AxisAlignedEfBoundaryAnalysis, AxisAlignedEfBoundaryCapabilityV1,
         AxisAlignedEfBoundaryError, AxisAlignedEfBoundaryLimits, AxisAlignedEfBoundaryWork,
@@ -1642,6 +1653,32 @@ mod tests {
             super::super::ExactTreePoseLimits::default(),
         )
         .expect("exact triangular pose")
+    }
+
+    fn direct_affine_point(
+        transform: ori_kinematics::RigidTransform,
+        source: ori_kinematics::Point3,
+    ) -> ExactPoint3 {
+        let rows = transform.rotation_rows();
+        let translation = transform.translation();
+        let source = [
+            BigRational::from_float(source.x()).unwrap(),
+            BigRational::from_float(source.y()).unwrap(),
+            BigRational::from_float(source.z()).unwrap(),
+        ];
+        let translation = [
+            BigRational::from_float(translation.x()).unwrap(),
+            BigRational::from_float(translation.y()).unwrap(),
+            BigRational::from_float(translation.z()).unwrap(),
+        ];
+        ExactPoint3 {
+            coordinates: std::array::from_fn(|row| {
+                let products = std::array::from_fn::<_, 3, _>(|column| {
+                    BigRational::from_float(rows[row][column]).unwrap() * &source[column]
+                });
+                &products[0] + &products[1] + &products[2] + &translation[row]
+            }),
+        }
     }
 
     fn prerequisite_kind(
@@ -2962,6 +2999,27 @@ mod tests {
         capability
     }
 
+    fn direct_f_corridor_capability<'a, 'prerequisite, 'ef, 'exact_e_corridor, 'exact, 'pose>(
+        analysis: &'a DirectFFiniteHingeCorridorAnalysis<
+            'prerequisite,
+            'ef,
+            'exact_e_corridor,
+            'exact,
+            'pose,
+        >,
+    ) -> &'a DirectFFiniteHingeCorridorCapabilityV1<
+        'prerequisite,
+        'ef,
+        'exact_e_corridor,
+        'exact,
+        'pose,
+    > {
+        let DirectFFiniteHingeCorridorResult::Contained(capability) = &analysis.result else {
+            panic!("direct-F finite hinge corridor must be contained");
+        };
+        capability
+    }
+
     #[test]
     fn exact_e_corridor_native_400mm_matrix_is_contained_and_closed_at_zero() {
         let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
@@ -3700,6 +3758,1416 @@ mod tests {
         assert!(matches!(
             projected.result,
             ExactEFiniteHingeCorridorResult::Contained(_)
+        ));
+        assert_eq!(projected.work, baseline.work);
+    }
+
+    #[test]
+    fn direct_f_400mm_matrix_fixes_96_contained_24_outside_and_minimum_excess_exactly() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let models = [
+            (
+                "mountain/source",
+                two_triangle_model_with_options(EdgeKind::Mountain, false, square, 501),
+            ),
+            (
+                "mountain/reordered",
+                two_triangle_model_with_options(EdgeKind::Mountain, true, square, 502),
+            ),
+            (
+                "valley/source",
+                two_triangle_model_with_options(EdgeKind::Valley, false, square, 503),
+            ),
+            (
+                "valley/reordered",
+                two_triangle_model_with_options(EdgeKind::Valley, true, square, 504),
+            ),
+        ];
+        let mut cases = 0_usize;
+        let mut contained_by_angle = [0_usize; 5];
+        let mut outside_by_angle = [0_usize; 5];
+        for (fixture, model) in &models {
+            for root in model.face_ids() {
+                for thickness in [0.1, 1.0, 3.0] {
+                    for (angle_index, angle) in
+                        [0.0, 10.0, 90.0, 135.0, 179.0].into_iter().enumerate()
+                    {
+                        cases += 1;
+                        let pose = triangular_pose_with_root(model, angle, *root);
+                        let bound = model.bind_pose(&pose).unwrap();
+                        let exact = triangular_exact_pose(model, &pose);
+                        let prerequisite_analysis =
+                            authenticated_ef_prerequisite(&exact, thickness);
+                        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+                            &prerequisite_analysis.result
+                        else {
+                            panic!(
+                                "{fixture}, root {root:?}, {thickness} mm at {angle}: prerequisite"
+                            );
+                        };
+                        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                            prerequisite,
+                            &exact,
+                            bound,
+                            thickness,
+                            AxisAlignedEfBoundaryLimits::default(),
+                        )
+                        .unwrap();
+                        let ef = ef_capability(&ef_analysis);
+                        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact,
+                            bound,
+                            thickness,
+                            ExactEFiniteHingeCorridorLimits::default(),
+                        )
+                        .unwrap();
+                        let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+                        let analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                            &prerequisite_analysis,
+                            Some(ef),
+                            &exact_e_analysis,
+                            &exact,
+                            bound,
+                            thickness,
+                            DirectFFiniteHingeCorridorLimits::default(),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("{fixture}, root {root:?}, {thickness} mm at {angle}: {error:?}")
+                        });
+                        assert_eq!(
+                            analysis.work.prism.input_rationals, 36,
+                            "direct-F uses the separately validated six-vertex prism entry"
+                        );
+                        assert_eq!(analysis.work.phase2b_exact, exact_e_analysis.work.exact);
+                        assert_cayley_work_is_monotone(
+                            &analysis.work.phase2b_exact,
+                            &analysis.work.exact,
+                        );
+                        assert!(analysis.work.corridor_vertex_tests <= 120);
+                        assert!(
+                            analysis.work.corridor_vertex_tests
+                                <= analysis.work.prism.candidate_vertices
+                        );
+                        let capability = match &analysis.result {
+                            DirectFFiniteHingeCorridorResult::Contained(capability) => {
+                                contained_by_angle[angle_index] += 1;
+                                assert_ne!(
+                                    angle, 90.0,
+                                    "literal direct-F must not round strict outside into containment"
+                                );
+                                capability
+                            }
+                            DirectFFiniteHingeCorridorResult::Outside(outside) => {
+                                outside_by_angle[angle_index] += 1;
+                                assert_eq!(
+                                    angle, 90.0,
+                                    "{fixture}, root {root:?}, {thickness} mm: {outside:?}"
+                                );
+                                assert_eq!(outside.interaction_kind, exact_e.interaction_kind());
+                                assert_eq!(outside.first_outside_vertex_index, 0);
+                                assert_eq!(outside.outside_vertex_count, 2);
+                                assert!(
+                                    analysis.work.corridor_vertex_tests
+                                        > outside.outside_vertex_count,
+                                    "outside detection must still scan every retained vertex"
+                                );
+                                assert!(!outside.axial_before_start);
+                                assert!(!outside.axial_after_end);
+                                assert!(outside.radial_outside);
+                                assert!(
+                                    outside
+                                        .first_radial_excess
+                                        .as_ref()
+                                        .is_some_and(BigRational::is_positive)
+                                );
+                                if cases == 3 {
+                                    let excess =
+                                        outside.first_radial_excess.as_ref().expect("excess");
+                                    // Minimal matrix fixture: Mountain/source,
+                                    // first root, 0.1 mm, 90 degrees.  The
+                                    // strict radial excess is about
+                                    // 5.46864692612954e-14 mm^4; it must not
+                                    // be rounded into a contained capability.
+                                    assert_eq!(
+                                        excess,
+                                        &BigRational::new(
+                                            BigInt::parse_bytes(
+                                                b"44993417196633807545963059937356168830766334170625",
+                                                10,
+                                            )
+                                            .unwrap(),
+                                            BigInt::parse_bytes(
+                                                b"822752278660603021077484591278675252491367932816789931674304512",
+                                                10,
+                                            )
+                                            .unwrap(),
+                                        )
+                                    );
+                                }
+                                continue;
+                            }
+                            other => {
+                                panic!(
+                                    "{fixture}, root {root:?}, {thickness} mm at {angle}: {other:?}"
+                                );
+                            }
+                        };
+                        let expected_kind = if angle == 0.0 {
+                            ExactEFiniteHingeInteractionKind::BoundaryAreaContact
+                        } else {
+                            ExactEFiniteHingeInteractionKind::PositiveVolume
+                        };
+                        assert_eq!(
+                            capability.interaction_kind(),
+                            expected_kind,
+                            "{fixture}, root {root:?}, {thickness} mm at {angle}"
+                        );
+                        assert_eq!(capability.interaction_kind(), exact_e.interaction_kind());
+                        assert_eq!(capability.length_squared(), &integer(320_000));
+                        assert_eq!(
+                            capability.half_thickness(),
+                            &(BigRational::from_float(thickness).unwrap() / integer(2))
+                        );
+                        if angle == 0.0 {
+                            assert_eq!(capability.cosine_half_squared(), &integer(1));
+                            assert_eq!(analysis.work.corridor_vertex_tests, 4);
+                        } else {
+                            assert!(analysis.work.corridor_vertex_tests >= 4);
+                        }
+                        let rebound = revalidate_direct_f_finite_hinge_corridor_v1(
+                            capability,
+                            prerequisite,
+                            ef,
+                            exact_e,
+                            &exact,
+                            bound,
+                            thickness,
+                        )
+                        .expect(
+                            "phase 1, EF, exact-E, all F bits, axis parent, pose and thickness",
+                        );
+                        assert!(std::ptr::eq(rebound.capability, capability.as_ref()));
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 120);
+        assert_eq!(contained_by_angle, [24, 24, 0, 24, 24]);
+        assert_eq!(outside_by_angle, [0, 0, 24, 0, 0]);
+    }
+
+    fn assert_cayley_work_is_monotone(prior: &CayleyWork, cumulative: &CayleyWork) {
+        for (before, after) in [
+            (prior.machin_terms, cumulative.machin_terms),
+            (prior.trig_terms, cumulative.trig_terms),
+            (prior.sqrt_refinements, cumulative.sqrt_refinements),
+            (prior.interval_operations, cumulative.interval_operations),
+            (prior.gcd_fallback_calls, cumulative.gcd_fallback_calls),
+            (
+                prior.gcd_fallback_input_bits,
+                cumulative.gcd_fallback_input_bits,
+            ),
+            (prior.rational_allocations, cumulative.rational_allocations),
+            (
+                prior.total_rational_allocation_bits,
+                cumulative.total_rational_allocation_bits,
+            ),
+        ] {
+            assert!(after >= before);
+        }
+        for (before, after) in [
+            (
+                prior.max_machin_series_terms,
+                cumulative.max_machin_series_terms,
+            ),
+            (
+                prior.max_trig_series_terms,
+                cumulative.max_trig_series_terms,
+            ),
+            (
+                prior.max_sqrt_call_refinements,
+                cumulative.max_sqrt_call_refinements,
+            ),
+            (prior.max_shift_bits, cumulative.max_shift_bits),
+            (prior.max_preflight_bits, cumulative.max_preflight_bits),
+            (prior.max_observed_bits, cumulative.max_observed_bits),
+            (
+                prior.max_gcd_fallback_call_input_bits,
+                cumulative.max_gcd_fallback_call_input_bits,
+            ),
+            (
+                prior.max_rational_allocation_bits,
+                cumulative.max_rational_allocation_bits,
+            ),
+            (prior.max_output_bits, cumulative.max_output_bits),
+        ] {
+            assert!(after >= before);
+        }
+    }
+
+    #[test]
+    fn direct_f_corridor_propagates_all_24_flat_fold_cases_without_f_work() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let models = [
+            two_triangle_model_with_options(EdgeKind::Mountain, false, square, 505),
+            two_triangle_model_with_options(EdgeKind::Mountain, true, square, 506),
+            two_triangle_model_with_options(EdgeKind::Valley, false, square, 507),
+            two_triangle_model_with_options(EdgeKind::Valley, true, square, 508),
+        ];
+        let mut cases = 0_usize;
+        for model in &models {
+            for root in model.face_ids() {
+                let pose = triangular_pose_with_root(model, 180.0, *root);
+                let bound = model.bind_pose(&pose).unwrap();
+                let exact = triangular_exact_pose(model, &pose);
+                for thickness in [0.1, 1.0, 3.0] {
+                    cases += 1;
+                    let prerequisite_analysis = authenticated_ef_prerequisite(&exact, thickness);
+                    let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                        &prerequisite_analysis,
+                        None,
+                        &exact,
+                        bound,
+                        thickness,
+                        ExactEFiniteHingeCorridorLimits::default(),
+                    )
+                    .unwrap();
+                    let analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                        &prerequisite_analysis,
+                        None,
+                        &exact_e_analysis,
+                        &exact,
+                        bound,
+                        thickness,
+                        DirectFFiniteHingeCorridorLimits::default(),
+                    )
+                    .unwrap();
+                    assert!(matches!(
+                        analysis.result,
+                        DirectFFiniteHingeCorridorResult::LayerOffsetUnmodeled
+                    ));
+                    assert_eq!(analysis.work, DirectFFiniteHingeCorridorWork::default());
+                }
+            }
+        }
+        assert_eq!(cases, 24);
+    }
+
+    #[test]
+    fn direct_f_corridor_axis_uses_parent_path_and_does_not_weld_child_endpoint_drift() {
+        let model = two_triangle_model_with_options(
+            EdgeKind::Mountain,
+            false,
+            [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)],
+            509,
+        );
+        let pose = triangular_pose_with_root(&model, 135.0, model.face_ids()[0]);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let capability = direct_f_corridor_capability(&direct_f_analysis);
+        let exact_hinge = &exact.hinges[0];
+        let native_hinge = &model.hinges()[0];
+        let parent_transform = pose
+            .hinge_parent_transform(exact_hinge.edge)
+            .expect("native hinge-parent transform");
+        assert_eq!(
+            parent_transform,
+            pose.face_transform(exact_hinge.parent)
+                .expect("parent face transform")
+        );
+        let child_transform = pose
+            .face_transform(exact_hinge.child)
+            .expect("child face transform");
+        let parent_start = direct_affine_point(parent_transform, native_hinge.start());
+        let parent_end = direct_affine_point(parent_transform, native_hinge.end());
+        let child_start = direct_affine_point(child_transform, native_hinge.start());
+        let child_end = direct_affine_point(child_transform, native_hinge.end());
+        assert!(
+            child_start != parent_start || child_end != parent_end,
+            "non-cardinal direct-lift F retains its exact affine endpoint drift"
+        );
+        assert_eq!(capability.axis_start(), &parent_start);
+        let observed_end = ExactPoint3 {
+            coordinates: std::array::from_fn(|axis| {
+                &capability.axis_start().coordinates[axis] + &capability.axis().coordinates[axis]
+            }),
+        };
+        assert_eq!(observed_end, parent_end);
+        assert!(
+            capability.axis_start() != &child_start || observed_end != child_end,
+            "the corridor axis must not average or weld the child path"
+        );
+    }
+
+    #[test]
+    fn direct_f_corridor_geometry_is_independent_of_every_ef_component_box() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 3.0);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let baseline_ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            3.0,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let mut mutated_ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            3.0,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let mutated_ef = mutated_ef_analysis
+            .capability
+            .as_mut()
+            .expect("mutated E/F capability");
+        let sentinel = integer(999_999);
+        for face in &mut mutated_ef.faces {
+            face.point_component_bound_mm = std::array::from_fn(|_| sentinel.clone());
+            face.normal_component_bound = std::array::from_fn(|_| sentinel.clone());
+            face.solid_component_bound_mm = std::array::from_fn(|_| sentinel.clone());
+            face.point_linf_bound_mm = sentinel.clone();
+            face.normal_linf_bound = sentinel.clone();
+            face.solid_linf_bound_mm = sentinel.clone();
+        }
+        mutated_ef.point_component_bound_mm = std::array::from_fn(|_| sentinel.clone());
+        mutated_ef.normal_component_bound = std::array::from_fn(|_| sentinel.clone());
+        mutated_ef.solid_component_bound_mm = std::array::from_fn(|_| sentinel.clone());
+        mutated_ef.point_linf_bound_mm = sentinel.clone();
+        mutated_ef.normal_linf_bound = sentinel.clone();
+        mutated_ef.solid_linf_bound_mm = sentinel;
+
+        let baseline_ef = ef_capability(&baseline_ef_analysis);
+        let mutated_ef = ef_capability(&mutated_ef_analysis);
+        let baseline_exact_e = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(baseline_ef),
+            &exact,
+            bound,
+            3.0,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let mutated_exact_e = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(mutated_ef),
+            &exact,
+            bound,
+            3.0,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let baseline = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(baseline_ef),
+            &baseline_exact_e,
+            &exact,
+            bound,
+            3.0,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let mutated = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(mutated_ef),
+            &mutated_exact_e,
+            &exact,
+            bound,
+            3.0,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let baseline_capability = direct_f_corridor_capability(&baseline);
+        let mutated_capability = direct_f_corridor_capability(&mutated);
+        assert_eq!(
+            baseline_capability.interaction_kind(),
+            mutated_capability.interaction_kind()
+        );
+        assert_eq!(
+            baseline_capability.length_squared(),
+            mutated_capability.length_squared()
+        );
+        assert_eq!(
+            baseline_capability.half_thickness(),
+            mutated_capability.half_thickness()
+        );
+        assert_eq!(
+            baseline_capability.cosine_half_squared(),
+            mutated_capability.cosine_half_squared()
+        );
+        assert_eq!(baseline.work, mutated.work);
+    }
+
+    #[test]
+    fn direct_f_corridor_rejects_tokens_aba_root_ulp_thickness_and_each_f_coefficient() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let independent_exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let duplicate_prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let SingleTriangularHingePrerequisiteResult::Authenticated(duplicate_prerequisite) =
+            &duplicate_prerequisite_analysis.result
+        else {
+            panic!("duplicate prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let duplicate_ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let duplicate_ef = ef_capability(&duplicate_ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let duplicate_exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+        let duplicate_exact_e = exact_e_corridor_capability(&duplicate_exact_e_analysis);
+        let mut direct_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let DirectFFiniteHingeCorridorResult::Contained(direct) = &mut direct_analysis.result
+        else {
+            panic!("direct F corridor");
+        };
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                prerequisite,
+                ef,
+                exact_e,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_some()
+        );
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                duplicate_prerequisite,
+                ef,
+                exact_e,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued phase-1 token"
+        );
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                prerequisite,
+                duplicate_ef,
+                exact_e,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued EF token"
+        );
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                prerequisite,
+                ef,
+                duplicate_exact_e,
+                &exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently issued exact-E corridor token"
+        );
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                prerequisite,
+                ef,
+                exact_e,
+                &independent_exact,
+                bound,
+                0.1,
+            )
+            .is_none(),
+            "independently regenerated exact pose"
+        );
+
+        let aba_pose = triangular_pose(&model, 135.0);
+        let aba_bound = model.bind_pose(&aba_pose).unwrap();
+        let rerooted_pose = triangular_pose_with_root(&model, 135.0, model.face_ids()[1]);
+        let rerooted_bound = model.bind_pose(&rerooted_pose).unwrap();
+        let one_ulp_pose = triangular_pose(&model, next_up(135.0));
+        let one_ulp_bound = model.bind_pose(&one_ulp_pose).unwrap();
+        for (name, mismatched_bound) in [
+            ("same-angle ABA", aba_bound),
+            ("different fixed root", rerooted_bound),
+            ("one-ULP angle", one_ulp_bound),
+        ] {
+            assert!(
+                revalidate_direct_f_finite_hinge_corridor_v1(
+                    direct,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    &exact,
+                    mismatched_bound,
+                    0.1,
+                )
+                .is_none(),
+                "{name}"
+            );
+        }
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                prerequisite,
+                ef,
+                exact_e,
+                &exact,
+                bound,
+                next_up(0.1),
+            )
+            .is_none(),
+            "one-ULP paper thickness"
+        );
+
+        let foreign = two_triangle_model_with_options(
+            EdgeKind::Mountain,
+            false,
+            [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)],
+            510,
+        );
+        let foreign_pose = triangular_pose(&foreign, 135.0);
+        let foreign_bound = foreign.bind_pose(&foreign_pose).unwrap();
+        assert!(
+            revalidate_direct_f_finite_hinge_corridor_v1(
+                direct,
+                prerequisite,
+                ef,
+                exact_e,
+                &exact,
+                foreign_bound,
+                0.1,
+            )
+            .is_none(),
+            "foreign model and pose"
+        );
+
+        let mut changed_coefficients = 0_usize;
+        for face in 0..2 {
+            for row in 0..3 {
+                for column in 0..3 {
+                    let original = direct.binary64_face_transforms[face].rotation[row][column];
+                    direct.binary64_face_transforms[face].rotation[row][column] = original ^ 1;
+                    assert!(
+                        revalidate_direct_f_finite_hinge_corridor_v1(
+                            direct,
+                            prerequisite,
+                            ef,
+                            exact_e,
+                            &exact,
+                            bound,
+                            0.1,
+                        )
+                        .is_none(),
+                        "face {face} rotation[{row}][{column}]"
+                    );
+                    direct.binary64_face_transforms[face].rotation[row][column] = original;
+                    changed_coefficients += 1;
+                }
+            }
+            for axis in 0..3 {
+                let original = direct.binary64_face_transforms[face].translation[axis];
+                direct.binary64_face_transforms[face].translation[axis] = original ^ 1;
+                assert!(
+                    revalidate_direct_f_finite_hinge_corridor_v1(
+                        direct,
+                        prerequisite,
+                        ef,
+                        exact_e,
+                        &exact,
+                        bound,
+                        0.1,
+                    )
+                    .is_none(),
+                    "face {face} translation[{axis}]"
+                );
+                direct.binary64_face_transforms[face].translation[axis] = original;
+                changed_coefficients += 1;
+            }
+        }
+        for row in 0..3 {
+            for column in 0..3 {
+                let original = direct.hinge_parent_transform.rotation[row][column];
+                direct.hinge_parent_transform.rotation[row][column] = original ^ 1;
+                assert!(
+                    revalidate_direct_f_finite_hinge_corridor_v1(
+                        direct,
+                        prerequisite,
+                        ef,
+                        exact_e,
+                        &exact,
+                        bound,
+                        0.1,
+                    )
+                    .is_none(),
+                    "hinge-parent rotation[{row}][{column}]"
+                );
+                direct.hinge_parent_transform.rotation[row][column] = original;
+                changed_coefficients += 1;
+            }
+        }
+        for axis in 0..3 {
+            let original = direct.hinge_parent_transform.translation[axis];
+            direct.hinge_parent_transform.translation[axis] = original ^ 1;
+            assert!(
+                revalidate_direct_f_finite_hinge_corridor_v1(
+                    direct,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    &exact,
+                    bound,
+                    0.1,
+                )
+                .is_none(),
+                "hinge-parent translation[{axis}]"
+            );
+            direct.hinge_parent_transform.translation[axis] = original;
+            changed_coefficients += 1;
+        }
+        assert_eq!(changed_coefficients, 36);
+    }
+
+    #[test]
+    fn direct_f_rejects_every_modified_phase2b_work_counter_and_seals_its_own_work() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let mut exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            exact_e_analysis
+                .authenticated_contained_capability_and_work()
+                .is_some()
+        );
+
+        let mut field_count = 0_usize;
+        let mut mutation_count = 0_usize;
+        macro_rules! reject_work_mutation {
+            ($field:expr, $name:expr) => {{
+                field_count += 1;
+                let original = $field;
+                $field = original.checked_add(1).expect("test counter increment");
+                let rejected = analyze_direct_f_finite_hinge_corridor_v1(
+                    &prerequisite_analysis,
+                    Some(ef),
+                    &exact_e_analysis,
+                    &exact,
+                    bound,
+                    0.1,
+                    DirectFFiniteHingeCorridorLimits::default(),
+                )
+                .unwrap();
+                let rejected_result = matches!(
+                    &rejected.result,
+                    DirectFFiniteHingeCorridorResult::Unresolved
+                );
+                let rejected_work_is_empty =
+                    rejected.work == DirectFFiniteHingeCorridorWork::default();
+                drop(rejected);
+                $field = original;
+                assert!(rejected_result, "{} upper", $name);
+                assert!(
+                    rejected_work_is_empty,
+                    "{} upper must not start F work",
+                    $name
+                );
+                mutation_count += 1;
+
+                if original > 0 {
+                    $field = original - 1;
+                    let rejected = analyze_direct_f_finite_hinge_corridor_v1(
+                        &prerequisite_analysis,
+                        Some(ef),
+                        &exact_e_analysis,
+                        &exact,
+                        bound,
+                        0.1,
+                        DirectFFiniteHingeCorridorLimits::default(),
+                    )
+                    .unwrap();
+                    let rejected_result = matches!(
+                        &rejected.result,
+                        DirectFFiniteHingeCorridorResult::Unresolved
+                    );
+                    let rejected_work_is_empty =
+                        rejected.work == DirectFFiniteHingeCorridorWork::default();
+                    drop(rejected);
+                    $field = original;
+                    assert!(rejected_result, "{} lower", $name);
+                    assert!(
+                        rejected_work_is_empty,
+                        "{} lower must not start F work",
+                        $name
+                    );
+                    mutation_count += 1;
+                }
+            }};
+        }
+        macro_rules! reject_work_fields {
+            ($base:expr, $prefix:literal, [$($field:ident),+ $(,)?]) => {
+                $(
+                    reject_work_mutation!(
+                        ($base).$field,
+                        concat!($prefix, stringify!($field))
+                    );
+                )+
+            };
+        }
+
+        reject_work_fields!(
+            exact_e_analysis.work,
+            "phase2b.",
+            [
+                authenticated_faces,
+                authenticated_hinges,
+                local_y_component_lifts,
+                thickness_lifts,
+                half_thickness_divisions,
+                scalar_reconstructions,
+                corridor_vertex_tests,
+            ]
+        );
+        reject_work_fields!(
+            exact_e_analysis.work.prism,
+            "phase2b.prism.",
+            [
+                prisms,
+                solid_vertices,
+                facets,
+                halfspaces,
+                prism_volume_tests,
+                facet_vertex_checks,
+                plane_triples,
+                singular_plane_triples,
+                nonsingular_solves,
+                membership_tests,
+                candidate_vertices,
+                dedup_comparisons,
+                affine_rank_tests,
+                support_plane_vertex_tests,
+                support_pair_tests,
+                input_rationals,
+                max_input_rational_storage_bits,
+                total_input_storage_bits,
+            ]
+        );
+        reject_work_fields!(
+            exact_e_analysis.work.prism.exact,
+            "phase2b.prism.exact.",
+            [
+                interval_operations,
+                machin_terms,
+                max_machin_series_terms,
+                trig_terms,
+                max_trig_series_terms,
+                sqrt_refinements,
+                max_sqrt_call_refinements,
+                max_shift_bits,
+                max_preflight_bits,
+                max_observed_bits,
+                gcd_fallback_calls,
+                gcd_fallback_input_bits,
+                max_gcd_fallback_call_input_bits,
+                rational_allocations,
+                max_rational_allocation_bits,
+                total_rational_allocation_bits,
+                max_output_bits,
+            ]
+        );
+        reject_work_fields!(
+            exact_e_analysis.work.exact,
+            "phase2b.exact.",
+            [
+                interval_operations,
+                machin_terms,
+                max_machin_series_terms,
+                trig_terms,
+                max_trig_series_terms,
+                sqrt_refinements,
+                max_sqrt_call_refinements,
+                max_shift_bits,
+                max_preflight_bits,
+                max_observed_bits,
+                gcd_fallback_calls,
+                gcd_fallback_input_bits,
+                max_gcd_fallback_call_input_bits,
+                rational_allocations,
+                max_rational_allocation_bits,
+                total_rational_allocation_bits,
+                max_output_bits,
+            ]
+        );
+        assert_eq!(field_count, 59);
+        assert!(mutation_count >= field_count);
+        assert!(
+            exact_e_analysis
+                .authenticated_contained_capability_and_work()
+                .is_some(),
+            "all test mutations must be restored"
+        );
+
+        let mut direct_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            direct_analysis
+                .authenticated_contained_capability_and_work()
+                .is_some()
+        );
+        let original = direct_analysis.work.local_exact.interval_operations;
+        direct_analysis.work.local_exact.interval_operations =
+            original.checked_add(1).expect("test counter increment");
+        assert!(
+            direct_analysis
+                .authenticated_contained_capability_and_work()
+                .is_none(),
+            "future C2 must not consume a direct-F analysis whose work was modified"
+        );
+        direct_analysis.work.local_exact.interval_operations = original;
+        assert!(
+            direct_analysis
+                .authenticated_contained_capability_and_work()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn direct_f_thickness_boundaries_are_exact_bit_bound_and_fail_closed() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+
+        for thickness in [0.01, f64::from_bits(1)] {
+            let prerequisite_analysis = authenticated_ef_prerequisite(&exact, thickness);
+            let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+                &prerequisite_analysis.result
+            else {
+                panic!("{thickness:e} mm prerequisite");
+            };
+            let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                prerequisite,
+                &exact,
+                bound,
+                thickness,
+                AxisAlignedEfBoundaryLimits::default(),
+            )
+            .unwrap();
+            let ef = ef_capability(&ef_analysis);
+            let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                &prerequisite_analysis,
+                Some(ef),
+                &exact,
+                bound,
+                thickness,
+                ExactEFiniteHingeCorridorLimits::default(),
+            )
+            .unwrap();
+            let exact_e = exact_e_corridor_capability(&exact_e_analysis);
+            let direct_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+                &prerequisite_analysis,
+                Some(ef),
+                &exact_e_analysis,
+                &exact,
+                bound,
+                thickness,
+                DirectFFiniteHingeCorridorLimits::default(),
+            )
+            .unwrap();
+            let direct = direct_f_corridor_capability(&direct_analysis);
+            let expected_half =
+                BigRational::from_float(thickness).expect("finite thickness") / integer(2);
+            assert!(expected_half.is_positive());
+            assert_eq!(
+                direct.half_thickness(),
+                &expected_half,
+                "t/2 must remain exact for {thickness:e} mm"
+            );
+            assert!(
+                revalidate_direct_f_finite_hinge_corridor_v1(
+                    direct,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    &exact,
+                    bound,
+                    thickness,
+                )
+                .is_some()
+            );
+            if thickness.to_bits() == 0.01_f64.to_bits() {
+                assert!(
+                    revalidate_direct_f_finite_hinge_corridor_v1(
+                        direct,
+                        prerequisite,
+                        ef,
+                        exact_e,
+                        &exact,
+                        bound,
+                        next_up(thickness),
+                    )
+                    .is_none(),
+                    "0.01 mm is bound by its full binary64 bit pattern"
+                );
+            }
+        }
+
+        let thickness = 0.1;
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, thickness);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("valid prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            thickness,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            thickness,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        for invalid in [0.0, -0.0, -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let rejected = analyze_direct_f_finite_hinge_corridor_v1(
+                &prerequisite_analysis,
+                Some(ef),
+                &exact_e_analysis,
+                &exact,
+                bound,
+                invalid,
+                DirectFFiniteHingeCorridorLimits::default(),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    rejected.result,
+                    DirectFFiniteHingeCorridorResult::Unresolved
+                ),
+                "{invalid:?}"
+            );
+            assert_eq!(
+                rejected.work,
+                DirectFFiniteHingeCorridorWork::default(),
+                "{invalid:?} must not begin F work"
+            );
+        }
+    }
+
+    fn direct_f_corridor_limits_from_work(
+        work: &DirectFFiniteHingeCorridorWork,
+    ) -> DirectFFiniteHingeCorridorLimits {
+        DirectFFiniteHingeCorridorLimits {
+            max_authenticated_faces: work.authenticated_faces,
+            max_authenticated_hinges: work.authenticated_hinges,
+            max_face_transform_bit_bindings: work.face_transform_bit_bindings,
+            max_hinge_parent_transform_bit_bindings: work.hinge_parent_transform_bit_bindings,
+            max_transform_scalar_lifts: work.transform_scalar_lifts,
+            max_source_coordinate_lifts: work.source_coordinate_lifts,
+            max_affine_point_reconstructions: work.affine_point_reconstructions,
+            max_material_normal_component_lifts: work.material_normal_component_lifts,
+            max_solid_vertex_constructions: work.solid_vertex_constructions,
+            max_thickness_lifts: work.thickness_lifts,
+            max_half_thickness_divisions: work.half_thickness_divisions,
+            max_scalar_reconstructions: work.scalar_reconstructions,
+            max_corridor_vertex_tests: work.corridor_vertex_tests,
+            prism: ExactPrismLimits {
+                max_prisms: work.prism.prisms,
+                max_solid_vertices: work.prism.solid_vertices,
+                max_facets: work.prism.facets,
+                max_halfspaces: work.prism.halfspaces,
+                max_prism_volume_tests: work.prism.prism_volume_tests,
+                max_facet_vertex_checks: work.prism.facet_vertex_checks,
+                max_plane_triples: work.prism.plane_triples,
+                max_singular_plane_triples: work.prism.singular_plane_triples,
+                max_nonsingular_solves: work.prism.nonsingular_solves,
+                max_membership_tests: work.prism.membership_tests,
+                max_candidate_vertices: work.prism.candidate_vertices,
+                max_dedup_comparisons: work.prism.dedup_comparisons,
+                max_affine_rank_tests: work.prism.affine_rank_tests,
+                max_support_plane_vertex_tests: work.prism.support_plane_vertex_tests,
+                max_support_pair_tests: work.prism.support_pair_tests,
+                max_input_rationals: work.prism.input_rationals,
+                max_input_rational_storage_bits: work.prism.max_input_rational_storage_bits,
+                max_total_input_storage_bits: work.prism.total_input_storage_bits,
+                exact: cayley_limits_from_observed_work(&work.prism.exact),
+            },
+            local_exact: cayley_limits_from_observed_work(&work.local_exact),
+            exact: cayley_limits_from_observed_work(&work.exact),
+        }
+    }
+
+    #[test]
+    fn direct_f_corridor_all_structural_and_exact_counters_have_one_short_limits() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 135.0);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact = triangular_exact_pose(&model, &pose);
+        let prerequisite_analysis = authenticated_ef_prerequisite(&exact, 0.1);
+        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
+            &prerequisite_analysis.result
+        else {
+            panic!("prerequisite");
+        };
+        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+            prerequisite,
+            &exact,
+            bound,
+            0.1,
+            AxisAlignedEfBoundaryLimits::default(),
+        )
+        .unwrap();
+        let ef = ef_capability(&ef_analysis);
+        let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact,
+            bound,
+            0.1,
+            ExactEFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let baseline = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            DirectFFiniteHingeCorridorLimits::default(),
+        )
+        .unwrap();
+        let exact_limits = direct_f_corridor_limits_from_work(&baseline.work);
+        let exact_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            exact_limits,
+        )
+        .unwrap();
+        assert!(matches!(
+            exact_analysis.result,
+            DirectFFiniteHingeCorridorResult::Contained(_)
+        ));
+        assert_eq!(exact_analysis.work, baseline.work);
+
+        let assert_one_short = |resource: &str, limits: DirectFFiniteHingeCorridorLimits| {
+            assert!(
+                matches!(
+                    analyze_direct_f_finite_hinge_corridor_v1(
+                        &prerequisite_analysis,
+                        Some(ef),
+                        &exact_e_analysis,
+                        &exact,
+                        bound,
+                        0.1,
+                        limits,
+                    ),
+                    Err(DirectFFiniteHingeCorridorError::ResourceLimitExceeded)
+                ),
+                "{resource}"
+            );
+        };
+        macro_rules! structural_one_short {
+            ($field:ident) => {
+                if exact_limits.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.$field -= 1;
+                    assert_one_short(stringify!($field), limits);
+                }
+            };
+        }
+        structural_one_short!(max_authenticated_faces);
+        structural_one_short!(max_authenticated_hinges);
+        structural_one_short!(max_face_transform_bit_bindings);
+        structural_one_short!(max_hinge_parent_transform_bit_bindings);
+        structural_one_short!(max_transform_scalar_lifts);
+        structural_one_short!(max_source_coordinate_lifts);
+        structural_one_short!(max_affine_point_reconstructions);
+        structural_one_short!(max_material_normal_component_lifts);
+        structural_one_short!(max_solid_vertex_constructions);
+        structural_one_short!(max_thickness_lifts);
+        structural_one_short!(max_half_thickness_divisions);
+        structural_one_short!(max_scalar_reconstructions);
+        structural_one_short!(max_corridor_vertex_tests);
+
+        macro_rules! prism_one_short {
+            ($field:ident) => {
+                if exact_limits.prism.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.prism.$field -= 1;
+                    assert_one_short(concat!("prism.", stringify!($field)), limits);
+                }
+            };
+        }
+        prism_one_short!(max_prisms);
+        prism_one_short!(max_solid_vertices);
+        prism_one_short!(max_facets);
+        prism_one_short!(max_halfspaces);
+        prism_one_short!(max_prism_volume_tests);
+        prism_one_short!(max_facet_vertex_checks);
+        prism_one_short!(max_plane_triples);
+        prism_one_short!(max_singular_plane_triples);
+        prism_one_short!(max_nonsingular_solves);
+        prism_one_short!(max_membership_tests);
+        prism_one_short!(max_candidate_vertices);
+        prism_one_short!(max_dedup_comparisons);
+        prism_one_short!(max_affine_rank_tests);
+        prism_one_short!(max_support_plane_vertex_tests);
+        prism_one_short!(max_support_pair_tests);
+        prism_one_short!(max_input_rationals);
+        prism_one_short!(max_input_rational_storage_bits);
+        prism_one_short!(max_total_input_storage_bits);
+
+        macro_rules! prism_exact_one_short {
+            ($field:ident) => {
+                if exact_limits.prism.exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.prism.exact.$field -= 1;
+                    assert_one_short(concat!("prism.exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        prism_exact_one_short!(max_interval_operations);
+        prism_exact_one_short!(max_shift_bits);
+        prism_exact_one_short!(max_intermediate_bits);
+        prism_exact_one_short!(max_gcd_fallback_calls);
+        prism_exact_one_short!(max_gcd_fallback_input_bits);
+        prism_exact_one_short!(max_rational_allocations);
+        prism_exact_one_short!(max_rational_allocation_bits);
+        prism_exact_one_short!(max_total_rational_allocation_bits);
+
+        macro_rules! local_exact_one_short {
+            ($field:ident) => {
+                if exact_limits.local_exact.$field > 0 {
+                    let mut limits = DirectFFiniteHingeCorridorLimits::default();
+                    limits.local_exact = exact_limits.local_exact;
+                    limits.local_exact.$field -= 1;
+                    assert_one_short(concat!("local_exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        local_exact_one_short!(max_interval_operations);
+        local_exact_one_short!(max_shift_bits);
+        local_exact_one_short!(max_intermediate_bits);
+        local_exact_one_short!(max_gcd_fallback_calls);
+        local_exact_one_short!(max_gcd_fallback_input_bits);
+        local_exact_one_short!(max_rational_allocations);
+        local_exact_one_short!(max_rational_allocation_bits);
+        local_exact_one_short!(max_total_rational_allocation_bits);
+
+        macro_rules! cumulative_exact_one_short {
+            ($field:ident) => {
+                if exact_limits.exact.$field > 0 {
+                    let mut limits = exact_limits;
+                    limits.exact.$field -= 1;
+                    assert_one_short(concat!("exact.", stringify!($field)), limits);
+                }
+            };
+        }
+        cumulative_exact_one_short!(max_interval_operations);
+        cumulative_exact_one_short!(max_shift_bits);
+        cumulative_exact_one_short!(max_intermediate_bits);
+        cumulative_exact_one_short!(max_gcd_fallback_calls);
+        cumulative_exact_one_short!(max_gcd_fallback_input_bits);
+        cumulative_exact_one_short!(max_rational_allocations);
+        cumulative_exact_one_short!(max_rational_allocation_bits);
+        cumulative_exact_one_short!(max_total_rational_allocation_bits);
+
+        let oversized_exact = oversized_cayley_limits();
+        let oversized = DirectFFiniteHingeCorridorLimits {
+            max_authenticated_faces: usize::MAX,
+            max_authenticated_hinges: usize::MAX,
+            max_face_transform_bit_bindings: usize::MAX,
+            max_hinge_parent_transform_bit_bindings: usize::MAX,
+            max_transform_scalar_lifts: usize::MAX,
+            max_source_coordinate_lifts: usize::MAX,
+            max_affine_point_reconstructions: usize::MAX,
+            max_material_normal_component_lifts: usize::MAX,
+            max_solid_vertex_constructions: usize::MAX,
+            max_thickness_lifts: usize::MAX,
+            max_half_thickness_divisions: usize::MAX,
+            max_scalar_reconstructions: usize::MAX,
+            max_corridor_vertex_tests: usize::MAX,
+            prism: ExactPrismLimits {
+                max_prisms: usize::MAX,
+                max_solid_vertices: usize::MAX,
+                max_facets: usize::MAX,
+                max_halfspaces: usize::MAX,
+                max_prism_volume_tests: usize::MAX,
+                max_facet_vertex_checks: usize::MAX,
+                max_plane_triples: usize::MAX,
+                max_singular_plane_triples: usize::MAX,
+                max_nonsingular_solves: usize::MAX,
+                max_membership_tests: usize::MAX,
+                max_candidate_vertices: usize::MAX,
+                max_dedup_comparisons: usize::MAX,
+                max_affine_rank_tests: usize::MAX,
+                max_support_plane_vertex_tests: usize::MAX,
+                max_support_pair_tests: usize::MAX,
+                max_input_rationals: usize::MAX,
+                max_input_rational_storage_bits: usize::MAX,
+                max_total_input_storage_bits: usize::MAX,
+                exact: oversized_exact,
+            },
+            local_exact: oversized_exact,
+            exact: oversized_exact,
+        };
+        let projected = analyze_direct_f_finite_hinge_corridor_v1(
+            &prerequisite_analysis,
+            Some(ef),
+            &exact_e_analysis,
+            &exact,
+            bound,
+            0.1,
+            oversized,
+        )
+        .unwrap();
+        assert!(matches!(
+            projected.result,
+            DirectFFiniteHingeCorridorResult::Contained(_)
         ));
         assert_eq!(projected.work, baseline.work);
     }

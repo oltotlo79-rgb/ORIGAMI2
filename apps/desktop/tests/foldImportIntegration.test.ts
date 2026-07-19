@@ -143,8 +143,8 @@ test('the FOLD modal makes all background regions inert', () => {
 
 test('apply closes and resets editor state only after success while errors keep the dialog', () => {
   const confirm = appFunction('confirmFoldImport', 'toggleBenchmark')
-  const tryBody = sourceSection(confirm, 'try {', '} catch (error) {')
-  const catchBody = sourceSection(confirm, '} catch (error) {', '} finally {')
+  const tryBody = sourceSection(confirm, 'try {', '} catch {')
+  const catchBody = sourceSection(confirm, '} catch {', '} finally {')
   const finallyBody = sourceSection(confirm, '} finally {', '\n    }\n  }')
   const applyIndex = tryBody.indexOf('await applyFoldImport(')
   const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
@@ -171,8 +171,9 @@ test('apply closes and resets editor state only after success while errors keep 
 
   assert.match(
     catchBody,
-    /setFoldImportError\(appMessage\(\{\s*ja: '取り込めませんでした: \{error\}',\s*en: 'Could not import: \{error\}',\s*\}, \{ error: message \}\)\)/u,
+    /const safeError = appMessage\(\s*appErrorLocalizedText\('fold_import_failed'\),\s*\)[\s\S]*setFoldImportError\(safeError\)[\s\S]*setCoreStatus\(safeError\)/u,
   )
+  assert.doesNotMatch(catchBody, /String\(error\)|\{ error:/u)
   assert.doesNotMatch(catchBody, /setFoldImportPreview\(null\)/u)
   assert.doesNotMatch(finallyBody, /setFoldImportPreview\(null\)/u)
   assert.match(finallyBody, /coreOperationRef\.current = false/u)
@@ -181,7 +182,7 @@ test('apply closes and resets editor state only after success while errors keep 
 
 test('performance data cannot outlive or obscure a FOLD project replacement', () => {
   const confirm = appFunction('confirmFoldImport', 'toggleBenchmark')
-  const tryBody = sourceSection(confirm, 'try {', '} catch (error) {')
+  const tryBody = sourceSection(confirm, 'try {', '} catch {')
   const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
   const clearBenchmarkIndex = tryBody.indexOf('setBenchmarkRun(null)')
 
@@ -195,7 +196,7 @@ test('performance data cannot outlive or obscure a FOLD project replacement', ()
     /ref=\{foldImportButtonRef\}[\s\S]*?disabled=\{coreBusy \|\| benchmarkLoading \|\| Boolean\(benchmarkRun\) \|\| !nativeSnapshot\}[\s\S]*?FOLD取込/u,
   )
   assert.doesNotMatch(
-    sourceSection(confirm, '} catch (error) {', '} finally {'),
+    sourceSection(confirm, '} catch {', '} finally {'),
     /setBenchmarkRun\(null\)/u,
   )
 })

@@ -45,7 +45,7 @@ test('snapshot replacement, validation errors, and benchmark mode cannot retain 
   )
   assert.match(
     appSource,
-    /setValidation\(null\)[\s\S]*?setCoreStatus\(appMessage\(\{\s*ja: '検証エラー: \{error\}',\s*en: 'Validation error: \{error\}',\s*\}, \{ error: String\(error\) \}\)\)/u,
+    /setValidation\(null\)[\s\S]*?setCoreStatus\(appMessage\(\s*appErrorLocalizedText\('validation_failed'\),\s*\)\)/u,
   )
 })
 

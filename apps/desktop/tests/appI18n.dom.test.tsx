@@ -1,5 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
 const coreMocks = vi.hoisted(() => ({
   generateBenchmarkPattern: vi.fn(),
@@ -17,7 +24,10 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => {
 
 import App from '../src/App.tsx'
 import { appConfirmationText } from '../src/lib/appMessages.ts'
-import { localeStore } from '../src/lib/i18n.ts'
+import {
+  LOCALE_STORAGE_KEY,
+  localeStore,
+} from '../src/lib/i18n.ts'
 import { themeStore } from '../src/lib/theme.ts'
 
 vi.mock('../src/components/CreaseCanvas', () => ({
@@ -40,11 +50,54 @@ vi.mock('../src/components/WorkspaceLayoutSeparator', () => ({
   WorkspaceLayoutSeparator: () => <div data-testid="workspace-separator" />,
 }))
 
+const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(
+  window,
+  'localStorage',
+)
+
+beforeEach(() => {
+  const values = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return values.size
+    },
+    clear() {
+      values.clear()
+    },
+    getItem(key) {
+      return values.get(key) ?? null
+    },
+    key(index) {
+      return [...values.keys()][index] ?? null
+    },
+    removeItem(key) {
+      values.delete(key)
+    },
+    setItem(key, value) {
+      values.set(key, value)
+    },
+  }
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: storage,
+  })
+})
+
 afterEach(() => {
   cleanup()
   coreMocks.generateBenchmarkPattern.mockReset()
   localeStore.dispose()
   themeStore.dispose()
+  window.localStorage.removeItem(LOCALE_STORAGE_KEY)
+  if (originalLocalStorageDescriptor) {
+    Object.defineProperty(
+      window,
+      'localStorage',
+      originalLocalStorageDescriptor,
+    )
+  } else {
+    Reflect.deleteProperty(window, 'localStorage')
+  }
   document.documentElement.lang = 'ja'
   document.body.replaceChildren()
 })
@@ -100,9 +153,10 @@ describe('App locale integration', () => {
     })).toBeTruthy()
   })
 
-  it('retranslates an existing asynchronous error without losing its variable', async () => {
+  it('retranslates an asynchronous error without exposing its payload', async () => {
+    const privateError = String.raw`C:\Users\alice\作品\private-project.ori`
     coreMocks.generateBenchmarkPattern.mockRejectedValueOnce(
-      new Error('E_TEST'),
+      new Error(privateError),
     )
     localeStore.dispose()
     localeStore.initialize()
@@ -112,16 +166,18 @@ describe('App locale integration', () => {
       name: '10,000本テスト',
     }))
     expect(await screen.findByText(
-      'ベンチマーク失敗: Error: E_TEST',
+      'ベンチマーク失敗: 性能テストを完了できませんでした。',
     )).toBeTruthy()
+    expect(document.body.textContent).not.toContain(privateError)
 
     fireEvent.change(screen.getByRole('combobox', {
       name: '表示言語',
     }), { target: { value: 'en' } })
 
     expect(await screen.findByText(
-      'Benchmark failed: Error: E_TEST',
+      'Benchmark failed: The performance test could not be completed.',
     )).toBeTruthy()
+    expect(document.body.textContent).not.toContain(privateError)
   })
 
   it('provides complete Japanese and English confirmation text', () => {

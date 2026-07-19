@@ -214,7 +214,10 @@ import {
   type LocalizedText,
   type MessageVariables,
 } from './lib/i18n'
-import { appConfirmationText } from './lib/appMessages'
+import {
+  appConfirmationText,
+  appErrorLocalizedText,
+} from './lib/appMessages'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{
@@ -350,7 +353,8 @@ function windowCloseAppMessage(message: string): AppMessage {
     }],
   ])
   return appMessage(
-    translated.get(message) ?? { ja: message, en: message },
+    translated.get(message)
+      ?? appErrorLocalizedText('window_close_status_invalid'),
   )
 }
 
@@ -1443,7 +1447,7 @@ function App() {
           }, { count: response.issues.length }))
         }
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (disposed || requestId !== topologyRequestIdRef.current) return
         const current = latestSnapshotRef.current
         if (
@@ -1453,10 +1457,9 @@ function App() {
         ) return
         reportUnexpected('app.topology_analysis')
         setTopologyResponse(null)
-        setTopologyStatus(appMessage({
-          ja: '3D解析エラー: {error}',
-          en: '3D analysis error: {error}',
-        }, { error: String(error) }))
+        setTopologyStatus(appMessage(
+          appErrorLocalizedText('topology_analysis_failed'),
+        ))
       })
 
     return () => {
@@ -1592,11 +1595,10 @@ function App() {
         en: 'Rust core revision {revision}',
       }, { revision: snapshot.revision }))
       return true
-    } catch (error) {
-      setCoreStatus(appMessage({
-        ja: 'コアエラー: {error}',
-        en: 'Core error: {error}',
-      }, { error: String(error) }))
+    } catch {
+      setCoreStatus(appMessage(
+        appErrorLocalizedText('native_edit_failed'),
+      ))
       return false
     } finally {
       coreOperationRef.current = false
@@ -2200,13 +2202,12 @@ function App() {
           local: localFlatFoldabilityCoreStatus(localPresentation, 'en'),
         }),
       }))
-    } catch (error) {
+    } catch {
       reportValidationUnexpected()
       setValidation(null)
-      setCoreStatus(appMessage({
-        ja: '検証エラー: {error}',
-        en: 'Validation error: {error}',
-      }, { error: String(error) }))
+      setCoreStatus(appMessage(
+        appErrorLocalizedText('validation_failed'),
+      ))
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2394,11 +2395,10 @@ function App() {
             ja: '「{name}」を保存しました',
             en: 'Saved “{name}”',
           }, { name: response.project.name }))
-    } catch (error) {
-      setCoreStatus(appMessage({
-        ja: 'ファイルエラー: {error}',
-        en: 'File error: {error}',
-      }, { error: String(error) }))
+    } catch {
+      setCoreStatus(appMessage(
+        appErrorLocalizedText('file_operation_failed'),
+      ))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2434,11 +2434,10 @@ function App() {
         ja: 'FOLDの線種・縮尺を確認してください',
         en: 'Review the FOLD line types and scale.',
       }))
-    } catch (error) {
-      setCoreStatus(appMessage({
-        ja: 'FOLD読込エラー: {error}',
-        en: 'FOLD read error: {error}',
-      }, { error: String(error) }))
+    } catch {
+      setCoreStatus(appMessage(
+        appErrorLocalizedText('fold_read_failed'),
+      ))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2458,11 +2457,10 @@ function App() {
         ja: 'FOLD取込をキャンセルしました',
         en: 'FOLD import cancelled',
       }))
-    } catch (error) {
-      setCoreStatus(appMessage({
-        ja: 'FOLD取込の後始末エラー: {error}',
-        en: 'FOLD import cleanup error: {error}',
-      }, { error: String(error) }))
+    } catch {
+      setCoreStatus(appMessage(
+        appErrorLocalizedText('fold_cleanup_failed'),
+      ))
     } finally {
       setFoldImportPreview(null)
       setFoldImportError(null)
@@ -2510,16 +2508,12 @@ function App() {
         en: 'Imported “{name}” from FOLD. A save location has not been set yet.',
       }, { name: snapshot.name }))
       requestAnimationFrame(() => foldImportButtonRef.current?.focus())
-    } catch (error) {
-      const message = String(error)
-      setFoldImportError(appMessage({
-        ja: '取り込めませんでした: {error}',
-        en: 'Could not import: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: 'FOLD取込エラー: {error}',
-        en: 'FOLD import error: {error}',
-      }, { error: message }))
+    } catch {
+      const safeError = appMessage(
+        appErrorLocalizedText('fold_import_failed'),
+      )
+      setFoldImportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2555,11 +2549,10 @@ function App() {
         ja: 'SVGの外周・線種・縮尺を確認してください',
         en: 'Review the SVG boundary, line types, and scale.',
       }))
-    } catch (error) {
-      setCoreStatus(appMessage({
-        ja: 'SVG読込エラー: {error}',
-        en: 'SVG read error: {error}',
-      }, { error: String(error) }))
+    } catch {
+      setCoreStatus(appMessage(
+        appErrorLocalizedText('svg_read_failed'),
+      ))
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -2583,16 +2576,12 @@ function App() {
       setSvgImportError(null)
       setSvgImportValidation(null)
       requestAnimationFrame(() => svgImportButtonRef.current?.focus())
-    } catch (error) {
-      const message = String(error)
-      setSvgImportError(appMessage({
-        ja: '取消を完了できませんでした: {error}',
-        en: 'Could not cancel: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: 'SVG取込の後始末エラー: {error}',
-        en: 'SVG import cleanup error: {error}',
-      }, { error: message }))
+    } catch {
+      const safeError = appMessage(
+        appErrorLocalizedText('svg_cleanup_failed'),
+      )
+      setSvgImportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2630,16 +2619,12 @@ function App() {
           height: validation.height_mm.toLocaleString('en'),
         }),
       }))
-    } catch (error) {
-      const message = String(error)
-      setSvgImportError(appMessage({
-        ja: '外周を検証できませんでした: {error}',
-        en: 'Could not validate the boundary: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: 'SVG外周検証エラー: {error}',
-        en: 'SVG boundary validation error: {error}',
-      }, { error: message }))
+    } catch {
+      const safeError = appMessage(
+        appErrorLocalizedText('svg_boundary_validation_failed'),
+      )
+      setSvgImportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2687,16 +2672,12 @@ function App() {
         en: 'Imported “{name}” from SVG. A save location has not been set yet.',
       }, { name: snapshot.name }))
       requestAnimationFrame(() => svgImportButtonRef.current?.focus())
-    } catch (error) {
-      const message = String(error)
-      setSvgImportError(appMessage({
-        ja: '取り込めませんでした: {error}',
-        en: 'Could not import: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: 'SVG取込エラー: {error}',
-        en: 'SVG import error: {error}',
-      }, { error: message }))
+    } catch {
+      const safeError = appMessage(
+        appErrorLocalizedText('svg_import_failed'),
+      )
+      setSvgImportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2752,17 +2733,13 @@ function App() {
           en: 'Review information loss for the {format} export.',
         }, { format: localizedCreaseExportFormatLabel(preview.format, 'en') }),
       }))
-    } catch (error) {
+    } catch {
       if (requestId !== creaseExportRequestIdRef.current) return
-      const message = String(error)
-      setCreaseExportError(appMessage({
-        ja: '書き出しデータを準備できませんでした: {error}',
-        en: 'Could not prepare export data: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: '展開図書き出しエラー: {error}',
-        en: 'Crease-pattern export error: {error}',
-      }, { error: message }))
+      const safeError = appMessage(
+        appErrorLocalizedText('crease_export_prepare_failed'),
+      )
+      setCreaseExportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       if (requestId === creaseExportRequestIdRef.current) {
         setFileOperation(null)
@@ -2813,16 +2790,12 @@ function App() {
         en: 'Crease-pattern export cancelled',
       }))
       requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
-    } catch (error) {
-      const message = String(error)
-      setCreaseExportError(appMessage({
-        ja: '取消を完了できませんでした: {error}',
-        en: 'Could not cancel: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: '展開図書き出しの後始末エラー: {error}',
-        en: 'Crease-pattern export cleanup error: {error}',
-      }, { error: message }))
+    } catch {
+      const safeError = appMessage(
+        appErrorLocalizedText('crease_export_cleanup_failed'),
+      )
+      setCreaseExportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       coreOperationRef.current = false
       setCoreBusy(false)
@@ -2875,16 +2848,12 @@ function App() {
         en: 'Exported {fileName}',
       }, { fileName: preview.suggested_file_name }))
       requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
-    } catch (error) {
-      const message = String(error)
-      setCreaseExportError(appMessage({
-        ja: '書き出せませんでした: {error}',
-        en: 'Could not export: {error}',
-      }, { error: message }))
-      setCoreStatus(appMessage({
-        ja: '展開図書き出しエラー: {error}',
-        en: 'Crease-pattern export error: {error}',
-      }, { error: message }))
+    } catch {
+      const safeError = appMessage(
+        appErrorLocalizedText('crease_export_save_failed'),
+      )
+      setCreaseExportError(safeError)
+      setCoreStatus(safeError)
     } finally {
       setFileOperation(null)
       coreOperationRef.current = false
@@ -3217,12 +3186,11 @@ function App() {
         bytes: formatBytes(payloadBytes, locale),
         responseMs: responseMs.toFixed(1),
       })))
-    } catch (error) {
+    } catch {
       reportUnexpected('app.benchmark')
-      setBenchmarkStatus(appMessage({
-        ja: 'ベンチマーク失敗: {error}',
-        en: 'Benchmark failed: {error}',
-      }, { error: String(error) }))
+      setBenchmarkStatus(appMessage(
+        appErrorLocalizedText('benchmark_failed'),
+      ))
     } finally {
       setBenchmarkLoading(false)
     }
@@ -3258,10 +3226,7 @@ function App() {
       <header className="titlebar" inert={modalOpen}>
         <div className="brand-mark" aria-hidden="true">◇</div>
         <strong>ORIGAMI2</strong>
-        <span
-          className="document-name"
-          title={nativeSnapshot?.current_path ?? undefined}
-        >
+        <span className="document-name">
           {nativeSnapshot?.name ?? text({
             ja: '無題のプロジェクト',
             en: 'Untitled project',
@@ -5096,7 +5061,12 @@ function toolLabel(tool: string, locale: Locale) {
     measure: { ja: '計測', en: 'Measure' },
   }
   const label = labels[tool]
-  return label ? selectLocalizedText(locale, label) : tool
+  return label
+    ? selectLocalizedText(locale, label)
+    : selectLocalizedText(locale, {
+        ja: '不明なツール',
+        en: 'Unknown tool',
+      })
 }
 
 function validationIssueLabel(code: string, locale: Locale) {
@@ -5180,7 +5150,12 @@ function validationIssueLabel(code: string, locale: Locale) {
     },
   }
   const label = labels[code]
-  return label ? selectLocalizedText(locale, label) : code
+  return label
+    ? selectLocalizedText(locale, label)
+    : selectLocalizedText(locale, {
+        ja: '不明な幾何検証問題',
+        en: 'Unknown geometry validation issue',
+      })
 }
 
 function localFlatFoldabilityCoreStatus(

@@ -43,6 +43,7 @@ const PREVIEW: InstructionExportPreview = {
 
 afterEach(() => {
   cleanup()
+  localeStore.setLocale('ja')
   localeStore.dispose()
   document.body.replaceChildren()
 })

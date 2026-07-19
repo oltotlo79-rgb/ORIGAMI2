@@ -189,8 +189,8 @@ test('the SVG modal makes every background region inert', () => {
 
 test('successful SVG apply resets editor, benchmark, and fold state only after replacement', () => {
   const confirm = appFunction('confirmSvgImport', 'toggleBenchmark')
-  const tryBody = sourceSection(confirm, 'try {', '} catch (error) {')
-  const catchBody = sourceSection(confirm, '} catch (error) {', '} finally {')
+  const tryBody = sourceSection(confirm, 'try {', '} catch {')
+  const catchBody = sourceSection(confirm, '} catch {', '} finally {')
   const finallyBody = sourceSection(confirm, '} finally {', '\n    }\n  }')
   const applyIndex = tryBody.indexOf('await applySvgImport(')
   const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
@@ -223,8 +223,9 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
   )
   assert.match(
     catchBody,
-    /setSvgImportError\(appMessage\(\{\s*ja: '取り込めませんでした: \{error\}',\s*en: 'Could not import: \{error\}',\s*\}, \{ error: message \}\)\)/u,
+    /const safeError = appMessage\(\s*appErrorLocalizedText\('svg_import_failed'\),\s*\)[\s\S]*?setSvgImportError\(safeError\)[\s\S]*?setCoreStatus\(safeError\)/u,
   )
+  assert.doesNotMatch(catchBody, /String\(error\)|\{error\}/u)
   assert.doesNotMatch(catchBody, /setSvgImportPreview\(null\)|setBenchmarkRun\(null\)/u)
   assert.doesNotMatch(finallyBody, /setSvgImportPreview\(null\)|setBenchmarkRun\(null\)/u)
   assert.match(finallyBody, /coreOperationRef\.current = false/u)
@@ -233,8 +234,8 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
 
 test('cancel invalidates the SVG preview token, keeps project state, and restores focus', () => {
   const cancel = appFunction('closeSvgImportDialog', 'confirmSvgImport')
-  const tryBody = sourceSection(cancel, 'try {', '} catch (error) {')
-  const catchBody = sourceSection(cancel, '} catch (error) {', '} finally {')
+  const tryBody = sourceSection(cancel, 'try {', '} catch {')
+  const catchBody = sourceSection(cancel, '} catch {', '} finally {')
   const finallyBody = sourceSection(cancel, '} finally {', '\n    }\n  }')
 
   assert.match(cancel, /const preview = svgImportPreview/u)
@@ -254,8 +255,9 @@ test('cancel invalidates the SVG preview token, keeps project state, and restore
   assert.doesNotMatch(catchBody, /setSvgImportPreview\(null\)/u)
   assert.match(
     catchBody,
-    /setSvgImportError\(appMessage\(\{\s*ja: '取消を完了できませんでした: \{error\}',\s*en: 'Could not cancel: \{error\}',\s*\}, \{ error: message \}\)\)/u,
+    /const safeError = appMessage\(\s*appErrorLocalizedText\('svg_cleanup_failed'\),\s*\)[\s\S]*?setSvgImportError\(safeError\)[\s\S]*?setCoreStatus\(safeError\)/u,
   )
+  assert.doesNotMatch(catchBody, /String\(error\)|\{error\}/u)
   assert.doesNotMatch(finallyBody, /setSvgImportPreview\(null\)/u)
   assert.match(finallyBody, /coreOperationRef\.current = false/u)
 })
@@ -294,13 +296,20 @@ test('the SVG dialog requires native geometry validation, every mapping, and exp
     /unresolved\.length === 0\s*&&\s*boundaryIsValid\s*&&\s*validationMatches\s*&&\s*boundaryConfirmed\s*&&\s*warningsAcknowledged\s*&&\s*\(!hasValidatedCuts \|\| cuttingAllowedConfirmed\)/u,
   )
   assert.match(dialogSource, /最大の輪郭を自動採用せず/u)
-  assert.match(dialogSource, /formatSvgViewBox\(preview\.root_view_box\)/u)
-  assert.match(dialogSource, /formatSvgPhysicalSize\(preview\.root_physical_size\)/u)
+  assert.match(dialogSource, /const locale = useLocale\(\)/u)
+  assert.match(dialogSource, /formatSvgViewBox\(preview\.root_view_box, locale\)/u)
+  assert.match(dialogSource, /formatSvgPhysicalSize\(preview\.root_physical_size, locale\)/u)
   assert.match(dialogSource, /Rust検証済みの用紙寸法:/u)
-  assert.match(dialogSource, /formatSvgNumber\(validation\.width_mm\)/u)
-  assert.match(dialogSource, /formatSvgNumber\(validation\.height_mm\)/u)
-  assert.match(dialogSource, /<option value="">選択してください<\/option>/u)
-  assert.match(dialogSource, /<option value="groups">下の線種割当で「用紙境界」を指定<\/option>/u)
+  assert.match(dialogSource, /formatSvgNumber\(validation\.width_mm, locale\)/u)
+  assert.match(dialogSource, /formatSvgNumber\(validation\.height_mm, locale\)/u)
+  assert.match(
+    dialogSource,
+    /<option value="">[\s\S]*?selectLocalizedText\(locale, TEXT\.selectPrompt\)[\s\S]*?<\/option>/u,
+  )
+  assert.match(
+    dialogSource,
+    /<option value="groups">[\s\S]*?selectLocalizedText\(locale, TEXT\.boundaryFromGroups\)[\s\S]*?<\/option>/u,
+  )
   assert.match(
     dialogSource,
     /preview\.boundary_candidates\.map\(\(candidate, index\) => \(/u,
@@ -319,8 +328,11 @@ test('the SVG dialog requires native geometry validation, every mapping, and exp
   )
   assert.match(
     dialogSource,
-    /preview\.style_groups\.map\(\(group, index\) => \{[\s\S]*?aria-label=\{`線種候補 \$\{index \+ 1\} の割当`\}/u,
+    /preview\.style_groups\.map\(\(group, index\) => \{[\s\S]*?aria-label=\{formatLocalizedText\(locale, TEXT\.mappingLabel,/u,
   )
+  assert.match(dialogSource, /svgImportStyleLabel\(group, locale\)/u)
+  assert.match(dialogSource, /localizedSvgImportTargetOptions\([\s\S]*?locale,/u)
+  assert.match(dialogSource, /svgImportWarningText\(warning, locale\)/u)
   assert.match(
     dialogSource,
     /preview\.warnings\.length === 0/u,

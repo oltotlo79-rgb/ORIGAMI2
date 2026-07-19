@@ -5,12 +5,14 @@ import {
   isValidSvgImportName,
   isSvgImportTarget,
   isSvgImportLineCap,
+  localizedSvgImportTargetOptions,
   parseSvgImportScale,
   safeSvgStrokeColor,
   svgImportBoundaryIsValid,
   svgImportPreviewBounds,
   svgImportStyleLabel,
   svgImportTargetOptions,
+  svgImportWarningText,
   unresolvedSvgImportGroups,
   type SvgImportPreview,
   type SvgImportStyleGroup,
@@ -98,6 +100,17 @@ test('candidate boundaries remove the conflicting boundary mapping option', () =
     svgImportTargetOptions(7).some(({ value }) => value === 'boundary'),
     false,
   )
+  assert.deepEqual(
+    localizedSvgImportTargetOptions(null, 'en').map(({ label }) => label),
+    [
+      'Paper boundary',
+      'Mountain fold',
+      'Valley fold',
+      'Auxiliary line',
+      'Cut line',
+      'Do not import',
+    ],
+  )
 })
 
 test('SVG style labels remain textual and color previews accept only canonical hex', () => {
@@ -105,11 +118,44 @@ test('SVG style labels remain textual and color previews accept only canonical h
     svgImportStyleLabel(groups[0]),
     'レイヤー: 外周 / class: paper / 代表ID: paper-outline / 属性: data-origami-kind=boundary / 色: #000000 / 線端: butt',
   )
+  assert.equal(
+    svgImportStyleLabel(groups[0], 'en'),
+    'Layer: 外周 / class: paper / Representative ID: paper-outline / Attribute: data-origami-kind=boundary / Color: #000000 / Line cap: butt',
+  )
   assert.equal(safeSvgStrokeColor('#A0b1C2'), '#a0b1c2')
   assert.equal(safeSvgStrokeColor('#a0b1c280'), '#a0b1c280')
   for (const unsafe of ['red', 'rgb(1 2 3)', 'url(https://example.test/a)', '#abcd']) {
     assert.equal(safeSvgStrokeColor(unsafe), null)
   }
+})
+
+test('SVG warning presentation translates only known bounded categories', () => {
+  assert.equal(
+    svgImportWarningText(
+      'SVG内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。',
+      'en',
+    ),
+    'The SVG title does not meet the project-name requirements, so the default project name will be used.',
+  )
+  assert.equal(
+    svgImportWarningText('未対応の要素「foreignObject」を除外（3件）。', 'en'),
+    'Unsupported SVG elements were excluded (3 occurrences).',
+  )
+  assert.equal(
+    svgImportWarningText(
+      '表示上限により42本の線をプレビューから省略しました。取込本体からは省略しません。',
+      'en',
+    ),
+    '42 lines were omitted from the preview display limit. They will still be imported.',
+  )
+  assert.equal(
+    svgImportWarningText('hostile internal detail', 'en'),
+    'Some SVG information will not be imported or will be changed.',
+  )
+  assert.equal(
+    svgImportWarningText('日本語の既知外警告', 'ja'),
+    '日本語の既知外警告',
+  )
 })
 
 test('SVG import rejects old or malformed line-cap wire values instead of merging them', () => {

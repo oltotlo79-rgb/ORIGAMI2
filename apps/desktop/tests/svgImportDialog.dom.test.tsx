@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,6 +11,7 @@ import type {
   SvgImportPreview,
   SvgImportSettingsValidation,
 } from '../src/lib/svgImport'
+import { localeStore } from '../src/lib/i18n.ts'
 
 const PREVIEW: SvgImportPreview = {
   import_id: '018f47d1-5c9f-7d42-8e91-2b90da8f61a4',
@@ -73,10 +75,71 @@ const VALIDATION: SvgImportSettingsValidation = {
 
 afterEach(() => {
   cleanup()
+  localeStore.setLocale('ja')
+  localeStore.dispose()
   document.body.replaceChildren()
 })
 
 describe('SvgImportDialog DOM interactions', () => {
+  it('translates all review controls, source metadata labels, and warnings live', () => {
+    localeStore.initialize()
+    localeStore.setLocale('en')
+    renderDialog({
+      preview: {
+        ...PREVIEW,
+        warnings: [
+          'SVG内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。',
+        ],
+      },
+    })
+
+    expect(screen.getByRole('dialog', {
+      name: 'Review boundary, line types, and scale',
+    })).toBeTruthy()
+    expect(screen.getByRole('img', {
+      name: 'Preview of the SVG line drawing to import',
+    })).toBeTruthy()
+    expect(screen.getByText('Selected SVG file')).toBeTruthy()
+    expect(screen.getByText('4 segments')).toBeTruthy()
+    expect(screen.getByText('1 group')).toBeTruthy()
+    expect(screen.getByText('0 candidates')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'Project name' })).toHaveProperty(
+      'value',
+      'テスト作品',
+    )
+    expect(screen.getByRole('combobox', {
+      name: 'Boundary selection method',
+    })).toBeTruthy()
+    const mapping = screen.getByRole('combobox', {
+      name: 'Assignment for line type candidate 1',
+    }) as HTMLSelectElement
+    expect([...mapping.options].map((option) => option.textContent)).toEqual([
+      'Select an option',
+      'Paper boundary',
+      'Mountain fold',
+      'Valley fold',
+      'Auxiliary line',
+      'Cut line',
+      'Do not import',
+    ])
+    expect(screen.getByText(
+      'The SVG title does not meet the project-name requirements, so the default project name will be used.',
+    )).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Import' })).toBeTruthy()
+
+    act(() => {
+      localeStore.setLocale('ja')
+    })
+    expect(screen.getByRole('dialog', {
+      name: '外周・線種・縮尺を確認',
+    })).toBeTruthy()
+    expect(screen.getByText('4本')).toBeTruthy()
+    expect(screen.getByRole('combobox', {
+      name: '外周の指定方法',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '取り込む' })).toBeTruthy()
+  })
+
   it('renders the source dash sample with the native line-cap value', () => {
     renderDialog()
 

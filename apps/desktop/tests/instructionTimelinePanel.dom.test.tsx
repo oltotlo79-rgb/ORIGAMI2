@@ -67,6 +67,7 @@ const APPLIED_POSE: FoldPreviewAppliedPoseSnapshot = {
 
 afterEach(() => {
   cleanup()
+  localeStore.setLocale('ja')
   localeStore.dispose()
   document.body.replaceChildren()
   vi.restoreAllMocks()

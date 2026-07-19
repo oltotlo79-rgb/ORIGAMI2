@@ -42,6 +42,7 @@ const PREVIEW: FoldImportPreview = {
 
 afterEach(() => {
   cleanup()
+  localeStore.setLocale('ja')
   localeStore.dispose()
   document.body.replaceChildren()
 })

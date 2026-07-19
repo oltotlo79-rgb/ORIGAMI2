@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { LengthValueInput } from '../src/components/LengthValueInput.tsx'
@@ -7,6 +7,7 @@ import {
   readLengthInputMillimetres,
   type ResolvedLengthDisplayUnit,
 } from '../src/lib/lengthUnit.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -25,6 +26,29 @@ const CENTIMETRES: ResolvedLengthDisplayUnit = Object.freeze({
 })
 
 describe('LengthValueInput', () => {
+  it('subscribes to locale changes without rewriting its caller-owned label', () => {
+    const localeStore = localeFixture('ja')
+    render(
+      <LengthValueInput
+        name="length"
+        initialMillimetres={25}
+        unit={CENTIMETRES}
+        ariaLabel="External dimension"
+        localeStore={localeStore}
+      />,
+    )
+    expect(screen.getByRole('spinbutton', {
+      name: 'External dimension',
+    })).toHaveProperty('value', '2.5')
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+    expect(screen.getByRole('spinbutton', {
+      name: 'External dimension',
+    })).toHaveProperty('value', '2.5')
+  })
+
   it('preserves the exact source number while the converted input is untouched', () => {
     const source = 0.10000000000000002
     let submitted: number | null = null

@@ -16,6 +16,7 @@ import type {
   RecoveryCandidateAvailable,
   RecoveryCandidateInvalid,
 } from '../src/lib/recoveryClient'
+import { localeFixture } from './localeTestFixture.ts'
 
 const RECOVERY_ID = '10000000-0000-4000-8000-000000000001'
 const PROJECT_ID = '20000000-0000-4000-8000-000000000002'
@@ -40,6 +41,21 @@ afterEach(() => {
 })
 
 describe('RecoveryDialog DOM interactions', () => {
+  it('localizes the mandatory decision and metadata in English', () => {
+    renderDialog({ localeStore: localeFixture('en') })
+
+    expect(screen.getByRole('dialog', {
+      name: 'Restore unsaved edits?',
+    })).toBeTruthy()
+    expect(screen.getByText('Last updated')).toBeTruthy()
+    expect(screen.getByText(
+      /original file is never overwritten automatically/u,
+    )).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeTruthy()
+  })
+
   it('shows only safe available metadata and requires an explicit decision', async () => {
     const onRestore = vi.fn()
     const onDiscard = vi.fn()
@@ -227,6 +243,7 @@ function dialogElement(overrides: Partial<RecoveryDialogProps> = {}) {
       onRestore={overrides.onRestore ?? vi.fn()}
       onDiscard={overrides.onDiscard ?? vi.fn()}
       onRetry={overrides.onRetry ?? vi.fn()}
+      localeStore={overrides.localeStore}
     />
   )
 }

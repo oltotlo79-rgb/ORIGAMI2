@@ -8,18 +8,33 @@ import {
   type KeyboardEvent,
 } from 'react'
 import {
+  formatLocalizedText,
+  localeStore,
+  selectLocalizedText,
+  useLocale,
+  type Locale,
+  type LocaleStore,
+  type LocalizedText,
+} from '../lib/i18n'
+import {
   evaluatePositiveMillimetreExpression,
   MAX_NUMERIC_EXPRESSION_SOURCE_BYTES,
   numericExpressionNativeErrorCategory,
   type AdoptedMillimetreExpression,
+  type NumericExpressionErrorCategory,
   type NumericExpressionNativeTransport,
 } from '../lib/numericExpressionNative'
+
+type NumericExpressionRejection =
+  | 'empty'
+  | 'unknown'
+  | NumericExpressionErrorCategory
 
 type EvaluationState =
   | Readonly<{ kind: 'idle' }>
   | Readonly<{ kind: 'evaluating' }>
   | Readonly<{ kind: 'accepted'; result: AdoptedMillimetreExpression }>
-  | Readonly<{ kind: 'rejected'; message: string }>
+  | Readonly<{ kind: 'rejected'; reason: NumericExpressionRejection }>
 
 export type NumericExpressionInputProps = Readonly<{
   id: string
@@ -28,6 +43,7 @@ export type NumericExpressionInputProps = Readonly<{
   disabled?: boolean
   ariaLabel: string
   transport?: NumericExpressionNativeTransport
+  localeStore?: LocaleStore
 }>
 
 export function NumericExpressionInput({
@@ -37,7 +53,11 @@ export function NumericExpressionInput({
   disabled = false,
   ariaLabel,
   transport,
+  localeStore: localeStore_ = localeStore,
 }: NumericExpressionInputProps) {
+  const locale = useLocale(localeStore_)
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
   const [source, setSource] = useState(defaultSource)
   const [evaluation, setEvaluation] = useState<EvaluationState>({ kind: 'idle' })
   const [showEvaluation, setShowEvaluation] = useState(true)
@@ -60,7 +80,7 @@ export function NumericExpressionInput({
     const generation = generationRef.current + 1
     generationRef.current = generation
     if (!candidate.trim()) {
-      setEvaluation({ kind: 'rejected', message: '式を入力してください。' })
+      setEvaluation({ kind: 'rejected', reason: 'empty' })
       return
     }
     setEvaluation({ kind: 'evaluating' })
@@ -81,7 +101,7 @@ export function NumericExpressionInput({
       ) return
       setEvaluation({
         kind: 'rejected',
-        message: numericExpressionInputErrorMessage(error),
+        reason: numericExpressionNativeErrorCategory(error) ?? 'unknown',
       })
     }
   }, [transport])
@@ -149,15 +169,21 @@ export function NumericExpressionInput({
         className={`numeric-expression-status numeric-expression-${evaluation.kind}`}
         aria-live="polite"
       >
-        {evaluation.kind === 'idle' && '式を入力できます（例: 200 * sqrt(2)）'}
-        {evaluation.kind === 'evaluating' && '式を評価しています…'}
-        {evaluation.kind === 'rejected' && evaluation.message}
+        {evaluation.kind === 'idle' && text(NUMERIC_EXPRESSION_TEXT.idle)}
+        {evaluation.kind === 'evaluating'
+          && text(NUMERIC_EXPRESSION_TEXT.evaluating)}
+        {evaluation.kind === 'rejected'
+          && numericExpressionInputErrorMessage(evaluation.reason, locale)}
         {evaluation.kind === 'accepted' && (
           <>
             <span>
               {showEvaluation
-                ? adoptedValueLabel(evaluation.result)
-                : `式: ${evaluation.result.source}`}
+                ? adoptedValueLabel(evaluation.result, locale)
+                : formatLocalizedText(
+                  locale,
+                  NUMERIC_EXPRESSION_TEXT.source,
+                  { source: evaluation.result.source },
+                )}
             </span>
             <button
               type="button"
@@ -167,7 +193,9 @@ export function NumericExpressionInput({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => setShowEvaluation((current) => !current)}
             >
-              {showEvaluation ? '式を表示' : '評価値を表示'}
+              {showEvaluation
+                ? text(NUMERIC_EXPRESSION_TEXT.showSource)
+                : text(NUMERIC_EXPRESSION_TEXT.showValue)}
             </button>
           </>
         )}
@@ -176,30 +204,81 @@ export function NumericExpressionInput({
   )
 }
 
-function adoptedValueLabel(result: AdoptedMillimetreExpression) {
-  const prefix = result.evaluation.exact ? '評価値' : '保証区間から採用'
-  return `${prefix}: ${result.value.toPrecision(15)} mm`
+function adoptedValueLabel(
+  result: AdoptedMillimetreExpression,
+  locale: Locale,
+) {
+  const template = result.evaluation.exact
+    ? NUMERIC_EXPRESSION_TEXT.exactValue
+    : NUMERIC_EXPRESSION_TEXT.guaranteedValue
+  return formatLocalizedText(locale, template, {
+    value: result.value.toPrecision(15),
+  })
 }
 
-function numericExpressionInputErrorMessage(error: unknown) {
-  const category = numericExpressionNativeErrorCategory(error)
-  if (category) {
-    switch (category) {
-      case 'invalid_request':
-        return '式が空か、入力上限を超えています。'
-      case 'invalid_expression':
-        return '式を解釈できません。演算子や括弧を確認してください。'
-      case 'resource_limit':
-        return '式が複雑すぎるため評価を中止しました。'
-      case 'result_out_of_range':
-        return '正のmm値として安全に採用できる精度ではありません。'
-      case 'native_unavailable':
-        return '式の評価はデスクトップ版で利用できます。'
-      case 'invalid_response':
-      case 'stale_response':
-      case 'internal_failure':
-        return '式の評価結果を採用できませんでした。'
-    }
-  }
-  return '式の評価結果を採用できませんでした。'
+function numericExpressionInputErrorMessage(
+  reason: NumericExpressionRejection,
+  locale: Locale,
+) {
+  return selectLocalizedText(locale, NUMERIC_EXPRESSION_ERROR_TEXT[reason])
 }
+
+const NUMERIC_EXPRESSION_TEXT = Object.freeze({
+  idle: Object.freeze({
+    ja: '式を入力できます（例: 200 * sqrt(2)）',
+    en: 'Enter an expression (example: 200 * sqrt(2))',
+  }),
+  evaluating: Object.freeze({
+    ja: '式を評価しています…',
+    en: 'Evaluating expression…',
+  }),
+  source: Object.freeze({ ja: '式: {source}', en: 'Expression: {source}' }),
+  showSource: Object.freeze({ ja: '式を表示', en: 'Show expression' }),
+  showValue: Object.freeze({ ja: '評価値を表示', en: 'Show value' }),
+  exactValue: Object.freeze({
+    ja: '評価値: {value} mm',
+    en: 'Value: {value} mm',
+  }),
+  guaranteedValue: Object.freeze({
+    ja: '保証区間から採用: {value} mm',
+    en: 'Adopted from guaranteed interval: {value} mm',
+  }),
+})
+
+const FAILED_EVALUATION_TEXT = Object.freeze({
+  ja: '式の評価結果を採用できませんでした。',
+  en: 'The expression result could not be accepted.',
+})
+
+const NUMERIC_EXPRESSION_ERROR_TEXT: Readonly<
+  Record<NumericExpressionRejection, LocalizedText>
+> = Object.freeze({
+  empty: Object.freeze({
+    ja: '式を入力してください。',
+    en: 'Enter an expression.',
+  }),
+  invalid_request: Object.freeze({
+    ja: '式が空か、入力上限を超えています。',
+    en: 'The expression is empty or exceeds the input limit.',
+  }),
+  invalid_expression: Object.freeze({
+    ja: '式を解釈できません。演算子や括弧を確認してください。',
+    en: 'The expression could not be parsed. Check its operators and parentheses.',
+  }),
+  resource_limit: Object.freeze({
+    ja: '式が複雑すぎるため評価を中止しました。',
+    en: 'Evaluation stopped because the expression is too complex.',
+  }),
+  result_out_of_range: Object.freeze({
+    ja: '正のmm値として安全に採用できる精度ではありません。',
+    en: 'The result is not precise enough to safely accept as a positive mm value.',
+  }),
+  native_unavailable: Object.freeze({
+    ja: '式の評価はデスクトップ版で利用できます。',
+    en: 'Expression evaluation is available in the desktop app.',
+  }),
+  invalid_response: FAILED_EVALUATION_TEXT,
+  stale_response: FAILED_EVALUATION_TEXT,
+  internal_failure: FAILED_EVALUATION_TEXT,
+  unknown: FAILED_EVALUATION_TEXT,
+})

@@ -7,6 +7,14 @@ import {
 } from 'react'
 
 import {
+  formatLocalizedText,
+  localeStore,
+  selectLocalizedText,
+  useLocale,
+  type LocaleStore,
+  type LocalizedText,
+} from '../lib/i18n.ts'
+import {
   HISTORY_LIMIT_SCHEMA_VERSION,
   historyLimitClient,
   historyLimitSettingsMatchExpectedBinding,
@@ -20,11 +28,6 @@ import {
   type SetHistoryEntryLimitRequest,
 } from '../lib/historyLimitClient.ts'
 
-const INVALID_VALUE_ERROR =
-  '履歴件数は1から128までの整数で入力してください。'
-const APPLY_ERROR =
-  '履歴件数を変更できませんでした。現在のプロジェクトを確認して、もう一度お試しください。'
-
 export type HistoryLimitControlProps = Readonly<{
   settings: HistoryLimitSettings
   expectedProjectInstanceId: string
@@ -35,6 +38,7 @@ export type HistoryLimitControlProps = Readonly<{
   onApplied: (
     settings: HistoryLimitSettings,
   ) => void | Promise<void>
+  localeStore?: LocaleStore
 }>
 
 type ControlAuthority = Readonly<{
@@ -51,7 +55,11 @@ export function HistoryLimitControl({
   client = historyLimitClient,
   disabled = false,
   onApplied,
+  localeStore: localeStore_ = localeStore,
 }: HistoryLimitControlProps) {
+  const locale = useLocale(localeStore_)
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
   const authority = prepareControlAuthority(
     settings,
     expectedProjectInstanceId,
@@ -112,9 +120,9 @@ export function HistoryLimitControl({
   const effectiveDisabled = disabled || pending || authority === null
   const applyDisabled = effectiveDisabled || draftInvalid || unchanged
   const errorMessage = operationError || authority === null
-    ? APPLY_ERROR
+    ? text(HISTORY_LIMIT_TEXT.applyError)
     : draftInvalid
-      ? INVALID_VALUE_ERROR
+      ? text(HISTORY_LIMIT_TEXT.invalidValueError)
       : null
   const errorId = errorMessage ? 'history-limit-error' : null
   const describedBy = errorId
@@ -196,18 +204,20 @@ export function HistoryLimitControl({
       className="history-limit-control"
       aria-busy={pending}
     >
-      <legend>Undo・Redo履歴の上限</legend>
+      <legend>{text(HISTORY_LIMIT_TEXT.legend)}</legend>
       <p>
-        現在の上限:
+        {text(HISTORY_LIMIT_TEXT.currentLimit)}
         {' '}
-        <output aria-label="現在の履歴件数上限">
+        <output aria-label={text(HISTORY_LIMIT_TEXT.currentLimitAriaLabel)}>
           {authority
-            ? `${authority.settings.historyEntryLimit}件`
-            : '確認できません'}
+            ? formatLocalizedText(locale, HISTORY_LIMIT_TEXT.entryCount, {
+              count: authority.settings.historyEntryLimit,
+            })
+            : text(HISTORY_LIMIT_TEXT.unavailable)}
         </output>
       </p>
       <label htmlFor="history-entry-limit-input">
-        履歴件数の上限
+        {text(HISTORY_LIMIT_TEXT.inputLabel)}
       </label>
       <input
         id="history-entry-limit-input"
@@ -229,11 +239,12 @@ export function HistoryLimitControl({
         disabled={applyDisabled}
         onClick={() => void apply()}
       >
-        {pending ? '適用中…' : '適用'}
+        {pending
+          ? text(HISTORY_LIMIT_TEXT.applying)
+          : text(HISTORY_LIMIT_TEXT.apply)}
       </button>
       <p id="history-limit-description">
-        上限を減らすと、古いUndo/Redo履歴は直ちに削除されます。
-        あとで上限を増やしても、削除された履歴は戻りません。
+        {text(HISTORY_LIMIT_TEXT.description)}
       </p>
       {errorMessage && (
         <p
@@ -247,6 +258,41 @@ export function HistoryLimitControl({
     </fieldset>
   )
 }
+
+const HISTORY_LIMIT_TEXT = Object.freeze({
+  invalidValueError: Object.freeze({
+    ja: '履歴件数は1から128までの整数で入力してください。',
+    en: 'Enter a whole-number history limit from 1 to 128.',
+  }),
+  applyError: Object.freeze({
+    ja: '履歴件数を変更できませんでした。現在のプロジェクトを確認して、もう一度お試しください。',
+    en: 'The history limit could not be changed. Check the current project and try again.',
+  }),
+  legend: Object.freeze({
+    ja: 'Undo・Redo履歴の上限',
+    en: 'Undo/Redo history limit',
+  }),
+  currentLimit: Object.freeze({ ja: '現在の上限:', en: 'Current limit:' }),
+  currentLimitAriaLabel: Object.freeze({
+    ja: '現在の履歴件数上限',
+    en: 'Current history entry limit',
+  }),
+  entryCount: Object.freeze({ ja: '{count}件', en: '{count} entries' }),
+  unavailable: Object.freeze({
+    ja: '確認できません',
+    en: 'Unavailable',
+  }),
+  inputLabel: Object.freeze({
+    ja: '履歴件数の上限',
+    en: 'History entry limit',
+  }),
+  applying: Object.freeze({ ja: '適用中…', en: 'Applying…' }),
+  apply: Object.freeze({ ja: '適用', en: 'Apply' }),
+  description: Object.freeze({
+    ja: '上限を減らすと、古いUndo/Redo履歴は直ちに削除されます。あとで上限を増やしても、削除された履歴は戻りません。',
+    en: 'Reducing the limit immediately removes older Undo/Redo entries. Increasing it later does not restore removed history.',
+  }),
+})
 
 function prepareControlAuthority(
   settings: unknown,

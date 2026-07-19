@@ -4,6 +4,14 @@ import type {
   RecoveryCandidateAvailable,
   RecoveryCandidateInvalid,
 } from '../lib/recoveryClient.ts'
+import {
+  localeStore,
+  selectLocalizedText,
+  useLocale,
+  type Locale,
+  type LocaleStore,
+  type LocalizedText,
+} from '../lib/i18n.ts'
 import './RecoveryDialog.css'
 
 export type RecoveryDialogProps = Readonly<{
@@ -15,6 +23,7 @@ export type RecoveryDialogProps = Readonly<{
     candidate: RecoveryCandidateAvailable | RecoveryCandidateInvalid,
   ) => void | Promise<void>
   onRetry: () => void | Promise<void>
+  localeStore?: LocaleStore
 }>
 
 type RecoveryAction = 'restore' | 'discard' | 'retry'
@@ -28,9 +37,6 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
-const FIXED_ACTION_ERROR =
-  '復旧データを処理できませんでした。もう一度お試しください。'
-
 /**
  * A mandatory startup decision. The parent owns background `inert` state and
  * removes this component only after restore/discard succeeds.
@@ -42,7 +48,11 @@ export function RecoveryDialog({
   onRestore,
   onDiscard,
   onRetry,
+  localeStore: localeStore_ = localeStore,
 }: RecoveryDialogProps) {
+  const locale = useLocale(localeStore_)
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
   const [pendingAction, setPendingAction] = useState<RecoveryAction | null>(null)
   const [localError, setLocalError] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
@@ -219,11 +229,13 @@ export function RecoveryDialog({
         tabIndex={-1}
       >
         <header className="recovery-dialog-header">
-          <span className="recovery-dialog-eyebrow">起動時の復旧</span>
+          <span className="recovery-dialog-eyebrow">
+            {text(RECOVERY_DIALOG_TEXT.eyebrow)}
+          </span>
           <h2 id="recovery-dialog-title">
             {available
-              ? '未保存の編集内容を復元しますか？'
-              : '復旧データを確認できません'}
+              ? text(RECOVERY_DIALOG_TEXT.availableTitle)
+              : text(RECOVERY_DIALOG_TEXT.invalidTitle)}
           </h2>
         </header>
 
@@ -231,24 +243,26 @@ export function RecoveryDialog({
           {available ? (
             <>
               <p id={descriptionId}>
-                前回の終了前に保存できなかった編集内容が見つかりました。
-                復元するか、破棄するかを選んでください。
+                {text(RECOVERY_DIALOG_TEXT.availableDescription)}
               </p>
               <dl className="recovery-dialog-metadata">
                 <div>
-                  <dt>最終更新</dt>
-                  <dd>{formatRecoveryTimestamp(candidate.updated_at_unix_ms)}</dd>
+                  <dt>{text(RECOVERY_DIALOG_TEXT.lastUpdated)}</dt>
+                  <dd>
+                    {formatRecoveryTimestamp(
+                      candidate.updated_at_unix_ms,
+                      locale,
+                    )}
+                  </dd>
                 </div>
               </dl>
               <p className="recovery-dialog-caution">
-                復元後の作品は未保存の新しい編集状態として開きます。
-                元のファイルを自動で上書きすることはありません。
+                {text(RECOVERY_DIALOG_TEXT.caution)}
               </p>
             </>
           ) : (
             <p id={descriptionId} className="recovery-dialog-invalid">
-              復旧データが破損しているか、このバージョンでは読み取れません。
-              再確認するか、安全に破棄してください。
+              {text(RECOVERY_DIALOG_TEXT.invalidDescription)}
             </p>
           )}
 
@@ -258,7 +272,7 @@ export function RecoveryDialog({
               role="alert"
               aria-live="assertive"
             >
-              {FIXED_ACTION_ERROR}
+              {text(RECOVERY_DIALOG_TEXT.actionError)}
             </p>
           )}
         </div>
@@ -272,7 +286,9 @@ export function RecoveryDialog({
               disabled={effectiveBusy}
               onClick={restore}
             >
-              {pendingAction === 'restore' ? '復元中…' : '復元する'}
+              {pendingAction === 'restore'
+                ? text(RECOVERY_DIALOG_TEXT.restoring)
+                : text(RECOVERY_DIALOG_TEXT.restore)}
             </button>
           )}
           <button
@@ -281,7 +297,9 @@ export function RecoveryDialog({
             disabled={effectiveBusy}
             onClick={retry}
           >
-            {pendingAction === 'retry' ? '確認中…' : '再確認'}
+            {pendingAction === 'retry'
+              ? text(RECOVERY_DIALOG_TEXT.checking)
+              : text(RECOVERY_DIALOG_TEXT.retry)}
           </button>
           <button
             type="button"
@@ -289,7 +307,9 @@ export function RecoveryDialog({
             disabled={effectiveBusy}
             onClick={discard}
           >
-            {pendingAction === 'discard' ? '破棄中…' : '破棄する'}
+            {pendingAction === 'discard'
+              ? text(RECOVERY_DIALOG_TEXT.discarding)
+              : text(RECOVERY_DIALOG_TEXT.discard)}
           </button>
         </footer>
       </section>
@@ -297,16 +317,63 @@ export function RecoveryDialog({
   )
 }
 
-function formatRecoveryTimestamp(timestamp: number | null): string {
-  if (timestamp === null) return '記録なし'
+function formatRecoveryTimestamp(
+  timestamp: number | null,
+  locale: Locale,
+): string {
+  if (timestamp === null) {
+    return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.noTimestamp)
+  }
   try {
     const date = new Date(timestamp)
-    if (!Number.isFinite(date.getTime())) return '確認できません'
-    return new Intl.DateTimeFormat('ja-JP', {
+    if (!Number.isFinite(date.getTime())) {
+      return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.unavailable)
+    }
+    return new Intl.DateTimeFormat(locale === 'ja' ? 'ja-JP' : 'en-US', {
       dateStyle: 'medium',
       timeStyle: 'short',
     }).format(date)
   } catch {
-    return '確認できません'
+    return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.unavailable)
   }
 }
+
+const RECOVERY_DIALOG_TEXT = Object.freeze({
+  eyebrow: Object.freeze({ ja: '起動時の復旧', en: 'Startup recovery' }),
+  availableTitle: Object.freeze({
+    ja: '未保存の編集内容を復元しますか？',
+    en: 'Restore unsaved edits?',
+  }),
+  invalidTitle: Object.freeze({
+    ja: '復旧データを確認できません',
+    en: 'Recovery data could not be verified',
+  }),
+  availableDescription: Object.freeze({
+    ja: '前回の終了前に保存できなかった編集内容が見つかりました。復元するか、破棄するかを選んでください。',
+    en: 'Edits that could not be saved before the previous session ended were found. Choose whether to restore or discard them.',
+  }),
+  lastUpdated: Object.freeze({ ja: '最終更新', en: 'Last updated' }),
+  caution: Object.freeze({
+    ja: '復元後の作品は未保存の新しい編集状態として開きます。元のファイルを自動で上書きすることはありません。',
+    en: 'The restored work opens as a new unsaved editing state. The original file is never overwritten automatically.',
+  }),
+  invalidDescription: Object.freeze({
+    ja: '復旧データが破損しているか、このバージョンでは読み取れません。再確認するか、安全に破棄してください。',
+    en: 'The recovery data is damaged or cannot be read by this version. Check again or discard it safely.',
+  }),
+  actionError: Object.freeze({
+    ja: '復旧データを処理できませんでした。もう一度お試しください。',
+    en: 'The recovery data could not be processed. Try again.',
+  }),
+  restoring: Object.freeze({ ja: '復元中…', en: 'Restoring…' }),
+  restore: Object.freeze({ ja: '復元する', en: 'Restore' }),
+  checking: Object.freeze({ ja: '確認中…', en: 'Checking…' }),
+  retry: Object.freeze({ ja: '再確認', en: 'Check again' }),
+  discarding: Object.freeze({ ja: '破棄中…', en: 'Discarding…' }),
+  discard: Object.freeze({ ja: '破棄する', en: 'Discard' }),
+  noTimestamp: Object.freeze({ ja: '記録なし', en: 'No record' }),
+  unavailable: Object.freeze({
+    ja: '確認できません',
+    en: 'Unavailable',
+  }),
+})

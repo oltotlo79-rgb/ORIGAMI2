@@ -17,6 +17,13 @@ import {
   type WorkspaceLayoutSnapshot,
   type WorkspaceLayoutStore,
 } from '../lib/workspaceLayout'
+import {
+  localeStore,
+  selectLocalizedText,
+  useLocale,
+  type Locale,
+  type LocaleStore,
+} from '../lib/i18n'
 
 export type WorkspaceLayoutSeparatorKind =
   | 'editor'
@@ -26,6 +33,7 @@ export type WorkspaceLayoutSeparatorKind =
 type WorkspaceLayoutSeparatorProps = Readonly<{
   kind: WorkspaceLayoutSeparatorKind
   store?: WorkspaceLayoutStore
+  localeStore?: LocaleStore
 }>
 
 type ActiveDrag = Readonly<{
@@ -40,14 +48,16 @@ type ActiveDrag = Readonly<{
 export function WorkspaceLayoutSeparator({
   kind,
   store = workspaceLayoutStore,
+  localeStore: localeStore_ = localeStore,
 }: WorkspaceLayoutSeparatorProps) {
+  const locale = useLocale(localeStore_)
   const layout = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
     store.getServerSnapshot,
   )
   const dragRef = useRef<ActiveDrag | null>(null)
-  const contract = separatorContract(kind, layout)
+  const contract = separatorContract(kind, layout, locale)
 
   const finishDrag = (
     event: ReactPointerEvent<HTMLDivElement>,
@@ -137,10 +147,11 @@ export function WorkspaceLayoutSeparator({
 function separatorContract(
   kind: WorkspaceLayoutSeparatorKind,
   layout: WorkspaceLayoutSnapshot,
+  locale: Locale,
 ) {
   if (kind === 'editor') {
     return {
-      label: '2Dと3Dの幅を変更',
+      label: selectLocalizedText(locale, SEPARATOR_TEXT.editorLabel),
       orientation: 'vertical' as const,
       minimum: MIN_EDITOR_TWO_D_PERCENT,
       maximum: MAX_EDITOR_TWO_D_PERCENT,
@@ -151,7 +162,7 @@ function separatorContract(
   }
   if (kind === 'inspector') {
     return {
-      label: 'プロパティパネルの幅を変更',
+      label: selectLocalizedText(locale, SEPARATOR_TEXT.inspectorLabel),
       orientation: 'vertical' as const,
       minimum: MIN_INSPECTOR_WIDTH_PX,
       maximum: MAX_INSPECTOR_WIDTH_PX,
@@ -161,7 +172,7 @@ function separatorContract(
     }
   }
   return {
-    label: '折り手順パネルの高さを変更',
+    label: selectLocalizedText(locale, SEPARATOR_TEXT.timelineLabel),
     orientation: 'horizontal' as const,
     minimum: MIN_TIMELINE_HEIGHT_PX,
     maximum: MAX_TIMELINE_HEIGHT_PX,
@@ -170,6 +181,21 @@ function separatorContract(
     controls: 'workspace-main instruction-timeline-panel',
   }
 }
+
+const SEPARATOR_TEXT = Object.freeze({
+  editorLabel: Object.freeze({
+    ja: '2Dと3Dの幅を変更',
+    en: 'Resize 2D and 3D panels',
+  }),
+  inspectorLabel: Object.freeze({
+    ja: 'プロパティパネルの幅を変更',
+    en: 'Resize properties panel',
+  }),
+  timelineLabel: Object.freeze({
+    ja: '折り手順パネルの高さを変更',
+    en: 'Resize instruction timeline panel',
+  }),
+})
 
 function applyPointerDrag(
   kind: WorkspaceLayoutSeparatorKind,

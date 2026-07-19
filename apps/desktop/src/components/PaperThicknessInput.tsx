@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 
 import {
+  formatLocalizedText,
+  localeStore,
+  selectLocalizedText,
+  useLocale,
+  type LocaleStore,
+  type LocalizedText,
+} from '../lib/i18n.ts'
+import {
   stepPaperThicknessFromMillimetres,
   type PaperThicknessStepDirection,
 } from '../lib/paperThicknessInput.ts'
@@ -17,6 +25,7 @@ export type PaperThicknessInputProps = Readonly<{
   name?: string
   sourceMillimetres?: number
   unit?: ResolvedLengthDisplayUnit
+  localeStore?: LocaleStore
 }>
 
 export function PaperThicknessInput({
@@ -26,7 +35,11 @@ export function PaperThicknessInput({
   name = 'thickness_mm',
   sourceMillimetres,
   unit = MILLIMETRE_LENGTH_DISPLAY_UNIT,
+  localeStore: localeStore_ = localeStore,
 }: PaperThicknessInputProps) {
+  const locale = useLocale(localeStore_)
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
   const [state, setState] = useState(() => ({
     dirty: false,
     steppedMillimetres: null as number | null,
@@ -37,6 +50,9 @@ export function PaperThicknessInput({
   const sourceToken = sourceMillimetres === undefined
     ? undefined
     : lengthInputSourceToken(sourceMillimetres, unit)
+  const unitLabel = unit.mode === 'paper_edge_ratio'
+    ? text(PAPER_THICKNESS_TEXT.paperEdgeRatio)
+    : unit.label
 
   useEffect(() => {
     setState({
@@ -104,18 +120,19 @@ export function PaperThicknessInput({
         }}
         required
         disabled={disabled}
-        aria-label="紙厚"
+        aria-label={text(PAPER_THICKNESS_TEXT.ariaLabel)}
         aria-describedby={stepDescriptionId}
-        title={`上下ボタンと矢印キーは物理量0.01 mm刻み。値は${unit.label}で直接入力できます`}
+        title={formatLocalizedText(locale, PAPER_THICKNESS_TEXT.title, {
+          unit: unitLabel,
+        })}
       />
       <span id={stepDescriptionId} className="visually-hidden">
-        上下ボタンと矢印キーは表示単位に関係なく、
-        紙厚を物理量0.01 mmずつ増減します。値は直接入力できます。
+        {text(PAPER_THICKNESS_TEXT.description)}
       </span>
       <span className="paper-thickness-step-buttons">
         <button
           type="button"
-          aria-label="紙厚を0.01 mm増やす"
+          aria-label={text(PAPER_THICKNESS_TEXT.increase)}
           aria-controls={id}
           disabled={disabled}
           onClick={() => applyStep('up')}
@@ -124,7 +141,7 @@ export function PaperThicknessInput({
         </button>
         <button
           type="button"
-          aria-label="紙厚を0.01 mm減らす"
+          aria-label={text(PAPER_THICKNESS_TEXT.decrease)}
           aria-controls={id}
           disabled={disabled}
           onClick={() => applyStep('down')}
@@ -135,3 +152,27 @@ export function PaperThicknessInput({
     </span>
   )
 }
+
+const PAPER_THICKNESS_TEXT = Object.freeze({
+  ariaLabel: Object.freeze({ ja: '紙厚', en: 'Paper thickness' }),
+  title: Object.freeze({
+    ja: '上下ボタンと矢印キーは物理量0.01 mm刻み。値は{unit}で直接入力できます',
+    en: 'Step buttons and arrow keys change the physical value by 0.01 mm. Values can be entered directly in {unit}.',
+  }),
+  description: Object.freeze({
+    ja: '上下ボタンと矢印キーは表示単位に関係なく、紙厚を物理量0.01 mmずつ増減します。値は直接入力できます。',
+    en: 'Step buttons and arrow keys increase or decrease paper thickness by a physical 0.01 mm, regardless of the display unit. Values can also be entered directly.',
+  }),
+  increase: Object.freeze({
+    ja: '紙厚を0.01 mm増やす',
+    en: 'Increase paper thickness by 0.01 mm',
+  }),
+  decrease: Object.freeze({
+    ja: '紙厚を0.01 mm減らす',
+    en: 'Decrease paper thickness by 0.01 mm',
+  }),
+  paperEdgeRatio: Object.freeze({
+    ja: '紙辺比',
+    en: 'paper-edge ratio',
+  }),
+})

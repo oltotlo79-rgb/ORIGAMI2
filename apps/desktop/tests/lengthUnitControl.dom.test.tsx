@@ -8,6 +8,7 @@ import {
   type BoundaryLengthReference,
   type ResolvedLengthDisplayUnit,
 } from '../src/lib/lengthUnit.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -36,6 +37,28 @@ const REFERENCES: readonly BoundaryLengthReference[] = Object.freeze([
 ])
 
 describe('LengthUnitControl', () => {
+  it('localizes unit labels and accessible names in English', () => {
+    render(
+      <LengthUnitControl
+        unit={MILLIMETRE_LENGTH_DISPLAY_UNIT}
+        references={REFERENCES}
+        disabled={false}
+        onChange={() => {}}
+        localeStore={localeFixture('en')}
+      />,
+    )
+
+    const selector = screen.getByRole('combobox', {
+      name: 'Length display unit',
+    }) as HTMLSelectElement
+    expect([...selector.options].map((option) => option.textContent)).toEqual([
+      'Millimetres (mm)',
+      'Centimetres (cm)',
+      'Inches (in)',
+      'Paper-edge ratio',
+    ])
+  })
+
   it('offers all four modes and starts ratio mode with a valid boundary edge', () => {
     const onChange = vi.fn<(unit: LengthDisplayUnit) => void>()
     render(

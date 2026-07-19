@@ -19,6 +19,7 @@ import {
   createWorkspaceLayoutStore,
   type WorkspaceLayoutStore,
 } from '../src/lib/workspaceLayout.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -126,6 +127,50 @@ describe('workspace layout integration', () => {
 })
 
 describe('WorkspaceLayoutControl', () => {
+  it('localizes layout actions, status, and separator labels in English', () => {
+    const target = store()
+    const english = localeFixture('en')
+    render(
+      <>
+        <WorkspaceLayoutControl store={target} localeStore={english} />
+        <WorkspaceLayoutSeparator
+          kind="editor"
+          store={target}
+          localeStore={english}
+        />
+        <WorkspaceLayoutSeparator
+          kind="inspector"
+          store={target}
+          localeStore={english}
+        />
+        <WorkspaceLayoutSeparator
+          kind="timeline"
+          store={target}
+          localeStore={english}
+        />
+      </>,
+    )
+
+    expect(screen.getByRole('group', {
+      name: 'Workspace layout',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Swap 2D and 3D',
+    })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: 'Current workspace layout',
+    }).textContent).toContain('Properties 248px · Timeline 192px')
+    expect(screen.getByRole('separator', {
+      name: 'Resize 2D and 3D panels',
+    })).toBeTruthy()
+    expect(screen.getByRole('separator', {
+      name: 'Resize properties panel',
+    })).toBeTruthy()
+    expect(screen.getByRole('separator', {
+      name: 'Resize instruction timeline panel',
+    })).toBeTruthy()
+  })
+
   it('moves both position choices and restores the complete default', () => {
     const target = store()
     target.setEditorTwoDPercent(63)

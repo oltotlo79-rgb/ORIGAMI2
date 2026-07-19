@@ -10,6 +10,7 @@ import {
   type NumericExpressionEvaluation,
   type NumericExpressionNativeTransport,
 } from '../src/lib/numericExpressionNative.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -17,6 +18,34 @@ afterEach(() => {
 })
 
 describe('NumericExpressionInput', () => {
+  it('localizes evaluation status and view controls in English', async () => {
+    render(
+      <NumericExpressionInput
+        id="english-width"
+        name="width_expression"
+        defaultSource="400"
+        ariaLabel="Paper width expression"
+        transport={fixedTransport()}
+        localeStore={localeFixture('en')}
+      />,
+    )
+    expect(screen.getByText(
+      'Enter an expression (example: 200 * sqrt(2))',
+    )).toBeTruthy()
+
+    fireEvent.blur(screen.getByRole('textbox', {
+      name: 'Paper width expression',
+    }))
+    await screen.findByText(/Value: 400/u)
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Show expression',
+    }))
+    expect(screen.getByText('Expression: 400')).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Show value',
+    })).toBeTruthy()
+  })
+
   it('evaluates on blur, preserves the source in form data, and toggles the result view', async () => {
     const transport = fixedTransport()
     render(

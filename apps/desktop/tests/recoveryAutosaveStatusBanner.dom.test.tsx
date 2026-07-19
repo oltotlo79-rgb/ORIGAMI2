@@ -3,10 +3,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   RECOVERY_AUTOSAVE_MONITOR_WARNING,
+  RECOVERY_AUTOSAVE_MONITOR_WARNING_EN,
   RECOVERY_AUTOSAVE_PERSISTENCE_WARNING,
+  RECOVERY_AUTOSAVE_PERSISTENCE_WARNING_EN,
   RECOVERY_AUTOSAVE_RECOVERED_NOTICE,
+  RECOVERY_AUTOSAVE_RECOVERED_NOTICE_EN,
   RecoveryAutosaveStatusBanner,
 } from '../src/components/RecoveryAutosaveStatusBanner.tsx'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -14,6 +18,39 @@ afterEach(() => {
 })
 
 describe('RecoveryAutosaveStatusBanner', () => {
+  it('localizes every autosave transition announcement in English', () => {
+    const english = localeFixture('en')
+    const rendered = render(
+      <RecoveryAutosaveStatusBanner
+        view={{ kind: 'persistence_failed', transition_id: 7 }}
+        localeStore={english}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toBe(
+      RECOVERY_AUTOSAVE_PERSISTENCE_WARNING_EN,
+    )
+
+    rendered.rerender(
+      <RecoveryAutosaveStatusBanner
+        view={{ kind: 'monitor_unavailable' }}
+        localeStore={english}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toBe(
+      RECOVERY_AUTOSAVE_MONITOR_WARNING_EN,
+    )
+
+    rendered.rerender(
+      <RecoveryAutosaveStatusBanner
+        view={{ kind: 'operational', transition_id: 8, recovered: true }}
+        localeStore={english}
+      />,
+    )
+    expect(screen.getByRole('status').textContent).toBe(
+      RECOVERY_AUTOSAVE_RECOVERED_NOTICE_EN,
+    )
+  })
+
   it('keeps persistence failure visible as a fixed assertive warning', () => {
     render(
       <RecoveryAutosaveStatusBanner

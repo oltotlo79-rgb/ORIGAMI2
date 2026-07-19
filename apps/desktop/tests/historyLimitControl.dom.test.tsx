@@ -17,6 +17,7 @@ import {
   type HistoryLimitSettings,
   type SetHistoryEntryLimitRequest,
 } from '../src/lib/historyLimitClient.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 const INSTANCE_ID = '10000000-0000-4000-8000-000000000001'
 const PROJECT_ID = '20000000-0000-4000-8000-000000000002'
@@ -37,6 +38,24 @@ afterEach(() => {
 })
 
 describe('HistoryLimitControl', () => {
+  it('localizes the complete history contract in English', () => {
+    renderControl({ localeStore: localeFixture('en') })
+
+    expect(screen.getByRole('group', {
+      name: 'Undo/Redo history limit',
+    })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: 'Current history entry limit',
+    }).textContent).toBe('128 entries')
+    expect(screen.getByRole('spinbutton', {
+      name: 'History entry limit',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeTruthy()
+    expect(screen.getByText(
+      /Increasing it later does not restore removed history/u,
+    )).toBeTruthy()
+  })
+
   it('shows the current limit, exact number bounds, and the destructive trim warning', () => {
     renderControl()
 
@@ -336,6 +355,7 @@ function controlElement(overrides: Partial<HistoryLimitControlProps> = {}) {
       }))}
       disabled={overrides.disabled ?? false}
       onApplied={overrides.onApplied ?? vi.fn()}
+      localeStore={overrides.localeStore}
     />
   )
 }

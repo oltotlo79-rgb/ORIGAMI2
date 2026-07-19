@@ -9,6 +9,7 @@ import {
 } from '@testing-library/react'
 
 import { RecoveryStartupOverlay } from '../src/components/RecoveryStartupOverlay'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -16,6 +17,37 @@ afterEach(() => {
 })
 
 describe('RecoveryStartupOverlay DOM interactions', () => {
+  it('localizes checking and failed startup gates in English', () => {
+    const english = localeFixture('en')
+    const rendered = render(
+      <RecoveryStartupOverlay
+        phase="checking"
+        busy={false}
+        onRetry={vi.fn()}
+        localeStore={english}
+      />,
+    )
+    expect(screen.getByRole('dialog', {
+      name: 'Checking recovery data',
+    })).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toContain(
+      'Checking whether editing can start safely',
+    )
+
+    rendered.rerender(
+      <RecoveryStartupOverlay
+        phase="failed"
+        busy={false}
+        onRetry={vi.fn()}
+        localeStore={english}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toContain(
+      'Recovery data must be checked before editing can begin',
+    )
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
   it('shows a non-dismissible checking gate without actions', () => {
     const onRetry = vi.fn()
     render(

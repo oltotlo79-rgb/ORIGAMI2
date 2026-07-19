@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 
+import {
+  localeStore,
+  selectLocalizedText,
+  useLocale,
+  type LocaleStore,
+  type LocalizedText,
+} from '../lib/i18n.ts'
 import './RecoveryDialog.css'
 
 export type RecoveryStartupOverlayProps = Readonly<{
   phase: 'checking' | 'failed'
   busy: boolean
   onRetry: () => void | Promise<void>
+  localeStore?: LocaleStore
 }>
 
 /**
@@ -16,7 +24,11 @@ export function RecoveryStartupOverlay({
   phase,
   busy,
   onRetry,
+  localeStore: localeStore_ = localeStore,
 }: RecoveryStartupOverlayProps) {
+  const locale = useLocale(localeStore_)
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
   const [retryPending, setRetryPending] = useState(false)
   const retryingRef = useRef(false)
   const dialogRef = useRef<HTMLElement>(null)
@@ -105,18 +117,20 @@ export function RecoveryStartupOverlay({
         tabIndex={-1}
       >
         <header className="recovery-dialog-header">
-          <span className="recovery-dialog-eyebrow">起動時の復旧</span>
+          <span className="recovery-dialog-eyebrow">
+            {text(RECOVERY_STARTUP_TEXT.eyebrow)}
+          </span>
           <h2 id="recovery-startup-title">
             {checking
-              ? '復旧データを確認しています'
-              : '復旧データを確認できません'}
+              ? text(RECOVERY_STARTUP_TEXT.checkingTitle)
+              : text(RECOVERY_STARTUP_TEXT.failedTitle)}
           </h2>
         </header>
         <div className="recovery-dialog-body">
           <p id="recovery-startup-description" role={checking ? 'status' : 'alert'}>
             {checking
-              ? '編集を安全に開始できるか確認しています。しばらくお待ちください。'
-              : '編集を開始する前に復旧データの確認が必要です。再試行してください。'}
+              ? text(RECOVERY_STARTUP_TEXT.checkingDescription)
+              : text(RECOVERY_STARTUP_TEXT.failedDescription)}
           </p>
         </div>
         {!checking && (
@@ -128,7 +142,9 @@ export function RecoveryStartupOverlay({
               disabled={effectiveBusy}
               onClick={() => void retry()}
             >
-              {effectiveBusy ? '再確認中…' : '再試行'}
+              {effectiveBusy
+                ? text(RECOVERY_STARTUP_TEXT.retrying)
+                : text(RECOVERY_STARTUP_TEXT.retry)}
             </button>
           </footer>
         )}
@@ -136,3 +152,25 @@ export function RecoveryStartupOverlay({
     </div>
   )
 }
+
+const RECOVERY_STARTUP_TEXT = Object.freeze({
+  eyebrow: Object.freeze({ ja: '起動時の復旧', en: 'Startup recovery' }),
+  checkingTitle: Object.freeze({
+    ja: '復旧データを確認しています',
+    en: 'Checking recovery data',
+  }),
+  failedTitle: Object.freeze({
+    ja: '復旧データを確認できません',
+    en: 'Recovery data could not be checked',
+  }),
+  checkingDescription: Object.freeze({
+    ja: '編集を安全に開始できるか確認しています。しばらくお待ちください。',
+    en: 'Checking whether editing can start safely. Please wait.',
+  }),
+  failedDescription: Object.freeze({
+    ja: '編集を開始する前に復旧データの確認が必要です。再試行してください。',
+    en: 'Recovery data must be checked before editing can begin. Try again.',
+  }),
+  retrying: Object.freeze({ ja: '再確認中…', en: 'Checking again…' }),
+  retry: Object.freeze({ ja: '再試行', en: 'Try again' }),
+})

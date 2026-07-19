@@ -8,6 +8,7 @@ import {
   type ThemeMediaChangeListener,
   type ThemePreference,
 } from '../src/lib/theme.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -42,6 +43,28 @@ function createFixture(systemDark = false) {
 }
 
 describe('ThemeControl', () => {
+  it('switches every visible and accessible theme label to English', () => {
+    const target = createFixture(true)
+    render(
+      <ThemeControl
+        store={target.store}
+        localeStore={localeFixture('en')}
+      />,
+    )
+
+    const select = screen.getByRole('combobox', {
+      name: 'Display theme',
+    }) as HTMLSelectElement
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      'Match OS setting',
+      'Light',
+      'Dark',
+    ])
+    expect(screen.getByRole('status', {
+      name: 'Current effective theme',
+    }).textContent).toBe('Current: Dark')
+  })
+
   it('exposes an accessible native select and the current effective theme', () => {
     const target = createFixture(false)
     render(<ThemeControl store={target.store} />)

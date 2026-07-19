@@ -7,6 +7,7 @@ import {
   createKeyboardShortcutStore,
   type KeyboardShortcutStore,
 } from '../src/lib/keyboardShortcutSettings.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -21,6 +22,31 @@ function store(): KeyboardShortcutStore {
 }
 
 describe('KeyboardShortcutControl', () => {
+  it('localizes command labels, ARIA names, status, and conflicts in English', () => {
+    const target = store()
+    render(
+      <KeyboardShortcutControl
+        store={target}
+        localeStore={localeFixture('en')}
+      />,
+    )
+
+    const openKey = screen.getByRole('combobox', { name: 'Open key' })
+    expect(screen.getByRole('checkbox', {
+      name: 'Use Alt for New',
+    })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: 'Current shortcut for Save as',
+    })).toBeTruthy()
+    fireEvent.change(openKey, { target: { value: 'n' } })
+    expect(screen.getByRole('alert').textContent).toContain(
+      'Open conflicts with New (Windows / macOS).',
+    )
+    expect(screen.getByRole('button', {
+      name: 'Restore defaults',
+    })).toBeTruthy()
+  })
+
   it('edits a portable shortcut and exposes the active value', () => {
     const target = store()
     render(<KeyboardShortcutControl store={target} />)

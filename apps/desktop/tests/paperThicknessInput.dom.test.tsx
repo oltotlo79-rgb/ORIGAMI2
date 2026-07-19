@@ -9,6 +9,7 @@ import {
 import {
   stepPaperThicknessFromMillimetres,
 } from '../src/lib/paperThicknessInput.ts'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -27,6 +28,29 @@ const VERTICAL_RATIO = ratioUnit('vertical-edge', 200, {
 })
 
 describe('PaperThicknessInput', () => {
+  it('localizes labels, help, and physical step actions in English', () => {
+    render(
+      <PaperThicknessInput
+        id="english-thickness"
+        initialValue="0.1"
+        disabled={false}
+        localeStore={localeFixture('en')}
+      />,
+    )
+    const input = screen.getByRole('spinbutton', {
+      name: 'Paper thickness',
+    })
+    expect(input.getAttribute('title')).toContain(
+      'physical value by 0.01 mm',
+    )
+    expect(screen.getByRole('button', {
+      name: 'Increase paper thickness by 0.01 mm',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Decrease paper thickness by 0.01 mm',
+    })).toBeTruthy()
+  })
+
   it('steps finer direct input by exactly 0.01 mm with buttons and keys', () => {
     render(
       <PaperThicknessInput

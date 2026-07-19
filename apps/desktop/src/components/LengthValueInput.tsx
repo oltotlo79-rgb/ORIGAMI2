@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  localeStore,
+  useLocale,
+  type LocaleStore,
+} from '../lib/i18n.ts'
+import {
   formatLengthInput,
   lengthInputSourceToken,
   type ResolvedLengthDisplayUnit,
@@ -17,6 +22,7 @@ export type LengthValueInputProps = Readonly<{
   minimumMillimetres?: number
   ariaLabel?: string
   className?: string
+  localeStore?: LocaleStore
 }>
 
 export function LengthValueInput({
@@ -30,7 +36,9 @@ export function LengthValueInput({
   minimumMillimetres,
   ariaLabel,
   className,
+  localeStore: localeStore_ = localeStore,
 }: LengthValueInputProps) {
+  useLocale(localeStore_)
   const initialValue = useMemo(
     () => formatLengthInput(initialMillimetres, unit),
     [initialMillimetres, unit],

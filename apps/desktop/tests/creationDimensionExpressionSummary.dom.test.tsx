@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CreationDimensionExpressionSummary } from '../src/components/CreationDimensionExpressionSummary.tsx'
+import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(() => {
   cleanup()
@@ -9,6 +10,31 @@ afterEach(() => {
 })
 
 describe('CreationDimensionExpressionSummary', () => {
+  it('localizes labels and keeps expression variables as inert text', () => {
+    render(
+      <CreationDimensionExpressionSummary
+        localeStore={localeFixture('en')}
+        binding={{
+          schema_version: 1,
+          width_source: '<img src=x onerror=alert(1)>',
+          height_source: '{height}',
+          adopted_width_mm: 200,
+          adopted_height_mm: 300,
+        }}
+      />,
+    )
+
+    expect(screen.getByText(/Creation size:/u).textContent).toContain(
+      '<img src=x onerror=alert(1)> × {height} mm',
+    )
+    expect(document.querySelector('img')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show values' }))
+    expect(screen.getByText(/200 × 300 mm/u)).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Show expressions',
+    })).toBeTruthy()
+  })
+
   it('switches between the persisted source and its native adopted values', () => {
     render(
       <CreationDimensionExpressionSummary

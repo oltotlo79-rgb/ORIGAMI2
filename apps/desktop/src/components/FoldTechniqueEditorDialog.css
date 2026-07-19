@@ -1,0 +1,242 @@
+.fold-technique-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(15 23 42 / 62%);
+}
+
+.fold-technique-editor-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(64rem, 100%);
+  max-height: min(92vh, 58rem);
+  overflow: hidden;
+  color: var(--text-primary, #172033);
+  background: var(--surface-elevated, #fff);
+  border: 1px solid var(--border-strong, #8390a5);
+  border-radius: 0.75rem;
+  box-shadow: 0 1.25rem 4rem rgb(15 23 42 / 35%);
+}
+
+.fold-technique-editor-header,
+.fold-technique-editor-footer,
+.fold-technique-editor-section-heading,
+.fold-technique-editor-operation-heading,
+.fold-technique-editor-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fold-technique-editor-header,
+.fold-technique-editor-footer {
+  padding: 1rem 1.25rem;
+  border-color: var(--border-muted, #d4dae5);
+}
+
+.fold-technique-editor-header {
+  border-bottom: 1px solid var(--border-muted, #d4dae5);
+}
+
+.fold-technique-editor-footer {
+  border-top: 1px solid var(--border-muted, #d4dae5);
+}
+
+.fold-technique-editor-header h2,
+.fold-technique-editor-fields h3,
+.fold-technique-editor-operation h4 {
+  margin: 0;
+}
+
+.fold-technique-editor-eyebrow {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--text-muted, #526078);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fold-technique-editor-close {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  font-size: 1.4rem;
+}
+
+.fold-technique-editor-body {
+  overflow: auto;
+  padding: 1.25rem;
+}
+
+.fold-technique-editor-body > :first-child {
+  margin-top: 0;
+}
+
+.fold-technique-editor-boundary {
+  display: grid;
+  gap: 0.35rem;
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  color: var(--warning-text, #5f3d00);
+  background: var(--warning-surface, #fff6d8);
+  border: 1px solid var(--warning-border, #d8a928);
+  border-radius: 0.5rem;
+}
+
+.fold-technique-editor-fields {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.fold-technique-editor-fields > section,
+.fold-technique-editor-operation {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border-muted, #d4dae5);
+  border-radius: 0.6rem;
+}
+
+.fold-technique-editor-fields label,
+.fold-technique-editor-authors {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.fold-technique-editor-fields input,
+.fold-technique-editor-fields select,
+.fold-technique-editor-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  color: inherit;
+  font: inherit;
+  font-weight: 400;
+  background: var(--input-surface, #fff);
+  border: 1px solid var(--border-strong, #8390a5);
+  border-radius: 0.35rem;
+}
+
+.fold-technique-editor-fields textarea {
+  resize: vertical;
+}
+
+.fold-technique-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.fold-technique-editor-row > label {
+  flex: 1;
+}
+
+.fold-technique-editor-section-heading {
+  align-items: flex-start;
+}
+
+.fold-technique-editor-section-heading p {
+  margin: 0.25rem 0 0;
+}
+
+.fold-technique-editor-operations {
+  display: grid;
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fold-technique-editor-operation {
+  background: var(--surface-subtle, #f7f9fc);
+}
+
+.fold-technique-editor-operation-heading > div {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.fold-technique-editor-support,
+.fold-technique-editor-preserved,
+.fold-technique-editor-status {
+  margin: 0;
+  color: var(--text-muted, #526078);
+}
+
+.fold-technique-editor-support.is-unsupported {
+  padding: 0.65rem;
+  color: var(--warning-text, #5f3d00);
+  background: var(--warning-surface, #fff6d8);
+  border-inline-start: 0.25rem solid var(--warning-border, #d8a928);
+}
+
+.fold-technique-editor-error {
+  margin: 1rem 0 0;
+  padding: 0.7rem 0.85rem;
+  color: var(--danger-text, #8a1020);
+  background: var(--danger-surface, #fff0f2);
+  border: 1px solid var(--danger-border, #cc5968);
+  border-radius: 0.4rem;
+}
+
+.fold-technique-editor-primary {
+  color: var(--button-primary-text, #fff);
+  background: var(--button-primary, #2856a6);
+}
+
+.fold-technique-editor-dialog button,
+.fold-technique-editor-fields input,
+.fold-technique-editor-fields select,
+.fold-technique-editor-fields textarea {
+  min-height: 2.25rem;
+}
+
+.fold-technique-editor-dialog :focus-visible {
+  outline: 3px solid var(--focus-ring, #1d70b8);
+  outline-offset: 2px;
+}
+
+.fold-technique-editor-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 46rem) {
+  .fold-technique-editor-backdrop {
+    padding: 0;
+  }
+
+  .fold-technique-editor-dialog {
+    width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .fold-technique-editor-grid,
+  .fold-technique-editor-section-heading {
+    grid-template-columns: 1fr;
+  }
+
+  .fold-technique-editor-section-heading {
+    display: grid;
+  }
+}

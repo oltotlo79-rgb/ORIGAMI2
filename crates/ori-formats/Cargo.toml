@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ori-core = { path = "../ori-core" }
 ori-domain = { path = "../ori-domain" }
 ori-geometry = { path = "../ori-geometry" }
 ori-instructions = { path = "../ori-instructions" }

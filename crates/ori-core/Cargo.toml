@@ -12,7 +12,5 @@ ori-foldability = { path = "../ori-foldability" }
 ori-geometry = { path = "../ori-geometry" }
 ori-topology = { path = "../ori-topology" }
 serde.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+thiserror.workspace = true

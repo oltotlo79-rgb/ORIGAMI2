@@ -19,6 +19,12 @@ use ori_geometry::{
 };
 use thiserror::Error;
 
+mod history_persistence;
+
+pub use history_persistence::{
+    EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1, EditorHistoryV1,
+};
+
 pub type Revision = u64;
 
 /// Largest revision that can round-trip exactly through a JavaScript number.
@@ -449,7 +455,7 @@ pub enum HistoryEntryLimitError {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct HistoryEntry {
     forward: Command,
     inverse: Inverse,
@@ -461,7 +467,7 @@ struct HistoryEntry {
 /// `Restore` already carries both sides so a future atomic stacked-fold
 /// command can store a non-planar `after` pose. Ordinary geometry commands
 /// currently start with `after: None`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum AppliedPoseHistoryTransition {
     PreserveCurrent,
     Restore {
@@ -496,7 +502,7 @@ impl AppliedPoseHistoryTransition {
     }
 }
 
-const MAX_EDITOR_HISTORY_ENTRIES: usize = 128;
+pub const MAX_EDITOR_HISTORY_ENTRIES: usize = 128;
 
 fn trim_history_to_limit(stack: &mut Vec<HistoryEntry>, limit: usize) {
     let discard_count = stack.len().saturating_sub(limit);
@@ -514,7 +520,7 @@ fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limi
     stack.push(entry);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Inverse {
     Command(Command),
     RestoreVertex {

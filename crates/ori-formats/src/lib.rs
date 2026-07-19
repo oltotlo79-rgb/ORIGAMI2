@@ -43,11 +43,14 @@ pub use ori_domain::{
     DEFAULT_MAX_CONSTRAINT_VERTICES as MAX_PROJECT_CONSTRAINT_INDEX_VERTICES,
 };
 pub use ori2::{
-    CURRENT_ORI2_CONTAINER_VERSION, ORI2_CONTAINER_IDENTIFIER,
+    CURRENT_ORI2_CONTAINER_VERSION, MAX_EDITOR_HISTORY_JSON_BYTES, ORI2_CONTAINER_IDENTIFIER,
+    ORI2_EDITOR_HISTORY_PATH, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2Limits,
-    Ori2Manifest, Ori2ProjectEntry, read_project_ori2, read_project_ori2_with_limits,
-    write_project_ori2, write_project_ori2_with_limits,
+    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
+    Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
+    read_project_archive_ori2, read_project_archive_ori2_with_limits, read_project_ori2,
+    read_project_ori2_with_limits, write_project_archive_ori2,
+    write_project_archive_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use svg::{
     SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,
@@ -169,6 +172,10 @@ pub enum FormatError {
     NilProjectId,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
+    #[error(".ori2 editor-history JSON is invalid: {0}")]
+    InvalidEditorHistoryJson(#[source] serde_json::Error),
+    #[error(".ori2 editor-history is not a valid history for the current project: {0}")]
+    InvalidEditorHistory(#[source] ori_core::EditorHistoryErrorV1),
     #[error(".ori2 ZIP data is invalid: {0}")]
     InvalidZip(#[from] zip::result::ZipError),
     #[error(".ori2 ZIP end-of-central-directory record is missing or invalid")]
@@ -223,6 +230,32 @@ pub enum FormatError {
     MissingRequiredFeature { feature: &'static str },
     #[error(".ori2 manifest references an invalid project path: {found:?}")]
     InvalidManifestProjectPath { found: String },
+    #[error(".ori2 manifest references an invalid editor-history path: {found:?}")]
+    InvalidManifestEditorHistoryPath { found: String },
+    #[error(
+        ".ori2 editor-history schema version {found} is not supported; latest supported version is {latest}"
+    )]
+    UnsupportedEditorHistorySchemaVersion { found: u32, latest: u32 },
+    #[error(
+        ".ori2 editor-history feature and manifest descriptor must either both be present or both be absent"
+    )]
+    EditorHistoryFeatureDescriptorMismatch,
+    #[error(".ori2 contains editor-history data without a manifest descriptor")]
+    UnexpectedEditorHistoryEntry,
+    #[error(
+        ".ori2 manifest declares editor-history size {declared} bytes, but editor-history.json is {actual} bytes"
+    )]
+    EditorHistorySizeMismatch { declared: u64, actual: u64 },
+    #[error(".ori2 editor-history checksum differs (expected {expected}, actual {actual})")]
+    EditorHistoryHashMismatch { expected: String, actual: String },
+    #[error(".ori2 editor-history is bound to a different project checksum")]
+    EditorHistoryProjectHashMismatch,
+    #[error(".ori2 editor-history is bound to a different project ID")]
+    EditorHistoryProjectIdMismatch,
+    #[error(
+        "the document-only .ori2 API cannot discard persisted editor history; use the project-archive API"
+    )]
+    EditorHistoryRequiresArchiveApi,
     #[error(
         ".ori2 manifest declares project size {declared} bytes, but project.json is {actual} bytes"
     )]

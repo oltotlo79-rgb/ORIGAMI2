@@ -5,6 +5,7 @@
 
 use std::io::{Cursor, Read, Write};
 
+use ori_core::{EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryV1};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -17,11 +18,15 @@ pub const ORI2_CONTAINER_IDENTIFIER: &str = "ORIGAMI2";
 pub const CURRENT_ORI2_CONTAINER_VERSION: u32 = 1;
 pub const ORI2_MANIFEST_PATH: &str = "manifest.json";
 pub const ORI2_PROJECT_PATH: &str = "project.json";
+pub const ORI2_EDITOR_HISTORY_PATH: &str = "editor-history.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
 pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v1";
+pub const ORI2_FEATURE_EDITOR_HISTORY_V1: &str = "editor_history_v1";
+pub const MAX_EDITOR_HISTORY_JSON_BYTES: u64 = 64 * 1024 * 1024;
 
-const REQUIRED_ENTRY_COUNT: usize = 2;
+const DOCUMENT_ONLY_ENTRY_COUNT: usize = 2;
+const PROJECT_WITH_HISTORY_ENTRY_COUNT: usize = 3;
 const ORI2_DEFLATE_LEVEL: i64 = 6;
 const END_OF_CENTRAL_DIRECTORY_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 const END_OF_CENTRAL_DIRECTORY_SIZE: usize = 22;
@@ -40,6 +45,7 @@ pub struct Ori2Limits {
     pub max_total_uncompressed_size: u64,
     pub max_manifest_size: u64,
     pub max_project_size: u64,
+    pub max_editor_history_size: u64,
 }
 
 impl Default for Ori2Limits {
@@ -52,6 +58,29 @@ impl Default for Ori2Limits {
             max_total_uncompressed_size: 256 * 1024 * 1024,
             max_manifest_size: 1024 * 1024,
             max_project_size: MAX_PROJECT_JSON_BYTES as u64,
+            max_editor_history_size: MAX_EDITOR_HISTORY_JSON_BYTES,
+        }
+    }
+}
+
+/// All project-local content carried by one `.ori2` archive.
+///
+/// `ProjectDocument` deliberately remains container-independent version 1.
+/// Optional editor history lives in a separate authenticated entry so legacy
+/// two-entry archives remain byte-compatible and document-only readers cannot
+/// silently discard history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ori2ProjectArchive {
+    pub document: ProjectDocument,
+    pub editor_history: Option<EditorHistoryV1>,
+}
+
+impl Ori2ProjectArchive {
+    #[must_use]
+    pub const fn document_only(document: ProjectDocument) -> Self {
+        Self {
+            document,
+            editor_history: None,
         }
     }
 }
@@ -69,6 +98,8 @@ pub struct Ori2Manifest {
     #[serde(default)]
     pub required_features: Vec<String>,
     pub project: Ori2ProjectEntry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_history: Option<Ori2EditorHistoryEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +109,22 @@ pub struct Ori2ProjectEntry {
     pub format_version: u32,
     pub uncompressed_size: u64,
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ori2EditorHistoryEntry {
+    pub path: String,
+    pub schema_version: u32,
+    pub uncompressed_size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Ori2EditorHistoryEnvelope {
+    project_sha256: String,
+    history: EditorHistoryV1,
 }
 
 impl Ori2Manifest {
@@ -96,6 +143,7 @@ impl Ori2Manifest {
                 uncompressed_size: project_bytes.len() as u64,
                 sha256: sha256_hex(project_bytes),
             },
+            editor_history: None,
         }
     }
 }
@@ -110,18 +158,76 @@ pub fn write_project_ori2_with_limits(
     document: &ProjectDocument,
     limits: Ori2Limits,
 ) -> Result<Vec<u8>, FormatError> {
+    write_project_archive_parts(document, None, limits)
+}
+
+/// Serializes a complete project archive, including authenticated Undo/Redo
+/// history when the history is not the default empty state.
+pub fn write_project_archive_ori2(project: &Ori2ProjectArchive) -> Result<Vec<u8>, FormatError> {
+    write_project_archive_ori2_with_limits(project, Ori2Limits::default())
+}
+
+/// Serializes a complete project archive using explicit resource limits.
+pub fn write_project_archive_ori2_with_limits(
+    project: &Ori2ProjectArchive,
+    limits: Ori2Limits,
+) -> Result<Vec<u8>, FormatError> {
+    if let Some(history) = &project.editor_history {
+        if history.project_id() != project.document.project_id {
+            return Err(FormatError::EditorHistoryProjectIdMismatch);
+        }
+        validate_editor_history_for_document(&project.document, history)?;
+    }
+    let history = project
+        .editor_history
+        .as_ref()
+        .filter(|history| !history.is_default_empty());
+    write_project_archive_parts(&project.document, history, limits)
+}
+
+fn write_project_archive_parts(
+    document: &ProjectDocument,
+    editor_history: Option<&EditorHistoryV1>,
+    limits: Ori2Limits,
+) -> Result<Vec<u8>, FormatError> {
     if document.format_version != crate::CURRENT_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion {
             found: document.format_version,
             latest: crate::CURRENT_FORMAT_VERSION,
         });
     }
-    ensure_entry_count(REQUIRED_ENTRY_COUNT, limits)?;
+    let entry_count = if editor_history.is_some() {
+        PROJECT_WITH_HISTORY_ENTRY_COUNT
+    } else {
+        DOCUMENT_ONLY_ENTRY_COUNT
+    };
+    ensure_entry_count(entry_count, limits)?;
     ensure_path_length(ORI2_MANIFEST_PATH, limits)?;
     ensure_path_length(ORI2_PROJECT_PATH, limits)?;
+    if editor_history.is_some() {
+        ensure_path_length(ORI2_EDITOR_HISTORY_PATH, limits)?;
+    }
 
     let project_bytes = write_project_json(document)?;
     ensure_project_entry_size(project_bytes.len() as u64, limits)?;
+    let project_sha256 = sha256_hex(&project_bytes);
+
+    let history_bytes = if let Some(history) = editor_history {
+        if history.project_id() != document.project_id {
+            return Err(FormatError::EditorHistoryProjectIdMismatch);
+        }
+        validate_editor_history_for_document(document, history)?;
+        let envelope = Ori2EditorHistoryEnvelope {
+            project_sha256: project_sha256.clone(),
+            history: history.clone(),
+        };
+        let bytes =
+            serde_json::to_vec_pretty(&envelope).map_err(FormatError::InvalidEditorHistoryJson)?;
+        ensure_editor_history_entry_size(bytes.len() as u64, limits)?;
+        Some(bytes)
+    } else {
+        None
+    };
 
     let mut required_features = Vec::new();
     if !document.instruction_timeline.steps.is_empty() {
@@ -133,7 +239,19 @@ pub fn write_project_ori2_with_limits(
     if !document.geometric_constraints.is_empty() {
         required_features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
     }
-    let manifest = Ori2Manifest::new(&project_bytes, document.format_version, required_features);
+    if history_bytes.is_some() {
+        required_features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
+    }
+    let mut manifest =
+        Ori2Manifest::new(&project_bytes, document.format_version, required_features);
+    if let Some(bytes) = &history_bytes {
+        manifest.editor_history = Some(Ori2EditorHistoryEntry {
+            path: ORI2_EDITOR_HISTORY_PATH.to_owned(),
+            schema_version: EDITOR_HISTORY_SCHEMA_VERSION_V1,
+            uncompressed_size: bytes.len() as u64,
+            sha256: sha256_hex(bytes),
+        });
+    }
     let manifest_bytes =
         serde_json::to_vec_pretty(&manifest).map_err(FormatError::InvalidManifestJson)?;
     ensure_entry_size(ORI2_MANIFEST_PATH, manifest_bytes.len() as u64, limits)?;
@@ -144,6 +262,13 @@ pub fn write_project_ori2_with_limits(
     )?;
     let total_size = (manifest_bytes.len() as u64)
         .checked_add(project_bytes.len() as u64)
+        .and_then(|size| {
+            size.checked_add(
+                history_bytes
+                    .as_ref()
+                    .map_or(0, |history| history.len() as u64),
+            )
+        })
         .ok_or(FormatError::ExpandedArchiveTooLarge {
             actual: u64::MAX,
             limit: limits.max_total_uncompressed_size,
@@ -162,6 +287,10 @@ pub fn write_project_ori2_with_limits(
     archive.write_all(&manifest_bytes)?;
     archive.start_file(ORI2_PROJECT_PATH, options)?;
     archive.write_all(&project_bytes)?;
+    if let Some(history_bytes) = &history_bytes {
+        archive.start_file(ORI2_EDITOR_HISTORY_PATH, options)?;
+        archive.write_all(history_bytes)?;
+    }
 
     let bytes = archive.finish()?.into_inner();
     ensure_archive_size(bytes.len() as u64, limits)?;
@@ -173,15 +302,37 @@ pub fn read_project_ori2(bytes: &[u8]) -> Result<ProjectDocument, FormatError> {
     read_project_ori2_with_limits(bytes, Ori2Limits::default())
 }
 
-/// Reads a project with explicit resource limits.
+/// Reads a document-only project with explicit resource limits.
 ///
-/// Every entry is inspected before data is expanded. Paths must be portable,
-/// relative UTF-8 paths without traversal components. Declared and actually
-/// read sizes are independently bounded.
+/// This compatibility API rejects archives that contain persisted editor
+/// history. Call [`read_project_archive_ori2_with_limits`] when history must be
+/// retained; silently dropping it would make a subsequent save destructive.
 pub fn read_project_ori2_with_limits(
     bytes: &[u8],
     limits: Ori2Limits,
 ) -> Result<ProjectDocument, FormatError> {
+    let project = read_project_archive_ori2_with_limits(bytes, limits)?;
+    if project.editor_history.is_some() {
+        return Err(FormatError::EditorHistoryRequiresArchiveApi);
+    }
+    Ok(project.document)
+}
+
+/// Reads a complete project archive, including optional persisted Undo/Redo
+/// history.
+pub fn read_project_archive_ori2(bytes: &[u8]) -> Result<Ori2ProjectArchive, FormatError> {
+    read_project_archive_ori2_with_limits(bytes, Ori2Limits::default())
+}
+
+/// Reads a complete project archive with explicit resource limits.
+///
+/// Every entry is inspected before data is expanded. Paths must be portable,
+/// relative UTF-8 paths without traversal components. Declared and actually
+/// read sizes are independently bounded.
+pub fn read_project_archive_ori2_with_limits(
+    bytes: &[u8],
+    limits: Ori2Limits,
+) -> Result<Ori2ProjectArchive, FormatError> {
     ensure_archive_size(bytes.len() as u64, limits)?;
     let declared_entry_count = declared_zip_entry_count(bytes)?;
     ensure_entry_count(declared_entry_count, limits)?;
@@ -205,6 +356,18 @@ pub fn read_project_ori2_with_limits(
     let manifest: Ori2Manifest =
         serde_json::from_slice(&manifest_bytes).map_err(FormatError::InvalidManifestJson)?;
     validate_manifest(&manifest)?;
+    let has_history_entry = archive
+        .file_names()
+        .any(|path| path == ORI2_EDITOR_HISTORY_PATH);
+    match (&manifest.editor_history, has_history_entry) {
+        (None, true) => return Err(FormatError::UnexpectedEditorHistoryEntry),
+        (Some(_), false) => {
+            return Err(FormatError::MissingEntry {
+                path: ORI2_EDITOR_HISTORY_PATH,
+            });
+        }
+        _ => {}
+    }
 
     ensure_project_entry_size(manifest.project.uncompressed_size, limits)?;
     let archived_project_size = archive.by_name(ORI2_PROJECT_PATH)?.size();
@@ -271,7 +434,82 @@ pub fn read_project_ori2_with_limits(
             feature: ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
         });
     }
-    Ok(project)
+
+    let editor_history = match &manifest.editor_history {
+        Some(descriptor) => Some(read_editor_history_entry(
+            &mut archive,
+            descriptor,
+            &project,
+            &actual_hash,
+            limits,
+        )?),
+        None => None,
+    };
+    Ok(Ori2ProjectArchive {
+        document: project,
+        editor_history,
+    })
+}
+
+fn read_editor_history_entry(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    descriptor: &Ori2EditorHistoryEntry,
+    project: &ProjectDocument,
+    project_sha256: &str,
+    limits: Ori2Limits,
+) -> Result<EditorHistoryV1, FormatError> {
+    ensure_editor_history_entry_size(descriptor.uncompressed_size, limits)?;
+    let archived_size = archive.by_name(ORI2_EDITOR_HISTORY_PATH)?.size();
+    if descriptor.uncompressed_size != archived_size {
+        return Err(FormatError::EditorHistorySizeMismatch {
+            declared: descriptor.uncompressed_size,
+            actual: archived_size,
+        });
+    }
+    let history_limit = effective_editor_history_entry_size_limit(limits);
+    let history_bytes = read_bounded_entry(archive, ORI2_EDITOR_HISTORY_PATH, history_limit)?;
+    let actual_size = history_bytes.len() as u64;
+    if descriptor.uncompressed_size != actual_size {
+        return Err(FormatError::EditorHistorySizeMismatch {
+            declared: descriptor.uncompressed_size,
+            actual: actual_size,
+        });
+    }
+    let actual_hash = sha256_hex(&history_bytes);
+    if !is_lowercase_sha256_hex(&descriptor.sha256) || descriptor.sha256 != actual_hash {
+        return Err(FormatError::EditorHistoryHashMismatch {
+            expected: descriptor.sha256.clone(),
+            actual: actual_hash,
+        });
+    }
+
+    let envelope: Ori2EditorHistoryEnvelope =
+        serde_json::from_slice(&history_bytes).map_err(FormatError::InvalidEditorHistoryJson)?;
+    if !is_lowercase_sha256_hex(&envelope.project_sha256)
+        || envelope.project_sha256 != project_sha256
+    {
+        return Err(FormatError::EditorHistoryProjectHashMismatch);
+    }
+    if envelope.history.project_id() != project.project_id {
+        return Err(FormatError::EditorHistoryProjectIdMismatch);
+    }
+    validate_editor_history_for_document(project, &envelope.history)?;
+    Ok(envelope.history)
+}
+
+fn validate_editor_history_for_document(
+    document: &ProjectDocument,
+    history: &EditorHistoryV1,
+) -> Result<(), FormatError> {
+    ori_core::EditorState::with_document_parts_and_history_v1(
+        document.crease_pattern.clone(),
+        document.paper.clone(),
+        document.instruction_timeline.clone(),
+        document.geometric_constraints.clone(),
+        history.clone(),
+    )
+    .map(|_| ())
+    .map_err(FormatError::InvalidEditorHistory)
 }
 
 fn validate_archive_entries(
@@ -320,6 +558,10 @@ fn validate_archive_entries(
                 });
             }
             has_project = true;
+        } else if path == ORI2_EDITOR_HISTORY_PATH && entry.is_dir() {
+            return Err(FormatError::RequiredEntryIsDirectory {
+                path: ORI2_EDITOR_HISTORY_PATH,
+            });
         }
     }
 
@@ -436,6 +678,7 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
                 ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
                     | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
                     | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
+                    | ORI2_FEATURE_EDITOR_HISTORY_V1
             )
         })
         .cloned()
@@ -451,6 +694,26 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
         return Err(FormatError::InvalidManifestProjectPath {
             found: manifest.project.path.clone(),
         });
+    }
+    let declares_history_feature = manifest
+        .required_features
+        .iter()
+        .any(|feature| feature == ORI2_FEATURE_EDITOR_HISTORY_V1);
+    if declares_history_feature != manifest.editor_history.is_some() {
+        return Err(FormatError::EditorHistoryFeatureDescriptorMismatch);
+    }
+    if let Some(editor_history) = &manifest.editor_history {
+        if editor_history.path != ORI2_EDITOR_HISTORY_PATH {
+            return Err(FormatError::InvalidManifestEditorHistoryPath {
+                found: editor_history.path.clone(),
+            });
+        }
+        if editor_history.schema_version != EDITOR_HISTORY_SCHEMA_VERSION_V1 {
+            return Err(FormatError::UnsupportedEditorHistorySchemaVersion {
+                found: editor_history.schema_version,
+                latest: EDITOR_HISTORY_SCHEMA_VERSION_V1,
+            });
+        }
     }
     Ok(())
 }
@@ -532,6 +795,21 @@ fn ensure_project_entry_size(actual: u64, limits: Ori2Limits) -> Result<(), Form
     )
 }
 
+fn effective_editor_history_entry_size_limit(limits: Ori2Limits) -> u64 {
+    limits
+        .max_editor_history_size
+        .min(limits.max_entry_uncompressed_size)
+        .min(MAX_EDITOR_HISTORY_JSON_BYTES)
+}
+
+fn ensure_editor_history_entry_size(actual: u64, limits: Ori2Limits) -> Result<(), FormatError> {
+    ensure_specific_size(
+        ORI2_EDITOR_HISTORY_PATH,
+        actual,
+        effective_editor_history_entry_size_limit(limits),
+    )
+}
+
 fn ensure_specific_size(path: &str, actual: u64, limit: u64) -> Result<(), FormatError> {
     if actual > limit {
         return Err(FormatError::EntryTooLarge {
@@ -568,9 +846,17 @@ fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn is_lowercase_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ori_core::{Command, EditorState};
     use ori_domain::{
         AssetId, ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, FaceId,
         GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle,
@@ -606,6 +892,20 @@ mod tests {
 
     fn project_id_from_wire(value: &str) -> ori_domain::ProjectId {
         serde_json::from_str(&format!("\"{value}\"")).expect("project ID fixture")
+    }
+
+    fn empty_editor_history(
+        project_id: ori_domain::ProjectId,
+        history_entry_limit: u32,
+    ) -> EditorHistoryV1 {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": EDITOR_HISTORY_SCHEMA_VERSION_V1,
+            "project_id": project_id,
+            "history_entry_limit": history_entry_limit,
+            "undo_stack": [],
+            "redo_stack": [],
+        }))
+        .expect("valid empty editor-history fixture")
     }
 
     fn add_all_geometric_constraint_kinds(document: &mut ProjectDocument) {
@@ -697,6 +997,61 @@ mod tests {
         writer.finish().expect("finish test ZIP").into_inner()
     }
 
+    fn archive_entries(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("open test archive");
+        (0..archive.len())
+            .map(|index| {
+                let mut entry = archive.by_index(index).expect("open test entry");
+                let name = entry.name().to_owned();
+                let mut contents = Vec::new();
+                entry
+                    .read_to_end(&mut contents)
+                    .expect("read test entry contents");
+                (name, contents)
+            })
+            .collect()
+    }
+
+    fn raw_zip_owned(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+        let borrowed = entries
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        raw_zip(&borrowed)
+    }
+
+    fn reseal_history_entry(entries: &mut [(String, Vec<u8>)], history_bytes: Vec<u8>) {
+        let manifest_index = entries
+            .iter()
+            .position(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let history_index = entries
+            .iter()
+            .position(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+            .expect("history fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(&entries[manifest_index].1).expect("parse fixture manifest");
+        let descriptor = manifest
+            .editor_history
+            .as_mut()
+            .expect("fixture history descriptor");
+        descriptor.uncompressed_size = history_bytes.len() as u64;
+        descriptor.sha256 = sha256_hex(&history_bytes);
+        entries[manifest_index].1 =
+            serde_json::to_vec_pretty(&manifest).expect("reseal fixture manifest");
+        entries[history_index].1 = history_bytes;
+    }
+
+    fn history_archive_fixture() -> (ProjectDocument, Vec<u8>) {
+        let document = sample_document();
+        let project = Ori2ProjectArchive {
+            editor_history: Some(empty_editor_history(document.project_id, 17)),
+            document: document.clone(),
+        };
+        let bytes = write_project_archive_ori2(&project).expect("write history fixture");
+        (document, bytes)
+    }
+
     fn manifest_for(project_bytes: &[u8]) -> Vec<u8> {
         manifest_for_features(project_bytes, Vec::new())
     }
@@ -770,9 +1125,409 @@ mod tests {
         assert_eq!(restored, original);
 
         let mut archive = ZipArchive::new(Cursor::new(&bytes)).expect("open generated ZIP");
-        assert_eq!(archive.len(), REQUIRED_ENTRY_COUNT);
+        assert_eq!(archive.len(), DOCUMENT_ONLY_ENTRY_COUNT);
         assert!(archive.by_name(ORI2_MANIFEST_PATH).is_ok());
         assert!(archive.by_name(ORI2_PROJECT_PATH).is_ok());
+    }
+
+    #[test]
+    fn default_empty_editor_history_preserves_the_legacy_two_entry_archive() {
+        let document = sample_document();
+        let legacy = write_project_ori2(&document).expect("write legacy document-only archive");
+        let project = Ori2ProjectArchive {
+            document: document.clone(),
+            editor_history: Some(empty_editor_history(
+                document.project_id,
+                ori_core::MAX_EDITOR_HISTORY_ENTRIES as u32,
+            )),
+        };
+
+        let with_default_history =
+            write_project_archive_ori2(&project).expect("write default-empty history");
+        assert_eq!(
+            with_default_history, legacy,
+            "the default empty history must not change canonical legacy bytes"
+        );
+
+        let restored = read_project_archive_ori2(&with_default_history)
+            .expect("read legacy-compatible archive");
+        assert_eq!(restored.document, document);
+        assert_eq!(restored.editor_history, None);
+        let archive =
+            ZipArchive::new(Cursor::new(&with_default_history)).expect("open generated ZIP");
+        assert_eq!(archive.len(), DOCUMENT_ONLY_ENTRY_COUNT);
+    }
+
+    #[test]
+    fn custom_history_limit_round_trips_in_an_authenticated_third_entry() {
+        let document = sample_document();
+        let history = empty_editor_history(document.project_id, 17);
+        assert!(!history.is_default_empty());
+        let project = Ori2ProjectArchive {
+            document: document.clone(),
+            editor_history: Some(history.clone()),
+        };
+
+        let first = write_project_archive_ori2(&project).expect("write history archive");
+        let second = write_project_archive_ori2(&project).expect("rewrite history archive");
+        assert_eq!(
+            second, first,
+            "history-bearing archives must be deterministic"
+        );
+
+        let manifest = manifest_from_archive(&first);
+        assert_eq!(
+            manifest.required_features,
+            vec![ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned()]
+        );
+        let descriptor = manifest
+            .editor_history
+            .expect("history descriptor must be present");
+        assert_eq!(descriptor.path, ORI2_EDITOR_HISTORY_PATH);
+        assert_eq!(descriptor.schema_version, EDITOR_HISTORY_SCHEMA_VERSION_V1);
+        assert!(is_lowercase_sha256_hex(&descriptor.sha256));
+
+        let mut archive = ZipArchive::new(Cursor::new(&first)).expect("open generated ZIP");
+        assert_eq!(archive.len(), PROJECT_WITH_HISTORY_ENTRY_COUNT);
+        assert!(archive.by_name(ORI2_EDITOR_HISTORY_PATH).is_ok());
+
+        let restored = read_project_archive_ori2(&first).expect("read history archive");
+        assert_eq!(restored.document, document);
+        assert_eq!(restored.editor_history, Some(history));
+        assert!(matches!(
+            read_project_ori2(&first),
+            Err(FormatError::EditorHistoryRequiresArchiveApi)
+        ));
+    }
+
+    #[test]
+    fn nonempty_undo_and_redo_history_round_trip_and_remain_operational() {
+        let mut document = sample_document();
+        let mut editor = EditorState::with_document_parts_and_constraints(
+            document.crease_pattern.clone(),
+            document.paper.clone(),
+            document.instruction_timeline.clone(),
+            document.geometric_constraints.clone(),
+        );
+        editor
+            .set_history_entry_limit(17)
+            .expect("set history limit");
+        let vertex = editor.pattern().vertices[0].id;
+        editor
+            .execute(
+                editor.revision(),
+                Command::MoveVertex {
+                    id: vertex,
+                    position: Point2::new(1.0, 2.0),
+                },
+            )
+            .expect("first edit");
+        editor
+            .execute(
+                editor.revision(),
+                Command::MoveVertex {
+                    id: vertex,
+                    position: Point2::new(3.0, 4.0),
+                },
+            )
+            .expect("second edit");
+        editor.undo(editor.revision()).expect("create redo history");
+        assert!(editor.can_undo());
+        assert!(editor.can_redo());
+
+        document.crease_pattern = editor.pattern().clone();
+        document.paper = editor.paper().clone();
+        document.instruction_timeline = editor.instruction_timeline().clone();
+        document.geometric_constraints = editor.geometric_constraints().clone();
+        let history = editor
+            .export_history_v1(document.project_id)
+            .expect("export editor history");
+        let bytes = write_project_archive_ori2(&Ori2ProjectArchive {
+            document: document.clone(),
+            editor_history: Some(history.clone()),
+        })
+        .expect("write nonempty history");
+
+        let restored_archive = read_project_archive_ori2(&bytes).expect("read nonempty history");
+        let restored_history = restored_archive
+            .editor_history
+            .clone()
+            .expect("restored history");
+        assert_eq!(restored_history, history);
+        let mut restored = EditorState::with_document_parts_and_history_v1(
+            restored_archive.document.crease_pattern.clone(),
+            restored_archive.document.paper.clone(),
+            restored_archive.document.instruction_timeline.clone(),
+            restored_archive.document.geometric_constraints.clone(),
+            restored_history,
+        )
+        .expect("restore operational editor history");
+        assert_eq!(restored.revision(), 0);
+        assert_eq!(restored.history_entry_limit(), 17);
+        assert!(restored.can_undo());
+        assert!(restored.can_redo());
+        assert_eq!(
+            restored
+                .export_history_v1(document.project_id)
+                .expect("re-export restored history"),
+            history
+        );
+
+        restored.undo(0).expect("first post-load undo");
+        assert_eq!(restored.revision(), 1);
+    }
+
+    #[test]
+    fn writer_rejects_editor_history_bound_to_another_project() {
+        let document = sample_document();
+        let history = empty_editor_history(ori_domain::ProjectId::new(), 17);
+        let project = Ori2ProjectArchive {
+            document,
+            editor_history: Some(history),
+        };
+
+        assert!(matches!(
+            write_project_archive_ori2(&project),
+            Err(FormatError::EditorHistoryProjectIdMismatch)
+        ));
+    }
+
+    #[test]
+    fn history_feature_and_manifest_descriptor_must_be_declared_together() {
+        let (_, bytes) = history_archive_fixture();
+
+        let mut missing_feature = archive_entries(&bytes);
+        let (_, manifest_bytes) = missing_feature
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(manifest_bytes).expect("parse manifest");
+        manifest
+            .required_features
+            .retain(|feature| feature != ORI2_FEATURE_EDITOR_HISTORY_V1);
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&missing_feature)),
+            Err(FormatError::EditorHistoryFeatureDescriptorMismatch)
+        ));
+
+        let mut missing_descriptor = archive_entries(&bytes);
+        let (_, manifest_bytes) = missing_descriptor
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(manifest_bytes).expect("parse manifest");
+        manifest.editor_history = None;
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&missing_descriptor)),
+            Err(FormatError::EditorHistoryFeatureDescriptorMismatch)
+        ));
+    }
+
+    #[test]
+    fn history_entry_presence_must_match_the_authenticated_manifest() {
+        let (document, bytes) = history_archive_fixture();
+        let mut missing = archive_entries(&bytes);
+        missing.retain(|(path, _)| path != ORI2_EDITOR_HISTORY_PATH);
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&missing)),
+            Err(FormatError::MissingEntry {
+                path: ORI2_EDITOR_HISTORY_PATH
+            })
+        ));
+
+        let document_only = write_project_ori2(&document).expect("write document-only fixture");
+        let mut orphan = archive_entries(&document_only);
+        orphan.push((
+            ORI2_EDITOR_HISTORY_PATH.to_owned(),
+            br#"{"untrusted":true}"#.to_vec(),
+        ));
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&orphan)),
+            Err(FormatError::UnexpectedEditorHistoryEntry)
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_history_descriptor_path_schema_size_and_hash() {
+        let (_, bytes) = history_archive_fixture();
+
+        let mut bad_path = archive_entries(&bytes);
+        let (_, manifest_bytes) = bad_path
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(manifest_bytes).expect("parse manifest");
+        manifest
+            .editor_history
+            .as_mut()
+            .expect("history descriptor")
+            .path = "../editor-history.json".to_owned();
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&bad_path)),
+            Err(FormatError::InvalidManifestEditorHistoryPath { .. })
+        ));
+
+        let mut bad_schema = archive_entries(&bytes);
+        let (_, manifest_bytes) = bad_schema
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(manifest_bytes).expect("parse manifest");
+        manifest
+            .editor_history
+            .as_mut()
+            .expect("history descriptor")
+            .schema_version += 1;
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&bad_schema)),
+            Err(FormatError::UnsupportedEditorHistorySchemaVersion { .. })
+        ));
+
+        let mut bad_size = archive_entries(&bytes);
+        let (_, manifest_bytes) = bad_size
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(manifest_bytes).expect("parse manifest");
+        manifest
+            .editor_history
+            .as_mut()
+            .expect("history descriptor")
+            .uncompressed_size += 1;
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&bad_size)),
+            Err(FormatError::EditorHistorySizeMismatch { .. })
+        ));
+
+        let mut bad_hash = archive_entries(&bytes);
+        let (_, manifest_bytes) = bad_hash
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest fixture");
+        let mut manifest: Ori2Manifest =
+            serde_json::from_slice(manifest_bytes).expect("parse manifest");
+        manifest
+            .editor_history
+            .as_mut()
+            .expect("history descriptor")
+            .sha256 = "0".repeat(64);
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&bad_hash)),
+            Err(FormatError::EditorHistoryHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_history_rebound_to_different_project_bytes_or_identity() {
+        let (_, bytes) = history_archive_fixture();
+
+        let mut wrong_project_hash = archive_entries(&bytes);
+        let (_, history_bytes) = wrong_project_hash
+            .iter()
+            .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+            .expect("history fixture");
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(history_bytes).expect("parse history envelope");
+        envelope["project_sha256"] = serde_json::Value::String("0".repeat(64));
+        let history_bytes =
+            serde_json::to_vec_pretty(&envelope).expect("serialize history envelope");
+        reseal_history_entry(&mut wrong_project_hash, history_bytes);
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&wrong_project_hash)),
+            Err(FormatError::EditorHistoryProjectHashMismatch)
+        ));
+
+        let mut wrong_project_id = archive_entries(&bytes);
+        let (_, history_bytes) = wrong_project_id
+            .iter()
+            .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+            .expect("history fixture");
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(history_bytes).expect("parse history envelope");
+        envelope["history"]["project_id"] =
+            serde_json::to_value(ori_domain::ProjectId::new()).expect("serialize project ID");
+        let history_bytes =
+            serde_json::to_vec_pretty(&envelope).expect("serialize history envelope");
+        reseal_history_entry(&mut wrong_project_id, history_bytes);
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&wrong_project_id)),
+            Err(FormatError::EditorHistoryProjectIdMismatch)
+        ));
+    }
+
+    #[test]
+    fn history_envelope_is_strict_and_history_size_has_a_hard_ceiling() {
+        let (_, bytes) = history_archive_fixture();
+        let mut unknown_field = archive_entries(&bytes);
+        let (_, history_bytes) = unknown_field
+            .iter()
+            .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+            .expect("history fixture");
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(history_bytes).expect("parse history envelope");
+        envelope
+            .as_object_mut()
+            .expect("history envelope object")
+            .insert("future_field".to_owned(), serde_json::json!(true));
+        let history_bytes =
+            serde_json::to_vec_pretty(&envelope).expect("serialize history envelope");
+        reseal_history_entry(&mut unknown_field, history_bytes);
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&unknown_field)),
+            Err(FormatError::InvalidEditorHistoryJson(_))
+        ));
+
+        let mut unsupported_history_schema = archive_entries(&bytes);
+        let (_, history_bytes) = unsupported_history_schema
+            .iter()
+            .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+            .expect("history fixture");
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(history_bytes).expect("parse history envelope");
+        envelope["history"]["schema_version"] =
+            serde_json::json!(EDITOR_HISTORY_SCHEMA_VERSION_V1 + 1);
+        let history_bytes =
+            serde_json::to_vec_pretty(&envelope).expect("serialize history envelope");
+        reseal_history_entry(&mut unsupported_history_schema, history_bytes);
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&unsupported_history_schema)),
+            Err(FormatError::InvalidEditorHistory(
+                ori_core::EditorHistoryErrorV1::UnsupportedSchemaVersion
+            ))
+        ));
+
+        let relaxed = Ori2Limits {
+            max_entry_uncompressed_size: MAX_EDITOR_HISTORY_JSON_BYTES * 2,
+            max_editor_history_size: MAX_EDITOR_HISTORY_JSON_BYTES * 2,
+            ..Ori2Limits::default()
+        };
+        assert_eq!(
+            effective_editor_history_entry_size_limit(relaxed),
+            MAX_EDITOR_HISTORY_JSON_BYTES
+        );
+        ensure_editor_history_entry_size(MAX_EDITOR_HISTORY_JSON_BYTES, relaxed)
+            .expect("equality with the history hard ceiling must succeed");
+        assert!(matches!(
+            ensure_editor_history_entry_size(MAX_EDITOR_HISTORY_JSON_BYTES + 1, relaxed),
+            Err(FormatError::EntryTooLarge {
+                path,
+                actual,
+                limit
+            }) if path == ORI2_EDITOR_HISTORY_PATH
+                && actual == MAX_EDITOR_HISTORY_JSON_BYTES + 1
+                && limit == MAX_EDITOR_HISTORY_JSON_BYTES
+        ));
     }
 
     #[test]

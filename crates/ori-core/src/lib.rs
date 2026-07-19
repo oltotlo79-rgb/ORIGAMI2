@@ -28,8 +28,9 @@ pub use constraints::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 pub use editor::{
-    Command, CommandError, CommandResult, EditorState, HistoryEntryLimitError,
-    IntersectionEdgeTarget, JunctionVertexIntent, MAX_REVISION, Revision,
+    Command, CommandError, CommandResult, EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1,
+    EditorHistoryV1, EditorState, HistoryEntryLimitError, IntersectionEdgeTarget,
+    JunctionVertexIntent, MAX_EDITOR_HISTORY_ENTRIES, MAX_REVISION, Revision,
 };
 pub use fold_model_fingerprint::fold_model_fingerprint_v1;
 pub use ori_foldability::{

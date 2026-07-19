@@ -2387,6 +2387,7 @@ dependencies = [
 name = "ori-formats"
 version = "0.1.0"
 dependencies = [
+ "ori-core",
  "ori-domain",
  "ori-geometry",
  "ori-instructions",

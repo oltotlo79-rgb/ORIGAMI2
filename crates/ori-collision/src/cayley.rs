@@ -4,13 +4,20 @@
 //! bind its output to a pose certificate.  In particular, none of the
 //! rationals below may be supplied by a caller as collision evidence.
 
-use std::cmp::Ordering;
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, VecDeque},
+};
 
 use num_bigint::{BigInt, BigUint, Sign};
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
+use ori_domain::{EdgeId, FaceId, VertexId};
+use ori_kinematics::{BoundMaterialTreePose, Point3};
+use ori_topology::FoldAssignment;
 
 const RATIONAL_CAYLEY_LOCAL_ROTATION_V1: &str = "rational_cayley_local_rotation_v1";
+const RATIONAL_CAYLEY_TREE_POSE_V1: &str = "rational_cayley_tree_pose_v1";
 const DEGREE_180: u16 = 180;
 const DEGREE_360: u16 = 360;
 const DEFAULT_GUARD_BITS: usize = 64;
@@ -58,6 +65,7 @@ enum CayleyStage {
     Candidate,
     Matrix,
     Output,
+    Tree,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +92,9 @@ enum CayleyError {
     InvariantFailure {
         stage: CayleyStage,
     },
+    BoundTreeInconsistent {
+        stage: CayleyStage,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -98,10 +109,19 @@ struct CayleyWork {
     max_shift_bits: usize,
     max_preflight_bits: usize,
     max_observed_bits: usize,
+    max_output_bits: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TotalTermLimits {
+    machin_terms: usize,
+    trig_terms: usize,
+    sqrt_refinements: usize,
 }
 
 struct WorkMeter<'a> {
     limits: &'a CayleyLimits,
+    total_term_limits: Option<TotalTermLimits>,
     work: CayleyWork,
 }
 
@@ -109,23 +129,36 @@ impl<'a> WorkMeter<'a> {
     fn new(limits: &'a CayleyLimits) -> Self {
         Self {
             limits,
+            total_term_limits: None,
+            work: CayleyWork::default(),
+        }
+    }
+
+    fn with_total_term_limits(
+        limits: &'a CayleyLimits,
+        total_term_limits: TotalTermLimits,
+    ) -> Self {
+        Self {
+            limits,
+            total_term_limits: Some(total_term_limits),
             work: CayleyWork::default(),
         }
     }
 
     fn operation(&mut self, stage: CayleyStage) -> Result<(), CayleyError> {
-        self.work.interval_operations = self.work.interval_operations.checked_add(1).ok_or(
+        let next = self.work.interval_operations.checked_add(1).ok_or(
             CayleyError::ResourceLimitExceeded {
                 stage,
                 resource: "interval_operations",
             },
         )?;
-        if self.work.interval_operations > self.limits.max_interval_operations {
+        if next > self.limits.max_interval_operations {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage,
                 resource: "interval_operations",
             });
         }
+        self.work.interval_operations = next;
         Ok(())
     }
 
@@ -136,8 +169,7 @@ impl<'a> WorkMeter<'a> {
                 resource: "machin_terms",
             });
         }
-        self.work.max_machin_series_terms = self.work.max_machin_series_terms.max(local_terms);
-        self.work.machin_terms =
+        let next =
             self.work
                 .machin_terms
                 .checked_add(1)
@@ -145,7 +177,19 @@ impl<'a> WorkMeter<'a> {
                     stage,
                     resource: "machin_terms",
                 })?;
-        self.operation(stage)
+        if self
+            .total_term_limits
+            .is_some_and(|limits| next > limits.machin_terms)
+        {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "total_machin_terms",
+            });
+        }
+        self.operation(stage)?;
+        self.work.max_machin_series_terms = self.work.max_machin_series_terms.max(local_terms);
+        self.work.machin_terms = next;
+        Ok(())
     }
 
     fn trig_term(&mut self, stage: CayleyStage, local_terms: usize) -> Result<(), CayleyError> {
@@ -155,8 +199,7 @@ impl<'a> WorkMeter<'a> {
                 resource: "trig_terms",
             });
         }
-        self.work.max_trig_series_terms = self.work.max_trig_series_terms.max(local_terms);
-        self.work.trig_terms =
+        let next =
             self.work
                 .trig_terms
                 .checked_add(1)
@@ -164,7 +207,19 @@ impl<'a> WorkMeter<'a> {
                     stage,
                     resource: "trig_terms",
                 })?;
-        self.operation(stage)
+        if self
+            .total_term_limits
+            .is_some_and(|limits| next > limits.trig_terms)
+        {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "total_trig_terms",
+            });
+        }
+        self.operation(stage)?;
+        self.work.max_trig_series_terms = self.work.max_trig_series_terms.max(local_terms);
+        self.work.trig_terms = next;
+        Ok(())
     }
 
     fn sqrt_refinement(
@@ -178,15 +233,26 @@ impl<'a> WorkMeter<'a> {
                 resource: "sqrt_refinements",
             });
         }
-        self.work.max_sqrt_call_refinements =
-            self.work.max_sqrt_call_refinements.max(local_refinements);
-        self.work.sqrt_refinements = self.work.sqrt_refinements.checked_add(1).ok_or(
+        let next = self.work.sqrt_refinements.checked_add(1).ok_or(
             CayleyError::ResourceLimitExceeded {
                 stage,
                 resource: "sqrt_refinements",
             },
         )?;
-        self.operation(stage)
+        if self
+            .total_term_limits
+            .is_some_and(|limits| next > limits.sqrt_refinements)
+        {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "total_sqrt_refinements",
+            });
+        }
+        self.operation(stage)?;
+        self.work.max_sqrt_call_refinements =
+            self.work.max_sqrt_call_refinements.max(local_refinements);
+        self.work.sqrt_refinements = next;
+        Ok(())
     }
 
     fn shift(&mut self, stage: CayleyStage, bits: usize) -> Result<(), CayleyError> {
@@ -341,6 +407,7 @@ impl<'a> WorkMeter<'a> {
     fn observe_output(&mut self, value: &BigRational) -> Result<(), CayleyError> {
         let bits = rational_bits(value);
         self.work.max_observed_bits = self.work.max_observed_bits.max(bits);
+        self.work.max_output_bits = self.work.max_output_bits.max(bits);
         if bits > self.limits.max_output_bits {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage: CayleyStage::Output,
@@ -368,6 +435,99 @@ struct ExactLocalRotation {
     certificate: ExactAngleCertificate,
     work: CayleyWork,
     version: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExactTreePoseLimits {
+    max_faces: usize,
+    max_hinges: usize,
+    max_adjacency_entries: usize,
+    max_boundary_occurrences: usize,
+    max_boundary_edge_index_entries: usize,
+    max_boundary_edge_index_operations: usize,
+    max_unique_vertices: usize,
+    max_total_machin_terms: usize,
+    max_total_trig_terms: usize,
+    max_total_sqrt_refinements: usize,
+    max_total_output_bits: usize,
+    cayley: CayleyLimits,
+}
+
+impl Default for ExactTreePoseLimits {
+    fn default() -> Self {
+        Self {
+            max_faces: 10_001,
+            max_hinges: 10_000,
+            max_adjacency_entries: 20_000,
+            max_boundary_occurrences: 1_000_000,
+            max_boundary_edge_index_entries: 1_000_000,
+            max_boundary_edge_index_operations: 1_000_000,
+            max_unique_vertices: 1_000_000,
+            max_total_machin_terms: 4_000_000,
+            max_total_trig_terms: 8_000_000,
+            max_total_sqrt_refinements: 640_000,
+            max_total_output_bits: 128_000_000,
+            cayley: CayleyLimits {
+                max_interval_operations: 10_000_000,
+                ..CayleyLimits::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ExactTreePoseWork {
+    faces: usize,
+    hinges: usize,
+    adjacency_entries: usize,
+    boundary_occurrences: usize,
+    boundary_edge_index_entries: usize,
+    boundary_edge_index_operations: usize,
+    unique_vertices: usize,
+    max_output_bits: usize,
+    total_output_bits: usize,
+    exact: CayleyWork,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactRigidTransform {
+    rotation: [[BigRational; 3]; 3],
+    translation: ExactVector3,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactFacePose {
+    face: FaceId,
+    transform: ExactRigidTransform,
+    boundary: Vec<(VertexId, ExactPoint3)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactHingePose {
+    edge: EdgeId,
+    parent: FaceId,
+    child: FaceId,
+    rotation_sign: i8,
+    angle_magnitude_bits: u64,
+    certificate: ExactAngleCertificate,
+    endpoint_vertices: [VertexId; 2],
+    world_endpoints: [ExactPoint3; 2],
+}
+
+#[derive(Debug)]
+struct RationalCayleyTreePose<'a> {
+    bound: BoundMaterialTreePose<'a>,
+    fixed_face: Option<FaceId>,
+    faces: Vec<ExactFacePose>,
+    hinges: Vec<ExactHingePose>,
+    work: ExactTreePoseWork,
+    version: &'static str,
+}
+
+impl RationalCayleyTreePose<'_> {
+    fn is_for(&self, bound: BoundMaterialTreePose<'_>) -> bool {
+        self.bound.model() == bound.model() && self.bound.pose().same_instance(bound.pose())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -594,6 +754,23 @@ fn local_rotation_v1(
     limits: CayleyLimits,
 ) -> Result<ExactLocalRotation, CayleyError> {
     let mut meter = WorkMeter::new(&limits);
+    local_rotation_v1_with_meter(
+        pivot,
+        end,
+        angle_magnitude_degrees,
+        rotation_sign,
+        &mut meter,
+    )
+}
+
+fn local_rotation_v1_with_meter(
+    pivot: [f64; 3],
+    end: [f64; 3],
+    angle_magnitude_degrees: f64,
+    rotation_sign: i8,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactLocalRotation, CayleyError> {
+    let limits = *meter.limits;
     if !matches!(rotation_sign, -1 | 1) {
         return Err(CayleyError::InvalidRotationSign {
             stage: CayleyStage::Input,
@@ -611,9 +788,9 @@ fn local_rotation_v1(
             resource: "candidate_bits",
         });
     }
-    let pivot = exact_point(pivot, &mut meter)?;
-    let end = exact_point(end, &mut meter)?;
-    let absolute_degrees = exact_f64(angle_magnitude_degrees, &mut meter, CayleyStage::Input)?;
+    let pivot = exact_point(pivot, meter)?;
+    let end = exact_point(end, meter)?;
+    let absolute_degrees = exact_f64(angle_magnitude_degrees, meter, CayleyStage::Input)?;
     let maximum = BigRational::from_integer(BigInt::from(DEGREE_180));
     if absolute_degrees.is_negative() || absolute_degrees > maximum {
         return Err(CayleyError::AngleOutOfRange {
@@ -626,55 +803,41 @@ fn local_rotation_v1(
         absolute_degrees.clone()
     };
 
-    let raw_direction = exact_between(&pivot, &end, &mut meter)?;
-    let (direction, delta) = normalize_direction(&raw_direction, &mut meter)?;
+    let raw_direction = exact_between(&pivot, &end, meter)?;
+    let (direction, delta) = normalize_direction(&raw_direction, meter)?;
 
     if absolute_degrees.is_zero() {
         let rotation = identity_matrix();
         let translation = zero_vector();
-        verify_invariants(
-            &rotation,
-            &translation,
-            &pivot,
-            &end,
-            &direction,
-            &mut meter,
-        )?;
-        observe_transform_output(&rotation, &translation, &mut meter)?;
+        verify_invariants(&rotation, &translation, &pivot, &end, &direction, meter)?;
+        observe_transform_output(&rotation, &translation, meter)?;
         return Ok(ExactLocalRotation {
             rotation,
             translation,
             certificate: ExactAngleCertificate::Exact { target_degrees },
-            work: meter.work,
+            work: meter.work.clone(),
             version: RATIONAL_CAYLEY_LOCAL_ROTATION_V1,
         });
     }
 
     if absolute_degrees == maximum {
-        let rotation = half_turn(&direction, &delta, &mut meter)?;
-        let translation = fixed_point_translation(&rotation, &pivot, &mut meter)?;
-        verify_invariants(
-            &rotation,
-            &translation,
-            &pivot,
-            &end,
-            &direction,
-            &mut meter,
-        )?;
-        observe_transform_output(&rotation, &translation, &mut meter)?;
+        let rotation = half_turn(&direction, &delta, meter)?;
+        let translation = fixed_point_translation(&rotation, &pivot, meter)?;
+        verify_invariants(&rotation, &translation, &pivot, &end, &direction, meter)?;
+        observe_transform_output(&rotation, &translation, meter)?;
         return Ok(ExactLocalRotation {
             rotation,
             translation,
             certificate: ExactAngleCertificate::Exact { target_degrees },
-            work: meter.work,
+            work: meter.work.clone(),
             version: RATIONAL_CAYLEY_LOCAL_ROTATION_V1,
         });
     }
 
-    let acceptance = adjacent_angle_acceptance(angle_magnitude_degrees, &mut meter)?;
+    let acceptance = adjacent_angle_acceptance(angle_magnitude_degrees, meter)?;
 
     if absolute_degrees == BigRational::from_integer(BigInt::from(90_u8))
-        && let Some(root) = exact_rational_square_root(&delta, &mut meter)?
+        && let Some(root) = exact_rational_square_root(&delta, meter)?
     {
         let sign = if rotation_sign < 0 {
             -BigRational::one()
@@ -682,22 +845,15 @@ fn local_rotation_v1(
             BigRational::one()
         };
         let parameter = meter.divide_rational(&sign, &root, CayleyStage::Candidate)?;
-        let rotation = cayley_matrix(&direction, &delta, &parameter, &mut meter)?;
-        let translation = fixed_point_translation(&rotation, &pivot, &mut meter)?;
-        verify_invariants(
-            &rotation,
-            &translation,
-            &pivot,
-            &end,
-            &direction,
-            &mut meter,
-        )?;
-        observe_transform_output(&rotation, &translation, &mut meter)?;
+        let rotation = cayley_matrix(&direction, &delta, &parameter, meter)?;
+        let translation = fixed_point_translation(&rotation, &pivot, meter)?;
+        verify_invariants(&rotation, &translation, &pivot, &end, &direction, meter)?;
+        observe_transform_output(&rotation, &translation, meter)?;
         return Ok(ExactLocalRotation {
             rotation,
             translation,
             certificate: ExactAngleCertificate::Exact { target_degrees },
-            work: meter.work,
+            work: meter.work.clone(),
             version: RATIONAL_CAYLEY_LOCAL_ROTATION_V1,
         });
     }
@@ -713,24 +869,17 @@ fn local_rotation_v1(
             &delta,
             &acceptance,
             precision,
-            &mut meter,
+            meter,
         ) {
             Ok((rotation, certificate)) => {
-                let translation = fixed_point_translation(&rotation, &pivot, &mut meter)?;
-                verify_invariants(
-                    &rotation,
-                    &translation,
-                    &pivot,
-                    &end,
-                    &direction,
-                    &mut meter,
-                )?;
-                observe_transform_output(&rotation, &translation, &mut meter)?;
+                let translation = fixed_point_translation(&rotation, &pivot, meter)?;
+                verify_invariants(&rotation, &translation, &pivot, &end, &direction, meter)?;
+                observe_transform_output(&rotation, &translation, meter)?;
                 return Ok(ExactLocalRotation {
                     rotation,
                     translation,
                     certificate,
-                    work: meter.work,
+                    work: meter.work.clone(),
                     version: RATIONAL_CAYLEY_LOCAL_ROTATION_V1,
                 });
             }
@@ -748,6 +897,863 @@ fn local_rotation_v1(
     Err(CayleyError::CertificateUnavailable {
         stage: CayleyStage::Candidate,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExactTreeNeighbor {
+    face: FaceId,
+    hinge_index: usize,
+    rotation_sign: i8,
+}
+
+#[derive(Debug)]
+struct AuthenticatedBoundaryEdgeIndex {
+    entries: HashMap<(FaceId, EdgeId), [VertexId; 2]>,
+    boundary_occurrences: usize,
+    operations: usize,
+}
+
+/// Builds a watertight rational pose bound to one exact native pose issuer.
+///
+/// This proof intentionally does not contain or authorize the binary64
+/// renderer snapshot. Renderer containment and the collision safe-set
+/// connection remain later gates.
+fn prepare_rational_cayley_tree_pose_v1<'a>(
+    bound: BoundMaterialTreePose<'a>,
+    limits: ExactTreePoseLimits,
+) -> Result<RationalCayleyTreePose<'a>, CayleyError> {
+    let model = bound.model();
+    let pose = bound.pose();
+    let face_ids = model.face_ids();
+    let hinges = model.hinges();
+    let angles = pose.hinge_angles();
+    let face_count = face_ids.len();
+    let hinge_count = hinges.len();
+
+    if face_count == 0 || face_count > limits.max_faces || hinge_count > limits.max_hinges {
+        return Err(CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: if face_count > limits.max_faces || face_count == 0 {
+                "faces"
+            } else {
+                "hinges"
+            },
+        });
+    }
+    if hinge_count
+        .checked_add(1)
+        .is_none_or(|expected| expected != face_count)
+        && !(hinge_count == 0 && face_count == 1)
+    {
+        return Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        });
+    }
+    if !strictly_canonical_faces(face_ids)
+        || !strictly_canonical_hinges(hinges)
+        || angles.len() != hinge_count
+        || !hinges.iter().zip(angles).all(|(hinge, angle)| {
+            hinge.edge() == angle.edge()
+                && angle.angle_degrees().is_finite()
+                && (0.0..=180.0).contains(&angle.angle_degrees())
+        })
+    {
+        return Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        });
+    }
+
+    let adjacency_entries =
+        hinge_count
+            .checked_mul(2)
+            .ok_or(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "adjacency_entries",
+            })?;
+    if adjacency_entries > limits.max_adjacency_entries {
+        return Err(CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "adjacency_entries",
+        });
+    }
+
+    let boundary_edge_index = build_authenticated_boundary_edge_index(bound, face_ids, &limits)?;
+    let boundary_occurrences = boundary_edge_index.boundary_occurrences;
+
+    let fixed_face = pose.fixed_face();
+    let root = if hinge_count == 0 {
+        if fixed_face.is_some() {
+            return Err(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            });
+        }
+        face_ids[0]
+    } else {
+        let root = fixed_face.ok_or(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        })?;
+        if face_ids
+            .binary_search_by_key(&root.canonical_bytes(), FaceId::canonical_bytes)
+            .is_err()
+        {
+            return Err(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            });
+        }
+        root
+    };
+    if pose.face_transform(root) != Some(model.identity_transform()) {
+        return Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        });
+    }
+
+    let mut meter = WorkMeter::with_total_term_limits(
+        &limits.cayley,
+        TotalTermLimits {
+            machin_terms: limits.max_total_machin_terms,
+            trig_terms: limits.max_total_trig_terms,
+            sqrt_refinements: limits.max_total_sqrt_refinements,
+        },
+    );
+    let mut adjacency = HashMap::<FaceId, Vec<ExactTreeNeighbor>>::new();
+    adjacency
+        .try_reserve(face_count)
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "faces",
+        })?;
+    for face in face_ids {
+        adjacency.insert(*face, Vec::new());
+    }
+    for (hinge_index, hinge) in hinges.iter().enumerate() {
+        if hinge.left_face() == hinge.right_face()
+            || !adjacency.contains_key(&hinge.left_face())
+            || !adjacency.contains_key(&hinge.right_face())
+        {
+            return Err(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            });
+        }
+        let base_sign = match hinge.assignment() {
+            FoldAssignment::Mountain => 1_i8,
+            FoldAssignment::Valley => -1_i8,
+        };
+        for (face, neighbor, rotation_sign) in [
+            (hinge.left_face(), hinge.right_face(), base_sign),
+            (hinge.right_face(), hinge.left_face(), -base_sign),
+        ] {
+            let neighbors = adjacency
+                .get_mut(&face)
+                .ok_or(CayleyError::BoundTreeInconsistent {
+                    stage: CayleyStage::Tree,
+                })?;
+            neighbors
+                .try_reserve(1)
+                .map_err(|_| CayleyError::ResourceLimitExceeded {
+                    stage: CayleyStage::Tree,
+                    resource: "adjacency_entries",
+                })?;
+            neighbors.push(ExactTreeNeighbor {
+                face: neighbor,
+                hinge_index,
+                rotation_sign,
+            });
+        }
+    }
+    for neighbors in adjacency.values_mut() {
+        neighbors
+            .sort_unstable_by_key(|neighbor| hinges[neighbor.hinge_index].edge().canonical_bytes());
+    }
+
+    let mut max_output_bits = 0_usize;
+    let mut total_output_bits = 0_usize;
+    let mut transforms = HashMap::<FaceId, ExactRigidTransform>::new();
+    transforms
+        .try_reserve(face_count)
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "faces",
+        })?;
+    let root_transform = exact_identity_transform();
+    charge_transform_output(
+        &root_transform,
+        &mut max_output_bits,
+        &mut total_output_bits,
+        limits.cayley.max_output_bits,
+        limits.max_total_output_bits,
+    )?;
+    transforms.insert(root, root_transform);
+    let mut hinge_poses = Vec::<Option<ExactHingePose>>::new();
+    hinge_poses
+        .try_reserve_exact(hinge_count)
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "hinges",
+        })?;
+    hinge_poses.resize_with(hinge_count, || None);
+    let mut queue = VecDeque::new();
+    queue
+        .try_reserve(face_count)
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "faces",
+        })?;
+    queue.push_back(root);
+
+    while let Some(parent_face) = queue.pop_front() {
+        meter.operation(CayleyStage::Tree)?;
+        let parent = transforms
+            .get(&parent_face)
+            .ok_or(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            })?;
+        charge_transform_output(
+            parent,
+            &mut max_output_bits,
+            &mut total_output_bits,
+            limits.cayley.max_output_bits,
+            limits.max_total_output_bits,
+        )?;
+        let parent = parent.clone();
+        let neighbors = adjacency
+            .get(&parent_face)
+            .ok_or(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            })?;
+        for neighbor in neighbors {
+            if transforms.contains_key(&neighbor.face) {
+                continue;
+            }
+            let hinge =
+                hinges
+                    .get(neighbor.hinge_index)
+                    .ok_or(CayleyError::BoundTreeInconsistent {
+                        stage: CayleyStage::Tree,
+                    })?;
+            if pose.hinge_parent_transform(hinge.edge()) != pose.face_transform(parent_face) {
+                return Err(CayleyError::BoundTreeInconsistent {
+                    stage: CayleyStage::Tree,
+                });
+            }
+            let angle =
+                angles
+                    .get(neighbor.hinge_index)
+                    .ok_or(CayleyError::BoundTreeInconsistent {
+                        stage: CayleyStage::Tree,
+                    })?;
+            let local = local_rotation_v1_with_meter(
+                point3_array(hinge.start()),
+                point3_array(hinge.end()),
+                angle.angle_degrees(),
+                neighbor.rotation_sign,
+                &mut meter,
+            )?;
+            check_tree_exact_aggregates(&meter.work, &limits)?;
+            let local_transform = ExactRigidTransform {
+                rotation: local.rotation,
+                translation: local.translation,
+            };
+            let child = compose_exact_transform(&parent, &local_transform, &mut meter)?;
+            verify_exact_rotation(&child.rotation, &mut meter)?;
+
+            let rest_start = exact_point(point3_array(hinge.start()), &mut meter)?;
+            let rest_end = exact_point(point3_array(hinge.end()), &mut meter)?;
+            let parent_start = apply_exact_transform(&parent, &rest_start, &mut meter)?;
+            let parent_end = apply_exact_transform(&parent, &rest_end, &mut meter)?;
+            let child_start = apply_exact_transform(&child, &rest_start, &mut meter)?;
+            let child_end = apply_exact_transform(&child, &rest_end, &mut meter)?;
+            if parent_start != child_start || parent_end != child_end {
+                return Err(CayleyError::InvariantFailure {
+                    stage: CayleyStage::Tree,
+                });
+            }
+            let endpoint_vertices = authenticated_hinge_endpoint_vertices(
+                bound,
+                &boundary_edge_index,
+                hinge,
+                &rest_start,
+                &rest_end,
+                &mut meter,
+            )?;
+            charge_transform_output(
+                &child,
+                &mut max_output_bits,
+                &mut total_output_bits,
+                limits.cayley.max_output_bits,
+                limits.max_total_output_bits,
+            )?;
+            charge_angle_certificate_output(
+                &local.certificate,
+                &mut max_output_bits,
+                &mut total_output_bits,
+                limits.cayley.max_output_bits,
+                limits.max_total_output_bits,
+            )?;
+            for endpoint in [&parent_start, &parent_end] {
+                charge_point_output(
+                    endpoint,
+                    &mut max_output_bits,
+                    &mut total_output_bits,
+                    limits.cayley.max_output_bits,
+                    limits.max_total_output_bits,
+                )?;
+            }
+            if hinge_poses[neighbor.hinge_index]
+                .replace(ExactHingePose {
+                    edge: hinge.edge(),
+                    parent: parent_face,
+                    child: neighbor.face,
+                    rotation_sign: neighbor.rotation_sign,
+                    angle_magnitude_bits: angle.angle_degrees().to_bits(),
+                    certificate: local.certificate,
+                    endpoint_vertices,
+                    world_endpoints: [parent_start, parent_end],
+                })
+                .is_some()
+                || transforms.insert(neighbor.face, child).is_some()
+            {
+                return Err(CayleyError::BoundTreeInconsistent {
+                    stage: CayleyStage::Tree,
+                });
+            }
+            queue.push_back(neighbor.face);
+        }
+    }
+    if transforms.len() != face_count || hinge_poses.iter().any(Option::is_none) {
+        return Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        });
+    }
+    check_tree_exact_aggregates(&meter.work, &limits)?;
+
+    let mut vertex_registry = HashMap::<VertexId, ExactPoint3>::new();
+    vertex_registry
+        .try_reserve(boundary_occurrences.min(limits.max_unique_vertices))
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "unique_vertices",
+        })?;
+    let mut faces = Vec::new();
+    faces
+        .try_reserve_exact(face_count)
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "faces",
+        })?;
+    for face in face_ids {
+        let transform = transforms
+            .remove(face)
+            .ok_or(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            })?;
+        verify_exact_rotation(&transform.rotation, &mut meter)?;
+        let source_boundary =
+            bound
+                .face_boundary(*face)
+                .ok_or(CayleyError::BoundTreeInconsistent {
+                    stage: CayleyStage::Tree,
+                })?;
+        let mut boundary = Vec::new();
+        boundary
+            .try_reserve_exact(source_boundary.vertices().len())
+            .map_err(|_| CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_occurrences",
+            })?;
+        for vertex in source_boundary.vertices() {
+            let source =
+                model
+                    .vertex_position(*vertex)
+                    .ok_or(CayleyError::BoundTreeInconsistent {
+                        stage: CayleyStage::Tree,
+                    })?;
+            let rest = exact_point(point3_array(source), &mut meter)?;
+            let current = apply_exact_transform(&transform, &rest, &mut meter)?;
+            charge_point_output(
+                &current,
+                &mut max_output_bits,
+                &mut total_output_bits,
+                limits.cayley.max_output_bits,
+                limits.max_total_output_bits,
+            )?;
+            // The registry and the per-face boundary both retain a copy
+            // during validation, so reserve logical storage for the clone
+            // before allocating it.
+            charge_point_output(
+                &current,
+                &mut max_output_bits,
+                &mut total_output_bits,
+                limits.cayley.max_output_bits,
+                limits.max_total_output_bits,
+            )?;
+            if !vertex_registry.contains_key(vertex)
+                && vertex_registry.len() >= limits.max_unique_vertices
+            {
+                return Err(CayleyError::ResourceLimitExceeded {
+                    stage: CayleyStage::Tree,
+                    resource: "unique_vertices",
+                });
+            }
+            match vertex_registry.entry(*vertex) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(current.clone());
+                }
+                std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &current => {}
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(CayleyError::InvariantFailure {
+                        stage: CayleyStage::Tree,
+                    });
+                }
+            }
+            boundary.push((*vertex, current));
+        }
+        faces.push(ExactFacePose {
+            face: *face,
+            transform,
+            boundary,
+        });
+    }
+
+    let mut hinges = Vec::new();
+    hinges
+        .try_reserve_exact(hinge_count)
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "hinges",
+        })?;
+    for hinge in hinge_poses {
+        let hinge = hinge.ok_or(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        })?;
+        for (vertex, endpoint) in hinge.endpoint_vertices.iter().zip(&hinge.world_endpoints) {
+            if vertex_registry.get(vertex) != Some(endpoint) {
+                return Err(CayleyError::InvariantFailure {
+                    stage: CayleyStage::Tree,
+                });
+            }
+        }
+        hinges.push(hinge);
+    }
+    check_tree_exact_aggregates(&meter.work, &limits)?;
+
+    Ok(RationalCayleyTreePose {
+        bound,
+        fixed_face,
+        faces,
+        hinges,
+        work: ExactTreePoseWork {
+            faces: face_count,
+            hinges: hinge_count,
+            adjacency_entries,
+            boundary_occurrences,
+            boundary_edge_index_entries: boundary_edge_index.entries.len(),
+            boundary_edge_index_operations: boundary_edge_index.operations,
+            unique_vertices: vertex_registry.len(),
+            max_output_bits: max_output_bits.max(meter.work.max_output_bits),
+            total_output_bits,
+            exact: meter.work,
+        },
+        version: RATIONAL_CAYLEY_TREE_POSE_V1,
+    })
+}
+
+fn strictly_canonical_faces(faces: &[FaceId]) -> bool {
+    !faces.is_empty()
+        && faces
+            .windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+}
+
+fn strictly_canonical_hinges(hinges: &[ori_kinematics::TreeHinge]) -> bool {
+    hinges
+        .windows(2)
+        .all(|pair| pair[0].edge().canonical_bytes() < pair[1].edge().canonical_bytes())
+}
+
+fn point3_array(point: Point3) -> [f64; 3] {
+    [point.x(), point.y(), point.z()]
+}
+
+fn exact_identity_transform() -> ExactRigidTransform {
+    ExactRigidTransform {
+        rotation: identity_matrix(),
+        translation: zero_vector(),
+    }
+}
+
+fn compose_exact_transform(
+    parent: &ExactRigidTransform,
+    local: &ExactRigidTransform,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactRigidTransform, CayleyError> {
+    let rotation = try_array3(|row| {
+        try_array3(|column| {
+            let mut value = BigRational::zero();
+            for index in 0..3 {
+                let product = meter.multiply_rational(
+                    &parent.rotation[row][index],
+                    &local.rotation[index][column],
+                    CayleyStage::Tree,
+                )?;
+                value = meter.add_rational(&value, &product, CayleyStage::Tree)?;
+            }
+            Ok(value)
+        })
+    })?;
+    let translation = ExactVector3 {
+        coordinates: try_array3(|row| {
+            let mut value = parent.translation.coordinates[row].clone();
+            for column in 0..3 {
+                let product = meter.multiply_rational(
+                    &parent.rotation[row][column],
+                    &local.translation.coordinates[column],
+                    CayleyStage::Tree,
+                )?;
+                value = meter.add_rational(&value, &product, CayleyStage::Tree)?;
+            }
+            Ok(value)
+        })?,
+    };
+    Ok(ExactRigidTransform {
+        rotation,
+        translation,
+    })
+}
+
+fn apply_exact_transform(
+    transform: &ExactRigidTransform,
+    point: &ExactPoint3,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactPoint3, CayleyError> {
+    apply_point(&transform.rotation, &transform.translation, point, meter)
+}
+
+fn verify_exact_rotation(
+    rotation: &[[BigRational; 3]; 3],
+    meter: &mut WorkMeter<'_>,
+) -> Result<(), CayleyError> {
+    for row in 0..3 {
+        for column in 0..3 {
+            let mut value = BigRational::zero();
+            for rotation_row in rotation {
+                let product = meter.multiply_rational(
+                    &rotation_row[row],
+                    &rotation_row[column],
+                    CayleyStage::Tree,
+                )?;
+                value = meter.add_rational(&value, &product, CayleyStage::Tree)?;
+            }
+            let expected = if row == column {
+                BigRational::one()
+            } else {
+                BigRational::zero()
+            };
+            if value != expected {
+                return Err(CayleyError::InvariantFailure {
+                    stage: CayleyStage::Tree,
+                });
+            }
+        }
+    }
+    if determinant(rotation, meter)? != BigRational::one() {
+        return Err(CayleyError::InvariantFailure {
+            stage: CayleyStage::Tree,
+        });
+    }
+    Ok(())
+}
+
+fn build_authenticated_boundary_edge_index(
+    bound: BoundMaterialTreePose<'_>,
+    faces: &[FaceId],
+    limits: &ExactTreePoseLimits,
+) -> Result<AuthenticatedBoundaryEdgeIndex, CayleyError> {
+    let mut entries = HashMap::<(FaceId, EdgeId), [VertexId; 2]>::new();
+    let mut boundary_occurrences = 0_usize;
+    let mut operations = 0_usize;
+
+    for face in faces {
+        if bound.pose().face_transform(*face).is_none() {
+            return Err(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            });
+        }
+        let boundary = bound
+            .face_boundary(*face)
+            .ok_or(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            })?;
+        let occurrence_count = boundary.vertices().len();
+        if boundary.face() != *face
+            || occurrence_count < 3
+            || occurrence_count != boundary.edges().len()
+        {
+            return Err(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            });
+        }
+
+        let next_boundary_occurrences = boundary_occurrences.checked_add(occurrence_count).ok_or(
+            CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_occurrences",
+            },
+        )?;
+        if next_boundary_occurrences > limits.max_boundary_occurrences {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_occurrences",
+            });
+        }
+        let next_entries = entries.len().checked_add(occurrence_count).ok_or(
+            CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_edge_index_entries",
+            },
+        )?;
+        if next_entries > limits.max_boundary_edge_index_entries {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_edge_index_entries",
+            });
+        }
+        let next_operations =
+            operations
+                .checked_add(occurrence_count)
+                .ok_or(CayleyError::ResourceLimitExceeded {
+                    stage: CayleyStage::Tree,
+                    resource: "boundary_edge_index_operations",
+                })?;
+        if next_operations > limits.max_boundary_edge_index_operations {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_edge_index_operations",
+            });
+        }
+        entries
+            .try_reserve(occurrence_count)
+            .map_err(|_| CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "boundary_edge_index_entries",
+            })?;
+
+        for (index, edge) in boundary.edges().iter().enumerate() {
+            let endpoints = [
+                boundary.vertices()[index],
+                boundary.vertices()[(index + 1) % occurrence_count],
+            ];
+            if entries.insert((*face, *edge), endpoints).is_some() {
+                return Err(CayleyError::BoundTreeInconsistent {
+                    stage: CayleyStage::Tree,
+                });
+            }
+        }
+        boundary_occurrences = next_boundary_occurrences;
+        operations = next_operations;
+    }
+
+    if entries.len() != boundary_occurrences {
+        return Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        });
+    }
+    Ok(AuthenticatedBoundaryEdgeIndex {
+        entries,
+        boundary_occurrences,
+        operations,
+    })
+}
+
+fn authenticated_hinge_endpoint_vertices(
+    bound: BoundMaterialTreePose<'_>,
+    boundary_edge_index: &AuthenticatedBoundaryEdgeIndex,
+    hinge: &ori_kinematics::TreeHinge,
+    rest_start: &ExactPoint3,
+    rest_end: &ExactPoint3,
+    meter: &mut WorkMeter<'_>,
+) -> Result<[VertexId; 2], CayleyError> {
+    let left_pair = *boundary_edge_index
+        .entries
+        .get(&(hinge.left_face(), hinge.edge()))
+        .ok_or(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        })?;
+    let right_pair = *boundary_edge_index
+        .entries
+        .get(&(hinge.right_face(), hinge.edge()))
+        .ok_or(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        })?;
+    if !unordered_vertex_pair_eq(left_pair, right_pair) {
+        return Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        });
+    }
+    let first =
+        bound
+            .model()
+            .vertex_position(left_pair[0])
+            .ok_or(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            })?;
+    let second =
+        bound
+            .model()
+            .vertex_position(left_pair[1])
+            .ok_or(CayleyError::BoundTreeInconsistent {
+                stage: CayleyStage::Tree,
+            })?;
+    let first = exact_point(point3_array(first), meter)?;
+    let second = exact_point(point3_array(second), meter)?;
+    if first == *rest_start && second == *rest_end {
+        Ok(left_pair)
+    } else if first == *rest_end && second == *rest_start {
+        Ok([left_pair[1], left_pair[0]])
+    } else {
+        Err(CayleyError::BoundTreeInconsistent {
+            stage: CayleyStage::Tree,
+        })
+    }
+}
+
+fn unordered_vertex_pair_eq(first: [VertexId; 2], second: [VertexId; 2]) -> bool {
+    first == second || first == [second[1], second[0]]
+}
+
+fn check_tree_exact_aggregates(
+    work: &CayleyWork,
+    limits: &ExactTreePoseLimits,
+) -> Result<(), CayleyError> {
+    for (actual, maximum, resource) in [
+        (
+            work.machin_terms,
+            limits.max_total_machin_terms,
+            "total_machin_terms",
+        ),
+        (
+            work.trig_terms,
+            limits.max_total_trig_terms,
+            "total_trig_terms",
+        ),
+        (
+            work.sqrt_refinements,
+            limits.max_total_sqrt_refinements,
+            "total_sqrt_refinements",
+        ),
+    ] {
+        if actual > maximum {
+            return Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn charge_transform_output(
+    transform: &ExactRigidTransform,
+    max_observed: &mut usize,
+    total: &mut usize,
+    maximum_per_value: usize,
+    maximum: usize,
+) -> Result<(), CayleyError> {
+    for value in transform
+        .rotation
+        .iter()
+        .flat_map(|row| row.iter())
+        .chain(transform.translation.coordinates.iter())
+    {
+        charge_rational_output(value, max_observed, total, maximum_per_value, maximum)?;
+    }
+    Ok(())
+}
+
+fn charge_point_output(
+    point: &ExactPoint3,
+    max_observed: &mut usize,
+    total: &mut usize,
+    maximum_per_value: usize,
+    maximum: usize,
+) -> Result<(), CayleyError> {
+    for coordinate in &point.coordinates {
+        charge_rational_output(coordinate, max_observed, total, maximum_per_value, maximum)?;
+    }
+    Ok(())
+}
+
+fn charge_angle_certificate_output(
+    certificate: &ExactAngleCertificate,
+    max_observed: &mut usize,
+    total: &mut usize,
+    maximum_per_value: usize,
+    maximum: usize,
+) -> Result<(), CayleyError> {
+    match certificate {
+        ExactAngleCertificate::Exact { target_degrees } => charge_rational_output(
+            target_degrees,
+            max_observed,
+            total,
+            maximum_per_value,
+            maximum,
+        ),
+        ExactAngleCertificate::Bounded(certificate) => {
+            for value in [
+                &certificate.target_degrees,
+                &certificate.parameter,
+                &certificate.target_half_tangent.lower,
+                &certificate.target_half_tangent.upper,
+                &certificate.realized_half_tangent.lower,
+                &certificate.realized_half_tangent.upper,
+                &certificate.max_error_radians,
+                &certificate.max_error_degrees,
+                &certificate.acceptance_degrees,
+                &certificate.pi.lower,
+                &certificate.pi.upper,
+            ] {
+                charge_rational_output(value, max_observed, total, maximum_per_value, maximum)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn charge_rational_output(
+    value: &BigRational,
+    max_observed: &mut usize,
+    total: &mut usize,
+    maximum_per_value: usize,
+    maximum: usize,
+) -> Result<(), CayleyError> {
+    let value_bits = rational_bits(value);
+    *max_observed = (*max_observed).max(value_bits);
+    if value_bits > maximum_per_value {
+        return Err(CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "output_bits",
+        });
+    }
+    let storage_bits = bigint_bits(value.numer())
+        .checked_add(bigint_bits(value.denom()))
+        .ok_or(CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "total_output_bits",
+        })?;
+    let next_total = total
+        .checked_add(storage_bits)
+        .ok_or(CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "total_output_bits",
+        })?;
+    if next_total > maximum {
+        return Err(CayleyError::ResourceLimitExceeded {
+            stage: CayleyStage::Tree,
+            resource: "total_output_bits",
+        });
+    }
+    *total = next_total;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1065,10 +2071,8 @@ fn machin_pi_interval(
     )?;
     let upper = meter.subtract_rational(&first_upper, &second_lower, CayleyStage::Pi)?;
     let exact = RationalInterval::new(lower, upper)?;
-    Ok(
-        DyadicInterval::from_rational_outward(&exact, work_precision, meter, CayleyStage::Pi)?
-            .to_rational(meter, CayleyStage::Pi)?,
-    )
+    DyadicInterval::from_rational_outward(&exact, work_precision, meter, CayleyStage::Pi)?
+        .to_rational(meter, CayleyStage::Pi)
 }
 
 fn atan_inverse_interval(
@@ -1917,6 +2921,13 @@ fn try_array3<T>(
 
 #[cfg(test)]
 mod tests {
+    use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
+    use ori_kinematics::{
+        CanonicalHingeAngles, HingeAngle, MaterialTreeKinematicsModel, MaterialTreePose,
+        TreeKinematicsLimits,
+    };
+    use ori_topology::{FaceExtractionInput, analyze_faces};
+
     use super::*;
 
     fn limits() -> CayleyLimits {
@@ -1935,6 +2946,509 @@ mod tests {
 
     fn transpose(matrix: &[[BigRational; 3]; 3]) -> [[BigRational; 3]; 3] {
         std::array::from_fn(|row| std::array::from_fn(|column| matrix[column][row].clone()))
+    }
+
+    fn tree_vertex_id(index: u64) -> VertexId {
+        serde_json::from_str(&format!("\"00000000-0000-4000-8000-{index:012x}\""))
+            .expect("fixed vertex id")
+    }
+
+    fn tree_edge_id(index: u64) -> EdgeId {
+        serde_json::from_str(&format!("\"00000000-0000-4000-9000-{index:012x}\""))
+            .expect("fixed edge id")
+    }
+
+    fn tree_project_id() -> ProjectId {
+        serde_json::from_str("\"00000000-0000-4000-b000-0000000000c1\"").expect("fixed project id")
+    }
+
+    fn tree_vertex(index: u64, x: f64, y: f64) -> Vertex {
+        Vertex {
+            id: tree_vertex_id(index),
+            position: Point2::new(x, y),
+        }
+    }
+
+    fn tree_edge(index: u64, start: VertexId, end: VertexId, kind: EdgeKind) -> Edge {
+        Edge {
+            id: tree_edge_id(index),
+            start,
+            end,
+            kind,
+        }
+    }
+
+    /// Three material faces joined by two diagonal hinges that meet at one
+    /// paper corner. This exercises both shared-edge watertightness and the
+    /// non-edge shared corner of the two outer faces.
+    fn diagonal_v_tree_model(reordered: bool) -> MaterialTreeKinematicsModel {
+        let mut vertices = vec![
+            tree_vertex(1, 0.0, 0.0),
+            tree_vertex(2, 10.0, 0.0),
+            tree_vertex(3, 10.0, 5.0),
+            tree_vertex(4, 10.0, 10.0),
+            tree_vertex(5, 5.0, 10.0),
+            tree_vertex(6, 0.0, 10.0),
+        ];
+        let mut boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| {
+                tree_edge(
+                    index as u64 + 1,
+                    boundary[index],
+                    boundary[(index + 1) % boundary.len()],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect::<Vec<_>>();
+        edges.push(tree_edge(7, boundary[0], boundary[2], EdgeKind::Mountain));
+        edges.push(tree_edge(8, boundary[0], boundary[4], EdgeKind::Valley));
+        if reordered {
+            vertices.reverse();
+            edges.reverse();
+            boundary.rotate_left(3);
+        }
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: tree_project_id(),
+            source_revision: 193,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("diagonal V topology"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("diagonal V material model")
+    }
+
+    fn single_face_tree_model() -> MaterialTreeKinematicsModel {
+        let vertices = vec![
+            tree_vertex(21, 0.0, 0.0),
+            tree_vertex(22, 8.0, 0.0),
+            tree_vertex(23, 8.0, 6.0),
+            tree_vertex(24, 0.0, 6.0),
+        ];
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let edges = (0..boundary.len())
+            .map(|index| {
+                tree_edge(
+                    index as u64 + 21,
+                    boundary[index],
+                    boundary[(index + 1) % boundary.len()],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect();
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: tree_project_id(),
+            source_revision: 194,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("single face topology"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("single face material model")
+    }
+
+    fn diagonal_v_angles(model: &MaterialTreeKinematicsModel) -> CanonicalHingeAngles {
+        CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    let angle = if hinge.edge() == tree_edge_id(7) {
+                        37.25
+                    } else {
+                        128.5
+                    };
+                    HingeAngle::new(hinge.edge(), angle).unwrap()
+                })
+                .collect(),
+        )
+        .expect("canonical V angles")
+    }
+
+    fn solve_diagonal_v(model: &MaterialTreeKinematicsModel, root: FaceId) -> MaterialTreePose {
+        model
+            .solve(Some(root), &diagonal_v_angles(model))
+            .expect("diagonal V pose")
+    }
+
+    fn exact_tree_pose<'a>(
+        model: &'a MaterialTreeKinematicsModel,
+        pose: &'a MaterialTreePose,
+        limits: ExactTreePoseLimits,
+    ) -> RationalCayleyTreePose<'a> {
+        prepare_rational_cayley_tree_pose_v1(
+            model.bind_pose(pose).expect("issuer-bound pose"),
+            limits,
+        )
+        .expect("watertight exact tree pose")
+    }
+
+    fn exact_face<'a>(pose: &'a RationalCayleyTreePose<'_>, face: FaceId) -> &'a ExactFacePose {
+        pose.faces
+            .binary_search_by_key(&face.canonical_bytes(), |candidate| {
+                candidate.face.canonical_bytes()
+            })
+            .ok()
+            .and_then(|index| pose.faces.get(index))
+            .expect("exact face")
+    }
+
+    fn inverse_exact_transform(
+        transform: &ExactRigidTransform,
+        meter: &mut WorkMeter<'_>,
+    ) -> ExactRigidTransform {
+        let rotation = std::array::from_fn(|row| {
+            std::array::from_fn(|column| transform.rotation[column][row].clone())
+        });
+        let translation = ExactVector3 {
+            coordinates: try_array3(|row| {
+                let mut value = BigRational::zero();
+                for (coefficient, coordinate) in
+                    rotation[row].iter().zip(&transform.translation.coordinates)
+                {
+                    let product =
+                        meter.multiply_rational(coefficient, coordinate, CayleyStage::Tree)?;
+                    value = meter.add_rational(&value, &product, CayleyStage::Tree)?;
+                }
+                Ok(-value)
+            })
+            .unwrap(),
+        };
+        ExactRigidTransform {
+            rotation,
+            translation,
+        }
+    }
+
+    #[test]
+    fn issuer_bound_single_face_tree_is_exact_identity_without_hinges() {
+        let model = single_face_tree_model();
+        let angles = CanonicalHingeAngles::new(Vec::new()).unwrap();
+        let pose = model.solve(None, &angles).unwrap();
+        let exact = exact_tree_pose(&model, &pose, ExactTreePoseLimits::default());
+        assert_eq!(exact.fixed_face, None);
+        assert_eq!(exact.faces.len(), 1);
+        assert!(exact.hinges.is_empty());
+        assert_eq!(exact.faces[0].transform, exact_identity_transform());
+        assert_eq!(exact.work.faces, 1);
+        assert_eq!(exact.work.hinges, 0);
+        assert_eq!(exact.work.exact.machin_terms, 0);
+        assert_eq!(exact.work.exact.trig_terms, 0);
+        assert_eq!(exact.work.exact.sqrt_refinements, 0);
+    }
+
+    #[test]
+    fn issuer_bound_diagonal_v_tree_is_watertight_and_rejects_aba() {
+        let model = diagonal_v_tree_model(false);
+        let root = model.face_ids()[1];
+        let pose = solve_diagonal_v(&model, root);
+        let bound = model.bind_pose(&pose).unwrap();
+        let exact =
+            prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default()).unwrap();
+
+        assert!(exact.is_for(bound));
+        assert_eq!(exact.version, RATIONAL_CAYLEY_TREE_POSE_V1);
+        assert_eq!(exact.fixed_face, Some(root));
+        assert_eq!(exact.faces.len(), model.face_ids().len());
+        assert_eq!(exact.hinges.len(), model.hinges().len());
+        assert_eq!(exact.work.faces, 3);
+        assert_eq!(exact.work.hinges, 2);
+        assert_eq!(exact.work.adjacency_entries, 4);
+        assert_eq!(
+            exact.work.boundary_edge_index_entries,
+            exact.work.boundary_occurrences
+        );
+        assert_eq!(
+            exact.work.boundary_edge_index_operations,
+            exact.work.boundary_occurrences
+        );
+        assert!(exact.work.max_output_bits >= exact.work.exact.max_output_bits);
+        assert_eq!(
+            exact_face(&exact, root).transform,
+            exact_identity_transform()
+        );
+
+        let corner = tree_vertex_id(1);
+        let corner_images = exact
+            .faces
+            .iter()
+            .flat_map(|face| &face.boundary)
+            .filter(|(vertex, _)| *vertex == corner)
+            .map(|(_, point)| point)
+            .collect::<Vec<_>>();
+        assert_eq!(corner_images.len(), 3);
+        assert!(corner_images.windows(2).all(|pair| pair[0] == pair[1]));
+
+        let limits = CayleyLimits {
+            max_interval_operations: 1_000_000,
+            ..CayleyLimits::default()
+        };
+        let mut meter = WorkMeter::new(&limits);
+        for hinge_pose in &exact.hinges {
+            let hinge = model
+                .hinges()
+                .iter()
+                .find(|hinge| hinge.edge() == hinge_pose.edge)
+                .unwrap();
+            let base = match hinge.assignment() {
+                FoldAssignment::Mountain => 1,
+                FoldAssignment::Valley => -1,
+            };
+            let expected_sign = if hinge_pose.parent == hinge.left_face() {
+                base
+            } else {
+                -base
+            };
+            assert_eq!(hinge_pose.rotation_sign, expected_sign);
+            assert_eq!(
+                pose.hinge_parent_transform(hinge_pose.edge),
+                pose.face_transform(hinge_pose.parent)
+            );
+
+            let start = exact_point(point3_array(hinge.start()), &mut meter).unwrap();
+            let end = exact_point(point3_array(hinge.end()), &mut meter).unwrap();
+            let midpoint = ExactPoint3 {
+                coordinates: std::array::from_fn(|index| {
+                    (&start.coordinates[index] + &end.coordinates[index]) / rational(2)
+                }),
+            };
+            let parent_midpoint = apply_exact_transform(
+                &exact_face(&exact, hinge_pose.parent).transform,
+                &midpoint,
+                &mut meter,
+            )
+            .unwrap();
+            let child_midpoint = apply_exact_transform(
+                &exact_face(&exact, hinge_pose.child).transform,
+                &midpoint,
+                &mut meter,
+            )
+            .unwrap();
+            assert_eq!(parent_midpoint, child_midpoint);
+        }
+
+        let cloned_pose = pose.clone();
+        assert!(exact.is_for(model.bind_pose(&cloned_pose).unwrap()));
+        let repeated = solve_diagonal_v(&model, root);
+        assert!(!exact.is_for(model.bind_pose(&repeated).unwrap()));
+        let independent = diagonal_v_tree_model(false);
+        let independent_pose = solve_diagonal_v(&independent, root);
+        assert!(!exact.is_for(independent.bind_pose(&independent_pose).unwrap()));
+    }
+
+    #[test]
+    fn exact_tree_rerooting_is_one_global_exact_frame_change() {
+        let model = diagonal_v_tree_model(false);
+        let first_root = model.face_ids()[0];
+        let second_root = *model.face_ids().last().unwrap();
+        let first_pose = solve_diagonal_v(&model, first_root);
+        let second_pose = solve_diagonal_v(&model, second_root);
+        let first = exact_tree_pose(&model, &first_pose, ExactTreePoseLimits::default());
+        let second = exact_tree_pose(&model, &second_pose, ExactTreePoseLimits::default());
+        let limits = CayleyLimits {
+            max_interval_operations: 1_000_000,
+            ..CayleyLimits::default()
+        };
+        let mut meter = WorkMeter::new(&limits);
+        let frame_change =
+            inverse_exact_transform(&exact_face(&first, second_root).transform, &mut meter);
+        for face in model.face_ids() {
+            let normalized = compose_exact_transform(
+                &frame_change,
+                &exact_face(&first, *face).transform,
+                &mut meter,
+            )
+            .unwrap();
+            assert_eq!(normalized, exact_face(&second, *face).transform);
+        }
+    }
+
+    #[test]
+    fn exact_tree_pose_is_invariant_to_source_collection_order() {
+        let first_model = diagonal_v_tree_model(false);
+        let reordered_model = diagonal_v_tree_model(true);
+        assert_eq!(first_model.face_ids(), reordered_model.face_ids());
+        let root = first_model.face_ids()[0];
+        let first_pose = solve_diagonal_v(&first_model, root);
+        let reordered_pose = solve_diagonal_v(&reordered_model, root);
+        let first = exact_tree_pose(&first_model, &first_pose, ExactTreePoseLimits::default());
+        let reordered = exact_tree_pose(
+            &reordered_model,
+            &reordered_pose,
+            ExactTreePoseLimits::default(),
+        );
+        assert_eq!(first.faces, reordered.faces);
+        assert_eq!(first.hinges, reordered.hinges);
+        assert_eq!(first.work, reordered.work);
+    }
+
+    #[test]
+    fn exact_tree_aggregate_limits_accept_observed_boundary_and_reject_one_short() {
+        let model = diagonal_v_tree_model(false);
+        let root = model.face_ids()[0];
+        let pose = solve_diagonal_v(&model, root);
+        let baseline = exact_tree_pose(&model, &pose, ExactTreePoseLimits::default());
+
+        let mut exact = ExactTreePoseLimits::default();
+        exact.max_faces = baseline.work.faces;
+        exact.max_hinges = baseline.work.hinges;
+        exact.max_adjacency_entries = baseline.work.adjacency_entries;
+        exact.max_boundary_occurrences = baseline.work.boundary_occurrences;
+        exact.max_boundary_edge_index_entries = baseline.work.boundary_edge_index_entries;
+        exact.max_boundary_edge_index_operations = baseline.work.boundary_edge_index_operations;
+        exact.max_unique_vertices = baseline.work.unique_vertices;
+        exact.max_total_machin_terms = baseline.work.exact.machin_terms;
+        exact.max_total_trig_terms = baseline.work.exact.trig_terms;
+        exact.max_total_sqrt_refinements = baseline.work.exact.sqrt_refinements;
+        exact.max_total_output_bits = baseline.work.total_output_bits;
+        exact.cayley.max_output_bits = baseline.work.max_output_bits;
+        exact.cayley.max_interval_operations = baseline.work.exact.interval_operations;
+        assert!(baseline.work.exact.machin_terms > 0);
+        assert!(baseline.work.exact.trig_terms > 0);
+        assert!(baseline.work.exact.sqrt_refinements > 0);
+        assert!(baseline.work.max_output_bits > 0);
+        assert!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), exact).is_ok()
+        );
+
+        let mut one_short = exact;
+        one_short.max_faces -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "faces",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_hinges -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "hinges",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_adjacency_entries -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "adjacency_entries",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_boundary_occurrences -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "boundary_occurrences",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_unique_vertices -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "unique_vertices",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_boundary_edge_index_entries -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "boundary_edge_index_entries",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_boundary_edge_index_operations -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "boundary_edge_index_operations",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_total_machin_terms -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_machin_terms",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_total_trig_terms -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_trig_terms",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_total_sqrt_refinements -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_sqrt_refinements",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.cayley.max_output_bits -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "output_bits",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.max_total_output_bits -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_output_bits",
+                ..
+            })
+        ));
+        let mut one_short = exact;
+        one_short.cayley.max_interval_operations -= 1;
+        assert!(matches!(
+            prepare_rational_cayley_tree_pose_v1(model.bind_pose(&pose).unwrap(), one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "interval_operations",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -2285,6 +3799,7 @@ mod tests {
             .map(rational_bits)
             .max()
             .unwrap();
+        assert_eq!(baseline.work.max_output_bits, actual_output_bits);
         let mut exact = limits();
         exact.max_output_bits = actual_output_bits;
         assert!(local_rotation_v1(pivot, end, 179.0, 1, exact).is_ok());
@@ -2513,5 +4028,82 @@ mod tests {
         let mut meter = WorkMeter::new(&exact);
         assert!(meter.observe_output(&rational(128)).is_ok());
         assert!(meter.observe_output(&rational(256)).is_err());
+    }
+
+    #[test]
+    fn tree_total_term_limits_reject_before_incrementing_the_excess_term() {
+        let base = limits();
+        let totals = TotalTermLimits {
+            machin_terms: 1,
+            trig_terms: 1,
+            sqrt_refinements: 1,
+        };
+        let mut meter = WorkMeter::with_total_term_limits(&base, totals);
+
+        assert!(meter.machin_term(CayleyStage::Pi, 1).is_ok());
+        assert!(matches!(
+            meter.machin_term(CayleyStage::Pi, 2),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "total_machin_terms",
+            })
+        ));
+        assert_eq!(meter.work.machin_terms, 1);
+
+        assert!(meter.trig_term(CayleyStage::Trigonometry, 1).is_ok());
+        assert!(matches!(
+            meter.trig_term(CayleyStage::Trigonometry, 2),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "total_trig_terms",
+            })
+        ));
+        assert_eq!(meter.work.trig_terms, 1);
+
+        assert!(meter.sqrt_refinement(CayleyStage::SquareRoot, 1).is_ok());
+        assert!(matches!(
+            meter.sqrt_refinement(CayleyStage::SquareRoot, 2),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Tree,
+                resource: "total_sqrt_refinements",
+            })
+        ));
+        assert_eq!(meter.work.sqrt_refinements, 1);
+        assert_eq!(meter.work.interval_operations, 3);
+    }
+
+    #[test]
+    fn total_output_storage_charges_numerator_and_denominator_bits() {
+        let value = BigRational::new(BigInt::from(5_u8), BigInt::from(8_u8));
+        assert_eq!(rational_bits(&value), 4);
+        let mut max_observed = 0;
+        let mut total = 0;
+        charge_rational_output(&value, &mut max_observed, &mut total, 4, 7).unwrap();
+        assert_eq!(max_observed, 4);
+        assert_eq!(total, 7);
+
+        let mut max_observed = 0;
+        let mut total = 0;
+        assert!(matches!(
+            charge_rational_output(&value, &mut max_observed, &mut total, 4, 6),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "total_output_bits",
+                ..
+            })
+        ));
+        assert_eq!(max_observed, 4);
+        assert_eq!(total, 0);
+
+        let mut max_observed = 0;
+        let mut total = 0;
+        assert!(matches!(
+            charge_rational_output(&value, &mut max_observed, &mut total, 3, usize::MAX),
+            Err(CayleyError::ResourceLimitExceeded {
+                resource: "output_bits",
+                ..
+            })
+        ));
+        assert_eq!(max_observed, 4);
+        assert_eq!(total, 0);
     }
 }

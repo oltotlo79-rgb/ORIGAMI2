@@ -2,18 +2,18 @@
 
 ## 完成率
 
-**全体完成率: 約42.0%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約42.4%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値40.41%に対し、project/session単位の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄、正常処理・終了時の復旧slot整理を利用者経路へ接続したため、「プロジェクト・保存・履歴」を45%から65%へ更新した。差分1.60ポイント（全体比率8% × 20ポイント）を加えた42.01%を小数第1位へ丸めて表示している。履歴そのものと履歴件数上限の`.ori2`永続化は未実装であり、HIS-002には加算していない。直前の40.41%には、同じissuer-bound poseのcanonical exact `E`とdirect-lift `F`がともにstrictな三角形中央面横断を証明した有限正厚姿勢を、native current-pose診断と専用の安全認定不可UIへ接続した分を含む。正厚の共面重なり・境界面接触・正体積を含む完全な三角柱分類、共有ヒンジ一般、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力は計上していない。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも未実装である。privateな正厚三角柱交差核、exact E/F有限ヒンジ回廊証明、完全平坦180度に限定した多面層順序anchorは利用者経路へ未接続なので、それ自体は加算していない。入力値自体が概数なので、42.01%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値42.01%に対し、通常`.ori2`とdirty復旧checkpointへ認証済みUndo/Redo両stack・履歴件数上限を保存し、通常openとクラッシュ復旧後にも利用できるHIS-002の利用者経路を接続したため、「プロジェクト・保存・履歴」を65%から70%へ更新した。差分0.40ポイント（全体比率8% × 5ポイント）を加えた42.41%を小数第1位へ丸めて表示している。正厚の共面重なり・境界面接触・正体積を含む完全な三角柱分類、共有ヒンジ一般、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力は計上していない。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも未実装である。privateな正厚三角柱交差核、exact E/F有限ヒンジ回廊証明、完全平坦180度に限定した多面層順序anchorは利用者経路へ未接続なので、それ自体は加算していない。入力値自体が概数なので、42.41%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
 | 領域 | 全体比率 | 現在の領域進捗 | 全体への寄与 | 状態 |
 |---|---:|---:|---:|---|
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
-| プロジェクト・保存・履歴 | 8% | 65% | 5.20% | 原子的編集、差分Undo/Redo、`.ori2`保存、project単位の表示単位に加え、1〜128件の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄を実装。Undo/Redo履歴と上限の`.ori2`永続化を残す |
+| プロジェクト・保存・履歴 | 8% | 70% | 5.60% | 原子的編集、差分Undo/Redo、`.ori2`保存、project単位の表示単位、1〜128件の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄に加え、認証済みUndo/Redo両stackと履歴上限の通常保存・復旧を実装 |
 | 2D展開図エディター | 15% | 51% | 7.65% | 基本編集、9種スナップ、画面・取込・SVG書出で統一した白黒識別可能な5線種を実装。面編集、数式作図、レイヤー、対称編集を残す |
 | 数式・幾何制約 | 9% | 22% | 1.98% | 新規用紙の数式入力に加え、11種制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因・判定保留表示を接続。残る9種の作成UI、式駆動更新、拘束solverを残す |
 | 3D折り・紙厚・衝突 | 17% | 54% | 9.18% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持に加え、同一native姿勢へ束縛した厳密静的診断、ゼロ厚面貫通・共面重なり、正厚の証明済み中央面横断と安全認定不可・判定保留表示を接続。正厚三角柱の完全分類、native連続停止、専用層順3D表示、折り重ね、閉路、切断由来を残す |
@@ -22,11 +22,11 @@
 | 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
 | 多言語・設定・配布・QA | 5% | 46% | 2.30% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、ライト/ダーク/OS連動、Windows/macOS標準shortcut、主要shortcutの変更・重複検出、保存可能な作業レイアウトを実装。i18n、更新、GitHub Releases配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **42.01%** | — |
+| **合計** | **100%** | — | **42.41%** | — |
 
 ## 完了
 
-- HIS-003〜006として、現在のproject/sessionごとに1〜128件の履歴上限を明示適用できる設定UIを接続した。縮小時はUndo/Redo両stackの最古を即時trimし、revision・document・dirty・3D poseを変えず、増加しても破棄済み履歴を復元しない。get/setの応答と適用はproject instance・project ID・revisionへ厳密に束縛し、古いprojectの結果を現在の画面へ混入させない。履歴とこの上限は`.ori2`へ保存しないため、HIS-002は未着手のままである。復旧は単一instance確立後、通常`.ori2`と同じstrict limitsで検証する`ProjectDocument`だけを、30秒周期でアプリ専用の固定1 slotへ保存する。書込みは同一directoryのstageを再読込・byte照合した後だけ原子的に公開し、background single writer、latest-one generation fence、timer/clear共通I/O gateで古い世代とclear競合を防ぐ。起動時は`none / available / invalid`へ分類し、候補がある間は自動保存を止め、復元または破棄を完了するまで背面操作を遮断する。復元projectは元のproject IDを保つ一方、fresh instance・pathなし・revision 0・dirtyとして開き、元の保存ファイルを暗黙に上書きしない。正常なsave/new/open/FOLD・SVG importは完了時bindingが現在値と一致する場合だけslotをclearする。通常終了は初回closeを必ず止め、nativeの10秒・1回限りtokenへproject instance・project ID・revision・clean/破棄確認を束縛し、2回目のcloseで再検証してから実I/Oを含む5秒以内のclearが成功した場合だけ終了する。stale・失効・取消・clear失敗では自動保存を継続し、windowが残れば編集を再開できる。未処理の起動候補は終了しても保持する。raw path・raw errorをUI/IPCへ出さず、外部通信も行わない。frontend全回帰はNode 1,216件、DOM 119件、desktop nativeは304件で、lint、production build、Rust format、native test/checkも成功した。release Clippyのローカル再実行だけはWindows Application Control（OS error 4551）がbuild scriptを遮断したため、push後のWindows/macOS CIで再検証する。HIS-003/004/005/006を実装済みへ更新し、MUST集計を42 / 28 / 17、「プロジェクト・保存・履歴」を65%、全体を42.01%（表示42.0%）とした
+- HIS-002として、通常`.ori2`とdirty documentの自動復旧checkpointへ、project ID・`project.json` bytesのSHA-256に束縛したUndo/Redo両stackと1〜128件の履歴上限を保存する利用者経路を接続した。coreは全22 command・19 inverseを安全に巻き戻して再生し、生成inverseと現在文書をbit-exactに照合する。desktopはcurrent 1状態とUndo/Redo到達先合計最大256状態（総検証最大257状態）のinstruction pose topologyを検証し、通常openでは不正履歴を既存project不変で拒否し、復旧では起動時`invalid`へ閉じる。既定128件の空履歴はentryを省略してlegacy 2-entry bytesを維持し、旧archiveは既定空履歴として開く。復旧checkpointは同じproject lock内でdocumentと履歴をcaptureし、lock解放後のdetached snapshotで到達endpointを検証する。dirty中にrevisionを変えず履歴上限・stackだけが変わった場合も履歴全体のSHA-256 digest差で次のcheckpointへ反映し、完全一致時だけ重複I/Oを省略する。復元後はproject IDと履歴を保ちながらfresh instance・pathなし・revision 0・dirty・baselineなし・runtime poseなしで開始する。保存失敗、hash・付替え・意味不一致、到達endpoint不正、復旧prepare/commit競合、固定error categoryを回帰し、`ori-core` unit 244件・doc 6件、`ori-formats` 188件、desktop release lib 326件、frontend Node 1,238件・DOM 126件（21 files）、Rust format、desktop release全target Clippy、frontend lint・production buildが成功した。HIS-002を実装済みへ更新し、MUST集計を43 / 28 / 16、「プロジェクト・保存・履歴」を70%、全体を42.41%（表示42.4%）とした
 - 有限な正厚の材料貫通について、初版正式仕様`centered_mid_surface_v1`のsolidが自身の中央面を内部に含むことを根拠に、canonical exact `E`とdirect-lift `F`の両方がstrictな三角形中央面横断を証明したpairだけを、native公開静的衝突入口の専用`ProvenPositiveThicknessPenetration`へ接続した。desktop wireは`proven_positive_thickness_penetration`を厳密検証し、「紙厚を含む材料貫通・安全認定不可」を赤系のassertive警告で表示する。辺中点山山Vの厚さ0.1/1/3 mm×90/91/135/179/180度をsource順・全rootで回帰し、135/179度だけを肯定した。角起点山谷Vは同じ3厚さ×片側10度・両45/90/91/135/179/180度で誤肯定0件を固定し、共有ヒンジ、非三角面、弱い証拠、資源上限、同角度ABAも肯定へ使わない。frontend Node 1,188件とDOM 104件、`ori-collision`の対象unit 9件・integration 14件、desktop対象経路、check、Clippy、fmt、lint、production buildが成功した。正厚の共面・境界面・正体積を含む完全分類とsafe proofは未完成のため、MUST集計38 / 28 / 21は変えず、3D領域だけを52%から54%、全体を40.41%（表示40.4%）へ更新した
 - コミット`9bba678`の[CI #269](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29700494833)は、frontend、Windows/macOS Rust、Windows/macOS bundleの全5 jobを14分1秒で完走した。正厚の証明済み面貫通、衝突回帰246件、失敗時のCI要約注釈を含むworkspaceと、Windows正式版NSIS・macOS自動buildの整合を確認した
 - コミット`ad53f35`の[CI #266](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/29699015678)は、frontend、Windows/macOS Rust、Windows/macOS bundleの全5 jobを14分1秒で完走した。Windows正式版向けNSIS bundleは4分52秒、macOS自動build検証は2分52秒で成功し、11種幾何制約の利用者経路と多面層順序anchorを含むworkspace・配布buildの整合を確認した
@@ -455,5 +455,5 @@
 1. exact rational Cayley回転によるwatertight rigid poseをversion付きで構成し、全共有ヒンジ線の一致、面内距離、直交性、角度包含および表示姿勢との差を証明する。完成までは斜め共有featureのraw姿勢不一致を判定保留へ閉じる
 2. nativeの衝突分類v2 4×11純粋表へ、正厚証拠と有限ヒンジcorridorを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
 3. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
-4. MUST 87件のstatus表を各checkpointで維持し、HIS-002の履歴永続化、i18n、レイヤーの未着手MUSTをbreadth-firstで進める
+4. MUST 87件のstatus表を各checkpointで維持し、i18nの利用者向け切替、レイヤー編集、その他の未着手MUSTをbreadth-firstで進める
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、保存・復旧・終了を含むネイティブE2Eを進める。macOSは自動ビルド・CI検証だけを継続する

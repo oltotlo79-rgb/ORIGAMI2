@@ -177,7 +177,7 @@ CommandResult
 - UIは楽観的表示を行えるが、拒否時にコア状態へ戻す。
 - 現行のUndo/Redoはproject/session内の差分履歴とし、既定128件、設定可能範囲1〜128件とする。上限縮小時はUndo/Redo両stackの最古から即時に破棄し、revision、document、dirty、3D poseを変えない。上限を再び増やしても破棄済み履歴は復元しない。
 - 履歴上限の取得・変更UIはproject instance、project ID、revisionへ束縛し、別projectや古いrevisionへの応答を適用しない。上限変更自体は作品編集commandではなく、現在sessionの履歴保持policyの変更として扱う。
-- 現行`.ori2`はUndo/Redo履歴と履歴件数上限を永続化しない。読込・復旧で生成した新しいEditorは既定128件から開始する。履歴の永続化・圧縮はHIS-002の将来課題である。
+- 通常`.ori2`とdirty documentの自動復旧checkpointは、Undo/Redo両stackと履歴件数上限を`editor_history_v1`として永続化する。読込時は保存inverseを安全に巻き戻して全forward commandを再生し、生成inverseと現在文書をbit-exactに照合してからlive stackへ入れる。復元後のrevisionは0、runtime current 3D poseは`None`とする。history-only変更はdocument dirtyを変えず、次の明示保存またはdirty documentの自動復旧checkpointで永続化する。形式、互換性、上限および受入れ条件は[編集履歴永続化V1](editor-history-persistence-v1.md)を正本とする。
 - 未完成状態を許す2D編集コマンドと、必ず有効状態を要求する3D操作コマンドを区別する。
 
 ## 6. 数値・幾何設計
@@ -597,29 +597,32 @@ ZIP系コンテナを候補とし、最低限以下を格納する。
 ```text
 manifest.json
 project.json
-history/
-assets/
-thumbnails/
+editor-history.json  # 非空履歴または非既定上限の場合
+assets/              # 将来拡張
+thumbnails/          # 将来拡張
 ```
 
-- `manifest.json`に形式バージョン、必要機能、ファイルハッシュを持たせる。
-- container v1のwriterはentry順を`manifest.json`、`project.json`に固定し、Deflate level 6、DOS timestamp `1980-01-01 00:00:00`で書く。同一`ProjectDocument`の反復保存と、読込後に変更せず再保存した結果はbyte-for-byteで一致する。頂点・辺・手順等の`Vec`順はprojectの順序付きデータとして保持し、別の保存順を同一視するcanonical化は行わない。
+- `manifest.json`に形式バージョン、必要機能、projectと履歴entryの非圧縮byte数およびSHA-256を持たせる。履歴entryはさらに`project.json`のSHA-256とproject IDへ束縛し、projectからの付替えを拒否する。
+- container v1のwriterはentry順を`manifest.json`、`project.json`、存在する場合の`editor-history.json`に固定し、Deflate level 6、DOS timestamp `1980-01-01 00:00:00`で書く。同一archive snapshotの反復保存と、読込後に変更せず再保存した結果はbyte-for-byteで一致する。既定128件かつ空の履歴はentryを省略し、従来の2 entry bytesを維持する。頂点・辺・手順等の`Vec`順はprojectの順序付きデータとして保持し、別の保存順を同一視するcanonical化は行わない。
+- 履歴entryの非圧縮hard ceilingは64 MiB、Undo/Redoは各128件以下とする。callerが上限を緩和してもhard ceilingを超えられない。
 - 保存は同一ディレクトリの一時ファイルへ書き、検証後に置換する。
 - 展開フォルダー形式は同一スキーマを使用する。
-- 未知フィールドは可能な限り保持し、破壊的な旧版保存を警告する。
+- container、projectおよび履歴V1が所有するenvelopeの未知fieldは拒否する。未知required featureを持つprojectを旧版が無視して保存してはならない。
 
 ### 11.2 自動復旧
 
-- 復旧用に保存するのは`ProjectDocument`だけとし、Undo/Redo履歴、現在の保存path、保存済みbaseline、3D current poseを含めない。通常の`.ori2`と同じstrict parser・構造件数・非緩和上限（archive 64 MiB、project entry 128 MiB）で再検証する。
+- 復旧用にはdirty document、その時点のUndo/Redo両stackおよび履歴件数上限を一つの`Ori2ProjectArchive`として保存する。現在の保存path、保存済みbaseline、3D current poseは含めない。通常の`.ori2`と同じstrict parser、履歴の意味再認証、構造件数および非緩和上限（archive 64 MiB、project entry 128 MiB、history entry 64 MiB）で再検証する。
 - 保存先はOSのアプリ専用data directory配下にある固定名の1 slotだけとする。利用者が任意pathをIPCで指定する機能、外部通信、telemetry、クラッシュデータの自動送信は持たない。
-- native timerは30秒周期で現在の`ProjectDocument`をcaptureする。project lockはcapture中だけ保持し、disk I/O中は解放する。dirtyでない同一bindingの重複保存は省略する。
-- 書込みは同一directoryの一時fileへstageし、flush・同期後に通常readerで再読込してdocument一致とexact bytesを検証してから原子的に公開する。POSIX系では公開directoryも同期し、Windowsでは検証済みhandleから同一volume上で原子的に置換する。途中失敗は成功として扱わない。
+- native timerは30秒周期で現在のdocumentと履歴を同じproject lock内でcaptureする。project lockはcapture中だけ保持し、lock解放後のdetached snapshotでcurrent 1状態と、全Undo・全Redoのinstruction pose到達先合計最大256状態（総検証最大257状態）を再構築・検証する。disk I/O中もlockを保持しない。dirtyでない同一bindingの重複保存とhistory-only変更は自動保存対象にしない。history-only変更は次の明示保存またはdocument dirty時のcheckpointへ含める。最後に永続化したdirty checkpointとの重複判定はbindingだけでなく、永続化対象のUndo/Redo両stack・履歴件数上限全体を決定論的JSONへ直列化したSHA-256 digestへ束縛する。documentがdirtyな間にrevisionを変えず履歴上限またはstackだけが変わった場合も、digest差を検出して次のcheckpointへ反映し、digestまで同一の場合だけI/Oを省略する。
+- 書込みは同一directoryの一時fileへstageし、flush・同期後に通常archive readerで再読込してdocument、履歴、exact bytesを検証してから原子的に公開する。POSIX系では公開directoryも同期し、Windowsでは検証済みhandleから同一volume上で原子的に置換する。途中失敗は成功として扱わない。
 - writerはprocess内で名前付きbackground threadを1本だけ起動し、呼出し側ではI/Oを実行しない。latest-one coalescingと単調なgeneration fenceで古い世代の完了を破棄する。autosave、discard、正常処理に伴うclearは共通I/O gateで直列化し、captureとclearの競合を全体としてclear前またはclear後へ順序付ける。失敗したgenerationはretry可能なまま残し、終了時の最大5秒待機には実際のfile I/O時間も含める。
 - Tauriのsingle-instance pluginを他の起動処理より先に登録し、同じ復旧slotを複数processが同時更新しない。二重起動要求は既存main windowを表示・foreground化するだけとし、引数や作業directoryを復旧入力に使わない。
-- 起動時にslotを`none / available / invalid`の3状態へ分類する。`none`だけは直ちに通常画面へ進み、`available`は復元または破棄、`invalid`は破棄が成功するまで必須modalで背面の編集・file操作・終了shortcutを遮断する。未処理候補がある間はtimerからslotを上書きしない。
-- 復元時は候補内のproject IDを維持しつつ、新しいproject instance、保存pathなし、revision 0、dirty、保存baselineなしで開く。次の通常保存は保存先選択を要求し、元の保存ファイルを暗黙に上書きしない。復元候補は次のautosaveまたは明示的な正常完了まで保持する。
+- 起動時にslotを`none / available / invalid`の3状態へ分類する。履歴のhash、project bindingまたは意味再認証の失敗も`invalid`とする。`none`だけは直ちに通常画面へ進み、`available`は復元または破棄、`invalid`は破棄が成功するまで必須modalで背面の編集・file操作・終了shortcutを遮断する。未処理候補がある間はtimerからslotを上書きしない。
+- 復元時は候補内のproject ID、Undo/Redo両stackおよび履歴件数上限を維持しつつ、新しいproject instance、保存pathなし、revision 0、dirty、保存baselineなし、3D current poseなしで開く。次の通常保存は保存先選択を要求し、元の保存ファイルを暗黙に上書きしない。復元候補は次のautosaveまたは明示的な正常完了まで保持する。
 - 成功したsave/new/open/FOLD・SVG importでは、project/import lockを解放してから、完了時のproject instance・project ID・revisionが現在値と一致する場合だけ復旧slotをclearする。通常window closeの初回要求は必ず同期的に止め、cleanまたは利用者が破棄を確認した現在bindingに対してnativeが10秒有効・1回限りのtokenを発行する。この準備段階ではslotと自動保存を変更しない。2回目のcloseでtokenを消費し、nativeが同じbindingとclean条件を再検証した後だけ自動書込みを停止して最大5秒のclearを行い、成功時だけ終了を許可する。token取消・失効・stale・clear失敗では自動保存を継続し、windowが残れば編集ロックを解除して再試行できる。windowが既にない、またはcleanで説明用UIを出せない経路では復旧データを残したまま終了でき、次回起動で再判定する。利用者が処理していない起動候補は終了しても保持する。
-- nativeからWebViewへは固定categoryとversion付きDTOだけを返し、raw filesystem path、raw parser/I/O error、復旧document内容を診断文字列へ混入させない。
+- 復旧slotの最終path要素はno-followで検査する。plain regular file以外の不正entryをclearするときは、固定8個のquarantine名の空きへatomic no-replace renameしてからentry自体だけをunlinkし、link、reparse pointまたはdirectoryの参照先を再帰削除しない。non-empty real directoryはquarantineへ保持し、8枠すべてが占有されている場合はactive entryを動かさず失敗へ閉じる。Windowsのclear用handleはdelete sharingを許可せず、同時rename・replacementを排他する。この境界は最終要素のno-followを保証するが、祖先directory全体のpinまたは再認証までは保証しない。
+- nativeからWebViewへは固定categoryとversion付きDTOだけを返し、raw filesystem path、raw parser/I/O error、復旧document内容を診断文字列へ混入させない。自動保存healthは`{schema_version: 1, status, transition_id}`だけとし、`pending_first_attempt / operational / persistence_failed`を区別する。status変化時だけ`transition_id`を増やし、`u32::MAX`では`persistence_failed`へ非wrap latchする。
+- frontendはhealthを5秒周期、single-flightで取得し、exact DTO、単調transitionおよびrenderer lifecycleを検証する。保存失敗または監視不能は通常保存を促す固定文言のassertive警告へ閉じ、自動再試行後に失敗から正常へ戻った場合だけpoliteな復旧通知を行う。timer初期化失敗、通信失敗、不正DTOまたは同じtransitionの矛盾は`monitor_unavailable`として安全側に表示する。
 
 ## 12. インポート・エクスポート
 
@@ -848,13 +851,14 @@ project instance・ID・revision・形式を固定
 
 OQ-001は、全入力を時間制限つきの「可／不可／不明」で返し、証明可能な対象クラスと根拠を明示する契約として初版解決した。OQ-002は`centered_mid_surface_v1`を初版正式仕様とし、厳密な層ずれを将来課題とすることで解決した。OQ-004は、外部汎用solverを採用せず、exact facewise制約のBFS伝播と明示stackによる決定論的DFS、独立certificate再検証を`convex_faces_facewise_v1`として実装したため初版解決した。詳細は[全体平坦折り判定と層順序管理の設計](global-flat-foldability-design.md)を正本とする。
 
+OQ-006「`.ori2`スキーマと履歴圧縮」は、[編集履歴永続化V1](editor-history-persistence-v1.md)の`editor_history_v1`として初版解決した。履歴は認証済みの独立JSON entryとし、containerのDeflate level 6を使用する。独自の履歴圧縮は導入せず、既定空履歴のentry省略、各stack 128件、非圧縮64 MiBのhard ceilingで互換性と資源上限を固定する。
+
 OQ-007「PDF図記号とレイアウト規則」は、[折り手順書き出し契約](instruction-export-contract.md)の`instruction_export_v1`として初版解決した。将来profileで図記号やlayoutを拡張する場合も、初版profileの決定論的出力は変更しない。
 
 | ID | 項目 | 解決時期 |
 |---|---|---|
 | OQ-003 | 高精度数値ライブラリ | Phase 0 |
 | OQ-005 | 2D Canvas/WebGL切替基準 | Phase 0 |
-| OQ-006 | `.ori2`スキーマと履歴圧縮 | Phase 1前 |
 | OQ-008 | 各外部形式の対応バージョン | Phase 2/6前 |
 | OQ-009 | GPL-3.0-only/or-later | 公開前 |
 | OQ-010 | 正式名称と商標 | 公開前 |

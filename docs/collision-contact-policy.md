@@ -275,13 +275,13 @@ penetrating > indeterminate > touching > separated
 
 ### 9.1 角起点の山折り・谷折りV
 
-中央面を固定し、一方を山折り、他方を谷折りとする。非隣接の外側2面は角の一共有頂点だけを持つ。次の15姿勢で、外側面組の期待値を全て`touching`、非隣接貫通件数を`0`、判定保留件数を`0`とする。
+中央面を固定し、一方を山折り、他方を谷折りとする。非隣接の外側2面は角の一共有頂点だけを持つ。次の15姿勢で、外側面組のnative decisionを全て`allowed_shared_vertex_contact`、非隣接貫通件数を`0`、判定保留件数を`0`とする。UIではこの専用decisionを「共有頂点の許容接触」として接触情報に含めるが、一般の`touching`へ読み替えない。
 
 | 材料厚 | 左だけ10度<br>右0度 | 左0度<br>右だけ10度 | 両側45度 | 両側91度 | 両側135度 |
 | --- | --- | --- | --- | --- | --- |
-| 0 mm | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 |
-| 0.1 mm | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 |
-| 1 mm | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 | `touching` / 貫通0 |
+| 0 mm | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 |
+| 0.1 mm | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 |
+| 1 mm | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 | `allowed_shared_vertex_contact` / 貫通0 |
 
 正厚ケースの許容は、共有頂点identityではなく、完全な中央面交差がその一頂点だけであるという6節のexact certificateに依存する。
 

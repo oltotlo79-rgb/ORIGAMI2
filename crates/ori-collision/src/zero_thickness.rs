@@ -506,6 +506,7 @@ struct AuthenticatedFace {
     boundary: Vec<AuthenticatedBoundaryVertex>,
     edges: Vec<EdgeId>,
     triangles: Vec<[ExactPoint3; 3]>,
+    material_normal: ExactVector3,
 }
 
 #[derive(Debug)]
@@ -599,6 +600,10 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
             .face_transform(face_id)
             .ok_or(ZeroThicknessAnalysisError::EvidenceUnavailable)?;
         let exact_transform = ExactAffineTransform::from_transform(transform);
+        let material_normal = exact_transform.transformed_local_y();
+        if material_normal.is_zero() {
+            return Err(ZeroThicknessAnalysisError::EvidenceUnavailable);
+        }
         let mut rest_boundary = Vec::new();
         rest_boundary
             .try_reserve_exact(boundary_count)
@@ -664,6 +669,7 @@ pub(super) fn prepare_authenticated_zero_thickness_pose(
             boundary,
             edges,
             triangles,
+            material_normal,
         });
     }
 
@@ -1199,10 +1205,17 @@ fn aggregate_authenticated_face_pair(
                 generic_contact_evidence(point_contacts, line_contacts)
             }
             AuthenticatedTopology::SharedVertex(_) => {
-                if contact_count > 0 && all_contacts_match_shared_feature {
-                    IntersectionEvidenceV2::SharedFeatureContact
-                } else if contact_count == 0 {
+                if contact_count == 0 {
                     IntersectionEvidenceV2::Indeterminate
+                } else if all_contacts_match_shared_feature {
+                    if exact_material_normals_are_cooriented(
+                        &first.material_normal,
+                        &second.material_normal,
+                    ) {
+                        IntersectionEvidenceV2::SharedFeatureContact
+                    } else {
+                        IntersectionEvidenceV2::Indeterminate
+                    }
                 } else {
                     generic_contact_evidence(point_contacts, line_contacts)
                 }
@@ -1238,6 +1251,10 @@ fn generic_contact_evidence(point_contacts: usize, line_contacts: usize) -> Inte
     } else {
         IntersectionEvidenceV2::Separated
     }
+}
+
+fn exact_material_normals_are_cooriented(first: &ExactVector3, second: &ExactVector3) -> bool {
+    first.dot(second) > exact_binary64_scalar(1.0e-10)
 }
 
 fn exact_segment_parameter(
@@ -1422,6 +1439,12 @@ impl ExactAffineTransform {
                         })
                         .sum::<BigRational>()
             }),
+        }
+    }
+
+    fn transformed_local_y(&self) -> ExactVector3 {
+        ExactVector3 {
+            coordinates: std::array::from_fn(|row| self.rotation[row][1].clone()),
         }
     }
 }
@@ -2178,6 +2201,20 @@ mod tests {
         boundary_points: &[[f64; 3]],
         triangle_indices: &[[usize; 3]],
     ) -> AuthenticatedFace {
+        synthetic_untrusted_face_with_material_normal(
+            id,
+            boundary_points,
+            triangle_indices,
+            [0.0, 1.0, 0.0],
+        )
+    }
+
+    fn synthetic_untrusted_face_with_material_normal(
+        id: FaceId,
+        boundary_points: &[[f64; 3]],
+        triangle_indices: &[[usize; 3]],
+        material_normal: [f64; 3],
+    ) -> AuthenticatedFace {
         let id_offset = u64::from(id.canonical_bytes()[15]) * 100;
         let boundary = boundary_points
             .iter()
@@ -2200,6 +2237,9 @@ mod tests {
             boundary,
             edges,
             triangles,
+            material_normal: ExactVector3 {
+                coordinates: material_normal.map(exact_binary64_scalar),
+            },
         }
     }
 
@@ -2596,9 +2636,14 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_midpoint_mountain_pair_never_silently_reports_safe_when_deeply_folded() {
+    fn authenticated_midpoint_mountain_pair_matches_the_normative_angle_matrix() {
         let model = midpoint_mountain_model();
-        for angle in [90.0, 135.0, 179.0] {
+        for (angle, expected) in [
+            (90.0, TopologyContactDecision::Indeterminate),
+            (91.0, TopologyContactDecision::Indeterminate),
+            (135.0, TopologyContactDecision::Penetrating),
+            (179.0, TopologyContactDecision::Penetrating),
+        ] {
             let angles = CanonicalHingeAngles::new(
                 model
                     .hinges()
@@ -2638,14 +2683,9 @@ mod tests {
                     }
                     outer_pairs += 1;
                     match analysis.dispatch_pair(first, second) {
-                        Ok(dispatch) => assert!(
-                            matches!(
-                                dispatch.decision(),
-                                TopologyContactDecision::Penetrating
-                                    | TopologyContactDecision::Indeterminate
-                            ),
-                            "{angle}: {dispatch:?}"
-                        ),
+                        Ok(dispatch) => {
+                            assert_eq!(dispatch.decision(), expected, "{angle}: {dispatch:?}");
+                        }
                         Err(ZeroThicknessAnalysisError::EvidenceUnavailable) => {}
                         Err(error) => panic!("{angle}: unexpected resource failure: {error:?}"),
                     }
@@ -2911,6 +2951,73 @@ mod tests {
             partial_hinge.decision(),
             TopologyContactDecision::Indeterminate
         );
+    }
+
+    #[test]
+    fn shared_vertex_allowance_requires_strictly_cooriented_material_normals() {
+        let threshold = 1.0e-10_f64;
+        let cases = [
+            (
+                f64::from_bits(threshold.to_bits() - 1),
+                IntersectionEvidenceV2::Indeterminate,
+                TopologyContactDecision::Indeterminate,
+            ),
+            (
+                threshold,
+                IntersectionEvidenceV2::Indeterminate,
+                TopologyContactDecision::Indeterminate,
+            ),
+            (
+                f64::from_bits(threshold.to_bits() + 1),
+                IntersectionEvidenceV2::SharedFeatureContact,
+                TopologyContactDecision::AllowedSharedVertexContact,
+            ),
+        ];
+        let first_points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let second_points = [[0.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+        let shared = ExactPoint3::from_point(point(0.0, 0.0, 0.0));
+
+        for (second_normal_x, evidence, decision) in cases {
+            for first_permutation in TRIANGLE_PERMUTATIONS {
+                for second_permutation in TRIANGLE_PERMUTATIONS {
+                    let first = synthetic_untrusted_face_with_material_normal(
+                        face_id(11),
+                        &permute(first_points, first_permutation),
+                        &[[0, 1, 2]],
+                        [1.0, 0.0, 0.0],
+                    );
+                    let second = synthetic_untrusted_face_with_material_normal(
+                        face_id(12),
+                        &permute(second_points, second_permutation),
+                        &[[0, 1, 2]],
+                        [second_normal_x, 1.0, 0.0],
+                    );
+                    let expected = single_dispatch(evidence, decision);
+                    assert_eq!(
+                        aggregate_authenticated_face_pair(
+                            &first,
+                            &second,
+                            &AuthenticatedTopology::SharedVertex(shared.clone()),
+                            1,
+                        )
+                        .expect("forward shared-vertex aggregate"),
+                        expected,
+                        "forward:{second_normal_x}:{first_permutation:?}:{second_permutation:?}"
+                    );
+                    assert_eq!(
+                        aggregate_authenticated_face_pair(
+                            &second,
+                            &first,
+                            &AuthenticatedTopology::SharedVertex(shared.clone()),
+                            1,
+                        )
+                        .expect("reverse shared-vertex aggregate"),
+                        expected,
+                        "reverse:{second_normal_x}:{first_permutation:?}:{second_permutation:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

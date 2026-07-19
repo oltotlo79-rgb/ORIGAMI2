@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約44.2%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約44.7%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値43.11%に対し、LIN-004の作成・改名・並べ替え・削除・選択折り線の割当をproject instance・project ID・revisionへ束縛した管理UIとして接続し、「2D展開図エディター」を51%から54%へ更新した。さらに、固定GitHub Releases APIへの明示的な手動更新確認、日英状態表示、端末ごとの有効・無効設定、通信内容と自動ダウンロード・自動インストールを行わないことの説明を利用者経路へ接続し、OPS-001/002/003を実装済み、「多言語・設定・配布・QA」を60%から72%へ更新した。差分は0.45ポイント（全体比率15% × 3ポイント）と0.60ポイント（全体比率5% × 12ポイント）の合計1.05ポイントで、44.16%を小数第1位へ丸めて表示している。注釈・下絵objectの編集、layerの表示・lock・透明度、GitHub Releasesへの正式版公開workflowは未実装である。正厚の共面重なり・境界面接触・正体積を含む完全な三角柱分類、共有ヒンジ一般、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frame、3D完成形出力は計上していない。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも未実装である。privateな正厚三角柱交差核、exact E/F有限ヒンジ回廊証明、完全平坦180度に限定した多面層順序anchorは利用者経路へ未接続なので、それ自体は加算していない。入力値自体が概数なので、44.16%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値44.16%に対し、認証済みの現在3D姿勢をOBJ・バイナリSTL・glTF 2.0 GLBへ書き出す利用者経路を接続し、「入出力・互換性」を68%から78%へ更新した。差分は0.50ポイント（全体比率5% × 10ポイント）で、44.66%を小数第1位へ丸めて表示している。静的meshはproject instance・ID・revision・geometry fingerprint・pose generation・紙厚へ束縛し、編集または姿勢変更後の古いpreviewを拒否する。中央面のみ、紙厚solid・材質・texture・animation・project意味情報を保持しないことと、STLの印刷適合性を保証しないことを事前表示する。実折り済み多面modelの外部reader、Blender、slicer、Web viewerでの受入とanimationは未完了なので、IO-008/009と入出力領域を完成扱いにしない。注釈・下絵objectの編集、layerの表示・lock・透明度、GitHub Releasesへの正式版公開workflowも未実装である。正厚の共面重なり・境界面接触・正体積を含む完全な三角柱分類、共有ヒンジ一般、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frameは未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも未実装である。privateな正厚三角柱交差核、exact E/F有限ヒンジ回廊証明、完全平坦180度に限定した多面層順序anchorは利用者経路へ未接続なので、それ自体は加算していない。入力値自体が概数なので、44.66%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,13 +19,14 @@
 | 3D折り・紙厚・衝突 | 17% | 54% | 9.18% | 木構造1ヒンジの姿勢・紙厚・衝突・固定面・物理把持に加え、同一native姿勢へ束縛した厳密静的診断、ゼロ厚面貫通・共面重なり、正厚の証明済み中央面横断と安全認定不可・判定保留表示を接続。正厚三角柱の完全分類、native連続停止、専用層順3D表示、折り重ね、閉路、切断由来を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 68% | 3.40% | `.ori2`、FOLD/SVG取込に加え、現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ、情報損失確認、revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frameと完成形3D形式を残す |
+| 入出力・互換性 | 5% | 78% | 3.90% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。FOLDの3D・複数frame、animation、外部3Dアプリでの受入検証を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **44.16%** | — |
+| **合計** | **100%** | — | **44.66%** | — |
 
 ## 完了
 
+- IO-007の利用者経路として、nativeで認証済みの現在3D姿勢を決定的に三角形化し、OBJ・バイナリSTL・glTF 2.0 GLBへ書き出せるようにした。project instance・ID・revision・geometry fingerprint・pose generation・model/pose identity・紙厚bitsをpreviewへ束縛し、編集・姿勢変更・project置換後の古いstageは保存前に拒否する。bytes・path・頂点配列はrendererへ渡さず、nativeのimmutable stageと保存dialogを通す。中央面のみ、紙厚solid・材質・texture・camera・animation・ORIGAMI2固有意味を保持しないことと、STLの印刷適合性を保証しないことを日英で事前表示し、明示確認をnativeでも強制する。OBJ/STL/GLBの決定性・構造・軸・単位・上限、stale失効、保存取消後の再試行、strict frontend DTO、dialogを自動回帰し、TypeScript、production build、lint、frontend Node 1,333件・DOM 197件、`ori-formats` 213件、desktop release check・Clippyが成功した。ブラウザ試作モードでは1,024×720で「3D書出し」操作の配置とconsole error/warning 0件を確認した。外部reader・Blender・slicer・Web viewer受入とanimationを残すため、IO-008/009は部分実装、「入出力・互換性」を78%、全体を44.66%（表示44.7%）、MUST集計を48 / 30 / 9へ更新した
 - OPS-001/002/003として、利用者が「今すぐ確認」を押した場合だけ、Tauriから取得したインストール済み版を端末内で比較し、固定URLのGitHub Releases latest APIへ1回だけ接続する更新確認UIを接続した。要求は`GET`・資格情報なし・referrerなし・redirect拒否・10秒timeout・128 KiB上限に固定し、project data、利用状況、インストール済み版を要求へ含めない。strict SemVer、正式release、公式repositoryのrelease URLだけを受理し、更新なし・更新あり・公開releaseなし・通信不能を固定状態へ閉じる。起動・popover開閉・言語切替では通信せず、自動ダウンロード・自動インストールも行わない。端末ごとの有効設定はversion固定で保存し、破損・読取不能時は無効へ閉じ、書込失敗を画面へ表示する。日本語・英語、ARIA、focus、light/dark contrast、stale request、StrictMode、CSPを回帰し、frontend Node 1,324件、DOM 192件、lint、型検査、production buildが成功した。ブラウザ実画面では日英即時切替、無効設定の再読込後保持、1440 px幅で画面内に収まる配置、操作前のGitHub API通信0件、console warning/error 0件を確認した。MUST集計を47 / 29 / 11、「多言語・設定・配布・QA」を72%、全体を44.16%（表示44.2%）へ更新した
 - LIN-004のlayer管理UIとして、ordered layerの作成・改名・並べ替え・削除と、選択した折り線の`crease_pattern` layerへの割当を、nativeの5 commandへ接続した。全操作はproject instance・project ID・revisionを照合してUndo/Redo・dirtyへ入り、応答は検証済みlayer差分とrevision・履歴状態だけを現在の信頼済みsnapshotへmergeする。default layerは削除不可、注釈・下絵layerへの折り線割当不可、busy・stale・不正応答・通信失敗は無変更へ閉じる。表示順は物理的な層順序ではないことと、注釈・下絵object編集が未対応であることを日英で明示した。stored default名は未編集時だけlocaleへ追従し、変更なしの送信を行わない。frontendのlayer対象54件を含む全Node 1,322件、全DOM 191件、lint、型検査、production buildが成功した。ローカルのdesktop Rust実行は既知のWindows Application Control `os error 4551`で開始前に遮断されたため、Windows CIで継続検証する。注釈・下絵object編集と表示・lock・透明度を残すためLIN-004は部分実装のままとし、「2D展開図エディター」を54%へ更新した
 - UI-001として、日本語・英語のversion固定端末設定とライブ切替を実装し、主要画面、全ダイアログ、2D展開図、3Dプレビュー、折り手順、幾何制約、局所・全体平坦折り、衝突・復旧・診断、設定、ARIA、通知を意味状態から再翻訳する利用者経路へ接続した。FOLD・SVG取込と展開図・折り図書出しのnative警告は固定allowlistだけを翻訳し、未知警告、例外、path、双方向制御を含む不正表示名は日英とも固定安全文言へ閉じる。紙辺比、計測不能、座標、紙厚、長さはlocale必須の共通表示APIへ統一した。全TSXの固定日本語・raw error・warning表示経路を静的監査し、frontend Node 1,310件、DOM 165件、lint、型検査、production buildが成功した。ブラウザ実画面では英語切替後に意図した「日本語」選択肢以外の固定日本語0件、再読込後の設定維持、console error/warning 0件を確認した。UI-001を実装済み、MUST集計を44 / 29 / 14、「多言語・設定・配布・QA」を60%、全体を43.11%（表示43.1%）へ更新した

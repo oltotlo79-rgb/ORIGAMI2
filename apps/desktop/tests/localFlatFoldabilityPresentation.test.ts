@@ -346,6 +346,141 @@ test('ten thousand project vertices are validated in one bounded presentation pa
   assert.equal(presentation.visibleItems.length, 0)
 })
 
+test('English local flat-foldability wording covers every outcome and reason', () => {
+  const conditions: Readonly<Record<LocalFlatFoldabilityCondition, string>> = {
+    satisfied: 'Satisfied',
+    violated: 'Violated',
+    not_applicable: 'Not applicable',
+    indeterminate: 'Indeterminate',
+  }
+  for (const [condition, expected] of Object.entries(conditions)) {
+    assert.equal(
+      localFlatFoldabilityConditionLabel(
+        condition as LocalFlatFoldabilityCondition,
+        'en',
+      ),
+      expected,
+    )
+  }
+
+  const reasons: Readonly<
+    Record<Exclude<LocalFlatFoldabilityReason, null>, string>
+  > = {
+    paper_boundary:
+      'Paper boundary vertices are outside the current local model.',
+    cut_incident:
+      'Vertices incident to a cut line are outside the current local model.',
+    fold_degree_limit:
+      'Indeterminate because the fold degree exceeds the exact limit (8).',
+    no_incident_fold_edges:
+      'Not applicable because there are no incident mountain or valley folds.',
+  }
+  for (const [reason, expected] of Object.entries(reasons)) {
+    assert.equal(
+      localFlatFoldabilityReasonLabel(
+        reason as Exclude<LocalFlatFoldabilityReason, null>,
+        MAX_DEGREE,
+        'en',
+      ),
+      expected,
+    )
+  }
+  assert.equal(localFlatFoldabilityReasonLabel(null, MAX_DEGREE, 'en'), '')
+
+  const cases = [
+    {
+      status: 'necessary_conditions_satisfied',
+      snapshot: vertex('satisfied', 'satisfied', null),
+      expected:
+        'The supported local necessary conditions are satisfied (satisfied 1, violated 0, not applicable 0, indeterminate 0).',
+    },
+    {
+      status: 'violated',
+      snapshot: vertex('violated', 'violated', null, {
+        foldDegree: 4,
+        mountainCount: 2,
+        valleyCount: 2,
+        kawasaki: 'satisfied',
+        maekawa: 'violated',
+      }),
+      expected:
+        'At least one vertex violates the local necessary conditions (satisfied 0, violated 1, not applicable 0, indeterminate 0).',
+    },
+    {
+      status: 'not_applicable',
+      snapshot: vertex('not-applicable', 'not_applicable', 'paper_boundary', {
+        foldDegree: 2,
+        mountainCount: 1,
+        valleyCount: 1,
+        kawasaki: 'not_applicable',
+        maekawa: 'not_applicable',
+      }),
+      expected:
+        'No vertices are eligible for the current local conditions (satisfied 0, violated 0, not applicable 1, indeterminate 0).',
+    },
+    {
+      status: 'indeterminate',
+      snapshot: vertex('indeterminate', 'indeterminate', 'fold_degree_limit', {
+        foldDegree: 10,
+        mountainCount: 6,
+        valleyCount: 4,
+        kawasaki: 'indeterminate',
+        maekawa: 'satisfied',
+      }),
+      expected:
+        'At least one vertex has indeterminate local necessary conditions (satisfied 0, violated 0, not applicable 0, indeterminate 1).',
+    },
+  ] as const
+
+  for (const { status, snapshot, expected } of cases) {
+    const presentation = createLocalFlatFoldabilityPresentation(
+      analyzedReport(status, [snapshot]),
+      [snapshot.vertex],
+      'en',
+    )
+    assert.equal(presentation.kind, 'ready')
+    assert.equal(presentation.summaryText, expected)
+  }
+})
+
+test('English blocked and invalid presentations fail closed without raw text', () => {
+  const blocked = createLocalFlatFoldabilityPresentation({
+    model: LOCAL_FLAT_FOLDABILITY_MODEL,
+    max_exact_fold_degree: MAX_DEGREE,
+    status: 'blocked',
+    total_vertices: 0,
+    applicable_vertices: 0,
+    satisfied_vertices: 0,
+    violated_vertices: 0,
+    not_applicable_vertices: 0,
+    indeterminate_vertices: 0,
+    vertices: [],
+  }, [], 'en')
+  assert.equal(blocked.kind, 'blocked')
+  assert.equal(
+    blocked.summaryText,
+    'Local flat-foldability conditions were not checked because the preceding geometry is invalid.',
+  )
+
+  const privateValue =
+    'C:\\Users\\alice\\秘密\\作品.ori; vertex_uuid=private; point=(12.3,45.6)'
+  const invalid = createLocalFlatFoldabilityPresentation({
+    ...analyzedReport('necessary_conditions_satisfied', [
+      vertex('only', 'satisfied', null),
+    ]),
+    raw_error: privateValue,
+  }, ['only'], 'en')
+  assert.equal(invalid.kind, 'invalid')
+  assert.equal(
+    invalid.summaryText,
+    'The local flat-foldability result could not be verified and is not treated as satisfied.',
+  )
+  assert.doesNotMatch(
+    JSON.stringify(invalid),
+    /alice|秘密|vertex_uuid|12\.3|45\.6/iu,
+  )
+})
+
 function vertex(
   id: string,
   verdict: LocalFlatFoldabilityCondition,

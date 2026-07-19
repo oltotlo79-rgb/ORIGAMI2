@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -14,6 +15,7 @@ import {
   GLOBAL_FLAT_FOLDABILITY_LAYER_ORDER_MODEL_ID,
   GLOBAL_FLAT_FOLDABILITY_MODEL_ID,
 } from '../src/lib/globalFlatFoldability'
+import { localeFixture } from './localeTestFixture'
 
 const COUNTS = {
   face_count: 6,
@@ -68,6 +70,132 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
     expect(panel.textContent).toContain('紙厚や層ずれ')
     expect(panel.textContent).toContain('手で折りやすい')
     expect(panel.textContent).toContain('安全にたどれる連続した折り経路')
+  })
+
+  it('switches controls, progress, results and accessibility text live to English', () => {
+    const localeStore = localeFixture('ja')
+    const { rerender } = renderPanel({
+      job: RUNNING,
+      localeStore,
+    })
+    expect(
+      screen.getByRole('region', { name: '全体平坦折り判定' }),
+    ).toBeTruthy()
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    const panel = screen.getByRole(
+      'region',
+      { name: 'Global flat-foldability check' },
+    )
+    expect(
+      screen.getByText('Time-limited three-way result'),
+    ).toBeTruthy()
+    const timeLimit = screen.getByRole(
+      'combobox',
+      { name: 'Time limit' },
+    ) as HTMLSelectElement
+    expect(timeLimit.disabled).toBe(true)
+    expect(
+      screen.getAllByRole('option').map((option) => option.textContent),
+    ).toEqual(['5 seconds', '30 seconds', '120 seconds'])
+    expect(screen.getByRole('button', { name: 'Checking…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Cancel check' })).toBeTruthy()
+    expect(
+      screen.getByRole('group', { name: 'Checking' })
+        .getAttribute('aria-busy'),
+    ).toBe('true')
+    expect(screen.getByText('Building overlap regions')).toBeTruthy()
+    expect(
+      screen.getByText('12,340 completed (total still being calculated)'),
+    ).toBeTruthy()
+    expect(panel.textContent).toContain('Elapsed time')
+    expect(panel.textContent).toContain('Overlap cells')
+    expect(panel.textContent).toContain('Search nodes')
+    const live = screen.getByRole('status')
+    expect(live.getAttribute('aria-live')).toBe('polite')
+    expect(live.getAttribute('aria-atomic')).toBe('true')
+    expect(live.textContent).toBe('Checking. Building overlap regions.')
+    const caution = screen.getByRole('complementary', {
+      name: 'Important limitations of the result',
+    })
+    expect(caution.textContent).toContain(
+      'What “Possible” does not guarantee',
+    )
+    expect(caution.textContent).toContain(
+      'This check uses an ideal zero-thickness model.',
+    )
+
+    rerender(panelElement({
+      localeStore,
+      job: {
+        ...RUNNING,
+        cancel_requested: true,
+      },
+    }))
+    expect(
+      screen.getByRole('group', { name: 'Cancelling' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Cancel requested' }),
+    ).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe(
+      'Cancelling. Building overlap regions.',
+    )
+
+    for (const [kind, label] of [
+      ['possible', 'Possible'],
+      ['impossible', 'Impossible'],
+      ['unknown', 'Unknown'],
+      ['cancelled', 'Cancelled'],
+      ['failed', 'Calculation error'],
+      ['stale', 'Outdated result'],
+    ] as const) {
+      rerender(panelElement({
+        localeStore,
+        job: terminalJob(kind),
+      }))
+      expect(
+        document.querySelector(`[data-result-kind="${kind}"]`),
+      ).toBeTruthy()
+      expect(screen.getByRole('group', { name: label })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Run again' })).toBeTruthy()
+      expect(screen.getByRole('status').textContent?.length).toBeGreaterThan(0)
+    }
+
+    rerender(panelElement({
+      localeStore,
+      job: terminalJob('unknown'),
+    }))
+    expect(screen.getByText('Reason for indeterminate result')).toBeTruthy()
+    expect(screen.getAllByText(/selected time limit/u).length).toBeGreaterThan(0)
+
+    const privateValue =
+      'C:\\Users\\alice\\秘密\\作品.ori; face_uuid=private; point=(12.3,45.6)'
+    rerender(panelElement({
+      localeStore,
+      job: {
+        state: 'failed',
+        summary: SUMMARY,
+        error_category: 'internal_failure',
+        raw_error: privateValue,
+      },
+    }))
+    expect(screen.getByText('Calculation error')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'The result format could not be verified safely. Its contents are hidden; run the check again with the current edits.',
+      ),
+    ).toBeTruthy()
+    expect(document.body.textContent).not.toMatch(
+      /alice|秘密|face_uuid|12\.3|45\.6/iu,
+    )
+
+    rerender(panelElement({ localeStore }))
+    expect(screen.getByRole('group', { name: 'Not checked' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start check' })).toBeTruthy()
   })
 
   it('changes only to an allowlisted preset and starts with the controlled value', () => {
@@ -301,6 +429,7 @@ function panelElement(
       onTimeLimitChange={overrides.onTimeLimitChange ?? vi.fn()}
       onStart={overrides.onStart ?? vi.fn()}
       onCancel={overrides.onCancel ?? vi.fn()}
+      localeStore={overrides.localeStore}
     />
   )
 }

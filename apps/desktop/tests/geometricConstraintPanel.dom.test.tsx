@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from '@testing-library/react'
 
 import { GeometricConstraintPanel } from '../src/components/GeometricConstraintPanel'
 import type {
   GeometricConstraintDocument,
   GeometricConstraintPreflightResult,
 } from '../src/lib/coreClient'
+import type { LocaleStore } from '../src/lib/i18n'
+import { localeFixture } from './localeTestFixture'
 
 const IDS = Array.from(
   { length: 24 },
@@ -64,6 +72,208 @@ describe('GeometricConstraintPanel', () => {
     expect(onRemove).toHaveBeenCalledWith(IDS[12])
     fireEvent.click(screen.getAllByRole('button', { name: '対象を選択' })[0]!)
     expect(onSelectEdge).toHaveBeenCalledWith(IDS[0])
+  })
+
+  it('switches every constraint status and control to fixed English UI text', () => {
+    const localeStore = localeFixture('ja')
+    const onRetryAnalysis = vi.fn()
+    const direct: GeometricConstraintPreflightResult = {
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: { kind: 'horizontal_and_vertical', edge: IDS[0]! },
+        constraint_ids: [IDS[12]!, IDS[13]!],
+      }],
+    }
+    const { rerender } = renderPanel({
+      document: allKinds(),
+      preflight: direct,
+      selectedEdgeId: IDS[0],
+      onRetryAnalysis,
+      localeStore,
+    })
+    expect(screen.getByRole('heading', { name: '幾何制約' })).toBeTruthy()
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    expect(
+      screen.getByRole('heading', { name: 'Geometric constraints' }),
+    ).toBeTruthy()
+    expect(screen.getByText('11 constraints')).toBeTruthy()
+    expect(
+      screen.getByRole('button', {
+        name: 'Constrain selected line horizontally',
+      }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('button', {
+        name: 'Constrain selected line vertically',
+      }),
+    ).toBeTruthy()
+    for (const name of [
+      'Fixed length',
+      'Fixed angle',
+      'Horizontal',
+      'Vertical',
+      'Equal length',
+      'Parallel',
+      'Point on line',
+      'Mirror symmetry',
+      'Rotational symmetry',
+      'Angle bisector',
+      'Length ratio',
+    ]) {
+      expect(screen.getByText(name)).toBeTruthy()
+    }
+    expect(
+      screen.getByRole('button', {
+        name: 'Delete Fixed length constraint',
+      }),
+    ).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Select target' })).toHaveLength(10)
+
+    let alert = screen.getByRole('alert')
+    expect(alert.getAttribute('aria-live')).toBe('assertive')
+    expect(alert.getAttribute('aria-atomic')).toBe('true')
+    expect(alert.textContent).toContain('1 direct conflicts found.')
+    expect(
+      screen.getByRole('list', { name: 'Direct conflict causes' }).textContent,
+    ).toContain(
+      'Edge 00000000…0001 is constrained as both horizontal and vertical',
+    )
+    expect(alert.textContent).toContain(
+      'Causing constraints: 00000000…0013, 00000000…0014',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze again' }))
+    expect(onRetryAnalysis).toHaveBeenCalledTimes(1)
+
+    const conflictCases = [
+      {
+        conflict: {
+          kind: 'different_fixed_lengths' as const,
+          edge: IDS[0]!,
+        },
+        expected: 'Different lengths are assigned to the same edge',
+      },
+      {
+        conflict: {
+          kind: 'different_fixed_angles' as const,
+          vertex: IDS[6]!,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        expected: 'Different angles are assigned to the same angle',
+      },
+      {
+        conflict: {
+          kind: 'different_length_ratios' as const,
+          numerator_edge: IDS[0]!,
+          denominator_edge: IDS[1]!,
+        },
+        expected:
+          'Different length ratios are assigned to the same pair of edges',
+      },
+      {
+        conflict: {
+          kind: 'equal_length_with_different_fixed_lengths' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        expected:
+          'Edges constrained to equal length have different fixed lengths',
+      },
+      {
+        conflict: {
+          kind: 'parallel_with_fixed_non_parallel_angle' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        expected: 'Parallel edges have a fixed angle that is not parallel',
+      },
+      {
+        conflict: {
+          kind: 'parallel_with_perpendicular_orientations' as const,
+          horizontal_edge: IDS[0]!,
+          vertical_edge: IDS[1]!,
+        },
+        expected:
+          'Parallel edges are separately constrained as horizontal and vertical',
+      },
+    ]
+    for (const { conflict, expected } of conflictCases) {
+      rerender(panel({
+        localeStore,
+        preflight: {
+          status: 'direct_conflict',
+          conflicts: [{
+            conflict,
+            constraint_ids: [IDS[12]!, IDS[13]!],
+          }],
+        },
+      }))
+      expect(screen.getByRole('alert').textContent).toContain(expected)
+    }
+
+    for (const [reason, expected] of [
+      [
+        'work_limit_exceeded',
+        'Indeterminate because the analysis work limit was reached.',
+      ],
+      [
+        'solver_required_constraint_kinds',
+        'Indeterminate because a complete constraint solver is required.',
+      ],
+      [
+        'invalid_document_or_geometry',
+        'Indeterminate because the constraints or crease pattern could not be validated.',
+      ],
+    ] as const) {
+      rerender(panel({
+        localeStore,
+        preflight: {
+          status: 'unknown',
+          reason,
+          unchecked_constraint_ids: ['private-untrusted-constraint-id'],
+        },
+      }))
+      alert = screen.getByRole('alert')
+      expect(alert.textContent).toContain(expected)
+      expect(alert.textContent).toContain(
+        'Do not treat the constraints as safety-verified.',
+      )
+      expect(alert.textContent).toContain(
+        'Unchecked constraints: invalid identifier',
+      )
+      expect(alert.textContent).not.toContain(
+        'private-untrusted-constraint-id',
+      )
+    }
+
+    rerender(panel({
+      localeStore,
+      preflight: { status: 'no_direct_conflict' },
+    }))
+    let status = screen.getByRole('status')
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(status.textContent).toContain(
+      'No direct conflicts found (satisfiability of all constraints is not proven)',
+    )
+
+    rerender(panel({ localeStore, analyzing: true }))
+    expect(screen.getByRole('status').textContent).toContain(
+      'Analyzing constraints…',
+    )
+    rerender(panel({ localeStore, analysisFailed: true }))
+    expect(screen.getByRole('alert').textContent).toContain(
+      'Constraint analysis could not be completed.',
+    )
+    rerender(panel({ localeStore }))
+    status = screen.getByRole('status')
+    expect(status.textContent).toContain(
+      'The current constraints have not been analyzed.',
+    )
+    expect(screen.getByText('No constraints yet.')).toBeTruthy()
   })
 
   it('never presents direct-conflict or unknown results as safe', () => {
@@ -259,6 +469,7 @@ function panel(overrides: Partial<{
   onRemove: (id: string) => void
   onSelectEdge: (id: string) => void
   onRetryAnalysis: () => void
+  localeStore: LocaleStore
 }> = {}) {
   return (
     <GeometricConstraintPanel
@@ -272,6 +483,7 @@ function panel(overrides: Partial<{
       onRemove={overrides.onRemove ?? (() => undefined)}
       onSelectEdge={overrides.onSelectEdge ?? (() => undefined)}
       onRetryAnalysis={overrides.onRetryAnalysis ?? (() => undefined)}
+      localeStore={overrides.localeStore}
     />
   )
 }

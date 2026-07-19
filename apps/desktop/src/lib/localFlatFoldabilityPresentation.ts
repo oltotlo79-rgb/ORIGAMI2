@@ -3,6 +3,11 @@ import type {
   LocalFlatFoldabilityReason,
   LocalFlatFoldabilityReport,
 } from './coreClient'
+import {
+  DEFAULT_LOCALE,
+  formatLocalizedText,
+  type Locale,
+} from './i18n.ts'
 
 export const LOCAL_FLAT_FOLDABILITY_VISIBLE_ITEM_LIMIT = 20
 export const LOCAL_FLAT_FOLDABILITY_MODEL =
@@ -119,10 +124,11 @@ const VERTEX_KEYS = [
 export function createLocalFlatFoldabilityPresentation(
   rawReport: unknown,
   currentProjectVertexIds: readonly string[],
+  locale: Locale = DEFAULT_LOCALE,
 ): LocalFlatFoldabilityPresentation {
   try {
     const report = exactDataRecord(rawReport, REPORT_KEYS)
-    if (!report) return invalidPresentation()
+    if (!report) return invalidPresentation(locale)
 
     const model = report.model
     const maxExactFoldDegree = report.max_exact_fold_degree
@@ -146,7 +152,7 @@ export function createLocalFlatFoldabilityPresentation(
       || !isNonNegativeSafeInteger(notApplicableVertices)
       || !isNonNegativeSafeInteger(indeterminateVertices)
       || !Array.isArray(rawVertices)
-    ) return invalidPresentation()
+    ) return invalidPresentation(locale)
 
     if (status === 'blocked') {
       if (
@@ -157,8 +163,8 @@ export function createLocalFlatFoldabilityPresentation(
         || notApplicableVertices !== 0
         || indeterminateVertices !== 0
         || rawVertices.length !== 0
-      ) return invalidPresentation()
-      return blockedPresentation(maxExactFoldDegree)
+      ) return invalidPresentation(locale)
+      return blockedPresentation(maxExactFoldDegree, locale)
     }
 
     const projectVertexIds = snapshotProjectVertexIds(currentProjectVertexIds)
@@ -166,7 +172,7 @@ export function createLocalFlatFoldabilityPresentation(
       !projectVertexIds
       || totalVertices !== projectVertexIds.ids.length
       || rawVertices.length !== projectVertexIds.ids.length
-    ) return invalidPresentation()
+    ) return invalidPresentation(locale)
 
     const verticesById = new Map<string, LocalFlatFoldabilityVertexPresentation>()
     const highlights = new Map<string, LocalFlatFoldabilityHighlight>()
@@ -184,7 +190,7 @@ export function createLocalFlatFoldabilityPresentation(
 
     for (const rawVertex of rawVertices) {
       const vertex = exactDataRecord(rawVertex, VERTEX_KEYS)
-      if (!vertex) return invalidPresentation()
+      if (!vertex) return invalidPresentation(locale)
       const vertexId = vertex.vertex
       const foldDegree = vertex.fold_degree
       const mountainCount = vertex.mountain_count
@@ -214,7 +220,7 @@ export function createLocalFlatFoldabilityPresentation(
           maekawa,
           maxExactFoldDegree,
         })
-      ) return invalidPresentation()
+      ) return invalidPresentation(locale)
 
       const presented = Object.freeze({
         vertexId,
@@ -264,7 +270,7 @@ export function createLocalFlatFoldabilityPresentation(
         actualViolated,
         actualIndeterminate,
       )
-    ) return invalidPresentation()
+    ) return invalidPresentation(locale)
 
     const visibleItems: LocalFlatFoldabilityVertexPresentation[] = []
     let actionableItemCount = 0
@@ -289,53 +295,83 @@ export function createLocalFlatFoldabilityPresentation(
       reportStatus: status,
       maxExactFoldDegree,
       counts,
-      summaryText: summaryText(status, counts),
+      summaryText: summaryText(status, counts, locale),
       verticesById,
       highlights,
       visibleItems: Object.freeze(visibleItems),
       hiddenItemCount: actionableItemCount - visibleItems.length,
     })
   } catch {
-    return invalidPresentation()
+    return invalidPresentation(locale)
   }
 }
 
 export function localFlatFoldabilityConditionLabel(
   condition: LocalFlatFoldabilityCondition,
+  locale: Locale = DEFAULT_LOCALE,
 ) {
-  return {
-    satisfied: '成立',
-    violated: '不成立',
-    not_applicable: '対象外',
-    indeterminate: '判定不能',
-  }[condition]
+  const labels = locale === 'en'
+    ? {
+      satisfied: 'Satisfied',
+      violated: 'Violated',
+      not_applicable: 'Not applicable',
+      indeterminate: 'Indeterminate',
+    }
+    : {
+      satisfied: '成立',
+      violated: '不成立',
+      not_applicable: '対象外',
+      indeterminate: '判定不能',
+    }
+  return labels[condition]
 }
 
 export function localFlatFoldabilityReasonLabel(
   reason: LocalFlatFoldabilityReason,
   maxExactFoldDegree: number,
+  locale: Locale = DEFAULT_LOCALE,
 ) {
   switch (reason) {
     case 'paper_boundary':
-      return '紙の輪郭頂点は現在の局所条件の対象外です'
+      return localized(
+        locale,
+        '紙の輪郭頂点は現在の局所条件の対象外です',
+        'Paper boundary vertices are outside the current local model.',
+      )
     case 'cut_incident':
-      return '切断線に接している頂点は現在の局所条件の対象外です'
+      return localized(
+        locale,
+        '切断線に接している頂点は現在の局所条件の対象外です',
+        'Vertices incident to a cut line are outside the current local model.',
+      )
     case 'fold_degree_limit':
-      return `折り線次数が厳密計算上限（${maxExactFoldDegree}）を超えたため判定不能です`
+      return formatLocalizedText(locale, {
+        ja: '折り線次数が厳密計算上限（{limit}）を超えたため判定不能です',
+        en: 'Indeterminate because the fold degree exceeds the exact limit ({limit}).',
+      }, { limit: maxExactFoldDegree })
     case 'no_incident_fold_edges':
-      return '判定対象の山折り・谷折り線がないため対象外です'
+      return localized(
+        locale,
+        '判定対象の山折り・谷折り線がないため対象外です',
+        'Not applicable because there are no incident mountain or valley folds.',
+      )
     case null:
       return ''
   }
 }
 
-function invalidPresentation(): LocalFlatFoldabilityPresentation {
+function invalidPresentation(
+  locale: Locale,
+): LocalFlatFoldabilityPresentation {
   return Object.freeze({
     kind: 'invalid',
     maxExactFoldDegree: null,
     counts: EMPTY_COUNTS,
-    summaryText:
+    summaryText: localized(
+      locale,
       '局所平坦折り条件の結果を確認できませんでした。成立とは扱いません。',
+      'The local flat-foldability result could not be verified and is not treated as satisfied.',
+    ),
     verticesById: new Map(),
     highlights: new Map(),
     visibleItems: Object.freeze([]),
@@ -343,13 +379,19 @@ function invalidPresentation(): LocalFlatFoldabilityPresentation {
   })
 }
 
-function blockedPresentation(maxExactFoldDegree: number): LocalFlatFoldabilityPresentation {
+function blockedPresentation(
+  maxExactFoldDegree: number,
+  locale: Locale,
+): LocalFlatFoldabilityPresentation {
   return Object.freeze({
     kind: 'blocked',
     maxExactFoldDegree,
     counts: EMPTY_COUNTS,
-    summaryText:
+    summaryText: localized(
+      locale,
       '前段の幾何構造に問題があるため、局所平坦折り条件は判定していません。',
+      'Local flat-foldability conditions were not checked because the preceding geometry is invalid.',
+    ),
     verticesById: new Map(),
     highlights: new Map(),
     visibleItems: Object.freeze([]),
@@ -488,17 +530,41 @@ function statusMatchesCounts(
 function summaryText(
   status: Exclude<LocalFlatFoldabilityReport['status'], 'blocked'>,
   counts: Counts,
+  locale: Locale,
 ) {
-  const detail = `成立${counts.satisfied}、不成立${counts.violated}、`
-    + `対象外${counts.notApplicable}、判定不能${counts.indeterminate}`
+  const detail = formatLocalizedText(locale, {
+    ja: '成立{satisfied}、不成立{violated}、対象外{notApplicable}、判定不能{indeterminate}',
+    en: 'satisfied {satisfied}, violated {violated}, not applicable {notApplicable}, indeterminate {indeterminate}',
+  }, {
+    satisfied: counts.satisfied,
+    violated: counts.violated,
+    notApplicable: counts.notApplicable,
+    indeterminate: counts.indeterminate,
+  })
   switch (status) {
     case 'necessary_conditions_satisfied':
-      return `対応範囲内の局所必要条件が成立しました（${detail}）。`
+      return formatLocalizedText(locale, {
+        ja: '対応範囲内の局所必要条件が成立しました（{detail}）。',
+        en: 'The supported local necessary conditions are satisfied ({detail}).',
+      }, { detail })
     case 'not_applicable':
-      return `現在の局所条件を適用できる頂点がありません（${detail}）。`
+      return formatLocalizedText(locale, {
+        ja: '現在の局所条件を適用できる頂点がありません（{detail}）。',
+        en: 'No vertices are eligible for the current local conditions ({detail}).',
+      }, { detail })
     case 'violated':
-      return `局所必要条件に不成立の頂点があります（${detail}）。`
+      return formatLocalizedText(locale, {
+        ja: '局所必要条件に不成立の頂点があります（{detail}）。',
+        en: 'At least one vertex violates the local necessary conditions ({detail}).',
+      }, { detail })
     case 'indeterminate':
-      return `局所必要条件を判定できない頂点があります（${detail}）。`
+      return formatLocalizedText(locale, {
+        ja: '局所必要条件を判定できない頂点があります（{detail}）。',
+        en: 'At least one vertex has indeterminate local necessary conditions ({detail}).',
+      }, { detail })
   }
+}
+
+function localized(locale: Locale, ja: string, en: string): string {
+  return locale === 'en' ? en : ja
 }

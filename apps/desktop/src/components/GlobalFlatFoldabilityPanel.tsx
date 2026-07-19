@@ -13,6 +13,12 @@ import {
   createGlobalFlatFoldabilityPresentation,
   type GlobalFlatFoldabilityPresentationKind,
 } from '../lib/globalFlatFoldabilityPresentation.ts'
+import {
+  localeStore,
+  useLocale,
+  type Locale,
+  type LocaleStore,
+} from '../lib/i18n.ts'
 
 export type GlobalFlatFoldabilityPanelProps = Readonly<{
   job: unknown
@@ -21,6 +27,7 @@ export type GlobalFlatFoldabilityPanelProps = Readonly<{
   onTimeLimitChange: (seconds: GlobalFlatFoldabilityTimePreset) => void
   onStart: (seconds: GlobalFlatFoldabilityTimePreset) => void
   onCancel: () => void
+  localeStore?: LocaleStore
 }>
 
 export function GlobalFlatFoldabilityPanel({
@@ -30,17 +37,21 @@ export function GlobalFlatFoldabilityPanel({
   onTimeLimitChange,
   onStart,
   onCancel,
+  localeStore: localeStore_ = localeStore,
 }: GlobalFlatFoldabilityPanelProps) {
+  const locale = useLocale(localeStore_)
   const titleId = useId()
   const cautionId = useId()
   const resultLabelId = useId()
-  const presentation = createGlobalFlatFoldabilityPresentation(job)
+  const presentation = createGlobalFlatFoldabilityPresentation(job, locale)
   const selectedTimeLimit = normalizeGlobalFlatFoldabilityTimePreset(
     timeLimitSeconds,
   )
   const startButtonRef = useRef<HTMLButtonElement>(null)
   const cancelButtonRef = useRef<HTMLButtonElement>(null)
   const previousKindRef = useRef(presentation.kind)
+  const hasTerminalResult = !presentation.active
+    && presentation.kind !== 'idle'
 
   useEffect(() => {
     const previousKind = previousKindRef.current
@@ -64,15 +75,25 @@ export function GlobalFlatFoldabilityPanel({
       <header className="global-flat-foldability-header">
         <div>
           <span className="global-flat-foldability-eyebrow">
-            時間制限つき・3値判定
+            {localized(
+              locale,
+              '時間制限つき・3値判定',
+              'Time-limited three-way result',
+            )}
           </span>
-          <h3 id={titleId}>全体平坦折り判定</h3>
+          <h3 id={titleId}>
+            {localized(
+              locale,
+              '全体平坦折り判定',
+              'Global flat-foldability check',
+            )}
+          </h3>
         </div>
       </header>
 
       <div className="global-flat-foldability-controls">
         <label>
-          <span>時間制限</span>
+          <span>{localized(locale, '時間制限', 'Time limit')}</span>
           <select
             value={selectedTimeLimit}
             disabled={presentation.active}
@@ -84,7 +105,11 @@ export function GlobalFlatFoldabilityPanel({
           >
             {GLOBAL_FLAT_FOLDABILITY_TIME_PRESETS.map((seconds) => (
               <option key={seconds} value={seconds}>
-                {seconds}秒
+                {localized(
+                  locale,
+                  `${seconds}秒`,
+                  `${seconds} seconds`,
+                )}
               </option>
             ))}
           </select>
@@ -96,7 +121,11 @@ export function GlobalFlatFoldabilityPanel({
           disabled={presentation.active || startDisabled}
           onClick={() => onStart(selectedTimeLimit)}
         >
-          {presentation.active ? '判定中…' : '判定を開始'}
+          {presentation.active
+            ? localized(locale, '判定中…', 'Checking…')
+            : hasTerminalResult
+              ? localized(locale, '再判定', 'Run again')
+              : localized(locale, '判定を開始', 'Start check')}
         </button>
       </div>
 
@@ -130,7 +159,13 @@ export function GlobalFlatFoldabilityPanel({
               className="global-flat-foldability-cancel"
               onClick={onCancel}
             >
-              {presentation.cancelRequested ? '中止（要求済み）' : '判定を中止'}
+              {presentation.cancelRequested
+                ? localized(
+                  locale,
+                  '中止（要求済み）',
+                  'Cancel requested',
+                )
+                : localized(locale, '判定を中止', 'Cancel check')}
             </button>
           </div>
         )}
@@ -159,12 +194,25 @@ export function GlobalFlatFoldabilityPanel({
       <aside
         id={cautionId}
         className="global-flat-foldability-caution"
-        aria-label="判定結果の重要な制約"
+        aria-label={localized(
+          locale,
+          '判定結果の重要な制約',
+          'Important limitations of the result',
+        )}
       >
-        <strong>「可」が保証しないこと</strong>
+        <strong>
+          {localized(
+            locale,
+            '「可」が保証しないこと',
+            'What “Possible” does not guarantee',
+          )}
+        </strong>
         <p>
-          理想的な厚さ0の判定です。紙厚や層ずれを含めて折れること、手で折りやすいこと、
-          平坦状態まで安全にたどれる連続した折り経路があることは保証しません。
+          {localized(
+            locale,
+            '理想的な厚さ0の判定です。紙厚や層ずれを含めて折れること、手で折りやすいこと、平坦状態まで安全にたどれる連続した折り経路があることは保証しません。',
+            'This check uses an ideal zero-thickness model. It does not guarantee foldability with paper thickness or layer offsets, ease of folding by hand, or a continuous collision-safe path to the flat state.',
+          )}
         </p>
       </aside>
 
@@ -183,4 +231,8 @@ export function GlobalFlatFoldabilityPanel({
 
 function isActiveKind(kind: GlobalFlatFoldabilityPresentationKind) {
   return kind === 'queued' || kind === 'running'
+}
+
+function localized(locale: Locale, ja: string, en: string): string {
+  return locale === 'en' ? en : ja
 }

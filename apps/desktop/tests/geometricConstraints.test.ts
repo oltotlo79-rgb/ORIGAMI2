@@ -219,6 +219,52 @@ test('returns fixed Japanese names and target-only summaries for all eleven kind
   }
 })
 
+test('returns fixed English names and target-only summaries for all eleven kinds', () => {
+  const expected = [
+    ['Fixed length', `Edge ${EDGE_1}`],
+    [
+      'Fixed angle',
+      `Vertex ${VERTEX_1} / Edges ${EDGE_1} · ${EDGE_2}`,
+    ],
+    ['Horizontal', `Edge ${EDGE_2}`],
+    ['Vertical', `Edge ${EDGE_3}`],
+    ['Equal length', `Edges ${EDGE_1} · ${EDGE_2}`],
+    ['Parallel', `Edges ${EDGE_2} · ${EDGE_3}`],
+    ['Point on line', `Vertex ${VERTEX_2} / Line ${EDGE_4}`],
+    [
+      'Mirror symmetry',
+      `Vertices ${VERTEX_1} · ${VERTEX_2} / Symmetry axis ${EDGE_5}`,
+    ],
+    [
+      'Rotational symmetry',
+      `Center ${VERTEX_1} / Corresponding vertices ${VERTEX_2} · ${VERTEX_3}`,
+    ],
+    [
+      'Angle bisector',
+      `Vertex ${VERTEX_4} / Angle edges ${EDGE_1} · ${EDGE_2} / Bisector ${EDGE_3}`,
+    ],
+    [
+      'Length ratio',
+      `Numerator edge ${EDGE_5} / Denominator edge ${EDGE_6}`,
+    ],
+  ]
+
+  const actual = DOCUMENT.constraints.map((record) =>
+    createGeometricConstraintPresentation(record, 'en'))
+  assert.deepEqual(
+    actual.map((item) => [item?.displayName, item?.targetSummary]),
+    expected,
+  )
+  for (const item of actual) {
+    assert.ok(item)
+    assertDeepFrozen(item)
+    assert.deepEqual(
+      Object.keys(item).sort(),
+      ['constraintId', 'displayName', 'kind', 'targetSummary'].sort(),
+    )
+  }
+})
+
 test('rejects every missing or unknown object field across all eleven kinds', () => {
   const sparseConstraints = new Array(1)
   const extendedConstraints: unknown[] = []

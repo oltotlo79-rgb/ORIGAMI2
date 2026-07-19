@@ -1,4 +1,9 @@
 import { isCanonicalNonNilUuid as isCanonicalUuid } from './canonicalUuid.ts'
+import {
+  DEFAULT_LOCALE,
+  formatLocalizedText,
+  type Locale,
+} from './i18n.ts'
 
 export const GEOMETRIC_CONSTRAINT_SCHEMA_VERSION = 1 as const
 export const MAX_GEOMETRIC_CONSTRAINT_RECORDS = 10_000
@@ -243,12 +248,13 @@ export function normalizeGeometricConstraintPreflightResponse(
 }
 
 /**
- * Produces fixed Japanese UI copy from one valid record. The presentation
+ * Produces fixed localized UI copy from one valid record. The presentation
  * contains only its kind and opaque target identities—never coordinates,
  * native errors, or geometry snapshots.
  */
 export function createGeometricConstraintPresentation(
   value: unknown,
+  locale: Locale = DEFAULT_LOCALE,
 ): GeometricConstraintPresentation | null {
   try {
     const record = parseConstraintRecord(value)
@@ -256,42 +262,152 @@ export function createGeometricConstraintPresentation(
     const constraint = record.constraint
     switch (constraint.kind) {
       case 'fixed_length':
-        return presentation(record.id, constraint.kind, '長さを固定',
-          `辺 ${constraint.edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '長さを固定', 'Fixed length'),
+          formatLocalizedText(locale, {
+            ja: '辺 {edge}',
+            en: 'Edge {edge}',
+          }, { edge: constraint.edge }),
+        )
       case 'fixed_angle':
-        return presentation(record.id, constraint.kind, '角度を固定',
-          `頂点 ${constraint.vertex}／辺 ${constraint.first_edge}・${constraint.second_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '角度を固定', 'Fixed angle'),
+          formatLocalizedText(locale, {
+            ja: '頂点 {vertex}／辺 {firstEdge}・{secondEdge}',
+            en: 'Vertex {vertex} / Edges {firstEdge} · {secondEdge}',
+          }, {
+            vertex: constraint.vertex,
+            firstEdge: constraint.first_edge,
+            secondEdge: constraint.second_edge,
+          }),
+        )
       case 'horizontal':
-        return presentation(record.id, constraint.kind, '水平',
-          `辺 ${constraint.edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '水平', 'Horizontal'),
+          formatLocalizedText(locale, {
+            ja: '辺 {edge}',
+            en: 'Edge {edge}',
+          }, { edge: constraint.edge }),
+        )
       case 'vertical':
-        return presentation(record.id, constraint.kind, '垂直',
-          `辺 ${constraint.edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '垂直', 'Vertical'),
+          formatLocalizedText(locale, {
+            ja: '辺 {edge}',
+            en: 'Edge {edge}',
+          }, { edge: constraint.edge }),
+        )
       case 'equal_length':
-        return presentation(record.id, constraint.kind, '等しい長さ',
-          `辺 ${constraint.first_edge}・${constraint.second_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '等しい長さ', 'Equal length'),
+          formatLocalizedText(locale, {
+            ja: '辺 {firstEdge}・{secondEdge}',
+            en: 'Edges {firstEdge} · {secondEdge}',
+          }, {
+            firstEdge: constraint.first_edge,
+            secondEdge: constraint.second_edge,
+          }),
+        )
       case 'parallel':
-        return presentation(record.id, constraint.kind, '平行',
-          `辺 ${constraint.first_edge}・${constraint.second_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '平行', 'Parallel'),
+          formatLocalizedText(locale, {
+            ja: '辺 {firstEdge}・{secondEdge}',
+            en: 'Edges {firstEdge} · {secondEdge}',
+          }, {
+            firstEdge: constraint.first_edge,
+            secondEdge: constraint.second_edge,
+          }),
+        )
       case 'point_on_line':
-        return presentation(record.id, constraint.kind, '点を直線上に配置',
-          `頂点 ${constraint.vertex}／直線 ${constraint.line_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '点を直線上に配置', 'Point on line'),
+          formatLocalizedText(locale, {
+            ja: '頂点 {vertex}／直線 {edge}',
+            en: 'Vertex {vertex} / Line {edge}',
+          }, {
+            vertex: constraint.vertex,
+            edge: constraint.line_edge,
+          }),
+        )
       case 'mirror_symmetry':
-        return presentation(record.id, constraint.kind, '線対称',
-          `頂点 ${constraint.first_vertex}・${constraint.second_vertex}／対称軸 ${constraint.axis_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '線対称', 'Mirror symmetry'),
+          formatLocalizedText(locale, {
+            ja: '頂点 {firstVertex}・{secondVertex}／対称軸 {axisEdge}',
+            en: 'Vertices {firstVertex} · {secondVertex} / Symmetry axis {axisEdge}',
+          }, {
+            firstVertex: constraint.first_vertex,
+            secondVertex: constraint.second_vertex,
+            axisEdge: constraint.axis_edge,
+          }),
+        )
       case 'rotational_symmetry':
-        return presentation(record.id, constraint.kind, '回転対称',
-          `中心 ${constraint.center_vertex}／対応する頂点 ${constraint.source_vertex}・${constraint.target_vertex}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '回転対称', 'Rotational symmetry'),
+          formatLocalizedText(locale, {
+            ja: '中心 {centerVertex}／対応する頂点 {sourceVertex}・{targetVertex}',
+            en: 'Center {centerVertex} / Corresponding vertices {sourceVertex} · {targetVertex}',
+          }, {
+            centerVertex: constraint.center_vertex,
+            sourceVertex: constraint.source_vertex,
+            targetVertex: constraint.target_vertex,
+          }),
+        )
       case 'angle_bisector':
-        return presentation(record.id, constraint.kind, '角の二等分',
-          `頂点 ${constraint.vertex}／角の辺 ${constraint.first_edge}・${constraint.second_edge}／二等分線 ${constraint.bisector_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '角の二等分', 'Angle bisector'),
+          formatLocalizedText(locale, {
+            ja: '頂点 {vertex}／角の辺 {firstEdge}・{secondEdge}／二等分線 {bisectorEdge}',
+            en: 'Vertex {vertex} / Angle edges {firstEdge} · {secondEdge} / Bisector {bisectorEdge}',
+          }, {
+            vertex: constraint.vertex,
+            firstEdge: constraint.first_edge,
+            secondEdge: constraint.second_edge,
+            bisectorEdge: constraint.bisector_edge,
+          }),
+        )
       case 'length_ratio':
-        return presentation(record.id, constraint.kind, '長さの比',
-          `分子の辺 ${constraint.numerator_edge}／分母の辺 ${constraint.denominator_edge}`)
+        return presentation(
+          record.id,
+          constraint.kind,
+          localized(locale, '長さの比', 'Length ratio'),
+          formatLocalizedText(locale, {
+            ja: '分子の辺 {numeratorEdge}／分母の辺 {denominatorEdge}',
+            en: 'Numerator edge {numeratorEdge} / Denominator edge {denominatorEdge}',
+          }, {
+            numeratorEdge: constraint.numerator_edge,
+            denominatorEdge: constraint.denominator_edge,
+          }),
+        )
     }
   } catch {
     return null
   }
+}
+
+function localized(locale: Locale, ja: string, en: string): string {
+  return locale === 'en' ? en : ja
 }
 
 function presentation(

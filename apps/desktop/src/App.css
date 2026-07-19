@@ -1182,6 +1182,39 @@ html[data-theme='dark'] .svg-import-loss-badge {
 .paper-size-form .property-actions { margin-top: 0; }
 .paper-size-form .property-actions button { width: 100%; }
 .paper-size-form input:disabled, .paper-size-form button:disabled { opacity: .5; cursor: not-allowed; }
+.history-limit-control {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.history-limit-control legend { padding: 0 4px; font-size: 12px; font-weight: 700; }
+.history-limit-control p { margin: 0; font-size: 11px; line-height: 1.45; }
+.history-limit-control label { color: var(--muted); font-size: 11px; font-weight: 700; }
+.history-limit-control input {
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.history-limit-control button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.history-limit-control :disabled { cursor: not-allowed; opacity: .5; }
+.history-limit-control [role='alert'] {
+  border-left: 3px solid #b24a4a;
+  padding: 5px 7px;
+  background: #fff0f0;
+  color: #8f3030;
+}
 .property-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .property-actions button {
   border: 1px solid var(--border);
@@ -1839,6 +1872,10 @@ html[data-theme='dark'] .step.is-stale { border-color: #b86a47; background: #4a2
 html[data-theme='dark'] .hinge-select-button[aria-pressed="true"] { border-color: #b86a47; background: #4a2c20; color: #ffc0a2; }
 html[data-theme='dark'] :is(.chip.active, .chip[aria-pressed="true"]) { color: #d1f3ff; border-color: #75bcd2; background: #174b5d; }
 html[data-theme='dark'] .field-error { color: #ffb4ab; }
+html[data-theme='dark'] .history-limit-control [role='alert'] {
+  background: #4a2929;
+  color: #f1b7b7;
+}
 html[data-theme='dark'] .angle-snap-settings input[aria-invalid="true"] { border-color: #ff8a80; }
 html[data-theme='dark'] .dialog-error { background: #4a2929; color: #f1b7b7; }
 html[data-theme='dark'] .numeric-expression-rejected { color: #ffb4ab; }

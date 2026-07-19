@@ -1,0 +1,197 @@
+.recovery-dialog-backdrop {
+  z-index: 100;
+}
+
+.recovery-dialog,
+.recovery-startup-dialog {
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid var(--border-dark, #aeb9c4);
+  border-radius: 10px;
+  background: var(--panel-strong, #fff);
+  color: var(--text, #26313b);
+  box-shadow: 0 18px 54px rgb(15 25 34 / 30%);
+  outline: none;
+}
+
+.recovery-dialog:focus-visible,
+.recovery-startup-dialog:focus-visible {
+  outline: 3px solid var(--accent, #176b87);
+  outline-offset: 3px;
+}
+
+.recovery-dialog-header {
+  display: grid;
+  gap: 4px;
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid var(--border, #cbd4dc);
+}
+
+.recovery-dialog-eyebrow {
+  color: var(--accent, #176b87);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.recovery-dialog-header h2 {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.4;
+}
+
+.recovery-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 24px;
+}
+
+.recovery-dialog-body p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.recovery-dialog-metadata {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border, #cbd4dc);
+  border-radius: 7px;
+}
+
+.recovery-dialog-metadata > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 11px;
+  background: var(--panel, #f8fafb);
+}
+
+.recovery-dialog-metadata dt {
+  color: var(--muted, #65727e);
+  font-size: 12px;
+}
+
+.recovery-dialog-metadata dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recovery-dialog-caution,
+.recovery-dialog-invalid {
+  padding: 10px 12px;
+  border: 1px solid #c89d42;
+  border-radius: 6px;
+  background: #fff8df;
+  color: #654d14;
+}
+
+.recovery-dialog-invalid {
+  border-color: #c56a6a;
+  background: #fff0f0;
+  color: #7f3030;
+}
+
+.recovery-dialog-error {
+  padding: 9px 11px;
+  border-radius: 6px;
+  background: #f9e2e2;
+  color: #913535;
+}
+
+.recovery-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 24px 22px;
+}
+
+.recovery-dialog-actions button {
+  min-width: 96px;
+  padding: 8px 14px;
+  border: 1px solid var(--border, #cbd4dc);
+  border-radius: 5px;
+  background: var(--panel-strong, #fff);
+  color: var(--text, #26313b);
+}
+
+.recovery-dialog-actions button:focus-visible {
+  outline: 3px solid var(--accent, #176b87);
+  outline-offset: 2px;
+}
+
+.recovery-dialog-actions button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+.recovery-dialog-actions .recovery-dialog-primary {
+  border-color: var(--accent-action, #176b87);
+  background: var(--accent-action, #176b87);
+  color: #fff;
+}
+
+.recovery-dialog-actions .recovery-dialog-discard {
+  border-color: #b85d5d;
+  color: #8c3030;
+}
+
+html[data-theme='dark'] .recovery-dialog-caution {
+  border-color: #8f7130;
+  background: #403719;
+  color: #f1d98f;
+}
+
+html[data-theme='dark'] .recovery-dialog-invalid,
+html[data-theme='dark'] .recovery-dialog-error {
+  border-color: #b86767;
+  background: #4a2929;
+  color: #f1b7b7;
+}
+
+html[data-theme='dark'] .recovery-dialog-actions .recovery-dialog-discard {
+  border-color: #d77b82;
+  color: #ffc0c4;
+}
+
+@media (max-width: 600px) {
+  .recovery-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .recovery-startup-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .recovery-dialog-header,
+  .recovery-dialog-body {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .recovery-dialog-actions {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .recovery-dialog-actions button {
+    flex: 1 1 130px;
+  }
+}
+
+@media (forced-colors: active) {
+  .recovery-dialog,
+  .recovery-dialog-caution,
+  .recovery-dialog-invalid,
+  .recovery-dialog-error,
+  .recovery-dialog-actions button {
+    forced-color-adjust: auto;
+  }
+}

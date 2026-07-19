@@ -24,12 +24,15 @@ import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
 import { GeometricConstraintPanel } from './components/GeometricConstraintPanel'
 import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
+import { HistoryLimitControl } from './components/HistoryLimitControl'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
+import { RecoveryDialog } from './components/RecoveryDialog'
+import { RecoveryStartupOverlay } from './components/RecoveryStartupOverlay'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import { ThemeControl } from './components/ThemeControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
@@ -52,7 +55,7 @@ import {
   connectTJunction,
   generateBenchmarkPattern,
   getInstructionExportProgress,
-  getProjectSnapshot,
+  getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
   moveVertex,
   newProject,
@@ -108,6 +111,21 @@ import type {
 import { normalizeGeometricConstraintDocument } from './lib/geometricConstraints'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
+import {
+  cancelWindowClosePrepare,
+  createWindowCloseHandshake,
+  createWindowCloseHandshakeState,
+  discardRecoveryCandidate,
+  getRecoveryCandidate,
+  prepareWindowClose,
+  restoreRecoveryCandidate,
+  type RecoveryCandidateAvailable,
+  type RecoveryCandidateInvalid,
+} from './lib/recoveryClient'
+import {
+  historyLimitClient,
+  type HistoryLimitSettings,
+} from './lib/historyLimitClient'
 import { useGeometricConstraintPreflight } from './lib/useGeometricConstraintPreflight'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import type { FoldPreviewAppliedPoseSnapshot } from './lib/foldPreviewAppliedPose'
@@ -224,6 +242,21 @@ type FixedFaceChoice = Readonly<{
   faceId: string | null
 }>
 
+type RecoveryStartupState =
+  | Readonly<{ kind: 'ready' }>
+  | Readonly<{ kind: 'checking' }>
+  | Readonly<{ kind: 'failed' }>
+  | Readonly<{
+      kind: 'candidate'
+      candidate: RecoveryCandidateAvailable | RecoveryCandidateInvalid
+    }>
+
+type HistoryLimitLoadState =
+  | Readonly<{ kind: 'unavailable' }>
+  | Readonly<{ kind: 'loading' }>
+  | Readonly<{ kind: 'failed' }>
+  | Readonly<{ kind: 'ready'; settings: HistoryLimitSettings }>
+
 type WorkspaceLayoutStyle = CSSProperties & {
   '--workspace-editor-two-d-share': string
   '--workspace-editor-three-d-share': string
@@ -278,6 +311,20 @@ function App() {
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
+  const [recoveryStartup, setRecoveryStartup] = useState<RecoveryStartupState>(
+    () => isNativeCoreAvailable()
+      ? { kind: 'checking' }
+      : { kind: 'ready' },
+  )
+  const [recoveryActionBusy, setRecoveryActionBusy] = useState(false)
+  const [recoveryActionError, setRecoveryActionError] = useState(false)
+  const [historyLimitLoadState, setHistoryLimitLoadState] =
+    useState<HistoryLimitLoadState>(() => (
+      isNativeCoreAvailable()
+        ? { kind: 'loading' }
+        : { kind: 'unavailable' }
+    ))
+  const [historyLimitRetrySequence, setHistoryLimitRetrySequence] = useState(0)
   const [geometricConstraintDocumentInvalid, setGeometricConstraintDocumentInvalid] =
     useState(false)
   const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
@@ -345,8 +392,20 @@ function App() {
   const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
     ...DEFAULT_SNAP_SETTINGS,
   }))
+  const recoveryBlocking = recoveryStartup.kind !== 'ready'
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
+  const initialProjectSnapshotRequestRef =
+    useRef<Promise<ProjectSnapshot> | null>(null)
+  const recoveryMountedRef = useRef(true)
+  const recoveryStartupStartedRef = useRef(false)
+  const recoveryRequestSequenceRef = useRef(0)
+  const recoveryOperationRef = useRef(false)
+  const windowCloseHandshakeStateRef =
+    useRef(createWindowCloseHandshakeState())
+  const historyLimitRequestSequenceRef = useRef(0)
+  const recoveryStartupRef = useRef<RecoveryStartupState>(recoveryStartup)
+  const recoveryBlockingRef = useRef(recoveryBlocking)
   const globalFlatFoldabilityCoordinatorRef =
     useRef<GlobalFlatFoldabilityCoordinator | null>(null)
   const angleInputRef = useRef<HTMLInputElement>(null)
@@ -360,6 +419,15 @@ function App() {
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
+  recoveryStartupRef.current = recoveryStartup
+  recoveryBlockingRef.current = recoveryBlocking
+  const getProjectSnapshot = useCallback(() => {
+    const pending = initialProjectSnapshotRequestRef.current
+    if (pending) return pending
+    const request = Promise.resolve().then(() => requestProjectSnapshot())
+    initialProjectSnapshotRequestRef.current = request
+    return request
+  }, [])
   const analyzeCurrentGeometricConstraints = useCallback(async (
     expectedProjectInstanceId: string,
     expectedProjectId: string,
@@ -430,6 +498,7 @@ function App() {
     || svgImportPreview !== null
     || creaseExportOpen
     || instructionExportOpen
+    || recoveryBlocking
   const closeDiagnosticsDialog = useCallback(() => {
     setDiagnosticsDialogOpen(false)
     requestAnimationFrame(() => diagnosticsButtonRef.current?.focus())
@@ -466,6 +535,181 @@ function App() {
     setTopologyResponse(null)
     setTopologyStatus('面・ヒンジ解析待ち')
   }, [])
+  const acceptAppliedHistoryLimit = useCallback(async (
+    settings: HistoryLimitSettings,
+  ) => {
+    const current = latestSnapshotRef.current
+    if (
+      !current
+      || current.project_instance_id !== settings.projectInstanceId
+      || current.project_id !== settings.projectId
+      || current.revision !== settings.revision
+    ) return
+
+    const refreshed = await requestProjectSnapshot()
+    const latest = latestSnapshotRef.current
+    if (
+      latest !== current
+      || refreshed.project_instance_id !== settings.projectInstanceId
+      || refreshed.project_id !== settings.projectId
+      || refreshed.revision !== settings.revision
+    ) return
+
+    applySnapshot(refreshed)
+    setHistoryLimitLoadState({ kind: 'ready', settings })
+    setCoreStatus(`Undo・Redo履歴の上限を${settings.historyEntryLimit}件に変更しました。`)
+  }, [applySnapshot])
+  const resetRecoveredProjectUi = useCallback(() => {
+    benchmarkRequestIdRef.current += 1
+    setBenchmarkLoading(false)
+    setBenchmarkRun(null)
+    setBenchmarkStatus('復元した編集内容を表示しています')
+    setSelectedLineId(null)
+    setSelectedVertexId(null)
+    setPendingEdgeStart(null)
+    setParallelReferenceEdgeId(null)
+    setAppliedFoldPose(null)
+    setFoldAngleOverrides({ projectId: null, values: new Map() })
+    setFixedFaceChoice({ projectId: null, faceId: null })
+    setActiveTool('select')
+    setCancelInteractionToken((token) => token + 1)
+  }, [])
+  const checkRecoveryStartup = useCallback(async (
+    refreshSnapshot: boolean,
+  ) => {
+    if (!isNativeCoreAvailable() || recoveryOperationRef.current) return
+    recoveryOperationRef.current = true
+    if (refreshSnapshot) initialProjectSnapshotRequestRef.current = null
+    const requestId = ++recoveryRequestSequenceRef.current
+    setRecoveryActionBusy(true)
+    setRecoveryActionError(false)
+    setRecoveryStartup({ kind: 'checking' })
+    setCoreStatus('復旧データを確認しています…')
+    try {
+      const [snapshot, candidate] = await Promise.all([
+        getProjectSnapshot(),
+        getRecoveryCandidate(),
+      ])
+      if (
+        !recoveryMountedRef.current
+        || requestId !== recoveryRequestSequenceRef.current
+      ) return
+      applySnapshot(snapshot)
+      if (candidate.status === 'none') {
+        setRecoveryStartup({ kind: 'ready' })
+        setCoreStatus(`Rustコア revision ${snapshot.revision}`)
+      } else {
+        setRecoveryStartup({ kind: 'candidate', candidate })
+        setCoreStatus('未保存の復旧データについて判断してください。')
+      }
+    } catch {
+      if (
+        !recoveryMountedRef.current
+        || requestId !== recoveryRequestSequenceRef.current
+      ) return
+      reportUnexpected('app.project_snapshot')
+      setRecoveryStartup({ kind: 'failed' })
+      setCoreStatus('復旧データを確認できませんでした。再試行してください。')
+    } finally {
+      if (
+        recoveryMountedRef.current
+        && requestId === recoveryRequestSequenceRef.current
+      ) {
+        recoveryOperationRef.current = false
+        setRecoveryActionBusy(false)
+      }
+    }
+  }, [applySnapshot, getProjectSnapshot])
+  const restoreStartupRecovery = useCallback(async (
+    candidate: RecoveryCandidateAvailable,
+  ) => {
+    const state = recoveryStartupRef.current
+    const current = latestSnapshotRef.current
+    if (
+      recoveryOperationRef.current
+      || !current
+      || !sameRecoveryCandidate(state, candidate)
+    ) return
+    recoveryOperationRef.current = true
+    const requestId = ++recoveryRequestSequenceRef.current
+    setRecoveryActionBusy(true)
+    setRecoveryActionError(false)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const recoveredSnapshot = await restoreRecoveryCandidate(candidate, {
+        project_instance_id: current.project_instance_id,
+        project_id: current.project_id,
+        revision: current.revision,
+      })
+      if (
+        !recoveryMountedRef.current
+        || requestId !== recoveryRequestSequenceRef.current
+        || latestSnapshotRef.current !== current
+        || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
+      ) return
+      applySnapshot(recoveredSnapshot, true)
+      resetRecoveredProjectUi()
+      setRecoveryStartup({ kind: 'ready' })
+      setCoreStatus('未保存の編集内容を復元しました。保存先を選んで保存してください。')
+    } catch {
+      if (
+        !recoveryMountedRef.current
+        || requestId !== recoveryRequestSequenceRef.current
+        || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
+      ) return
+      setRecoveryActionError(true)
+      setCoreStatus('復旧データを復元できませんでした。もう一度お試しください。')
+    } finally {
+      if (
+        recoveryMountedRef.current
+        && requestId === recoveryRequestSequenceRef.current
+      ) {
+        recoveryOperationRef.current = false
+        setRecoveryActionBusy(false)
+      }
+    }
+  }, [applySnapshot, resetRecoveredProjectUi])
+  const discardStartupRecovery = useCallback(async (
+    candidate: RecoveryCandidateAvailable | RecoveryCandidateInvalid,
+  ) => {
+    if (
+      recoveryOperationRef.current
+      || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
+    ) return
+    recoveryOperationRef.current = true
+    const requestId = ++recoveryRequestSequenceRef.current
+    setRecoveryActionBusy(true)
+    setRecoveryActionError(false)
+    try {
+      await discardRecoveryCandidate(candidate)
+      if (
+        !recoveryMountedRef.current
+        || requestId !== recoveryRequestSequenceRef.current
+        || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
+      ) return
+      setRecoveryStartup({ kind: 'ready' })
+      setCoreStatus('復旧データを破棄しました。')
+    } catch {
+      if (
+        !recoveryMountedRef.current
+        || requestId !== recoveryRequestSequenceRef.current
+        || !sameRecoveryCandidate(recoveryStartupRef.current, candidate)
+      ) return
+      setRecoveryActionError(true)
+      setCoreStatus('復旧データを破棄できませんでした。もう一度お試しください。')
+    } finally {
+      if (
+        recoveryMountedRef.current
+        && requestId === recoveryRequestSequenceRef.current
+      ) {
+        recoveryOperationRef.current = false
+        setRecoveryActionBusy(false)
+      }
+    }
+  }, [])
+  const retryRecoveryStartup = useCallback(() => {
+    return checkRecoveryStartup(true)
+  }, [checkRecoveryStartup])
   const nativeLines = useMemo<CreaseLine[]>(() => {
     if (!nativeSnapshot) return []
     const positions = new Map(
@@ -807,6 +1051,15 @@ function App() {
   const paperResizeFormKey = nativeSnapshot && rectangularPaperSize
     ? `${nativeSnapshot.project_id}:${rectangularPaperSize.width}:${rectangularPaperSize.height}:${lengthDisplayUnit.key}`
     : `${nativeSnapshot?.project_id ?? 'paper-unavailable'}:not-rectangular`
+  const boundHistoryLimitSettings =
+    historyLimitLoadState.kind === 'ready'
+    && nativeSnapshot
+    && historyLimitLoadState.settings.projectInstanceId
+      === nativeSnapshot.project_instance_id
+    && historyLimitLoadState.settings.projectId === nativeSnapshot.project_id
+    && historyLimitLoadState.settings.revision === nativeSnapshot.revision
+      ? historyLimitLoadState.settings
+      : null
   const snapStatusLabel = SNAP_OPTIONS
     .filter(({ kind }) => snapSettings[kind])
     .map(({ label }) => label)
@@ -844,17 +1097,71 @@ function App() {
   }, [])
 
   useEffect(() => {
+    recoveryMountedRef.current = true
+    return () => {
+      recoveryMountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
     if (!isNativeCoreAvailable()) return
     getProjectSnapshot()
-      .then((snapshot) => {
-        applySnapshot(snapshot)
-        setCoreStatus(`Rustコア revision ${snapshot.revision}`)
-      })
-      .catch((error: unknown) => {
-        reportUnexpected('app.project_snapshot')
-        setCoreStatus(`コアエラー: ${String(error)}`)
-      })
-  }, [applySnapshot])
+    if (recoveryStartupStartedRef.current) return
+    recoveryStartupStartedRef.current = true
+    void checkRecoveryStartup(false)
+  }, [checkRecoveryStartup, getProjectSnapshot])
+
+  useEffect(() => {
+    if (!isNativeCoreAvailable()) {
+      setHistoryLimitLoadState({ kind: 'unavailable' })
+      return
+    }
+    if (!nativeSnapshot || recoveryBlocking) {
+      setHistoryLimitLoadState({ kind: 'loading' })
+      return
+    }
+
+    const expected = Object.freeze({
+      expectedProjectInstanceId: nativeSnapshot.project_instance_id,
+      expectedProjectId: nativeSnapshot.project_id,
+      expectedRevision: nativeSnapshot.revision,
+    })
+    const requestId = ++historyLimitRequestSequenceRef.current
+    let disposed = false
+    setHistoryLimitLoadState({ kind: 'loading' })
+
+    void historyLimitClient.get(expected).then((settings) => {
+      const current = latestSnapshotRef.current
+      if (
+        disposed
+        || requestId !== historyLimitRequestSequenceRef.current
+        || !current
+        || current.project_instance_id !== settings.projectInstanceId
+        || current.project_id !== settings.projectId
+        || current.revision !== settings.revision
+      ) return
+      setHistoryLimitLoadState({ kind: 'ready', settings })
+    }).catch(() => {
+      const current = latestSnapshotRef.current
+      if (
+        disposed
+        || requestId !== historyLimitRequestSequenceRef.current
+        || !current
+        || current.project_instance_id !== expected.expectedProjectInstanceId
+        || current.project_id !== expected.expectedProjectId
+        || current.revision !== expected.expectedRevision
+      ) return
+      setHistoryLimitLoadState({ kind: 'failed' })
+    })
+
+    return () => {
+      disposed = true
+    }
+  }, [
+    historyLimitRetrySequence,
+    nativeSnapshot,
+    recoveryBlocking,
+  ])
 
   useEffect(() => {
     const current = nativeStaticCollisionRequest
@@ -956,29 +1263,65 @@ function App() {
 
     let disposed = false
     let unlisten: (() => void) | undefined
-    void getCurrentWindow().onCloseRequested((event) => {
-      if (coreOperationRef.current) {
-        event.preventDefault()
-        setCoreStatus('処理が完了してから終了してください')
-        return
-      }
-      if (!latestSnapshotRef.current?.is_dirty) return
-      const discard = window.confirm(
-        '未保存の変更があります。変更を破棄して終了しますか？\nキャンセルすると編集画面に戻ります。',
-      )
-      if (!discard) event.preventDefault()
+    const appWindow = getCurrentWindow()
+    const reportCloseGuardFailure = () =>
+      reportUnexpected('app.close_guard')
+    const closeHandshake = createWindowCloseHandshake(
+      windowCloseHandshakeStateRef.current,
+      {
+        getBlocker: () => {
+          if (
+            recoveryBlockingRef.current
+            || recoveryOperationRef.current
+          ) return 'recovery'
+          return (
+            coreOperationRef.current
+            && !windowCloseHandshakeStateRef.current.interaction_locked
+          )
+            ? 'core'
+            : null
+        },
+        getProjectState: () => {
+          const current = latestSnapshotRef.current
+          if (!current) return null
+          return {
+            project_instance_id: current.project_instance_id,
+            project_id: current.project_id,
+            revision: current.revision,
+            is_dirty: current.is_dirty,
+          }
+        },
+        confirmDiscard: () => window.confirm(
+          '未保存の変更があります。変更を破棄して終了しますか？\nキャンセルすると編集画面に戻ります。',
+        ),
+        prepare: prepareWindowClose,
+        cancel: cancelWindowClosePrepare,
+        requestClose: () => appWindow.close(),
+        setInteractionLocked: (locked) => {
+          coreOperationRef.current = locked
+          if (recoveryMountedRef.current) setCoreBusy(locked)
+        },
+        setStatus: setCoreStatus,
+        reportFailure: reportCloseGuardFailure,
+      },
+    )
+    void appWindow.onCloseRequested((event) => {
+      closeHandshake.handle(event)
     }).then((stopListening) => {
       if (disposed) stopListening()
       else unlisten = stopListening
-    }).catch((error: unknown) => {
+    }).catch(() => {
       if (!disposed) {
-        reportUnexpected('app.close_guard')
-        setCoreStatus(`終了確認の初期化エラー: ${String(error)}`)
+        reportCloseGuardFailure()
+        setCoreStatus(
+          '終了確認を開始できませんでした。アプリを開いたまま、もう一度お試しください。',
+        )
       }
     })
 
     return () => {
       disposed = true
+      closeHandshake.dispose()
       unlisten?.()
     }
   }, [])
@@ -991,7 +1334,11 @@ function App() {
     ) => Promise<ProjectSnapshot>,
   ) => {
     const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return false
+    if (
+      !current
+      || coreOperationRef.current
+      || recoveryBlockingRef.current
+    ) return false
     coreOperationRef.current = true
     setCoreBusy(true)
     setCancelInteractionToken((token) => token + 1)
@@ -1287,6 +1634,10 @@ function App() {
         setNewProjectError(null)
         return
       }
+      if (recoveryBlocking) {
+        if (key === 'escape') event.preventDefault()
+        return
+      }
       if (modalOpen) return
       if (isEditingText(event.target)) return
 
@@ -1335,7 +1686,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyboardShortcut)
     return () => window.removeEventListener('keydown', handleKeyboardShortcut)
-  }, [coreBusy, deleteSelection, keyboardShortcuts, modalOpen, nativeSnapshot, newProjectOpen, runNativeEdit, selectedLine, selectedVertex])
+  }, [coreBusy, deleteSelection, keyboardShortcuts, modalOpen, nativeSnapshot, newProjectOpen, recoveryBlocking, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
     if (
@@ -1529,7 +1880,11 @@ function App() {
   async function submitNewProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
+    if (
+      !current
+      || coreOperationRef.current
+      || recoveryBlockingRef.current
+    ) return
 
     const form = new FormData(event.currentTarget)
     const name = String(form.get('name') ?? '').trim()
@@ -1612,7 +1967,11 @@ function App() {
 
   async function runFileOperation(operation: 'open' | 'save' | 'save_as') {
     const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
+    if (
+      !current
+      || coreOperationRef.current
+      || recoveryBlockingRef.current
+    ) return
     if (
       operation === 'open' &&
       current.is_dirty &&
@@ -3235,6 +3594,40 @@ function App() {
             </div>
           </section>
           <section>
+            <h2>編集履歴</h2>
+            {boundHistoryLimitSettings && nativeSnapshot ? (
+              <HistoryLimitControl
+                settings={boundHistoryLimitSettings}
+                expectedProjectInstanceId={nativeSnapshot.project_instance_id}
+                expectedProjectId={nativeSnapshot.project_id}
+                expectedRevision={nativeSnapshot.revision}
+                disabled={coreBusy || recoveryBlocking}
+                onApplied={acceptAppliedHistoryLimit}
+              />
+            ) : historyLimitLoadState.kind === 'failed' ? (
+              <div role="alert">
+                <p>Undo・Redo履歴の上限を確認できませんでした。</p>
+                <button
+                  type="button"
+                  disabled={coreBusy || recoveryBlocking}
+                  onClick={() => setHistoryLimitRetrySequence(
+                    (sequence) => sequence + 1,
+                  )}
+                >
+                  再試行
+                </button>
+              </div>
+            ) : historyLimitLoadState.kind === 'unavailable' ? (
+              <p className="muted">
+                履歴上限の設定はデスクトップ版で利用できます。
+              </p>
+            ) : (
+              <p className="muted" role="status" aria-live="polite">
+                履歴上限を確認しています…
+              </p>
+            )}
+          </section>
+          <section>
             <h2>スナップ</h2>
             <div className="chip-row" aria-label="スナップ設定">
               {SNAP_OPTIONS.map(({ kind, label }) => (
@@ -3381,6 +3774,27 @@ function App() {
         applyStepPose={applyInstructionStepPose}
         onExport={beginInstructionExport}
       />
+
+      {(recoveryStartup.kind === 'checking'
+        || recoveryStartup.kind === 'failed') && (
+        <RecoveryStartupOverlay
+          phase={recoveryStartup.kind}
+          busy={recoveryActionBusy}
+          onRetry={retryRecoveryStartup}
+        />
+      )}
+
+      {recoveryStartup.kind === 'candidate' && (
+        <RecoveryDialog
+          key={`${recoveryStartup.candidate.status}:${recoveryStartup.candidate.recovery_id}`}
+          candidate={recoveryStartup.candidate}
+          busy={recoveryActionBusy}
+          error={recoveryActionError}
+          onRestore={restoreStartupRecovery}
+          onDiscard={discardStartupRecovery}
+          onRetry={retryRecoveryStartup}
+        />
+      )}
 
       {newProjectOpen && (
         <div className="dialog-backdrop">
@@ -3610,6 +4024,26 @@ function App() {
       </footer>
     </main>
   )
+}
+
+function sameRecoveryCandidate(
+  state: RecoveryStartupState,
+  candidate: RecoveryCandidateAvailable | RecoveryCandidateInvalid,
+): boolean {
+  if (
+    state.kind !== 'candidate'
+    || state.candidate.status !== candidate.status
+    || state.candidate.recovery_id !== candidate.recovery_id
+  ) return false
+  if (
+    state.candidate.status === 'available'
+    && candidate.status === 'available'
+  ) {
+    return state.candidate.project_id === candidate.project_id
+      && state.candidate.updated_at_unix_ms === candidate.updated_at_unix_ms
+  }
+  return state.candidate.status === 'invalid'
+    && candidate.status === 'invalid'
 }
 
 function lineKindLabel(kind: CreaseLine['kind']) {

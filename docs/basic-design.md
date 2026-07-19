@@ -175,8 +175,9 @@ CommandResult
 - UIは状態を直接変更せず、コマンドをRustコアへ送る。
 - Rustコアは検証後に適用し、差分を返す。
 - UIは楽観的表示を行えるが、拒否時にコア状態へ戻す。
-- 永続Undo/Redoはコマンドログと定期スナップショットを組み合わせる。
-- 履歴容量上限を超えた場合、古いログをスナップショットへ圧縮する。
+- 現行のUndo/Redoはproject/session内の差分履歴とし、既定128件、設定可能範囲1〜128件とする。上限縮小時はUndo/Redo両stackの最古から即時に破棄し、revision、document、dirty、3D poseを変えない。上限を再び増やしても破棄済み履歴は復元しない。
+- 履歴上限の取得・変更UIはproject instance、project ID、revisionへ束縛し、別projectや古いrevisionへの応答を適用しない。上限変更自体は作品編集commandではなく、現在sessionの履歴保持policyの変更として扱う。
+- 現行`.ori2`はUndo/Redo履歴と履歴件数上限を永続化しない。読込・復旧で生成した新しいEditorは既定128件から開始する。履歴の永続化・圧縮はHIS-002の将来課題である。
 - 未完成状態を許す2D編集コマンドと、必ず有効状態を要求する3D操作コマンドを区別する。
 
 ## 6. 数値・幾何設計
@@ -609,9 +610,16 @@ thumbnails/
 
 ### 11.2 自動復旧
 
-- 通常ファイルとは別の端末内領域へコマンドログとスナップショットを保存する。
-- 正常終了時は不要な復旧データを整理する。
-- 起動時に復旧候補を示し、元ファイルを上書きせず復元コピーを開く。
+- 復旧用に保存するのは`ProjectDocument`だけとし、Undo/Redo履歴、現在の保存path、保存済みbaseline、3D current poseを含めない。通常の`.ori2`と同じstrict parser・構造件数・非緩和上限（archive 64 MiB、project entry 128 MiB）で再検証する。
+- 保存先はOSのアプリ専用data directory配下にある固定名の1 slotだけとする。利用者が任意pathをIPCで指定する機能、外部通信、telemetry、クラッシュデータの自動送信は持たない。
+- native timerは30秒周期で現在の`ProjectDocument`をcaptureする。project lockはcapture中だけ保持し、disk I/O中は解放する。dirtyでない同一bindingの重複保存は省略する。
+- 書込みは同一directoryの一時fileへstageし、flush・同期後に通常readerで再読込してdocument一致とexact bytesを検証してから原子的に公開する。POSIX系では公開directoryも同期し、Windowsでは検証済みhandleから同一volume上で原子的に置換する。途中失敗は成功として扱わない。
+- writerはprocess内で名前付きbackground threadを1本だけ起動し、呼出し側ではI/Oを実行しない。latest-one coalescingと単調なgeneration fenceで古い世代の完了を破棄する。autosave、discard、正常処理に伴うclearは共通I/O gateで直列化し、captureとclearの競合を全体としてclear前またはclear後へ順序付ける。失敗したgenerationはretry可能なまま残し、終了時の最大5秒待機には実際のfile I/O時間も含める。
+- Tauriのsingle-instance pluginを他の起動処理より先に登録し、同じ復旧slotを複数processが同時更新しない。二重起動要求は既存main windowを表示・foreground化するだけとし、引数や作業directoryを復旧入力に使わない。
+- 起動時にslotを`none / available / invalid`の3状態へ分類する。`none`だけは直ちに通常画面へ進み、`available`は復元または破棄、`invalid`は破棄が成功するまで必須modalで背面の編集・file操作・終了shortcutを遮断する。未処理候補がある間はtimerからslotを上書きしない。
+- 復元時は候補内のproject IDを維持しつつ、新しいproject instance、保存pathなし、revision 0、dirty、保存baselineなしで開く。次の通常保存は保存先選択を要求し、元の保存ファイルを暗黙に上書きしない。復元候補は次のautosaveまたは明示的な正常完了まで保持する。
+- 成功したsave/new/open/FOLD・SVG importでは、project/import lockを解放してから、完了時のproject instance・project ID・revisionが現在値と一致する場合だけ復旧slotをclearする。通常window closeの初回要求は必ず同期的に止め、cleanまたは利用者が破棄を確認した現在bindingに対してnativeが10秒有効・1回限りのtokenを発行する。この準備段階ではslotと自動保存を変更しない。2回目のcloseでtokenを消費し、nativeが同じbindingとclean条件を再検証した後だけ自動書込みを停止して最大5秒のclearを行い、成功時だけ終了を許可する。token取消・失効・stale・clear失敗では自動保存を継続し、windowが残れば編集ロックを解除して再試行できる。windowが既にない、またはcleanで説明用UIを出せない経路では復旧データを残したまま終了でき、次回起動で再判定する。利用者が処理していない起動候補は終了しても保持する。
+- nativeからWebViewへは固定categoryとversion付きDTOだけを返し、raw filesystem path、raw parser/I/O error、復旧document内容を診断文字列へ混入させない。
 
 ## 12. インポート・エクスポート
 

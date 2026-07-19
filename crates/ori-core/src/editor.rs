@@ -436,6 +436,19 @@ pub enum CommandError {
     GeometricConstraintBlocksGeometryMutation { constraint: ConstraintId },
 }
 
+/// Reports an unsupported per-editor undo/redo history entry limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum HistoryEntryLimitError {
+    #[error(
+        "editor history entry limit must be between {minimum} and {maximum} inclusive; got {requested}"
+    )]
+    OutOfRange {
+        requested: usize,
+        minimum: usize,
+        maximum: usize,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     forward: Command,
@@ -485,11 +498,16 @@ impl AppliedPoseHistoryTransition {
 
 const MAX_EDITOR_HISTORY_ENTRIES: usize = 128;
 
-fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry) {
-    let discard_count = stack
-        .len()
-        .saturating_add(1)
-        .saturating_sub(MAX_EDITOR_HISTORY_ENTRIES);
+fn trim_history_to_limit(stack: &mut Vec<HistoryEntry>, limit: usize) {
+    let discard_count = stack.len().saturating_sub(limit);
+    if discard_count > 0 {
+        stack.drain(..discard_count);
+    }
+}
+
+fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limit: usize) {
+    debug_assert!((1..=MAX_EDITOR_HISTORY_ENTRIES).contains(&limit));
+    let discard_count = stack.len().saturating_add(1).saturating_sub(limit);
     if discard_count > 0 {
         stack.drain(..discard_count);
     }
@@ -1368,6 +1386,7 @@ pub struct EditorState {
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
+    history_entry_limit: usize,
 }
 
 impl EditorState {
@@ -1430,6 +1449,7 @@ impl EditorState {
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            history_entry_limit: MAX_EDITOR_HISTORY_ENTRIES,
         }
     }
 
@@ -1504,6 +1524,33 @@ impl EditorState {
         !self.redo_stack.is_empty()
     }
 
+    /// Returns the maximum number of entries retained in each history stack.
+    #[must_use]
+    pub const fn history_entry_limit(&self) -> usize {
+        self.history_entry_limit
+    }
+
+    /// Changes the maximum number of entries retained in each history stack.
+    ///
+    /// Both stacks are trimmed immediately from their oldest side when the
+    /// limit shrinks. Increasing the limit cannot recover entries that were
+    /// already discarded. This runtime preference does not edit the document,
+    /// advance its revision, or change the currently applied pose.
+    pub fn set_history_entry_limit(&mut self, limit: usize) -> Result<(), HistoryEntryLimitError> {
+        if !(1..=MAX_EDITOR_HISTORY_ENTRIES).contains(&limit) {
+            return Err(HistoryEntryLimitError::OutOfRange {
+                requested: limit,
+                minimum: 1,
+                maximum: MAX_EDITOR_HISTORY_ENTRIES,
+            });
+        }
+
+        trim_history_to_limit(&mut self.undo_stack, limit);
+        trim_history_to_limit(&mut self.redo_stack, limit);
+        self.history_entry_limit = limit;
+        Ok(())
+    }
+
     pub fn execute(
         &mut self,
         expected_revision: Revision,
@@ -1533,6 +1580,7 @@ impl EditorState {
                 inverse,
                 applied_pose,
             },
+            self.history_entry_limit,
         );
         self.redo_stack.clear();
         self.revision = next_revision;
@@ -1554,7 +1602,7 @@ impl EditorState {
         self.undo_stack
             .pop()
             .expect("the successfully applied undo entry must still be present");
-        push_bounded_history(&mut self.redo_stack, entry);
+        push_bounded_history(&mut self.redo_stack, entry, self.history_entry_limit);
         self.revision = next_revision;
         Ok(self.result(result))
     }
@@ -1576,7 +1624,7 @@ impl EditorState {
         self.redo_stack
             .pop()
             .expect("the successfully applied redo entry must still be present");
-        push_bounded_history(&mut self.undo_stack, entry);
+        push_bounded_history(&mut self.undo_stack, entry, self.history_entry_limit);
         self.revision = next_revision;
         Ok(self.result(result))
     }
@@ -4216,6 +4264,7 @@ mod tests {
         instruction_timeline: InstructionTimeline,
         current_applied_pose: Option<crate::AppliedPoseV1>,
         revision: Revision,
+        history_entry_limit: usize,
         undo_stack: String,
         redo_stack: String,
     }
@@ -4228,6 +4277,7 @@ mod tests {
             instruction_timeline: editor.instruction_timeline.clone(),
             current_applied_pose: editor.current_applied_pose.clone(),
             revision: editor.revision,
+            history_entry_limit: editor.history_entry_limit(),
             undo_stack: format!("{:?}", editor.undo_stack),
             redo_stack: format!("{:?}", editor.redo_stack),
         }
@@ -12077,6 +12127,250 @@ mod tests {
         assert_eq!(editor.undo_stack.len(), MAX_EDITOR_HISTORY_ENTRIES);
         assert!(!editor.can_redo());
         assert_eq!(editor.pattern.vertices.len(), command_count);
+    }
+
+    #[test]
+    fn every_editor_constructor_uses_the_default_history_limit_and_clone_preserves_it() {
+        let pattern = CreasePattern::empty();
+        let paper = Paper::default();
+        let timeline = InstructionTimeline::default();
+        let constraints = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: Vec::new(),
+        };
+
+        assert_eq!(
+            EditorState::new(pattern.clone()).history_entry_limit(),
+            MAX_EDITOR_HISTORY_ENTRIES
+        );
+        assert_eq!(
+            EditorState::with_paper(pattern.clone(), paper.clone()).history_entry_limit(),
+            MAX_EDITOR_HISTORY_ENTRIES
+        );
+        assert_eq!(
+            EditorState::with_document_parts(pattern.clone(), paper.clone(), timeline.clone())
+                .history_entry_limit(),
+            MAX_EDITOR_HISTORY_ENTRIES
+        );
+        assert_eq!(
+            EditorState::with_document_parts_and_constraints(
+                pattern,
+                paper,
+                timeline,
+                constraints,
+            )
+            .history_entry_limit(),
+            MAX_EDITOR_HISTORY_ENTRIES
+        );
+
+        let mut configured = EditorState::new(CreasePattern::empty());
+        configured
+            .set_history_entry_limit(7)
+            .expect("valid history limit");
+        assert_eq!(configured.clone().history_entry_limit(), 7);
+    }
+
+    #[test]
+    fn setting_history_limit_trims_both_stacks_from_the_oldest_side_without_touching_state() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let vertex_ids = (0..6)
+            .map(|index| {
+                let id = VertexId::new();
+                editor
+                    .execute(
+                        editor.revision(),
+                        Command::AddVertex {
+                            id,
+                            position: Point2::new(f64::from(index), 0.0),
+                        },
+                    )
+                    .expect("add history fixture vertex");
+                id
+            })
+            .collect::<Vec<_>>();
+        editor
+            .undo(editor.revision())
+            .expect("create first redo entry");
+        editor
+            .undo(editor.revision())
+            .expect("create second redo entry");
+        let pose = runtime_pose(15.0);
+        editor.adopt_current_applied_pose(pose.clone());
+        let document_before = (
+            editor.pattern.clone(),
+            editor.paper.clone(),
+            editor.geometric_constraints.clone(),
+            editor.instruction_timeline.clone(),
+        );
+        let revision_before = editor.revision();
+
+        editor
+            .set_history_entry_limit(1)
+            .expect("minimum history limit is valid");
+
+        assert_eq!(editor.history_entry_limit(), 1);
+        assert_eq!(editor.undo_stack.len(), 1);
+        assert_eq!(editor.redo_stack.len(), 1);
+        assert!(matches!(
+            &editor.undo_stack[0].forward,
+            Command::AddVertex { id, .. } if *id == vertex_ids[3]
+        ));
+        assert!(matches!(
+            &editor.redo_stack[0].forward,
+            Command::AddVertex { id, .. } if *id == vertex_ids[4]
+        ));
+        assert_eq!(
+            (
+                editor.pattern.clone(),
+                editor.paper.clone(),
+                editor.geometric_constraints.clone(),
+                editor.instruction_timeline.clone(),
+            ),
+            document_before
+        );
+        assert_eq!(editor.revision(), revision_before);
+        assert_eq!(editor.current_applied_pose(), Some(&pose));
+    }
+
+    #[test]
+    fn increasing_history_limit_does_not_restore_trimmed_entries() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor
+            .set_history_entry_limit(2)
+            .expect("small history limit");
+        let mut vertex_ids = Vec::new();
+        for index in 0..5 {
+            let id = VertexId::new();
+            vertex_ids.push(id);
+            editor
+                .execute(
+                    editor.revision(),
+                    Command::AddVertex {
+                        id,
+                        position: Point2::new(f64::from(index), 0.0),
+                    },
+                )
+                .expect("add history fixture vertex");
+        }
+        assert_eq!(editor.undo_stack.len(), 2);
+        assert!(matches!(
+            &editor.undo_stack[0].forward,
+            Command::AddVertex { id, .. } if *id == vertex_ids[3]
+        ));
+
+        editor
+            .set_history_entry_limit(4)
+            .expect("increased history limit");
+        assert_eq!(editor.undo_stack.len(), 2);
+        for index in 5..8 {
+            let id = VertexId::new();
+            vertex_ids.push(id);
+            editor
+                .execute(
+                    editor.revision(),
+                    Command::AddVertex {
+                        id,
+                        position: Point2::new(f64::from(index), 0.0),
+                    },
+                )
+                .expect("add post-increase history fixture vertex");
+        }
+
+        assert_eq!(editor.undo_stack.len(), 4);
+        assert!(matches!(
+            &editor.undo_stack[0].forward,
+            Command::AddVertex { id, .. } if *id == vertex_ids[4]
+        ));
+        for _ in 0..4 {
+            editor
+                .undo(editor.revision())
+                .expect("undo retained history");
+        }
+        assert!(!editor.can_undo());
+        assert_eq!(editor.redo_stack.len(), 4);
+        assert_eq!(
+            editor
+                .pattern
+                .vertices
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>(),
+            vertex_ids[..4]
+        );
+    }
+
+    #[test]
+    fn execute_undo_and_redo_pushes_all_use_the_instance_history_limit() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor
+            .set_history_entry_limit(2)
+            .expect("small history limit");
+        for index in 0..4 {
+            editor
+                .execute(
+                    editor.revision(),
+                    Command::AddVertex {
+                        id: VertexId::new(),
+                        position: Point2::new(f64::from(index), 0.0),
+                    },
+                )
+                .expect("add history fixture vertex");
+        }
+        assert_eq!(editor.undo_stack.len(), 2);
+
+        editor.undo(editor.revision()).expect("first undo");
+        editor.undo(editor.revision()).expect("second undo");
+        assert_eq!(editor.redo_stack.len(), 2);
+
+        editor.redo(editor.revision()).expect("first redo");
+        editor.redo(editor.revision()).expect("second redo");
+        assert_eq!(editor.undo_stack.len(), 2);
+        assert!(!editor.can_redo());
+    }
+
+    #[test]
+    fn invalid_history_limits_are_atomic_at_both_boundaries() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        for index in 0..3 {
+            editor
+                .execute(
+                    editor.revision(),
+                    Command::AddVertex {
+                        id: VertexId::new(),
+                        position: Point2::new(f64::from(index), 0.0),
+                    },
+                )
+                .expect("add history fixture vertex");
+        }
+        editor.undo(editor.revision()).expect("create redo history");
+        editor.adopt_current_applied_pose(runtime_pose(25.0));
+        let before = editor_state_snapshot(&editor);
+
+        for requested in [0, MAX_EDITOR_HISTORY_ENTRIES + 1] {
+            assert_eq!(
+                editor.set_history_entry_limit(requested),
+                Err(HistoryEntryLimitError::OutOfRange {
+                    requested,
+                    minimum: 1,
+                    maximum: MAX_EDITOR_HISTORY_ENTRIES,
+                })
+            );
+            assert_eq!(editor_state_snapshot(&editor), before);
+        }
+    }
+
+    #[test]
+    fn history_limit_accepts_both_inclusive_boundaries() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        editor
+            .set_history_entry_limit(1)
+            .expect("minimum history limit");
+        assert_eq!(editor.history_entry_limit(), 1);
+
+        editor
+            .set_history_entry_limit(MAX_EDITOR_HISTORY_ENTRIES)
+            .expect("maximum history limit");
+        assert_eq!(editor.history_entry_limit(), MAX_EDITOR_HISTORY_ENTRIES);
     }
 
     fn runtime_pose(angle_degrees: f64) -> crate::AppliedPoseV1 {

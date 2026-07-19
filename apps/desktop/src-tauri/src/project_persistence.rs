@@ -4,6 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, UNIX_EPOCH},
 };
 
 use ori_formats::{Ori2Limits, ProjectDocument, read_project_ori2_with_limits, write_project_ori2};
@@ -38,6 +39,30 @@ pub(super) const PROJECT_SERIALIZATION_FAILED_MESSAGE: &str =
     "プロジェクトの保存データを作成できませんでした。";
 
 static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
+pub(super) const FRONTEND_MAX_SAFE_INTEGER_U64: u64 = (1_u64 << 53) - 1;
+
+/// Bounded, redacted result used by the private crash-recovery slot.
+///
+/// This type deliberately carries neither a path nor an underlying I/O or
+/// parser error. Recovery diagnostics must not accidentally expose app-data
+/// locations or raw operating-system details to the WebView.
+#[derive(Debug, PartialEq)]
+pub(super) enum RecoveryDocumentLoad {
+    Missing,
+    Available {
+        document: Box<ProjectDocument>,
+        updated_at_unix_ms: Option<u64>,
+    },
+    Invalid,
+}
+
+/// Opaque persistence failure for crash-recovery storage.
+///
+/// The ordinary Save As path returns localized user-facing errors. Recovery
+/// runs in the background, so its boundary intentionally erases raw errors and
+/// lets the caller expose one fixed status instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RecoveryPersistenceError;
 
 pub(super) fn load_document_from_path(path: &Path) -> Result<ProjectDocument, String> {
     let limits = Ori2Limits::default();
@@ -67,6 +92,144 @@ pub(super) fn load_document_from_path(path: &Path) -> Result<ProjectDocument, St
     validate_document_instruction_poses(&document)
         .map_err(|_| PROJECT_INSTRUCTIONS_INVALID_MESSAGE.to_owned())?;
     Ok(document)
+}
+
+pub(super) fn inspect_recovery_document(path: &Path) -> RecoveryDocumentLoad {
+    let limits = Ori2Limits::default();
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RecoveryDocumentLoad::Missing;
+        }
+        Err(_) => return RecoveryDocumentLoad::Invalid,
+    };
+    let metadata = match file.metadata() {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) | Err(_) => return RecoveryDocumentLoad::Invalid,
+    };
+    if metadata.len() > limits.max_archive_size {
+        return RecoveryDocumentLoad::Invalid;
+    }
+    let updated_at_unix_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(frontend_safe_unix_millis);
+    let capacity = usize::try_from(metadata.len())
+        .unwrap_or(0)
+        .min(usize::try_from(limits.max_archive_size).unwrap_or(usize::MAX));
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut bounded_reader = file.take(limits.max_archive_size.saturating_add(1));
+    if bounded_reader.read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > limits.max_archive_size
+    {
+        return RecoveryDocumentLoad::Invalid;
+    }
+    let Ok(document) = read_project_ori2_with_limits(&bytes, limits) else {
+        return RecoveryDocumentLoad::Invalid;
+    };
+    if validate_document_instruction_poses(&document).is_err() {
+        return RecoveryDocumentLoad::Invalid;
+    }
+    RecoveryDocumentLoad::Available {
+        document: Box::new(document),
+        updated_at_unix_ms,
+    }
+}
+
+pub(super) fn frontend_safe_unix_millis(duration: Duration) -> Option<u64> {
+    let milliseconds = u64::try_from(duration.as_millis()).ok()?;
+    (milliseconds <= FRONTEND_MAX_SAFE_INTEGER_U64).then_some(milliseconds)
+}
+
+/// Atomically replaces the private recovery slot with a verified `.ori2`.
+///
+/// Callers pass a detached [`ProjectDocument`], so no live project mutex needs
+/// to remain held while serialization, synchronization, verification, and
+/// publication perform filesystem I/O.
+pub(super) fn persist_recovery_document(
+    path: &Path,
+    document: &ProjectDocument,
+) -> Result<(), RecoveryPersistenceError> {
+    let mut staged = prepare_recovery_staged_file(path, document)?;
+    publish_recovery_staged_file(&mut staged, path)
+}
+
+pub(super) fn clear_recovery_document(path: &Path) -> Result<(), RecoveryPersistenceError> {
+    if path.file_name().is_none() {
+        return Err(RecoveryPersistenceError);
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(RecoveryPersistenceError),
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let parent = containing_directory(path).ok_or(RecoveryPersistenceError)?;
+        let directory = File::open(parent).map_err(|_| RecoveryPersistenceError)?;
+        directory.sync_all().map_err(|_| RecoveryPersistenceError)?;
+    }
+    Ok(())
+}
+
+fn prepare_recovery_staged_file(
+    path: &Path,
+    document: &ProjectDocument,
+) -> Result<StagedFile, RecoveryPersistenceError> {
+    if path.file_name().is_none() {
+        return Err(RecoveryPersistenceError);
+    }
+    let parent = containing_directory(path).ok_or(RecoveryPersistenceError)?;
+    std::fs::create_dir_all(parent).map_err(|_| RecoveryPersistenceError)?;
+    validate_document_instruction_poses(document).map_err(|_| RecoveryPersistenceError)?;
+    let bytes = write_project_ori2(document).map_err(|_| RecoveryPersistenceError)?;
+    prepare_staged_file(path, document, &bytes).map_err(|_| RecoveryPersistenceError)
+}
+
+#[cfg(test)]
+pub(super) fn stage_recovery_document_for_test(
+    path: &Path,
+    document: &ProjectDocument,
+) -> Result<StagedFile, RecoveryPersistenceError> {
+    prepare_recovery_staged_file(path, document)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn publish_recovery_staged_file(
+    staged: &mut StagedFile,
+    destination: &Path,
+) -> Result<(), RecoveryPersistenceError> {
+    let parent = containing_directory(destination).ok_or(RecoveryPersistenceError)?;
+    let directory = File::open(parent).map_err(|_| RecoveryPersistenceError)?;
+
+    // The first barrier ensures an error is reported before the visible slot
+    // changes. A post-publish barrier failure leaves the verified document
+    // visible but reports failure so the generation remains retryable.
+    directory.sync_all().map_err(|_| RecoveryPersistenceError)?;
+    publish_unix_staged_file(
+        staged,
+        destination,
+        ExistingDestinationPolicy::ReplaceConfirmed,
+    )
+    .map_err(|_| RecoveryPersistenceError)?;
+    directory.sync_all().map_err(|_| RecoveryPersistenceError)
+}
+
+#[cfg(target_os = "windows")]
+fn publish_recovery_staged_file(
+    staged: &mut StagedFile,
+    destination: &Path,
+) -> Result<(), RecoveryPersistenceError> {
+    super::rename_windows_staged_file_with_policy(
+        staged.file(),
+        destination,
+        ExistingDestinationPolicy::ReplaceConfirmed,
+    )
+    .map_err(|_| RecoveryPersistenceError)?;
+    staged.committed = true;
+    Ok(())
 }
 
 #[cfg(test)]

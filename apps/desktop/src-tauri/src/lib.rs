@@ -2,9 +2,12 @@ mod applied_pose;
 mod crease_export;
 mod diagnostics;
 mod global_flat_foldability;
+mod history_settings;
 mod instruction_export;
 mod numeric_expression;
 mod project_persistence;
+#[allow(dead_code)]
+mod recovery;
 mod save_path;
 
 use std::{
@@ -36,6 +39,7 @@ use global_flat_foldability::{
     GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
     get_global_flat_foldability_progress, get_global_flat_foldability_result,
 };
+use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
     InstructionExportState, begin_instruction_export, cancel_instruction_export,
     get_instruction_export_progress, preview_instruction_export, save_instruction_export,
@@ -78,6 +82,11 @@ use project_persistence::{
 };
 #[cfg(all(test, not(target_os = "windows")))]
 use project_persistence::{commit_unix_staged_project_file, prepare_staged_file};
+use recovery::{
+    ExitRecoveryAuthorization, ExitRecoveryDisposition, PreparedWindowCloseSettlement,
+    RecoveryRuntime, cancel_window_close_prepare, discard_recovery, get_recovery_candidate,
+    prepare_window_close, restore_recovery, start_recovery_autosave_timer,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -420,6 +429,34 @@ impl ProjectState {
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions,
             saved_document: Some(saved_document),
+            editor,
+        }
+    }
+
+    /// Restores a crash-recovery payload as a new unsaved project instance.
+    ///
+    /// A recovery slot contains only [`ProjectDocument`]. In particular it
+    /// carries no original path, saved baseline, editor history, or runtime
+    /// pose. Keeping the persisted project ID while issuing a fresh instance
+    /// ID lets delayed work distinguish this restored editor from the crashed
+    /// process without ever authorizing an overwrite of the original file.
+    fn from_recovery(document: ProjectDocument) -> Self {
+        let numeric_expressions = document.numeric_expressions;
+        let editor = EditorState::with_document_parts_and_constraints(
+            document.crease_pattern,
+            document.paper,
+            document.instruction_timeline,
+            document.geometric_constraints,
+        );
+        Self {
+            instance_id: ProjectId::new(),
+            project_id: document.project_id,
+            name: document.name,
+            current_path: None,
+            saved_revision: None,
+            applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            numeric_expressions,
+            saved_document: None,
             editor,
         }
     }
@@ -875,6 +912,7 @@ fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, Strin
 #[tauri::command]
 async fn new_project(
     state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
@@ -893,7 +931,7 @@ async fn new_project(
     .await
     .map_err(|error| error.user_input_message().to_owned())?;
     let mut project = lock_project(&state)?;
-    replace_with_new_project(
+    let response = replace_with_new_project(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
@@ -909,7 +947,10 @@ async fn new_project(
             front_color,
             back_color,
         },
-    )
+    )?;
+    drop(project);
+    let _ = recovery.clear_after_normal_completion(&state, &response);
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1150,6 +1191,7 @@ async fn analyze_project_topology(
 async fn open_project(
     app: AppHandle,
     state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
 ) -> Result<ProjectFileResponse, String> {
     let (expected_instance_id, expected_project_id, expected_revision, initial_directory) = {
         let project = lock_project(&state)?;
@@ -1186,35 +1228,54 @@ async fn open_project(
         .map_err(|_| PROJECT_OPEN_TASK_FAILED_MESSAGE.to_owned())??;
 
     let mut project = lock_project(&state)?;
-    apply_loaded_project_file(
+    let response = apply_loaded_project_file(
         &mut project,
         expected_instance_id,
         expected_project_id,
         expected_revision,
         loaded,
-    )
+    )?;
+    drop(project);
+    let _ = recovery.clear_after_normal_completion(&state, &response.project);
+    Ok(response)
 }
 
 #[tauri::command]
 async fn save_project(
     app: AppHandle,
     state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
 ) -> Result<ProjectFileResponse, String> {
-    {
+    let saved_to_current_path = {
         let mut project = lock_project(&state)?;
         if let Some(path) = project.current_path.clone() {
-            return save_project_to_path(&mut project, path);
+            Some(save_project_to_path(&mut project, path)?)
+        } else {
+            None
         }
+    };
+    if let Some(response) = saved_to_current_path {
+        let _ = recovery.clear_after_normal_completion(&state, &response.project);
+        return Ok(response);
     }
-    save_project_with_dialog(&app, &state)
+    let response = save_project_with_dialog(&app, &state)?;
+    if !response.canceled {
+        let _ = recovery.clear_after_normal_completion(&state, &response.project);
+    }
+    Ok(response)
 }
 
 #[tauri::command]
 async fn save_project_as(
     app: AppHandle,
     state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
 ) -> Result<ProjectFileResponse, String> {
-    save_project_with_dialog(&app, &state)
+    let response = save_project_with_dialog(&app, &state)?;
+    if !response.canceled {
+        let _ = recovery.clear_after_normal_completion(&state, &response.project);
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1290,6 +1351,7 @@ async fn preview_fold_import(
 #[tauri::command]
 async fn apply_fold_import(
     state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
     import_state: State<'_, FoldImportState>,
     preview_id: ProjectId,
     expected_project_id: ProjectId,
@@ -1319,14 +1381,18 @@ async fn apply_fold_import(
     // with the final checked replacement.
     let mut pending_slot = lock_fold_import(&import_state)?;
     let mut project = lock_project(&state)?;
-    commit_fold_import_replacement(
+    let response = commit_fold_import_replacement(
         &mut project,
         &mut pending_slot,
         preview_id,
         expected_project_id,
         expected_revision,
         replacement,
-    )
+    )?;
+    drop(project);
+    drop(pending_slot);
+    let _ = recovery.clear_after_normal_completion(&state, &response);
+    Ok(response)
 }
 
 #[tauri::command]
@@ -1496,6 +1562,7 @@ async fn validate_svg_import_settings(
 #[tauri::command]
 async fn apply_svg_import(
     state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
     import_state: State<'_, SvgImportState>,
     preview_id: ProjectId,
     expected_project_id: ProjectId,
@@ -1574,6 +1641,9 @@ async fn apply_svg_import(
     )?;
     pending_slot.validation_generation_id = None;
     pending_slot.validation = None;
+    drop(project);
+    drop(pending_slot);
+    let _ = recovery.clear_after_normal_completion(&state, &snapshot);
     Ok(snapshot)
 }
 
@@ -4795,7 +4865,18 @@ fn macos_menu(app_handle: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 pub fn run() {
-    let builder = tauri::Builder::default();
+    // Tauri plugins run in registration order. Single-instance must remain
+    // first so no other plugin initializes in a secondary process.
+    let builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Privacy boundary: command-line arguments and the working
+            // directory are intentionally neither inspected nor recorded.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
     #[cfg(target_os = "macos")]
     let builder = builder
         .enable_macos_default_menu(false)
@@ -4809,10 +4890,22 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let recovery_root = app
+                .path()
+                .app_data_dir()
+                .map_err(|_| {
+                    std::io::Error::other("the private recovery directory could not be initialized")
+                })?
+                .join("recovery");
+            let recovery = RecoveryRuntime::new(recovery_root);
+            app.manage(AppState::new(initial_project_state()));
+            app.manage(recovery);
             app.manage(DiagnosticsState::from_app_handle(app.handle()));
+            start_recovery_autosave_timer(app.handle().clone()).map_err(|_| {
+                std::io::Error::other("the private recovery timer could not be initialized")
+            })?;
             Ok(())
         })
-        .manage(AppState::new(initial_project_state()))
         .manage(FoldImportState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
@@ -4822,6 +4915,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
             project_snapshot,
+            get_history_entry_limit,
+            set_history_entry_limit,
+            get_recovery_candidate,
+            restore_recovery,
+            discard_recovery,
+            prepare_window_close,
+            cancel_window_close_prepare,
             new_project,
             validate_project,
             apply_current_native_pose,
@@ -4887,11 +4987,48 @@ pub fn run() {
             return;
         };
 
-        // Closing the last window is already confirmed by the WebView's
-        // close-requested handler. App-level quit paths (notably Cmd+Q on
-        // macOS) arrive while the main window still exists and need their own
-        // native confirmation.
+        let project_state = app_handle.state::<AppState>();
+        match app_handle
+            .state::<RecoveryRuntime>()
+            .settle_prepared_window_close(&project_state)
+        {
+            Ok(PreparedWindowCloseSettlement::Settled) => return,
+            Ok(PreparedWindowCloseSettlement::Rejected) | Err(_) => {
+                // The WebView's close authorization was stale or its bounded
+                // recovery clear failed. If the window still exists, keep the
+                // process open and report the fixed error. With no remaining
+                // window, allow exit while retaining the recovery slot rather
+                // than leave an invisible process running.
+                if !app_handle.webview_windows().is_empty() {
+                    api.prevent_exit();
+                    app_handle
+                        .dialog()
+                        .message(
+                            "The private recovery data could not be settled. The application remains open.",
+                        )
+                        .title("ORIGAMI2")
+                        .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                }
+                return;
+            }
+            Ok(PreparedWindowCloseSettlement::NotPrepared) => {}
+        }
+
+        // A missing WebView is not proof that the JavaScript close listener
+        // ran: listener setup, the renderer, or an OS shutdown path may have
+        // failed. Preserve dirty recovery fail-closed unless native state can
+        // prove there is no unsaved work. App-level quit paths (notably Cmd+Q
+        // on macOS) arrive while the main window still exists and use the
+        // native confirmation below.
         if app_handle.webview_windows().is_empty() {
+            // A failed or project-changed clear leaves the file in place,
+            // which is safer than delaying exit with no remaining window to
+            // explain it.
+            let _ = app_handle
+                .state::<RecoveryRuntime>()
+                .clear_for_exit(&project_state, ExitRecoveryAuthorization::Clean);
             return;
         }
 
@@ -4900,12 +5037,36 @@ pub fn run() {
             return;
         }
 
-        let project_state = app_handle.state::<AppState>();
         let project_is_dirty = lock_project(&project_state)
             .map(|project| project.is_dirty())
             .unwrap_or(true);
         if !project_is_dirty {
-            return;
+            match app_handle
+                .state::<RecoveryRuntime>()
+                .clear_for_exit(&project_state, ExitRecoveryAuthorization::Clean)
+            {
+                Ok(ExitRecoveryDisposition::ProjectChanged) => {
+                    // A delayed edit committed after the first clean check.
+                    // Continue into the native discard confirmation below.
+                }
+                Ok(
+                    ExitRecoveryDisposition::Cleared
+                    | ExitRecoveryDisposition::PreservedStartupCandidate,
+                ) => return,
+                Err(_) => {
+                    api.prevent_exit();
+                    app_handle
+                        .dialog()
+                        .message(
+                            "The private recovery data could not be settled. The application remains open.",
+                        )
+                        .title("ORIGAMI2")
+                        .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                    return;
+                }
+            }
         }
 
         api.prevent_exit();
@@ -4931,8 +5092,27 @@ pub fn run() {
             let exit_guard = exit_handle.state::<ExitGuard>();
             exit_guard.dialog_open.store(false, Ordering::SeqCst);
             if discard_changes {
-                exit_guard.allow_once.store(true, Ordering::SeqCst);
-                exit_handle.exit(0);
+                if exit_handle
+                    .state::<RecoveryRuntime>()
+                    .clear_for_exit(
+                        &exit_handle.state::<AppState>(),
+                        ExitRecoveryAuthorization::DiscardConfirmed,
+                    )
+                    .is_ok()
+                {
+                    exit_guard.allow_once.store(true, Ordering::SeqCst);
+                    exit_handle.exit(0);
+                } else {
+                    exit_handle
+                        .dialog()
+                        .message(
+                            "The private recovery data could not be settled. The application remains open.",
+                        )
+                        .title("ORIGAMI2")
+                        .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                }
             }
         });
     });

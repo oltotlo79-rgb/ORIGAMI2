@@ -38,6 +38,7 @@ import { RecoveryDialog } from './components/RecoveryDialog'
 import { RecoveryStartupOverlay } from './components/RecoveryStartupOverlay'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import { ThemeControl } from './components/ThemeControl'
+import { UpdateCheckPopover } from './components/UpdateCheckControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import {
@@ -5119,6 +5120,7 @@ function App() {
         <span className="status-spacer" />
         <KeyboardShortcutControl />
         <WorkspaceLayoutControl />
+        <UpdateCheckPopover />
         <ThemeControl />
         <LanguageControl />
         {isDiagnosticsShareAvailable() && (

@@ -426,4 +426,8 @@ try {
     }
 }
 
+# Expected rejection fixtures above intentionally leave a child pwsh exit code of 1.
+# GitHub Actions appends a shell footer that exits with the last native exit code,
+# even after this contract has completed successfully, so clear that captured code.
+$global:LASTEXITCODE = 0
 Write-Output 'Windows production release workflow contract passed.'

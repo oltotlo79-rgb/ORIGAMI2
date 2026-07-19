@@ -1,5 +1,13 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   CreaseCanvas,
   type CreaseCanvasRenderMetrics,
@@ -17,6 +25,7 @@ import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { LengthUnitControl } from './components/LengthUnitControl'
 import { LengthValueInput } from './components/LengthValueInput'
 import { SvgImportDialog } from './components/SvgImportDialog'
+import { ThemeControl } from './components/ThemeControl'
 import {
   addEdge,
   addVertex,
@@ -147,6 +156,7 @@ import {
 import { createGlobalFlatFoldabilityNativeTransport } from './lib/globalFlatFoldabilityNative'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
 import { isDiagnosticsShareAvailable } from './lib/diagnosticsShare'
+import { resolveFileKeyboardShortcut } from './lib/fileKeyboardShortcut'
 import './App.css'
 
 const SNAP_OPTIONS: ReadonlyArray<{ kind: keyof SnapSettings; label: string }> = [
@@ -698,6 +708,12 @@ function App() {
     .map(({ label }) => label)
     .join('・') || 'なし'
 
+  const runShortcutFileOperation = useEffectEvent((
+    operation: 'open' | 'save' | 'save_as',
+  ) => {
+    void runFileOperation(operation)
+  })
+
   useEffect(() => {
     if (!isNativeCoreAvailable()) return
     let mounted = true
@@ -1098,6 +1114,18 @@ function App() {
 
       const key = event.key.toLowerCase()
       const primaryModifier = event.ctrlKey || event.metaKey
+      const fileShortcut = resolveFileKeyboardShortcut(event)
+      if (fileShortcut) {
+        event.preventDefault()
+        if (coreBusy || !nativeSnapshot) return
+        if (fileShortcut === 'new') {
+          setNewProjectError(null)
+          setNewProjectOpen(true)
+        } else {
+          runShortcutFileOperation(fileShortcut)
+        }
+        return
+      }
       if (primaryModifier && key === 'z') {
         event.preventDefault()
         if (event.repeat) return
@@ -2116,6 +2144,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
+            title="新規 (Ctrl/Cmd+N)"
+            aria-keyshortcuts="Control+N Meta+N"
             onClick={() => {
               setNewProjectError(null)
               setNewProjectOpen(true)
@@ -2155,6 +2185,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
+            title="開く (Ctrl/Cmd+O)"
+            aria-keyshortcuts="Control+O Meta+O"
             onClick={() => void runFileOperation('open')}
           >
             {fileOperation === 'open' ? '開いています…' : '開く'}
@@ -2189,6 +2221,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
+            title="保存 (Ctrl/Cmd+S)"
+            aria-keyshortcuts="Control+S Meta+S"
             onClick={() => void runFileOperation('save')}
           >
             {fileOperation === 'save' ? '保存中…' : '保存'}
@@ -2196,6 +2230,8 @@ function App() {
           <button
             type="button"
             disabled={coreBusy || !nativeSnapshot}
+            title="別名保存 (Ctrl/Cmd+Shift+S)"
+            aria-keyshortcuts="Control+Shift+S Meta+Shift+S"
             onClick={() => void runFileOperation('save_as')}
           >
             {fileOperation === 'save_as' ? '保存中…' : '別名保存'}
@@ -3331,6 +3367,7 @@ function App() {
         <span>{coreStatus}</span>
         <span>スナップ: {snapStatusLabel}</span>
         <span className="status-spacer" />
+        <ThemeControl />
         {isDiagnosticsShareAvailable() && (
           <button
             ref={diagnosticsButtonRef}

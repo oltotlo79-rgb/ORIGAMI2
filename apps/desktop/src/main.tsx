@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { reportUnexpected } from './lib/diagnosticsRuntime'
+import { initializeTheme, themeStore } from './lib/theme'
+
+initializeTheme()
 
 const reportUnhandledError = () => {
   reportUnexpected('app.unhandled_error')
@@ -18,6 +21,7 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     window.removeEventListener('error', reportUnhandledError)
     window.removeEventListener('unhandledrejection', reportUnhandledRejection)
+    themeStore.dispose()
   })
 }
 

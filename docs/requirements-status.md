@@ -193,8 +193,8 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | EDT-005 | 部分実装 | 新規作成時の幅・高さの原式とnative採用値をversion固定schemaで`.ori2`へ保存し、読込時再評価・bit一致検証と式/評価値切替表示が動作。既存幾何の式保持、式による再計算、Undo/Redo統合を残す |
 | EDT-006 | 実装済み | 9種snap、個別切替、優先順位、空間索引 |
 | EDT-007 | 部分実装 | 平行・垂直等の補助あり。円・compass作図なし |
-| EDT-008 | 未着手 | 永続的な11種幾何制約systemなし |
-| EDT-009 | 未着手 | 制約矛盾の原因特定なし |
+| EDT-008 | 未着手 | 11種のversion固定DTO、参照・有限値・資源上限の検証、元geometryを借用するcanonical prepared setは`ori-core`内部に実装。project schema、保存、編集command、UI、拘束solverへ未接続のため利用者経路なし |
+| EDT-009 | 未着手 | 7種の直接矛盾、最大3 IDの決定論的原因、`DirectConflict / Unknown / NoDirectConflict`の安全なpreflightは`ori-core`内部に実装。project・UIへの原因表示、非線形・推移的矛盾のsolverへ未接続 |
 | EDT-010 | 未着手 | 左右・回転対称編集なし |
 | EDT-011 | 実装済み | 不正・未完成状態の表示と保存を許可 |
 | EDT-012 | 部分実装 | 3D移行のfail-closed遮断あり。問題位置・理由の網羅表示を残す |

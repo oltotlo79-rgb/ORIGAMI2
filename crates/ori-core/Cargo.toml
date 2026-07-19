@@ -11,7 +11,9 @@ ori-domain = { path = "../ori-domain" }
 ori-foldability = { path = "../ori-foldability" }
 ori-geometry = { path = "../ori-geometry" }
 ori-topology = { path = "../ori-topology" }
+serde.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-serde.workspace = true
+serde_json.workspace = true

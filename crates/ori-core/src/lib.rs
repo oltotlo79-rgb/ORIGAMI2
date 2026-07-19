@@ -1,6 +1,7 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
 mod applied_pose;
+mod constraints;
 mod editor;
 mod fold_model_fingerprint;
 mod sheet;
@@ -11,6 +12,17 @@ mod validation;
 pub use applied_pose::{
     APPLIED_POSE_MODEL_ID_V1, AppliedHingeAngleV1, AppliedPoseErrorV1, AppliedPoseLimitsV1,
     AppliedPoseResourceV1, AppliedPoseV1, prepare_applied_pose_v1,
+};
+pub use constraints::{
+    ConstraintEdgeRoleV1, ConstraintId, ConstraintPreflightV1, ConstraintScalarFieldV1,
+    ConstraintVertexRoleV1, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_PRECHECKS,
+    DEFAULT_MAX_CONSTRAINT_RECORDS, DEFAULT_MAX_CONSTRAINT_REFERENCES,
+    DEFAULT_MAX_CONSTRAINT_VERTICES, DirectConstraintConflictKindV1, DirectConstraintConflictV1,
+    GEOMETRIC_CONSTRAINT_MODEL_ID_V1, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+    GeometricConstraintDocumentV1, GeometricConstraintErrorV1, GeometricConstraintKindV1,
+    GeometricConstraintLimitsV1, GeometricConstraintRecordV1, GeometricConstraintResourceV1,
+    GeometricConstraintSetV1, GeometricConstraintUnknownReasonV1, MAX_DIRECT_CONFLICT_CAUSE_IDS_V1,
+    preflight_direct_conflicts_v1, prepare_geometric_constraints_v1,
 };
 pub use editor::{
     Command, CommandError, CommandResult, EditorState, IntersectionEdgeTarget,

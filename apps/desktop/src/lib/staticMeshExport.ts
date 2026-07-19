@@ -8,6 +8,7 @@ export type StaticMeshExportWarning =
   | 'no_thickness_solid'
   | 'no_materials_textures_animation'
   | 'no_project_semantics'
+  | 'stl_triangle_soup_facet_normals'
   | 'stl_printability_not_guaranteed'
 
 export type StaticMeshExportPreview = Readonly<{
@@ -211,6 +212,8 @@ export function staticMeshExportWarningMessage(
         '表裏色、材質、テクスチャ、カメラ、折りアニメーションは含みません。',
       no_project_semantics:
         '折り線、山谷、面ID、編集履歴、折り手順などORIGAMI2固有情報は含みません。',
+      stl_triangle_soup_facet_normals:
+        'STLは頂点indexと頂点法線を保持しません。各三角形が独立したtriangle soupになり、法線は面ごとのfacet normalへ置き換わります。',
       stl_printability_not_guaranteed:
         'STL出力は3Dプリント可能性を保証しません。厚みのない中央面であり、スライサーで別途確認が必要です。',
     },
@@ -223,6 +226,8 @@ export function staticMeshExportWarningMessage(
         'Front/back colors, materials, textures, camera, and folding animation are not included.',
       no_project_semantics:
         'Creases, mountain/valley assignments, face IDs, edit history, folding steps, and other ORIGAMI2 semantics are not included.',
+      stl_triangle_soup_facet_normals:
+        'STL does not preserve vertex indices or vertex normals. It stores independent triangle soup with one facet normal per triangle.',
       stl_printability_not_guaranteed:
         'STL export does not guarantee 3D printability. This is a zero-thickness mid-surface and must be checked separately in a slicer.',
     },
@@ -237,7 +242,11 @@ function normalizeWarnings(
   const warnings = exactArray(value)
   if (!warnings) return null
   const expected = format === 'stl'
-    ? [...BASE_WARNINGS, 'stl_printability_not_guaranteed'] as const
+    ? [
+        ...BASE_WARNINGS,
+        'stl_triangle_soup_facet_normals',
+        'stl_printability_not_guaranteed',
+      ] as const
     : BASE_WARNINGS
   if (
     warnings.length !== expected.length

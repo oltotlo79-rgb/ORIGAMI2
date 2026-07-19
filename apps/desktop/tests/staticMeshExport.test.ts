@@ -47,7 +47,12 @@ function preview(format: 'obj' | 'stl' | 'glb' = 'obj') {
         'no_thickness_solid',
         'no_materials_textures_animation',
         'no_project_semantics',
-        ...(format === 'stl' ? ['stl_printability_not_guaranteed'] : []),
+        ...(format === 'stl'
+          ? [
+              'stl_triangle_soup_facet_normals',
+              'stl_printability_not_guaranteed',
+            ]
+          : []),
       ],
     },
   }
@@ -140,7 +145,37 @@ test('loss messages explicitly disclose mid-surface and STL limitations', () => 
     /closed manifold/,
   )
   assert.match(
+    staticMeshExportWarningMessage('stl_triangle_soup_facet_normals', 'ja'),
+    /頂点index.*頂点法線.*triangle soup.*facet normal/,
+  )
+  assert.match(
+    staticMeshExportWarningMessage('stl_triangle_soup_facet_normals', 'en'),
+    /vertex indices.*vertex normals.*triangle soup.*facet normal/,
+  )
+  assert.match(
     staticMeshExportWarningMessage('stl_printability_not_guaranteed', 'ja'),
     /3Dプリント可能性を保証しません/,
   )
+})
+
+test('STL warning allowlist requires the exact loss sequence', () => {
+  const missingTriangleSoup = preview('stl')
+  missingTriangleSoup.preview.warnings.splice(4, 1)
+  assert.equal(
+    normalizeStaticMeshExportPreviewResponse(missingTriangleSoup),
+    null,
+  )
+
+  const reordered = preview('stl')
+  reordered.preview.warnings.splice(
+    4,
+    2,
+    'stl_printability_not_guaranteed',
+    'stl_triangle_soup_facet_normals',
+  )
+  assert.equal(normalizeStaticMeshExportPreviewResponse(reordered), null)
+
+  const unexpectedForObj = preview('obj')
+  unexpectedForObj.preview.warnings.push('stl_triangle_soup_facet_normals')
+  assert.equal(normalizeStaticMeshExportPreviewResponse(unexpectedForObj), null)
 })

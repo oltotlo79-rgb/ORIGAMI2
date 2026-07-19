@@ -149,6 +149,7 @@ enum StaticMeshExportWarning {
     NoThicknessSolid,
     NoMaterialsTexturesAnimation,
     NoProjectSemantics,
+    StlTriangleSoupFacetNormals,
     StlPrintabilityNotGuaranteed,
 }
 
@@ -431,6 +432,7 @@ fn export_warnings(format: StaticMeshExportFormatRequest) -> Vec<StaticMeshExpor
         StaticMeshExportWarning::NoProjectSemantics,
     ];
     if format == StaticMeshExportFormatRequest::Stl {
+        warnings.push(StaticMeshExportWarning::StlTriangleSoupFacetNormals);
         warnings.push(StaticMeshExportWarning::StlPrintabilityNotGuaranteed);
     }
     warnings
@@ -1275,6 +1277,34 @@ mod tests {
             assert!(!rendered.contains("bytes"));
             assert!(!rendered.contains("path"));
         }
+    }
+
+    #[test]
+    fn warning_allowlist_is_closed_and_stl_discloses_triangle_soup_conversion() {
+        assert_eq!(
+            export_warnings(StaticMeshExportFormatRequest::Obj),
+            vec![
+                StaticMeshExportWarning::MidSurfaceOnly,
+                StaticMeshExportWarning::NoThicknessSolid,
+                StaticMeshExportWarning::NoMaterialsTexturesAnimation,
+                StaticMeshExportWarning::NoProjectSemantics,
+            ]
+        );
+        assert_eq!(
+            export_warnings(StaticMeshExportFormatRequest::Glb),
+            export_warnings(StaticMeshExportFormatRequest::Obj)
+        );
+        assert_eq!(
+            export_warnings(StaticMeshExportFormatRequest::Stl),
+            vec![
+                StaticMeshExportWarning::MidSurfaceOnly,
+                StaticMeshExportWarning::NoThicknessSolid,
+                StaticMeshExportWarning::NoMaterialsTexturesAnimation,
+                StaticMeshExportWarning::NoProjectSemantics,
+                StaticMeshExportWarning::StlTriangleSoupFacetNormals,
+                StaticMeshExportWarning::StlPrintabilityNotGuaranteed,
+            ]
+        );
     }
 
     #[test]

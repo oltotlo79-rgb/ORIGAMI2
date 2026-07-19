@@ -39,6 +39,7 @@ const PREVIEW: StaticMeshExportPreview = Object.freeze({
     'no_thickness_solid',
     'no_materials_textures_animation',
     'no_project_semantics',
+    'stl_triangle_soup_facet_normals',
     'stl_printability_not_guaranteed',
   ]),
 })
@@ -59,6 +60,7 @@ describe('StaticMeshExportDialog DOM interactions', () => {
     expect(screen.getByText('2.3 KB')).toBeTruthy()
     expect(screen.getByText(/3 面 · 12 頂点 · 6 三角形/u)).toBeTruthy()
     expect(screen.getByText(/設定した紙厚は形状へ反映されません/u)).toBeTruthy()
+    expect(screen.getByText(/頂点index.*triangle soup.*facet normal/u)).toBeTruthy()
     expect(screen.getByText(/3Dプリント可能性を保証しません/u)).toBeTruthy()
     expect(screen.getByText(/right-handed X-right Y-forward Z-up/u)).toBeTruthy()
 

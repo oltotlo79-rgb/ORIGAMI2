@@ -73,6 +73,52 @@ test('a proven zero-thickness penetration or overlap is blocking and publishes t
   assert.match(view.accessibleText, /正の面積を持つ重なり/)
 })
 
+test('a proven positive-thickness mid-surface crossing has a distinct material-penetration presentation', () => {
+  const view = presentNativeStaticCollision({
+    kind: 'ready',
+    diagnostic: {
+      status: 'blocking',
+      reason: 'proven_positive_thickness_penetration',
+      expectedUnorderedFacePairs: 3,
+      provenPenetratingPairs: 1,
+      firstProvenPenetratingPair: {
+        firstFaceId: '00000000-0000-4000-8000-000000000001',
+        secondFaceId: '00000000-0000-4000-8000-000000000002',
+      },
+    },
+  })
+
+  assert.equal(view.dataStatus, 'penetrating')
+  assert.equal(view.badgeClass, 'is-blocked')
+  assert.equal(view.requiresSafetyReview, true)
+  assert.equal(
+    view.badgeText,
+    '厳密判定｜紙厚を含む材料貫通 1・安全認定不可',
+  )
+  assert.equal(
+    view.accessibleText,
+    '現在の表示姿勢で紙厚を含む材料の貫通1件を厳密証明したため、安全認定を遮断しました。',
+  )
+})
+
+test('a malformed positive-thickness reason fails closed instead of inventing a count', () => {
+  const view = presentNativeStaticCollision({
+    kind: 'ready',
+    diagnostic: {
+      status: 'blocking',
+      reason: 'proven_positive_thickness_penetration',
+      expectedUnorderedFacePairs: 3,
+      provenPenetratingPairs: 0,
+      firstProvenPenetratingPair: null,
+    },
+  })
+
+  assert.equal(view.dataStatus, 'unavailable')
+  assert.equal(view.badgeClass, 'is-unavailable')
+  assert.equal(view.requiresSafetyReview, true)
+  assert.doesNotMatch(view.badgeText, /材料貫通/)
+})
+
 for (const reason of [
   'evidence_unavailable',
   'resource_limit_exceeded',

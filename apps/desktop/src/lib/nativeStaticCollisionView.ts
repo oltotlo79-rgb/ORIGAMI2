@@ -1,5 +1,8 @@
+import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
+
 export type CurrentStaticCollisionDiagnosticReason =
   | 'proven_zero_thickness_penetration'
+  | 'proven_positive_thickness_penetration'
   | 'evidence_unavailable'
   | 'resource_limit_exceeded'
   | 'inconsistent_state'
@@ -152,6 +155,23 @@ export function presentNativeStaticCollision(
 
   if (
     diagnostic.status === 'blocking'
+    && diagnostic.reason === 'proven_positive_thickness_penetration'
+    && validPositiveThicknessPenetration(diagnostic)
+  ) {
+    const count = diagnostic.provenPenetratingPairs
+    return {
+      dataStatus: 'penetrating',
+      badgeClass: 'is-blocked',
+      badgeText:
+        `厳密判定｜紙厚を含む材料貫通 ${count}・安全認定不可`,
+      accessibleText:
+        `現在の表示姿勢で紙厚を含む材料の貫通${count}件を厳密証明したため、安全認定を遮断しました。`,
+      requiresSafetyReview: true,
+    }
+  }
+
+  if (
+    diagnostic.status === 'blocking'
     && (
       diagnostic.reason === 'evidence_unavailable'
       || diagnostic.reason === 'resource_limit_exceeded'
@@ -198,4 +218,25 @@ function unavailablePresentation(
 
 function validCount(value: number | null): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+function validPositiveThicknessPenetration(
+  diagnostic: CurrentStaticCollisionDiagnostic,
+): diagnostic is CurrentStaticCollisionDiagnostic & Readonly<{
+  expectedUnorderedFacePairs: number
+  provenPenetratingPairs: number
+  firstProvenPenetratingPair: CurrentStaticCollisionFacePair
+}> {
+  const expected = diagnostic.expectedUnorderedFacePairs
+  const proven = diagnostic.provenPenetratingPairs
+  const pair = diagnostic.firstProvenPenetratingPair
+  return validCount(expected)
+    && expected > 0
+    && validCount(proven)
+    && proven > 0
+    && proven <= expected
+    && pair !== null
+    && isCanonicalNonNilUuid(pair.firstFaceId)
+    && isCanonicalNonNilUuid(pair.secondFaceId)
+    && pair.firstFaceId < pair.secondFaceId
 }

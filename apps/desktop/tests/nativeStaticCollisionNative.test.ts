@@ -154,6 +154,85 @@ test('inspection preserves a canonical proven penetrating pair without raw geome
   })
 })
 
+test('inspection accepts a strictly bound positive-thickness penetration reason', async () => {
+  const transport = createNativeStaticCollisionNativeTransport(() => ({
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'proven_positive_thickness_penetration',
+    expectedUnorderedFacePairs: 3,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+    },
+  }))
+
+  const result = await transport.inspect()
+  assert.deepEqual(result.binding, BINDING)
+  assert.equal(
+    result.diagnostic.reason,
+    'proven_positive_thickness_penetration',
+  )
+  assert.equal(result.diagnostic.expectedUnorderedFacePairs, 3)
+  assert.equal(result.diagnostic.provenPenetratingPairs, 1)
+  assert.deepEqual(result.diagnostic.firstProvenPenetratingPair, {
+    firstFaceId: FACE_A,
+    secondFaceId: FACE_B,
+  })
+})
+
+test('positive-thickness penetration rejects every malformed relational contract', async () => {
+  const valid = {
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'proven_positive_thickness_penetration',
+    expectedUnorderedFacePairs: 3,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+    },
+  }
+  const malformed = [
+    { ...valid, binding: null },
+    { ...valid, status: 'certified_nonblocking' },
+    { ...valid, expectedUnorderedFacePairs: null },
+    { ...valid, expectedUnorderedFacePairs: 0 },
+    { ...valid, provenPenetratingPairs: null },
+    { ...valid, provenPenetratingPairs: 0 },
+    { ...valid, provenPenetratingPairs: 4 },
+    { ...valid, firstProvenPenetratingPair: null },
+    {
+      ...valid,
+      firstProvenPenetratingPair: {
+        firstFaceId: FACE_B,
+        secondFaceId: FACE_A,
+      },
+    },
+    {
+      ...valid,
+      firstProvenPenetratingPair: {
+        firstFaceId: FACE_A,
+        secondFaceId: FACE_A,
+      },
+    },
+    {
+      ...valid,
+      firstProvenPenetratingPair: {
+        firstFaceId: 'not-a-face-id',
+        secondFaceId: FACE_B,
+      },
+    },
+    { ...valid, reason: 'proven_positive_volume_overlap' },
+    { ...valid, rawGeometry: 'private' },
+  ]
+
+  for (const value of malformed) {
+    const transport = createNativeStaticCollisionNativeTransport(() => value)
+    await assert.rejects(transport.inspect(), NativeStaticCollisionNativeError)
+  }
+})
+
 test('inspection rejects the retired transversal-only wire contract', async () => {
   const transport = createNativeStaticCollisionNativeTransport(() => ({
     binding: BINDING,

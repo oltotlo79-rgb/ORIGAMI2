@@ -81,10 +81,21 @@ clampし、逐次残量と構造aggregate preflightを共有する。旧exact sn
 共有頂点接触の誤肯定0件、両180度を共面正面積重なり1件として分離した。辺中点山山Vは
 135/179度だけを横断1件、90/91/180度を横断専用経路では判定保留として固定した。
 非三角whole material faceの135度横断もsource順・全rootに依存せず1件となり、
-三角形どうしはCayley dual gateを迂回できない。`-0.0`と正厚はこの肯定経路へ入らない。
-正厚証拠、有限ヒンジcorridor、連続衝突、場所別層順transport、原子的
+三角形どうしはCayley dual gateを迂回できない。`-0.0`はこの肯定経路へ入らない。
+正厚の完全な三角柱証拠、有限ヒンジcorridor、連続衝突、場所別層順transport、原子的
 `ApplyStackedFold`は未完成なので、MUST集計、
 SIM-010の未着手状態、完成率36.9%は変更しない。
+
+2026-07-20追記: 初版正式仕様`centered_mid_surface_v1`では、有限な正厚solidが
+自身の材料中央面を内部に含む。この包含関係を使い、同じissuer-bound poseの
+canonical exact `E`とdirect-lift `F`がともに三角形中央面のstrict transversalを
+証明した場合だけ、正厚でも材料貫通をblocking肯定する限定経路を公開静的衝突入口へ
+接続した。専用reason `proven_positive_thickness_penetration`をdesktop診断と
+赤系の安全認定不可UIへ渡し、厚さ`0.1 / 1 / 3 mm`の辺中点山山Vについて
+135/179度だけを貫通、90/91/180度を証拠不足へ固定した。角起点山谷Vは同じ3厚さと
+片側10度・両45/90/91/135/179/180度の全組で正厚貫通へ誤昇格しない。
+この経路は中央面横断だけの十分条件であり、正厚の共面重なり、境界面接触、
+正体積三角柱SAT、共有ヒンジ、非三角面、有限corridorまたは安全証明を完成させない。
 
 2026-07-19追記: 表示中の完全姿勢をproject instance・project ID・revision・固定面・
 全hinge角度とともにnative current-pose authorityへ適用するproduction commandと、
@@ -206,7 +217,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | VAL-001 | 実装済み | 幾何・topology検証とUI結果表示 |
 | VAL-002 | 部分実装 | 紙内部の単一頂点・ゼロ厚モデルで川崎・前川条件を全頂点へ検証し、対象外・構造遮断・次数上限と両条件の根拠をUI表示。指定山谷の局所十分性、他の局所条件、厚さモデルを残す |
 | VAL-003 | 実装済み | 凸material face対象の`convex_faces_facewise_v1`で、時間制限つきの可・不可・不明3値判定と、証明済みの場所別`facewise_layer_order_v1`をUIから実行・確認できる。厚さ、連続折り経路、対象外形状は保証せず、不明へ分離する |
-| VAL-004 | 部分実装 | 選択1ヒンジの線形CCDでは衝突直前停止と理由表示が動作。加えて表示済みnative姿勢の厚さ`+0.0`について、三角形どうしのdual-gate横断、非三角whole material face横断、180度の共面正面積重なりを厳密診断し、安全認定不可・判定保留を表示する。共有点・共有辺だけの接触は貫通へ昇格しない。native診断自体による連続経路停止、正厚、全3D折り操作経路への適用を残す |
+| VAL-004 | 部分実装 | 選択1ヒンジの線形CCDでは衝突直前停止と理由表示が動作。加えて表示済みnative姿勢では、厚さ`+0.0`のdual-gate横断・非三角whole material face横断・180度共面正面積重なりと、有限な正厚でexact `E/F`の両方が証明した三角形中央面のstrict transversalを厳密診断し、安全認定不可・判定保留を表示する。共有点・共有辺だけの接触は貫通へ昇格しない。native診断自体による連続経路停止、正厚三角柱の完全分類、全3D折り操作経路への適用を残す |
 | VAL-005 | 実装済み | 全体平坦折り判定で1〜300秒の時間制限を選択でき、単調phase・経過時間・上限付き件数を表示する。時間切れは不可でなく不明として返す |
 | VAL-006 | 実装済み | 全体平坦折りpanelから実行中jobを中止でき、協調checkpointと世代照合により中止・再中止・旧job完了を現在結果へ混入させない |
 | VAL-007 | 実装済み | immutable snapshot取得後にproject lockを解放し、native background workerで解析する。編集とUI操作を継続でき、進捗はpollingで受け取る |
@@ -222,11 +233,11 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | SIM-003 | 部分実装 | 3D把持は選択1ヒンジ回転へ限定 |
 | SIM-004 | 実装済み | 固定面選択、reroot、従属面連動 |
 | SIM-005 | 実装済み | 表示厚と判定厚を分離し、正式仕様`centered_mid_surface_v1`で衝突へ反映。有限ヒンジ長を超えるcorridorは層ずらし未再現として判定不能へ退避 |
-| SIM-006 | 部分実装 | 1ヒンジの安全停止・原因表示に加え、同一generationへ束縛したnative静的診断を3D画面へ表示。process-wide RAII worker gate、busy時の全状態無変異、blocking結果のexact B再検証、stale結果のbinding除去を実装し、厚さ`+0.0`の証明済み面貫通・共面正面積重なりを一般化したwire/UIでblocking表示する。native診断は読み取り専用で、全操作経路の適用遮断・巻戻し、正厚には未対応 |
+| SIM-006 | 部分実装 | 1ヒンジの安全停止・原因表示に加え、同一generationへ束縛したnative静的診断を3D画面へ表示。process-wide RAII worker gate、busy時の全状態無変異、blocking結果のexact B再検証、stale結果のbinding除去を実装し、厚さ`+0.0`の証明済み面貫通・共面正面積重なりと、正厚の証明済み中央面横断を専用wire/UIでblocking表示する。native診断は読み取り専用で、全操作経路の適用遮断・巻戻し、正厚三角柱の完全分類には未対応 |
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
-| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。bit-exactな厚さ`+0.0`では、三角形どうしのcanonical exact `E`＋direct-lift `F` dual-gate横断、非三角whole material faceのexact横断、180度のexact共面正面積重なりをnative公開静的入口へblocking専用で接続し、desktop current-pose apply、process-wide worker gate、同generation診断、stale binding除去、一般化したproduction警告UIまで到達した。正厚では有限半径scalar、1ヒンジ・2三角形面限定の共有境界・材料半平面・current共有端点・材料法線・有限軸方向範囲を同じexact poseへ束縛するprivate前提token、および同じ`E/F`の位置・法線差から正厚solidの成分別上限を封印するprivate capabilityまで固定した。さらに2個のexact三角柱の完全閉交差集合を全120平面三つ組から構成し、rank・正体積・対向support facetを有限累積budgetで返すprivate kernel、exact `E`側の全canonical交差頂点を閉じた有限ヒンジ回廊へ包含するprivate能力token、およびdirect-lift `F`側でcanonical affine half-prismへの完全包含・有界性・有限半径を示すC2診断まで完成した。C2は共有端点driftを許容するauthorityではなく、`ContainedUnadmitted`以外の安全認定を発行しない。no-hinge・単一material faceのopaque bootstrapに加え、全ヒンジがbit-exact 180度の多面treeでは、平坦折り判定のexact facewise layer-order snapshotを同じmodel issuer・pose instanceへ再結合し、3面3層、source順不変、ABA・certificate改変拒否まで再検証する観測専用anchorを実装した。どちらもproject mutation権限を持たない。全boundary point/normal/solidを束縛する共有hinge admission、native exact topology margin、正厚の本番証明、共有ヒンジ一般、H64既定上限内の完全成功、native連続衝突、非180度・正厚・連続姿勢へ一般化した多面transport、desktop current guard、層順viewer、原子的`ApplyStackedFold` commandとUIは未実装である。これらの完成前は折り重ねUIへ着手しない |
+| SIM-010 | 未着手 | 現在3D状態の一直線による複数層一括折り、層別山谷線の展開図追加、1 step記録を未実装。先行条件として、衝突分類v1/v2の全組合せ表と共通corpus、private layer-order capability、current pose certificate/generation失効、tree kinematics、認証済みexact境界・三角形分割・全pair coverage・共有関係分類、有理Cayley tree poseと有限資源meterまで完成した。bit-exactな厚さ`+0.0`では、三角形どうしのcanonical exact `E`＋direct-lift `F` dual-gate横断、非三角whole material faceのexact横断、180度のexact共面正面積重なりをnative公開静的入口へblocking専用で接続し、desktop current-pose apply、process-wide worker gate、同generation診断、stale binding除去、一般化したproduction警告UIまで到達した。有限な正厚でも、同じ`E/F`のstrictな三角形中央面横断を材料貫通の十分条件として専用のblocking reasonと警告UIへ接続した。正厚ではこのほか、有限半径scalar、1ヒンジ・2三角形面限定の共有境界・材料半平面・current共有端点・材料法線・有限軸方向範囲を同じexact poseへ束縛するprivate前提token、および同じ`E/F`の位置・法線差から正厚solidの成分別上限を封印するprivate capabilityまで固定した。さらに2個のexact三角柱の完全閉交差集合を全120平面三つ組から構成し、rank・正体積・対向support facetを有限累積budgetで返すprivate kernel、exact `E`側の全canonical交差頂点を閉じた有限ヒンジ回廊へ包含するprivate能力token、およびdirect-lift `F`側でcanonical affine half-prismへの完全包含・有界性・有限半径を示すC2診断まで完成した。C2は共有端点driftを許容するauthorityではなく、`ContainedUnadmitted`以外の安全認定を発行しない。no-hinge・単一material faceのopaque bootstrapに加え、全ヒンジがbit-exact 180度の多面treeでは、平坦折り判定のexact facewise layer-order snapshotを同じmodel issuer・pose instanceへ再結合し、3面3層、source順不変、ABA・certificate改変拒否まで再検証する観測専用anchorを実装した。どちらもproject mutation権限を持たない。全boundary point/normal/solidを束縛する共有hinge admission、native exact topology margin、正厚三角柱の共面・境界面・正体積を含む完全な本番分類、共有ヒンジ一般、H64既定上限内の完全成功、native連続衝突、非180度・正厚・連続姿勢へ一般化した多面transport、desktop current guard、層順viewer、原子的`ApplyStackedFold` commandとUIは未実装である。これらの完成前は折り重ねUIへ着手しない |
 
 ## 折り手順
 

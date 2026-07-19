@@ -79,15 +79,19 @@ pub(super) enum CurrentStaticCollisionDiagnosticStatus {
 pub(super) enum CurrentStaticCollisionDiagnosticReason {
     #[serde(rename = "proven_zero_thickness_penetration")]
     ProvenTransversalPenetration,
+    ProvenPositiveThicknessPenetration,
     EvidenceUnavailable,
     ResourceLimitExceeded,
     InconsistentState,
     PoseAuthorityUnavailable,
 }
 
-/// Canonically ordered identity of the first proven zero-thickness
-/// penetrating face pair. This includes transversal crossing and coplanar
-/// positive-area overlap, but never point/line/shared-feature contact.
+/// Canonically ordered identity of the first proven penetrating face pair.
+///
+/// For positive paper thickness this is only an issuer-bound exact-E and
+/// direct-lift-F mid-surface transversal. For zero thickness it may also be a
+/// coplanar positive-area overlap. It is never point/line/shared-point
+/// contact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CurrentStaticCollisionFacePair {
@@ -406,6 +410,23 @@ fn diagnostic_response_from_error(
                 reason: Some(CurrentStaticCollisionDiagnosticReason::ProvenTransversalPenetration),
                 expected_unordered_face_pairs: Some(expected_unordered_face_pairs),
                 proven_transversal_pairs: Some(proven_transversal_pairs),
+                first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
+                    first_face_id,
+                    second_face_id,
+                }),
+            },
+            StaticCollisionError::ProvenPositiveThicknessPenetration {
+                expected_unordered_face_pairs,
+                proven_positive_thickness_pairs,
+                first_proven_positive_thickness_pair: [first_face_id, second_face_id],
+            } => CurrentStaticCollisionDiagnosticResponse {
+                binding,
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(
+                    CurrentStaticCollisionDiagnosticReason::ProvenPositiveThicknessPenetration,
+                ),
+                expected_unordered_face_pairs: Some(expected_unordered_face_pairs),
+                proven_transversal_pairs: Some(proven_positive_thickness_pairs),
                 first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
                     first_face_id,
                     second_face_id,
@@ -746,6 +767,12 @@ mod tests {
     }
 
     fn midpoint_mountain_400mm_project() -> (ProjectState, [EdgeId; 2]) {
+        midpoint_mountain_400mm_project_with_thickness(0.0)
+    }
+
+    fn midpoint_mountain_400mm_project_with_thickness(
+        thickness_mm: f64,
+    ) -> (ProjectState, [EdgeId; 2]) {
         let coordinates = [
             (0.0, 0.0),
             (200.0, 0.0),
@@ -787,7 +814,7 @@ mod tests {
         let pattern = CreasePattern { vertices, edges };
         let paper = Paper {
             boundary_vertices: boundary,
-            thickness_mm: 0.0,
+            thickness_mm,
             ..Paper::default()
         };
         (ProjectState::new_with_paper(pattern, paper), hinges)
@@ -1447,6 +1474,92 @@ mod tests {
                 "raw internal field leaked: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn positive_thickness_mid_surface_transversal_has_a_distinct_redacted_reason() {
+        let (project, hinges) = midpoint_mountain_400mm_project_with_thickness(1.0);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .expect("three-face midpoint topology")
+            .clone();
+        let mut complete_hinge_angles = hinges
+            .into_iter()
+            .map(|edge_id| NativePoseHingeAngleRequest {
+                edge_id,
+                angle_degrees: 135.0,
+            })
+            .collect::<Vec<_>>();
+        complete_hinge_angles.sort_by_key(|angle| angle.edge_id.canonical_bytes());
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(topology.faces[0].id),
+            complete_hinge_angles,
+        };
+        let state = AppState::new(project);
+        let applied = tauri::async_runtime::block_on(
+            crate::applied_pose::apply_current_native_pose(&state, request),
+        )
+        .expect("production native-pose adoption");
+        let expected_pair = {
+            let capability = capture_current_pose_capability(&state)
+                .expect("capture")
+                .expect("current production pose");
+            only_non_hinge_face_pair(capability.claims.model.as_ref())
+        };
+
+        let error = match certify_current_static_collision(&state, StaticCollisionLimits::default())
+        {
+            Ok(_) => panic!("positive-thickness transversal must block certificate C"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            CurrentStaticCollisionError::GeometryBlocking(
+                StaticCollisionError::ProvenPositiveThicknessPenetration {
+                    expected_unordered_face_pairs: 3,
+                    proven_positive_thickness_pairs: 1,
+                    first_proven_positive_thickness_pair: expected_pair,
+                },
+            )
+        );
+
+        let diagnosis = tauri::async_runtime::block_on(
+            inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
+        )
+        .expect("redacted positive-thickness diagnosis");
+        assert_eq!(
+            diagnosis,
+            CurrentStaticCollisionDiagnosticResponse {
+                binding: Some(applied.binding),
+                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
+                reason: Some(
+                    CurrentStaticCollisionDiagnosticReason::ProvenPositiveThicknessPenetration,
+                ),
+                expected_unordered_face_pairs: Some(3),
+                proven_transversal_pairs: Some(1),
+                first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
+                    first_face_id: expected_pair[0],
+                    second_face_id: expected_pair[1],
+                }),
+            }
+        );
+        let encoded = serde_json::to_value(diagnosis).expect("serialize diagnosis");
+        assert_eq!(encoded["reason"], "proven_positive_thickness_penetration");
+        assert_eq!(encoded["provenPenetratingPairs"], 1);
+        assert_eq!(
+            encoded["firstProvenPenetratingPair"]["firstFaceId"],
+            serde_json::to_value(expected_pair[0]).expect("serialize first face")
+        );
+        assert_eq!(
+            encoded["firstProvenPenetratingPair"]["secondFaceId"],
+            serde_json::to_value(expected_pair[1]).expect("serialize second face")
+        );
     }
 
     #[test]

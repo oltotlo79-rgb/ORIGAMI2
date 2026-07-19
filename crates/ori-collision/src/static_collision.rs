@@ -24,11 +24,12 @@ pub const CENTERED_MID_SURFACE_THICKNESS_MODEL_V1: &str = "centered_mid_surface_
 /// First opaque native static-collision geometry-proof format.
 ///
 /// Version 1 admits only the complete zero-pair proof for a no-hinge,
-/// single-material-face pose. Exact zero-thickness multi-face diagnostics now
-/// authenticate and scan every face and triangle pair, but every valid
+/// single-material-face pose. Exact multi-face diagnostics now authenticate
+/// and scan every mid-surface face and triangle pair, but every valid
 /// multi-face material tree contains a shared hinge. That pair remains
 /// blocking until canonical watertight shared-feature geometry and its finite
-/// hinge model exist. Positive-thickness pairs are also still blocking. The
+/// hinge model exist. A strict mid-surface transversal may now provide a
+/// distinct positive-thickness blocking reason, but cannot issue a proof. The
 /// public success set therefore has not expanded and the proof identifier
 /// remains V1.
 ///
@@ -146,6 +147,23 @@ pub enum StaticCollisionError {
         /// This is geometry identity only. It contains no coordinates,
         /// transforms, arithmetic evidence, or internal diagnostic text.
         first_proven_transversal_pair: [FaceId; 2],
+    },
+    #[error(
+        "static collision proved {proven_positive_thickness_pairs} positive-thickness penetrating face pairs among {expected_unordered_face_pairs} unordered face pairs"
+    )]
+    /// Blocking positive-thickness penetration diagnostic.
+    ///
+    /// Under [`CENTERED_MID_SURFACE_THICKNESS_MODEL_V1`], every finite
+    /// positive-thickness solid contains its material mid-surface. This
+    /// diagnostic is issued only when the existing issuer-bound exact-E and
+    /// direct-lift-F dual gate proves a strict transversal of those
+    /// mid-surfaces. Finite-prism overlap, coplanar area, touching and every
+    /// unresolved result remain insufficient.
+    ProvenPositiveThicknessPenetration {
+        expected_unordered_face_pairs: usize,
+        proven_positive_thickness_pairs: usize,
+        /// First proven pair in canonical `FaceId` byte order.
+        first_proven_positive_thickness_pair: [FaceId; 2],
     },
 }
 
@@ -266,9 +284,12 @@ impl NativeStaticCollisionGeometryProof {
 ///
 /// The current implementation intentionally succeeds only for the complete
 /// zero-pair case: exactly one material face and no material hinge. A
-/// zero-thickness multi-face pose runs authenticated whole-face diagnostics,
-/// but returns a blocking error at penetration, indeterminate evidence or the
-/// mandatory shared-hinge pair. Positive-thickness pairs remain blocking.
+/// multi-face pose runs authenticated whole-face mid-surface diagnostics, but
+/// returns a blocking error at penetration, indeterminate evidence or the
+/// mandatory shared-hinge pair. For finite positive thickness, the existing
+/// exact-E and direct-lift-F strict transversal is used only as a sufficient
+/// condition for a distinct blocking penetration reason. It never expands the
+/// collision-free proof set.
 ///
 /// Static `Touching` is admissible only as evidence of zero penetration at
 /// this exact pose. Continuous fold execution must still stop at its first
@@ -315,12 +336,6 @@ pub fn prove_static_collision_geometry(
         if pose.face_transform(face).is_none() {
             return Err(StaticCollisionError::InconsistentMaterialPose);
         }
-    }
-
-    if paper_thickness_mm > 0.0 && expected_unordered_face_pairs > 0 {
-        return Err(StaticCollisionError::PairEvidenceUnavailable {
-            expected_unordered_face_pairs,
-        });
     }
 
     if expected_unordered_face_pairs == 0 {
@@ -418,7 +433,9 @@ pub fn prove_static_collision_geometry(
             first_proven_transversal_pair: [first, second],
         });
     }
-    let transversal_limits = (paper_thickness_mm.to_bits() == 0.0_f64.to_bits())
+    let is_positive_zero = paper_thickness_mm.to_bits() == 0.0_f64.to_bits();
+    let is_positive_thickness = paper_thickness_mm > 0.0;
+    let transversal_limits = (is_positive_zero || is_positive_thickness)
         .then(|| remaining_proven_transversal_scan_limits(limits, analysis.work()))
         .transpose()?;
     // The legacy diagnostic owns its complete exact face geometry. Release it
@@ -431,7 +448,11 @@ pub fn prove_static_collision_geometry(
             scan_bound_pose_for_proven_transversal_penetration(bound, transversal_limits).map_err(
                 |error| map_proven_transversal_scan_error(error, expected_unordered_face_pairs),
             )?;
-        return finish_proven_transversal_scan(transversal, expected_unordered_face_pairs);
+        return if is_positive_thickness {
+            finish_proven_positive_thickness_scan(transversal, expected_unordered_face_pairs)
+        } else {
+            finish_proven_transversal_scan(transversal, expected_unordered_face_pairs)
+        };
     }
     Err(StaticCollisionError::PairEvidenceUnavailable {
         expected_unordered_face_pairs,
@@ -508,16 +529,7 @@ fn finish_proven_transversal_scan(
     scan: ProvenTransversalScanSummary,
     expected_unordered_face_pairs: usize,
 ) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
-    let first_pair_is_canonical = scan
-        .first_proven_transversal_pair
-        .is_none_or(|(first, second)| first.canonical_bytes() < second.canonical_bytes());
-    if scan.enumerated_pairs != expected_unordered_face_pairs
-        || scan.proven_transversal_pairs > scan.enumerated_pairs
-        || (scan.proven_transversal_pairs == 0) != scan.first_proven_transversal_pair.is_none()
-        || !first_pair_is_canonical
-    {
-        return Err(StaticCollisionError::InconsistentMaterialPose);
-    }
+    validate_proven_transversal_scan(&scan, expected_unordered_face_pairs)?;
     if scan.proven_transversal_pairs > 0 {
         let (first, second) = scan
             .first_proven_transversal_pair
@@ -531,6 +543,43 @@ fn finish_proven_transversal_scan(
     Err(StaticCollisionError::PairEvidenceUnavailable {
         expected_unordered_face_pairs,
     })
+}
+
+fn finish_proven_positive_thickness_scan(
+    scan: ProvenTransversalScanSummary,
+    expected_unordered_face_pairs: usize,
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    validate_proven_transversal_scan(&scan, expected_unordered_face_pairs)?;
+    if scan.proven_transversal_pairs > 0 {
+        let (first, second) = scan
+            .first_proven_transversal_pair
+            .ok_or(StaticCollisionError::InconsistentMaterialPose)?;
+        return Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
+            expected_unordered_face_pairs,
+            proven_positive_thickness_pairs: scan.proven_transversal_pairs,
+            first_proven_positive_thickness_pair: [first, second],
+        });
+    }
+    Err(StaticCollisionError::PairEvidenceUnavailable {
+        expected_unordered_face_pairs,
+    })
+}
+
+fn validate_proven_transversal_scan(
+    scan: &ProvenTransversalScanSummary,
+    expected_unordered_face_pairs: usize,
+) -> Result<(), StaticCollisionError> {
+    let first_pair_is_canonical = scan
+        .first_proven_transversal_pair
+        .is_none_or(|(first, second)| first.canonical_bytes() < second.canonical_bytes());
+    if scan.enumerated_pairs != expected_unordered_face_pairs
+        || scan.proven_transversal_pairs > scan.enumerated_pairs
+        || (scan.proven_transversal_pairs == 0) != scan.first_proven_transversal_pair.is_none()
+        || !first_pair_is_canonical
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -793,7 +842,8 @@ mod tests {
     use super::{
         ProvenTransversalScanError, ProvenTransversalScanSummary, StaticCollisionError,
         StaticCollisionLimits, UnorderedFacePairs, ZeroThicknessAnalysisWork,
-        ZeroThicknessPairRecord, checked_unordered_pair_count, finish_proven_transversal_scan,
+        ZeroThicknessPairRecord, checked_unordered_pair_count,
+        finish_proven_positive_thickness_scan, finish_proven_transversal_scan,
         legacy_dispatch_proves_zero_thickness_penetration, map_proven_transversal_scan_error,
         remaining_proven_transversal_scan_limits, scan_zero_thickness_pair_records,
     };
@@ -1026,6 +1076,22 @@ mod tests {
             }
         );
         assert_eq!(
+            finish_proven_positive_thickness_scan(
+                ProvenTransversalScanSummary {
+                    enumerated_pairs: 3,
+                    proven_transversal_pairs: 1,
+                    first_proven_transversal_pair: Some((proven_pair[0], proven_pair[1])),
+                },
+                3,
+            )
+            .expect_err("positive-thickness affirmative pair remains blocking"),
+            StaticCollisionError::ProvenPositiveThicknessPenetration {
+                expected_unordered_face_pairs: 3,
+                proven_positive_thickness_pairs: 1,
+                first_proven_positive_thickness_pair: proven_pair,
+            }
+        );
+        assert_eq!(
             finish_proven_transversal_scan(
                 ProvenTransversalScanSummary {
                     enumerated_pairs: 3,
@@ -1035,6 +1101,20 @@ mod tests {
                 3,
             )
             .expect_err("zero affirmative pairs retain unavailable evidence"),
+            StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs: 3,
+            }
+        );
+        assert_eq!(
+            finish_proven_positive_thickness_scan(
+                ProvenTransversalScanSummary {
+                    enumerated_pairs: 3,
+                    proven_transversal_pairs: 0,
+                    first_proven_transversal_pair: None,
+                },
+                3,
+            )
+            .expect_err("zero positive-thickness pairs retain unavailable evidence"),
             StaticCollisionError::PairEvidenceUnavailable {
                 expected_unordered_face_pairs: 3,
             }
@@ -1064,6 +1144,11 @@ mod tests {
             assert_eq!(
                 finish_proven_transversal_scan(summary, 3)
                     .expect_err("inconsistent affirmative summary"),
+                StaticCollisionError::InconsistentMaterialPose
+            );
+            assert_eq!(
+                finish_proven_positive_thickness_scan(summary, 3)
+                    .expect_err("positive-thickness summary uses the same validation"),
                 StaticCollisionError::InconsistentMaterialPose
             );
         }

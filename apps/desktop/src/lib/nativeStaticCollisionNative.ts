@@ -445,6 +445,14 @@ function diagnosticContractIsValid(
       && proven <= expected
       && pair !== null
   }
+  if (reason === 'proven_positive_thickness_penetration') {
+    return expected !== null
+      && expected > 0
+      && proven !== null
+      && proven > 0
+      && proven <= expected
+      && pair !== null
+  }
   if (reason === 'evidence_unavailable') {
     return expected !== null
       && expected > 0
@@ -509,6 +517,7 @@ function isDiagnosticReason(
 ): value is CurrentStaticCollisionDiagnosticReason | null {
   return value === null
     || value === 'proven_zero_thickness_penetration'
+    || value === 'proven_positive_thickness_penetration'
     || value === 'evidence_unavailable'
     || value === 'resource_limit_exceeded'
     || value === 'inconsistent_state'

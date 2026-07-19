@@ -110,6 +110,43 @@ describe('NativeStaticCollisionBadge', () => {
     )
   })
 
+  it('renders proven positive-thickness material penetration with the existing red blocking class', () => {
+    render(
+      <NativeStaticCollisionBadge
+        state={{
+          kind: 'ready',
+          diagnostic: {
+            status: 'blocking',
+            reason: 'proven_positive_thickness_penetration',
+            expectedUnorderedFacePairs: 3,
+            provenPenetratingPairs: 1,
+            firstProvenPenetratingPair: {
+              firstFaceId: '00000000-0000-4000-8000-000000000001',
+              secondFaceId: '00000000-0000-4000-8000-000000000002',
+            },
+          },
+        }}
+      />,
+    )
+
+    const badge = screen.getByRole('alert')
+    assert.match(badge.className, /(?:^|\s)is-blocked(?:\s|$)/u)
+    assert.equal(badge.getAttribute('data-native-collision-status'), 'penetrating')
+    assert.equal(badge.getAttribute('data-collision-risk'), 'blocking')
+    assert.equal(badge.getAttribute('aria-live'), 'assertive')
+    assert.equal(
+      badge.textContent,
+      '厳密判定｜紙厚を含む材料貫通 1・安全認定不可',
+    )
+    const accessible =
+      '現在の表示姿勢で紙厚を含む材料の貫通1件を厳密証明したため、安全認定を遮断しました。'
+    assert.equal(badge.getAttribute('title'), accessible)
+    assert.equal(
+      badge.getAttribute('aria-label'),
+      `native厳密衝突判定。${accessible}`,
+    )
+  })
+
   it('does not hide an unavailable result', () => {
     render(
       <NativeStaticCollisionBadge

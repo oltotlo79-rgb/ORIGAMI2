@@ -1,3 +1,5 @@
+import type { Locale } from './i18n.ts'
+
 export const FOLD_ASSIGNMENT_CODES = ['M', 'V', 'F', 'U', 'C', 'J'] as const
 
 export type FoldAssignmentCode = (typeof FOLD_ASSIGNMENT_CODES)[number]
@@ -83,8 +85,41 @@ const ASSIGNMENT_LABELS: Readonly<Record<FoldAssignmentCode | 'B', string>> = {
   J: 'J · 面の結合',
 }
 
-export function foldAssignmentLabel(assignment: FoldAssignmentCode | 'B') {
-  return ASSIGNMENT_LABELS[assignment]
+const ENGLISH_ASSIGNMENT_LABELS:
+Readonly<Record<FoldAssignmentCode | 'B', string>> = {
+  B: 'B · Paper boundary',
+  M: 'M · Mountain fold',
+  V: 'V · Valley fold',
+  F: 'F · Flat crease',
+  U: 'U · Unassigned',
+  C: 'C · Cut or slit',
+  J: 'J · Face join',
+}
+
+const ENGLISH_TARGET_LABELS: Readonly<Record<FoldImportTarget, string>> = {
+  mountain: 'Mountain fold',
+  valley: 'Valley fold',
+  auxiliary: 'Auxiliary line',
+  cut: 'Cut line',
+  ignore: 'Do not import',
+}
+
+export function foldAssignmentLabel(
+  assignment: FoldAssignmentCode | 'B',
+  locale: Locale = 'ja',
+) {
+  return locale === 'ja'
+    ? ASSIGNMENT_LABELS[assignment]
+    : ENGLISH_ASSIGNMENT_LABELS[assignment]
+}
+
+export function foldImportTargetLabel(
+  target: FoldImportTarget,
+  locale: Locale = 'ja',
+) {
+  if (locale === 'en') return ENGLISH_TARGET_LABELS[target]
+  return FOLD_IMPORT_TARGET_OPTIONS.find((option) => option.value === target)
+    ?.label ?? target
 }
 
 export function foldImportTargetOptions(assignment: FoldAssignmentCode) {

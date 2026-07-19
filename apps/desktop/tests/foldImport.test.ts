@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  foldAssignmentLabel,
+  foldImportTargetLabel,
   foldImportTargetOptions,
   foldPreviewBounds,
   initialFoldImportMapping,
@@ -53,6 +55,12 @@ test('FOLD assignment targets preserve direct meanings and constrain lossy choic
   ])
   assert.equal(isAllowedFoldImportTarget('F', 'mountain'), false)
   assert.equal(isAllowedFoldImportTarget('U', 'mountain'), true)
+  assert.equal(foldAssignmentLabel('B'), 'B · 用紙境界')
+  assert.equal(foldAssignmentLabel('B', 'en'), 'B · Paper boundary')
+  assert.equal(foldAssignmentLabel('J', 'en'), 'J · Face join')
+  assert.equal(foldImportTargetLabel('auxiliary'), '補助線')
+  assert.equal(foldImportTargetLabel('auxiliary', 'en'), 'Auxiliary line')
+  assert.equal(foldImportTargetLabel('ignore', 'en'), 'Do not import')
 })
 
 test('invalid or missing mappings remain unresolved', () => {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   foldAssignmentLabel,
   foldImportTargetOptions,
+  foldImportTargetLabel,
   foldPreviewBounds,
   initialFoldImportMapping,
   isValidFoldImportName,
@@ -12,6 +13,7 @@ import {
   type FoldImportSettings,
   type FoldImportTarget,
 } from '../lib/foldImport'
+import { useLocale } from '../lib/i18n.ts'
 
 type FoldImportDialogProps = Readonly<{
   preview: FoldImportPreview
@@ -28,6 +30,88 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+const FOLD_IMPORT_COPY = {
+  ja: {
+    eyebrow: 'FOLD 1.0–1.2 取込',
+    title: '線種と縮尺を確認',
+    close: '閉じる',
+    description:
+      '元のFOLDファイルは変更しません。確認後、編集可能な未保存プロジェクトとして取り込みます。',
+    preview: '取り込む展開図のプレビュー',
+    previewUnavailable: 'プレビューを表示できません。',
+    previewTruncated: '表示用に一部の線だけを描画しています。',
+    metadata: {
+      file: 'ファイル',
+      specification: '仕様',
+      unit: '単位',
+      geometry: '形状',
+      boundary: '境界',
+    },
+    unspecified: '記載なし',
+    vertexUnit: '頂点',
+    edgeUnit: '辺',
+    name: '作品名',
+    invalidName: '制御文字を含まない120文字以内の名前が必要です。',
+    scale: '1 FOLD単位の長さ',
+    missingScale: '単位情報がないため、実寸への換算値を指定してください。',
+    sourceUnit: '元の単位',
+    convertedScale: 'から換算した値です。必要なら変更できます。',
+    mappingTitle: '線種の割当',
+    mappingDescription:
+      'F・U・JはORIGAMI2に同じ意味の線種がないため、用途を明示的に選んでください。',
+    lineUnit: '本',
+    boundaryFixed: '用紙境界（固定）',
+    assignmentSuffix: 'の割当',
+    select: '選択してください',
+    unresolved: '未選択',
+    warningTitle: '取り込まれない情報',
+    acknowledge: '上記を確認し、展開図として取り込む',
+    cancel: 'キャンセル',
+    importing: '取込中…',
+    import: '取り込む',
+  },
+  en: {
+    eyebrow: 'Import FOLD 1.0–1.2',
+    title: 'Review line types and scale',
+    close: 'Close',
+    description:
+      'The source FOLD file is not modified. After review, it is imported as an editable unsaved project.',
+    preview: 'Preview of the crease pattern to import',
+    previewUnavailable: 'The preview is unavailable.',
+    previewTruncated: 'Only a subset of lines is drawn in this preview.',
+    metadata: {
+      file: 'File',
+      specification: 'Specification',
+      unit: 'Unit',
+      geometry: 'Geometry',
+      boundary: 'Boundary',
+    },
+    unspecified: 'Not specified',
+    vertexUnit: 'vertices',
+    edgeUnit: 'edges',
+    name: 'Work name',
+    invalidName: 'Enter a name of at most 120 characters without control characters.',
+    scale: 'Length of 1 FOLD unit',
+    missingScale:
+      'No unit metadata is available. Enter a conversion to real-world size.',
+    sourceUnit: 'source unit',
+    convertedScale: ' conversion. Change it if needed.',
+    mappingTitle: 'Line type mapping',
+    mappingDescription:
+      'F, U, and J have no directly equivalent ORIGAMI2 line type. Explicitly choose how to use them.',
+    lineUnit: 'lines',
+    boundaryFixed: 'Paper boundary (fixed)',
+    assignmentSuffix: ' mapping',
+    select: 'Select a mapping',
+    unresolved: 'Not selected',
+    warningTitle: 'Information that will not be imported',
+    acknowledge: 'I have reviewed the above and want to import the crease pattern',
+    cancel: 'Cancel',
+    importing: 'Importing…',
+    import: 'Import',
+  },
+} as const
+
 export function FoldImportDialog({
   preview,
   busy,
@@ -35,6 +119,9 @@ export function FoldImportDialog({
   onCancel,
   onImport,
 }: FoldImportDialogProps) {
+  const locale = useLocale()
+  const copy = FOLD_IMPORT_COPY[locale]
+  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   const [name, setName] = useState(preview.suggested_name)
   const [scaleInput, setScaleInput] = useState(
     preview.default_mm_per_unit === null ? '' : String(preview.default_mm_per_unit),
@@ -118,15 +205,15 @@ export function FoldImportDialog({
       >
         <header>
           <div>
-            <span className="dialog-eyebrow">FOLD 1.0–1.2 取込</span>
-            <h2 id="fold-import-title">線種と縮尺を確認</h2>
+            <span className="dialog-eyebrow">{copy.eyebrow}</span>
+            <h2 id="fold-import-title">{copy.title}</h2>
           </div>
           <button
             type="button"
             className="dialog-close"
             disabled={busy}
             onClick={onCancel}
-            aria-label="閉じる"
+            aria-label={copy.close}
           >
             ×
           </button>
@@ -134,7 +221,7 @@ export function FoldImportDialog({
 
         <div className="fold-import-dialog-body">
           <p id="fold-import-description" className="dialog-note">
-            元のFOLDファイルは変更しません。確認後、編集可能な未保存プロジェクトとして取り込みます。
+            {copy.description}
           </p>
 
           <div className="fold-import-overview">
@@ -143,7 +230,7 @@ export function FoldImportDialog({
                 <svg
                   viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
                   role="img"
-                  aria-label="取り込む展開図のプレビュー"
+                  aria-label={copy.preview}
                   preserveAspectRatio="xMidYMid meet"
                 >
                   {preview.preview_edges.map((edge, index) => {
@@ -164,27 +251,48 @@ export function FoldImportDialog({
                   })}
                 </svg>
               ) : (
-                <p>プレビューを表示できません。</p>
+                <p>{copy.previewUnavailable}</p>
               )}
               {preview.preview_truncated && (
-                <span>表示用に一部の線だけを描画しています。</span>
+                <span>{copy.previewTruncated}</span>
               )}
             </div>
             <dl className="fold-import-metadata">
-              <div><dt>ファイル</dt><dd>{preview.file_name}</dd></div>
-              <div><dt>仕様</dt><dd>{preview.file_spec ?? '記載なし'}</dd></div>
-              <div><dt>単位</dt><dd>{preview.frame_unit ?? '記載なし'}</dd></div>
+              <div><dt>{copy.metadata.file}</dt><dd>{preview.file_name}</dd></div>
               <div>
-                <dt>形状</dt>
-                <dd>{preview.vertex_count.toLocaleString()}頂点・{preview.edge_count.toLocaleString()}辺</dd>
+                <dt>{copy.metadata.specification}</dt>
+                <dd>{preview.file_spec ?? copy.unspecified}</dd>
               </div>
-              <div><dt>境界</dt><dd>{preview.boundary_edge_count.toLocaleString()}辺</dd></div>
+              <div>
+                <dt>{copy.metadata.unit}</dt>
+                <dd>{preview.frame_unit ?? copy.unspecified}</dd>
+              </div>
+              <div>
+                <dt>{copy.metadata.geometry}</dt>
+                <dd>
+                  {preview.vertex_count.toLocaleString(numberLocale)}
+                  {locale === 'ja' ? `${copy.vertexUnit}・` : ` ${copy.vertexUnit} · `}
+                  {preview.edge_count.toLocaleString(numberLocale)}
+                  {locale === 'ja' ? copy.edgeUnit : ` ${copy.edgeUnit}`}
+                </dd>
+              </div>
+              <div>
+                <dt>{copy.metadata.boundary}</dt>
+                <dd>
+                  {preview.boundary_edge_count.toLocaleString(numberLocale)}
+                  {locale === 'ja'
+                    ? copy.edgeUnit
+                    : preview.boundary_edge_count === 1
+                      ? ' edge'
+                      : ` ${copy.edgeUnit}`}
+                </dd>
+              </div>
             </dl>
           </div>
 
           <div className="fold-import-fields">
             <label className="dialog-field">
-              <span>作品名</span>
+              <span>{copy.name}</span>
               <input
                 ref={nameInputRef}
                 value={name}
@@ -196,12 +304,12 @@ export function FoldImportDialog({
               />
               {!nameIsValid && (
                 <small id="fold-import-name-help">
-                  制御文字を含まない120文字以内の名前が必要です。
+                  {copy.invalidName}
                 </small>
               )}
             </label>
             <label className="dialog-field">
-              <span>1 FOLD単位の長さ</span>
+              <span>{copy.scale}</span>
               <span className="number-with-unit">
                 <input
                   value={scaleInput}
@@ -218,28 +326,42 @@ export function FoldImportDialog({
               </span>
               <small id="fold-import-scale-help">
                 {preview.default_mm_per_unit === null
-                  ? '単位情報がないため、実寸への換算値を指定してください。'
-                  : `${preview.frame_unit ?? '元の単位'}から換算した値です。必要なら変更できます。`}
+                  ? copy.missingScale
+                  : `${preview.frame_unit ?? copy.sourceUnit}${copy.convertedScale}`}
               </small>
             </label>
           </div>
 
           <section className="fold-import-mapping" aria-labelledby="fold-import-mapping-title">
-            <h3 id="fold-import-mapping-title">線種の割当</h3>
+            <h3 id="fold-import-mapping-title">{copy.mappingTitle}</h3>
             <p>
-              F・U・JはORIGAMI2に同じ意味の線種がないため、用途を明示的に選んでください。
+              {copy.mappingDescription}
             </p>
             <div className="fold-import-mapping-list">
               {preview.assignments.map(({ assignment, count }) => (
                 <label key={assignment}>
-                  <span>{foldAssignmentLabel(assignment)} <b>{count.toLocaleString()}本</b></span>
+                  <span>
+                    {foldAssignmentLabel(assignment, locale)}{' '}
+                    <b>
+                      {count.toLocaleString(numberLocale)}
+                      {locale === 'ja'
+                        ? copy.lineUnit
+                        : count === 1
+                          ? ' line'
+                          : ` ${copy.lineUnit}`}
+                    </b>
+                  </span>
                   {assignment === 'B' ? (
-                    <span className="fold-import-fixed-mapping">用紙境界（固定）</span>
+                    <span className="fold-import-fixed-mapping">
+                      {copy.boundaryFixed}
+                    </span>
                   ) : (
                     <select
                       value={mapping[assignment] ?? ''}
                       disabled={busy}
-                      aria-label={`${foldAssignmentLabel(assignment)}の割当`}
+                      aria-label={
+                        `${foldAssignmentLabel(assignment, locale)}${copy.assignmentSuffix}`
+                      }
                       onChange={(event) => {
                         const value = event.target.value as FoldImportTarget | ''
                         setMapping((current) => ({
@@ -248,9 +370,11 @@ export function FoldImportDialog({
                         }))
                       }}
                     >
-                      <option value="">選択してください</option>
+                      <option value="">{copy.select}</option>
                       {foldImportTargetOptions(assignment).map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
+                        <option key={option.value} value={option.value}>
+                          {foldImportTargetLabel(option.value, locale)}
+                        </option>
                       ))}
                     </select>
                   )}
@@ -259,14 +383,17 @@ export function FoldImportDialog({
             </div>
             {unresolved.length > 0 && (
               <p className="fold-import-attention" role="status">
-                未選択: {unresolved.map(foldAssignmentLabel).join('、')}
+                {copy.unresolved}:{' '}
+                {unresolved
+                  .map((assignment) => foldAssignmentLabel(assignment, locale))
+                  .join(locale === 'ja' ? '、' : ', ')}
               </p>
             )}
           </section>
 
           {preview.warnings.length > 0 && (
             <section className="fold-import-warnings" aria-labelledby="fold-import-warnings-title">
-              <h3 id="fold-import-warnings-title">取り込まれない情報</h3>
+              <h3 id="fold-import-warnings-title">{copy.warningTitle}</h3>
               <ul>
                 {preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
               </ul>
@@ -277,7 +404,7 @@ export function FoldImportDialog({
                   disabled={busy}
                   onChange={(event) => setWarningsAcknowledged(event.target.checked)}
                 />
-                上記を確認し、展開図として取り込む
+                {copy.acknowledge}
               </label>
             </section>
           )}
@@ -286,9 +413,11 @@ export function FoldImportDialog({
         </div>
 
         <footer>
-          <button type="button" disabled={busy} onClick={onCancel}>キャンセル</button>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            {copy.cancel}
+          </button>
           <button type="button" className="primary" disabled={!canImport} onClick={submit}>
-            {busy ? '取込中…' : '取り込む'}
+            {busy ? copy.importing : copy.import}
           </button>
         </footer>
       </section>

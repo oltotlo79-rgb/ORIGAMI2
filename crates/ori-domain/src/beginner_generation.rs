@@ -9,6 +9,9 @@ pub const MAX_BEGINNER_ALLOWED_TECHNIQUES_V1: usize = 8;
 pub const MAX_BEGINNER_TARGET_PART_RECORDS_V1: usize = 7;
 pub const MAX_BEGINNER_TARGET_PART_COUNT_V1: u8 = 8;
 pub const MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32;
+pub const MAX_BEGINNER_SKELETON_SEGMENTS_V1: usize = 64;
+pub const MAX_BEGINNER_SKELETON_COORDINATE_TENTHS_MM_V1: i32 = 100_000;
+pub const MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1: u16 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +60,22 @@ pub struct BeginnerTargetPartRecordV1 {
     pub count: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSkeletonPointV1 {
+    pub x_tenths_mm: i32,
+    pub y_tenths_mm: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSkeletonSegmentV1 {
+    pub id: u16,
+    pub start: BeginnerSkeletonPointV1,
+    pub end: BeginnerSkeletonPointV1,
+    pub thickness_tenths_mm: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginnerGenerationConstraintsV1 {
@@ -67,6 +86,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub target_category: Option<BeginnerTargetCategoryV1>,
     #[serde(default)]
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
+    #[serde(default)]
+    pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
     pub allowed_techniques: Vec<BeginnerFoldTechniqueV1>,
 }
 
@@ -78,6 +99,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             detail_level: BeginnerDetailLevelV1::Standard,
             target_category: None,
             target_parts: Vec::new(),
+            skeleton_segments: Vec::new(),
             allowed_techniques: vec![
                 BeginnerFoldTechniqueV1::ValleyFold,
                 BeginnerFoldTechniqueV1::MountainFold,
@@ -106,6 +128,7 @@ pub fn validate_beginner_generation_constraints_v1(
         || constraints.allowed_techniques.is_empty()
         || constraints.allowed_techniques.len() > MAX_BEGINNER_ALLOWED_TECHNIQUES_V1
         || constraints.target_parts.len() > MAX_BEGINNER_TARGET_PART_RECORDS_V1
+        || constraints.skeleton_segments.len() > MAX_BEGINNER_SKELETON_SEGMENTS_V1
     {
         return false;
     }
@@ -122,11 +145,28 @@ pub fn validate_beginner_generation_constraints_v1(
     }
     let mut part_kinds = HashSet::with_capacity(constraints.target_parts.len());
     let mut total = 0_u16;
-    constraints.target_parts.iter().all(|part| {
+    if !constraints.target_parts.iter().all(|part| {
         total = total.saturating_add(u16::from(part.count));
         (1..=MAX_BEGINNER_TARGET_PART_COUNT_V1).contains(&part.count)
             && total <= MAX_BEGINNER_TARGET_PARTS_TOTAL_V1
             && part_kinds.insert(part.kind)
+    }) {
+        return false;
+    }
+    let mut segment_ids = HashSet::with_capacity(constraints.skeleton_segments.len());
+    constraints.skeleton_segments.iter().all(|segment| {
+        let coordinates = [
+            segment.start.x_tenths_mm,
+            segment.start.y_tenths_mm,
+            segment.end.x_tenths_mm,
+            segment.end.y_tenths_mm,
+        ];
+        coordinates.into_iter().all(|value| {
+            value.unsigned_abs() <= MAX_BEGINNER_SKELETON_COORDINATE_TENTHS_MM_V1 as u32
+        }) && segment.start != segment.end
+            && (1..=MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1)
+                .contains(&segment.thickness_tenths_mm)
+            && segment_ids.insert(segment.id)
     })
 }
 

@@ -10,6 +10,7 @@
 
 use std::{
     cmp::Ordering,
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -36,7 +37,8 @@ use super::{
     lock_project,
 };
 
-const STATIC_MESH_GEOMETRY_PROFILE: &str = "authenticated_mid_surface_triangle_mesh_v1";
+const MID_SURFACE_GEOMETRY_PROFILE: &str = "authenticated_mid_surface_triangle_mesh_v1";
+const CLOSED_FACE_SOLIDS_GEOMETRY_PROFILE: &str = "authenticated_closed_face_solids_v1";
 const MAX_EXACT_TRIANGULATION_PREDICATES: usize = 20_000_000;
 const GLTF_ENCODED_UNIT: &str = "meter";
 const GLTF_ENCODED_AXIS: &str = "glTF 2.0 right-handed -X-right Y-up Z-forward";
@@ -148,6 +150,7 @@ impl StaticMeshExportFormatRequest {
 enum StaticMeshExportWarning {
     MidSurfaceOnly,
     NoThicknessSolid,
+    IndependentFaceSolids,
     NoTexturesAnimation,
     NoProjectSemantics,
     StlTriangleSoupFacetNormals,
@@ -381,15 +384,23 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         .bind_pose(&source.pose)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let face_count = source.pose.face_ids().len();
-    let mesh =
-        build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)?
-            .with_base_color_rgba(source.paper_front_color_rgba);
+    let mid_surface =
+        build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)?;
+    let mesh = if source.paper_thickness_mm > 0.0 {
+        extrude_closed_face_solids(mid_surface, source.paper_thickness_mm)?
+    } else {
+        mid_surface
+    }
+    .with_base_color_rgba(source.paper_front_color_rgba);
     let validated =
         validate_indexed_triangle_mesh(&mesh).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let artifact = export_static_triangle_mesh(source.format.exporter_format(), &validated)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     validate_artifact_contract(source.format, &validated, &artifact)?;
-    let warnings: Arc<[StaticMeshExportWarning]> = Arc::from(export_warnings(source.format));
+    let warnings: Arc<[StaticMeshExportWarning]> = Arc::from(export_warnings(
+        source.format,
+        source.paper_thickness_mm > 0.0,
+    ));
     Ok(PendingStaticMeshExport {
         export_id: source.export_id,
         expected_project_instance_id: source.expected_project_instance_id,
@@ -430,13 +441,22 @@ fn validate_artifact_contract(
     Ok(())
 }
 
-fn export_warnings(format: StaticMeshExportFormatRequest) -> Vec<StaticMeshExportWarning> {
-    let mut warnings = vec![
-        StaticMeshExportWarning::MidSurfaceOnly,
-        StaticMeshExportWarning::NoThicknessSolid,
+fn export_warnings(
+    format: StaticMeshExportFormatRequest,
+    has_thickness: bool,
+) -> Vec<StaticMeshExportWarning> {
+    let mut warnings = if has_thickness {
+        vec![StaticMeshExportWarning::IndependentFaceSolids]
+    } else {
+        vec![
+            StaticMeshExportWarning::MidSurfaceOnly,
+            StaticMeshExportWarning::NoThicknessSolid,
+        ]
+    };
+    warnings.extend([
         StaticMeshExportWarning::NoTexturesAnimation,
         StaticMeshExportWarning::NoProjectSemantics,
-    ];
+    ]);
     if format == StaticMeshExportFormatRequest::Stl {
         warnings.push(StaticMeshExportWarning::StlTriangleSoupFacetNormals);
         warnings.push(StaticMeshExportWarning::StlPrintabilityNotGuaranteed);
@@ -460,7 +480,11 @@ fn preview_snapshot(pending: &PendingStaticMeshExport) -> StaticMeshExportPrevie
         face_count: pending.face_count,
         vertex_count: pending.vertex_count,
         triangle_count: pending.triangle_count,
-        geometry_profile: STATIC_MESH_GEOMETRY_PROFILE,
+        geometry_profile: if pending.paper_thickness_mm > 0.0 {
+            CLOSED_FACE_SOLIDS_GEOMETRY_PROFILE
+        } else {
+            MID_SURFACE_GEOMETRY_PROFILE
+        },
         source_unit: STATIC_MESH_SOURCE_UNIT,
         encoded_unit: pending.format.encoded_unit(),
         source_axis: STATIC_MESH_SOURCE_AXIS,
@@ -736,6 +760,97 @@ fn build_current_pose_mid_surface_mesh(
     Ok(IndexedTriangleMeshV1::new(
         name, positions, normals, triangles,
     ))
+}
+
+fn extrude_closed_face_solids(
+    mesh: IndexedTriangleMeshV1,
+    thickness_mm: f64,
+) -> Result<IndexedTriangleMeshV1, String> {
+    if !thickness_mm.is_finite() || thickness_mm <= 0.0 {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    let source_vertex_count = mesh.positions_mm.len();
+    let half = thickness_mm / 2.0;
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    positions
+        .try_reserve(source_vertex_count.saturating_mul(2))
+        .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    normals
+        .try_reserve(source_vertex_count.saturating_mul(2))
+        .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    for (position, normal) in mesh.positions_mm.iter().zip(&mesh.normals) {
+        positions.push([
+            position[0] + normal[0] * half,
+            position[1] + normal[1] * half,
+            position[2] + normal[2] * half,
+        ]);
+        normals.push(*normal);
+    }
+    for (position, normal) in mesh.positions_mm.iter().zip(&mesh.normals) {
+        positions.push([
+            position[0] - normal[0] * half,
+            position[1] - normal[1] * half,
+            position[2] - normal[2] * half,
+        ]);
+        normals.push(normal.map(|component| -component));
+    }
+    let bottom_offset =
+        u32::try_from(source_vertex_count).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    let mut triangles = Vec::new();
+    let mut edges = BTreeMap::<(u32, u32), (usize, u32, u32)>::new();
+    for triangle in &mesh.triangles {
+        triangles.push(*triangle);
+        triangles.push([
+            triangle[2] + bottom_offset,
+            triangle[1] + bottom_offset,
+            triangle[0] + bottom_offset,
+        ]);
+        for (start, end) in [
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ] {
+            let key = (start.min(end), start.max(end));
+            edges
+                .entry(key)
+                .and_modify(|entry| entry.0 += 1)
+                .or_insert((1, start, end));
+        }
+    }
+    for (_, (count, start, end)) in edges {
+        if count != 1 {
+            continue;
+        }
+        let start_index = usize::try_from(start).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+        let end_index = usize::try_from(end).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+        let a = mesh.positions_mm[start_index];
+        let b = mesh.positions_mm[end_index];
+        let normal = mesh.normals[start_index];
+        let edge = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let side_normal = normalize([
+            edge[1] * normal[2] - edge[2] * normal[1],
+            edge[2] * normal[0] - edge[0] * normal[2],
+            edge[0] * normal[1] - edge[1] * normal[0],
+        ])
+        .ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?;
+        let base = u32::try_from(positions.len()).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+        let top_a = positions[start_index];
+        let top_b = positions[end_index];
+        let bottom_a = positions[start_index + source_vertex_count];
+        let bottom_b = positions[end_index + source_vertex_count];
+        positions.extend([top_a, top_b, bottom_b, bottom_a]);
+        normals.extend([side_normal; 4]);
+        triangles.push([base, base + 1, base + 2]);
+        triangles.push([base, base + 2, base + 3]);
+    }
+    if positions.len() > MAX_STATIC_MESH_VERTICES || triangles.len() > MAX_STATIC_MESH_TRIANGLES {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    Ok(
+        IndexedTriangleMeshV1::new(mesh.name, positions, normals, triangles)
+            .with_base_color_rgba(mesh.base_color_rgba),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1259,8 +1374,8 @@ mod tests {
                 capture_export_source(&state, ProjectId::new(), request).expect("capture source");
             let pending = build_pending_export(source).expect("build staged mesh");
             assert_eq!(pending.face_count, 1);
-            assert_eq!(pending.vertex_count, 4);
-            assert_eq!(pending.triangle_count, 2);
+            assert_eq!(pending.vertex_count, 24);
+            assert_eq!(pending.triangle_count, 12);
             assert!(!pending.bytes.is_empty());
             match format {
                 StaticMeshExportFormatRequest::Obj => {
@@ -1286,9 +1401,56 @@ mod tests {
     }
 
     #[test]
+    fn positive_thickness_extrudes_front_back_and_closed_side_faces() {
+        use std::collections::BTreeMap;
+
+        let state = app_state_with_current_pose();
+        let request = preview_request(&state, StaticMeshExportFormatRequest::Stl);
+        let source =
+            capture_export_source(&state, ProjectId::new(), request).expect("capture source");
+        let mid =
+            build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)
+                .expect("mid surface");
+        let solid = extrude_closed_face_solids(mid, 0.1).expect("solid extrusion");
+        assert_eq!(solid.positions_mm.len(), 24);
+        assert_eq!(solid.triangles.len(), 12);
+        let min_z = solid
+            .positions_mm
+            .iter()
+            .map(|position| position[2])
+            .fold(f64::INFINITY, f64::min);
+        let max_z = solid
+            .positions_mm
+            .iter()
+            .map(|position| position[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(max_z - min_z, 0.1);
+        validate_indexed_triangle_mesh(&solid).expect("validated closed face solids");
+        let point_key =
+            |index: u32| solid.positions_mm[index as usize].map(|component| component.to_bits());
+        let mut geometric_edges = BTreeMap::new();
+        for triangle in &solid.triangles {
+            for (start, end) in [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ] {
+                let a = point_key(start);
+                let b = point_key(end);
+                let key = if a <= b { (a, b) } else { (b, a) };
+                *geometric_edges.entry(key).or_insert(0_usize) += 1;
+            }
+        }
+        assert!(
+            geometric_edges.values().all(|incidence| *incidence == 2),
+            "every geometric edge must belong to exactly two triangles"
+        );
+    }
+
+    #[test]
     fn warning_allowlist_is_closed_and_stl_discloses_triangle_soup_conversion() {
         assert_eq!(
-            export_warnings(StaticMeshExportFormatRequest::Obj),
+            export_warnings(StaticMeshExportFormatRequest::Obj, false),
             vec![
                 StaticMeshExportWarning::MidSurfaceOnly,
                 StaticMeshExportWarning::NoThicknessSolid,
@@ -1297,11 +1459,19 @@ mod tests {
             ]
         );
         assert_eq!(
-            export_warnings(StaticMeshExportFormatRequest::Glb),
-            export_warnings(StaticMeshExportFormatRequest::Obj)
+            export_warnings(StaticMeshExportFormatRequest::Glb, false),
+            export_warnings(StaticMeshExportFormatRequest::Obj, false)
         );
         assert_eq!(
-            export_warnings(StaticMeshExportFormatRequest::Stl),
+            export_warnings(StaticMeshExportFormatRequest::Glb, true),
+            vec![
+                StaticMeshExportWarning::IndependentFaceSolids,
+                StaticMeshExportWarning::NoTexturesAnimation,
+                StaticMeshExportWarning::NoProjectSemantics,
+            ]
+        );
+        assert_eq!(
+            export_warnings(StaticMeshExportFormatRequest::Stl, false),
             vec![
                 StaticMeshExportWarning::MidSurfaceOnly,
                 StaticMeshExportWarning::NoThicknessSolid,

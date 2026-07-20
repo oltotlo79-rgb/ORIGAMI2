@@ -54,6 +54,8 @@ const COPY = {
     rebuild: '現在姿勢から作り直す',
     midSurface:
       '重要: 出力は紙の「中央面」だけです。紙厚を持つソリッド、閉じた多様体、3Dプリント可能な模型ではありません。',
+    faceSolids:
+      '重要: 紙厚を面ごとの閉じた立体として出力します。折り目での和集合や3Dプリント可能性は保証しません。',
     metadata: {
       format: '形式',
       specification: '出力仕様',
@@ -98,6 +100,8 @@ const COPY = {
     rebuild: 'Rebuild from the current pose',
     midSurface:
       'Important: this exports only the paper mid-surface. It is not a paper-thickness solid, a closed manifold, or a guaranteed printable model.',
+    faceSolids:
+      'Important: paper thickness is exported as one closed solid per face. Hinge unions and 3D printability are not guaranteed.',
     metadata: {
       format: 'Format',
       specification: 'Specification',
@@ -284,7 +288,9 @@ export function StaticMeshExportDialog({
           {preview && (
             <>
               <p className="static-mesh-export-mid-surface">
-                {copy.midSurface}
+                {preview.geometryProfile === 'authenticated_closed_face_solids_v1'
+                  ? copy.faceSolids
+                  : copy.midSurface}
               </p>
               <dl className="crease-export-metadata">
                 <div>

@@ -35,7 +35,7 @@ function preview(format: 'obj' | 'stl' | 'glb' = 'obj') {
       faceCount: 3,
       vertexCount: 12,
       triangleCount: 6,
-      geometryProfile: 'authenticated_mid_surface_triangle_mesh_v1',
+      geometryProfile: 'authenticated_closed_face_solids_v1',
       sourceUnit: 'millimeter',
       encodedUnit: glb ? 'meter' : 'millimeter',
       sourceAxis: 'right-handed X-right Y-forward Z-up',
@@ -43,8 +43,7 @@ function preview(format: 'obj' | 'stl' | 'glb' = 'obj') {
         ? 'glTF 2.0 right-handed -X-right Y-up Z-forward'
         : 'right-handed X-right Y-forward Z-up',
       warnings: [
-        'mid_surface_only',
-        'no_thickness_solid',
+        'independent_face_solids',
         'no_textures_animation',
         'no_project_semantics',
         ...(format === 'stl'

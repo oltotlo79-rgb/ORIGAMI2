@@ -29,14 +29,13 @@ const PREVIEW: StaticMeshExportPreview = Object.freeze({
   faceCount: 3,
   vertexCount: 12,
   triangleCount: 6,
-  geometryProfile: 'authenticated_mid_surface_triangle_mesh_v1',
+  geometryProfile: 'authenticated_closed_face_solids_v1',
   sourceUnit: 'millimeter',
   encodedUnit: 'millimeter',
   sourceAxis: 'right-handed X-right Y-forward Z-up',
   encodedAxis: 'right-handed X-right Y-forward Z-up',
   warnings: Object.freeze([
-    'mid_surface_only',
-    'no_thickness_solid',
+    'independent_face_solids',
     'no_textures_animation',
     'no_project_semantics',
     'stl_triangle_soup_facet_normals',
@@ -59,7 +58,7 @@ describe('StaticMeshExportDialog DOM interactions', () => {
     expect(screen.getByText('鶴-pose.stl')).toBeTruthy()
     expect(screen.getByText('2.3 KB')).toBeTruthy()
     expect(screen.getByText(/3 面 · 12 頂点 · 6 三角形/u)).toBeTruthy()
-    expect(screen.getByText(/設定した紙厚は形状へ反映されません/u)).toBeTruthy()
+    expect(screen.getByText(/紙厚は面ごとの閉じた立体/u)).toBeTruthy()
     expect(screen.getByText(/頂点index.*triangle soup.*facet normal/u)).toBeTruthy()
     expect(screen.getByText(/3Dプリント可能性を保証しません/u)).toBeTruthy()
     expect(screen.getByText(/right-handed X-right Y-forward Z-up/u)).toBeTruthy()

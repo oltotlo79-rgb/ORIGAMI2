@@ -6,6 +6,7 @@ export type StaticMeshExportFormat = 'obj' | 'stl' | 'glb'
 export type StaticMeshExportWarning =
   | 'mid_surface_only'
   | 'no_thickness_solid'
+  | 'independent_face_solids'
   | 'no_textures_animation'
   | 'no_project_semantics'
   | 'stl_triangle_soup_facet_normals'
@@ -26,7 +27,9 @@ export type StaticMeshExportPreview = Readonly<{
   faceCount: number
   vertexCount: number
   triangleCount: number
-  geometryProfile: 'authenticated_mid_surface_triangle_mesh_v1'
+  geometryProfile:
+    | 'authenticated_mid_surface_triangle_mesh_v1'
+    | 'authenticated_closed_face_solids_v1'
   sourceUnit: 'millimeter'
   encodedUnit: 'millimeter' | 'meter'
   sourceAxis: 'right-handed X-right Y-forward Z-up'
@@ -75,9 +78,14 @@ const PREVIEW_KEYS = [
   'warnings',
 ] as const
 
-const BASE_WARNINGS: readonly StaticMeshExportWarning[] = Object.freeze([
+const MID_SURFACE_WARNINGS: readonly StaticMeshExportWarning[] = Object.freeze([
   'mid_surface_only',
   'no_thickness_solid',
+  'no_textures_animation',
+  'no_project_semantics',
+])
+const SOLID_WARNINGS: readonly StaticMeshExportWarning[] = Object.freeze([
+  'independent_face_solids',
   'no_textures_animation',
   'no_project_semantics',
 ])
@@ -141,13 +149,21 @@ export function normalizeStaticMeshExportPreviewResponse(
     || record.triangleCount > MAX_TRIANGLES
     || record.faceCount > record.triangleCount
     || record.faceCount * 3 > record.vertexCount
-    || record.geometryProfile !== 'authenticated_mid_surface_triangle_mesh_v1'
+    || record.geometryProfile !== (
+      record.paperThicknessMm > 0
+        ? 'authenticated_closed_face_solids_v1'
+        : 'authenticated_mid_surface_triangle_mesh_v1'
+    )
     || record.sourceUnit !== 'millimeter'
     || record.encodedUnit !== (format === 'glb' ? 'meter' : 'millimeter')
     || record.sourceAxis !== SOURCE_AXIS
     || record.encodedAxis !== (format === 'glb' ? GLTF_AXIS : SOURCE_AXIS)
   ) return null
-  const warnings = normalizeWarnings(record.warnings, format)
+  const warnings = normalizeWarnings(
+    record.warnings,
+    format,
+    record.paperThicknessMm > 0,
+  )
   if (!warnings) return null
   return Object.freeze({
     preview: Object.freeze({
@@ -165,7 +181,7 @@ export function normalizeStaticMeshExportPreviewResponse(
       faceCount: record.faceCount,
       vertexCount: record.vertexCount,
       triangleCount: record.triangleCount,
-      geometryProfile: 'authenticated_mid_surface_triangle_mesh_v1',
+      geometryProfile: record.geometryProfile as StaticMeshExportPreview['geometryProfile'],
       sourceUnit: 'millimeter',
       encodedUnit: format === 'glb' ? 'meter' : 'millimeter',
       sourceAxis: SOURCE_AXIS,
@@ -208,20 +224,24 @@ export function staticMeshExportWarningMessage(
         '出力は現在姿勢の紙の中央面だけです。紙の表面・裏面を持つ立体ではありません。',
       no_thickness_solid:
         '設定した紙厚は形状へ反映されません。層ずらし、厚み付きソリッド、閉じた多様体は含みません。',
+      independent_face_solids:
+        '紙厚は面ごとの閉じた立体として出力します。折り目で隣接する立体の和集合や隙間・重なりの除去は保証しません。',
       no_textures_animation:
-        '表裏色、材質、テクスチャ、カメラ、折りアニメーションは含みません。',
+        'GLBには紙の表色をマテリアルとして含めます。裏色、テクスチャ、カメラ、折りアニメーションは含みません。',
       no_project_semantics:
         '折り線、山谷、面ID、編集履歴、折り手順などORIGAMI2固有情報は含みません。',
       stl_triangle_soup_facet_normals:
         'STLは頂点indexと頂点法線を保持しません。各三角形が独立したtriangle soupになり、法線は面ごとのfacet normalへ置き換わります。',
       stl_printability_not_guaranteed:
-        'STL出力は3Dプリント可能性を保証しません。厚みのない中央面であり、スライサーで別途確認が必要です。',
+        'STL出力は3Dプリント可能性を保証しません。面ごとの立体は折り目で重なりや隙間が生じるため、スライサーで確認してください。',
     },
     en: {
       mid_surface_only:
         'The export contains only the paper mid-surface in the current pose. It is not a solid with front and back surfaces.',
       no_thickness_solid:
         'Configured paper thickness is not applied to geometry. Layer offsets, a thickness solid, and a closed manifold are not included.',
+      independent_face_solids:
+        'Paper thickness is exported as one closed solid per face. The solids are not unioned, and hinge gaps or overlaps are not removed.',
       no_textures_animation:
         'GLB includes the paper front color as a material. Back color, textures, camera, and folding animation are not included.',
       no_project_semantics:
@@ -229,7 +249,7 @@ export function staticMeshExportWarningMessage(
       stl_triangle_soup_facet_normals:
         'STL does not preserve vertex indices or vertex normals. It stores independent triangle soup with one facet normal per triangle.',
       stl_printability_not_guaranteed:
-        'STL export does not guarantee 3D printability. This is a zero-thickness mid-surface and must be checked separately in a slicer.',
+        'STL export does not guarantee 3D printability. Per-face solids may overlap or leave hinge gaps and must be checked in a slicer.',
     },
   } as const
   return copy[locale][warning]
@@ -238,16 +258,18 @@ export function staticMeshExportWarningMessage(
 function normalizeWarnings(
   value: unknown,
   format: StaticMeshExportFormat,
+  hasThickness: boolean,
 ): readonly StaticMeshExportWarning[] | null {
   const warnings = exactArray(value)
   if (!warnings) return null
+  const baseWarnings = hasThickness ? SOLID_WARNINGS : MID_SURFACE_WARNINGS
   const expected = format === 'stl'
     ? [
-        ...BASE_WARNINGS,
+        ...baseWarnings,
         'stl_triangle_soup_facet_normals',
         'stl_printability_not_guaranteed',
       ] as const
-    : BASE_WARNINGS
+    : baseWarnings
   if (
     warnings.length !== expected.length
     || warnings.some((warning, index) => warning !== expected[index])

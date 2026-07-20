@@ -365,6 +365,13 @@ export function GeometricConstraintPanel({
       >
         {localized(locale, '保存式を再評価してプレビュー', 'Re-evaluate saved expressions')}
       </button>
+      <p className="muted">
+        {localized(
+          locale,
+          '頂点参照: v.<正規UUID>.x または v.<正規UUID>.y',
+          'Vertex reference: v.<canonical-uuid>.x or v.<canonical-uuid>.y',
+        )}
+      </p>
       {selectedEdgeId === null && (
         <p className="muted">
           {localized(

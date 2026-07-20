@@ -2775,17 +2775,153 @@ fn reevaluate_saved_vertex_expressions(
         return Err("saved numeric expression set is empty or too large".to_owned());
     }
     let mut seen = HashSet::new();
-    let mut drivers = Vec::with_capacity(project.numeric_expressions.vertex_coordinates.len());
     for binding in &project.numeric_expressions.vertex_coordinates {
         if !seen.insert(binding.vertex) {
             return Err("saved numeric expressions contain a cycle or duplicate".to_owned());
         }
-        let (x, y) =
-            evaluate_finite_millimetre_pair(binding.x_source.clone(), binding.y_source.clone())
-                .map_err(|error| error.user_input_message().to_owned())?;
+    }
+    let mut memo = HashMap::new();
+    let mut visiting = HashSet::new();
+    let mut work = 0usize;
+    let mut drivers = Vec::with_capacity(project.numeric_expressions.vertex_coordinates.len());
+    for binding in &project.numeric_expressions.vertex_coordinates {
+        let x = resolve_saved_coordinate(
+            project,
+            binding.vertex,
+            false,
+            &mut memo,
+            &mut visiting,
+            &mut work,
+            0,
+        )?;
+        let y = resolve_saved_coordinate(
+            project,
+            binding.vertex,
+            true,
+            &mut memo,
+            &mut visiting,
+            &mut work,
+            0,
+        )?;
         drivers.push((binding.vertex, Point2::new(x, y)));
     }
     Ok(drivers)
+}
+
+const MAX_SAVED_EXPRESSION_DEPENDENCY_DEPTH: usize = 64;
+const MAX_SAVED_EXPRESSION_REFERENCES: usize = 4_096;
+
+fn resolve_saved_coordinate(
+    project: &ProjectState,
+    vertex: VertexId,
+    y_axis: bool,
+    memo: &mut HashMap<(VertexId, bool), f64>,
+    visiting: &mut HashSet<(VertexId, bool)>,
+    work: &mut usize,
+    depth: usize,
+) -> Result<f64, String> {
+    let key = (vertex, y_axis);
+    if let Some(value) = memo.get(&key) {
+        return Ok(*value);
+    }
+    if depth > MAX_SAVED_EXPRESSION_DEPENDENCY_DEPTH || !visiting.insert(key) {
+        return Err("saved numeric expressions contain a dependency cycle".to_owned());
+    }
+    let binding = project
+        .numeric_expressions
+        .vertex_coordinates
+        .iter()
+        .find(|binding| binding.vertex == vertex);
+    let value = if let Some(binding) = binding {
+        let source = if y_axis {
+            &binding.y_source
+        } else {
+            &binding.x_source
+        };
+        let expanded =
+            expand_saved_vertex_references(project, source, memo, visiting, work, depth)?;
+        let pair = if y_axis {
+            evaluate_finite_millimetre_pair("0".to_owned(), expanded)
+        } else {
+            evaluate_finite_millimetre_pair(expanded, "0".to_owned())
+        }
+        .map_err(|error| error.user_input_message().to_owned())?;
+        if y_axis { pair.1 } else { pair.0 }
+    } else {
+        let point = project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|candidate| candidate.id == vertex)
+            .map(|candidate| candidate.position)
+            .ok_or_else(|| "saved numeric expression has a dangling vertex reference".to_owned())?;
+        if y_axis { point.y } else { point.x }
+    };
+    visiting.remove(&key);
+    memo.insert(key, value);
+    Ok(value)
+}
+
+fn expand_saved_vertex_references(
+    project: &ProjectState,
+    source: &str,
+    memo: &mut HashMap<(VertexId, bool), f64>,
+    visiting: &mut HashSet<(VertexId, bool)>,
+    work: &mut usize,
+    depth: usize,
+) -> Result<String, String> {
+    let mut result = String::with_capacity(source.len());
+    let mut cursor = 0;
+    while let Some(relative) = source[cursor..].find("v.") {
+        let start = cursor + relative;
+        result.push_str(&source[cursor..start]);
+        let end = start
+            .checked_add(40)
+            .ok_or_else(|| "invalid vertex reference".to_owned())?;
+        let token = source
+            .get(start..end)
+            .ok_or_else(|| "invalid vertex reference".to_owned())?;
+        let uuid = token
+            .get(2..38)
+            .ok_or_else(|| "invalid vertex reference".to_owned())?;
+        let axis = token
+            .get(38..40)
+            .ok_or_else(|| "invalid vertex reference".to_owned())?;
+        if !matches!(axis, ".x" | ".y") {
+            return Err("invalid vertex reference".to_owned());
+        }
+        let referenced: VertexId = serde_json::from_str(&format!("\"{uuid}\""))
+            .map_err(|_| "invalid vertex reference".to_owned())?;
+        let canonical = serde_json::to_value(referenced)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| "invalid vertex reference".to_owned())?;
+        if canonical != uuid {
+            return Err("invalid vertex reference".to_owned());
+        }
+        *work = work
+            .checked_add(1)
+            .ok_or_else(|| "expression reference limit".to_owned())?;
+        if *work > MAX_SAVED_EXPRESSION_REFERENCES {
+            return Err("expression reference limit".to_owned());
+        }
+        let value = resolve_saved_coordinate(
+            project,
+            referenced,
+            axis == ".y",
+            memo,
+            visiting,
+            work,
+            depth + 1,
+        )?;
+        result.push('(');
+        result.push_str(&value.to_string());
+        result.push(')');
+        cursor = end;
+    }
+    result.push_str(&source[cursor..]);
+    Ok(result)
 }
 
 fn geometric_constraint_solve_response(
@@ -15232,6 +15368,59 @@ mod tests {
         assert!(reevaluate_saved_vertex_expressions(&project).is_err());
         let binding = VertexCoordinateExpressions::new(vertex, "1", "2", 0.0, 0.0);
         project.numeric_expressions.vertex_coordinates = vec![binding.clone(), binding];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    }
+
+    fn vertex_reference(id: VertexId, axis: char) -> String {
+        let id = serde_json::to_value(id)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        format!("v.{id}.{axis}")
+    }
+
+    #[test]
+    fn saved_vertex_reference_dag_is_evaluated_topologically() {
+        let (mut project, _, first, _) = solver_stage_fixture();
+        let second = project.editor.pattern().vertices[1].id;
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(first, "2", "3", 0.0, 0.0),
+            VertexCoordinateExpressions::new(
+                second,
+                format!("{}+4", vertex_reference(first, 'x')),
+                format!("{}*2", vertex_reference(first, 'y')),
+                0.0,
+                0.0,
+            ),
+        ];
+        assert_eq!(
+            reevaluate_saved_vertex_expressions(&project).unwrap(),
+            vec![
+                (first, Point2::new(2.0, 3.0)),
+                (second, Point2::new(6.0, 6.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn saved_vertex_reference_self_cycle_and_dangling_fail_closed() {
+        let (mut project, _, vertex, _) = solver_stage_fixture();
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            vertex,
+            vertex_reference(vertex, 'x'),
+            "0",
+            0.0,
+            0.0,
+        )];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            vertex,
+            vertex_reference(VertexId::new(), 'x'),
+            "0",
+            0.0,
+            0.0,
+        )];
         assert!(reevaluate_saved_vertex_expressions(&project).is_err());
     }
 

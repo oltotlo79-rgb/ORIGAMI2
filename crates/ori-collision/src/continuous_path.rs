@@ -14,10 +14,11 @@ use ori_kinematics::{
 };
 use thiserror::Error;
 
+use crate::cayley::prepare_swept_tree_hinge_thickness_boundaries_v1;
 use crate::{
     StaticCollisionLimits, diagnose_static_collision_geometry,
     prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
-    prepare_tree_hinge_thickness_boundaries_v1, revalidate_positive_thickness_pair_separation_v1,
+    revalidate_positive_thickness_pair_separation_v1,
     revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
@@ -264,18 +265,33 @@ fn positive_endpoint_candidates_v1(
         return None;
     }
     let mut bounds = Vec::with_capacity(model.face_ids().len());
+    let mut world_vertices = HashMap::with_capacity(model.face_ids().len());
     for face in model.face_ids() {
         let transform = pose.face_transform(*face)?;
         let boundary = model.face_boundary(*face)?;
-        let mut minimum = [f64::INFINITY; 3];
-        let mut maximum = [f64::NEG_INFINITY; 3];
+        let mut minimum = [f64::INFINITY; 7];
+        let mut maximum = [f64::NEG_INFINITY; 7];
+        let mut points = Vec::with_capacity(boundary.vertices().len());
         for vertex in boundary.vertices() {
             let world = transform.apply_point(pose.vertex_position(*vertex)?).ok()?;
-            for (axis, value) in [world.x(), world.y(), world.z()].into_iter().enumerate() {
-                minimum[axis] = minimum[axis].min(value - expansion);
-                maximum[axis] = maximum[axis].max(value + expansion);
+            points.push([world.x(), world.y(), world.z()]);
+            for (axis, (value, radius)) in [
+                (world.x(), expansion),
+                (world.y(), expansion),
+                (world.z(), expansion),
+                (world.x() + world.y(), expansion * std::f64::consts::SQRT_2),
+                (world.x() - world.y(), expansion * std::f64::consts::SQRT_2),
+                (world.x() + 25.0 * world.y(), expansion * 626.0_f64.sqrt()),
+                (world.x() - 25.0 * world.y(), expansion * 626.0_f64.sqrt()),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                minimum[axis] = minimum[axis].min(value - radius);
+                maximum[axis] = maximum[axis].max(value + radius);
             }
         }
+        world_vertices.insert(*face, points);
         bounds.push((*face, minimum, maximum));
     }
     bounds.sort_by(|left, right| {
@@ -289,6 +305,41 @@ fn positive_endpoint_candidates_v1(
                 || (hinge.left_face() == second && hinge.right_face() == first)
         })
     };
+    let separated_by_planar_edge = |first: FaceId, second: FaceId| {
+        let Some(first_points) = world_vertices.get(&first) else {
+            return false;
+        };
+        let Some(second_points) = world_vertices.get(&second) else {
+            return false;
+        };
+        [first_points, second_points]
+            .into_iter()
+            .any(|axes_source| {
+                (0..axes_source.len()).any(|index| {
+                    let start = axes_source[index];
+                    let end = axes_source[(index + 1) % axes_source.len()];
+                    let axis = [-(end[2] - start[2]), end[0] - start[0]];
+                    let norm = axis[0].hypot(axis[1]);
+                    if !norm.is_finite() || norm == 0.0 {
+                        return false;
+                    }
+                    let project = |points: &Vec<[f64; 3]>| {
+                        points.iter().fold(
+                            (f64::INFINITY, f64::NEG_INFINITY),
+                            |(minimum, maximum), point| {
+                                let value = axis[0] * point[0] + axis[1] * point[2];
+                                (minimum.min(value), maximum.max(value))
+                            },
+                        )
+                    };
+                    let (first_min, first_max) = project(first_points);
+                    let (second_min, second_max) = project(second_points);
+                    let radius = expansion * norm;
+                    first_max + radius < second_min - radius
+                        || second_max + radius < first_min - radius
+                })
+            })
+    };
     let mut candidates = Vec::new();
     for first in 0..bounds.len() {
         for second in first + 1..bounds.len() {
@@ -296,14 +347,19 @@ fn positive_endpoint_candidates_v1(
                 break;
             }
             if adjacent(bounds[first].0, bounds[second].0)
-                || (1..3).any(|axis| {
+                || separated_by_planar_edge(bounds[first].0, bounds[second].0)
+                || (1..7).any(|axis| {
                     bounds[first].2[axis] < bounds[second].1[axis]
                         || bounds[second].2[axis] < bounds[first].1[axis]
                 })
             {
                 continue;
             }
-            if candidates.len() >= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1 {
+            if candidates
+                .len()
+                .checked_add(1)
+                .is_none_or(|work| !positive_endpoint_pair_work_within_limit_v1(work))
+            {
                 return None;
             }
             let mut pair = (bounds[first].0, bounds[second].0);
@@ -315,6 +371,21 @@ fn positive_endpoint_candidates_v1(
     }
     candidates.sort_by_key(|pair| (pair.0.canonical_bytes(), pair.1.canonical_bytes()));
     Some(candidates)
+}
+
+fn faces_share_material_vertex_v1(
+    model: &MaterialTreeKinematicsModel,
+    first: FaceId,
+    second: FaceId,
+) -> bool {
+    model.face_boundary(first).is_some_and(|first_boundary| {
+        model.face_boundary(second).is_some_and(|second_boundary| {
+            first_boundary
+                .vertices()
+                .iter()
+                .any(|vertex| second_boundary.vertices().contains(vertex))
+        })
+    })
 }
 
 pub fn diagnose_collective_hinge_path_v1(
@@ -434,10 +505,11 @@ pub fn diagnose_collective_hinge_path_v1(
             let endpoint_candidates = positive_two_hinge_topology
                 .then(|| positive_endpoint_candidates_v1(model, &pose, paper_thickness_mm))
                 .flatten();
-            let endpoint_topology = if endpoint_candidates
-                .as_ref()
-                .is_some_and(|candidates| !candidates.is_empty())
-            {
+            let endpoint_topology = if endpoint_candidates.as_ref().is_some_and(|candidates| {
+                candidates
+                    .iter()
+                    .any(|(first, second)| !faces_share_material_vertex_v1(model, *first, *second))
+            }) {
                 Some(
                     prepare_positive_thickness_tree_endpoint_topology_memo_v1(
                         model,
@@ -452,7 +524,7 @@ pub fn diagnose_collective_hinge_path_v1(
             };
             all_positive_thickness_outer_shells &= if positive_two_hinge_topology {
                 endpoint_candidates.as_ref().is_some()
-                    && prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
+                    && prepare_swept_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
                     .ok()
                     .flatten()
                     .is_some_and(|boundary| {
@@ -485,7 +557,9 @@ pub fn diagnose_collective_hinge_path_v1(
                                                 return true;
                                             }
                                             positive_endpoint_memo_pair_entries += 1;
-                                            endpoint_topology.as_ref().is_some_and(|memo| {
+                                            faces_share_material_vertex_v1(
+                                                model, *first, *second,
+                                            ) || endpoint_topology.as_ref().is_some_and(|memo| {
                                                 memo.enumerated_pairs()
                                                     == model.face_ids().len()
                                                         * model
@@ -1406,6 +1480,7 @@ fn collective_pose_is_one_moving_body(
 
 #[cfg(test)]
 mod tests {
+    use crate::prepare_tree_hinge_thickness_boundaries_v1;
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
     use ori_kinematics::TreeKinematicsLimits;
     use ori_topology::{FaceExtractionInput, analyze_faces};
@@ -4311,6 +4386,22 @@ mod tests {
             let model = sparse_triangle_strip_model(face_count);
             let (moving, initial) = zero_tree_pose(&model);
             let requested = positive_tree_max_angle_degrees_v1(face_count - 1).unwrap();
+            let moving_set = moving.iter().copied().collect::<HashSet<_>>();
+            let endpoint = solve_collective_pose(&model, &initial, &moving_set, requested).unwrap();
+            let candidates = positive_endpoint_candidates_v1(&model, &endpoint, 0.001).unwrap();
+            assert!(
+                candidates.iter().all(|(first, second)| {
+                    faces_share_material_vertex_v1(&model, *first, *second)
+                }),
+                "face_count={face_count}, candidates={}, nonjunction={}",
+                candidates.len(),
+                candidates
+                    .iter()
+                    .filter(|(first, second)| {
+                        !faces_share_material_vertex_v1(&model, *first, *second)
+                    })
+                    .count()
+            );
             let diagnostic = diagnose_collective_hinge_path_v1(
                 &model,
                 &initial,
@@ -4320,7 +4411,10 @@ mod tests {
                 StackedFoldPathDiagnosticLimitsV1::default(),
             )
             .unwrap();
-            assert!(diagnostic.continuous_clearance_certified());
+            assert!(
+                diagnostic.continuous_clearance_certified(),
+                "face_count={face_count}, diagnostic={diagnostic:?}"
+            );
             assert!(diagnostic.positive_endpoint_memo_pair_entries() <= 120);
             assert_eq!(diagnostic.positive_endpoint_exact_pair_calls(), 0);
         }

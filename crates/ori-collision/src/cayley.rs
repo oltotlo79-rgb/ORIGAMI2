@@ -3955,6 +3955,7 @@ pub(crate) use positive_thickness::{
     SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
     ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1, diagnose_bound_shared_hinge_solid_v1,
     diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
+    prepare_swept_tree_hinge_thickness_boundaries_v1,
 };
 
 #[cfg(test)]

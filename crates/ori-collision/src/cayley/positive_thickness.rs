@@ -2349,6 +2349,21 @@ pub fn prepare_tree_hinge_thickness_boundaries_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
 ) -> Result<Option<NativeTreeHingeThicknessBoundariesV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
+    prepare_tree_hinge_thickness_boundaries_internal_v1(bound, paper_thickness_mm, true)
+}
+
+pub(crate) fn prepare_swept_tree_hinge_thickness_boundaries_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> Result<Option<NativeTreeHingeThicknessBoundariesV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
+    prepare_tree_hinge_thickness_boundaries_internal_v1(bound, paper_thickness_mm, false)
+}
+
+fn prepare_tree_hinge_thickness_boundaries_internal_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    reject_nonjunction_rail_overlap: bool,
+) -> Result<Option<NativeTreeHingeThicknessBoundariesV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
     if !positive_finite_binary64(paper_thickness_mm)
         || bound.model().hinges().len() < 2
         || bound.model().hinges().len() > MAX_COMPOSED_THICKNESS_HINGES_V1
@@ -2369,10 +2384,19 @@ pub fn prepare_tree_hinge_thickness_boundaries_v1(
     }
     for first in 0..hinges.len() {
         for second in first + 1..hinges.len() {
-            if thickness_boundary_rails_overlap(
-                hinges[first].observation(),
-                hinges[second].observation(),
-            ) {
+            let shared_junction = hinges[first].endpoint_vertices.iter().any(|vertex| {
+                hinges[second]
+                    .endpoint_vertices
+                    .iter()
+                    .any(|candidate| candidate == vertex)
+            });
+            if reject_nonjunction_rail_overlap
+                && thickness_boundary_rails_overlap(
+                    hinges[first].observation(),
+                    hinges[second].observation(),
+                )
+                && !shared_junction
+            {
                 return Ok(None);
             }
         }

@@ -1688,20 +1688,21 @@ export async function evaluateBeginnerParameterGrid(
 }
 
 export function applyBeginnerParameterGridCandidate(
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
   grid: BeginnerGridEvaluationResponse,
   expectedProfile: BeginnerDesignProfileV1,
   candidate: BeginnerGridEvaluationResponse['candidates'][number],
 ) {
-  if (!grid.candidates.includes(candidate)
+  if (expectedProjectId !== grid.project_id || expectedRevision !== grid.revision
+    || expectedProjectInstanceId !== grid.project_instance_id
+    || !grid.candidates.includes(candidate)
     || candidate.assessment.proof_scope !== 'sufficient'
     || candidate.assessment.reason !== 'global_flat_foldability_proven'
     || !candidate.assessment.apply_allowed) {
     return Promise.reject(new Error('grid candidate lacks a live sufficient proof'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_parameter_grid_candidate', {
-    expectedProjectInstanceId: grid.project_instance_id,
-    expectedProjectId: grid.project_id,
-    expectedRevision: grid.revision,
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
     expectedProfile,
     expectedGridHash: grid.grid_hash,
     selectedPoint: candidate.point,

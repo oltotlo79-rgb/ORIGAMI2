@@ -56,6 +56,7 @@ const mutationContracts = [
   ['importBeginnerReferenceModel', 'import_beginner_reference_model'],
   ['applyBeginnerReferenceModelFeatures', 'apply_beginner_reference_model_features'],
   ['applyBeginnerGeneratedPlan', 'apply_beginner_generated_plan'],
+  ['applyBeginnerParameterGridCandidate', 'apply_beginner_parameter_grid_candidate'],
   ['applyBeginnerSymmetricParameters', 'apply_beginner_symmetric_parameters'],
   ['updatePaperProperties', 'update_paper_properties'],
   ['importFrontPaperTexture', 'import_front_paper_texture'],
@@ -70,9 +71,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 55)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 55)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 55)
+  assert.equal(mutationContracts.length, 56)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 56)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 56)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

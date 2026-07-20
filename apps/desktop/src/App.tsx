@@ -4087,6 +4087,7 @@ function App() {
       en: 'Revalidate this design’s grid, geometry, and global proof, then apply it? One Undo reverts the whole change.',
     }))) return
     void runNativeEdit(() => applyBeginnerParameterGridCandidate(
+      current.project_id, current.revision, current.project_instance_id,
       grid, current.beginner_design_profile, candidate,
     )).then(() => {
       beginnerGridRequestRef.current += 1

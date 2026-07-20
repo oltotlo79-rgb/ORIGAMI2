@@ -539,6 +539,24 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
       }
       execFileSync(
         'node',
+        [
+          '.github/scripts/bind_release_sbom.mjs',
+          join(directory, `ORIGAMI2-v${version}-${platform}.cdx.json`),
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            VERSION: version,
+            PLATFORM: platform,
+            RELEASE_COMMIT: 'a'.repeat(40),
+            RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
+            NODE_VERSION: 'v24.0.0',
+          },
+        },
+      )
+      execFileSync(
+        'node',
         ['.github/scripts/write_update_manifest.mjs', directory],
         {
           cwd: root,
@@ -568,7 +586,11 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
       {
         cwd: root,
         encoding: 'utf8',
-        env: { ...process.env, RELEASE_VERSION: version },
+        env: {
+          ...process.env,
+          RELEASE_VERSION: version,
+          RELEASE_COMMIT: 'a'.repeat(40),
+        },
       },
     )
     assert.match(output, /verified merged release set v0\.1\.0/u)

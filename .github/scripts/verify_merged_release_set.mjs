@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -46,6 +46,37 @@ for (const [platform, names] of platformFiles) {
     })
   } finally {
     rmSync(staging, { recursive: true, force: true })
+  }
+}
+if (process.env.RELEASE_COMMIT !== undefined) {
+  const identities = [...platformFiles.keys()].map((platform) => {
+    const sbom = JSON.parse(readFileSync(
+      join(directory, `ORIGAMI2-v${version}-${platform}.cdx.json`),
+      'utf8',
+    ))
+    const properties = new Map(
+      sbom.metadata?.properties?.map(({ name, value }) => [name, value]) ?? [],
+    )
+    return {
+      platform,
+      cargoLock: properties.get('origami2.build.cargo-lock-sha256'),
+      node: properties.get('origami2.build.node-version'),
+      packageLock: properties.get('origami2.build.package-lock-sha256'),
+      rustc: properties.get('origami2.build.rustc-version'),
+      sourceCommit: properties.get('origami2.release.source-commit'),
+      version: properties.get('origami2.release.version'),
+      declaredPlatform: properties.get('origami2.release.platform'),
+    }
+  })
+  for (const identity of identities) {
+    if (identity.declaredPlatform !== identity.platform) {
+      throw new Error('cross-platform SBOM platform identity mismatch')
+    }
+  }
+  const withoutPlatform = ({ platform: _platform, declaredPlatform: _declared, ...identity }) =>
+    identity
+  if (JSON.stringify(withoutPlatform(identities[0])) !== JSON.stringify(withoutPlatform(identities[1]))) {
+    throw new Error('cross-platform build identity mismatch')
   }
 }
 console.log(`verified merged release set v${version}`)

@@ -1314,6 +1314,54 @@ export function moveVertices(
   })
 }
 
+export type MirrorSelectionRequest = {
+  vertices: string[]
+  edges: string[]
+  axis: {
+    start: { x: number; y: number }
+    end: { x: number; y: number }
+  }
+  mode: 'move' | 'duplicate'
+  new_vertices: string[]
+  new_edges: string[]
+}
+
+export type MirrorSelectionPreflight = {
+  allowed: boolean
+  mode: 'move' | 'duplicate'
+  vertex_count: number
+  edge_count: number
+  issue: string | null
+}
+
+export function preflightMirrorSelection(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  request: MirrorSelectionRequest,
+) {
+  return invoke<MirrorSelectionPreflight>('preflight_mirror_selection', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    request,
+  })
+}
+
+export function applyMirrorSelection(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  request: MirrorSelectionRequest,
+) {
+  return invoke<ProjectSnapshot>('apply_mirror_selection', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    request,
+  })
+}
+
 export type GeometricConstraintSolvePreview = {
   token: string
   revision: number

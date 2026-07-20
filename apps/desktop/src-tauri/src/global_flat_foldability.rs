@@ -278,9 +278,12 @@ pub(super) fn get_current_layer_order_view(
             GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
         ));
     }
-    let capability = capture_current_layer_order_capability(&state, &project)?.ok_or_else(|| {
-        GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable)
-    })?;
+    let capability =
+        capture_current_layer_order_capability(&state, &project)?.ok_or_else(|| {
+            GlobalFlatFoldabilityCommandError::new(
+                GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+            )
+        })?;
     let generation = capability.generation();
     let snapshot = revalidate_current_layer_order_capability(&state, &project, &capability)?
         .ok_or_else(|| {
@@ -295,13 +298,7 @@ pub(super) fn get_current_layer_order_view(
             let boundary_world = cell
                 .exact_boundary
                 .iter()
-                .map(|point| {
-                    Some([
-                        point.x.to_f64()?,
-                        0.0,
-                        -point.y.to_f64()?,
-                    ])
-                })
+                .map(|point| Some([point.x.to_f64()?, 0.0, -point.y.to_f64()?]))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| {
                     GlobalFlatFoldabilityCommandError::new(

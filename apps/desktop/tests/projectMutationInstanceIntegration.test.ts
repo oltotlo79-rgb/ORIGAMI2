@@ -27,6 +27,7 @@ const mutationContracts = [
   ['rotateEdgeAboutPoint', 'rotate_edge_about_point'],
   ['moveVertices', 'move_vertices'],
   ['applyGeometricConstraintSolve', 'apply_geometric_constraint_solve'],
+  ['applyMirrorSelection', 'apply_mirror_selection'],
   ['removeVertex', 'remove_vertex'],
   ['removeBoundaryVertex', 'remove_boundary_vertex'],
   ['removeEdge', 'remove_edge'],
@@ -64,9 +65,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 49)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 49)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 49)
+  assert.equal(mutationContracts.length, 50)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 50)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 50)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

@@ -484,6 +484,7 @@ fn first_step_page(
             glyphs,
         )?;
         cursor += 20.0;
+        cursor = add_hand_guide_summary(&mut page, step, cursor, font, glyphs)?;
         return Ok((page, cursor));
     }
 
@@ -522,7 +523,49 @@ fn first_step_page(
         glyphs,
     )?;
     cursor += 20.0;
+    cursor = add_hand_guide_summary(&mut page, step, cursor, font, glyphs)?;
     Ok((page, cursor))
+}
+
+fn add_hand_guide_summary(
+    page: &mut InstructionPage,
+    step: &ori_domain::InstructionStep,
+    cursor: f64,
+    font: &InstructionFont<'_>,
+    glyphs: &mut GlyphBudget,
+) -> Result<f64, InstructionExportError> {
+    if step.visual.hand_guides.is_empty() {
+        return Ok(cursor);
+    }
+    let labels = step
+        .visual
+        .hand_guides
+        .iter()
+        .map(|guide| {
+            let kind = match guide.kind {
+                ori_domain::InstructionHandGuideKind::Pinch => "pinch",
+                ori_domain::InstructionHandGuideKind::Hold => "hold",
+                ori_domain::InstructionHandGuideKind::Push => "push",
+                ori_domain::InstructionHandGuideKind::Regrip => "regrip",
+            };
+            if guide.label.is_empty() {
+                kind.to_owned()
+            } else {
+                format!("{kind}: {}", guide.label)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" / ");
+    add_wrapped_header(
+        page,
+        &format!("Hand guides: {labels}"),
+        8.0,
+        11.0,
+        cursor,
+        PageColor::MUTED,
+        font,
+        glyphs,
+    )
 }
 
 fn draw_declarative_placeholder(
@@ -944,8 +987,8 @@ fn format_duration(duration_ms: u32) -> String {
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId,
-        InstructionTimeline,
+        InstructionHandGuide, InstructionHandGuideKind, InstructionPoint3, InstructionPose,
+        InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
     };
 
     use super::*;
@@ -988,7 +1031,7 @@ mod tests {
 
     #[test]
     fn declarative_layout_preserves_text_and_draws_no_fold_pose() {
-        let timeline = InstructionTimeline {
+        let mut timeline = InstructionTimeline {
             steps: vec![InstructionStep {
                 id: InstructionStepId::new(),
                 title: "中割り折り（説明）".to_owned(),
@@ -1004,6 +1047,23 @@ mod tests {
                 },
             }],
         };
+        timeline.steps[0]
+            .visual
+            .hand_guides
+            .push(InstructionHandGuide {
+                kind: InstructionHandGuideKind::Regrip,
+                position: InstructionPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                direction: InstructionPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                label: "right hand".to_owned(),
+            });
         let diagram = InstructionDiagramPlan {
             bounds: DiagramBounds {
                 min_x: 0.0,
@@ -1040,6 +1100,7 @@ mod tests {
         assert!(text.contains("この説明はPDFとSVGに残ります。"));
         assert!(text.contains("自動実行せず層を確認してください。"));
         assert!(text.contains("説明専用・3D姿勢なし"));
+        assert!(text.contains("Hand guides: regrip: right hand"));
         assert!(layout.pages.iter().all(|page| page.lines.is_empty()));
     }
 

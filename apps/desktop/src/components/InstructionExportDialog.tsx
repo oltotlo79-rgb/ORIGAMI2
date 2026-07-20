@@ -89,7 +89,7 @@ const INSTRUCTION_EXPORT_COPY = {
       'Generate instructions from the current edit revision. Exporting does not change the project save state or history.',
     format: 'Export format',
     optionDetails: {
-      pdf: 'Combine fixed-isometric instruction diagrams into a multi-page PDF',
+      pdf: 'Combine fixed-isometric diagrams and hand/regrip guide labels into a multi-page PDF',
       svg_zip: 'Package one vector SVG image per instruction page into a ZIP',
     },
     rebuild: 'Rebuild from the current edits',

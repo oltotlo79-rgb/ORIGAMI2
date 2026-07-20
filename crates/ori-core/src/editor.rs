@@ -76,6 +76,9 @@ pub enum ElementMetadataTargetV1 {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    UpdateProjectMemo {
+        memo: String,
+    },
     SetElementMetadata {
         target: ElementMetadataTargetV1,
         metadata: Option<ElementMetadataV1>,
@@ -636,6 +639,9 @@ fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limi
 
 #[derive(Debug, Clone, PartialEq)]
 enum Inverse {
+    RestoreProjectMemo {
+        memo: String,
+    },
     RestoreElementMetadata {
         target: ElementMetadataTargetV1,
         metadata: Option<ElementMetadataV1>,
@@ -1525,6 +1531,7 @@ pub struct EditorState {
     instruction_timeline: InstructionTimeline,
     project_layers: ProjectLayerDocumentV1,
     element_metadata: ElementMetadataDocumentV1,
+    project_memo: String,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
     revision: Revision,
@@ -1635,12 +1642,35 @@ impl EditorState {
             instruction_timeline,
             project_layers,
             element_metadata,
+            project_memo: String::new(),
             current_applied_pose: None,
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             history_entry_limit: MAX_EDITOR_HISTORY_ENTRIES,
         }
+    }
+
+    #[must_use]
+    pub fn with_all_document_parts_and_memo(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        project_memo: String,
+    ) -> Self {
+        let mut editor = Self::with_all_document_parts(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+        );
+        editor.project_memo = project_memo;
+        editor
     }
 
     #[must_use]
@@ -1661,6 +1691,11 @@ impl EditorState {
     #[must_use]
     pub const fn element_metadata(&self) -> &ElementMetadataDocumentV1 {
         &self.element_metadata
+    }
+
+    #[must_use]
+    pub fn project_memo(&self) -> &str {
+        &self.project_memo
     }
 
     #[must_use]
@@ -1835,6 +1870,19 @@ impl EditorState {
         self.ensure_project_layers_allow(command)?;
         self.ensure_geometric_constraints_allow(command)?;
         match *command {
+            Command::UpdateProjectMemo { ref memo } => {
+                const MAX_PROJECT_MEMO_CHARS: usize = 16_000;
+                if memo.chars().count() > MAX_PROJECT_MEMO_CHARS
+                    || memo.chars().any(|character| {
+                        character.is_control() && !matches!(character, '\n' | '\r' | '\t')
+                    })
+                {
+                    return Err(CommandError::InvalidElementMetadata);
+                }
+                Ok(Inverse::RestoreProjectMemo {
+                    memo: std::mem::replace(&mut self.project_memo, memo.clone()),
+                })
+            }
             Command::SetElementMetadata {
                 target,
                 ref metadata,
@@ -2671,7 +2719,8 @@ impl EditorState {
                 self.ensure_edge_layer_unlocked(*edge)?;
                 self.ensure_layer_unlocked(*layer)
             }
-            Command::SetElementMetadata { .. }
+            Command::UpdateProjectMemo { .. }
+            | Command::SetElementMetadata { .. }
             | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
             | Command::SetLengthDisplayUnit { .. }
@@ -2966,6 +3015,7 @@ impl EditorState {
             Command::AddVertex { .. }
             | Command::AddEdge { .. }
             | Command::AddConnectedVertex { .. }
+            | Command::UpdateProjectMemo { .. }
             | Command::SetElementMetadata { .. }
             | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
@@ -4381,6 +4431,9 @@ impl EditorState {
 
     fn apply_inverse(&mut self, inverse: &Inverse) -> Result<(), CommandError> {
         match inverse {
+            Inverse::RestoreProjectMemo { memo } => {
+                self.project_memo.clone_from(memo);
+            }
             Inverse::RestoreElementMetadata { target, metadata } => {
                 self.replace_element_metadata(*target, metadata.clone());
             }
@@ -4926,7 +4979,8 @@ impl Command {
                     added_edges,
                 )
             }
-            Self::SetElementMetadata { .. }
+            Self::UpdateProjectMemo { .. }
+            | Self::SetElementMetadata { .. }
             | Self::MoveVertex { .. }
             | Self::MoveEdge { .. }
             | Self::MoveVertices { .. }
@@ -4980,7 +5034,8 @@ impl Command {
             | Self::ConnectIntersectionCluster { .. }
             | Self::SplitBoundaryEdge { .. }
             | Self::RemoveBoundaryVertex { .. } => true,
-            Self::SetElementMetadata { .. }
+            Self::UpdateProjectMemo { .. }
+            | Self::SetElementMetadata { .. }
             | Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
             | Self::SetLengthDisplayUnit { .. }
@@ -5003,6 +5058,10 @@ impl Command {
 
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match *self {
+            Self::UpdateProjectMemo { .. } => Changes {
+                settings: true,
+                ..Changes::default()
+            },
             Self::SetElementMetadata { target, .. } => Changes {
                 vertices: match target {
                     ElementMetadataTargetV1::Vertex(id) => vec![id],
@@ -5299,6 +5358,10 @@ impl Command {
 impl Inverse {
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match self {
+            Self::RestoreProjectMemo { .. } => Changes {
+                settings: true,
+                ..Changes::default()
+            },
             Self::RestoreElementMetadata { target, .. } => Changes {
                 vertices: match target {
                     ElementMetadataTargetV1::Vertex(id) => vec![*id],

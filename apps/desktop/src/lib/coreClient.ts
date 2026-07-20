@@ -106,6 +106,7 @@ export type ProjectSnapshot = {
   project_instance_id: string
   project_id: string
   name: string
+  memo: string
   current_path: string | null
   revision: number
   saved_revision: number | null
@@ -578,6 +579,20 @@ function benchmarkEdgeId(index: number) {
 
 export function getProjectSnapshot() {
   return invoke<ProjectSnapshot>('project_snapshot')
+}
+
+export function updateProjectMemo(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  memo: string,
+) {
+  return invoke<ProjectSnapshot>('update_project_memo', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    memo,
+  })
 }
 
 export function validateProject() {
@@ -1709,6 +1724,7 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'project_instance_id',
   'project_id',
   'name',
+  'memo',
   'current_path',
   'revision',
   'saved_revision',
@@ -1738,6 +1754,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !isCanonicalNonNilUuid(record.project_instance_id)
     || !isCanonicalNonNilUuid(record.project_id)
     || typeof record.name !== 'string'
+    || typeof record.memo !== 'string'
     || (
       record.current_path !== null
       && typeof record.current_path !== 'string'
@@ -1779,6 +1796,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     project_instance_id: record.project_instance_id,
     project_id: record.project_id,
     name: record.name,
+    memo: record.memo,
     current_path: record.current_path,
     revision: record.revision,
     saved_revision: record.saved_revision,
@@ -1822,6 +1840,7 @@ export function normalizeProjectLayerMutationSnapshot(
     || record.project_instance_id !== base.project_instance_id
     || record.project_id !== base.project_id
     || record.name !== base.name
+    || record.memo !== base.memo
     || record.current_path !== base.current_path
     || !isProjectRevision(record.revision)
     || record.saved_revision !== base.saved_revision
@@ -1842,6 +1861,7 @@ export function normalizeProjectLayerMutationSnapshot(
     project_instance_id: base.project_instance_id,
     project_id: base.project_id,
     name: base.name,
+    memo: base.memo,
     current_path: base.current_path,
     revision: record.revision,
     saved_revision: base.saved_revision,

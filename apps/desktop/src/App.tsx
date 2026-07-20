@@ -103,6 +103,7 @@ import {
   splitEdge,
   undo,
   updateProjectLayerPresentation,
+  updateProjectMemo,
   updatePaperProperties,
   type ProjectSnapshot,
   type GeometricConstraintKind,
@@ -3020,6 +3021,22 @@ function App() {
         selectedElementTarget,
         metadata,
       ))
+  }
+
+  function submitProjectMemo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current || recoveryBlockingRef.current) return
+    const memo = String(new FormData(event.currentTarget).get('project_memo') ?? '')
+    if (memo.length > 16_000) {
+      setCoreStatus(appMessage({
+        ja: 'プロジェクトメモは16000文字以内で入力してください。',
+        en: 'Keep the project memo within 16,000 characters.',
+      }))
+      return
+    }
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      updateProjectMemo(projectId, revision, projectInstanceId, memo))
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -6289,6 +6306,31 @@ function App() {
               </p>
             )}
           </section>
+          {nativeSnapshot && !benchmarkRun && (
+            <section className="property-section">
+              <h2>{text({ ja: 'プロジェクトメモ', en: 'Project memo' })}</h2>
+              <form
+                key={`${nativeSnapshot.project_instance_id}:${nativeSnapshot.memo}`}
+                onSubmit={(event) => void submitProjectMemo(event)}
+              >
+                <label>
+                  <span>{text({ ja: 'メモ', en: 'Notes' })}</span>
+                  <textarea
+                    name="project_memo"
+                    maxLength={16_000}
+                    rows={5}
+                    defaultValue={nativeSnapshot.memo}
+                    disabled={coreBusy || recoveryBlocking}
+                  />
+                </label>
+                <div className="property-actions">
+                  <button type="submit" disabled={coreBusy || recoveryBlocking}>
+                    {text({ ja: 'メモを保存', en: 'Save memo' })}
+                  </button>
+                </div>
+              </form>
+            </section>
+          )}
           {nativeSnapshot && !benchmarkRun && (
             <ProjectLayerPanel
               document={nativeSnapshot.project_layers}

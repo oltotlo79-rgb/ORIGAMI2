@@ -137,6 +137,9 @@ struct VertexPositionUpdateV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum CommandV1 {
+    UpdateProjectMemo {
+        memo: String,
+    },
     SetElementMetadata {
         target: ElementMetadataTargetV1,
         metadata: Option<ElementMetadataV1>,
@@ -321,6 +324,9 @@ struct VertexPositionV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InverseV1 {
+    RestoreProjectMemo {
+        memo: String,
+    },
     RestoreElementMetadata {
         target: ElementMetadataTargetV1,
         metadata: Option<ElementMetadataV1>,
@@ -485,6 +491,7 @@ fn target_from_wire(target: IntersectionEdgeTargetV1) -> IntersectionEdgeTarget 
 
 fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1> {
     Ok(match command {
+        Command::UpdateProjectMemo { memo } => CommandV1::UpdateProjectMemo { memo: memo.clone() },
         Command::SetElementMetadata { target, metadata } => CommandV1::SetElementMetadata {
             target: *target,
             metadata: metadata.clone(),
@@ -706,6 +713,7 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
 
 fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1> {
     Ok(match command {
+        CommandV1::UpdateProjectMemo { memo } => Command::UpdateProjectMemo { memo },
         CommandV1::SetElementMetadata { target, metadata } => {
             Command::SetElementMetadata { target, metadata }
         }
@@ -939,6 +947,9 @@ fn indexed_layer_assignment_from_wire(
 
 fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1> {
     Ok(match inverse {
+        Inverse::RestoreProjectMemo { memo } => {
+            InverseV1::RestoreProjectMemo { memo: memo.clone() }
+        }
         Inverse::RestoreElementMetadata { target, metadata } => InverseV1::RestoreElementMetadata {
             target: *target,
             metadata: metadata.clone(),
@@ -1171,6 +1182,7 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
 
 fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1> {
     Ok(match inverse {
+        InverseV1::RestoreProjectMemo { memo } => Inverse::RestoreProjectMemo { memo },
         InverseV1::RestoreElementMetadata { target, metadata } => {
             Inverse::RestoreElementMetadata { target, metadata }
         }
@@ -1468,6 +1480,15 @@ fn validate_constraint_finite(
 
 fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1> {
     match command {
+        Command::UpdateProjectMemo { memo } => {
+            if memo.chars().count() > 16_000
+                || memo.chars().any(|character| {
+                    character.is_control() && !matches!(character, '\n' | '\r' | '\t')
+                })
+            {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
+        }
         Command::SetElementMetadata { metadata, .. } => {
             if let Some(metadata) = metadata {
                 ori_domain::validate_element_metadata_v1(metadata)
@@ -1577,6 +1598,15 @@ fn validate_vertex_finite(vertex: &Vertex) -> Result<(), EditorHistoryErrorV1> {
 
 fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1> {
     match inverse {
+        Inverse::RestoreProjectMemo { memo } => {
+            if memo.chars().count() > 16_000
+                || memo.chars().any(|character| {
+                    character.is_control() && !matches!(character, '\n' | '\r' | '\t')
+                })
+            {
+                return Err(EditorHistoryErrorV1::InvalidInverse);
+            }
+        }
         Inverse::RestoreElementMetadata { metadata, .. } => {
             if let Some(metadata) = metadata {
                 ori_domain::validate_element_metadata_v1(metadata)
@@ -1717,6 +1747,7 @@ fn validate_inverse_application(
 ) -> Result<(), EditorHistoryErrorV1> {
     let invalid = || EditorHistoryErrorV1::InvalidInverse;
     match inverse {
+        Inverse::RestoreProjectMemo { .. } => {}
         Inverse::RestoreElementMetadata { .. } => {}
         Inverse::Command(_) => {}
         Inverse::RestoreVertex { index, vertex } => {
@@ -2176,14 +2207,37 @@ impl EditorState {
         element_metadata: ElementMetadataDocumentV1,
         history: EditorHistoryV1,
     ) -> Result<Self, EditorHistoryErrorV1> {
-        let limit = history.validate_shape()?;
-        let mut current = Self::with_all_document_parts(
+        Self::with_all_document_parts_memo_and_history_v1(
             pattern,
             paper,
             instruction_timeline,
             geometric_constraints,
             project_layers,
             element_metadata,
+            String::new(),
+            history,
+        )
+    }
+
+    pub fn with_all_document_parts_memo_and_history_v1(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        project_memo: String,
+        history: EditorHistoryV1,
+    ) -> Result<Self, EditorHistoryErrorV1> {
+        let limit = history.validate_shape()?;
+        let mut current = Self::with_all_document_parts_and_memo(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+            project_memo,
         );
         validate_editor_finite(&current)?;
         let expected_current = editor_document_parts_bytes(&current)?;

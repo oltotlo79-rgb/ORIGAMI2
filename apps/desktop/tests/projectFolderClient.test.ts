@@ -138,6 +138,7 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
     project_instance_id: INSTANCE_ID,
     project_id: PROJECT_ID,
     name: 'Expanded project',
+    memo: '',
     current_path: null,
     revision: 4,
     saved_revision: 4,

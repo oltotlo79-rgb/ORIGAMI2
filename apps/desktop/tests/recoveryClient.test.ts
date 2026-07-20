@@ -1076,6 +1076,7 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
     project_instance_id: RESTORED_INSTANCE_ID,
     project_id: RECOVERED_PROJECT_ID,
     name: 'Recovered work',
+    memo: '',
     current_path: null,
     revision: 0,
     saved_revision: null,

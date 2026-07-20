@@ -235,6 +235,11 @@ pub struct ProjectDocument {
     pub format_version: u32,
     pub project_id: ProjectId,
     pub name: String,
+    /// Free-form project-level notes.
+    ///
+    /// Empty notes are omitted to keep legacy project JSON byte-stable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub memo: String,
     #[serde(default)]
     pub paper: Paper,
     pub crease_pattern: CreasePattern,
@@ -266,6 +271,7 @@ impl ProjectDocument {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: ProjectId::new(),
             name: name.into(),
+            memo: String::new(),
             paper: Paper::default(),
             crease_pattern,
             instruction_timeline: InstructionTimeline::default(),
@@ -287,6 +293,8 @@ pub enum FormatError {
     NilProjectId,
     #[error("project element metadata is invalid")]
     InvalidElementMetadata,
+    #[error("project memo is invalid")]
+    InvalidProjectMemo,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error(".ori2 editor-history JSON is invalid: {0}")]
@@ -458,6 +466,15 @@ pub fn read_project_json_with_limits(
 }
 
 fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatError> {
+    const MAX_PROJECT_MEMO_CHARS: usize = 16_000;
+    if document.memo.chars().count() > MAX_PROJECT_MEMO_CHARS
+        || document
+            .memo
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(FormatError::InvalidProjectMemo);
+    }
     ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
         .map_err(|_| FormatError::InvalidElementMetadata)?;
     if document.format_version != CURRENT_FORMAT_VERSION {
@@ -806,6 +823,34 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn project_memo_round_trips_and_legacy_json_defaults_to_empty() {
+        let mut document = sample_document();
+        document.memo = "Fold slowly.\n裏面を確認".to_owned();
+        let encoded = write_project_json(&document).unwrap();
+        assert_eq!(read_project_json(&encoded).unwrap(), document);
+
+        let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        legacy.as_object_mut().unwrap().remove("memo");
+        let restored = read_project_json(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(restored.memo.is_empty());
+    }
+
+    #[test]
+    fn project_memo_rejects_controls_and_excess_length() {
+        let mut document = sample_document();
+        document.memo = "bad\u{0000}memo".to_owned();
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidProjectMemo)
+        ));
+        document.memo = "a".repeat(16_001);
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidProjectMemo)
+        ));
+    }
 
     fn sample_document() -> ProjectDocument {
         let start = VertexId::new();

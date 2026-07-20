@@ -126,6 +126,7 @@ const PROJECT_SNAPSHOT_KEYS = [
   'project_instance_id',
   'project_id',
   'name',
+  'memo',
   'current_path',
   'revision',
   'saved_revision',
@@ -567,6 +568,7 @@ export function parseRestoredRecoverySnapshot(
       || record.project_instance_id === parsedExpected.project_instance_id
       || record.project_id !== parsedCandidate.project_id
       || typeof record.name !== 'string'
+      || typeof record.memo !== 'string'
       || record.current_path !== null
       || record.revision !== 0
       || !isNullableRevision(record.saved_revision)
@@ -617,6 +619,7 @@ export function parseRestoredRecoverySnapshot(
       project_instance_id: record.project_instance_id,
       project_id: parsedCandidate.project_id,
       name: record.name,
+      memo: record.memo,
       current_path: null,
       revision: 0,
       saved_revision: null,
@@ -653,6 +656,7 @@ export function parsePathlessProjectSnapshot(
       || !isCanonicalNonNilUuid(record.project_instance_id)
       || !isCanonicalNonNilUuid(record.project_id)
       || typeof record.name !== 'string'
+      || typeof record.memo !== 'string'
       || record.current_path !== null
       || !isNonNegativeSafeInteger(record.revision)
       || !isNullableRevision(record.saved_revision)
@@ -702,6 +706,7 @@ export function parsePathlessProjectSnapshot(
       project_instance_id: record.project_instance_id,
       project_id: record.project_id,
       name: record.name,
+      memo: record.memo,
       current_path: null,
       revision: record.revision,
       saved_revision: record.saved_revision,

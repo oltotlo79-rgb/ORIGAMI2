@@ -272,6 +272,7 @@ function validSnapshot() {
     project_instance_id: INSTANCE_ID,
     project_id: PROJECT_ID,
     name: 'Layer test',
+    memo: '',
     current_path: null,
     revision: 8,
     saved_revision: null,

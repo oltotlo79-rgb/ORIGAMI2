@@ -42,6 +42,7 @@ const mutationContracts = [
   ['redo', 'redo'],
   ['setCuttingAllowed', 'set_cutting_allowed'],
   ['setElementMetadata', 'set_element_metadata'],
+  ['updateProjectMemo', 'update_project_memo'],
   ['updatePaperProperties', 'update_paper_properties'],
   ['setLengthDisplayUnit', 'set_length_display_unit'],
   ['resizeRectangularPaper', 'resize_rectangular_paper'],
@@ -53,9 +54,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 38)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 38)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 38)
+  assert.equal(mutationContracts.length, 39)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 39)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 39)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

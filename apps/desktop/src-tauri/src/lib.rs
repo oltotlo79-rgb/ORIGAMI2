@@ -438,13 +438,14 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
-        let editor = EditorState::with_all_document_parts(
+        let editor = EditorState::with_all_document_parts_and_memo(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
             document.geometric_constraints,
             document.layers,
             document.element_metadata,
+            document.memo,
         );
         Self {
             instance_id: ProjectId::new(),
@@ -531,6 +532,7 @@ impl ProjectState {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: self.project_id,
             name: self.name.clone(),
+            memo: self.editor.project_memo().to_owned(),
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
@@ -583,6 +585,7 @@ impl ProjectState {
         saved.format_version != CURRENT_FORMAT_VERSION
             || saved.project_id != self.project_id
             || saved.name != self.name
+            || saved.memo != self.editor.project_memo()
             || saved.paper != *self.editor.paper()
             || saved.crease_pattern != *self.editor.pattern()
             || saved.instruction_timeline != *self.editor.instruction_timeline()
@@ -592,6 +595,7 @@ impl ProjectState {
                 != self.numeric_expressions.vertex_coordinates
             || saved.geometric_constraints != *self.editor.geometric_constraints()
             || saved.layers != *self.editor.project_layers()
+            || saved.element_metadata != *self.editor.element_metadata()
     }
 
     fn record_numeric_expression_edit(&mut self) {
@@ -824,24 +828,26 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             if history.project_id() != project.document.project_id {
                 return Err(());
             }
-            EditorState::with_all_document_parts_and_history_v1(
+            EditorState::with_all_document_parts_memo_and_history_v1(
                 project.document.crease_pattern.clone(),
                 project.document.paper.clone(),
                 project.document.instruction_timeline.clone(),
                 project.document.geometric_constraints.clone(),
                 project.document.layers.clone(),
                 project.document.element_metadata.clone(),
+                project.document.memo.clone(),
                 history.clone(),
             )
             .map_err(|_| ())
         }
-        None => Ok(EditorState::with_all_document_parts(
+        None => Ok(EditorState::with_all_document_parts_and_memo(
             project.document.crease_pattern.clone(),
             project.document.paper.clone(),
             project.document.instruction_timeline.clone(),
             project.document.geometric_constraints.clone(),
             project.document.layers.clone(),
             project.document.element_metadata.clone(),
+            project.document.memo.clone(),
         )),
     }?;
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
@@ -926,6 +932,7 @@ struct ProjectSnapshot {
     project_instance_id: ProjectId,
     project_id: ProjectId,
     name: String,
+    memo: String,
     current_path: Option<String>,
     revision: u64,
     saved_revision: Option<u64>,
@@ -1326,6 +1333,38 @@ fn benchmark_edge_id(index: usize) -> String {
 fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, String> {
     let project = lock_project(&state)?;
     Ok(snapshot(&project))
+}
+
+#[tauri::command]
+fn update_project_memo(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    memo: String,
+) -> Result<ProjectSnapshot, String> {
+    const MAX_PROJECT_MEMO_CHARS: usize = 16_000;
+    if memo.chars().count() > MAX_PROJECT_MEMO_CHARS
+        || memo
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err("project memo must contain at most 16000 printable characters".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateProjectMemo { memo },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4606,6 +4645,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         name: project.name.clone(),
+        memo: project.editor.project_memo().to_owned(),
         current_path: project
             .current_path
             .as_deref()
@@ -6412,6 +6452,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
             project_snapshot,
+            update_project_memo,
             get_history_entry_limit,
             set_history_entry_limit,
             get_recovery_candidate,
@@ -12452,18 +12493,45 @@ mod tests {
     #[test]
     fn document_snapshot_keeps_identity_name_and_dirty_state() {
         let mut document = ProjectDocument::new("Loaded bird", CreasePattern::empty());
+        document.memo = "Check the reverse side.".to_owned();
         document.paper.cutting_allowed = true;
         let project = ProjectState::from_document(document.clone(), PathBuf::from("bird.ori2"));
         let response = snapshot(&project);
 
         assert_eq!(response.project_id, document.project_id);
         assert_eq!(response.name, "Loaded bird");
+        assert_eq!(response.memo, "Check the reverse side.");
         assert_eq!(response.current_path.as_deref(), Some("bird.ori2"));
         assert!(!response.is_dirty);
         assert_eq!(response.paper, document.paper);
         assert!(response.cutting_allowed);
         assert!(!response.can_undo);
         assert_eq!(project.document(), document);
+    }
+
+    #[test]
+    fn project_memo_is_dirty_undoable_and_round_trips_through_history() {
+        let mut project = ProjectState::new(CreasePattern::empty());
+        project
+            .editor
+            .execute(
+                0,
+                Command::UpdateProjectMemo {
+                    memo: "First draft".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(project.document().memo, "First draft");
+        assert!(project.is_dirty());
+
+        let archive = project.project_archive().unwrap();
+        let mut reopened =
+            ProjectState::from_project_archive(archive, PathBuf::from("memo.ori2")).unwrap();
+        assert_eq!(reopened.document().memo, "First draft");
+        reopened.editor.undo(reopened.editor.revision()).unwrap();
+        assert!(reopened.document().memo.is_empty());
+        reopened.editor.redo(reopened.editor.revision()).unwrap();
+        assert_eq!(reopened.document().memo, "First draft");
     }
 
     #[test]

@@ -10,7 +10,7 @@
 
 現在の行単位集計は **実装済み57 / 部分実装25 / 未着手5**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。2026-07-20に11種幾何制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因と判定保留表示を利用者経路へ接続し、EDT-008/009を未着手から部分実装へ更新した。同日にproject/session単位の履歴件数上限UIと、30秒周期の端末内自動保存、起動時の必須復元・破棄workflow、正常完了時の復旧slot整理を接続し、HIS-003/004/005/006を実装済みへ更新した。さらに通常`.ori2`と復旧checkpointへ認証済みUndo/Redo両stack・履歴件数上限を保存し、再読込後も利用できる利用者経路を接続してHIS-002を実装済みへ更新した。LIN-004はversion固定のproject layer文書、折り線edge assignment、編集command、履歴、通常保存・復旧・strict IPC snapshotに加えて、layer作成・改名・並べ替え・削除・選択折り線の割当UIまで接続したため部分実装を維持する。layer共通の表示・lock・透明度はLIN-005として接続済みだが、注釈・下絵object自体の作成・編集・描画は未実装のためLIN-004は実装済みにはしない。UI-001は言語設定の端末保存とライブ切替を、主要画面、ダイアログ、2D/3D、折り手順、ARIA、通知、固定native警告まで日英で接続したため実装済みへ更新した。さらに固定GitHub Releases APIへの明示的な手動更新確認、端末ごとの無効設定、プライバシー説明と日英状態表示を利用者経路へ接続し、OPS-001/002/003を実装済みへ更新した。同日に認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ書き出す利用者経路を接続し、IO-007を実装済み、静的なBlender・3Dプリンター・Web等への受渡しをIO-008の部分実装へ更新した。名前付き複合折り技法は、日英の作成・厳格取込・複数技法選択編集・別名保存を1 MiB上限、通常ファイルno-follow読込、Rust/TypeScript二重検証、原子的保存へ接続してINS-009を実装済みとした。さらに技法情報・parameter・precondition・ordered operationを説明専用timeline案へ決定的に変換し、日英preview、明示確認、原子的追加、stale/取消/失敗時の無変更、一括Undo/Redoへ接続してINS-008を実装済みとした。技法から3D運動を生成・自動実行する機能はINS-008の実装根拠に含めない。展開フォルダー形式はstrict core、Windows/Unixのno-follow filesystem adapter、新規targetの原子的保存・読込、既存targetのimmutable phase journal差替え、native private registryによる起動時回復、pathless strict IPC、同一projectの安全な差替えと別projectの上書き拒否を明示する日英UIまで接続したためIO-003を部分実装として維持する。オーナー実施のWindows実機E2Eだけを残す。選択頂点を始点とする表示単位の正長・度単位角度・線種指定による終点と線の作図を一つのnative原子的commandへ統合し、一回のUndo/Redo、layer lock、切断許可、履歴永続化へ接続したためEDT-003を実装済みへ更新した。頂点の新規X/Y、既存頂点のX/Y移動、選択頂点からの長さ・角度にも原式とnative採用値のversion固定bindingを接続し、複数頂点差分を含むUndo/Redo、履歴上限、`.ori2`、展開folder、復旧保存・再読込、native再評価・bit一致検証まで完了したためEDT-005を実装済みへ更新した。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
 
-2026-07-20再集計: LIN-004、EDT-001/007/008/009/010/012、VAL-002/004/008、SIM-003/006/009、INS-001/002/003/004/005/006/007/010、IO-003の完了により、現在の正本87行は **実装済み79 / 部分実装6 / 未着手2**。
+2026-07-20再集計: LIN-004、EDT-001/007/008/009/010/012、VAL-002/004/008、SIM-003/006/009、INS-001/002/003/004/005/006/007/010、IO-003、OPS-007の完了により、現在の正本87行は **実装済み80 / 部分実装5 / 未着手2**。
 
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
@@ -305,7 +305,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | OPS-004 | 実装済み | 固定schemaのredacted JSONだけをアプリ専用領域へ端末内保存し、明示操作で選んだ端末内ファイルにも保存できる。通信・自動送信なし |
 | OPS-005 | 実装済み | 固定15 scopeの粗い件数区分だけを保存・表示し、作品名・形状・内容・path・ID・座標・時刻・アプリ版・OS・CPU・GPUを含めない |
 | OPS-006 | 実装済み | Tauri版の診断ダイアログで正確なJSONを読取専用表示し、内容選択と同一bytesの手動保存、GitHub Issuesへ利用者自身で添付する案内を提供 |
-| OPS-007 | 部分実装 | Windows CIは動作。Windows用パッケージのGitHub Releases正式配布を残す |
+| OPS-007 | 実装済み | `v*` tagまたは既存tagを指定する手動dispatchから、tag・commit・全versionを固定してfrontend/Rust全検証、unsigned Windows NSIS生成、resource・release notes・SHA-256再検証を行う。保護environmentと最小`contents: write`権限のpublish jobは、既存Releaseの上書きを拒否し、同一の検証済みartifactをdraft作成後に正式なlatest GitHub Releaseとして公開する。契約testは署名状態、trigger、権限、tag ABA、asset集合、取消不能publishを回帰する |
 | OPS-008 | 実装済み | macOSでRust test・Clippyとfrontend production buildを含む`.app`生成をCI検証。オーナー決定どおり実機E2E・正式配布は初版対象外 |
 
 ## 更新ルール

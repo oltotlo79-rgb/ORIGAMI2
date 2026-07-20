@@ -1848,18 +1848,26 @@ export function importUnderlayImage(
   })
 }
 
-export function readUnderlayAssetDataUrl(
+export async function readUnderlayAssetDataUrl(
   expectedProjectId: string,
   expectedRevision: number,
   expectedProjectInstanceId: string,
   asset: string,
 ) {
-  return invoke<string>('read_underlay_asset_data_url', {
+  if (!isCanonicalNonNilUuid(asset)) throw new Error('invalid underlay asset')
+  const value = await invoke<unknown>('read_underlay_asset_data_url', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
     asset,
   })
+  const maximumLength = Math.ceil(16 * 1024 * 1024 / 3) * 4 + 32
+  if (
+    typeof value !== 'string'
+    || value.length > maximumLength
+    || !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/u.test(value)
+  ) throw new Error('invalid underlay asset response')
+  return value
 }
 
 export function undo(

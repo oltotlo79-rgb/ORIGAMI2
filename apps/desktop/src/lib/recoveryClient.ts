@@ -138,6 +138,8 @@ const PROJECT_SNAPSHOT_KEYS = [
   'geometric_constraints',
   'project_layers',
   'element_metadata',
+  'annotations',
+  'underlays',
   'fold_model_fingerprint',
   'can_undo',
   'can_redo',
@@ -150,6 +152,71 @@ const MAX_BOUNDARY_VERTICES = 1_000_000
 const MAX_INSTRUCTION_STEPS = 512
 const MAX_INSTRUCTION_HINGES_PER_STEP = 10_000
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u
+
+function parseAnnotations(value: unknown, layers: ProjectSnapshot['project_layers']) {
+  const record = exactDataRecord(value, ['schema_version', 'annotations'] as const)
+  if (record?.schema_version !== 1 || !Array.isArray(record.annotations) || record.annotations.length > 10_000) return null
+  const layerIds = new Set(layers.layers.filter((layer) => layer.content_kind === 'annotation').map((layer) => layer.id))
+  const ids = new Set<string>()
+  for (const value of record.annotations) {
+    const item = exactDataRecord(value, ['id', 'text', 'anchor', 'style', 'layer'] as const)
+    const anchorRecord = item && exactDataRecord(item.anchor,
+      exactDataRecord(item.anchor, ['kind', 'position'] as const)?.kind === 'absolute'
+        ? ['kind', 'position'] as const
+        : ['kind', 'vertex', 'offset'] as const)
+    const anchorPoint = anchorRecord && exactDataRecord(
+      anchorRecord.kind === 'absolute' ? anchorRecord.position : anchorRecord.offset,
+      ['x', 'y'] as const,
+    )
+    const style = item && exactDataRecord(item.style, ['color', 'font_size_mm', 'bold', 'italic'] as const)
+    const color = style && exactDataRecord(style.color, ['red', 'green', 'blue', 'alpha'] as const)
+    if (!item || !isCanonicalNonNilUuid(item.id) || ids.has(item.id)
+      || typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 4096
+      || typeof item.layer !== 'string' || !layerIds.has(item.layer)
+      || !anchorRecord || !anchorPoint || !finite(anchorPoint.x) || !finite(anchorPoint.y)
+      || (anchorRecord.kind !== 'absolute' && (anchorRecord.kind !== 'vertex' || !isCanonicalNonNilUuid(anchorRecord.vertex)))
+      || !style || !color || !finite(style.font_size_mm) || style.font_size_mm < 0.5 || style.font_size_mm > 200
+      || typeof style.bold !== 'boolean' || typeof style.italic !== 'boolean'
+      || !rgbaChannel(color.red) || !rgbaChannel(color.green) || !rgbaChannel(color.blue) || !rgbaChannel(color.alpha)) return null
+    ids.add(item.id)
+  }
+  return {
+    schema_version: 1,
+    annotations: record.annotations,
+  } as ProjectSnapshot['annotations']
+}
+
+function parseUnderlays(value: unknown, layers: ProjectSnapshot['project_layers']) {
+  const record = exactDataRecord(value, ['schema_version', 'underlays'] as const)
+  if (record?.schema_version !== 1 || !Array.isArray(record.underlays) || record.underlays.length > 256) return null
+  const layerIds = new Set(layers.layers.filter((layer) => layer.content_kind === 'underlay').map((layer) => layer.id))
+  const ids = new Set<string>()
+  for (const value of record.underlays) {
+    const item = exactDataRecord(value, ['id', 'asset', 'transform', 'opacity', 'layer'] as const)
+    const transform = item && exactDataRecord(item.transform, ['position', 'scale_x', 'scale_y', 'rotation_degrees'] as const)
+    const position = transform && exactDataRecord(transform.position, ['x', 'y'] as const)
+    if (!item || !transform || !position || !isCanonicalNonNilUuid(item.id)
+      || !isCanonicalNonNilUuid(item.asset) || ids.has(item.id)
+      || typeof item.layer !== 'string' || !layerIds.has(item.layer)
+      || !finite(position.x) || !finite(position.y)
+      || !finite(transform.scale_x) || Math.abs(transform.scale_x) < 0.000001 || Math.abs(transform.scale_x) > 1_000_000
+      || !finite(transform.scale_y) || Math.abs(transform.scale_y) < 0.000001 || Math.abs(transform.scale_y) > 1_000_000
+      || !finite(transform.rotation_degrees) || !finite(item.opacity) || item.opacity < 0 || item.opacity > 1) return null
+    ids.add(item.id)
+  }
+  return {
+    schema_version: 1,
+    underlays: record.underlays,
+  } as ProjectSnapshot['underlays']
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function rgbaChannel(value: unknown): value is number {
+  return Number.isInteger(value) && typeof value === 'number' && value >= 0 && value <= 255
+}
 
 const defaultNativeInvoke: RecoveryNativeInvoke = (command, args) =>
   invoke<unknown>(command, args === undefined ? undefined : { ...args })
@@ -596,6 +663,8 @@ export function parseRestoredRecoverySnapshot(
       record.project_layers,
       creasePattern?.edges ?? [],
     )
+    const annotations = projectLayers && parseAnnotations(record.annotations, projectLayers)
+    const underlays = projectLayers && parseUnderlays(record.underlays, projectLayers)
     const elementMetadata = exactDataRecord(record.element_metadata, [
       'vertices',
       'edges',
@@ -608,6 +677,8 @@ export function parseRestoredRecoverySnapshot(
       || !numericExpressions
       || !geometricConstraints
       || !projectLayers
+      || !annotations
+      || !underlays
       || !elementMetadata
       || !Array.isArray(elementMetadata.vertices)
       || !Array.isArray(elementMetadata.edges)
@@ -631,6 +702,8 @@ export function parseRestoredRecoverySnapshot(
       geometric_constraints: geometricConstraints,
       project_layers: projectLayers,
       element_metadata: record.element_metadata as ProjectSnapshot['element_metadata'],
+      annotations,
+      underlays,
       fold_model_fingerprint: record.fold_model_fingerprint,
       can_undo: false,
       can_redo: false,
@@ -683,6 +756,8 @@ export function parsePathlessProjectSnapshot(
       record.project_layers,
       creasePattern?.edges ?? [],
     )
+    const annotations = projectLayers && parseAnnotations(record.annotations, projectLayers)
+    const underlays = projectLayers && parseUnderlays(record.underlays, projectLayers)
     const elementMetadata = exactDataRecord(record.element_metadata, [
       'vertices',
       'edges',
@@ -695,6 +770,8 @@ export function parsePathlessProjectSnapshot(
       || !numericExpressions
       || !geometricConstraints
       || !projectLayers
+      || !annotations
+      || !underlays
       || !elementMetadata
       || !Array.isArray(elementMetadata.vertices)
       || !Array.isArray(elementMetadata.edges)
@@ -718,6 +795,8 @@ export function parsePathlessProjectSnapshot(
       geometric_constraints: geometricConstraints,
       project_layers: projectLayers,
       element_metadata: record.element_metadata as ProjectSnapshot['element_metadata'],
+      annotations,
+      underlays,
       fold_model_fingerprint: record.fold_model_fingerprint,
       can_undo: record.can_undo,
       can_redo: record.can_redo,

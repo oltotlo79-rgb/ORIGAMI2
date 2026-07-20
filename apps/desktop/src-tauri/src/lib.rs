@@ -3797,7 +3797,14 @@ fn import_underlay_image(
         .add_filter("PNG or JPEG image", &["png", "jpg", "jpeg"])
         .blocking_pick_file();
     let Some(selected) = selected else {
-        return lock_project(&state).map(|project| snapshot(&project));
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+        return Ok(snapshot(&project));
     };
     let path = selected
         .into_path()
@@ -3885,6 +3892,15 @@ fn read_underlay_asset_data_url(
         expected_project_id,
         expected_revision,
     )?;
+    if !project
+        .editor
+        .underlays()
+        .underlays
+        .iter()
+        .any(|underlay| underlay.asset == asset)
+    {
+        return Err("underlay asset is unavailable".to_owned());
+    }
     let item = project
         .texture_assets
         .iter()

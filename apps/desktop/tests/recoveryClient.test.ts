@@ -1124,6 +1124,8 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
       edges: [],
       faces: [],
     },
+    annotations: { schema_version: 1, annotations: [] },
+    underlays: { schema_version: 1, underlays: [] },
     fold_model_fingerprint: 'a'.repeat(64),
     can_undo: false,
     can_redo: false,

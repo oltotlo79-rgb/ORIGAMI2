@@ -75,7 +75,7 @@ use ori_core::{
     segment_midpoint_polygon_relation, validate_paper,
 };
 use ori_domain::{
-    ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
+    AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
     InstructionVisual, LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit,
@@ -85,11 +85,12 @@ use ori_domain::{
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
     FoldBoundaryCandidateSource, FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit,
-    FoldPreview, FoldPreviewWarning, Ori2ProjectArchive, PolarVertexConstructionExpressions,
-    ProjectDocument, ProjectNumericExpressions, RectangularPaperCreationExpressions,
-    SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
-    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
-    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
+    FoldPreview, FoldPreviewWarning, MAX_PROJECT_TEXTURE_ASSET_BYTES,
+    MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES, Ori2ProjectArchive, PolarVertexConstructionExpressions,
+    ProjectDocument, ProjectNumericExpressions, ProjectTextureAssetV1, ProjectTextureMediaTypeV1,
+    RectangularPaperCreationExpressions, SvgBoundaryCandidateId, SvgBoundaryCandidateKind,
+    SvgConversionOptions, SvgDashPattern, SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview,
+    SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
     VertexCoordinateExpressionChange, VertexCoordinateExpressionTransition,
     VertexCoordinateExpressions, generate_project_thumbnail_svg, read_fold_preview,
     read_svg_preview,
@@ -1414,12 +1415,6 @@ fn update_project_memo(
         return Err("project memo must contain at most 16000 printable characters".to_owned());
     }
     let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
-    )?;
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -3519,6 +3514,126 @@ fn update_paper_properties(
             cutting_allowed,
         },
     )
+}
+
+/// Selects a bounded PNG/JPEG through the native picker, registers it in the
+/// authenticated project, and selects it as the paper front in one operation.
+///
+/// A canceled picker is a successful no-op. The image bytes never cross the
+/// webview boundary.
+#[tauri::command]
+fn import_front_paper_texture(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<ProjectSnapshot, String> {
+    {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+    }
+
+    let selected = app
+        .dialog()
+        .file()
+        .set_title("表面テクスチャ画像 / Front texture image")
+        .add_filter("PNG or JPEG image", &["png", "jpg", "jpeg"])
+        .blocking_pick_file();
+    let Some(selected) = selected else {
+        return lock_project(&state).map(|project| snapshot(&project));
+    };
+    let selected = selected
+        .into_path()
+        .map_err(|_| "ローカルのテクスチャ画像を選択してください。".to_owned())?;
+
+    let metadata = std::fs::metadata(&selected)
+        .map_err(|_| "テクスチャ画像を読み込めませんでした。".to_owned())?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES as u64
+    {
+        return Err("テクスチャ画像は16 MiB以下のPNG/JPEGを選択してください。".to_owned());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(&selected)
+        .and_then(|file| {
+            file.take((MAX_PROJECT_TEXTURE_ASSET_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "テクスチャ画像を読み込めませんでした。".to_owned())?;
+    let media_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ProjectTextureMediaTypeV1::Png
+    } else if bytes.starts_with(&[0xff, 0xd8]) && bytes.ends_with(&[0xff, 0xd9]) {
+        ProjectTextureMediaTypeV1::Jpeg
+    } else {
+        return Err("選択したファイルは有効なPNG/JPEGではありません。".to_owned());
+    };
+
+    let mut project = lock_project(&state)?;
+    register_front_texture(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        media_type,
+        bytes,
+    )
+}
+
+fn register_front_texture(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    media_type: ProjectTextureMediaTypeV1,
+    bytes: Vec<u8>,
+) -> Result<ProjectSnapshot, String> {
+    ensure_expected_project(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let asset_id = AssetId::new();
+    let mut retained_total = bytes.len();
+    for asset in &project.texture_assets {
+        retained_total = retained_total.saturating_add(asset.bytes.len());
+    }
+    if retained_total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES
+        || project.texture_assets.len() >= ori_formats::MAX_PROJECT_TEXTURE_ASSETS
+    {
+        return Err("プロジェクト内テクスチャの合計は32 MiB以下にしてください。".to_owned());
+    }
+    project.texture_assets.push(ProjectTextureAssetV1 {
+        id: asset_id,
+        media_type,
+        bytes,
+    });
+    let paper = project.editor.paper().clone();
+    let result = execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdatePaperProperties {
+            thickness_mm: paper.thickness_mm,
+            front_color: paper.front.color,
+            back_color: paper.back.color,
+            front_texture_asset: Some(asset_id),
+            back_texture_asset: paper.back.texture_asset,
+            cutting_allowed: paper.cutting_allowed,
+        },
+    );
+    if result.is_err() {
+        project.texture_assets.retain(|asset| asset.id != asset_id);
+    }
+    result
 }
 
 #[tauri::command]
@@ -6593,6 +6708,7 @@ pub fn run() {
             move_instruction_step,
             set_cutting_allowed,
             update_paper_properties,
+            import_front_paper_texture,
             set_element_metadata,
             set_length_display_unit,
             resize_rectangular_paper,
@@ -9580,6 +9696,48 @@ mod tests {
         assert!(project.is_dirty());
         project.editor.redo(4).expect("redo to saved content");
         assert!(!project.is_dirty());
+    }
+
+    #[test]
+    fn imported_front_textures_remain_live_across_undo_redo() {
+        let mut project = initial_project_state();
+        let instance_id = project.instance_id;
+        let project_id = project.project_id;
+        let png = |tag| {
+            let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+            bytes.push(tag);
+            bytes
+        };
+
+        register_front_texture(
+            &mut project,
+            instance_id,
+            project_id,
+            0,
+            ProjectTextureMediaTypeV1::Png,
+            png(1),
+        )
+        .expect("first texture");
+        let first = project.editor.paper().front.texture_asset.unwrap();
+        register_front_texture(
+            &mut project,
+            instance_id,
+            project_id,
+            1,
+            ProjectTextureMediaTypeV1::Png,
+            png(2),
+        )
+        .expect("replacement texture");
+        let second = project.editor.paper().front.texture_asset.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(project.texture_assets.len(), 2);
+
+        project.editor.undo(2).expect("undo texture replacement");
+        assert_eq!(project.editor.paper().front.texture_asset, Some(first));
+        ori_formats::write_project_json(&project.document()).expect("undo document");
+        project.editor.redo(3).expect("redo texture replacement");
+        assert_eq!(project.editor.paper().front.texture_asset, Some(second));
+        ori_formats::write_project_json(&project.document()).expect("redo document");
     }
 
     #[test]

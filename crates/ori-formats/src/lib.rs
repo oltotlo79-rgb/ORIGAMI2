@@ -596,12 +596,13 @@ fn validate_texture_assets(document: &ProjectDocument) -> Result<(), FormatError
             || asset.bytes.is_empty()
             || asset.bytes.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES
             || !payload_matches
-            || !referenced.contains(&asset.id.canonical_bytes())
         {
             return Err(FormatError::InvalidTextureAssets);
         }
     }
-    if total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES || ids != referenced {
+    // Bounded unreferenced assets are retained deliberately: an editor history
+    // entry may restore a former paper texture on undo/redo.
+    if total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES || !referenced.is_subset(&ids) {
         return Err(FormatError::InvalidTextureAssets);
     }
     Ok(())
@@ -2038,7 +2039,7 @@ mod tests {
     }
 
     #[test]
-    fn texture_registry_rejects_missing_foreign_duplicate_and_mistyped_payloads() {
+    fn texture_registry_rejects_missing_duplicate_and_mistyped_payloads() {
         let asset_id = AssetId::new();
         let mut document = sample_document();
         document.paper.front.texture_asset = Some(asset_id);
@@ -2070,10 +2071,7 @@ mod tests {
 
         document.texture_assets.pop();
         document.paper.front.texture_asset = None;
-        assert!(matches!(
-            write_project_json(&document),
-            Err(FormatError::InvalidTextureAssets)
-        ));
+        assert!(write_project_json(&document).is_ok());
     }
 
     #[test]

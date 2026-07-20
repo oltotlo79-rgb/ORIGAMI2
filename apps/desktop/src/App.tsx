@@ -109,6 +109,7 @@ import {
   updateProjectLayerPresentation,
   updateProjectMemo,
   updatePaperProperties,
+  importFrontPaperTexture,
   type ProjectSnapshot,
   type GeometricConstraintKind,
   type ProjectTopologyResponse,
@@ -2981,7 +2982,10 @@ function App() {
     )
     const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
     const backColor = parseHexColor(String(form.get('back_color') ?? ''))
-    const frontTextureAsset = builtinPaperPatternAsset(form.get('front_pattern'))
+    const frontPattern = form.get('front_pattern')
+    const frontTextureAsset = frontPattern === 'custom'
+      ? current.paper.front.texture_asset
+      : builtinPaperPatternAsset(frontPattern)
     const backTextureAsset = builtinPaperPatternAsset(form.get('back_pattern'))
     if (thicknessMm === null || thicknessMm < 0) {
       setCoreStatus(appMessage({
@@ -3007,6 +3011,12 @@ function App() {
         backTextureAsset,
         cuttingAllowed: form.get('cutting_allowed') === 'on',
       }))
+  }
+
+  function chooseFrontPaperTexture() {
+    if (coreOperationRef.current) return
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      importFrontPaperTexture(projectId, revision, projectInstanceId))
   }
 
   function submitElementMetadata(event: FormEvent<HTMLFormElement>) {
@@ -6911,14 +6921,25 @@ function App() {
                     name="front_pattern"
                     defaultValue={builtinPaperPatternFromAsset(
                       nativeSnapshot?.paper.front.texture_asset,
-                    ) ?? 'none'}
+                    ) ?? (nativeSnapshot?.paper.front.texture_asset ? 'custom' : 'none')}
                     disabled={coreBusy || !nativeSnapshot}
                   >
                     <option value="none">{text({ ja: 'なし（単色）', en: 'None (solid)' })}</option>
                     <option value="dots">{text({ ja: 'ドット', en: 'Dots' })}</option>
                     <option value="grid">{text({ ja: '格子', en: 'Grid' })}</option>
                     <option value="stripes">{text({ ja: '縞', en: 'Stripes' })}</option>
+                    {nativeSnapshot?.paper.front.texture_asset
+                      && !builtinPaperPatternFromAsset(nativeSnapshot.paper.front.texture_asset)
+                      ? <option value="custom">{text({ ja: '読み込んだ画像', en: 'Imported image' })}</option>
+                      : null}
                   </select>
+                  <button
+                    type="button"
+                    disabled={coreBusy || !nativeSnapshot}
+                    onClick={chooseFrontPaperTexture}
+                  >
+                    {text({ ja: '画像を読み込む…', en: 'Import image…' })}
+                  </button>
                 </label>
                 <label className="paper-color-field">
                   <span>{text({ ja: '裏の模様', en: 'Back pattern' })}</span>

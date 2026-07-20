@@ -26,6 +26,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       mode: ${{ steps.contract.outputs.mode }}
       tag: ${{ steps.contract.outputs.tag }}
@@ -193,11 +194,13 @@ jobs:
           path: target/formal-release
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   publish:
     if: needs.validate.outputs.mode == 'prerelease' || needs.validate.outputs.mode == 'stable'
     needs: [validate, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: formal-release
     permissions:
       contents: write
@@ -244,6 +247,7 @@ jobs:
     if: needs.validate.outputs.mode == 'promote'
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: formal-release
     permissions:
       contents: write

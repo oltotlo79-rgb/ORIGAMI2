@@ -20,6 +20,34 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   assert.doesNotMatch(workflow, /pull_request:/u)
 })
 
+test('all workflow actions are immutable SHA-pinned with bounded release jobs', () => {
+  const workflowNames = ['ci.yml', 'release.yml', 'release-windows.yml']
+  for (const name of workflowNames) {
+    const workflow = readFileSync(join(root, '.github/workflows', name), 'utf8')
+    const references = [...workflow.matchAll(/uses:\s*([^\s@]+)@([^\s#]+)/gu)]
+    assert.ok(references.length > 0)
+    for (const [, action, revision] of references) {
+      assert.match(revision, /^[0-9a-f]{40}$/u, `${name}: ${action}@${revision}`)
+    }
+    const checkoutCount = references.filter(([, action]) =>
+      action === 'actions/checkout').length
+    assert.equal(
+      workflow.match(/persist-credentials: false/gu)?.length ?? 0,
+      checkoutCount,
+      `${name}: every checkout must discard credentials`,
+    )
+  }
+
+  const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  assert.equal(release.match(/timeout-minutes:/gu)?.length ?? 0, 4)
+  assert.match(
+    release,
+    /name: formal-release-\$\{\{ matrix\.platform \}\}[\s\S]*retention-days: 1/u,
+  )
+  const build = release.slice(release.indexOf('  build:'), release.indexOf('  publish:'))
+  assert.doesNotMatch(build, /contents: write|id-token: write|attestations: write/u)
+})
+
 test('formal manifest remains an attested manual-review artifact, not an updater endpoint', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const manifestWriter = readFileSync(

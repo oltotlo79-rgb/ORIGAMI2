@@ -40,7 +40,11 @@ jobs:
           git clone --filter=blob:none --no-checkout https://github.com/rustsec/advisory-db.git "$database"
           git -C "$database" checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0
           test "$(git -C "$database" rev-parse HEAD)" = b5fc89b8be99e96f79194d8a6f11e9b4143b99f0
-          mapfile -t allowed_warnings < .github/rustsec-allowed-warnings.txt
+          audit_report="$RUNNER_TEMP/rustsec-audit.json"
+          cargo audit --db "$database" --no-fetch --json > "$audit_report"
+          allowed_warnings_file="$RUNNER_TEMP/rustsec-allowed-warnings.txt"
+          node .github/scripts/verify_rustsec_warning_ledger.mjs "$audit_report" > "$allowed_warnings_file"
+          mapfile -t allowed_warnings < "$allowed_warnings_file"
           ignore_args=()
           for advisory in "${allowed_warnings[@]}"; do
             [[ "$advisory" =~ ^RUSTSEC-[0-9]{4}-[0-9]{4}$ ]]

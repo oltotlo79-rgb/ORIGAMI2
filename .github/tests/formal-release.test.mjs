@@ -211,7 +211,8 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
   assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/u)
   assert.match(workflow, /checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0/u)
   assert.match(workflow, /cargo audit --db "\$database" --no-fetch --deny warnings/u)
-  assert.match(workflow, /rustsec-allowed-warnings\.txt/u)
+  assert.match(workflow, /verify_rustsec_warning_ledger\.mjs "\$audit_report" > "\$allowed_warnings_file"/u)
+  assert.match(workflow, /cargo audit --db "\$database" --no-fetch --json/u)
   assert.doesNotMatch(workflow, /npx (?!--no-install)/u)
   for (const command of workflow.matchAll(/cargo test[^\r\n]*/gu)) {
     assert.match(command[0], /--locked/u)
@@ -1176,10 +1177,14 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
     status: 'ci-gated',
     npm: 'npm-audit-v2;node-24.11.1;audit-level-low',
     cargo: 'cargo-audit-0.22.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
-    rustsecAllowedWarnings: readFileSync(
-      join(root, '.github/rustsec-allowed-warnings.txt'),
+    rustsecAllowedWarnings: JSON.parse(readFileSync(
+      join(root, '.github/rustsec-warning-ledger.json'),
       'utf8',
-    ).trim().split(/\r?\n/u),
+    )).entries.map(({ id }) => id),
+    rustsecWarningLedger: JSON.parse(readFileSync(
+      join(root, '.github/rustsec-warning-ledger.json'),
+      'utf8',
+    )),
     scope: 'package-lock.json;Cargo.lock',
   })
   assert.ok(policy.cargoRegistryPackages > 0 && policy.cargoRegistryPackages <= 10000)

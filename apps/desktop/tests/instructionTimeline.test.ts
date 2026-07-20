@@ -56,7 +56,7 @@ test('validates and detaches a current and a stale instruction step', () => {
   assert.equal(presentation.steps[0]?.title, '手順')
 })
 
-test('validates authored cameras, arrows, and focus points', () => {
+test('validates authored cameras, arrows, focus points, and hand guides', () => {
   const authored = step('step-1', CURRENT_FINGERPRINT, [])
   authored.visual = {
     camera: {
@@ -74,6 +74,12 @@ test('validates authored cameras, arrows, and focus points', () => {
       radius: 0.1,
       label: 'corner',
     }],
+    hand_guides: [{
+      kind: 'pinch',
+      position: { x: 0.5, y: 0, z: 0 },
+      direction: { x: 0, y: -1, z: 0 },
+      label: 'pinch',
+    }],
   }
   const presentation = createInstructionTimelinePresentation(
     { steps: [authored] },
@@ -87,6 +93,8 @@ test('validates authored cameras, arrows, and focus points', () => {
     { ...authored.visual, camera: { ...authored.visual.camera!, target: { x: 4, y: 3, z: 5 } } },
     { ...authored.visual, arrows: [{ ...authored.visual.arrows[0]!, end: { x: 0, y: 0, z: 0 } }] },
     { ...authored.visual, focus_points: [{ ...authored.visual.focus_points[0]!, radius: 0 }] },
+    { ...authored.visual, hand_guides: [{ ...authored.visual.hand_guides[0]!, kind: 'unknown' }] },
+    { ...authored.visual, hand_guides: [{ ...authored.visual.hand_guides[0]!, direction: { x: 0, y: 0, z: 0 } }] },
   ]) {
     assert.equal(createInstructionTimelinePresentation(
       { steps: [{ ...authored, visual }] },
@@ -739,6 +747,7 @@ function step(
       camera: null,
       arrows: [],
       focus_points: [],
+      hand_guides: [],
     },
     pose: {
       model: 'absolute_hinge_angles_v1' as const,

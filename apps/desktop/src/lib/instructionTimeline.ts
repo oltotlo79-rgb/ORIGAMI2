@@ -722,11 +722,12 @@ function parseStep(
 export function parseInstructionVisual(value: unknown): InstructionVisual | null {
   if (
     !isRecord(value)
-    || !hasExactKeys(value, ['camera', 'arrows', 'focus_points'])
+    || !hasExactKeys(value, ['camera', 'arrows', 'focus_points', 'hand_guides'])
     || !(value.camera === null || isCamera(value.camera))
     || !Array.isArray(value.arrows)
     || !Array.isArray(value.focus_points)
-    || value.arrows.length + value.focus_points.length > 64
+    || !Array.isArray(value.hand_guides)
+    || value.arrows.length + value.focus_points.length + value.hand_guides.length > 64
   ) return null
   const arrows = value.arrows.map((arrow) => {
     if (
@@ -755,13 +756,35 @@ export function parseInstructionVisual(value: unknown): InstructionVisual | null
       label: focus.label,
     })
   })
-  if (arrows.some((arrow) => arrow === null) || focusPoints.some((focus) => focus === null)) {
+  const handGuides = value.hand_guides.map((guide) => {
+    if (
+      !isRecord(guide)
+      || !hasExactKeys(guide, ['kind', 'position', 'direction', 'label'])
+      || !['pinch', 'hold', 'push'].includes(String(guide.kind))
+      || !isPoint3(guide.position)
+      || !isPoint3(guide.direction)
+      || samePoint3(guide.direction, { x: 0, y: 0, z: 0 })
+      || !validMarkerLabel(guide.label)
+    ) return null
+    return Object.freeze({
+      kind: guide.kind as 'pinch' | 'hold' | 'push',
+      position: guide.position,
+      direction: guide.direction,
+      label: guide.label,
+    })
+  })
+  if (
+    arrows.some((arrow) => arrow === null)
+    || focusPoints.some((focus) => focus === null)
+    || handGuides.some((guide) => guide === null)
+  ) {
     return null
   }
   return Object.freeze({
     camera: value.camera,
     arrows: Object.freeze(arrows) as InstructionVisual['arrows'],
     focus_points: Object.freeze(focusPoints) as InstructionVisual['focus_points'],
+    hand_guides: Object.freeze(handGuides) as InstructionVisual['hand_guides'],
   })
 }
 

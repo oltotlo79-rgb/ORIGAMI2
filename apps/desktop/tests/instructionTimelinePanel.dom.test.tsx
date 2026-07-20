@@ -50,6 +50,7 @@ const SNAPSHOT = {
         camera: null,
         arrows: [],
         focus_points: [],
+        hand_guides: [],
       },
       pose: {
         model: 'absolute_hinge_angles_v1',

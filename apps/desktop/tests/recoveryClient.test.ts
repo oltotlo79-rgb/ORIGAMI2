@@ -291,6 +291,7 @@ test('restore preserves declarative instruction text but rejects executable pose
       camera: null,
       arrows: [],
       focus_points: [],
+      hand_guides: [],
     },
     pose: {
       model: 'declarative_only_v1',

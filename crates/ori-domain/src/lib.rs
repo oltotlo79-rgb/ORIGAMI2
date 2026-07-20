@@ -261,6 +261,7 @@ pub struct InstructionVisual {
     pub camera: Option<InstructionCamera>,
     pub arrows: Vec<InstructionArrow>,
     pub focus_points: Vec<InstructionFocusPoint>,
+    pub hand_guides: Vec<InstructionHandGuide>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -288,6 +289,22 @@ pub struct InstructionArrow {
 pub struct InstructionFocusPoint {
     pub position: InstructionPoint3,
     pub radius: f64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionHandGuideKind {
+    Pinch,
+    Hold,
+    Push,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstructionHandGuide {
+    pub kind: InstructionHandGuideKind,
+    pub position: InstructionPoint3,
+    pub direction: InstructionPoint3,
     pub label: String,
 }
 
@@ -718,7 +735,8 @@ fn validate_instruction_visual(
     let marker_count = visual
         .arrows
         .len()
-        .saturating_add(visual.focus_points.len());
+        .saturating_add(visual.focus_points.len())
+        .saturating_add(visual.hand_guides.len());
     if marker_count > MAX_INSTRUCTION_VISUAL_MARKERS {
         return Err(InstructionTimelineValidationError::TooManyVisualMarkers {
             step_index,
@@ -760,6 +778,21 @@ fn validate_instruction_visual(
             || focus.radius <= 0.0
             || focus.label.chars().count() > MAX_INSTRUCTION_MARKER_LABEL_CHARS
             || focus.label.chars().any(char::is_control)
+        {
+            return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+        }
+    }
+    for guide in &visual.hand_guides {
+        if !finite(guide.position)
+            || !finite(guide.direction)
+            || guide.direction
+                == (InstructionPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                })
+            || guide.label.chars().count() > MAX_INSTRUCTION_MARKER_LABEL_CHARS
+            || guide.label.chars().any(char::is_control)
         {
             return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
         }
@@ -970,6 +1003,20 @@ mod tests {
                 radius: 0.1,
                 label: "corner".to_owned(),
             }],
+            hand_guides: vec![InstructionHandGuide {
+                kind: InstructionHandGuideKind::Pinch,
+                position: InstructionPoint3 {
+                    x: 0.5,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                direction: InstructionPoint3 {
+                    x: 0.0,
+                    y: -1.0,
+                    z: 0.0,
+                },
+                label: "pinch".to_owned(),
+            }],
         };
         let timeline = InstructionTimeline { steps: vec![step] };
 
@@ -991,7 +1038,17 @@ mod tests {
         let restored: InstructionStep = serde_json::from_value(json).expect("legacy step");
         assert_eq!(restored.visual, InstructionVisual::default());
 
-        let mut invalid = step;
+        let mut visual_without_hand_guides =
+            serde_json::to_value(&step.visual).expect("serialize visual");
+        visual_without_hand_guides
+            .as_object_mut()
+            .expect("visual object")
+            .remove("hand_guides");
+        let restored_visual: InstructionVisual =
+            serde_json::from_value(visual_without_hand_guides).expect("legacy visual");
+        assert!(restored_visual.hand_guides.is_empty());
+
+        let mut invalid = step.clone();
         invalid.visual.focus_points.push(InstructionFocusPoint {
             position: InstructionPoint3 {
                 x: 0.0,
@@ -1004,6 +1061,28 @@ mod tests {
         assert!(matches!(
             validate_instruction_timeline(&InstructionTimeline {
                 steps: vec![invalid]
+            }),
+            Err(InstructionTimelineValidationError::InvalidVisual { step_index: 0 })
+        ));
+
+        let mut invalid_guide = step;
+        invalid_guide.visual.hand_guides.push(InstructionHandGuide {
+            kind: InstructionHandGuideKind::Hold,
+            position: InstructionPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            direction: InstructionPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            label: "hold".to_owned(),
+        });
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid_guide]
             }),
             Err(InstructionTimelineValidationError::InvalidVisual { step_index: 0 })
         ));

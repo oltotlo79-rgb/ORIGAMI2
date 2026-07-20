@@ -935,10 +935,10 @@ const TEXT = Object.freeze({
   cautionLabel: localized('注意', 'Caution'),
   durationLabel: localized('表示時間', 'Display time'),
   saveMetadata: localized('説明を保存', 'Save details'),
-  visualLabel: localized('カメラ・矢印・注目箇所（JSON）', 'Camera, arrows, and focus points (JSON)'),
+  visualLabel: localized('カメラ・矢印・注目箇所・手指ガイド（JSON）', 'Camera, arrows, focus points, and hand guides (JSON)'),
   visualHelp: localized(
-    'cameraはposition/target/up、arrowsはstart/end/label、focus_pointsはposition/radius/labelを指定します。',
-    'Set camera position/target/up, arrow start/end/label, and focus-point position/radius/label.',
+    'camera、arrows、focus_pointsに加え、hand_guidesへpinch/hold/pushとposition/direction/labelを指定します。',
+    'Set camera, arrows, focus_points, and hand_guides with pinch/hold/push plus position/direction/label.',
   ),
   showIn3d: localized('3Dに表示', 'Show in 3D'),
   updateCurrentPose: localized(

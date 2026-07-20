@@ -1058,6 +1058,38 @@ export function FoldPreview({
           marker.renderOrder = 20
           instructionVisualGroup.add(marker)
         }
+        for (const guide of visual.hand_guides) {
+          const position = new THREE.Vector3(
+            guide.position.x,
+            guide.position.y,
+            guide.position.z,
+          )
+          const direction = new THREE.Vector3(
+            guide.direction.x,
+            guide.direction.y,
+            guide.direction.z,
+          )
+          const color = guide.kind === 'pinch'
+            ? 0x8e44ad
+            : guide.kind === 'hold'
+              ? 0x00796b
+              : 0xc2410c
+          const touch = new THREE.Mesh(
+            new THREE.TorusGeometry(0.09, 0.018, 8, 20),
+            new THREE.MeshBasicMaterial({ color, depthTest: false }),
+          )
+          touch.position.copy(position)
+          touch.renderOrder = 21
+          instructionVisualGroup.add(touch)
+          instructionVisualGroup.add(new THREE.ArrowHelper(
+            direction.normalize(),
+            position,
+            0.35,
+            color,
+            0.1,
+            0.05,
+          ))
+        }
       }
       const materials = [...paperMaterials]
       const createdSelectedFaceMaterial = new THREE.LineBasicMaterial({

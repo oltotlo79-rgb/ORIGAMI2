@@ -224,6 +224,12 @@ export type InstructionVisual = {
     radius: number
     label: string
   }[]
+  hand_guides: readonly {
+    kind: 'pinch' | 'hold' | 'push'
+    position: InstructionPoint3
+    direction: InstructionPoint3
+    label: string
+  }[]
 }
 
 export type NamedTechniqueTimelineSourceKindV1 =

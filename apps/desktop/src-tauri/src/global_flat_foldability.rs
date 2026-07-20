@@ -12,7 +12,7 @@ use ori_core::{
     CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, TopologyAnalysisInput,
     TopologySnapshot, analyze_local_flat_foldability_with_checkpoint,
 };
-use ori_domain::{CreasePattern, Paper, ProjectId};
+use ori_domain::{CreasePattern, FaceId, Paper, ProjectId};
 use ori_foldability::{
     FlatFoldabilityProofIncompleteReason, FlatFoldabilityResource,
     GLOBAL_FLAT_FOLDABILITY_MODEL_ID, GlobalFlatFoldabilityCheckpoint,
@@ -232,6 +232,102 @@ pub(super) enum GlobalFlatFoldabilityJobDto {
 pub(super) struct GlobalFlatFoldabilityBeginResponse {
     job_id: GlobalFlatFoldabilityJobId,
     job: GlobalFlatFoldabilityJobDto,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CurrentLayerOrderViewRequest {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CurrentLayerOrderViewResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    layer_order_generation: u64,
+    cells: Vec<CurrentLayerOrderCellDto>,
+    read_only: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentLayerOrderCellDto {
+    cell_key_sha256: String,
+    bottom_to_top_faces: Vec<FaceId>,
+    boundary_world: Vec<[f64; 3]>,
+}
+
+#[tauri::command]
+pub(super) fn get_current_layer_order_view(
+    app_state: State<'_, AppState>,
+    state: State<'_, GlobalFlatFoldabilityState>,
+    request: CurrentLayerOrderViewRequest,
+) -> Result<CurrentLayerOrderViewResponse, GlobalFlatFoldabilityCommandError> {
+    let project = lock_project(&app_state).map_err(|_| {
+        GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
+    })?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(GlobalFlatFoldabilityCommandError::new(
+            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+        ));
+    }
+    let capability = capture_current_layer_order_capability(&state, &project)?.ok_or_else(|| {
+        GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable)
+    })?;
+    let generation = capability.generation();
+    let snapshot = revalidate_current_layer_order_capability(&state, &project, &capability)?
+        .ok_or_else(|| {
+            GlobalFlatFoldabilityCommandError::new(
+                GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+            )
+        })?;
+    let cells = snapshot
+        .overlap_cells
+        .iter()
+        .map(|cell| {
+            let boundary_world = cell
+                .exact_boundary
+                .iter()
+                .map(|point| {
+                    Some([
+                        point.x.to_f64()?,
+                        0.0,
+                        -point.y.to_f64()?,
+                    ])
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    GlobalFlatFoldabilityCommandError::new(
+                        GlobalFlatFoldabilityErrorCategory::InternalFailure,
+                    )
+                })?;
+            Ok(CurrentLayerOrderCellDto {
+                cell_key_sha256: cell
+                    .cell_key
+                    .0
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+                bottom_to_top_faces: cell.bottom_to_top_faces.clone(),
+                boundary_world,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CurrentLayerOrderViewResponse {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        layer_order_generation: generation,
+        cells,
+        read_only: true,
+    })
 }
 
 #[derive(Default)]

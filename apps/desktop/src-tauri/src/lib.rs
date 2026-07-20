@@ -54,7 +54,8 @@ use fold_technique_file_io::{
 };
 use global_flat_foldability::{
     GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
-    get_global_flat_foldability_progress, get_global_flat_foldability_result,
+    get_current_layer_order_view, get_global_flat_foldability_progress,
+    get_global_flat_foldability_result,
 };
 use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
@@ -6770,6 +6771,7 @@ pub fn run() {
             evaluate_numeric_expression,
             analyze_project_topology,
             begin_global_flat_foldability,
+            get_current_layer_order_view,
             get_global_flat_foldability_progress,
             get_global_flat_foldability_result,
             cancel_global_flat_foldability,

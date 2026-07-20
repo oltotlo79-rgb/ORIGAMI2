@@ -6887,6 +6887,13 @@ function App() {
           <GlobalFlatFoldabilityPanel
             job={globalFlatFoldabilityJob}
             timeLimitSeconds={globalFlatFoldabilityTimeLimit}
+            authority={nativeSnapshot ? {
+              projectInstanceId: nativeSnapshot.project_instance_id,
+              projectId: nativeSnapshot.project_id,
+              revision: nativeSnapshot.revision,
+            } : undefined}
+            selectedFaceId={selectedFaceId}
+            onSelectFace={setSelectedFaceId}
             startDisabled={
               coreBusy
               || benchmarkLoading

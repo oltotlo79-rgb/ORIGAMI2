@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use num_bigint::{BigInt, Sign};
 use num_rational::BigRational;
-use num_traits::{One, Zero};
+use num_traits::{One, ToPrimitive, Zero};
 use serde::Serialize;
 
 use crate::GlobalFlatFoldabilityPhase;
@@ -21,6 +21,25 @@ pub struct ExactRationalValue {
     pub sign: ExactSign,
     pub numerator_magnitude_be: Vec<u8>,
     pub denominator_be: Vec<u8>,
+}
+
+impl ExactRationalValue {
+    #[must_use]
+    pub fn to_f64(&self) -> Option<f64> {
+        let magnitude = BigInt::from_bytes_be(Sign::Plus, &self.numerator_magnitude_be);
+        let numerator = match self.sign {
+            ExactSign::Negative => -magnitude,
+            ExactSign::Zero => BigInt::from(0),
+            ExactSign::Positive => magnitude,
+        };
+        let denominator = BigInt::from_bytes_be(Sign::Plus, &self.denominator_be);
+        if denominator.is_zero() {
+            return None;
+        }
+        BigRational::new(numerator, denominator)
+            .to_f64()
+            .filter(|value| value.is_finite())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -542,5 +561,20 @@ mod tests {
                 rational_bytes(&value).expect("canonical payload").len()
             );
         }
+    }
+
+    #[test]
+    fn canonical_exact_rational_has_a_finite_viewer_projection() {
+        let value = ExactRationalValue {
+            sign: ExactSign::Negative,
+            numerator_magnitude_be: vec![3],
+            denominator_be: vec![2],
+        };
+        assert_eq!(value.to_f64(), Some(-1.5));
+        let invalid = ExactRationalValue {
+            denominator_be: vec![0],
+            ..value
+        };
+        assert_eq!(invalid.to_f64(), None);
     }
 }

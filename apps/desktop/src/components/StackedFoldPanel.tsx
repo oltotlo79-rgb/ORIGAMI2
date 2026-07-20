@@ -15,6 +15,7 @@ import type {
   StackedFoldReadResponse,
   StackedFoldRotationDirection,
 } from '../lib/stackedFoldRead'
+import type { LayerOrderViewerCell } from '../lib/currentLayerOrderView'
 
 type SelectedLine = Readonly<{
   id: string
@@ -283,9 +284,7 @@ export function StackedFoldPanel({
   )
 }
 
-type ViewerCell = StackedFoldReadResponse['crossedCells'][number]
-
-function LayerOrderViewer({
+export function LayerOrderViewer({
   locale,
   cells,
   selectedCell,
@@ -296,7 +295,7 @@ function LayerOrderViewer({
   onHoverFace,
 }: Readonly<{
   locale: Locale
-  cells: readonly ViewerCell[]
+  cells: readonly LayerOrderViewerCell[]
   selectedCell: string | null
   selectedFace: string | null
   hoveredFace: string | null

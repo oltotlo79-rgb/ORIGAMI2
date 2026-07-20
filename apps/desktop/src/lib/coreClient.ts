@@ -1312,6 +1312,18 @@ export function previewGeometricConstraintEdgeSolve(
   })
 }
 
+export function previewGeometricConstraintExpressionSolve(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<GeometricConstraintSolvePreview>('preview_geometric_constraint_expression_solve', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
+}
+
 export function previewGeometricConstraintSolve(
   expectedProjectId: string,
   expectedRevision: number,

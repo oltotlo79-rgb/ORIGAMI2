@@ -2729,6 +2729,92 @@ fn preview_geometric_constraint_edge_solve(
     Ok(response)
 }
 
+#[tauri::command]
+fn preview_geometric_constraint_expression_solve(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<GeometricConstraintSolvePreviewResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    if project.editor.revision() != expected_revision {
+        return Err("project revision is stale".to_owned());
+    }
+    let drivers = reevaluate_saved_vertex_expressions(&project)?;
+    let solved = solve_geometric_constraints_with_drivers_v1(
+        project.editor.pattern(),
+        project.editor.geometric_constraints(),
+        &drivers,
+        ConstraintSolveLimitsV1::default(),
+    )
+    .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
+    let token = ProjectId::new();
+    let response = geometric_constraint_solve_response(token, expected_revision, &solved);
+    *state
+        .3
+        .lock()
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())? =
+        Some(GeometricConstraintSolveStage {
+            token,
+            project_instance_id: expected_project_instance_id,
+            project_id: expected_project_id,
+            revision: expected_revision,
+            positions: solved.positions,
+        });
+    Ok(response)
+}
+
+fn reevaluate_saved_vertex_expressions(
+    project: &ProjectState,
+) -> Result<Vec<(VertexId, Point2)>, String> {
+    if project.numeric_expressions.vertex_coordinates.is_empty()
+        || project.numeric_expressions.vertex_coordinates.len()
+            > ConstraintSolveLimitsV1::default().max_vertices
+    {
+        return Err("saved numeric expression set is empty or too large".to_owned());
+    }
+    let mut seen = HashSet::new();
+    let mut drivers = Vec::with_capacity(project.numeric_expressions.vertex_coordinates.len());
+    for binding in &project.numeric_expressions.vertex_coordinates {
+        if !seen.insert(binding.vertex) {
+            return Err("saved numeric expressions contain a cycle or duplicate".to_owned());
+        }
+        let (x, y) =
+            evaluate_finite_millimetre_pair(binding.x_source.clone(), binding.y_source.clone())
+                .map_err(|error| error.user_input_message().to_owned())?;
+        drivers.push((binding.vertex, Point2::new(x, y)));
+    }
+    Ok(drivers)
+}
+
+fn geometric_constraint_solve_response(
+    token: ProjectId,
+    revision: u64,
+    solved: &ori_core::ConstraintSolvePreviewV1,
+) -> GeometricConstraintSolvePreviewResponse {
+    GeometricConstraintSolvePreviewResponse {
+        token,
+        revision,
+        iterations: solved.iterations,
+        maximum_residual: solved.maximum_residual,
+        rank: solved.rank,
+        degrees_of_freedom: solved.degrees_of_freedom,
+        equation_count: solved.equation_count,
+        condition_estimate: solved.condition_estimate,
+        system_classification: solve_system_classification(solved),
+        changed_vertices: solved
+            .positions
+            .iter()
+            .map(|(vertex_id, point)| GeometricConstraintSolveVertex {
+                vertex_id: *vertex_id,
+                x: point.x,
+                y: point.y,
+            })
+            .collect(),
+    }
+}
+
 fn solve_system_classification(solved: &ori_core::ConstraintSolvePreviewV1) -> &'static str {
     if solved.degrees_of_freedom > 0 {
         "under_constrained"
@@ -7066,6 +7152,7 @@ pub fn run() {
             move_vertices,
             preview_geometric_constraint_solve,
             preview_geometric_constraint_edge_solve,
+            preview_geometric_constraint_expression_solve,
             apply_geometric_constraint_solve,
             remove_vertex,
             add_edge,
@@ -15106,5 +15193,29 @@ mod tests {
         assert_eq!(solver_vertex_position(&project, vertex), original);
         execute_redo(&mut project, stage.project_id, 2).unwrap();
         assert_eq!(solver_vertex_position(&project, vertex), target);
+    }
+
+    #[test]
+    fn saved_vertex_expressions_are_recomputed_as_multi_drivers() {
+        let (mut project, _, vertex, _) = solver_stage_fixture();
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            vertex, "1+2", "sqrt(16)", 0.0, 0.0,
+        )];
+        assert_eq!(
+            reevaluate_saved_vertex_expressions(&project).unwrap(),
+            vec![(vertex, Point2::new(3.0, 4.0))]
+        );
+    }
+
+    #[test]
+    fn saved_expression_duplicates_and_nonfinite_results_fail_closed() {
+        let (mut project, _, vertex, _) = solver_stage_fixture();
+        let valid = VertexCoordinateExpressions::new(vertex, "1", "2", 0.0, 0.0);
+        project.numeric_expressions.vertex_coordinates = vec![valid.clone(), valid];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            vertex, "1/0", "2", 0.0, 0.0,
+        )];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
     }
 }

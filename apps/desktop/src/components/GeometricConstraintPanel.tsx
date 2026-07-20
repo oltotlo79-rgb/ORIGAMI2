@@ -103,6 +103,7 @@ type GeometricConstraintPanelProps = {
   onPreviewEdgeSolve?: (
     edgeId: string, startX: number, startY: number, endX: number, endY: number,
   ) => Promise<GeometricConstraintSolvePreview>
+  onPreviewExpressionSolve?: () => Promise<GeometricConstraintSolvePreview>
   localeStore?: LocaleStore
 }
 
@@ -126,6 +127,7 @@ export function GeometricConstraintPanel({
   onPreviewSolve,
   onApplySolve,
   onPreviewEdgeSolve,
+  onPreviewExpressionSolve,
   localeStore: localeStore_ = localeStore,
 }: GeometricConstraintPanelProps) {
   const locale = useLocale(localeStore_)
@@ -348,6 +350,21 @@ export function GeometricConstraintPanel({
           {localized(locale, '辺をプレビュー', 'Preview edge transform')}
         </button>
       </fieldset>
+      <button
+        type="button"
+        disabled={disabled || solveBusy || !onPreviewExpressionSolve}
+        onClick={() => {
+          if (!onPreviewExpressionSolve) return
+          setSolveBusy(true)
+          setSolveError(false)
+          void onPreviewExpressionSolve()
+            .then(setSolvePreview)
+            .catch(() => setSolveError(true))
+            .finally(() => setSolveBusy(false))
+        }}
+      >
+        {localized(locale, '保存式を再評価してプレビュー', 'Re-evaluate saved expressions')}
+      </button>
       {selectedEdgeId === null && (
         <p className="muted">
           {localized(

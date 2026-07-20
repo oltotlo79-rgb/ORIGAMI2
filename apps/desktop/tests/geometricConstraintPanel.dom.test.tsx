@@ -24,6 +24,14 @@ const IDS = Array.from(
 afterEach(cleanup)
 
 describe('GeometricConstraintPanel', () => {
+  it('previews saved expression re-evaluation without applying it', async () => {
+    const onPreviewExpressionSolve = vi.fn().mockRejectedValue(new Error('invalid expression'))
+    renderPanel({ onPreviewExpressionSolve, localeStore: localeFixture('en') })
+    fireEvent.click(screen.getByRole('button', { name: 'Re-evaluate saved expressions' }))
+    await screen.findByRole('alert')
+    expect(onPreviewExpressionSolve).toHaveBeenCalledOnce()
+  })
+
   it('requires preview before an explicit atomic solver apply', async () => {
     const onPreviewSolve = vi.fn().mockResolvedValue({
       token: IDS[20],
@@ -537,6 +545,7 @@ function panel(overrides: Partial<{
   onRetryAnalysis: () => void
   onPreviewSolve: (vertexId: string, x: number, y: number) => Promise<GeometricConstraintSolvePreview>
   onApplySolve: (token: string) => Promise<boolean>
+  onPreviewExpressionSolve: () => Promise<GeometricConstraintSolvePreview>
   localeStore: LocaleStore
 }> = {}) {
   return (
@@ -558,6 +567,7 @@ function panel(overrides: Partial<{
       onRetryAnalysis={overrides.onRetryAnalysis ?? (() => undefined)}
       onPreviewSolve={overrides.onPreviewSolve}
       onApplySolve={overrides.onApplySolve}
+      onPreviewExpressionSolve={overrides.onPreviewExpressionSolve}
       localeStore={overrides.localeStore}
     />
   )

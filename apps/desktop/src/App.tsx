@@ -89,6 +89,7 @@ import {
   previewFoldImport,
   previewGeometricConstraintSolve,
   previewGeometricConstraintEdgeSolve,
+  previewGeometricConstraintExpressionSolve,
   previewInstructionExport,
   previewInstructionMeshAnimation,
   previewStaticMeshExport,
@@ -2204,6 +2205,18 @@ function App() {
       startY,
       endX,
       endY,
+    )
+  }, [])
+
+  const previewConstraintExpressionSolve = useCallback(() => {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current || recoveryBlockingRef.current) {
+      return Promise.reject(new Error('project unavailable'))
+    }
+    return previewGeometricConstraintExpressionSolve(
+      current.project_id,
+      current.revision,
+      current.project_instance_id,
     )
   }, [])
 
@@ -6638,6 +6651,7 @@ function App() {
               onRetryAnalysis={retryGeometricConstraintAnalysis}
               onPreviewSolve={previewConstraintSolve}
               onPreviewEdgeSolve={previewConstraintEdgeSolve}
+              onPreviewExpressionSolve={previewConstraintExpressionSolve}
               onApplySolve={applyConstraintSolve}
             />
           )}

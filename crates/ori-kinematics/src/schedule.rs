@@ -594,6 +594,7 @@ pub struct PreparedHalfAngleRationalEntryV1 {
     denominator_power_coefficients: Vec<BigRational>,
     numerator_certificate: PoleFreeBernsteinCertificateV1,
     denominator_certificate: PoleFreeBernsteinCertificateV1,
+    derivative_bound_degrees_bits: u64,
 }
 
 impl PreparedHalfAngleRationalEntryV1 {
@@ -646,6 +647,17 @@ impl PreparedHalfAngleRationalEntryV1 {
             limits.max_coefficient_bits,
             limits.max_work,
         )?;
+        let derivative = evaluate_half_angle_rational_derivative_interval_v1(
+            &numerator_certificate,
+            &denominator_certificate,
+            limits.max_coefficient_bits,
+            limits.max_work,
+        )?;
+        let radians_bound = derivative.lower().abs().max(derivative.upper().abs());
+        let derivative_bound_degrees = radians_bound * 180.0 / core::f64::consts::PI;
+        if !derivative_bound_degrees.is_finite() {
+            return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+        }
         Ok(Self {
             edge: input.edge,
             u_domain,
@@ -653,12 +665,34 @@ impl PreparedHalfAngleRationalEntryV1 {
             denominator_power_coefficients,
             numerator_certificate,
             denominator_certificate,
+            derivative_bound_degrees_bits: derivative_bound_degrees.to_bits().saturating_add(1),
         })
     }
 
     #[must_use]
     pub const fn edge(&self) -> EdgeId {
         self.edge
+    }
+
+    fn evaluate_degrees(&self, parameter: f64) -> Option<f64> {
+        if !(0.0..=1.0).contains(&parameter) {
+            return None;
+        }
+        let lower = self.u_domain[0].to_f64()?;
+        let upper = self.u_domain[1].to_f64()?;
+        let u = lower + (upper - lower) * parameter;
+        let evaluate = |coefficients: &[BigRational]| {
+            coefficients
+                .iter()
+                .rev()
+                .try_fold(0.0_f64, |value, coefficient| {
+                    Some(value * u + coefficient.to_f64()?)
+                })
+        };
+        let numerator = evaluate(&self.numerator_power_coefficients)?;
+        let denominator = evaluate(&self.denominator_power_coefficients)?;
+        let angle = 2.0 * numerator.atan2(denominator).to_degrees();
+        angle.is_finite().then_some(angle)
     }
 
     pub fn evaluate_exact(
@@ -1179,7 +1213,12 @@ impl CanonicalCycleScheduleV1 {
 
     pub fn evaluate(&self, parameter: f64) -> Option<CanonicalHingeAngles> {
         if !self.half_angle_entries.is_empty() {
-            return None;
+            return self
+                .half_angle_entries
+                .iter()
+                .map(|entry| HingeAngle::new(entry.edge(), entry.evaluate_degrees(parameter)?).ok())
+                .collect::<Option<Vec<_>>>()
+                .and_then(|angles| CanonicalHingeAngles::new(angles).ok());
         }
         if !parameter.is_finite() || parameter < self.domain[0] || parameter > self.domain[1] {
             return None;
@@ -1318,6 +1357,13 @@ impl CanonicalCycleScheduleV1 {
 
     #[must_use]
     pub fn derivative_bound(&self, edge: EdgeId) -> Option<f64> {
+        if !self.half_angle_entries.is_empty() {
+            return self
+                .half_angle_entries
+                .iter()
+                .find(|entry| entry.edge() == edge)
+                .map(|entry| f64::from_bits(entry.derivative_bound_degrees_bits));
+        }
         self.entries
             .iter()
             .find(|entry| entry.edge == edge)
@@ -2141,6 +2187,13 @@ mod tests {
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
+        let evaluated = schedule.evaluate(0.5).expect("certified point evaluation");
+        assert!(evaluated.as_slice().iter().all(|angle| {
+            (angle.angle_degrees() - 90.0).abs() <= 1.0e-12
+                && schedule
+                    .derivative_bound(angle.edge())
+                    .is_some_and(|bound| bound >= 0.0 && bound <= 1.0e-12)
+        }));
         let left = schedule
             .evaluate_angle_box_dyadic(1, 0, CycleScheduleLimitsV1::default())
             .unwrap();

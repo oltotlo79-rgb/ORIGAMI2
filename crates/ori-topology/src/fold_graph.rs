@@ -448,7 +448,7 @@ fn ensure_supported_walk_orientations(walks: &PaperWalkSet) -> Result<(), FoldGr
         if WalkIndex(walk_index) == walks.exterior()
             || matches!(
                 walk.orientation,
-                Orientation::CounterClockwise | Orientation::Clockwise
+                Orientation::CounterClockwise | Orientation::Clockwise | Orientation::Collinear
             )
         {
             continue;
@@ -464,7 +464,7 @@ fn ensure_supported_walk_orientations(walks: &PaperWalkSet) -> Result<(), FoldGr
         WalkIndex(index) != walks.exterior()
             && !matches!(
                 walk.orientation,
-                Orientation::CounterClockwise | Orientation::Clockwise
+                Orientation::CounterClockwise | Orientation::Clockwise | Orientation::Collinear
             )
     }) {
         Err(FoldGraphError::InternalInvariant)
@@ -478,7 +478,7 @@ fn ensure_simple_material_walks(walks: &PaperWalkSet) -> Result<(), FoldGraphErr
     let mut found_repeated_vertex = false;
     for (walk_index, walk) in walks.walks().iter().enumerate() {
         let walk_index = WalkIndex(walk_index);
-        if walk_index == walks.exterior() {
+        if walk_index == walks.exterior() || walk.orientation != Orientation::CounterClockwise {
             continue;
         }
         let mut vertices = HashSet::with_capacity(walk.half_edges.len());
@@ -584,7 +584,12 @@ where
     }
     for (walk_index, walk) in walks.walks().iter().enumerate() {
         let walk_index = WalkIndex(walk_index);
-        if walk_index == walks.exterior() || walk.orientation != Orientation::Clockwise {
+        if walk_index == walks.exterior()
+            || !matches!(
+                walk.orientation,
+                Orientation::Clockwise | Orientation::Collinear
+            )
+        {
             continue;
         }
         let boundary =
@@ -620,8 +625,12 @@ where
         let owner = owner.ok_or(CooperativeOperationError::Operation(
             FoldGraphError::InternalInvariant,
         ))?;
-        faces[owner].area -= boundary.signed_double_area.abs() * 0.5;
-        faces[owner].holes.push(boundary);
+        if walk.orientation == Orientation::Clockwise {
+            faces[owner].area -= boundary.signed_double_area.abs() * 0.5;
+            faces[owner].holes.push(boundary);
+        } else {
+            faces[owner].seams.push(boundary);
+        }
         owners.insert(walk_index, owner);
     }
     let by_walk = owners
@@ -1275,6 +1284,60 @@ mod tests {
                     .find(|(edge, _)| *edge == cut.id)
                     .map(|(_, incidence)| incidence),
                 Some(EdgeIncidence::Cut { left, right }) if left != right
+            )
+        }));
+    }
+
+    #[test]
+    fn isolated_branched_cut_is_one_open_seam_without_disconnect() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x901, 0.0, 0.0);
+        let b = vertex(0x902, 8.0, 0.0);
+        let c = vertex(0x903, 8.0, 8.0);
+        let d = vertex(0x904, 0.0, 8.0);
+        let center = vertex(0x905, 4.0, 4.0);
+        let left = vertex(0x906, 2.0, 4.0);
+        let upper = vertex(0x907, 4.0, 6.0);
+        let right = vertex(0x908, 6.0, 4.0);
+        let boundary = [&a, &b, &c, &d];
+        let cuts = [
+            edge(0x920, &left, &center, EdgeKind::Cut),
+            edge(0x921, &center, &upper, EdgeKind::Cut),
+            edge(0x922, &center, &right, EdgeKind::Cut),
+        ];
+        let mut edges = boundary_edges(&boundary, 0x910);
+        edges.extend(cuts.iter().cloned());
+        let pattern = CreasePattern {
+            vertices: vec![
+                a.clone(),
+                b.clone(),
+                c.clone(),
+                d.clone(),
+                center,
+                left,
+                upper,
+                right,
+            ],
+            edges,
+        };
+        let source_paper = paper(&boundary, true);
+
+        let snapshot = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("branched seam");
+        assert_eq!(snapshot.faces.len(), 1);
+        assert_eq!(snapshot.faces[0].holes.len(), 0);
+        assert_eq!(snapshot.faces[0].seams.len(), 1);
+        assert_eq!(snapshot.faces[0].seams[0].half_edges.len(), 6);
+        assert_eq!(snapshot.material_components.len(), 1);
+        assert!(snapshot.hinge_adjacency.is_empty());
+        assert!(cuts.iter().all(|cut| {
+            matches!(
+                snapshot
+                    .edge_incidence
+                    .iter()
+                    .find(|(edge, _)| *edge == cut.id)
+                    .map(|(_, incidence)| incidence),
+                Some(EdgeIncidence::Cut { left, right }) if left == right
             )
         }));
     }

@@ -1293,6 +1293,12 @@ test('dependency policy is independent of the caller working directory', () => {
 })
 
 test('release CI evidence rejects duplicate and incomplete check runs', () => {
+  const verifierSource = readFileSync(join(root, '.github/scripts/verify_release_ci.mjs'), 'utf8')
+  assert.match(verifierSource, /attempt <= 3/u)
+  assert.match(verifierSource, /AbortSignal\.timeout\(30_000\)/u)
+  assert.match(verifierSource, /retry-after/u)
+  assert.match(verifierSource, /x-ratelimit-remaining/u)
+  assert.match(verifierSource, /seconds > 30/u)
   const directory = mkdtempSync(join(tmpdir(), 'origami2-ci-evidence-'))
   try {
     const runsPath = join(directory, 'runs.json')

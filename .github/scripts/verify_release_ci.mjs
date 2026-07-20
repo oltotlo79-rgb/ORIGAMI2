@@ -6,6 +6,33 @@ import { buildRustsecReviewReport } from './dependency_policy.mjs'
 const commit = process.env.RELEASE_COMMIT
 if (!/^[0-9a-f]{40}$/u.test(commit ?? '')) throw new Error('invalid release commit for CI evidence')
 
+const retryDelay = (response) => {
+  const header = response.headers.get('retry-after')
+  if (header === null) return null
+  const seconds = /^[0-9]+$/u.test(header) ? Number(header) : (Date.parse(header) - Date.now()) / 1000
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 30) throw new Error('GitHub API Retry-After is invalid or unbounded')
+  return Math.ceil(seconds * 1000)
+}
+async function boundedFetch(url, options, label) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let response
+    try {
+      response = await fetch(url, { ...options, signal: AbortSignal.timeout(30_000) })
+    } catch (error) {
+      if (attempt === 3) throw new Error(`${label} timed out after bounded retries`, { cause: error })
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
+      continue
+    }
+    const delay = retryDelay(response)
+    const retryable = response.status === 408 || response.status === 429 || response.status >= 500
+      || (response.status === 403 && (delay !== null || response.headers.get('x-ratelimit-remaining') === '0'))
+    if (!retryable || attempt === 3) return response
+    await response.body?.cancel()
+    await new Promise((resolve) => setTimeout(resolve, delay ?? attempt * 1000))
+  }
+  throw new Error(`${label} retry state is unreachable`)
+}
+
 async function loadJson(path, url) {
   if (path) {
     if ((process.env.API_LINK_FIXTURE ?? '').trim() !== '') throw new Error('GitHub CI evidence pagination is forbidden')
@@ -13,14 +40,14 @@ async function loadJson(path, url) {
   }
   const token = process.env.GH_TOKEN
   if (!token) throw new Error('GitHub token is required for CI evidence lookup')
-  const response = await fetch(url, {
+  const response = await boundedFetch(url, {
     headers: {
       authorization: `Bearer ${token}`,
       accept: 'application/vnd.github+json',
       'x-github-api-version': '2022-11-28',
     },
     redirect: 'error',
-  })
+  }, 'GitHub CI evidence API')
   if (!response.ok) throw new Error(`GitHub CI evidence API failed: ${response.status}`)
   if ((response.headers.get('link') ?? '').trim() !== '') throw new Error('GitHub CI evidence pagination is forbidden')
   const text = await response.text()
@@ -31,14 +58,14 @@ async function loadJson(path, url) {
 async function loadArtifactBytes(path, url) {
   if (path) return readFileSync(path)
   const headers = { authorization: `Bearer ${process.env.GH_TOKEN}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }
-  const initial = await fetch(url, { headers, redirect: 'manual' })
+  const initial = await boundedFetch(url, { headers, redirect: 'manual' }, 'GitHub CI artifact API')
   if (![301, 302, 303, 307, 308].includes(initial.status)) throw new Error(`GitHub CI artifact download failed: ${initial.status}`)
   const location = new URL(initial.headers.get('location') ?? '')
   if (
     location.protocol !== 'https:' || location.port !== '' || location.username !== '' || location.password !== ''
     || !['.actions.githubusercontent.com', '.blob.core.windows.net'].some((suffix) => location.hostname.endsWith(suffix))
   ) throw new Error('GitHub CI artifact redirect is invalid')
-  const response = await fetch(location, { redirect: 'error' })
+  const response = await boundedFetch(location, { redirect: 'error' }, 'GitHub CI artifact storage')
   if (!response.ok) throw new Error(`GitHub CI artifact storage download failed: ${response.status}`)
   const declaredSize = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredSize) && (declaredSize < 1 || declaredSize > 16_777_216)) throw new Error('GitHub CI artifact size is outside bounds')

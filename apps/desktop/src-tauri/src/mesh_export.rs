@@ -21,7 +21,8 @@ use ori_formats::{
     EmbeddedBaseColorTextureV1, EmbeddedTextureMediaTypeV1, IndexedTriangleMeshV1,
     MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES, STATIC_MESH_SOURCE_AXIS,
     STATIC_MESH_SOURCE_UNIT, StaticMeshExportArtifact, StaticMeshExportFormat,
-    export_static_triangle_mesh, validate_indexed_triangle_mesh,
+    export_dual_sided_triangle_mesh_glb, export_static_triangle_mesh,
+    validate_indexed_triangle_mesh,
 };
 use ori_kinematics::{MaterialTreeKinematicsModel, MaterialTreePose, Point3};
 use serde::{Deserialize, Serialize};
@@ -90,7 +91,7 @@ struct StaticMeshExportSource {
     paper_front_color_rgba: [u8; 4],
     paper_back_color_rgba: [u8; 4],
     paper_front_texture: Option<ResolvedStaticMeshTexture>,
-    has_back_texture: bool,
+    paper_back_texture: Option<ResolvedStaticMeshTexture>,
     paper_thickness_mm: f64,
     paper_thickness_bits: u64,
     model: MaterialTreeKinematicsModel,
@@ -101,7 +102,6 @@ struct StaticMeshExportSource {
 /// allowed to supply this value: a future asset repository must mint it after
 /// authenticating the requested `AssetId`.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Back requires a separate primitive/material before activation.
 enum PaperTextureSide {
     Front,
     Back,
@@ -135,19 +135,41 @@ fn stage_authenticated_texture(
     material_tex_coords: Vec<[f32; 2]>,
     mesh: IndexedTriangleMeshV1,
 ) -> Result<IndexedTriangleMeshV1, String> {
+    let vertex_count = mesh.positions_mm.len();
+    let texture = authenticate_texture(
+        format,
+        expected_asset_id,
+        expected_side,
+        expected_binding,
+        resolved,
+        material_tex_coords,
+        vertex_count,
+    )?;
+    Ok(match texture {
+        Some(texture) => mesh.with_base_color_texture(texture),
+        None => mesh,
+    })
+}
+
+fn authenticate_texture(
+    format: StaticMeshExportFormatRequest,
+    expected_asset_id: Option<AssetId>,
+    expected_side: PaperTextureSide,
+    expected_binding: TextureAuthorityBinding,
+    resolved: Option<ResolvedStaticMeshTexture>,
+    material_tex_coords: Vec<[f32; 2]>,
+    vertex_count: usize,
+) -> Result<Option<EmbeddedBaseColorTextureV1>, String> {
     let Some(expected_asset_id) = expected_asset_id else {
         return if resolved.is_none() {
-            Ok(mesh)
+            Ok(None)
         } else {
             Err(PREVIEW_FAILED_MESSAGE.to_owned())
         };
     };
-    // The current GLB document has one front-facing material. Back-side UV
-    // semantics require a separate primitive/material and are deliberately not
-    // approximated by reusing the front UVs.
-    if format != StaticMeshExportFormatRequest::Glb || expected_side != PaperTextureSide::Front {
+    if format != StaticMeshExportFormatRequest::Glb {
         return if resolved.is_none() {
-            Ok(mesh)
+            Ok(None)
         } else {
             Err(PREVIEW_FAILED_MESSAGE.to_owned())
         };
@@ -156,11 +178,11 @@ fn stage_authenticated_texture(
     if resolved.asset_id != expected_asset_id
         || resolved.side != expected_side
         || resolved.binding != expected_binding
-        || material_tex_coords.len() != mesh.positions_mm.len()
+        || material_tex_coords.len() != vertex_count
     {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
     }
-    Ok(mesh.with_base_color_texture(EmbeddedBaseColorTextureV1 {
+    Ok(Some(EmbeddedBaseColorTextureV1 {
         media_type: resolved.media_type,
         bytes: resolved.bytes,
         tex_coords: material_tex_coords,
@@ -470,7 +492,29 @@ fn capture_export_source(
                 bytes: asset.bytes.clone(),
             }
         }),
-        has_back_texture: project.editor.paper().back.texture_asset.is_some(),
+        paper_back_texture: project.editor.paper().back.texture_asset.map(|asset_id| {
+            let asset = project
+                .texture_assets
+                .iter()
+                .find(|asset| asset.id == asset_id)
+                .expect("validated project texture reference");
+            ResolvedStaticMeshTexture {
+                binding: TextureAuthorityBinding {
+                    project_instance_id: project.instance_id,
+                    project_id: project.project_id,
+                    revision: project.editor.revision(),
+                },
+                asset_id,
+                side: PaperTextureSide::Back,
+                media_type: match asset.media_type {
+                    ori_formats::ProjectTextureMediaTypeV1::Png => EmbeddedTextureMediaTypeV1::Png,
+                    ori_formats::ProjectTextureMediaTypeV1::Jpeg => {
+                        EmbeddedTextureMediaTypeV1::Jpeg
+                    }
+                },
+                bytes: asset.bytes.clone(),
+            }
+        }),
         paper_thickness_mm: canonical_zero(paper_thickness_mm),
         paper_thickness_bits,
         model: view.model().clone(),
@@ -495,9 +539,13 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         .paper_front_texture
         .as_ref()
         .map(|texture| texture.asset_id);
+    let expected_back_asset = source
+        .paper_back_texture
+        .as_ref()
+        .map(|texture| texture.asset_id);
     if source.format == StaticMeshExportFormatRequest::Glb
-        && (source.has_back_texture
-            || (source.paper_thickness_mm > 0.0 && expected_front_asset.is_some()))
+        && source.paper_thickness_mm > 0.0
+        && (expected_front_asset.is_some() || expected_back_asset.is_some())
     {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
     }
@@ -506,6 +554,23 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
     } else {
         None
     };
+    let back_texture = authenticate_texture(
+        source.format,
+        expected_back_asset,
+        PaperTextureSide::Back,
+        TextureAuthorityBinding {
+            project_instance_id: source.expected_project_instance_id,
+            project_id: source.expected_project_id,
+            revision: source.expected_revision,
+        },
+        if source.format == StaticMeshExportFormatRequest::Glb {
+            source.paper_back_texture
+        } else {
+            None
+        },
+        material_tex_coords.clone(),
+        mid_surface.positions_mm.len(),
+    )?;
     let mid_surface = stage_authenticated_texture(
         source.format,
         expected_front_asset,
@@ -531,8 +596,12 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
     };
     let validated =
         validate_indexed_triangle_mesh(&mesh).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
-    let artifact = export_static_triangle_mesh(source.format.exporter_format(), &validated)
-        .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    let artifact = if let Some(back_texture) = back_texture {
+        export_dual_sided_triangle_mesh_glb(&validated, back_texture, source.paper_back_color_rgba)
+    } else {
+        export_static_triangle_mesh(source.format.exporter_format(), &validated)
+    }
+    .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     validate_artifact_contract(source.format, &validated, &artifact)?;
     let warnings: Arc<[StaticMeshExportWarning]> = Arc::from(export_warnings(
         source.format,
@@ -571,7 +640,9 @@ fn validate_artifact_contract(
         || artifact.file_extension != requested.extension()
         || artifact.bytes.is_empty()
         || artifact.vertex_count != mesh.positions_mm().len()
-        || artifact.triangle_count != mesh.triangles().len()
+        || (artifact.triangle_count != mesh.triangles().len()
+            && !(requested == StaticMeshExportFormatRequest::Glb
+                && artifact.triangle_count == mesh.triangles().len().saturating_mul(2)))
     {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
     }
@@ -1499,18 +1570,22 @@ mod tests {
         assert_eq!(texture.tex_coords, uvs);
         assert_eq!(texture.bytes, b"\x89PNG\r\n\x1a\nnative");
 
-        assert!(
-            stage_authenticated_texture(
-                StaticMeshExportFormatRequest::Glb,
-                Some(expected),
-                PaperTextureSide::Back,
-                binding,
-                Some(resolved(expected)),
-                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-                texture_stage_mesh(),
-            )
-            .is_err()
-        );
+        let back = ResolvedStaticMeshTexture {
+            side: PaperTextureSide::Back,
+            ..resolved(expected)
+        };
+        let authenticated_back = authenticate_texture(
+            StaticMeshExportFormatRequest::Glb,
+            Some(expected),
+            PaperTextureSide::Back,
+            binding,
+            Some(back),
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            3,
+        )
+        .expect("authenticated back texture")
+        .expect("present back texture");
+        assert_eq!(authenticated_back.bytes, b"\x89PNG\r\n\x1a\nnative");
 
         let stale = TextureAuthorityBinding {
             revision: 8,
@@ -1648,6 +1723,78 @@ mod tests {
             .commit_prepared(&mut project, prepared)
             .expect("commit initial planar pose");
         AppState::new(project)
+    }
+
+    fn app_state_with_dual_textures() -> AppState {
+        let mut project = crate::initial_project_state();
+        let front = AssetId::new();
+        let back = AssetId::new();
+        project.texture_assets = vec![
+            ori_formats::ProjectTextureAssetV1 {
+                id: front,
+                media_type: ori_formats::ProjectTextureMediaTypeV1::Png,
+                bytes: b"\x89PNG\r\n\x1a\nfront".to_vec(),
+            },
+            ori_formats::ProjectTextureAssetV1 {
+                id: back,
+                media_type: ori_formats::ProjectTextureMediaTypeV1::Jpeg,
+                bytes: vec![0xff, 0xd8, b'b', b'a', b'c', b'k', 0xff, 0xd9],
+            },
+        ];
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let paper = project.editor.paper().clone();
+        crate::execute_command(
+            &mut project,
+            instance,
+            project_id,
+            0,
+            Command::UpdatePaperProperties {
+                thickness_mm: 0.0,
+                front_color: paper.front.color,
+                back_color: paper.back.color,
+                front_texture_asset: Some(front),
+                back_texture_asset: Some(back),
+                cutting_allowed: paper.cutting_allowed,
+            },
+        )
+        .expect("select dual textures");
+        let authority = project.applied_pose_authority.clone();
+        let captured = authority
+            .capture_request(
+                &project,
+                NativePoseRequest {
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: 1,
+                    fixed_face_id: None,
+                    complete_hinge_angles: Vec::new(),
+                },
+            )
+            .expect("capture textured pose");
+        let prepared = captured.prepare().expect("prepare textured pose");
+        authority
+            .commit_prepared(&mut project, prepared)
+            .expect("commit textured pose");
+        AppState::new(project)
+    }
+
+    #[test]
+    fn zero_thickness_glb_carries_authenticated_front_and_back_assets() {
+        let state = app_state_with_dual_textures();
+        let request = preview_request(&state, StaticMeshExportFormatRequest::Glb);
+        let source =
+            capture_export_source(&state, ProjectId::new(), request).expect("capture source");
+        let pending = build_pending_export(source).expect("dual-sided GLB");
+        assert_eq!(&pending.bytes[0..4], b"glTF");
+        let json_length = u32::from_le_bytes(pending.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&pending.bytes[20..20 + json_length]).expect("GLB JSON");
+        assert_eq!(json["meshes"][0]["primitives"].as_array().unwrap().len(), 2);
+        assert_eq!(json["materials"].as_array().unwrap().len(), 2);
+        assert_eq!(json["images"].as_array().unwrap().len(), 2);
+        assert_eq!(json["images"][0]["mimeType"], "image/png");
+        assert_eq!(json["images"][1]["mimeType"], "image/jpeg");
     }
 
     fn preview_request(

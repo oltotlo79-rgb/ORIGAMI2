@@ -266,6 +266,8 @@ pub struct MaterialTreeKinematicsModel {
 pub struct MaterialHingeGraphGeometry {
     face_ids: Vec<FaceId>,
     hinges: Vec<TreeHinge>,
+    positions: HashMap<VertexId, Point3>,
+    face_boundaries: Vec<PreparedFaceBoundary>,
 }
 
 impl MaterialHingeGraphGeometry {
@@ -292,6 +294,8 @@ impl MaterialHingeGraphGeometry {
         Ok(Self {
             face_ids: prepared.face_ids,
             hinges: prepared.hinges,
+            positions: prepared.positions,
+            face_boundaries: prepared.face_boundaries,
         })
     }
 
@@ -303,6 +307,19 @@ impl MaterialHingeGraphGeometry {
     #[must_use]
     pub fn hinges(&self) -> &[TreeHinge] {
         &self.hinges
+    }
+
+    #[must_use]
+    pub fn vertex_position(&self, vertex: VertexId) -> Option<Point3> {
+        self.positions.get(&vertex).copied()
+    }
+
+    #[must_use]
+    pub fn face_boundary_vertices(&self, face: FaceId) -> Option<&[VertexId]> {
+        self.face_boundaries
+            .binary_search_by_key(&face.canonical_bytes(), |item| item.face.canonical_bytes())
+            .ok()
+            .map(|index| self.face_boundaries[index].vertices.as_slice())
     }
 }
 
@@ -1689,6 +1706,8 @@ fn owns_material_face_boundary(source: &PreparedTree, boundary: MaterialFaceBoun
 struct PreparedMaterialGraph {
     face_ids: Vec<FaceId>,
     hinges: Vec<TreeHinge>,
+    positions: HashMap<VertexId, Point3>,
+    face_boundaries: Vec<PreparedFaceBoundary>,
 }
 
 fn prepare_material_graph(
@@ -1713,7 +1732,7 @@ fn prepare_material_graph(
         &mut simple_boundary_budget,
     )?;
     let incidences = unique_incidences(topology, &edges)?;
-    let (face_ids, _face_boundaries, face_keys, occurrences) = validate_faces(
+    let (face_ids, face_boundaries, face_keys, occurrences) = validate_faces(
         topology,
         &edges,
         &positions,
@@ -1769,7 +1788,12 @@ fn prepare_material_graph(
     if hinges.windows(2).any(|pair| pair[0].edge == pair[1].edge) {
         return Err(KinematicsError::UnsupportedTopology);
     }
-    Ok(PreparedMaterialGraph { face_ids, hinges })
+    Ok(PreparedMaterialGraph {
+        face_ids,
+        hinges,
+        positions,
+        face_boundaries,
+    })
 }
 
 fn solve_tree(

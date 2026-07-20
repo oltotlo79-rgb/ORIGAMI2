@@ -32,6 +32,8 @@ export type UpdateCheckTransportResponse = Readonly<{
   status: number
   contentType: string | null
   body: string
+  finalUrl: string
+  redirected: boolean
 }>
 
 export type UpdateCheckTransport = Readonly<{
@@ -152,6 +154,8 @@ export function createGitHubReleasesFetchTransport(
           status: response.status,
           contentType: response.headers.get('content-type'),
           body: await readBoundedResponseBody(response),
+          finalUrl: response.url,
+          redirected: response.redirected,
         })
       } catch (error) {
         if (isBoundedTransportError(error)) throw error
@@ -313,6 +317,8 @@ function parseTransportResponse(
       'status',
       'contentType',
       'body',
+      'finalUrl',
+      'redirected',
     ])
     if (
       !record
@@ -320,6 +326,10 @@ function parseTransportResponse(
       || !Number.isInteger(record.status)
       || record.status < 100
       || record.status > 599
+    ) return Object.freeze({ kind: 'error', reason: 'invalid_response' })
+    if (
+      record.finalUrl !== ORIGAMI2_GITHUB_RELEASES_API_URL
+      || record.redirected !== false
     ) return Object.freeze({ kind: 'error', reason: 'invalid_response' })
     if (record.status === 404) {
       return Object.freeze({

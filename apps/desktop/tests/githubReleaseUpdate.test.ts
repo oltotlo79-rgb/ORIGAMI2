@@ -41,6 +41,7 @@ test('the parser retains only a stable version and its official release page', (
     author: { login: 'arbitrary-author' },
     assets: [{
       browser_download_url: 'https://evil.example/payload.exe',
+      signature: 'forged-native-updater-signature',
     }],
     tarball_url: 'https://evil.example/archive',
     zipball_url: 'https://evil.example/archive',
@@ -56,7 +57,7 @@ test('the parser retains only a stable version and its official release page', (
     'version',
     'releasePageUrl',
   ])
-  assert.doesNotMatch(JSON.stringify(parsed), /alice|evil|payload/iu)
+  assert.doesNotMatch(JSON.stringify(parsed), /alice|evil|payload|signature/iu)
 })
 
 test('draft prerelease inconsistent and malformed versions are rejected', () => {
@@ -314,30 +315,33 @@ test('manual checks compare versions without sending local inputs', async () => 
 
 test('HTTP status content type schema body size and failures use fixed reasons', async () => {
   const cases: Array<[unknown, string]> = [
-    [{ status: 404, contentType: 'application/json', body: '{}' },
+    [response({ status: 404, contentType: 'application/json', body: '{}' }),
       'no_published_release'],
-    [{ status: 403, contentType: 'application/json', body: '{}' },
+    [response({ status: 403, contentType: 'application/json', body: '{}' }),
       'service_unavailable'],
-    [{ status: 429, contentType: 'application/json', body: '{}' },
+    [response({ status: 429, contentType: 'application/json', body: '{}' }),
       'service_unavailable'],
-    [{ status: 500, contentType: 'application/json', body: '{}' },
+    [response({ status: 500, contentType: 'application/json', body: '{}' }),
       'service_unavailable'],
-    [{ status: 200, contentType: 'text/html', body: '{}' },
+    [response({ status: 200, contentType: 'text/html', body: '{}' }),
       'invalid_response'],
-    [{ status: 200, contentType: null, body: '{}' },
+    [response({ status: 200, contentType: null, body: '{}' }),
       'invalid_response'],
-    [{ status: 200, contentType: 'application/json', body: '{}' },
+    [response({ status: 200, contentType: 'application/json', body: '{}' }),
       'invalid_response'],
+    [response({ finalUrl: 'https://evil.example/releases/latest' }),
+      'invalid_response'],
+    [response({ redirected: true }), 'invalid_response'],
     [{ status: 200, contentType: 'application/json', body: validBody(), extra: 1 },
       'invalid_response'],
-    [{ status: 99, contentType: 'application/json', body: validBody() },
+    [response({ status: 99, contentType: 'application/json', body: validBody() }),
       'invalid_response'],
-    [{ status: 200, contentType: 'application/json', body:
-      'x'.repeat(MAX_GITHUB_RELEASE_RESPONSE_BYTES + 1) },
+    [response({ status: 200, contentType: 'application/json', body:
+      'x'.repeat(MAX_GITHUB_RELEASE_RESPONSE_BYTES + 1) }),
     'response_too_large'],
-    [{ status: 200, contentType: 'application/json', body: JSON.stringify({
+    [response({ status: 200, contentType: 'application/json', body: JSON.stringify({
       filler: 'あ'.repeat(Math.floor(MAX_GITHUB_RELEASE_RESPONSE_BYTES / 3)),
-    }) }, 'response_too_large'],
+    }) }), 'response_too_large'],
   ]
   for (const [transportValue, reason] of cases) {
     const client = createUpdateCheckClient({
@@ -374,7 +378,7 @@ test('the fetch transport emits one bounded anonymous GET only when requested', 
   const targetClock = clock()
   const fetch: UpdateCheckFetch = async (input, init) => {
     requests.push({ input, init })
-    return new Response(validBody(), {
+    return responseAtApi(validBody(), {
       status: 200,
       headers: {
         'content-type': 'application/json; charset=utf-8',
@@ -433,7 +437,7 @@ test('the fetch transport emits one bounded anonymous GET only when requested', 
 test('declared and streamed response limits stop oversized release data', async () => {
   const declaredClient = createUpdateCheckClient(
     createGitHubReleasesFetchTransport({
-      fetch: async () => new Response('{}', {
+      fetch: async () => responseAtApi('{}', {
         status: 200,
         headers: {
           'content-type': 'application/json',
@@ -455,7 +459,7 @@ test('declared and streamed response limits stop oversized release data', async 
 
   const streamedClient = createUpdateCheckClient(
     createGitHubReleasesFetchTransport({
-      fetch: async () => new Response(
+      fetch: async () => responseAtApi(
         'x'.repeat(MAX_GITHUB_RELEASE_RESPONSE_BYTES + 1),
         {
           status: 200,
@@ -542,8 +546,19 @@ function response(
     status: 200,
     contentType: 'application/vnd.github+json; charset=utf-8',
     body: validBody(),
+    finalUrl: ORIGAMI2_GITHUB_RELEASES_API_URL,
+    redirected: false,
     ...overrides,
   }
+}
+
+function responseAtApi(body: BodyInit, init: ResponseInit): Response {
+  const value = new Response(body, init)
+  Object.defineProperties(value, {
+    url: { value: ORIGAMI2_GITHUB_RELEASES_API_URL },
+    redirected: { value: false },
+  })
+  return value
 }
 
 function clock(): {

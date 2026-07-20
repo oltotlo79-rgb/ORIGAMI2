@@ -54,6 +54,12 @@ import {
   type StackedFoldReadRequest,
   type StackedFoldReadResponse,
 } from './stackedFoldRead.ts'
+import {
+  isMeshAnimationPreviewRequest,
+  normalizeMeshAnimationPreviewResponse,
+  type MeshAnimationPreviewRequest,
+  type MeshAnimationPreviewResponse,
+} from './meshAnimationExport.ts'
 
 export type {
   EdgeLayerAssignmentV1,
@@ -623,6 +629,26 @@ export function proposeCurrentStackedFoldRead(
     if (!response) throw new Error('invalid stacked-fold response')
     return response
   })
+}
+
+export function previewInstructionMeshAnimation(
+  request: MeshAnimationPreviewRequest,
+): Promise<MeshAnimationPreviewResponse> {
+  if (!isMeshAnimationPreviewRequest(request)) {
+    return Promise.reject(new Error('invalid mesh-animation preview request'))
+  }
+  return invoke<unknown>('preview_instruction_mesh_animation', { request }).then((value) => {
+    const response = normalizeMeshAnimationPreviewResponse(value, request)
+    if (!response) throw new Error('invalid mesh-animation preview response')
+    return response
+  })
+}
+
+export function cancelInstructionMeshAnimation(exportId: string): Promise<void> {
+  if (!isCanonicalNonNilUuid(exportId)) {
+    return Promise.reject(new Error('invalid mesh-animation export id'))
+  }
+  return invoke<void>('cancel_instruction_mesh_animation', { exportId })
 }
 
 export function analyzeGeometricConstraints(

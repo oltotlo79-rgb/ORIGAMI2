@@ -180,6 +180,7 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
         schema_version: 1,
         maximum_steps: 60,
         detail_level: 'standard',
+        target_category: null,
         allowed_techniques: ['valley_fold', 'mountain_fold'],
       },
     },

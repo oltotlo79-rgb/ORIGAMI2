@@ -167,6 +167,7 @@ export type BeginnerGenerationConstraintsV1 = {
   schema_version: 1
   maximum_steps: number
   detail_level: 'simple' | 'standard' | 'detailed'
+  target_category: 'animal' | 'insect' | null
   allowed_techniques: Array<
     | 'valley_fold'
     | 'mountain_fold'
@@ -197,6 +198,7 @@ function normalizeBeginnerGenerationConstraints(
     'schema_version',
     'maximum_steps',
     'detail_level',
+    'target_category',
     'allowed_techniques',
   ] as const)
   if (
@@ -210,6 +212,9 @@ function normalizeBeginnerGenerationConstraints(
       && record.detail_level !== 'standard'
       && record.detail_level !== 'detailed'
     )
+    || (record.target_category !== null
+      && record.target_category !== 'animal'
+      && record.target_category !== 'insect')
     || !Array.isArray(record.allowed_techniques)
     || record.allowed_techniques.length < 1
     || record.allowed_techniques.length > 8
@@ -220,6 +225,7 @@ function normalizeBeginnerGenerationConstraints(
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
     detail_level: record.detail_level,
+    target_category: record.target_category,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
 }
@@ -243,7 +249,12 @@ export type BeginnerCandidateResponseV1 = {
   requested_candidate_count: number
   bulge_treatment: 'target_shape_approximation'
   elasticity_model: 'not_computed'
-  generation_status: 'ready' | 'resource_limit' | 'unsupported_paper' | 'unsupported_techniques'
+  generation_status:
+    | 'ready'
+    | 'resource_limit'
+    | 'unsupported_paper'
+    | 'unsupported_techniques'
+    | 'missing_target_category'
   generated_plans: BeginnerGeneratedPlanV1[]
   candidates: BeginnerCandidateScoreV1[]
 }
@@ -286,7 +297,7 @@ function normalizeBeginnerCandidateResponse(
     || response.requested_candidate_count !== requestedCandidateCount
     || response.bulge_treatment !== 'target_shape_approximation'
     || response.elasticity_model !== 'not_computed'
-    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques']
+    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques', 'missing_target_category']
       .includes(String(response.generation_status))
     || !Array.isArray(response.generated_plans)
     || response.generated_plans.length > 3

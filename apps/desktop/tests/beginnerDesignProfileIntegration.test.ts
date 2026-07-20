@@ -50,6 +50,15 @@ test('AUT-105 generation constraints share the profile history and strict projec
   assert.match(app, /Allowed fold techniques/u)
 })
 
+test('AUT-001 admits only animal and insect target categories and connects them to generation', () => {
+  assert.match(generation, /enum BeginnerTargetCategoryV1[\s\S]*Animal[\s\S]*Insect/u)
+  assert.match(client, /record\.target_category !== 'animal'/u)
+  assert.match(client, /record\.target_category !== 'insect'/u)
+  assert.match(app, /name="target_category"/u)
+  assert.match(app, /初版で対応する目標形状は動物と昆虫だけ/u)
+  assert.match(app, /supports only animal and insect targets/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

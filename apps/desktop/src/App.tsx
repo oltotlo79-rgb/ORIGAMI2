@@ -3452,11 +3452,13 @@ function App() {
     const preset = String(data.get('design_preset'))
     const maximumSteps = Number(data.get('maximum_steps'))
     const detailLevel = String(data.get('detail_level'))
+    const targetCategory = String(data.get('target_category'))
     const allowedTechniques = data.getAll('allowed_techniques').map(String)
     const generationConstraints = {
       schema_version: 1 as const,
       maximum_steps: maximumSteps,
       detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
+      target_category: targetCategory as 'animal' | 'insect',
       allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
     }
     if (
@@ -3464,6 +3466,7 @@ function App() {
       || maximumSteps < 1
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
+      || !['animal', 'insect'].includes(targetCategory)
       || allowedTechniques.length < 1
       || allowedTechniques.length > 8
       || new Set(allowedTechniques).size !== allowedTechniques.length
@@ -7250,7 +7253,9 @@ function App() {
                     </div>
                   ) : (
                     <p role="status">
-                      {beginnerCandidates.generation_status === 'unsupported_techniques'
+                      {beginnerCandidates.generation_status === 'missing_target_category'
+                        ? text({ ja: '先に動物または昆虫の目標カテゴリを保存してください。', en: 'Save an animal or insect target category first.' })
+                        : beginnerCandidates.generation_status === 'unsupported_techniques'
                         ? text({ ja: '谷折りまたは山折りを許可してください。', en: 'Allow valley or mountain folds to generate plans.' })
                         : beginnerCandidates.generation_status === 'resource_limit'
                           ? text({ ja: '入力が生成処理の上限を超えています。', en: 'The input exceeds the generation work limit.' })
@@ -7279,6 +7284,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.preset,
                   nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps,
                   nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
+                  nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
                 ].join(':')}
                 onSubmit={submitBeginnerDesignProfile}
@@ -7311,6 +7317,28 @@ function App() {
                     foldability: nativeSnapshot.beginner_design_profile.foldability_weight,
                     steps: nativeSnapshot.beginner_design_profile.step_count_weight,
                     paper: nativeSnapshot.beginner_design_profile.paper_efficiency_weight,
+                  })}
+                </p>
+                <label className="field">
+                  <span>{text({ ja: '目標形状カテゴリ', en: 'Target shape category' })}</span>
+                  <select
+                    name="target_category"
+                    required
+                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? ''}
+                    disabled={coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-target-category-help"
+                  >
+                    <option value="" disabled>
+                      {text({ ja: 'カテゴリを選択', en: 'Select a category' })}
+                    </option>
+                    <option value="animal">{text({ ja: '動物', en: 'Animal' })}</option>
+                    <option value="insect">{text({ ja: '昆虫', en: 'Insect' })}</option>
+                  </select>
+                </label>
+                <p id="beginner-target-category-help" className="muted">
+                  {text({
+                    ja: '初版で対応する目標形状は動物と昆虫だけです。未対応カテゴリは推測しません。',
+                    en: 'The initial release supports only animal and insect targets. Unsupported categories are not inferred.',
                   })}
                 </p>
                 <label className="field">

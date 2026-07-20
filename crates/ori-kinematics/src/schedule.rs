@@ -1533,6 +1533,34 @@ impl CanonicalCycleScheduleV1 {
         (!moving.is_empty()).then_some(moving)
     }
 
+    /// Recognizes the exact rational degree-4 mode used by the physical
+    /// 120/120/60/60 Kawasaki vertex: two hinges carry tan(rho/2)=u and the
+    /// opposite pair carries tan(rho/2)=u/2 over the canonical unit domain.
+    #[must_use]
+    pub fn kawasaki_120_120_60_60_half_angle_pairs_v1(&self) -> Option<(Vec<EdgeId>, Vec<EdgeId>)> {
+        if self.half_angle_entries.len() != 4 {
+            return None;
+        }
+        let rational = |numerator: i64, denominator: i64| {
+            BigRational::new(numerator.into(), denominator.into())
+        };
+        let unit_domain = [rational(0, 1), rational(1, 1)];
+        let numerator = [rational(0, 1), rational(1, 1)];
+        let mut unit = Vec::new();
+        let mut half = Vec::new();
+        for entry in &self.half_angle_entries {
+            if entry.u_domain != unit_domain || entry.numerator_power_coefficients != numerator {
+                return None;
+            }
+            match entry.denominator_power_coefficients.as_slice() {
+                [value] if *value == rational(1, 1) => unit.push(entry.edge),
+                [value] if *value == rational(2, 1) => half.push(entry.edge),
+                _ => return None,
+            }
+        }
+        (unit.len() == 2 && half.len() == 2).then_some((unit, half))
+    }
+
     #[must_use]
     pub fn matches_binding(
         &self,

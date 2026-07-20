@@ -176,6 +176,8 @@ impl MaterialHingeGraphGeometry {
             self, audit, fixed_face, schedule, tolerance,
         ) || orthogonal_inverse_pair_cycle_closure_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
+        ) || kawasaki_120_120_60_60_cycle_closure_premises_v1(
+            self, audit, fixed_face, schedule, tolerance,
         ) {
             let mut checked_hinges = self
                 .hinges()
@@ -1093,6 +1095,80 @@ fn orthogonal_inverse_pair_cycle_closure_premises_v1(
         || !parallel(ordered[1].axis(), ordered[2].axis())
         || parallel(ordered[0].axis(), ordered[1].axis())
     {
+        return false;
+    }
+    [0.0, 0.5, 1.0].into_iter().all(|u| {
+        schedule.evaluate(u).is_some_and(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, tolerance)
+                .is_ok()
+        })
+    })
+}
+
+fn kawasaki_120_120_60_60_cycle_closure_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if geometry.hinges().len() != 4 || audit.closure_hinges().len() != 1 {
+        return false;
+    }
+    let Some((unit_edges, half_edges)) = schedule.kawasaki_120_120_60_60_half_angle_pairs_v1()
+    else {
+        return false;
+    };
+    let unit = unit_edges.into_iter().collect::<HashSet<_>>();
+    let half = half_edges.into_iter().collect::<HashSet<_>>();
+    let mut ordered = Vec::with_capacity(4);
+    let mut face = fixed_face;
+    let mut used = HashSet::new();
+    for _ in 0..4 {
+        let Some(hinge) = geometry.hinges().iter().find(|hinge| {
+            !used.contains(&hinge.edge())
+                && (hinge.left_face() == face || hinge.right_face() == face)
+        }) else {
+            return false;
+        };
+        used.insert(hinge.edge());
+        face = if hinge.left_face() == face {
+            hinge.right_face()
+        } else {
+            hinge.left_face()
+        };
+        ordered.push(hinge);
+    }
+    if face != fixed_face
+        || unit.contains(&ordered[0].edge()) != unit.contains(&ordered[2].edge())
+        || unit.contains(&ordered[1].edge()) != unit.contains(&ordered[3].edge())
+        || unit.contains(&ordered[0].edge()) == unit.contains(&ordered[1].edge())
+        || ordered
+            .iter()
+            .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+            .count()
+            != 1
+        || ordered
+            .iter()
+            .find(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+            .is_none_or(|hinge| !half.contains(&hinge.edge()))
+    {
+        return false;
+    }
+    let cosine = |a: crate::Point3, b: crate::Point3| a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
+    let adjacent_cosines = (0..4)
+        .map(|index| cosine(ordered[index].axis(), ordered[(index + 1) % 4].axis()))
+        .collect::<Vec<_>>();
+    let negative = adjacent_cosines
+        .iter()
+        .filter(|value| (**value + 0.5).abs() <= tolerance)
+        .count();
+    let positive = adjacent_cosines
+        .iter()
+        .filter(|value| (**value - 0.5).abs() <= tolerance)
+        .count();
+    if negative != 2 || positive != 2 {
         return false;
     }
     [0.0, 0.5, 1.0].into_iter().all(|u| {

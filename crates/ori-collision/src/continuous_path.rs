@@ -2161,12 +2161,12 @@ mod tests {
     }
 
     #[test]
-    fn kawasaki_120_60_vertex_rejects_unsigned_naive_half_angle_ratio() {
+    fn kawasaki_120_120_60_60_vertex_obeys_signed_half_angle_ratio() {
         let points = [
             (100.0, 0.0),
             (-50.0, 86.602_540_378_443_86),
-            (-100.0, 0.0),
             (-50.0, -86.602_540_378_443_86),
+            (50.0, -86.602_540_378_443_86),
             (0.0, 0.0),
         ];
         let vertices = points
@@ -2197,7 +2197,7 @@ mod tests {
             id: hinges[index],
             start: boundary[index],
             end: center,
-            kind: if index % 2 == 0 {
+            kind: if index == 3 {
                 EdgeKind::Mountain
             } else {
                 EdgeKind::Valley
@@ -2252,13 +2252,13 @@ mod tests {
                                 denominator: 1,
                             },
                             ori_kinematics::RationalCoefficientV1 {
-                                numerator: if index % 2 == 0 { 1 } else { 2 },
+                                numerator: 1,
                                 denominator: 1,
                             },
                         ],
                         denominator_power_coefficients: vec![
                             ori_kinematics::RationalCoefficientV1 {
-                                numerator: 1,
+                                numerator: if index % 2 == 0 { 1 } else { 2 },
                                 denominator: 1,
                             },
                         ],
@@ -2268,20 +2268,27 @@ mod tests {
             ori_kinematics::CycleScheduleLimitsV1::default(),
         )
         .unwrap();
-        let initial = schedule.evaluate(0.0).unwrap();
-        assert!(
-            geometry
-                .solve_closed(&audit, fixed, &initial, 1.0e-8)
-                .is_ok()
-        );
-        for u in [0.5, 1.0] {
+        for u in [0.0, 0.5, 1.0] {
             let angles = schedule.evaluate(u).unwrap();
-            assert!(
-                geometry
-                    .solve_closed(&audit, fixed, &angles, 1.0e-8)
-                    .is_err()
-            );
+            geometry
+                .solve_closed(&audit, fixed, &angles, 1.0e-8)
+                .unwrap();
         }
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-8,
+                ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 16,
+                    max_leaves: 65_536,
+                    max_work: 1_048_576,
+                    schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("full-domain physical four-vertex closure");
+        assert_eq!(closure.leaves().len(), 1);
     }
 
     fn one_hinge_model() -> MaterialTreeKinematicsModel {

@@ -2109,6 +2109,34 @@ fn temporary_symmetric_profile_for_grid(
         point.scale_percent,
         point.spacing_percent,
     );
+    if matches!(
+        source.generation_constraints.target_asset,
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. })
+    ) {
+        if let (Some(base), Some(candidate)) = (
+            source
+                .generation_constraints
+                .protrusions
+                .iter()
+                .find(|target| target.count == estimate.protrusion_count),
+            profile.generation_constraints.protrusions.first_mut(),
+        ) {
+            candidate.length_tenths_mm = base
+                .length_tenths_mm
+                .saturating_mul(u32::from(point.scale_percent))
+                .checked_div(27)
+                .unwrap_or(1)
+                .clamp(1, 1_000_000);
+            candidate.thickness_tenths_mm = u16::try_from(
+                u32::from(base.thickness_tenths_mm)
+                    .saturating_mul(u32::from(point.spacing_percent))
+                    .checked_div(50)
+                    .unwrap_or(1)
+                    .clamp(1, 10_000),
+            )
+            .unwrap_or(10_000);
+        }
+    }
     Ok(profile)
 }
 
@@ -10246,6 +10274,36 @@ mod tests {
         assert_eq!(
             temporary_symmetric_profile_for_grid(&source, forged),
             Err("beginner_parameter_grid_point_invalid".to_owned())
+        );
+        let mut model_source = source.clone();
+        configure_symmetric_profile(
+            &mut model_source,
+            ori_domain::BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 4,
+                scale_percent: 25,
+                spacing_percent: 35,
+            },
+            27,
+            50,
+        );
+        model_source.generation_constraints.protrusions[0].length_tenths_mm = 270;
+        model_source.generation_constraints.protrusions[0].thickness_tenths_mm = 100;
+        model_source.generation_constraints.target_asset =
+            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel {
+                asset_id: AssetId::new(),
+            });
+        let model_candidate = temporary_symmetric_profile_for_grid(
+            &model_source,
+            ori_domain::beginner_parameter_grid_v1()[0],
+        )
+        .unwrap();
+        assert_eq!(
+            model_candidate.generation_constraints.protrusions[0].length_tenths_mm,
+            100
+        );
+        assert_eq!(
+            model_candidate.generation_constraints.protrusions[0].thickness_tenths_mm,
+            40
         );
 
         let mut project = initial_project_state();

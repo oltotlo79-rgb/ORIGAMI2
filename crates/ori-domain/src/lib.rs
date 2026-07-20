@@ -8,6 +8,7 @@ mod beginner_candidates;
 mod beginner_design;
 mod beginner_generation;
 mod beginner_generator;
+mod beginner_recognition;
 mod constraints;
 mod element_metadata;
 mod layers;
@@ -43,6 +44,12 @@ pub use beginner_generator::{
     BEGINNER_GENERATOR_SCHEMA_VERSION_V1, BeginnerGeneratedPlanKindV1, BeginnerGeneratedPlanV1,
     BeginnerGeneratorErrorV1, MAX_BEGINNER_GENERATED_CANDIDATES_V1,
     MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1, generate_beginner_plans_v1,
+};
+pub use beginner_recognition::{
+    BEGINNER_RECOGNITION_SCHEMA_VERSION_V1, BeginnerRecognitionBoundsV1,
+    BeginnerRecognitionErrorV1, BeginnerRecognitionFormatV1, BeginnerRecognitionProposalV1,
+    MAX_BEGINNER_RECOGNITION_COMPONENTS_V1, MAX_BEGINNER_RECOGNITION_DIMENSION_V1,
+    MAX_BEGINNER_RECOGNITION_PIXELS_V1, analyze_marker_png_rgba_v1,
 };
 pub use constraints::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,

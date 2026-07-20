@@ -142,6 +142,61 @@ pub struct BeginnerSymmetricParameterCandidateV1 {
     pub required_protrusion_count: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerBilateralPairBindingV1 {
+    pub pair_index: u8,
+    pub protrusion_id: u16,
+    pub center_y_tenths_mm: i32,
+}
+
+#[must_use]
+pub fn insect_three_pair_bindings_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<[BeginnerBilateralPairBindingV1; 3]> {
+    if constraints.target_category != Some(BeginnerTargetCategoryV1::Insect)
+        || constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == BeginnerTargetPartKindV1::Leg)
+            .map_or(0, |part| part.count)
+            != 6
+    {
+        return None;
+    }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) =
+        skeleton_bounds(&constraints.skeleton_segments)?;
+    let axis_twice = minimum_x.checked_add(maximum_x)?;
+    let mut pairs = constraints
+        .protrusions
+        .iter()
+        .filter(|target| {
+            target.count == 2
+                && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+                && target.direction_milli[0] != 0
+                && target.position_tenths_mm[0].checked_mul(2) == Some(axis_twice)
+                && (minimum_y..=maximum_y).contains(&target.position_tenths_mm[1])
+        })
+        .collect::<Vec<_>>();
+    if pairs.len() != 3 {
+        return None;
+    }
+    pairs.sort_by_key(|target| (target.position_tenths_mm[1], target.id));
+    if pairs
+        .windows(2)
+        .any(|pair| pair[0].position_tenths_mm[1] >= pair[1].position_tenths_mm[1])
+    {
+        return None;
+    }
+    Some(std::array::from_fn(|index| {
+        BeginnerBilateralPairBindingV1 {
+            pair_index: index as u8,
+            protrusion_id: pairs[index].id,
+            center_y_tenths_mm: pairs[index].position_tenths_mm[1],
+        }
+    }))
+}
+
 #[must_use]
 pub fn symmetric_parameter_candidates_v1(
     estimate: BeginnerSymmetricParameterEstimateV1,
@@ -911,6 +966,42 @@ mod tests {
             leg_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
         );
+        let mut complete_legs = constraints.clone();
+        complete_legs.target_parts[2] = BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Leg,
+            count: 6,
+        };
+        complete_legs.protrusions = [1_i32, 5, 9]
+            .into_iter()
+            .enumerate()
+            .map(|(index, center_y)| {
+                let mut target = bilateral_protrusion(index as u16 + 1, 2);
+                target.position_tenths_mm[1] = center_y;
+                target
+            })
+            .collect();
+        assert_eq!(
+            insect_three_pair_bindings_v1(&complete_legs),
+            Some([
+                BeginnerBilateralPairBindingV1 {
+                    pair_index: 0,
+                    protrusion_id: 1,
+                    center_y_tenths_mm: 1
+                },
+                BeginnerBilateralPairBindingV1 {
+                    pair_index: 1,
+                    protrusion_id: 2,
+                    center_y_tenths_mm: 5
+                },
+                BeginnerBilateralPairBindingV1 {
+                    pair_index: 2,
+                    protrusion_id: 3,
+                    center_y_tenths_mm: 9
+                },
+            ])
+        );
+        complete_legs.protrusions[2].position_tenths_mm[1] = 5;
+        assert_eq!(insect_three_pair_bindings_v1(&complete_legs), None);
         constraints.skeleton_segments[1].end.y_tenths_mm = 11;
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &constraints),

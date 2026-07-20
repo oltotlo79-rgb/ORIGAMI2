@@ -30,9 +30,9 @@ pub use beginner_design::{
 };
 pub use beginner_generation::{
     BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1, BeginnerDetailLevelV1,
-    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, MAX_BEGINNER_ALLOWED_TECHNIQUES_V1,
-    MAX_BEGINNER_GENERATION_STEPS_V1, MIN_BEGINNER_GENERATION_STEPS_V1,
-    validate_beginner_generation_constraints_v1,
+    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerTargetCategoryV1,
+    MAX_BEGINNER_ALLOWED_TECHNIQUES_V1, MAX_BEGINNER_GENERATION_STEPS_V1,
+    MIN_BEGINNER_GENERATION_STEPS_V1, validate_beginner_generation_constraints_v1,
 };
 pub use beginner_generator::{
     BEGINNER_GENERATOR_SCHEMA_VERSION_V1, BeginnerGeneratedPlanKindV1, BeginnerGeneratedPlanV1,

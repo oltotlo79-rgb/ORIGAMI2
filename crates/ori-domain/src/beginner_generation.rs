@@ -28,12 +28,21 @@ pub enum BeginnerDetailLevelV1 {
     Detailed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerTargetCategoryV1 {
+    Animal,
+    Insect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginnerGenerationConstraintsV1 {
     pub schema_version: u32,
     pub maximum_steps: u16,
     pub detail_level: BeginnerDetailLevelV1,
+    #[serde(default)]
+    pub target_category: Option<BeginnerTargetCategoryV1>,
     pub allowed_techniques: Vec<BeginnerFoldTechniqueV1>,
 }
 
@@ -43,6 +52,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             schema_version: BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1,
             maximum_steps: 60,
             detail_level: BeginnerDetailLevelV1::Standard,
+            target_category: None,
             allowed_techniques: vec![
                 BeginnerFoldTechniqueV1::ValleyFold,
                 BeginnerFoldTechniqueV1::MountainFold,

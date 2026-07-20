@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, CreasePattern, Edge, EdgeId,
-    EdgeKind, Point2, ProjectId, Vertex, VertexId,
+    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerTargetCategoryV1,
+    CreasePattern, Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId,
 };
 
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
@@ -31,6 +31,7 @@ pub enum BeginnerGeneratorErrorV1 {
     ResourceLimit,
     UnsupportedPaper,
     UnsupportedTechniques,
+    MissingTargetCategory,
 }
 
 pub fn generate_beginner_plans_v1(
@@ -90,12 +91,15 @@ pub fn generate_beginner_plans_v1(
     if !allows_valley && !allows_mountain {
         return Err(BeginnerGeneratorErrorV1::UnsupportedTechniques);
     }
+    let target_category = constraints
+        .target_category
+        .ok_or(BeginnerGeneratorErrorV1::MissingTargetCategory)?;
     let kind = if allows_valley {
         EdgeKind::Valley
     } else {
         EdgeKind::Mountain
     };
-    let variants = [
+    let animal_variants = [
         (
             BeginnerGeneratedPlanKindV1::VerticalBookFold,
             Point2::new((min_x + max_x) / 2.0, min_y),
@@ -115,6 +119,12 @@ pub fn generate_beginner_plans_v1(
             "diagonal_fold",
         ),
     ];
+    let variants = match target_category {
+        BeginnerTargetCategoryV1::Animal => animal_variants,
+        BeginnerTargetCategoryV1::Insect => {
+            [animal_variants[2], animal_variants[0], animal_variants[1]]
+        }
+    };
     Ok(variants
         .into_iter()
         .take(MAX_BEGINNER_GENERATED_CANDIDATES_V1)
@@ -184,7 +194,10 @@ mod tests {
                 .collect(),
             edges: Vec::new(),
         };
-        let constraints = BeginnerGenerationConstraintsV1::default();
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Animal),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
         let first = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
         let second = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
         assert_eq!(first, second);

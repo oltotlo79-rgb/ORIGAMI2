@@ -1570,19 +1570,22 @@ fn evaluate_beginner_candidates(
         .iter()
         .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
         .count();
+    let constraints = &project
+        .editor
+        .beginner_design_profile()
+        .generation_constraints;
     let mut candidates = ori_domain::score_beginner_candidates_v1(
         ori_domain::BeginnerCandidateInputV1 {
             vertex_count: pattern.vertices.len(),
             edge_count: pattern.edges.len(),
             crease_count,
+            target_approximation_score: ori_domain::beginner_target_approximation_score_v1(
+                constraints,
+            ),
         },
         project.editor.beginner_design_profile(),
     );
     candidates.truncate(usize::from(requested_candidate_count));
-    let constraints = &project
-        .editor
-        .beginner_design_profile()
-        .generation_constraints;
     let generation = if target_asset_reference_is_live(&project, constraints.target_asset) {
         ori_domain::generate_beginner_plans_v1(
             project.project_id,

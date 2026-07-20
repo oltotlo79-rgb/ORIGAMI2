@@ -43,6 +43,7 @@ pub struct BeginnerCandidateInputV1 {
     pub vertex_count: usize,
     pub edge_count: usize,
     pub crease_count: usize,
+    pub target_approximation_score: u8,
 }
 
 #[must_use]
@@ -56,7 +57,10 @@ pub fn score_beginner_candidates_v1(
         .saturating_add(input.crease_count.saturating_mul(2))
         .min(100);
     let simplicity = 100_u8.saturating_sub(complexity as u8);
-    let shape_base = (50_usize.saturating_add(input.crease_count.min(50))) as u8;
+    let crease_shape = (50_usize.saturating_add(input.crease_count.min(50))) as u8;
+    let shape_base = ((u16::from(crease_shape)
+        + u16::from(input.target_approximation_score.min(100)))
+        / 2) as u8;
     let variants = [
         (BeginnerCandidateKindV1::Recommended, 0_i16, 0_i16),
         (BeginnerCandidateKindV1::ShapeFocused, 15, -10),
@@ -128,6 +132,7 @@ mod tests {
             vertex_count: usize::MAX,
             edge_count: usize::MAX,
             crease_count: usize::MAX,
+            target_approximation_score: 100,
         };
         let profile = BeginnerDesignProfileV1::default();
         let first = score_beginner_candidates_v1(input, &profile);
@@ -148,5 +153,15 @@ mod tests {
                 .all(|pair| pair[0].total_score >= pair[1].total_score)
         );
         assert!(first.iter().all(|candidate| candidate.total_score <= 100));
+
+        let mut unmatched = input;
+        unmatched.target_approximation_score = 0;
+        let unmatched_scores = score_beginner_candidates_v1(unmatched, &profile);
+        assert!(
+            first
+                .iter()
+                .zip(unmatched_scores)
+                .all(|(matched, missing)| matched.shape_score > missing.shape_score)
+        );
     }
 }

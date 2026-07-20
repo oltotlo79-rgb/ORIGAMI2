@@ -130,6 +130,8 @@ pub fn generate_beginner_plans_v1(
             {
                 return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
             }
+            let endpoints = parameterized_symmetric_endpoints(constraints, 4, true)
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
             symmetric_template(
                 namespace,
                 source,
@@ -139,7 +141,7 @@ pub fn generate_beginner_plans_v1(
                 max_x,
                 min_y,
                 max_y,
-                &[(0.25, 0.0), (0.75, 0.0), (0.25, 1.0), (0.75, 1.0)],
+                &endpoints,
                 "symmetric_four_leg_base",
                 constraints,
             )
@@ -152,6 +154,8 @@ pub fn generate_beginner_plans_v1(
             {
                 return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
             }
+            let endpoints = parameterized_symmetric_endpoints(constraints, 2, false)
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
             symmetric_template(
                 namespace,
                 source,
@@ -161,7 +165,7 @@ pub fn generate_beginner_plans_v1(
                 max_x,
                 min_y,
                 max_y,
-                &[(0.0, 0.25), (0.0, 0.75), (1.0, 0.25), (1.0, 0.75)],
+                &endpoints,
                 "symmetric_wing_base",
                 constraints,
             )
@@ -247,6 +251,30 @@ pub fn generate_beginner_plans_v1(
     Ok(plans)
 }
 
+#[must_use]
+pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
+    let target = match constraints.target_category {
+        Some(BeginnerTargetCategoryV1::Animal) => {
+            parameterized_symmetric_endpoints(constraints, 4, true).and_then(|_| {
+                constraints
+                    .protrusions
+                    .iter()
+                    .find(|target| target.count == 4)
+            })
+        }
+        Some(BeginnerTargetCategoryV1::Insect) => {
+            parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
+                constraints
+                    .protrusions
+                    .iter()
+                    .find(|target| target.count == 2)
+            })
+        }
+        None => None,
+    };
+    target.map_or(0, |target| 60 + target.priority.min(100) * 2 / 5)
+}
+
 fn has_bilateral_protrusion_count(
     constraints: &BeginnerGenerationConstraintsV1,
     count: u8,
@@ -294,6 +322,90 @@ fn has_bilateral_skeleton(constraints: &BeginnerGenerationConstraintsV1) -> bool
                         && mirror_end.1 == candidate.start.y_tenths_mm)
         })
     })
+}
+
+fn parameterized_symmetric_endpoints(
+    constraints: &BeginnerGenerationConstraintsV1,
+    count: u8,
+    vertical: bool,
+) -> Option<[(f64, f64); 4]> {
+    let target = constraints.protrusions.iter().find(|target| {
+        target.count == count && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+    })?;
+    let (minimum_x, maximum_x, minimum_y, maximum_y) =
+        skeleton_bounds(constraints.skeleton_segments.as_slice())?;
+    let span_x = maximum_x.checked_sub(minimum_x)?;
+    let span_y = maximum_y.checked_sub(minimum_y)?;
+    if span_x <= 0 || span_y <= 0 {
+        return None;
+    }
+    let axis_twice = minimum_x.checked_add(maximum_x)?;
+    if target.position_tenths_mm[0].checked_mul(2)? != axis_twice
+        || !(minimum_y..=maximum_y).contains(&target.position_tenths_mm[1])
+    {
+        return None;
+    }
+    let primary_direction = if vertical {
+        target.direction_milli[1]
+    } else {
+        target.direction_milli[0]
+    };
+    if primary_direction == 0 {
+        return None;
+    }
+    let primary_span = if vertical { span_y } else { span_x };
+    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
+    let thickness_ratio =
+        f64::from(target.thickness_tenths_mm) / f64::from(u32::try_from(span_x.min(span_y)).ok()?);
+    if !(0.02..=0.45).contains(&length_ratio) || !(0.001..=0.25).contains(&thickness_ratio) {
+        return None;
+    }
+    let priority_scale = 0.75 + f64::from(target.priority) / 400.0;
+    let direction_scale = f64::from(primary_direction.unsigned_abs()) / 1_000.0;
+    let reach = length_ratio * priority_scale * direction_scale;
+    let spread = (thickness_ratio * 2.0).clamp(0.05, 0.2);
+    let center_offset = target.position_tenths_mm[1].checked_sub(minimum_y)?;
+    let center_y = f64::from(center_offset) / f64::from(span_y as u32);
+    let endpoints = if vertical {
+        [
+            (0.5 - spread, center_y - reach),
+            (0.5 + spread, center_y - reach),
+            (0.5 - spread, center_y + reach),
+            (0.5 + spread, center_y + reach),
+        ]
+    } else {
+        [
+            (0.5 - reach, center_y - spread),
+            (0.5 - reach, center_y + spread),
+            (0.5 + reach, center_y - spread),
+            (0.5 + reach, center_y + spread),
+        ]
+    };
+    endpoints
+        .iter()
+        .all(|(x, y)| (0.0..1.0).contains(x) && (0.0..1.0).contains(y))
+        .then_some(endpoints)
+}
+
+fn skeleton_bounds(segments: &[BeginnerSkeletonSegmentV1]) -> Option<(i32, i32, i32, i32)> {
+    Some((
+        segments
+            .iter()
+            .flat_map(|segment| [segment.start.x_tenths_mm, segment.end.x_tenths_mm])
+            .min()?,
+        segments
+            .iter()
+            .flat_map(|segment| [segment.start.x_tenths_mm, segment.end.x_tenths_mm])
+            .max()?,
+        segments
+            .iter()
+            .flat_map(|segment| [segment.start.y_tenths_mm, segment.end.y_tenths_mm])
+            .min()?,
+        segments
+            .iter()
+            .flat_map(|segment| [segment.start.y_tenths_mm, segment.end.y_tenths_mm])
+            .max()?,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -406,6 +518,7 @@ mod tests {
         };
         let first = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
         let second = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 92);
         assert_eq!(first, second);
         assert_eq!(first.len(), 3);
         assert_eq!(
@@ -417,6 +530,34 @@ mod tests {
             first[1..]
                 .iter()
                 .all(|plan| plan.crease_pattern.edges.len() == 1)
+        );
+        let mut higher_priority = constraints.clone();
+        higher_priority.protrusions[0].priority = 100;
+        let scaled =
+            generate_beginner_plans_v1(namespace, &source, &ids, &higher_priority).unwrap();
+        assert_ne!(
+            first[0].crease_pattern.vertices,
+            scaled[0].crease_pattern.vertices
+        );
+        let mut shorter_direction = constraints.clone();
+        shorter_direction.protrusions[0].direction_milli[1] = 500;
+        let direction_scaled =
+            generate_beginner_plans_v1(namespace, &source, &ids, &shorter_direction).unwrap();
+        assert_ne!(
+            first[0].crease_pattern.vertices,
+            direction_scaled[0].crease_pattern.vertices
+        );
+        shorter_direction.protrusions[0].direction_milli[1] = 0;
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &shorter_direction),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+        let mut outside_paper = constraints.clone();
+        outside_paper.protrusions[0].length_tenths_mm = 10;
+        assert_eq!(beginner_target_approximation_score_v1(&outside_paper), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &outside_paper),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids[..3], &constraints),
@@ -505,10 +646,14 @@ mod tests {
         crate::BeginnerProtrusionTargetV1 {
             id,
             count,
-            length_tenths_mm: 100,
-            thickness_tenths_mm: 10,
-            position_tenths_mm: [0, 0, 0],
-            direction_milli: [1_000, 0, 0],
+            length_tenths_mm: 5,
+            thickness_tenths_mm: 2,
+            position_tenths_mm: [0, if count == 2 { 5 } else { 0 }, 0],
+            direction_milli: if count == 2 {
+                [1_000, 0, 0]
+            } else {
+                [0, 1_000, 0]
+            },
             symmetry: BeginnerProtrusionSymmetryV1::Bilateral,
             curvature_degrees: 0,
             joint: crate::BeginnerProtrusionJointV1::Hinge,

@@ -1,6 +1,6 @@
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
+use num_traits::{Signed, ToPrimitive, Zero};
 use ori_domain::{EdgeId, FaceId};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -62,6 +62,52 @@ pub struct PoleFreeBernsteinCertificateV1 {
     degree: usize,
     positive: bool,
     coefficients: Vec<BigRational>,
+}
+
+impl PoleFreeBernsteinCertificateV1 {
+    fn range_interval(&self) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+        let lower = self
+            .coefficients
+            .iter()
+            .min()
+            .and_then(|value| value.to_f64())
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let upper = self
+            .coefficients
+            .iter()
+            .max()
+            .and_then(|value| value.to_f64())
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let lower = OutwardIntervalV1::from_rounded(lower)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let upper = OutwardIntervalV1::from_rounded(upper)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        OutwardIntervalV1::new(lower.lower(), upper.upper())
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
+    }
+}
+
+pub fn evaluate_pole_free_rational_interval_v1(
+    numerator: &PoleFreeBernsteinCertificateV1,
+    denominator: &PoleFreeBernsteinCertificateV1,
+    max_work: usize,
+) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+    let work = numerator
+        .coefficients
+        .len()
+        .checked_add(denominator.coefficients.len())
+        .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+    if work > max_work {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    let numerator = numerator.range_interval()?;
+    let denominator = denominator.range_interval()?;
+    if denominator.lower() <= 0.0 && denominator.upper() >= 0.0 {
+        return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+    }
+    numerator
+        .div(denominator)
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
 }
 
 pub fn prepare_pole_free_bernstein_certificate_v1(
@@ -568,6 +614,38 @@ mod tests {
                 .iter()
                 .all(|value| value.is_positive())
         );
+        let denominator = prepare_pole_free_bernstein_certificate_v1(
+            &[RationalCoefficientV1 {
+                numerator: 2,
+                denominator: 1,
+            }],
+            4,
+            8,
+            16,
+        )
+        .unwrap();
+        let quotient =
+            evaluate_pole_free_rational_interval_v1(&positive, &denominator, 16).unwrap();
+        assert!(quotient.lower() <= 0.5);
+        assert!(quotient.upper() >= 1.0);
+        assert_eq!(
+            evaluate_pole_free_rational_interval_v1(&positive, &denominator, 1),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+        let near_zero = prepare_pole_free_bernstein_certificate_v1(
+            &[RationalCoefficientV1 {
+                numerator: 1,
+                denominator: 1_u64 << 50,
+            }],
+            4,
+            53,
+            16,
+        )
+        .unwrap();
+        let large =
+            evaluate_pole_free_rational_interval_v1(&positive, &near_zero, 16).unwrap();
+        assert!(large.upper().is_finite());
+        assert!(large.lower() > 0.0);
         for invalid in [
             vec![
                 RationalCoefficientV1 {

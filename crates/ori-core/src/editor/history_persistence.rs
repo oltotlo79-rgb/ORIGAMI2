@@ -291,6 +291,12 @@ enum CommandV1 {
         edge: EdgeId,
         layer: LayerId,
     },
+    ApplyStackedFoldDocument {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -324,6 +330,12 @@ struct VertexPositionV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InverseV1 {
+    RestoreStackedFoldDocument {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+    },
     RestoreProjectMemo {
         memo: String,
     },
@@ -708,6 +720,17 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             edge: *edge,
             layer: *layer,
         },
+        Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        } => CommandV1::ApplyStackedFoldDocument {
+            pattern: pattern.clone(),
+            paper: paper.clone(),
+            instruction_timeline: instruction_timeline.clone(),
+            project_layers: project_layers.clone(),
+        },
     })
 }
 
@@ -899,6 +922,17 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
         },
         CommandV1::DeleteLayer { layer } => Command::DeleteLayer { layer },
         CommandV1::AssignEdgeToLayer { edge, layer } => Command::AssignEdgeToLayer { edge, layer },
+        CommandV1::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        } => Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        },
     })
 }
 
@@ -947,6 +981,17 @@ fn indexed_layer_assignment_from_wire(
 
 fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1> {
     Ok(match inverse {
+        Inverse::RestoreStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        } => InverseV1::RestoreStackedFoldDocument {
+            pattern: pattern.clone(),
+            paper: paper.clone(),
+            instruction_timeline: instruction_timeline.clone(),
+            project_layers: project_layers.clone(),
+        },
         Inverse::RestoreProjectMemo { memo } => {
             InverseV1::RestoreProjectMemo { memo: memo.clone() }
         }
@@ -1182,6 +1227,17 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
 
 fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1> {
     Ok(match inverse {
+        InverseV1::RestoreStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        } => Inverse::RestoreStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        },
         InverseV1::RestoreProjectMemo { memo } => Inverse::RestoreProjectMemo { memo },
         InverseV1::RestoreElementMetadata { target, metadata } => {
             Inverse::RestoreElementMetadata { target, metadata }
@@ -1478,8 +1534,45 @@ fn validate_constraint_finite(
     }
 }
 
+fn validate_stacked_fold_document(
+    pattern: &CreasePattern,
+    paper: &Paper,
+    timeline: &InstructionTimeline,
+    layers: &ProjectLayerDocumentV1,
+    error: EditorHistoryErrorV1,
+) -> Result<(), EditorHistoryErrorV1> {
+    if paper.thickness_mm.to_bits() != 0.0_f64.to_bits()
+        || pattern
+            .vertices
+            .iter()
+            .any(|vertex| !finite_point(vertex.position))
+        || !validate_crease_pattern(pattern).is_valid()
+        || !validate_paper(paper, pattern).is_valid()
+        || validate_instruction_timeline(timeline).is_err()
+        || validate_project_layer_document_against_pattern_v1(layers, pattern).is_err()
+    {
+        return Err(error);
+    }
+    for step in &timeline.steps {
+        validate_instruction_step_finite(step)?;
+    }
+    Ok(())
+}
+
 fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1> {
     match command {
+        Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        } => validate_stacked_fold_document(
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            EditorHistoryErrorV1::InvalidCommand,
+        )?,
         Command::UpdateProjectMemo { memo } => {
             if memo.chars().count() > 16_000
                 || memo.chars().any(|character| {
@@ -1598,6 +1691,18 @@ fn validate_vertex_finite(vertex: &Vertex) -> Result<(), EditorHistoryErrorV1> {
 
 fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1> {
     match inverse {
+        Inverse::RestoreStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        } => validate_stacked_fold_document(
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            EditorHistoryErrorV1::InvalidInverse,
+        )?,
         Inverse::RestoreProjectMemo { memo } => {
             if memo.chars().count() > 16_000
                 || memo.chars().any(|character| {
@@ -1747,6 +1852,7 @@ fn validate_inverse_application(
 ) -> Result<(), EditorHistoryErrorV1> {
     let invalid = || EditorHistoryErrorV1::InvalidInverse;
     match inverse {
+        Inverse::RestoreStackedFoldDocument { .. } => {}
         Inverse::RestoreProjectMemo { .. } => {}
         Inverse::RestoreElementMetadata { .. } => {}
         Inverse::Command(_) => {}
@@ -2890,6 +2996,78 @@ mod tests {
             editor.geometric_constraints.clone(),
             history,
         )
+    }
+
+    #[test]
+    fn stacked_fold_document_history_round_trips_and_rejects_malformed_target() {
+        let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
+        let (source_pattern, paper) = sheet.into_parts();
+        let mut target_pattern = source_pattern.clone();
+        let hinge = EdgeId::new();
+        target_pattern.edges.push(Edge {
+            id: hinge,
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Mountain,
+        });
+        let timeline = InstructionTimeline {
+            steps: vec![InstructionStep {
+                id: InstructionStepId::new(),
+                title: "fold".to_owned(),
+                description: String::new(),
+                caution: String::new(),
+                duration_ms: ori_domain::MIN_INSTRUCTION_DURATION_MS,
+                visual: InstructionVisual::default(),
+                pose: InstructionPose {
+                    model: ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1,
+                    source_model_fingerprint:
+                        crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                            &target_pattern,
+                            &paper,
+                        ),
+                    fixed_face: Some(FaceId::new()),
+                    hinge_angles: vec![ori_domain::InstructionHingeAngle {
+                        edge: hinge,
+                        angle_degrees: 90.0,
+                    }],
+                },
+            }],
+        };
+        let mut editor = EditorState::with_paper(source_pattern.clone(), paper.clone());
+        editor
+            .execute(
+                0,
+                Command::ApplyStackedFoldDocument {
+                    pattern: target_pattern.clone(),
+                    paper: paper.clone(),
+                    instruction_timeline: timeline.clone(),
+                    project_layers: ProjectLayerDocumentV1::default(),
+                },
+            )
+            .unwrap();
+        let history = editor.export_history_v1(ProjectId::new()).unwrap();
+        let mut reopened = restore(&editor, history).unwrap();
+        reopened.undo(0).unwrap();
+        assert_eq!(reopened.pattern(), &source_pattern);
+        reopened.redo(1).unwrap();
+        assert_eq!(reopened.pattern(), &target_pattern);
+        assert_eq!(reopened.instruction_timeline(), &timeline);
+
+        let mut malformed = target_pattern;
+        malformed.vertices[0].position.x = f64::NAN;
+        assert_eq!(
+            editor.execute(
+                1,
+                Command::ApplyStackedFoldDocument {
+                    pattern: malformed,
+                    paper,
+                    instruction_timeline: timeline,
+                    project_layers: ProjectLayerDocumentV1::default(),
+                },
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor.revision(), 1);
     }
 
     #[test]

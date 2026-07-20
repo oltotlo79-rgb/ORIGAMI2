@@ -235,6 +235,12 @@ pub enum Command {
         edge: EdgeId,
         layer: LayerId,
     },
+    ApplyStackedFoldDocument {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +256,8 @@ pub struct CommandResult {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum CommandError {
+    #[error("the stacked-fold target document is invalid")]
+    InvalidStackedFoldDocument,
     #[error("expected revision {expected}, but the current revision is {actual}")]
     RevisionConflict {
         expected: Revision,
@@ -639,6 +647,12 @@ fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limi
 
 #[derive(Debug, Clone, PartialEq)]
 enum Inverse {
+    RestoreStackedFoldDocument {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+    },
     RestoreProjectMemo {
         memo: String,
     },
@@ -1822,6 +1836,36 @@ impl EditorState {
         Ok(self.result(result))
     }
 
+    pub fn execute_stacked_fold_document(
+        &mut self,
+        expected_revision: Revision,
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+        applied_pose: AppliedPoseV1,
+    ) -> Result<CommandResult, CommandError> {
+        let result = self.execute(
+            expected_revision,
+            Command::ApplyStackedFoldDocument {
+                pattern,
+                paper,
+                instruction_timeline,
+                project_layers,
+            },
+        )?;
+        self.current_applied_pose = Some(applied_pose.clone());
+        let entry = self
+            .undo_stack
+            .last_mut()
+            .ok_or(CommandError::InvalidStackedFoldDocument)?;
+        let AppliedPoseHistoryTransition::Restore { after, .. } = &mut entry.applied_pose else {
+            return Err(CommandError::InvalidStackedFoldDocument);
+        };
+        *after = Some(applied_pose);
+        Ok(result)
+    }
+
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
@@ -1870,6 +1914,50 @@ impl EditorState {
         self.ensure_project_layers_allow(command)?;
         self.ensure_geometric_constraints_allow(command)?;
         match *command {
+            Command::ApplyStackedFoldDocument {
+                ref pattern,
+                ref paper,
+                ref instruction_timeline,
+                ref project_layers,
+            } => {
+                if paper.thickness_mm.to_bits() != 0.0_f64.to_bits()
+                    || (*pattern == self.pattern && *paper == self.paper)
+                    || instruction_timeline.steps.len()
+                        != self.instruction_timeline.steps.len().saturating_add(1)
+                    || self
+                        .pattern
+                        .vertices
+                        .iter()
+                        .any(|source| !pattern.vertices.iter().any(|target| target == source))
+                    || self
+                        .pattern
+                        .edges
+                        .iter()
+                        .any(|source| !pattern.edges.iter().any(|target| target == source))
+                    || !validate_crease_pattern(pattern).is_valid()
+                    || !validate_paper(paper, pattern).is_valid()
+                {
+                    return Err(CommandError::InvalidStackedFoldDocument);
+                }
+                validate_instruction_timeline(instruction_timeline)?;
+                validate_project_layer_document_against_pattern_v1(project_layers, pattern)?;
+                for record in &self.geometric_constraints.constraints {
+                    validate_geometric_constraint_record_against_pattern_v1(pattern, record)
+                        .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
+                }
+                Ok(Inverse::RestoreStackedFoldDocument {
+                    pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
+                    paper: std::mem::replace(&mut self.paper, paper.clone()),
+                    instruction_timeline: std::mem::replace(
+                        &mut self.instruction_timeline,
+                        instruction_timeline.clone(),
+                    ),
+                    project_layers: std::mem::replace(
+                        &mut self.project_layers,
+                        project_layers.clone(),
+                    ),
+                })
+            }
             Command::UpdateProjectMemo { ref memo } => {
                 const MAX_PROJECT_MEMO_CHARS: usize = 16_000;
                 if memo.chars().count() > MAX_PROJECT_MEMO_CHARS
@@ -2735,7 +2823,8 @@ impl EditorState {
             | Command::CreateLayer { .. }
             | Command::RenameLayer { .. }
             | Command::UpdateLayerPresentation { .. }
-            | Command::MoveLayer { .. } => Ok(()),
+            | Command::MoveLayer { .. }
+            | Command::ApplyStackedFoldDocument { .. } => Ok(()),
         }
     }
 
@@ -3033,7 +3122,8 @@ impl EditorState {
             | Command::UpdateLayerPresentation { .. }
             | Command::MoveLayer { .. }
             | Command::DeleteLayer { .. }
-            | Command::AssignEdgeToLayer { .. } => {}
+            | Command::AssignEdgeToLayer { .. }
+            | Command::ApplyStackedFoldDocument { .. } => {}
         }
         Ok(targets)
     }
@@ -4431,6 +4521,17 @@ impl EditorState {
 
     fn apply_inverse(&mut self, inverse: &Inverse) -> Result<(), CommandError> {
         match inverse {
+            Inverse::RestoreStackedFoldDocument {
+                pattern,
+                paper,
+                instruction_timeline,
+                project_layers,
+            } => {
+                self.pattern.clone_from(pattern);
+                self.paper.clone_from(paper);
+                self.instruction_timeline.clone_from(instruction_timeline);
+                self.project_layers.clone_from(project_layers);
+            }
             Inverse::RestoreProjectMemo { memo } => {
                 self.project_memo.clone_from(memo);
             }
@@ -5006,6 +5107,11 @@ impl Command {
             | Self::MoveLayer { .. }
             | Self::DeleteLayer { .. }
             | Self::AssignEdgeToLayer { .. } => return Ok(None),
+            Self::ApplyStackedFoldDocument { pattern, .. } => {
+                let added_vertices = pattern.vertices.len().saturating_sub(0);
+                let added_edges = pattern.edges.len().saturating_sub(0);
+                (added_vertices, added_edges)
+            }
         };
         Ok(Some(growth))
     }
@@ -5033,7 +5139,8 @@ impl Command {
             | Self::ConnectTJunction { .. }
             | Self::ConnectIntersectionCluster { .. }
             | Self::SplitBoundaryEdge { .. }
-            | Self::RemoveBoundaryVertex { .. } => true,
+            | Self::RemoveBoundaryVertex { .. }
+            | Self::ApplyStackedFoldDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
             | Self::SetElementMetadata { .. }
             | Self::SetCuttingAllowed { .. }
@@ -5351,6 +5458,13 @@ impl Command {
                 settings: true,
                 ..Changes::default()
             },
+            Self::ApplyStackedFoldDocument { ref pattern, .. } => Changes {
+                vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
+                edges: pattern.edges.iter().map(|edge| edge.id).collect(),
+                settings: true,
+                instructions: true,
+                constraints: false,
+            },
         }
     }
 }
@@ -5358,6 +5472,17 @@ impl Command {
 impl Inverse {
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match self {
+            Self::RestoreStackedFoldDocument {
+                pattern,
+                instruction_timeline: _,
+                ..
+            } => Changes {
+                vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
+                edges: pattern.edges.iter().map(|edge| edge.id).collect(),
+                settings: true,
+                instructions: true,
+                constraints: false,
+            },
             Self::RestoreProjectMemo { .. } => Changes {
                 settings: true,
                 ..Changes::default()
@@ -14064,6 +14189,84 @@ mod tests {
             crate::AppliedPoseLimitsV1::default(),
         )
         .expect("runtime pose fixture")
+    }
+
+    #[test]
+    fn stacked_fold_document_is_one_atomic_history_entry() {
+        let (mut editor, source_pattern, source_paper) = rectangular_editor();
+        let mut target_pattern = source_pattern.clone();
+        let hinge = EdgeId::new();
+        target_pattern.edges.push(Edge {
+            id: hinge,
+            start: source_paper.boundary_vertices[0],
+            end: source_paper.boundary_vertices[2],
+            kind: EdgeKind::Mountain,
+        });
+        let face = FaceId::new();
+        let timeline = InstructionTimeline {
+            steps: vec![InstructionStep {
+                id: InstructionStepId::new(),
+                title: "Stacked fold".to_owned(),
+                description: String::new(),
+                caution: String::new(),
+                duration_ms: ori_domain::MIN_INSTRUCTION_DURATION_MS,
+                visual: InstructionVisual::default(),
+                pose: InstructionPose {
+                    model: ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1,
+                    source_model_fingerprint:
+                        crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                            &target_pattern,
+                            &source_paper,
+                        ),
+                    fixed_face: Some(face),
+                    hinge_angles: vec![ori_domain::InstructionHingeAngle {
+                        edge: hinge,
+                        angle_degrees: 90.0,
+                    }],
+                },
+            }],
+        };
+        let after_pose = runtime_pose(90.0);
+        let before_failure = editor_state_snapshot(&editor);
+        let mut positive_thickness = source_paper.clone();
+        positive_thickness.thickness_mm = 0.1;
+        assert_eq!(
+            editor.execute_stacked_fold_document(
+                0,
+                target_pattern.clone(),
+                positive_thickness,
+                timeline.clone(),
+                ProjectLayerDocumentV1::default(),
+                after_pose.clone(),
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor_state_snapshot(&editor), before_failure);
+        editor
+            .execute_stacked_fold_document(
+                0,
+                target_pattern.clone(),
+                source_paper.clone(),
+                timeline.clone(),
+                ProjectLayerDocumentV1::default(),
+                after_pose.clone(),
+            )
+            .expect("atomic stacked fold");
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(editor.pattern(), &target_pattern);
+        assert_eq!(editor.instruction_timeline(), &timeline);
+        assert_eq!(editor.current_applied_pose(), Some(&after_pose));
+        assert!(editor.can_undo());
+
+        editor.undo(1).expect("undo whole stacked fold");
+        assert_eq!(editor.pattern(), &source_pattern);
+        assert!(editor.instruction_timeline().steps.is_empty());
+        assert!(editor.current_applied_pose().is_none());
+
+        editor.redo(2).expect("redo whole stacked fold");
+        assert_eq!(editor.pattern(), &target_pattern);
+        assert_eq!(editor.instruction_timeline(), &timeline);
+        assert_eq!(editor.current_applied_pose(), Some(&after_pose));
     }
 
     #[test]

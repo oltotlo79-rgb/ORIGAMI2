@@ -306,7 +306,7 @@ test('publication verifies current-run artifact archive digests before extractio
   assert.match(workflow, /actions\/artifacts\/\$artifact_id\/zip/u)
   assert.match(workflow, /actual_digest.*expected_digest/u)
   assert.match(workflow, /--max-redirs 0 --max-filesize 1048576/u)
-  assert.match(workflow, /! grep -Eiq '\^link:.*rel="next"'/u)
+  assert.match(workflow, /! grep -Eiq '\^link:' "\$metadata_headers"/u)
   assert.match(workflow, /--proto-redir '=https'/u)
   assert.match(workflow, /url_effective/u)
   assert.match(workflow, /\.blob\\\.core\\\.windows\\\.net/u)
@@ -1325,7 +1325,7 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       total_count: 1,
       workflow_runs: [successfulRun()],
     }))
-    const verify = () => execFileSync('node', ['.github/scripts/verify_release_ci.mjs'], {
+    const verify = (extraEnv = {}) => execFileSync('node', ['.github/scripts/verify_release_ci.mjs'], {
       cwd: root,
       encoding: 'utf8',
       env: {
@@ -1335,6 +1335,7 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
         CHECK_RUNS_FIXTURE: checksPath,
         ARTIFACTS_FIXTURE: artifactsPath,
         ARTIFACT_ARCHIVE_FIXTURE: artifactArchivePath,
+        ...extraEnv,
       },
     })
     const check = (name, status = 'completed', conclusion = 'success') => ({
@@ -1399,6 +1400,13 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
         workflowRunId: '42', runAttempt: 1, checkSuiteId: '84',
       },
     })
+    assert.throws(() => verify({ API_LINK_FIXTURE: '<https://api.github.test/page=2>; rel="next"' }), /pagination is forbidden/u)
+    writeFileSync(artifactsPath, JSON.stringify({
+      total_count: 5,
+      artifacts: [artifactRecord, ...otherArtifacts],
+    }))
+    assert.throws(verify, /artifact set is incomplete or outside bounds/u)
+    writeArtifacts()
     writeFileSync(artifactArchivePath, Buffer.from('tampered'))
     assert.throws(verify, /artifact digest mismatch/u)
     writeFileSync(artifactArchivePath, artifactBytes)

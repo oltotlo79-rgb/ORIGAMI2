@@ -7,7 +7,10 @@ const commit = process.env.RELEASE_COMMIT
 if (!/^[0-9a-f]{40}$/u.test(commit ?? '')) throw new Error('invalid release commit for CI evidence')
 
 async function loadJson(path, url) {
-  if (path) return JSON.parse(readFileSync(path, 'utf8'))
+  if (path) {
+    if ((process.env.API_LINK_FIXTURE ?? '').trim() !== '') throw new Error('GitHub CI evidence pagination is forbidden')
+    return JSON.parse(readFileSync(path, 'utf8'))
+  }
   const token = process.env.GH_TOKEN
   if (!token) throw new Error('GitHub token is required for CI evidence lookup')
   const response = await fetch(url, {
@@ -19,9 +22,7 @@ async function loadJson(path, url) {
     redirect: 'error',
   })
   if (!response.ok) throw new Error(`GitHub CI evidence API failed: ${response.status}`)
-  if ((response.headers.get('link') ?? '').includes('rel="next"')) {
-    throw new Error('GitHub CI evidence exceeds the 100-item page bound')
-  }
+  if ((response.headers.get('link') ?? '').trim() !== '') throw new Error('GitHub CI evidence pagination is forbidden')
   const text = await response.text()
   if (text.length > 4_194_304) throw new Error('GitHub CI evidence exceeds the response bound')
   return JSON.parse(text)

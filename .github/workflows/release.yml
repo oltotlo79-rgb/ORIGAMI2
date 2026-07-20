@@ -325,7 +325,7 @@ jobs:
             --output "$metadata" \
             "https://api.github.com/repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100"
           grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$metadata_headers"
-          ! grep -Eiq '^link:.*rel="next"' "$metadata_headers"
+          ! grep -Eiq '^link:' "$metadata_headers"
           while IFS=$'\t' read -r name artifact_id expected_digest
           do
             archive="$RUNNER_TEMP/$name.zip"

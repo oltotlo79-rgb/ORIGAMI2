@@ -330,6 +330,17 @@ jobs:
           }
           ./.github/tests/windows_release_workflow_contract.ps1 `
             -UnsignedExecutableFixture $installers[0].FullName
+      - name: Reject adversarial Windows bundle fixtures
+        shell: pwsh
+        run: |
+          $appVersion = (
+            Get-Content ./apps/desktop/src-tauri/tauri.conf.json -Raw |
+              ConvertFrom-Json
+          ).version
+          ./.github/tests/windows_bundle_adversarial_contract.ps1 `
+            -BundleDirectory ./target/release/bundle/nsis `
+            -PortableExecutable ./target/release/origami2-desktop.exe `
+            -ExpectedVersion $appVersion
       - name: Upload verified Windows NSIS installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

@@ -15,10 +15,35 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $resolvedBundleDirectory = (Resolve-Path -LiteralPath $BundleDirectory).Path
+$bundleEntries = @(Get-ChildItem -LiteralPath $resolvedBundleDirectory -Force)
+if ($bundleEntries.Count -ne 1) {
+    throw "Bundle directory must contain exactly one installer, found $($bundleEntries.Count) entries."
+}
 $installers = @(Get-ChildItem -LiteralPath $resolvedBundleDirectory -File -Filter '*.exe')
 if ($installers.Count -ne 1) {
     throw "Expected exactly one NSIS installer in '$resolvedBundleDirectory', found $($installers.Count)."
 }
+
+function Assert-BoundedRegularFile {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label must not be a reparse point."
+    }
+    if ($item.Length -le 0 -or $item.Length -gt 536870912) {
+        throw "$Label size is outside the 512 MiB audit bound."
+    }
+    $hardLinks = @(& fsutil.exe hardlink list $item.FullName 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $hardLinks.Count -ne 1) {
+        throw "$Label must have exactly one hard link."
+    }
+}
+
+Assert-BoundedRegularFile -Path $installers[0].FullName -Label 'Windows NSIS installer'
 
 function Assert-Version {
     param(
@@ -60,6 +85,7 @@ Assert-Version -Path $installers[0].FullName -Label 'Windows NSIS installer'
 Assert-Signature -Path $installers[0].FullName -Label 'Windows NSIS installer'
 if (-not [string]::IsNullOrWhiteSpace($PortableExecutable)) {
     $resolvedPortable = (Resolve-Path -LiteralPath $PortableExecutable).Path
+    Assert-BoundedRegularFile -Path $resolvedPortable -Label 'Windows portable executable'
     Assert-Version -Path $resolvedPortable -Label 'Windows portable executable'
     Assert-Signature -Path $resolvedPortable -Label 'Windows portable executable'
 }
@@ -95,6 +121,23 @@ try {
     $appExecutables = @(
         Get-ChildItem -LiteralPath $temporaryRoot -Recurse -File -Filter 'origami2-desktop.exe'
     )
+    $extractedFiles = @(Get-ChildItem -LiteralPath $temporaryRoot -Recurse -File -Force)
+    if ($extractedFiles.Count -gt 100000) {
+        throw "Extracted installer exceeds the 100000-file audit bound."
+    }
+    $extractedBytes = 0L
+    foreach ($file in $extractedFiles) {
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Extracted installer contains a reparse point."
+        }
+        if ($file.Length -gt 536870912) {
+            throw "Extracted installer contains an oversized file."
+        }
+        $extractedBytes += $file.Length
+        if ($extractedBytes -gt 1073741824) {
+            throw "Extracted installer exceeds the 1 GiB audit bound."
+        }
+    }
 
     if ($fontFiles.Count -ne 1) {
         throw "Expected exactly one bundled Noto Sans JP font, found $($fontFiles.Count)."
@@ -107,6 +150,13 @@ try {
     }
     Assert-Version -Path $appExecutables[0].FullName -Label 'Embedded Windows executable'
     Assert-Signature -Path $appExecutables[0].FullName -Label 'Embedded Windows executable'
+    if (-not [string]::IsNullOrWhiteSpace($PortableExecutable)) {
+        $portableHash = (Get-FileHash -LiteralPath $resolvedPortable -Algorithm SHA256).Hash
+        $embeddedHash = (Get-FileHash -LiteralPath $appExecutables[0].FullName -Algorithm SHA256).Hash
+        if ($portableHash -cne $embeddedHash) {
+            throw 'Portable and embedded Windows executable payloads differ.'
+        }
+    }
     if ($fontFiles[0].Directory.Name -cne 'fonts') {
         throw "Bundled Noto Sans JP font is not in the expected fonts directory."
     }

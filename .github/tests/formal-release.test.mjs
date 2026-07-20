@@ -105,6 +105,31 @@ test('macOS CI rejects bounded adversarial bundle fixtures', () => {
   }
 })
 
+test('Windows CI rejects bounded adversarial bundle fixtures', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const verifier = readFileSync(join(root, 'scripts/verify_windows_bundle.ps1'), 'utf8')
+  const adversarial = readFileSync(
+    join(root, '.github/tests/windows_bundle_adversarial_contract.ps1'),
+    'utf8',
+  )
+  assert.match(workflow, /windows_bundle_adversarial_contract\.ps1/u)
+  assert.match(verifier, /FileAttributes\]::ReparsePoint/u)
+  assert.match(verifier, /fsutil\.exe hardlink list/u)
+  assert.match(verifier, /536870912/u)
+  assert.match(verifier, /100000-file audit bound/u)
+  assert.match(verifier, /Portable and embedded Windows executable payloads differ/u)
+  for (const fixture of [
+    'extra-dll',
+    'hardlink-installer',
+    'reparse-installer',
+    'oversized-installer',
+    'wrong-version',
+    'substituted-portable',
+  ]) {
+    assert.match(adversarial, new RegExp(fixture, 'u'))
+  }
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

@@ -198,6 +198,34 @@ struct StackedFoldFlatEndpointLayerOrderDto {
     overlap_cell_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StackedFoldTransactionFailureClassDto {
+    ContinuousPathUncertified,
+    TargetLayerOrderUnavailable,
+    AtomicEditorCommandUnavailable,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackedFoldTransactionProposalDto {
+    source_project_id: ProjectId,
+    source_revision: u64,
+    target_revision: u64,
+    source_fingerprint_sha256: String,
+    target_fingerprint_sha256: String,
+    added_vertex_count: usize,
+    added_edge_count: usize,
+    mountain_crease_count: usize,
+    valley_crease_count: usize,
+    timeline_step_count: usize,
+    timeline_complete_hinge_angle_count: usize,
+    requested_angle_degrees: f64,
+    ready_for_atomic_apply: bool,
+    failure_classes: Vec<StackedFoldTransactionFailureClassDto>,
+    authorizes_project_mutation: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldReadResponse {
@@ -213,6 +241,7 @@ pub(super) struct StackedFoldReadResponse {
     endpoint_collision: StackedFoldEndpointCollisionDto,
     continuous_path: StackedFoldContinuousPathDto,
     flat_endpoint_layer_order: StackedFoldFlatEndpointLayerOrderDto,
+    transaction_proposal: StackedFoldTransactionProposalDto,
     work: StackedFoldReadWorkDto,
     authorizes_project_mutation: bool,
     authorizes_apply_stacked_fold: bool,
@@ -469,6 +498,55 @@ pub(super) async fn propose_current_stacked_fold_read(
                 .hinges()
                 .len(),
         };
+        let source_fingerprint_sha256 = geometry_proof.lineage().source_fingerprint().to_hex();
+        let target_fingerprint_sha256 = geometry_proof.lineage().target_fingerprint().to_hex();
+        let added_vertex_count = topology
+            .pattern
+            .vertices
+            .len()
+            .checked_sub(pattern.vertices.len())
+            .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let added_edge_count = topology
+            .pattern
+            .edges
+            .len()
+            .checked_sub(pattern.edges.len())
+            .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let mountain_crease_count = expected_creases
+            .iter()
+            .filter(|crease| crease.kind == ori_domain::EdgeKind::Mountain)
+            .count();
+        let valley_crease_count = expected_creases
+            .iter()
+            .filter(|crease| crease.kind == ori_domain::EdgeKind::Valley)
+            .count();
+        if mountain_crease_count + valley_crease_count != expected_creases.len() {
+            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+        }
+        let transaction_failures = transaction_failure_classes(
+            continuous_path.continuous_clearance_certified(),
+            flat_endpoint_layer_order.certified,
+        );
+        let transaction_proposal = StackedFoldTransactionProposalDto {
+            source_project_id: binding.project_id(),
+            source_revision: binding.source_revision(),
+            target_revision: geometry_proof.lineage().target_revision(),
+            source_fingerprint_sha256,
+            target_fingerprint_sha256,
+            added_vertex_count,
+            added_edge_count,
+            mountain_crease_count,
+            valley_crease_count,
+            timeline_step_count: 1,
+            timeline_complete_hinge_angle_count: prepared_requested_pose
+                .pose()
+                .hinge_angles()
+                .len(),
+            requested_angle_degrees: candidate.requested_angle_degrees(),
+            ready_for_atomic_apply: false,
+            failure_classes: transaction_failures,
+            authorizes_project_mutation: false,
+        };
         let crossed_cells = proposal
             .crossed_cells()
             .iter()
@@ -514,6 +592,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             endpoint_collision,
             continuous_path,
             flat_endpoint_layer_order,
+            transaction_proposal,
         ))
     })
     .await
@@ -531,6 +610,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         endpoint_collision,
         continuous_path,
         flat_endpoint_layer_order,
+        transaction_proposal,
     ) = analysis;
 
     {
@@ -591,6 +671,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             authorizes_project_mutation: continuous_path.authorizes_project_mutation(),
         },
         flat_endpoint_layer_order,
+        transaction_proposal,
         work: StackedFoldReadWorkDto {
             scanned_cells: work.scanned_cells,
             total_boundary_vertices: work.total_boundary_vertices,
@@ -615,6 +696,23 @@ fn lowercase_hex(bytes: [u8; 32]) -> String {
         output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn transaction_failure_classes(
+    continuous_path_certified: bool,
+    target_layer_order_certified: bool,
+) -> Vec<StackedFoldTransactionFailureClassDto> {
+    let mut failures = Vec::new();
+    if !continuous_path_certified {
+        failures.push(StackedFoldTransactionFailureClassDto::ContinuousPathUncertified);
+    }
+    if !target_layer_order_certified {
+        failures.push(StackedFoldTransactionFailureClassDto::TargetLayerOrderUnavailable);
+    }
+    // EditorState has no atomic topology+timeline+pose/layer command yet.
+    // Keep this explicit even when every read-only premise succeeds.
+    failures.push(StackedFoldTransactionFailureClassDto::AtomicEditorCommandUnavailable);
+    failures
 }
 
 #[cfg(test)]
@@ -765,5 +863,24 @@ mod tests {
                 "invalid angle {angle:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn transaction_proposal_failure_classes_are_explicit_and_fail_closed() {
+        let missing_all = serde_json::to_value(transaction_failure_classes(false, false)).unwrap();
+        assert_eq!(
+            missing_all,
+            serde_json::json!([
+                "continuous_path_uncertified",
+                "target_layer_order_unavailable",
+                "atomic_editor_command_unavailable"
+            ])
+        );
+        let final_missing_command =
+            serde_json::to_value(transaction_failure_classes(true, true)).unwrap();
+        assert_eq!(
+            final_missing_command,
+            serde_json::json!(["atomic_editor_command_unavailable"])
+        );
     }
 }

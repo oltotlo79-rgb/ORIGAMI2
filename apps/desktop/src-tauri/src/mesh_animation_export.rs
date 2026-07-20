@@ -540,13 +540,17 @@ mod tests {
                             } else {
                                 actual_fixed_face
                             },
-                            hinge_angles: hinge_ids
-                                .into_iter()
-                                .map(|edge| InstructionHingeAngle {
-                                    edge,
-                                    angle_degrees: 30.0,
-                                })
-                                .collect(),
+                            hinge_angles: {
+                                let mut hinge_ids = hinge_ids;
+                                hinge_ids.sort_unstable_by_key(|edge| edge.canonical_bytes());
+                                hinge_ids
+                            }
+                            .into_iter()
+                            .map(|edge| InstructionHingeAngle {
+                                edge,
+                                angle_degrees: 30.0,
+                            })
+                            .collect(),
                         },
                     },
                 },

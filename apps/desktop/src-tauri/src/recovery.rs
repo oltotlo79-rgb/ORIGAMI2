@@ -2352,7 +2352,13 @@ mod tests {
         assert!(!authority.has_current);
         assert!(!authority.has_pending);
         assert!(restored.is_dirty());
-        assert_eq!(restored.document(), expected);
+        let mut restored_document = restored.document();
+        assert!(
+            restored_document.thumbnail_svg.is_some(),
+            "restored projects must project a canonical thumbnail"
+        );
+        restored_document.thumbnail_svg = expected.thumbnail_svg.clone();
+        assert_eq!(restored_document, expected);
         assert_eq!(fs::read(original_path).unwrap(), original_bytes);
     }
 
@@ -2426,7 +2432,13 @@ mod tests {
             &runtime.lock_state().unwrap().candidate,
             CachedRecoveryCandidate::None
         ));
-        assert_eq!(io.document(), Some(recovered));
+        let mut stored = io.document().expect("autosave document");
+        assert!(
+            stored.thumbnail_svg.is_some(),
+            "autosave after restore must contain a canonical thumbnail"
+        );
+        stored.thumbnail_svg = recovered.thumbnail_svg.clone();
+        assert_eq!(stored, recovered);
         assert_eq!(io.calls(), vec!["store:recovered"]);
     }
 

@@ -14,6 +14,8 @@ const MAX_DISPLAY_BYTES: usize = 32;
 pub(super) const USER_INPUT_PRECISION_BITS: u16 = 192;
 static NUMERIC_EXPRESSION_WORKER_GATE: NumericExpressionWorkerGate =
     NumericExpressionWorkerGate::new();
+#[cfg(test)]
+static SYNCHRONOUS_EVALUATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct NumericExpressionWorkerGate(AtomicBool);
 
@@ -257,6 +259,10 @@ pub(super) fn evaluate_positive_millimetre_pair(
     width_source: String,
     height_source: String,
 ) -> Result<(f64, f64), PositiveMillimetrePairError> {
+    #[cfg(test)]
+    let _test_serial = SYNCHRONOUS_EVALUATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let permit = NUMERIC_EXPRESSION_WORKER_GATE
         .try_acquire()
         .ok_or(PositiveMillimetrePairError::WorkerBusy)?;
@@ -270,6 +276,10 @@ pub(super) fn evaluate_finite_millimetre_pair(
     x_source: String,
     y_source: String,
 ) -> Result<(f64, f64), PositiveMillimetrePairError> {
+    #[cfg(test)]
+    let _test_serial = SYNCHRONOUS_EVALUATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let permit = NUMERIC_EXPRESSION_WORKER_GATE
         .try_acquire()
         .ok_or(PositiveMillimetrePairError::WorkerBusy)?;

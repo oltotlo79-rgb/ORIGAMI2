@@ -1351,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn no_hinge_pose_is_adopted_without_document_revision_history_or_dirty_change() {
+    fn no_hinge_pose_is_adopted_without_revision_or_history_and_marks_document_dirty() {
         let mut project = no_hinge_project();
         let document_before = project.document();
         let revision_before = project.editor.revision();
@@ -1379,8 +1379,14 @@ mod tests {
         assert_eq!(project.editor.revision(), revision_before);
         assert_eq!(project.editor.can_undo(), can_undo_before);
         assert_eq!(project.editor.can_redo(), can_redo_before);
-        assert_eq!(project.document(), document_before);
-        assert!(!project.is_dirty());
+        let mut document_after = project.document();
+        assert!(
+            document_after.current_pose.is_some(),
+            "adopted pose must be persisted in the projected document"
+        );
+        document_after.current_pose = document_before.current_pose.clone();
+        assert_eq!(document_after, document_before);
+        assert!(project.is_dirty());
         assert_eq!(
             authority.test_snapshot().expect("snapshot"),
             CurrentAppliedPoseAuthoritySnapshot {

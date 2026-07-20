@@ -16,7 +16,7 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   assert.match(validator, /'git', \['verify-tag', tag\]/u)
   assert.match(workflow, /permissions:\s*\n\s+contents: read/u)
   assert.match(workflow, /attest-build-provenance@43d14bc2/u)
-  assert.match(workflow, /gh release edit "\$RELEASE_TAG".*--prerelease=false --latest/u)
+  assert.match(workflow, /releases\/\$release_id[\s\S]*prerelease=false/u)
   assert.doesNotMatch(workflow, /pull_request:/u)
 })
 
@@ -273,10 +273,14 @@ test('promotion reuses and verifies the complete prerelease asset set', () => {
   assert.match(promote, /gh attestation verify "\$asset"/u)
   assert.match(promote, /\.prerelease "\$before"\)" = true/u)
   assert.match(promote, /cmp "\$RUNNER_TEMP\/assets-before\.json"/u)
+  assert.match(promote, /releases\/tags\/\$RELEASE_TAG" --jq \.id\)" = "\$release_id"/u)
+  assert.match(promote, /commits\/\$RELEASE_TAG" --jq \.sha\)" = "\$RELEASE_COMMIT"/u)
+  assert.match(promote, /patch_status=0/u)
+  assert.match(promote, /releases\/\$release_id/u)
   assert.doesNotMatch(promote, /tauri build|tauri bundle|cargo build|npm run build/u)
   assert.ok(
     promote.indexOf('gh attestation verify') <
-      promote.indexOf('gh release edit'),
+      promote.indexOf('gh api --method PATCH'),
   )
 })
 

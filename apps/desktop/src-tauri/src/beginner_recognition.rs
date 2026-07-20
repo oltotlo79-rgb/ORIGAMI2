@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use ori_domain::{
     AssetId, BeginnerRecognitionProposalV1, ProjectId, UnderlayId, analyze_marker_png_rgba_v1,
+    analyze_silhouette_png_rgba_v1,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -17,6 +18,68 @@ pub(crate) struct RecognizeBeginnerTargetRequest {
     expected_revision: u64,
     underlay_id: UnderlayId,
     asset_id: AssetId,
+}
+
+#[tauri::command]
+pub(crate) fn recognize_beginner_silhouette(
+    state: State<'_, AppState>,
+    request: RecognizeBeginnerTargetRequest,
+) -> Result<BeginnerRecognitionProposalV1, String> {
+    let bytes = {
+        let project = lock_project(&state)?;
+        ensure_recognition_binding(&project, request)?;
+        project
+            .texture_assets
+            .iter()
+            .find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.clone())
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+    };
+    let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+    let (width, height, rgba) = decode_marker_png(&bytes)?;
+    let proposal = analyze_silhouette_png_rgba_v1(
+        request.underlay_id,
+        request.asset_id,
+        source_sha256,
+        width,
+        height,
+        &rgba,
+    )
+    .map_err(|error| match error {
+        ori_domain::BeginnerRecognitionErrorV1::AmbiguousSilhouette => {
+            "recognition_ambiguous_silhouette".to_owned()
+        }
+        ori_domain::BeginnerRecognitionErrorV1::UnsupportedSilhouette => {
+            "recognition_unsupported_silhouette".to_owned()
+        }
+        ori_domain::BeginnerRecognitionErrorV1::InvalidDimensions
+        | ori_domain::BeginnerRecognitionErrorV1::PixelLimit
+        | ori_domain::BeginnerRecognitionErrorV1::InvalidRgbaLength
+        | ori_domain::BeginnerRecognitionErrorV1::ComponentLimit
+        | ori_domain::BeginnerRecognitionErrorV1::PartLimit
+        | ori_domain::BeginnerRecognitionErrorV1::SkeletonLimit => {
+            "recognition_resource_limit".to_owned()
+        }
+        ori_domain::BeginnerRecognitionErrorV1::EmptyShape
+        | ori_domain::BeginnerRecognitionErrorV1::UnsupportedMarker => {
+            "recognition_unsupported_silhouette".to_owned()
+        }
+    })?;
+    {
+        let project = lock_project(&state)?;
+        ensure_recognition_binding(&project, request)?;
+        let live_bytes = project
+            .texture_assets
+            .iter()
+            .find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.as_slice())
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?;
+        let live_hash: [u8; 32] = Sha256::digest(live_bytes).into();
+        if live_hash != source_sha256 {
+            return Err("recognition_asset_changed".to_owned());
+        }
+    }
+    Ok(proposal)
 }
 
 #[tauri::command]

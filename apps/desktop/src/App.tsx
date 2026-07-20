@@ -82,6 +82,7 @@ import {
   deleteProjectLayer,
   evaluateBeginnerCandidates,
   recognizeBeginnerTarget,
+  recognizeBeginnerSilhouette,
   generateBenchmarkPattern,
   getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
@@ -138,6 +139,7 @@ import {
   type BeginnerDesignProfileV1,
   type BeginnerCandidateResponseV1,
   type BeginnerRecognitionProposalV1,
+  BeginnerRecognitionError,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
   type GeometricConstraintKind,
@@ -3553,7 +3555,7 @@ function App() {
       ))
   }
 
-  function requestBeginnerRecognition() {
+  function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
     const current = latestSnapshotRef.current
     const form = beginnerDesignFormRef.current
     if (!current || !form || beginnerRecognitionBusy || coreBusy || recoveryBlocking) return
@@ -3574,7 +3576,10 @@ function App() {
     }
     setBeginnerRecognitionBusy(true)
     setBeginnerRecognitionProposal(null)
-    void recognizeBeginnerTarget(
+    const recognize = mode === 'silhouette'
+      ? recognizeBeginnerSilhouette
+      : recognizeBeginnerTarget
+    void recognize(
       binding.projectId,
       binding.revision,
       binding.instanceId,
@@ -3589,14 +3594,31 @@ function App() {
         || latest.revision !== binding.revision) return
       setBeginnerRecognitionProposal(proposal)
       setCoreStatus(appMessage({
-        ja: 'マーカーPNGの認識案を作成しました。まだ保存されていません。',
-        en: 'Created a marker PNG proposal. It has not been saved.',
+        ja: mode === 'silhouette'
+          ? '輪郭画像の認識案を作成しました。まだ保存されていません。'
+          : 'マーカーPNGの認識案を作成しました。まだ保存されていません。',
+        en: mode === 'silhouette'
+          ? 'Created a silhouette proposal. It has not been saved.'
+          : 'Created a marker PNG proposal. It has not been saved.',
       }))
-    }).catch(() => {
+    }).catch((error: unknown) => {
       if (requestId !== beginnerRecognitionRequestRef.current) return
+      const reason = error instanceof BeginnerRecognitionError ? error.reason : 'native_failure'
       setCoreStatus(appMessage({
-        ja: 'マーカーPNGを認識できませんでした。',
-        en: 'The marker PNG could not be recognized.',
+        ja: reason === 'ambiguous_silhouette'
+          ? '輪郭が複数または不明瞭なため認識を拒否しました。'
+          : reason === 'resource_limit'
+            ? '画像が認識の資源上限を超えています。'
+            : reason === 'unsupported_silhouette'
+              ? '輪郭画像は透明背景と完全な黒の単一形状にしてください。'
+              : '画像を安全に認識できませんでした。',
+        en: reason === 'ambiguous_silhouette'
+          ? 'Recognition was rejected because the silhouette is ambiguous or disconnected.'
+          : reason === 'resource_limit'
+            ? 'The image exceeds the recognition resource limit.'
+            : reason === 'unsupported_silhouette'
+              ? 'Use one solid black silhouette on a transparent background.'
+              : 'The image could not be recognized safely.',
       }))
     }).finally(() => {
       if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
@@ -3607,12 +3629,14 @@ function App() {
     const proposal = beginnerRecognitionProposal
     const form = beginnerDesignFormRef.current
     if (!proposal || !form) return
-    const counts = new Map(proposal.target_parts.map((part) => [part.kind, part.count]))
-    form.querySelectorAll<HTMLInputElement>('input[name^="target_part_"]').forEach((input) => {
-      const kind = input.name.slice('target_part_'.length)
-      input.value = String(counts.get(kind as BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']) ?? 0)
-    })
-    setBeginnerPartTotal(proposal.target_parts.reduce((sum, part) => sum + part.count, 0))
+    if (proposal.target_parts.length > 0) {
+      const counts = new Map(proposal.target_parts.map((part) => [part.kind, part.count]))
+      form.querySelectorAll<HTMLInputElement>('input[name^="target_part_"]').forEach((input) => {
+        const kind = input.name.slice('target_part_'.length)
+        input.value = String(counts.get(kind as BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']) ?? 0)
+      })
+      setBeginnerPartTotal(proposal.target_parts.reduce((sum, part) => sum + part.count, 0))
+    }
     setBeginnerSkeletonSegments(proposal.skeleton_segments.map((segment) => ({
       ...segment,
       start: { ...segment.start },
@@ -7565,13 +7589,23 @@ function App() {
                 <div aria-live="polite">
                   <button
                     type="button"
-                    onClick={requestBeginnerRecognition}
+                    onClick={() => requestBeginnerRecognition('marker')}
                     disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
                     aria-describedby="beginner-recognition-help"
                   >
                     {beginnerRecognitionBusy
                       ? text({ ja: '認識中…', en: 'Recognizing…' })
                       : text({ ja: 'マーカーPNGを認識', en: 'Recognize marker PNG' })}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => requestBeginnerRecognition('silhouette')}
+                    disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-recognition-help"
+                  >
+                    {beginnerRecognitionBusy
+                      ? text({ ja: '認識中…', en: 'Recognizing…' })
+                      : text({ ja: '単一輪郭PNGを認識', en: 'Recognize silhouette PNG' })}
                   </button>
                   <p id="beginner-recognition-help" className="muted">
                     {text({

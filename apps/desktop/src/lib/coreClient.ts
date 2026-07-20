@@ -200,7 +200,7 @@ export type BeginnerGenerationConstraintsV1 = {
 
 export type BeginnerRecognitionProposalV1 = {
   schema_version: 1
-  format: 'marker_png_v1'
+  format: 'marker_png_v1' | 'silhouette_png_v1'
   source_underlay_id: string
   source_asset_id: string
   source_sha256: readonly number[]
@@ -341,13 +341,14 @@ function normalizeBeginnerRecognitionProposal(
   value: unknown,
   expectedUnderlayId: string,
   expectedAssetId: string,
+  expectedFormat: BeginnerRecognitionProposalV1['format'] = 'marker_png_v1',
 ): BeginnerRecognitionProposalV1 | null {
   const record = exactCoreDataRecord(value, [
     'schema_version', 'format', 'source_underlay_id', 'source_asset_id',
     'source_sha256', 'width', 'height', 'shape_bounds', 'target_parts',
     'skeleton_segments',
   ] as const)
-  if (!record || record.schema_version !== 1 || record.format !== 'marker_png_v1'
+  if (!record || record.schema_version !== 1 || record.format !== expectedFormat
     || record.source_underlay_id !== expectedUnderlayId
     || record.source_asset_id !== expectedAssetId
     || !Array.isArray(record.source_sha256) || record.source_sha256.length !== 32
@@ -377,7 +378,7 @@ function normalizeBeginnerRecognitionProposal(
   if (!constraints) return null
   return Object.freeze({
     schema_version: 1,
-    format: 'marker_png_v1',
+    format: expectedFormat,
     source_underlay_id: expectedUnderlayId,
     source_asset_id: expectedAssetId,
     source_sha256: Object.freeze(record.source_sha256.slice()),
@@ -1206,6 +1207,56 @@ export function recognizeBeginnerTarget(
     const proposal = normalizeBeginnerRecognitionProposal(value, underlayId, assetId)
     if (!proposal) throw new Error('invalid beginner recognition response')
     return proposal
+  })
+}
+
+export class BeginnerRecognitionError extends Error {
+  readonly reason:
+    | 'ambiguous_silhouette'
+    | 'unsupported_silhouette'
+    | 'resource_limit'
+    | 'native_failure'
+
+  constructor(reason: BeginnerRecognitionError['reason']) {
+    super('beginner recognition failed')
+    this.reason = reason
+  }
+}
+
+export function recognizeBeginnerSilhouette(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  underlayId: string,
+  assetId: string,
+) {
+  if (!isCanonicalNonNilUuid(expectedProjectId)
+    || !isCanonicalNonNilUuid(expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(underlayId)
+    || !isCanonicalNonNilUuid(assetId)
+    || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    return Promise.reject(new BeginnerRecognitionError('native_failure'))
+  }
+  const request = {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, underlayId, assetId,
+  }
+  return invoke<unknown>('recognize_beginner_silhouette', { request }).then((value) => {
+    const proposal = normalizeBeginnerRecognitionProposal(
+      value, underlayId, assetId, 'silhouette_png_v1',
+    )
+    if (!proposal) throw new BeginnerRecognitionError('native_failure')
+    return proposal
+  }, (error: unknown) => {
+    if (error === 'recognition_ambiguous_silhouette') {
+      throw new BeginnerRecognitionError('ambiguous_silhouette')
+    }
+    if (error === 'recognition_unsupported_silhouette') {
+      throw new BeginnerRecognitionError('unsupported_silhouette')
+    }
+    if (error === 'recognition_resource_limit') {
+      throw new BeginnerRecognitionError('resource_limit')
+    }
+    throw new BeginnerRecognitionError('native_failure')
   })
 }
 

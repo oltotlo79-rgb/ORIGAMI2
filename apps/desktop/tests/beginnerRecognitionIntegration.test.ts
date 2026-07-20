@@ -40,6 +40,20 @@ test('the read-only proposal is stale-safe, single-flight, and copied before nor
   assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
 })
 
+test('single silhouette recognition fails closed with explicit reasons and no inferred parts', () => {
+  assert.match(domain, /SilhouettePngV1/u)
+  assert.match(domain, /AmbiguousSilhouette/u)
+  assert.match(domain, /UnsupportedSilhouette/u)
+  assert.match(domain, /target_parts: Vec::new\(\)/u)
+  assert.match(native, /recognition_ambiguous_silhouette/u)
+  assert.match(native, /live_hash != source_sha256/u)
+  assert.match(client, /recognize_beginner_silhouette/u)
+  assert.match(client, /'silhouette_png_v1'/u)
+  assert.match(app, /Recognize silhouette PNG/u)
+  assert.match(app, /does not change the project until you save/u)
+  assert.match(app, /proposal\.target_parts\.length > 0/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

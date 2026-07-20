@@ -2100,8 +2100,12 @@ fn transaction_failure_classes(
 mod tests {
     use super::*;
 
+    fn fixed_id<T: serde::de::DeserializeOwned>(group: &str, index: u64) -> T {
+        serde_json::from_str(&format!("\"00000000-0000-4000-{group}-{index:012x}\"")).unwrap()
+    }
+
     fn two_hinge_tree_project() -> super::super::ProjectState {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex, VertexId};
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let points = [
             (0.0, 0.0),
             (33.0, 0.0),
@@ -2114,15 +2118,16 @@ mod tests {
         ];
         let vertices = points
             .into_iter()
-            .map(|(x, y)| Vertex {
-                id: VertexId::new(),
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("7100", index as u64 + 1),
                 position: Point2::new(x, y),
             })
             .collect::<Vec<_>>();
         let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
         let mut edges = (0..boundary.len())
             .map(|index| Edge {
-                id: ori_domain::EdgeId::new(),
+                id: fixed_id("7200", index as u64 + 1),
                 start: boundary[index],
                 end: boundary[(index + 1) % boundary.len()],
                 kind: EdgeKind::Boundary,
@@ -2130,25 +2135,28 @@ mod tests {
             .collect::<Vec<_>>();
         edges.extend([
             Edge {
-                id: ori_domain::EdgeId::new(),
+                id: fixed_id("7200", 20),
                 start: boundary[1],
                 end: boundary[6],
                 kind: EdgeKind::Mountain,
             },
             Edge {
-                id: ori_domain::EdgeId::new(),
+                id: fixed_id("7200", 21),
                 start: boundary[2],
                 end: boundary[5],
                 kind: EdgeKind::Valley,
             },
         ]);
-        super::super::ProjectState::new_with_paper(
+        let mut project = super::super::ProjectState::new_with_paper(
             CreasePattern { vertices, edges },
             Paper {
                 boundary_vertices: boundary,
                 ..Paper::default()
             },
-        )
+        );
+        project.instance_id = fixed_id("7300", 1);
+        project.project_id = fixed_id("7300", 2);
+        project
     }
 
     #[test]
@@ -2175,7 +2183,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "two-hinge layer-side admission fixture is not yet deterministic"]
+    #[ignore = "native stacked-fold proposal does not yet admit a pre-creased tree source"]
     fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
@@ -2199,8 +2207,8 @@ mod tests {
                 expected_project_instance_id: instance,
                 expected_project_id: project_id,
                 expected_revision: revision,
-                first: [0.0, 0.0, -50.0],
-                second: [100.0, 0.0, -50.0],
+                first: [50.0, 0.0, 0.0],
+                second: [50.0, 0.0, -100.0],
                 fixed_side: FixedSideRequest::Left,
                 rotation_direction: RotationDirectionRequest::Positive,
                 requested_angle_degrees: angle,
@@ -2255,8 +2263,8 @@ mod tests {
                 expected_project_instance_id: instance,
                 expected_project_id: project_id,
                 expected_revision: revision,
-                first: [0.0, 0.0, -50.0],
-                second: [100.0, 0.0, -50.0],
+                first: [50.0, 0.0, 0.0],
+                second: [50.0, 0.0, -100.0],
                 fixed_side: FixedSideRequest::Left,
                 rotation_direction: RotationDirectionRequest::Positive,
                 requested_angle_degrees: angle,

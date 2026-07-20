@@ -2357,19 +2357,11 @@ pub fn prepare_tree_hinge_thickness_boundaries_v1(
     }
     let mut hinges = Vec::with_capacity(bound.model().hinges().len());
     for source_hinge in bound.model().hinges() {
-        let capability = prepare_single_hinge_thickness_boundary_for_edge_v1(
+        let capability = prepare_projected_incident_hinge_boundary_v1(
             bound,
             paper_thickness_mm,
             source_hinge.edge(),
-            true,
-        )
-        .ok()
-        .flatten()
-        .or(prepare_projected_incident_hinge_boundary_v1(
-            bound,
-            paper_thickness_mm,
-            source_hinge.edge(),
-        )?);
+        )?;
         let Some(capability) = capability else {
             return Ok(None);
         };

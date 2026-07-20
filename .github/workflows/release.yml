@@ -279,6 +279,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
           RELEASE_MODE: ${{ needs.validate.outputs.mode }}
           REQUIRE_SIGNATURE: ${{ needs.validate.outputs.mode != 'dry-run' && 'true' || 'false' }}
+          EXPECTED_SIGNATURE_POLICY: ${{ needs.validate.outputs.mode != 'dry-run' && 'platform-signed' || 'unsigned-dry-run' }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           EXECUTED_TEST_COUNT: ${{ needs.validate.outputs.test_count }}
         run: node .github/scripts/verify_formal_release.mjs target/formal-release

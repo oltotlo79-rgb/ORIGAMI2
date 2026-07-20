@@ -23,11 +23,16 @@ const expectedSignaturePolicy = process.env.EXPECTED_SIGNATURE_POLICY
 if (!['platform-signed', 'unsigned-dry-run'].includes(expectedSignaturePolicy)) {
   throw new Error('EXPECTED_SIGNATURE_POLICY is invalid')
 }
-if (
-  process.env.RELEASE_MODE !== undefined
-  && process.env.RELEASE_MODE !== 'dry-run'
-  && process.env.REQUIRE_SIGNATURE !== 'true'
-) throw new Error('publishable release mode requires platform signatures')
+if (process.env.RELEASE_MODE !== undefined) {
+  if (!['dry-run', 'prerelease', 'stable'].includes(process.env.RELEASE_MODE)) {
+    throw new Error('RELEASE_MODE is invalid for artifact verification')
+  }
+  const dryRun = process.env.RELEASE_MODE === 'dry-run'
+  if (
+    process.env.REQUIRE_SIGNATURE !== (dryRun ? 'false' : 'true')
+    || expectedSignaturePolicy !== (dryRun ? 'unsigned-dry-run' : 'platform-signed')
+  ) throw new Error('release mode and signature policy are inconsistent')
+}
 const prefix = `ORIGAMI2-v${version}-${platform}`
 const payloads = platform === 'windows-x64'
   ? [`${prefix}-setup.exe`, `${prefix}-portable.zip`, `${prefix}.cdx.json`]

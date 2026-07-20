@@ -632,6 +632,8 @@ test('merged release verification binds update manifests to signed payload polic
   assert.match(platformVerifier, /signaturePolicy: expectedSignaturePolicy/u)
   assert.match(platformVerifier, /buildMode: expectedSignaturePolicy === 'platform-signed'/u)
   assert.match(platformVerifier, /EXPECTED_SIGNATURE_POLICY is invalid/u)
+  assert.match(platformVerifier, /release mode and signature policy are inconsistent/u)
+  assert.match(workflow, /REQUIRE_SIGNATURE:.*mode != 'dry-run'[\s\S]*EXPECTED_SIGNATURE_POLICY:.*mode != 'dry-run'/u)
 })
 
 test('CI and formal release share the strict macOS bundle contract', () => {
@@ -1344,7 +1346,26 @@ test('local artifact verifier requires explicit signature policy and verifies pa
         },
       },
     ),
-    /publishable release mode requires platform signatures/u,
+    /release mode and signature policy are inconsistent/u,
+  )
+  assert.throws(
+    () => execFileSync(
+      'node',
+      ['.github/scripts/verify_formal_release.mjs', root],
+      {
+        cwd: root,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          RELEASE_PLATFORM: 'windows-x64',
+          RELEASE_VERSION: '1.2.3',
+          RELEASE_MODE: 'dry-run',
+          REQUIRE_SIGNATURE: 'true',
+          EXPECTED_SIGNATURE_POLICY: 'platform-signed',
+        },
+      },
+    ),
+    /release mode and signature policy are inconsistent/u,
   )
 })
 

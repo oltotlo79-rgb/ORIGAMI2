@@ -48,6 +48,7 @@ import {
   addEdge,
   addEdgeOrientationConstraint,
   addConnectedVertex,
+  addInstructionStep,
   addVertex,
   appendNamedTechniqueInstructionSteps,
   analyzeGeometricConstraints,
@@ -190,6 +191,7 @@ import {
   type BoundNativeStaticCollisionView,
 } from './lib/nativeStaticCollisionView'
 import type { InstructionStepPresentation } from './lib/instructionTimeline'
+import { planInstructionAutoRecord } from './lib/instructionAutoRecord'
 import { formatPaperThicknessInput } from './lib/paperThicknessInput'
 import { PaperThicknessInput } from './components/PaperThicknessInput'
 import {
@@ -547,6 +549,8 @@ function App() {
     setNativeStaticCollisionRetrySequence,
   ] = useState(0)
   const [manualPoseChangeSequence, setManualPoseChangeSequence] = useState(0)
+  const [autoRecordInstructions, setAutoRecordInstructions] = useState(false)
+  const lastAutoRecordedPoseSequenceRef = useRef(0)
   const [activeTool, setActiveTool] = useState('select')
   const [benchmarkStatusMessage, setBenchmarkStatus] = useState<AppMessage>(
     () => appMessage({ ja: '未実行', en: 'Not run' }),
@@ -943,6 +947,7 @@ function App() {
       en: 'Undo/redo history limit changed to {limit}.',
     }, { limit: settings.historyEntryLimit }))
   }, [applySnapshot])
+
   const resetRecoveredProjectUi = useCallback(() => {
     benchmarkRequestIdRef.current += 1
     setBenchmarkLoading(false)
@@ -1904,6 +1909,38 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+
+  useEffect(() => {
+    const current = latestSnapshotRef.current
+    const plan = planInstructionAutoRecord({
+      enabled: autoRecordInstructions,
+      sequence: manualPoseChangeSequence,
+      lastRecordedSequence: lastAutoRecordedPoseSequenceRef.current,
+      snapshot: current,
+      appliedPose: appliedFoldPose,
+      locale,
+    })
+    if (!plan) return
+    lastAutoRecordedPoseSequenceRef.current = plan.sequence
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      addInstructionStep(
+        projectId,
+        revision,
+        projectInstanceId,
+        plan.title,
+        '',
+        '',
+        1_500,
+        plan.pose.fixedFace,
+        plan.pose.hingeAngles,
+      ))
+  }, [
+    appliedFoldPose,
+    autoRecordInstructions,
+    locale,
+    manualPoseChangeSequence,
+    runNativeEdit,
+  ])
 
   const runProjectLayerEdit = useCallback((
     action: (
@@ -5040,6 +5077,18 @@ function App() {
           <article id="fold-preview-panel" className="panel preview-panel">
             <div className="panel-heading">
               <span>{text({ ja: '3D プレビュー', en: '3D preview' })}</span>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={autoRecordInstructions}
+                  disabled={coreBusy || Boolean(benchmarkRun) || !nativeSnapshot}
+                  onChange={(event) => {
+                    lastAutoRecordedPoseSequenceRef.current = manualPoseChangeSequence
+                    setAutoRecordInstructions(event.currentTarget.checked)
+                  }}
+                />
+                {text({ ja: '3D操作を自動記録', en: 'Auto-record 3D edits' })}
+              </label>
               <span className={foldPreviewStatusClass}>{foldPreviewStatus}</span>
             </div>
             <FoldPreview

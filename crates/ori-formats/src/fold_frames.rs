@@ -52,6 +52,8 @@ pub struct Fold3dFramesPreviewV1 {
     frames: Vec<Fold3dFramePreviewV1>,
     resolved_vertices: Vec<Vec<[f64; 3]>>,
     topology_sha256: Vec<Option<[u8; 32]>>,
+    topologies: Vec<Option<Topology>>,
+    rest_vertices: Option<Vec<[f64; 3]>>,
 }
 
 impl Fold3dFramesPreviewV1 {
@@ -78,6 +80,57 @@ impl Fold3dFramesPreviewV1 {
             authorizes_applied_pose: false,
             authorizes_instruction_timeline: false,
         })
+    }
+
+    pub fn prepare_applied_pose_proposal(
+        &self,
+        index: usize,
+    ) -> Result<Fold3dAppliedPoseProposalV1, Fold3dFramesImportErrorV1> {
+        let rest = self
+            .rest_vertices
+            .as_ref()
+            .ok_or(Fold3dFramesImportErrorV1::PoseUnavailable)?;
+        let target = self
+            .resolved_vertices
+            .get(index)
+            .ok_or(Fold3dFramesImportErrorV1::FrameSelectionOutOfRange)?;
+        let topology = self
+            .topologies
+            .get(index)
+            .and_then(Option::as_ref)
+            .ok_or(Fold3dFramesImportErrorV1::PoseUnavailable)?;
+        prepare_pose(rest, target, topology, self.source_sha256, index)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fold3dAppliedPoseProposalV1 {
+    source_sha256: [u8; 32],
+    frame_index: usize,
+    face_transforms: Vec<[[f64; 4]; 3]>,
+    hinge_angles_degrees: Vec<(usize, f64)>,
+}
+
+impl Fold3dAppliedPoseProposalV1 {
+    #[must_use]
+    pub const fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
+    }
+    #[must_use]
+    pub const fn frame_index(&self) -> usize {
+        self.frame_index
+    }
+    #[must_use]
+    pub fn face_transforms(&self) -> &[[[f64; 4]; 3]] {
+        &self.face_transforms
+    }
+    #[must_use]
+    pub fn hinge_angles_degrees(&self) -> &[(usize, f64)] {
+        &self.hinge_angles_degrees
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
     }
 }
 
@@ -143,6 +196,8 @@ pub enum Fold3dFramesImportErrorV1 {
     InvalidCoordinates,
     #[error("selected FOLD frame is out of range")]
     FrameSelectionOutOfRange,
+    #[error("FOLD frame cannot produce the narrow rigid tree pose proposal")]
+    PoseUnavailable,
 }
 
 #[derive(Deserialize)]
@@ -175,7 +230,7 @@ struct RawFrame {
     faces_vertices: Option<Vec<Vec<usize>>>,
 }
 
-#[derive(Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct Topology {
     edges: Vec<[usize; 2]>,
     assignments: Vec<String>,
@@ -278,6 +333,8 @@ pub fn read_fold_3d_frames_preview_v1(
         frames,
         resolved_vertices,
         topology_sha256,
+        topologies,
+        rest_vertices: root,
     })
 }
 
@@ -366,6 +423,175 @@ fn parse_topology(
         assignments,
         faces,
     }))
+}
+
+fn prepare_pose(
+    rest: &[[f64; 3]],
+    target: &[[f64; 3]],
+    topology: &Topology,
+    source_sha256: [u8; 32],
+    frame_index: usize,
+) -> Result<Fold3dAppliedPoseProposalV1, Fold3dFramesImportErrorV1> {
+    if rest.len() != target.len() || rest.iter().any(|p| p[2].to_bits() != 0.0_f64.to_bits()) {
+        return Err(Fold3dFramesImportErrorV1::PoseUnavailable);
+    }
+    let mut transforms = Vec::with_capacity(topology.faces.len());
+    let mut normals = Vec::with_capacity(topology.faces.len());
+    for face in &topology.faces {
+        let a = face[0];
+        let (b, c) = face[1..]
+            .iter()
+            .copied()
+            .zip(face[2..].iter().copied())
+            .find(|(b, c)| cross2(rest[a], rest[*b], rest[*c]).abs() > 1e-12)
+            .ok_or(Fold3dFramesImportErrorV1::PoseUnavailable)?;
+        let ru = normalize3(sub3(rest[b], rest[a]))?;
+        let rn = normalize3(cross3(sub3(rest[b], rest[a]), sub3(rest[c], rest[a])))?;
+        let rv = cross3(rn, ru);
+        let tu = normalize3(sub3(target[b], target[a]))?;
+        let tn = normalize3(cross3(
+            sub3(target[b], target[a]),
+            sub3(target[c], target[a]),
+        ))?;
+        let tv = cross3(tn, tu);
+        let rotation = [
+            [
+                tu[0] * ru[0] + tv[0] * rv[0] + tn[0] * rn[0],
+                tu[0] * ru[1] + tv[0] * rv[1] + tn[0] * rn[1],
+                tu[0] * ru[2] + tv[0] * rv[2] + tn[0] * rn[2],
+            ],
+            [
+                tu[1] * ru[0] + tv[1] * rv[0] + tn[1] * rn[0],
+                tu[1] * ru[1] + tv[1] * rv[1] + tn[1] * rn[1],
+                tu[1] * ru[2] + tv[1] * rv[2] + tn[1] * rn[2],
+            ],
+            [
+                tu[2] * ru[0] + tv[2] * rv[0] + tn[2] * rn[0],
+                tu[2] * ru[1] + tv[2] * rv[1] + tn[2] * rn[1],
+                tu[2] * ru[2] + tv[2] * rv[2] + tn[2] * rn[2],
+            ],
+        ];
+        let translation = sub3(target[a], mul3(rotation, rest[a]));
+        let scale = face.iter().map(|i| norm3(rest[*i])).fold(1.0, f64::max);
+        if face.iter().any(|i| {
+            norm3(sub3(
+                add3(mul3(rotation, rest[*i]), translation),
+                target[*i],
+            )) > 1e-8 * scale
+        }) {
+            return Err(Fold3dFramesImportErrorV1::PoseUnavailable);
+        }
+        transforms.push([
+            [
+                rotation[0][0],
+                rotation[0][1],
+                rotation[0][2],
+                translation[0],
+            ],
+            [
+                rotation[1][0],
+                rotation[1][1],
+                rotation[1][2],
+                translation[1],
+            ],
+            [
+                rotation[2][0],
+                rotation[2][1],
+                rotation[2][2],
+                translation[2],
+            ],
+        ]);
+        normals.push(tn);
+    }
+    let mut hinges = Vec::new();
+    let mut adjacency = vec![Vec::new(); topology.faces.len()];
+    for (edge_index, edge) in topology.edges.iter().enumerate() {
+        let incident = topology
+            .faces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, face)| {
+                face.windows(2)
+                    .chain(std::iter::once(&[face[face.len() - 1], face[0]][..]))
+                    .any(|pair| {
+                        (pair[0] == edge[0] && pair[1] == edge[1])
+                            || (pair[0] == edge[1] && pair[1] == edge[0])
+                    })
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        match topology.assignments[edge_index].as_str() {
+            "B" if incident.len() == 1 => {}
+            assignment @ ("M" | "V") if incident.len() == 2 => {
+                adjacency[incident[0]].push(incident[1]);
+                adjacency[incident[1]].push(incident[0]);
+                let axis = normalize3(sub3(target[edge[1]], target[edge[0]]))?;
+                let angle = dot3(axis, cross3(normals[incident[0]], normals[incident[1]]))
+                    .atan2(dot3(normals[incident[0]], normals[incident[1]]))
+                    .to_degrees();
+                if (assignment == "M" && angle >= -1e-10) || (assignment == "V" && angle <= 1e-10) {
+                    return Err(Fold3dFramesImportErrorV1::PoseUnavailable);
+                }
+                hinges.push((edge_index, angle));
+            }
+            _ => return Err(Fold3dFramesImportErrorV1::PoseUnavailable),
+        }
+    }
+    if hinges.len() + 1 != topology.faces.len() || topology.faces.is_empty() {
+        return Err(Fold3dFramesImportErrorV1::PoseUnavailable);
+    }
+    let mut seen = vec![false; topology.faces.len()];
+    let mut stack = vec![0];
+    while let Some(face) = stack.pop() {
+        if seen[face] {
+            continue;
+        }
+        seen[face] = true;
+        stack.extend(adjacency[face].iter().copied());
+    }
+    if seen.iter().any(|seen| !seen) {
+        return Err(Fold3dFramesImportErrorV1::PoseUnavailable);
+    }
+    Ok(Fold3dAppliedPoseProposalV1 {
+        source_sha256,
+        frame_index,
+        face_transforms: transforms,
+        hinge_angles_degrees: hinges,
+    })
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+fn norm3(a: [f64; 3]) -> f64 {
+    dot3(a, a).sqrt()
+}
+fn normalize3(a: [f64; 3]) -> Result<[f64; 3], Fold3dFramesImportErrorV1> {
+    let n = norm3(a);
+    if !n.is_finite() || n <= 1e-12 {
+        Err(Fold3dFramesImportErrorV1::PoseUnavailable)
+    } else {
+        Ok([a[0] / n, a[1] / n, a[2] / n])
+    }
+}
+fn mul3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [dot3(m[0], v), dot3(m[1], v), dot3(m[2], v)]
+}
+fn cross2(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
 fn resolve(
@@ -513,5 +739,28 @@ mod tests {
         assert!(first.topology_sha256().is_some());
         assert!(!second.authorizes_applied_pose());
         assert!(!second.authorizes_instruction_timeline());
+        assert_eq!(
+            preview.prepare_applied_pose_proposal(1),
+            Err(Fold3dFramesImportErrorV1::PoseUnavailable)
+        );
+    }
+
+    #[test]
+    fn rigid_two_face_tree_issues_opaque_pose_proposal() {
+        let bytes = br#"{
+          "vertices_coords":[[0,0,0],[1,0,0],[1,1,0],[0,1,0]],
+          "edges_vertices":[[0,1],[1,2],[2,3],[3,0],[0,2]],
+          "edges_assignment":["B","B","B","B","V"],
+          "faces_vertices":[[0,1,2],[0,2,3]],
+          "file_frames":[{"frame_inherit":true,
+            "vertices_coords":[[0,0,0],[1,0,0],[1,1,0],[0.5,0.5,0.7071067811865476]]
+          }]
+        }"#;
+        let preview = read_fold_3d_frames_preview_v1(bytes, FoldImportLimits::default()).unwrap();
+        let proposal = preview.prepare_applied_pose_proposal(0).unwrap();
+        assert_eq!(proposal.face_transforms().len(), 2);
+        assert_eq!(proposal.hinge_angles_degrees().len(), 1);
+        assert!(proposal.hinge_angles_degrees()[0].1 > 89.999);
+        assert!(!proposal.authorizes_project_mutation());
     }
 }

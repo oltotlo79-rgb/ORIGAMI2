@@ -49,7 +49,7 @@ pub use beginner_recognition::{
     BEGINNER_RECOGNITION_SCHEMA_VERSION_V1, BeginnerRecognitionBoundsV1,
     BeginnerRecognitionErrorV1, BeginnerRecognitionFormatV1, BeginnerRecognitionProposalV1,
     MAX_BEGINNER_RECOGNITION_COMPONENTS_V1, MAX_BEGINNER_RECOGNITION_DIMENSION_V1,
-    MAX_BEGINNER_RECOGNITION_PIXELS_V1, analyze_marker_png_rgba_v1,
+    MAX_BEGINNER_RECOGNITION_PIXELS_V1, analyze_marker_png_rgba_v1, analyze_silhouette_png_rgba_v1,
 };
 pub use constraints::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,

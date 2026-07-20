@@ -93,6 +93,16 @@ test('AUT-004 binds passive image and GLB references without granting generation
   assert.match(app, /selected project reference image as target input/u)
 })
 
+test('AUT-004 preview is bounded, project-bound, and stale-safe', () => {
+  assert.match(client, /record\.positions\.length > 20_000/u)
+  assert.match(client, /record\.triangle_indices\.length > 40_000/u)
+  assert.match(client, /record\.project_instance_id !== expectedProjectInstanceId/u)
+  assert.match(client, /record\.revision !== expectedRevision/u)
+  assert.match(app, /beginnerReferenceRequestRef\.current/u)
+  assert.match(app, /latest\.project_instance_id === geometry\.project_instance_id/u)
+  assert.match(app, /Read-only 3D reference model/u)
+})
+
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {
   assert.match(generation, /struct BeginnerProtrusionTargetV1/u)
   for (const field of [

@@ -225,8 +225,7 @@ struct CurrentAppliedPoseClaims {
     topology: Arc<TopologySnapshot>,
     fold_model_fingerprint: Arc<str>,
     semantic_pose: Arc<AppliedPoseV1>,
-    model: Arc<MaterialTreeKinematicsModel>,
-    pose: Arc<MaterialTreePose>,
+    native_pose: CurrentNativeMaterialPose,
     material_faces: Arc<[FaceId]>,
     material_hinges: Arc<[EdgeId]>,
     paper_thickness_bits: u64,
@@ -235,6 +234,81 @@ struct CurrentAppliedPoseClaims {
     thickness_model_id: &'static str,
     contact_policy_id: &'static str,
     generation: u64,
+}
+
+#[derive(Clone)]
+enum CurrentNativeMaterialPose {
+    Tree {
+        model: Arc<MaterialTreeKinematicsModel>,
+        pose: Arc<MaterialTreePose>,
+    },
+    Graph {
+        geometry: Arc<ori_kinematics::MaterialHingeGraphGeometry>,
+        audit: Arc<ori_kinematics::MaterialHingeGraphAudit>,
+        pose: Arc<ori_kinematics::ClosedMaterialHingeGraphPose>,
+    },
+}
+
+impl CurrentNativeMaterialPose {
+    fn tree(&self) -> Option<(&MaterialTreeKinematicsModel, &MaterialTreePose)> {
+        match self {
+            Self::Tree { model, pose } => Some((model.as_ref(), pose.as_ref())),
+            Self::Graph { .. } => None,
+        }
+    }
+
+    fn graph(
+        &self,
+    ) -> Option<(
+        &ori_kinematics::MaterialHingeGraphGeometry,
+        &ori_kinematics::MaterialHingeGraphAudit,
+        &ori_kinematics::ClosedMaterialHingeGraphPose,
+    )> {
+        match self {
+            Self::Tree { .. } => None,
+            Self::Graph {
+                geometry,
+                audit,
+                pose,
+            } => Some((geometry.as_ref(), audit.as_ref(), pose.as_ref())),
+        }
+    }
+
+    fn same_native_instance(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Tree {
+                    model: first_model,
+                    pose: first_pose,
+                },
+                Self::Tree {
+                    model: second_model,
+                    pose: second_pose,
+                },
+            ) => {
+                Arc::ptr_eq(first_model, second_model)
+                    && Arc::ptr_eq(first_pose, second_pose)
+                    && first_pose.same_instance(second_pose)
+            }
+            (
+                Self::Graph {
+                    geometry: first_geometry,
+                    audit: first_audit,
+                    pose: first_pose,
+                },
+                Self::Graph {
+                    geometry: second_geometry,
+                    audit: second_audit,
+                    pose: second_pose,
+                },
+            ) => {
+                Arc::ptr_eq(first_geometry, second_geometry)
+                    && Arc::ptr_eq(first_audit, second_audit)
+                    && Arc::ptr_eq(first_pose, second_pose)
+            }
+            _ => false,
+        }
+    }
 }
 
 struct CurrentAppliedPoseCertificate {
@@ -283,12 +357,31 @@ impl CurrentAppliedPoseCapability {
     /// any result.
     #[must_use]
     pub(super) fn model(&self) -> &MaterialTreeKinematicsModel {
-        self.claims.model.as_ref()
+        self.claims
+            .native_pose
+            .tree()
+            .expect("tree pose capability")
+            .0
     }
 
     #[must_use]
     pub(super) fn pose(&self) -> &MaterialTreePose {
-        self.claims.pose.as_ref()
+        self.claims
+            .native_pose
+            .tree()
+            .expect("tree pose capability")
+            .1
+    }
+
+    #[must_use]
+    pub(super) fn graph(
+        &self,
+    ) -> Option<(
+        &ori_kinematics::MaterialHingeGraphGeometry,
+        &ori_kinematics::MaterialHingeGraphAudit,
+        &ori_kinematics::ClosedMaterialHingeGraphPose,
+    )> {
+        self.claims.native_pose.graph()
     }
 
     #[must_use]
@@ -310,12 +403,33 @@ impl CurrentAppliedPoseView<'_> {
 
     #[must_use]
     pub(super) fn model(&self) -> &MaterialTreeKinematicsModel {
-        self.certificate.claims.model.as_ref()
+        self.certificate
+            .claims
+            .native_pose
+            .tree()
+            .expect("tree pose view")
+            .0
     }
 
     #[must_use]
     pub(super) fn pose(&self) -> &MaterialTreePose {
-        self.certificate.claims.pose.as_ref()
+        self.certificate
+            .claims
+            .native_pose
+            .tree()
+            .expect("tree pose view")
+            .1
+    }
+
+    #[must_use]
+    pub(super) fn graph(
+        &self,
+    ) -> Option<(
+        &ori_kinematics::MaterialHingeGraphGeometry,
+        &ori_kinematics::MaterialHingeGraphAudit,
+        &ori_kinematics::ClosedMaterialHingeGraphPose,
+    )> {
+        self.certificate.claims.native_pose.graph()
     }
 
     #[must_use]
@@ -555,8 +669,10 @@ impl CurrentAppliedPoseAuthority {
             topology: Arc::clone(&prepared.topology),
             fold_model_fingerprint: Arc::clone(&prepared.binding.fold_model_fingerprint),
             semantic_pose: Arc::clone(&prepared.semantic_pose),
-            model: Arc::clone(&prepared.model),
-            pose: Arc::clone(&prepared.pose),
+            native_pose: CurrentNativeMaterialPose::Tree {
+                model: Arc::clone(&prepared.model),
+                pose: Arc::clone(&prepared.pose),
+            },
             material_faces,
             material_hinges,
             paper_thickness_bits: prepared.binding.paper_thickness_bits,
@@ -946,20 +1062,22 @@ fn current_applied_pose_certificate_is_internally_consistent(
         && claims.paper_thickness_bits == binding.paper_thickness_bits
         && claims.paper_thickness_bits == claims.topology_input.paper().thickness_mm.to_bits()
         && claims.kinematics_model_id == MATERIAL_TREE_KINEMATICS_MODEL_ID
-        && claims.model.model_id() == claims.kinematics_model_id
         && claims.semantic_model_id == APPLIED_POSE_MODEL_ID_V1
         && claims.semantic_pose.model_id() == claims.semantic_model_id
         && claims.thickness_model_id == CENTERED_MID_SURFACE_THICKNESS_MODEL_V1
         && claims.contact_policy_id == TOPOLOGY_CONTACT_POLICY_V2
-        && claims.model.owns_pose(&claims.pose)
-        && claims.model.bind_pose(&claims.pose).is_ok()
-        && material_pose_matches_semantic(&claims.pose, &claims.semantic_pose)
-        && registries_match_model_and_pose(
-            &claims.model,
-            &claims.pose,
-            &claims.material_faces,
-            &claims.material_hinges,
-        )
+        && claims.native_pose.tree().is_some_and(|(model, pose)| {
+            model.model_id() == claims.kinematics_model_id
+                && model.owns_pose(pose)
+                && model.bind_pose(pose).is_ok()
+                && material_pose_matches_semantic(pose, &claims.semantic_pose)
+                && registries_match_model_and_pose(
+                    model,
+                    pose,
+                    &claims.material_faces,
+                    &claims.material_hinges,
+                )
+        })
 }
 
 fn current_applied_pose_certificate_is_current(
@@ -1020,9 +1138,7 @@ fn current_applied_pose_claims_match(
         && first.fold_model_fingerprint.as_ref() == second.fold_model_fingerprint.as_ref()
         && Arc::ptr_eq(&first.semantic_pose, &second.semantic_pose)
         && semantic_pose_bits_equal(&first.semantic_pose, &second.semantic_pose)
-        && Arc::ptr_eq(&first.model, &second.model)
-        && Arc::ptr_eq(&first.pose, &second.pose)
-        && first.pose.same_instance(&second.pose)
+        && first.native_pose.same_native_instance(&second.native_pose)
         && Arc::ptr_eq(&first.material_faces, &second.material_faces)
         && first.material_faces.as_ref() == second.material_faces.as_ref()
         && Arc::ptr_eq(&first.material_hinges, &second.material_hinges)
@@ -1782,7 +1898,14 @@ pub(super) mod tests {
     fn same_angle_resolve_is_a_new_pose_and_invalidates_the_old_capability() {
         let mut project = no_hinge_project();
         let (authority, first_capability) = install_current_pose_authority(&mut project);
-        let first_pose = Arc::clone(&first_capability.certificate.claims.pose);
+        let first_pose = first_capability
+            .certificate
+            .claims
+            .native_pose
+            .tree()
+            .unwrap()
+            .1
+            .clone();
 
         let second_prepared = authority
             .capture_request(&project, request_for(&project))
@@ -1794,7 +1917,15 @@ pub(super) mod tests {
             .expect("same-angle commit");
 
         assert!(
-            !first_pose.same_instance(&second_capability.certificate.claims.pose),
+            !first_pose.same_instance(
+                second_capability
+                    .certificate
+                    .claims
+                    .native_pose
+                    .tree()
+                    .unwrap()
+                    .1
+            ),
             "a new solve must not collapse same-angle ABA"
         );
         assert!(

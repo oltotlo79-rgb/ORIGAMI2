@@ -73,6 +73,47 @@ test('dry-run validates without a tag or GitHub mutation', () => {
   assert.match(output, /mode=dry-run/u)
 })
 
+test('update manifest generator emits canonical version and digest bindings', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-update-manifest-'))
+  try {
+    const prefix = 'ORIGAMI2-v0.1.0-macos-arm64'
+    const payloads = {
+      [`${prefix}-app.tar.gz`]: 'application',
+      [`${prefix}.cdx.json`]: JSON.stringify({ bomFormat: 'CycloneDX', components: [] }),
+    }
+    for (const [name, value] of Object.entries(payloads)) {
+      writeFileSync(join(directory, name), value)
+    }
+    execFileSync(
+      'node',
+      ['.github/scripts/write_update_manifest.mjs', directory],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          PLATFORM: 'macos-arm64',
+          VERSION: '0.1.0',
+        },
+      },
+    )
+    const bytes = readFileSync(join(directory, `${prefix}.update.json`), 'utf8')
+    const parsed = JSON.parse(bytes)
+    assert.equal(bytes, `${JSON.stringify(parsed)}\n`)
+    assert.deepEqual(parsed, {
+      schema: 'origami2.update-manifest.v1',
+      version: '0.1.0',
+      platform: 'macos-arm64',
+      assets: Object.entries(payloads).sort(([left], [right]) =>
+        left.localeCompare(right)).map(([name, value]) => ({
+        name,
+        sha256: createHash('sha256').update(value).digest('hex'),
+      })),
+    })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
   const directory = mkdtempSync(join(tmpdir(), 'origami2-release-contract-'))
   try {
@@ -82,6 +123,16 @@ test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
       [`${prefix}-portable.zip`]: 'portable',
       [`${prefix}.cdx.json`]: JSON.stringify({ bomFormat: 'CycloneDX', components: [] }),
     }
+    payloads[`${prefix}.update.json`] = `${JSON.stringify({
+      schema: 'origami2.update-manifest.v1',
+      version: '0.1.0',
+      platform: 'windows-x64',
+      assets: Object.entries(payloads).sort(([left], [right]) =>
+        left.localeCompare(right)).map(([name, value]) => ({
+        name,
+        sha256: createHash('sha256').update(value).digest('hex'),
+      })),
+    })}\n`
     const checksums = []
     for (const [name, value] of Object.entries(payloads)) {
       writeFileSync(join(directory, name), value)
@@ -91,7 +142,7 @@ test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
       join(directory, 'SHA256SUMS-windows-x64.txt'),
       `${checksums.sort((left, right) => left.slice(66).localeCompare(right.slice(66))).join('\n')}\n`,
     )
-    execFileSync('node', ['.github/scripts/verify_formal_release.mjs', directory], {
+    const verifyOptions = {
       cwd: root,
       env: {
         ...process.env,
@@ -99,7 +150,35 @@ test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
         RELEASE_VERSION: '0.1.0',
         REQUIRE_SIGNATURE: 'false',
       },
-    })
+    }
+    execFileSync(
+      'node',
+      ['.github/scripts/verify_formal_release.mjs', directory],
+      verifyOptions,
+    )
+
+    const manifestName = `${prefix}.update.json`
+    const tampered = JSON.parse(payloads[manifestName])
+    tampered.assets[0].sha256 = '0'.repeat(64)
+    const tamperedBytes = `${JSON.stringify(tampered)}\n`
+    writeFileSync(join(directory, manifestName), tamperedBytes)
+    const tamperedChecksums = checksums.map((line) =>
+      line.endsWith(`  ${manifestName}`)
+        ? `${createHash('sha256').update(tamperedBytes).digest('hex')}  ${manifestName}`
+        : line,
+    )
+    writeFileSync(
+      join(directory, 'SHA256SUMS-windows-x64.txt'),
+      `${tamperedChecksums.join('\n')}\n`,
+    )
+    assert.throws(
+      () => execFileSync(
+        'node',
+        ['.github/scripts/verify_formal_release.mjs', directory],
+        { ...verifyOptions, stdio: 'pipe' },
+      ),
+      /digest binding failed/u,
+    )
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -114,6 +193,16 @@ test('local artifact verifier rejects non-canonical checksum manifests', () => {
       [`${prefix}-portable.zip`]: 'portable',
       [`${prefix}.cdx.json`]: JSON.stringify({ bomFormat: 'CycloneDX', components: [] }),
     }
+    payloads[`${prefix}.update.json`] = `${JSON.stringify({
+      schema: 'origami2.update-manifest.v1',
+      version: '0.1.0',
+      platform: 'windows-x64',
+      assets: Object.entries(payloads).sort(([left], [right]) =>
+        left.localeCompare(right)).map(([name, value]) => ({
+        name,
+        sha256: createHash('sha256').update(value).digest('hex'),
+      })),
+    })}\n`
     for (const [name, value] of Object.entries(payloads)) {
       writeFileSync(join(directory, name), value)
     }

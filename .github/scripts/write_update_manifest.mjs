@@ -1,0 +1,33 @@
+import { createHash } from 'node:crypto'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
+
+const directory = resolve(process.argv[2])
+const platform = process.env.PLATFORM
+const version = process.env.VERSION
+if (!['windows-x64', 'macos-arm64'].includes(platform)) {
+  throw new Error('unsupported update manifest platform')
+}
+if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? '')) {
+  throw new Error('invalid update manifest version')
+}
+const prefix = `ORIGAMI2-v${version}-${platform}`
+const names = platform === 'windows-x64'
+  ? [`${prefix}-portable.zip`, `${prefix}-setup.exe`, `${prefix}.cdx.json`]
+  : [`${prefix}-app.tar.gz`, `${prefix}.cdx.json`]
+const assets = names.sort().map((name) => Object.freeze({
+  name,
+  sha256: createHash('sha256').update(readFileSync(join(directory, name))).digest('hex'),
+}))
+const manifest = {
+  schema: 'origami2.update-manifest.v1',
+  version,
+  platform,
+  assets,
+}
+writeFileSync(
+  join(directory, `${prefix}.update.json`),
+  `${JSON.stringify(manifest)}\n`,
+  { encoding: 'utf8', flag: 'wx' },
+)
+console.log(`wrote canonical update manifest for ${basename(directory)} ${platform}`)

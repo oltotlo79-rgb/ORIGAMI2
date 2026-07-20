@@ -11,6 +11,7 @@ export type ReleaseArtifactPlan = Readonly<{
   supplementalPayloadName: string | null
   checksumManifestName: string
   sbomName: string
+  updateManifestName: string
   signatureVerification: 'authenticode' | 'apple_codesign'
   provenanceAttestationRequired: true
   userConfirmationRequired: true
@@ -43,19 +44,23 @@ export function selectReleaseArtifactPlan(
     : null
   const checksumManifestName = `SHA256SUMS-${platform}.txt`
   const sbomName = `${prefix}.cdx.json`
+  const updateManifestName = `${prefix}.update.json`
   const required = [
     payloadName,
     checksumManifestName,
     sbomName,
+    updateManifestName,
     ...(supplementalPayloadName ? [supplementalPayloadName] : []),
   ]
   const completeReleaseSet = [
     `ORIGAMI2-v${version}-windows-x64-setup.exe`,
     `ORIGAMI2-v${version}-windows-x64-portable.zip`,
     `ORIGAMI2-v${version}-windows-x64.cdx.json`,
+    `ORIGAMI2-v${version}-windows-x64.update.json`,
     `SHA256SUMS-windows-x64.txt`,
     `ORIGAMI2-v${version}-macos-arm64-app.tar.gz`,
     `ORIGAMI2-v${version}-macos-arm64.cdx.json`,
+    `ORIGAMI2-v${version}-macos-arm64.update.json`,
     `SHA256SUMS-macos-arm64.txt`,
   ]
   if (
@@ -72,6 +77,7 @@ export function selectReleaseArtifactPlan(
     supplementalPayloadName,
     checksumManifestName,
     sbomName,
+    updateManifestName,
     signatureVerification: platform === 'windows-x64'
       ? 'authenticode'
       : 'apple_codesign',

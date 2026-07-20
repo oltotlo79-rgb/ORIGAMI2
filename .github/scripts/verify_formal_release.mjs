@@ -20,8 +20,10 @@ const prefix = `ORIGAMI2-v${version}-${platform}`
 const payloads = platform === 'windows-x64'
   ? [`${prefix}-setup.exe`, `${prefix}-portable.zip`, `${prefix}.cdx.json`]
   : [`${prefix}-app.tar.gz`, `${prefix}.cdx.json`]
+const updateManifest = `${prefix}.update.json`
+const releaseFiles = [...payloads, updateManifest]
 const checksum = `SHA256SUMS-${platform}.txt`
-const expected = [...payloads, checksum].sort()
+const expected = [...releaseFiles, checksum].sort()
 const actual = readdirSync(directory).sort()
 if (actual.join('\n') !== expected.join('\n')) {
   throw new Error(`artifact set mismatch:\n${actual.join('\n')}`)
@@ -34,13 +36,13 @@ const entries = lines.map((line) => {
 })
 const manifestNames = entries.map(([name]) => name)
 if (
-  manifestNames.length !== payloads.length
-  || manifestNames.join('\n') !== [...payloads].sort().join('\n')
+  manifestNames.length !== releaseFiles.length
+  || manifestNames.join('\n') !== [...releaseFiles].sort().join('\n')
 ) {
   throw new Error('checksum manifest is incomplete or non-canonical')
 }
 const checksums = new Map(entries)
-for (const name of payloads) {
+for (const name of releaseFiles) {
   if (statSync(join(directory, name)).size === 0) throw new Error(`${name} is empty`)
   const digest = createHash('sha256').update(readFileSync(join(directory, name))).digest('hex')
   if (checksums.get(name) !== digest) throw new Error(`${name} checksum mismatch`)
@@ -48,6 +50,22 @@ for (const name of payloads) {
 const sbom = JSON.parse(readFileSync(join(directory, `${prefix}.cdx.json`), 'utf8'))
 if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) {
   throw new Error('CycloneDX SBOM contract failed')
+}
+const updateManifestBytes = readFileSync(join(directory, updateManifest), 'utf8')
+const parsedUpdateManifest = JSON.parse(updateManifestBytes)
+const expectedUpdateManifest = {
+  schema: 'origami2.update-manifest.v1',
+  version,
+  platform,
+  assets: [...payloads].sort().map((name) => ({
+    name,
+    sha256: checksums.get(name),
+  })),
+}
+if (
+  updateManifestBytes !== `${JSON.stringify(expectedUpdateManifest)}\n`
+) {
+  throw new Error('update manifest is non-canonical or digest binding failed')
 }
 if (process.env.REQUIRE_SIGNATURE === 'true') {
   const { execFileSync } = await import('node:child_process')

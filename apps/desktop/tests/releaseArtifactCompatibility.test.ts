@@ -11,9 +11,11 @@ const assets = [
   'ORIGAMI2-v1.2.3-windows-x64-setup.exe',
   'ORIGAMI2-v1.2.3-windows-x64-portable.zip',
   'ORIGAMI2-v1.2.3-windows-x64.cdx.json',
+  'ORIGAMI2-v1.2.3-windows-x64.update.json',
   'SHA256SUMS-windows-x64.txt',
   'ORIGAMI2-v1.2.3-macos-arm64-app.tar.gz',
   'ORIGAMI2-v1.2.3-macos-arm64.cdx.json',
+  'ORIGAMI2-v1.2.3-macos-arm64.update.json',
   'SHA256SUMS-macos-arm64.txt',
 ]
 
@@ -29,6 +31,8 @@ test('selects exact signed-release assets without retaining download authority',
       'ORIGAMI2-v1.2.3-windows-x64-portable.zip',
     checksumManifestName: 'SHA256SUMS-windows-x64.txt',
     sbomName: 'ORIGAMI2-v1.2.3-windows-x64.cdx.json',
+    updateManifestName:
+      'ORIGAMI2-v1.2.3-windows-x64.update.json',
     signatureVerification: 'authenticode',
     provenanceAttestationRequired: true,
     userConfirmationRequired: true,

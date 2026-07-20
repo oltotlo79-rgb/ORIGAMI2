@@ -21,6 +21,9 @@ if ($env:PLATFORM -eq 'windows-x64') {
     throw "Unsupported platform '$env:PLATFORM'."
 }
 
+node .github/scripts/write_update_manifest.mjs $output
+if ($LASTEXITCODE -ne 0) { throw 'Could not generate the update manifest.' }
+
 $assets = Get-ChildItem $output -File |
     Where-Object Name -NotLike 'SHA256SUMS-*' |
     Sort-Object -Property Name

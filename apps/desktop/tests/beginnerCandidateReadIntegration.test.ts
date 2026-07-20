@@ -42,13 +42,27 @@ test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and 
 test('AUT-101 exposes bounded generated crease patterns and instructions as read-only previews', () => {
   assert.match(native, /generate_beginner_plans_v1/)
   assert.match(client, /response\.generated_plans\.length > 3/)
-  assert.match(client, /pattern\.vertices\.length !== 2/)
-  assert.match(client, /pattern\.edges\.length !== 1/)
+  assert.match(client, /pattern\.vertices\.length > 5/)
+  assert.match(client, /pattern\.edges\.length > 4/)
+  assert.match(client, /vertexIds\.has\(edge\.start\)/)
+  assert.match(client, /new Set\(admittedEdges\.map\(\(edge\) => edge\.id\)\)/)
   assert.match(app, /Candidate crease-pattern preview/)
   assert.match(app, /Candidate folding instructions/)
   assert.match(app, /read-only candidate/)
+  assert.match(app, /plan\.crease_pattern\.edges\.map/)
   assert.match(app, /cancelBeginnerCandidates/)
   assert.match(app, /beginnerCandidateRequestRef\.current !== requestId/)
+})
+
+test('AUT-101 admits only explicit symmetric animal and insect templates', () => {
+  assert.match(client, /'symmetric_four_leg_base'/)
+  assert.match(client, /'symmetric_wing_base'/)
+  assert.match(native, /UnsupportedAnimalTemplate/)
+  assert.match(native, /UnsupportedInsectTemplate/)
+  assert.match(app, /bilateral four-part protrusion target/)
+  assert.match(app, /bilateral two-part protrusion target/)
+  assert.match(app, /Create the symmetric four-leg base/)
+  assert.match(app, /Create the bilateral wing base/)
 })
 
 test('AUT-106 presents one recommendation first and adds bounded candidates on demand', () => {
@@ -68,6 +82,8 @@ test('AUT-101 apply rebinds candidate authority natively and requires confirmati
   assert.match(native, /expected_candidate_edge_id: EdgeId/)
   assert.match(native, /generated candidate identity changed before apply/)
   assert.match(native, /Command::ApplyStackedFoldDocument/)
+  assert.match(native, /SymmetricFourLegBase/)
+  assert.match(native, /SymmetricWingBase/)
   assert.match(client, /invoke<ProjectSnapshot>\('apply_beginner_generated_plan'/)
   assert.match(client, /isCanonicalNonNilUuid\(expectedCandidateEdgeId\)/)
   assert.match(app, /window\.confirm/)

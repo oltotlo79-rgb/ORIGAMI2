@@ -536,13 +536,20 @@ export type BeginnerCandidateResponseV1 = {
     | 'missing_target_category'
     | 'missing_required_parts'
     | 'missing_target_asset'
+    | 'unsupported_animal_template'
+    | 'unsupported_insect_template'
   generated_plans: BeginnerGeneratedPlanV1[]
   candidates: BeginnerCandidateScoreV1[]
 }
 
 export type BeginnerGeneratedPlanV1 = {
   schema_version: 1
-  kind: 'vertical_book_fold' | 'horizontal_book_fold' | 'diagonal_fold'
+  kind:
+    | 'symmetric_four_leg_base'
+    | 'symmetric_wing_base'
+    | 'vertical_book_fold'
+    | 'horizontal_book_fold'
+    | 'diagonal_fold'
   crease_pattern: {
     vertices: Array<{ id: string; position: { x: number; y: number } }>
     edges: Array<{ id: string; start: string; end: string; kind: 'mountain' | 'valley' }>
@@ -581,7 +588,7 @@ function normalizeBeginnerCandidateResponse(
     || response.requested_candidate_count !== requestedCandidateCount
     || response.bulge_treatment !== 'target_shape_approximation'
     || response.elasticity_model !== 'not_computed'
-    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques', 'missing_target_category', 'missing_required_parts', 'missing_target_asset']
+    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques', 'missing_target_category', 'missing_required_parts', 'missing_target_asset', 'unsupported_animal_template', 'unsupported_insect_template']
       .includes(String(response.generation_status))
     || !Array.isArray(response.generated_plans)
     || response.generated_plans.length > 3
@@ -642,16 +649,18 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
-      || pattern.vertices.length !== 2
+      || pattern.vertices.length < 2
+      || pattern.vertices.length > 5
       || !Array.isArray(pattern.edges)
-      || pattern.edges.length !== 1
+      || pattern.edges.length < 1
+      || pattern.edges.length > 4
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -671,14 +680,31 @@ function normalizeBeginnerCandidateResponse(
         || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null
       return { id: item.id, position: { x: Number(position.x), y: Number(position.y) } }
     })
-    const edge = exactCoreDataRecord(pattern.edges[0], ['id', 'start', 'end', 'kind'] as const)
-    if (vertices.some((vertex) => vertex === null) || !edge
-      || !isCanonicalNonNilUuid(edge.id) || !isCanonicalNonNilUuid(edge.start)
-      || !isCanonicalNonNilUuid(edge.end) || !['mountain', 'valley'].includes(String(edge.kind))) return null
+    if (vertices.some((vertex) => vertex === null)) return null
+    const admittedVertices = vertices as BeginnerGeneratedPlanV1['crease_pattern']['vertices']
+    const vertexIds = new Set(admittedVertices.map((vertex) => vertex.id))
+    if (vertexIds.size !== admittedVertices.length) return null
+    const edges = pattern.edges.map((value) => {
+      const edge = exactCoreDataRecord(value, ['id', 'start', 'end', 'kind'] as const)
+      if (!edge
+        || !isCanonicalNonNilUuid(edge.id) || !isCanonicalNonNilUuid(edge.start)
+        || !isCanonicalNonNilUuid(edge.end) || edge.start === edge.end
+        || !vertexIds.has(edge.start) || !vertexIds.has(edge.end)
+        || !['mountain', 'valley'].includes(String(edge.kind))) return null
+      return {
+        id: edge.id,
+        start: edge.start,
+        end: edge.end,
+        kind: edge.kind,
+      } as BeginnerGeneratedPlanV1['crease_pattern']['edges'][number]
+    })
+    if (edges.some((edge) => edge === null)) return null
+    const admittedEdges = edges as BeginnerGeneratedPlanV1['crease_pattern']['edges']
+    if (new Set(admittedEdges.map((edge) => edge.id)).size !== admittedEdges.length) return null
     return {
       schema_version: 1,
       kind: record.kind,
-      crease_pattern: { vertices, edges: [edge] },
+      crease_pattern: { vertices: admittedVertices, edges: admittedEdges },
       instruction_codes: record.instruction_codes.slice(),
       target_parts: normalizedPlanInputs.target_parts,
       skeleton_segments: normalizedPlanInputs.skeleton_segments,
@@ -1433,7 +1459,11 @@ export function applyBeginnerGeneratedPlan(
   selectedKind: BeginnerGeneratedPlanV1['kind'],
   expectedCandidateEdgeId: string,
 ) {
-  if (selectedKind !== 'diagonal_fold' || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
+  if (![
+    'diagonal_fold',
+    'symmetric_four_leg_base',
+    'symmetric_wing_base',
+  ].includes(selectedKind) || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
     return Promise.reject(new Error('unsupported generated plan'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_generated_plan', {

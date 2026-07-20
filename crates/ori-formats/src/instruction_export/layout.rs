@@ -324,6 +324,10 @@ pub(super) fn layout_instruction_pages(
         maximum: limits.max_glyphs,
     };
     let mut pages = Vec::new();
+    let final_physical_step_index = diagram
+        .steps
+        .iter()
+        .rposition(|step| !step.declarative_only);
 
     for (step_index, (step, diagram_step)) in timeline.steps.iter().zip(&diagram.steps).enumerate()
     {
@@ -335,6 +339,7 @@ pub(super) fn layout_instruction_pages(
             diagram.bounds,
             step_number,
             step_count,
+            final_physical_step_index == Some(step_index),
             font,
             &mut glyphs,
         )?;
@@ -427,6 +432,7 @@ fn first_step_page(
     bounds: DiagramBounds,
     step_number: usize,
     step_count: usize,
+    completed_form_thumbnail: bool,
     font: &InstructionFont<'_>,
     glyphs: &mut GlyphBudget,
 ) -> Result<(InstructionPage, f64), InstructionExportError> {
@@ -466,6 +472,19 @@ fn first_step_page(
         glyphs,
     )?;
     cursor += 8.0;
+    if completed_form_thumbnail {
+        cursor = add_wrapped_header(
+            &mut page,
+            "Completed-form thumbnail",
+            10.0,
+            14.0,
+            cursor,
+            PageColor::MUTED,
+            font,
+            glyphs,
+        )?;
+        cursor += 4.0;
+    }
 
     if diagram_step.declarative_only {
         draw_declarative_placeholder(&mut page, cursor, font, glyphs)?;

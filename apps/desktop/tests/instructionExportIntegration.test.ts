@@ -8,6 +8,7 @@ const panelSource = read('../src/components/InstructionTimelinePanel.tsx')
 const dialogSource = read('../src/components/InstructionExportDialog.tsx')
 const nativeSource = read('../src-tauri/src/lib.rs')
 const nativeExportSource = read('../src-tauri/src/instruction_export.rs')
+const layoutSource = read('../../../crates/ori-formats/src/instruction_export/layout.rs')
 
 test('the current authored timeline opens one background-blocking instruction export flow', () => {
   assert.match(appSource, /\|\| instructionExportOpen/u)
@@ -22,6 +23,13 @@ test('the current authored timeline opens one background-blocking instruction ex
   )
   assert.match(panelSource, /steps\.some\(\(step\) => step\.stale\)/u)
   assert.match(panelSource, /折り図を書き出す/u)
+})
+
+test('the last physical saved step is identified as the completed-form thumbnail', () => {
+  assert.match(panelSource, /findLast\(\(step\) => !step\.declarativeOnly\)/u)
+  assert.match(panelSource, /Completed-form thumbnail/u)
+  assert.match(layoutSource, /rposition\(\|step\| !step\.declarative_only\)/u)
+  assert.match(layoutSource, /"Completed-form thumbnail"/u)
 })
 
 test('preview save and cancel use opaque identity without exposing bytes or a path', () => {

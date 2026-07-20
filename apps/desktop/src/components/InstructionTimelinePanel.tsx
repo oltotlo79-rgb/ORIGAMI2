@@ -126,6 +126,7 @@ export function InstructionTimelinePanel({
   const animationWasUsedRef = useRef(false)
 
   const steps = presentation.kind === 'ready' ? presentation.steps : []
+  const finalPhysicalStepId = steps.findLast((step) => !step.declarativeOnly)?.id ?? null
   const firstPhysicalStep = steps.find((step) => !step.declarativeOnly)
   const selectedStep = presentation.kind === 'ready' && selectedStepId
     ? presentation.stepsById.get(selectedStepId) ?? null
@@ -786,7 +787,12 @@ export function InstructionTimelinePanel({
                     aria-current={displayed ? 'step' : undefined}
                     onClick={() => setSelectedStepId(step.id)}
                   >
-                    <span>{step.index + 1}. {step.title}</span>
+                    <span>
+                      {step.index + 1}. {step.title}
+                      {step.id === finalPhysicalStepId
+                        ? ` · ${locale === 'ja' ? '完成形サムネイル' : 'Completed-form thumbnail'}`
+                        : ''}
+                    </span>
                     <small>
                       {step.stale
                         ? selectLocalizedText(locale, TEXT.needsUpdate)

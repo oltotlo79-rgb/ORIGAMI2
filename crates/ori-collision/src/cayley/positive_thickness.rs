@@ -758,12 +758,32 @@ fn analyze_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     SingleTriangularHingePrerequisiteAnalysis<'exact, 'pose>,
     SingleTriangularHingePrerequisiteError,
 > {
+    let target_edge =
+        (exact.bound.model().hinges().len() == 1).then(|| exact.bound.model().hinges()[0].edge());
+    analyze_single_triangular_hinge_prerequisites_for_edge_v1(
+        exact,
+        paper_thickness_mm,
+        target_edge,
+        limits,
+    )
+}
+
+fn analyze_single_triangular_hinge_prerequisites_for_edge_v1<'exact, 'pose>(
+    exact: &'exact RationalCayleyTreePose<'pose>,
+    paper_thickness_mm: f64,
+    target_edge: Option<EdgeId>,
+    limits: SingleTriangularHingePrerequisiteLimits,
+) -> Result<
+    SingleTriangularHingePrerequisiteAnalysis<'exact, 'pose>,
+    SingleTriangularHingePrerequisiteError,
+> {
     let limits = limits.projected();
     let mut work = SingleTriangularHingePrerequisiteWork::default();
     let mut meter = WorkMeter::new(&limits.exact);
     let result = calculate_single_triangular_hinge_prerequisites_v1(
         exact,
         paper_thickness_mm,
+        target_edge,
         &limits,
         &mut work,
         &mut meter,
@@ -784,6 +804,7 @@ fn analyze_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
 fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     exact: &'exact RationalCayleyTreePose<'pose>,
     paper_thickness_mm: f64,
+    target_edge: Option<EdgeId>,
     limits: &SingleTriangularHingePrerequisiteLimits,
     work: &mut SingleTriangularHingePrerequisiteWork,
     meter: &mut WorkMeter<'_>,
@@ -806,17 +827,9 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
         || model.face_ids() != pose.face_ids()
         || model.hinges() != pose.hinges()
         || exact.fixed_face != pose.fixed_face()
-        || model.face_ids().len() != 2
-        || model.hinges().len() != 1
-        || exact.faces.len() != 2
-        || exact.hinges.len() != 1
-        || pose.hinge_angles().len() != 1
-        || exact.faces.iter().any(|face| {
-            face.boundary.len() != 3
-                || bound.face_boundary(face.face).is_none_or(|boundary| {
-                    boundary.vertices().len() != 3 || boundary.edges().len() != 3
-                })
-        })
+        || exact.faces.len() != model.face_ids().len()
+        || exact.hinges.len() != model.hinges().len()
+        || pose.hinge_angles().len() != model.hinges().len()
     {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     }
@@ -831,9 +844,22 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     }
 
-    let source_hinge = &model.hinges()[0];
-    let exact_hinge = &exact.hinges[0];
-    let pose_angle = &pose.hinge_angles()[0];
+    let Some(target_edge) = target_edge else {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    };
+    let mut hinge_matches = model
+        .hinges()
+        .iter()
+        .enumerate()
+        .filter(|(_, hinge)| hinge.edge() == target_edge);
+    let Some((hinge_index, source_hinge)) = hinge_matches.next() else {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    };
+    if hinge_matches.next().is_some() {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    }
+    let exact_hinge = &exact.hinges[hinge_index];
+    let pose_angle = &pose.hinge_angles()[hinge_index];
     let base_rotation_sign = match source_hinge.assignment() {
         FoldAssignment::Mountain => 1_i8,
         FoldAssignment::Valley => -1_i8,
@@ -859,31 +885,38 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     }
 
     validate_exact_pose_rational_inputs(exact, limits, work, meter)?;
-    let Some(indexes) = authenticate_triangular_hinge_indexes(exact, source_hinge) else {
+    let Some(indexes) = authenticate_triangular_hinge_indexes(exact, source_hinge, hinge_index)
+    else {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     };
-
-    let rest_faces_by_index = [
-        reauthenticate_exact_face_rest(bound, &exact.faces[0], meter)?,
-        reauthenticate_exact_face_rest(bound, &exact.faces[1], meter)?,
-    ];
 
     let rest_start = exact_point_at_stage(point3_array(source_hinge.start()), meter)?;
     let rest_end = exact_point_at_stage(point3_array(source_hinge.end()), meter)?;
     let left_face = &exact.faces[indexes.left_face_index];
     let right_face = &exact.faces[indexes.right_face_index];
-    let left_rest = &rest_faces_by_index[indexes.left_face_index];
-    let right_rest = &rest_faces_by_index[indexes.right_face_index];
+    if left_face.boundary.len() != 3
+        || right_face.boundary.len() != 3
+        || bound
+            .face_boundary(left_face.face)
+            .is_none_or(|boundary| boundary.vertices().len() != 3 || boundary.edges().len() != 3)
+        || bound
+            .face_boundary(right_face.face)
+            .is_none_or(|boundary| boundary.vertices().len() != 3 || boundary.edges().len() != 3)
+    {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    }
+    let left_rest = reauthenticate_exact_face_rest(bound, left_face, meter)?;
+    let right_rest = reauthenticate_exact_face_rest(bound, right_face, meter)?;
     let start_vertex = exact_hinge.endpoint_vertices[0];
     let end_vertex = exact_hinge.endpoint_vertices[1];
     let left_pair = cyclic_vertex_pair(left_face, indexes.left_hinge_occurrence);
     let right_pair = cyclic_vertex_pair(right_face, indexes.right_hinge_occurrence);
     if left_pair != [start_vertex, end_vertex]
         || right_pair != [end_vertex, start_vertex]
-        || !rest_vertex_matches(left_face, left_rest, start_vertex, &rest_start)
-        || !rest_vertex_matches(left_face, left_rest, end_vertex, &rest_end)
-        || !rest_vertex_matches(right_face, right_rest, start_vertex, &rest_start)
-        || !rest_vertex_matches(right_face, right_rest, end_vertex, &rest_end)
+        || !rest_vertex_matches(left_face, &left_rest, start_vertex, &rest_start)
+        || !rest_vertex_matches(left_face, &left_rest, end_vertex, &rest_end)
+        || !rest_vertex_matches(right_face, &right_rest, start_vertex, &rest_start)
+        || !rest_vertex_matches(right_face, &right_rest, end_vertex, &rest_end)
     {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     }
@@ -1273,6 +1306,7 @@ fn validate_prerequisite_rational_input(
 fn authenticate_triangular_hinge_indexes(
     exact: &RationalCayleyTreePose<'_>,
     source_hinge: &ori_kinematics::TreeHinge,
+    hinge_index: usize,
 ) -> Option<AuthenticatedTriangleIndexes> {
     let left_face_index = unique_exact_face_index(exact, source_hinge.left_face())?;
     let right_face_index = unique_exact_face_index(exact, source_hinge.right_face())?;
@@ -1295,7 +1329,7 @@ fn authenticate_triangular_hinge_indexes(
     Some(AuthenticatedTriangleIndexes {
         left_face_index,
         right_face_index,
-        hinge_index: 0,
+        hinge_index,
         left_hinge_occurrence,
         right_hinge_occurrence,
     })
@@ -1754,6 +1788,14 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
 ) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1> {
+    diagnose_bound_shared_hinge_solid_for_edge_v1(bound, paper_thickness_mm, None)
+}
+
+fn diagnose_bound_shared_hinge_solid_for_edge_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    target_edge: Option<EdgeId>,
+) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1> {
     use direct_f_corridor::{
         DirectFFiniteHingeCorridorLimits, analyze_direct_f_finite_hinge_corridor_v1,
     };
@@ -1776,15 +1818,29 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
     };
 
     if !positive_finite_binary64(paper_thickness_mm)
-        || bound.model().face_ids().len() != 2
-        || bound.model().hinges().len() != 1
-        || bound.pose().face_ids().len() != 2
-        || bound.pose().hinges().len() != 1
+        || bound.model().face_ids() != bound.pose().face_ids()
+        || bound.model().hinges() != bound.pose().hinges()
     {
         return Ok(None);
     }
-    let face_ids = bound.model().face_ids();
-    let mut face_pair = [face_ids[0], face_ids[1]];
+    let target_edge = match target_edge {
+        Some(edge) => edge,
+        None if bound.model().hinges().len() == 1 => bound.model().hinges()[0].edge(),
+        None => return Ok(None),
+    };
+    let mut matches = bound
+        .model()
+        .hinges()
+        .iter()
+        .enumerate()
+        .filter(|(_, hinge)| hinge.edge() == target_edge);
+    let Some((target_hinge_index, target_hinge)) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Ok(None);
+    }
+    let mut face_pair = [target_hinge.left_face(), target_hinge.right_face()];
     face_pair.sort_unstable_by_key(FaceId::canonical_bytes);
 
     let exact = match prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default()) {
@@ -1797,11 +1853,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
         }
         Err(_) => return Ok(None),
     };
-    if exact.faces.len() == 2
-        && exact.faces.iter().all(|face| face.boundary.len() == 3)
-        && exact.hinges.len() == 1
-        && exact.hinges[0].angle_magnitude_bits == 90.0_f64.to_bits()
-    {
+    if exact.hinges[target_hinge_index].angle_magnitude_bits == 90.0_f64.to_bits() {
         // At exactly 90 degrees the centered slabs meet the finite corridor
         // boundary. Reversing the canonical hinge endpoint can change the
         // last binary64 bit of direct-F while leaving the physical pose
@@ -1816,9 +1868,10 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
             disposition: SharedHingeSolidDiagnosticDispositionV1::Indeterminate,
         }));
     }
-    let prerequisite_analysis = analyze_single_triangular_hinge_prerequisites_v1(
+    let prerequisite_analysis = analyze_single_triangular_hinge_prerequisites_for_edge_v1(
         &exact,
         paper_thickness_mm,
+        Some(target_edge),
         SingleTriangularHingePrerequisiteLimits::default(),
     )
     .map_err(
@@ -2009,6 +2062,7 @@ pub struct NativeSingleHingeThicknessBoundaryV1<'a> {
     hinge: EdgeId,
     left_face: FaceId,
     right_face: FaceId,
+    endpoint_vertices: [VertexId; 2],
     left_front: [[f64; 3]; 2],
     left_back: [[f64; 3]; 2],
     right_front: [[f64; 3]; 2],
@@ -2020,6 +2074,7 @@ pub struct SingleHingeThicknessBoundaryObservationV1 {
     pub hinge: EdgeId,
     pub left_face: FaceId,
     pub right_face: FaceId,
+    pub endpoint_vertices: [VertexId; 2],
     pub left_front: [[f64; 3]; 2],
     pub left_back: [[f64; 3]; 2],
     pub right_front: [[f64; 3]; 2],
@@ -2039,6 +2094,7 @@ impl<'a> NativeSingleHingeThicknessBoundaryV1<'a> {
             hinge: self.hinge,
             left_face: self.left_face,
             right_face: self.right_face,
+            endpoint_vertices: self.endpoint_vertices,
             left_front: self.left_front,
             left_back: self.left_back,
             right_front: self.right_front,
@@ -2051,16 +2107,31 @@ pub fn prepare_single_hinge_thickness_boundary_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
 ) -> Result<Option<NativeSingleHingeThicknessBoundaryV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
-    let diagnostic = diagnose_bound_shared_hinge_solid_v1(bound, paper_thickness_mm).map_err(
-        |error| match error {
-            SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded => {
-                SingleHingeThicknessBoundaryErrorV1::ResourceLimitExceeded
-            }
-            SharedHingeSolidDiagnosticErrorV1::InconsistentPose => {
-                SingleHingeThicknessBoundaryErrorV1::InconsistentPose
-            }
-        },
-    )?;
+    if bound.model().hinges().len() != 1 {
+        return Ok(None);
+    }
+    prepare_single_hinge_thickness_boundary_for_edge_v1(
+        bound,
+        paper_thickness_mm,
+        bound.model().hinges()[0].edge(),
+    )
+}
+
+fn prepare_single_hinge_thickness_boundary_for_edge_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    target_edge: EdgeId,
+) -> Result<Option<NativeSingleHingeThicknessBoundaryV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
+    let diagnostic =
+        diagnose_bound_shared_hinge_solid_for_edge_v1(bound, paper_thickness_mm, Some(target_edge))
+            .map_err(|error| match error {
+                SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded => {
+                    SingleHingeThicknessBoundaryErrorV1::ResourceLimitExceeded
+                }
+                SharedHingeSolidDiagnosticErrorV1::InconsistentPose => {
+                    SingleHingeThicknessBoundaryErrorV1::InconsistentPose
+                }
+            })?;
     if diagnostic.is_none_or(|summary| {
         summary.disposition != SharedHingeSolidDiagnosticDispositionV1::Allowed
     }) {
@@ -2068,7 +2139,16 @@ pub fn prepare_single_hinge_thickness_boundary_v1(
     }
     let model = bound.model();
     let pose = bound.pose();
-    let hinge = &model.hinges()[0];
+    let mut hinge_matches = model
+        .hinges()
+        .iter()
+        .filter(|hinge| hinge.edge() == target_edge);
+    let Some(hinge) = hinge_matches.next() else {
+        return Err(SingleHingeThicknessBoundaryErrorV1::InconsistentPose);
+    };
+    if hinge_matches.next().is_some() {
+        return Err(SingleHingeThicknessBoundaryErrorV1::InconsistentPose);
+    }
     let left_transform = pose
         .face_transform(hinge.left_face())
         .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
@@ -2076,6 +2156,15 @@ pub fn prepare_single_hinge_thickness_boundary_v1(
         .face_transform(hinge.right_face())
         .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
     let endpoints = [hinge.start(), hinge.end()];
+    let left_boundary = bound
+        .face_boundary(hinge.left_face())
+        .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let occurrence = unique_edge_occurrence(left_boundary.edges(), hinge.edge())
+        .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let endpoint_vertices = [
+        left_boundary.vertices()[occurrence],
+        left_boundary.vertices()[(occurrence + 1) % left_boundary.vertices().len()],
+    ];
     let left_world = endpoints.map(|point| {
         left_transform
             .apply_point(point)
@@ -2124,6 +2213,7 @@ pub fn prepare_single_hinge_thickness_boundary_v1(
         hinge: hinge.edge(),
         left_face: hinge.left_face(),
         right_face: hinge.right_face(),
+        endpoint_vertices,
         left_front: offset(left_world, left_normal, 1.0),
         left_back: offset(left_world, left_normal, -1.0),
         right_front: offset(right_world, right_normal, 1.0),
@@ -2144,6 +2234,133 @@ pub fn revalidate_single_hinge_thickness_boundary_v1(
         return None;
     }
     Some(capability.observation())
+}
+
+pub const MAX_COMPOSED_THICKNESS_HINGES_V1: usize = 16;
+
+#[derive(Debug)]
+pub struct NativeTreeHingeThicknessBoundariesV1<'a> {
+    bound: BoundMaterialTreePose<'a>,
+    paper_thickness_bits: u64,
+    hinges: Vec<NativeSingleHingeThicknessBoundaryV1<'a>>,
+}
+
+impl NativeTreeHingeThicknessBoundariesV1<'_> {
+    #[must_use]
+    pub fn hinge_count(&self) -> usize {
+        self.hinges.len()
+    }
+}
+
+pub fn prepare_tree_hinge_thickness_boundaries_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> Result<Option<NativeTreeHingeThicknessBoundariesV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
+    if !positive_finite_binary64(paper_thickness_mm)
+        || bound.model().hinges().len() < 2
+        || bound.model().hinges().len() > MAX_COMPOSED_THICKNESS_HINGES_V1
+    {
+        return Ok(None);
+    }
+    let mut hinges = Vec::with_capacity(bound.model().hinges().len());
+    for source_hinge in bound.model().hinges() {
+        let Some(capability) = prepare_single_hinge_thickness_boundary_for_edge_v1(
+            bound,
+            paper_thickness_mm,
+            source_hinge.edge(),
+        )?
+        else {
+            return Ok(None);
+        };
+        hinges.push(capability);
+    }
+    for first in 0..hinges.len() {
+        for second in first + 1..hinges.len() {
+            if thickness_boundary_rails_overlap(
+                hinges[first].observation(),
+                hinges[second].observation(),
+            ) {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(NativeTreeHingeThicknessBoundariesV1 {
+        bound,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        hinges,
+    }))
+}
+
+pub fn revalidate_tree_hinge_thickness_boundaries_v1(
+    capability: &NativeTreeHingeThicknessBoundariesV1<'_>,
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> Option<Vec<SingleHingeThicknessBoundaryObservationV1>> {
+    if capability.paper_thickness_bits != paper_thickness_mm.to_bits()
+        || !std::ptr::eq(capability.bound.model(), bound.model())
+        || !std::ptr::eq(capability.bound.pose(), bound.pose())
+    {
+        return None;
+    }
+    capability
+        .hinges
+        .iter()
+        .map(|hinge| {
+            revalidate_single_hinge_thickness_boundary_v1(hinge, bound, paper_thickness_mm)
+        })
+        .collect()
+}
+
+fn thickness_boundary_rails_overlap(
+    first: SingleHingeThicknessBoundaryObservationV1,
+    second: SingleHingeThicknessBoundaryObservationV1,
+) -> bool {
+    let first_points = [
+        first.left_front,
+        first.left_back,
+        first.right_front,
+        first.right_back,
+    ]
+    .concat();
+    let second_points = [
+        second.left_front,
+        second.left_back,
+        second.right_front,
+        second.right_back,
+    ]
+    .concat();
+    let boxes_overlap = (0..3).all(|axis| {
+        let first_min = first_points
+            .iter()
+            .map(|point| point[axis])
+            .fold(f64::INFINITY, f64::min);
+        let first_max = first_points
+            .iter()
+            .map(|point| point[axis])
+            .fold(f64::NEG_INFINITY, f64::max);
+        let second_min = second_points
+            .iter()
+            .map(|point| point[axis])
+            .fold(f64::INFINITY, f64::min);
+        let second_max = second_points
+            .iter()
+            .map(|point| point[axis])
+            .fold(f64::NEG_INFINITY, f64::max);
+        first_min <= second_max && second_min <= first_max
+    });
+    if !boxes_overlap {
+        return false;
+    }
+    let shares_material_vertex = first
+        .endpoint_vertices
+        .iter()
+        .any(|vertex| second.endpoint_vertices.contains(vertex));
+    let shares_exact_rail_endpoint = first_points.iter().any(|left| {
+        second_points
+            .iter()
+            .any(|right| left.map(f64::to_bits) == right.map(f64::to_bits))
+    });
+    !(shares_material_vertex && shares_exact_rail_endpoint)
 }
 
 #[cfg(test)]
@@ -2390,6 +2607,63 @@ mod tests {
         )
     }
 
+    fn three_triangle_chain_model(namespace_index: u64) -> MaterialTreeKinematicsModel {
+        let coordinates = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (450.0, 200.0),
+            (250.0, 450.0),
+            (0.0, 300.0),
+        ];
+        let vertices = coordinates
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| triangular_vertex(index as u64 + 101, x, y))
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..5)
+            .map(|index| {
+                triangular_edge(
+                    index as u64 + 101,
+                    boundary[index],
+                    boundary[(index + 1) % 5],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect::<Vec<_>>();
+        edges.push(triangular_edge(
+            106,
+            boundary[0],
+            boundary[2],
+            EdgeKind::Mountain,
+        ));
+        edges.push(triangular_edge(
+            107,
+            boundary[0],
+            boundary[3],
+            EdgeKind::Valley,
+        ));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: triangular_project_id(namespace_index),
+            source_revision: 900 + namespace_index,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("three triangular faces"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("three-triangle chain")
+    }
+
     fn unsupported_polygon_model(
         coordinates: &[(f64, f64)],
         crease_endpoint_indexes: &[(usize, usize, EdgeKind)],
@@ -2529,6 +2803,45 @@ mod tests {
                 .is_none()
             );
         }
+    }
+
+    #[test]
+    fn two_hinge_tree_composes_only_authenticated_shared_endpoints() {
+        let model = three_triangle_chain_model(9_004);
+        let angle = [0.0, 10.0, 30.0, 45.0, 60.0, 120.0, 150.0, 179.0]
+            .into_iter()
+            .find(|angle| {
+                let pose = uniform_pose(&model, *angle);
+                let bound = model.bind_pose(&pose).unwrap();
+                prepare_tree_hinge_thickness_boundaries_v1(bound, 0.1)
+                    .is_ok_and(|capability| capability.is_some())
+            })
+            .expect("one bounded two-hinge composition");
+        let pose = uniform_pose(&model, angle);
+        let bound = model.bind_pose(&pose).unwrap();
+        let capability = prepare_tree_hinge_thickness_boundaries_v1(bound, 0.1)
+            .unwrap()
+            .expect("repeatable composition");
+        assert_eq!(capability.hinge_count(), 2);
+        let observations = revalidate_tree_hinge_thickness_boundaries_v1(&capability, bound, 0.1)
+            .expect("same tree pose and thickness");
+        assert_eq!(observations.len(), 2);
+        assert!(
+            observations[0]
+                .endpoint_vertices
+                .iter()
+                .any(|vertex| observations[1].endpoint_vertices.contains(vertex))
+        );
+        assert!(revalidate_tree_hinge_thickness_boundaries_v1(&capability, bound, 0.2).is_none());
+        let aba = uniform_pose(&model, pose.hinge_angles()[0].angle_degrees());
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(
+                &capability,
+                model.bind_pose(&aba).unwrap(),
+                0.1,
+            )
+            .is_none()
+        );
     }
 
     fn triangular_pose_with_root(

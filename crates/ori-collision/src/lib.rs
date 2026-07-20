@@ -29,9 +29,11 @@ mod static_collision;
 mod zero_thickness;
 
 pub use cayley::{
-    NativeSingleHingeThicknessBoundaryV1, SingleHingeThicknessBoundaryErrorV1,
+    MAX_COMPOSED_THICKNESS_HINGES_V1, NativeSingleHingeThicknessBoundaryV1,
+    NativeTreeHingeThicknessBoundariesV1, SingleHingeThicknessBoundaryErrorV1,
     SingleHingeThicknessBoundaryObservationV1, prepare_single_hinge_thickness_boundary_v1,
-    revalidate_single_hinge_thickness_boundary_v1,
+    prepare_tree_hinge_thickness_boundaries_v1, revalidate_single_hinge_thickness_boundary_v1,
+    revalidate_tree_hinge_thickness_boundaries_v1,
 };
 
 pub use cell_order_transport::{

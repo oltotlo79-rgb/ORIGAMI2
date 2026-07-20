@@ -64,6 +64,71 @@ pub struct PoleFreeBernsteinCertificateV1 {
     coefficients: Vec<BigRational>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactBernsteinRangeV1 {
+    coefficients: Vec<BigRational>,
+}
+
+impl ExactBernsteinRangeV1 {
+    fn derivative(
+        &self,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let degree = self.coefficients.len().saturating_sub(1);
+        if degree > max_work {
+            return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+        }
+        if degree == 0 {
+            return Ok(Self {
+                coefficients: vec![BigRational::zero()],
+            });
+        }
+        let coefficients = self
+            .coefficients
+            .windows(2)
+            .map(|window| (&window[1] - &window[0]) * BigInt::from(degree))
+            .collect::<Vec<_>>();
+        validate_exact_bits(&coefficients, max_coefficient_bits)?;
+        Ok(Self { coefficients })
+    }
+
+    fn sub_same_degree(
+        &self,
+        rhs: &Self,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        if self.coefficients.len() != rhs.coefficients.len() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        if self.coefficients.len() > max_work {
+            return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+        }
+        let coefficients = self
+            .coefficients
+            .iter()
+            .zip(&rhs.coefficients)
+            .map(|(left, right)| left - right)
+            .collect::<Vec<_>>();
+        validate_exact_bits(&coefficients, max_coefficient_bits)?;
+        Ok(Self { coefficients })
+    }
+}
+
+fn validate_exact_bits(
+    coefficients: &[BigRational],
+    maximum: u32,
+) -> Result<(), CycleSchedulePrepareErrorV1> {
+    if coefficients.iter().any(|value| {
+        value.numer().bits() > u64::from(maximum) || value.denom().bits() > u64::from(maximum)
+    }) {
+        Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    } else {
+        Ok(())
+    }
+}
+
 impl PoleFreeBernsteinCertificateV1 {
     fn range_interval(&self) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
         let lower = self
@@ -197,15 +262,23 @@ pub fn prepare_pole_free_bernstein_certificate_v1(
         }
         coefficients.push(value);
     }
-    let positive = coefficients.iter().all(|value| value.is_positive());
-    let negative = coefficients.iter().all(|value| value.is_negative());
+    validate_exact_bits(&coefficients, max_coefficient_bits)?;
+    let exact_range = ExactBernsteinRangeV1 { coefficients };
+    let positive = exact_range
+        .coefficients
+        .iter()
+        .all(|value| value.is_positive());
+    let negative = exact_range
+        .coefficients
+        .iter()
+        .all(|value| value.is_negative());
     if !positive && !negative {
         return Err(CycleSchedulePrepareErrorV1::InvalidInput);
     }
     Ok(PoleFreeBernsteinCertificateV1 {
         degree,
         positive,
-        coefficients,
+        coefficients: exact_range.coefficients,
     })
 }
 
@@ -787,6 +860,47 @@ mod tests {
         assert_eq!(
             evaluate_pole_free_atan2_interval_v1(&positive, &positive, 1),
             Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn exact_bernstein_derivative_and_same_degree_sub_are_bounded() {
+        let range = ExactBernsteinRangeV1 {
+            coefficients: [1_i64, 3, 6]
+                .map(|value| BigRational::from_integer(value.into()))
+                .to_vec(),
+        };
+        let derivative = range.derivative(16, 8).unwrap();
+        assert_eq!(
+            derivative.coefficients,
+            [4_i64, 6]
+                .map(|value| BigRational::from_integer(value.into()))
+                .to_vec()
+        );
+        let difference = range
+            .sub_same_degree(
+                &ExactBernsteinRangeV1 {
+                    coefficients: [1_i64, 1, 1]
+                        .map(|value| BigRational::from_integer(value.into()))
+                        .to_vec(),
+                },
+                16,
+                8,
+            )
+            .unwrap();
+        assert_eq!(
+            difference.coefficients,
+            [0_i64, 2, 5]
+                .map(|value| BigRational::from_integer(value.into()))
+                .to_vec()
+        );
+        assert_eq!(
+            range.derivative(2, 8),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+        assert_eq!(
+            range.sub_same_degree(&derivative, 16, 8),
+            Err(CycleSchedulePrepareErrorV1::InvalidInput)
         );
     }
 }

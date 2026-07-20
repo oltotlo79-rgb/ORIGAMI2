@@ -101,6 +101,42 @@ describe('stacked-fold read boundary', () => {
         entries: Array.from({ length: 65 }, () => linearEntry),
       },
     }), false)
+    const graph = {
+      version: 1,
+      states: [
+        { entries: [{ edge: faceId, angleDegrees: 20 }] },
+        { entries: [{ edge: faceId, angleDegrees: 40 }] },
+      ],
+      transitions: [{ sourceState: 0, targetState: 1 }],
+      sourceState: 0,
+      targetState: 1,
+    } as const
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      certifiedPathGraphV1: graph,
+    }), true)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      linearCandidateV1,
+      certifiedPathGraphV1: graph,
+    }), false)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      certifiedPathGraphV1: {
+        ...graph,
+        states: Array.from({ length: 33 }, () => graph.states[0]),
+      },
+    }), false)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      certifiedPathGraphV1: {
+        ...graph,
+        transitions: [
+          { sourceState: 0, targetState: 1 },
+          { sourceState: 0, targetState: 1 },
+        ],
+      },
+    }), false)
     assert.equal(isStackedFoldReadRequest({
       ...request,
       cycleScheduleV1: schedule,

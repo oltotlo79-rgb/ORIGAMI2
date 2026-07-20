@@ -29,6 +29,20 @@ export type StackedFoldReadRequest = Readonly<{
   requestedAngleDegrees: number
   cycleScheduleV1?: CycleScheduleRequestV1
   linearCandidateV1?: LinearCandidateRequestV1
+  certifiedPathGraphV1?: CertifiedPathGraphRequestV1
+}>
+
+export type CertifiedPathGraphRequestV1 = Readonly<{
+  version: 1
+  states: readonly Readonly<{
+    entries: readonly Readonly<{ edge: string; angleDegrees: number }>[]
+  }>[]
+  transitions: readonly Readonly<{
+    sourceState: number
+    targetState: number
+  }>[]
+  sourceState: 0
+  targetState: number
 }>
 
 export type LinearCandidateRequestV1 = Readonly<{
@@ -330,7 +344,71 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
           entry.requestedAngleDegrees >= 0 &&
           entry.requestedAngleDegrees <= 180,
       ))
+  const graph = value.certifiedPathGraphV1
+  const graphStates = isRecord(graph) && Array.isArray(graph.states)
+    ? graph.states
+    : null
+  const graphValid = graph === undefined || (
+    isRecord(graph) &&
+    hasExactKeys(graph, [
+      'version', 'states', 'transitions', 'sourceState', 'targetState',
+    ]) &&
+    graph.version === 1 &&
+    graph.sourceState === 0 &&
+    Number.isSafeInteger(graph.targetState) &&
+    graphStates !== null &&
+    graphStates.length >= 2 &&
+    graphStates.length <= 32 &&
+    Number(graph.targetState) > 0 &&
+    Number(graph.targetState) < graphStates.length &&
+    graphStates.every((state) =>
+      isRecord(state) &&
+      hasExactKeys(state, ['entries']) &&
+      Array.isArray(state.entries) &&
+      state.entries.length > 0 &&
+      state.entries.length <= 64 &&
+      state.entries.every((entry, index, entries) =>
+        isRecord(entry) &&
+        hasExactKeys(entry, ['edge', 'angleDegrees']) &&
+        isCanonicalNonNilUuid(entry.edge) &&
+        typeof entry.angleDegrees === 'number' &&
+        Number.isFinite(entry.angleDegrees) &&
+        entry.angleDegrees >= 0 &&
+        entry.angleDegrees <= 180 &&
+        (index === 0 || String(entries[index - 1]?.edge) < entry.edge),
+      )
+    ) &&
+    Array.isArray(graph.transitions) &&
+    graph.transitions.length > 0 &&
+    graph.transitions.length <= 64 &&
+    graph.transitions.every((edge, index, edges) =>
+      isRecord(edge) &&
+      hasExactKeys(edge, ['sourceState', 'targetState']) &&
+      Number.isSafeInteger(edge.sourceState) &&
+      Number.isSafeInteger(edge.targetState) &&
+      Number(edge.sourceState) >= 0 &&
+      Number(edge.targetState) >= 0 &&
+      Number(edge.sourceState) < graphStates.length &&
+      Number(edge.targetState) < graphStates.length &&
+      edge.sourceState !== edge.targetState &&
+      (index === 0 ||
+        Number(edges[index - 1]?.sourceState) < Number(edge.sourceState) ||
+        (edges[index - 1]?.sourceState === edge.sourceState &&
+          Number(edges[index - 1]?.targetState) < Number(edge.targetState))),
+    )
+  )
+  const pathVariantCount = Number(schedule !== undefined)
+    + Number(linear !== undefined)
+    + Number(graph !== undefined)
   return (
+    hasExactKeys(value, [
+      'expectedProjectInstanceId', 'expectedProjectId', 'expectedRevision',
+      'first', 'second', 'fixedSide', 'rotationDirection',
+      'requestedAngleDegrees',
+      ...(schedule !== undefined ? ['cycleScheduleV1'] : []),
+      ...(linear !== undefined ? ['linearCandidateV1'] : []),
+      ...(graph !== undefined ? ['certifiedPathGraphV1'] : []),
+    ]) &&
     isCanonicalNonNilUuid(value.expectedProjectInstanceId) &&
     isCanonicalNonNilUuid(value.expectedProjectId) &&
     isCount(value.expectedRevision) &&
@@ -345,7 +423,8 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
     value.requestedAngleDegrees <= 180 &&
     scheduleValid &&
     linearValid &&
-    !(schedule !== undefined && linear !== undefined)
+    graphValid &&
+    pathVariantCount <= 1
   )
 }
 

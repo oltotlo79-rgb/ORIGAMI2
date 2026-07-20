@@ -13,6 +13,7 @@ import {
 } from '../lib/stackedFoldReadCoordinator'
 import type {
   CycleScheduleRequestV1,
+  CertifiedPathGraphRequestV1,
   LinearCandidateRequestV1,
   StackedFoldFixedSide,
   StackedFoldReadResponse,
@@ -177,6 +178,7 @@ export function StackedFoldPanel({
     const requestedAngleDegrees = Number(angle)
     let cycleScheduleV1: CycleScheduleRequestV1 | undefined
     let linearCandidateV1: LinearCandidateRequestV1 | undefined
+    let certifiedPathGraphV1: CertifiedPathGraphRequestV1 | undefined
     if (cycleScheduleText.trim()) {
       if (new TextEncoder().encode(cycleScheduleText).byteLength > MAX_CYCLE_SCHEDULE_JSON_BYTES) {
         setView({ kind: 'failed', reason: 'invalid' })
@@ -186,7 +188,14 @@ export function StackedFoldPanel({
         const parsed = JSON.parse(cycleScheduleText) as
           | CycleScheduleRequestV1
           | LinearCandidateRequestV1
+          | CertifiedPathGraphRequestV1
         if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          'states' in parsed
+        ) {
+          certifiedPathGraphV1 = parsed as CertifiedPathGraphRequestV1
+        } else if (
           typeof parsed === 'object' &&
           parsed !== null &&
           Array.isArray(parsed.entries) &&
@@ -224,6 +233,7 @@ export function StackedFoldPanel({
       requestedAngleDegrees,
       ...(cycleScheduleV1 ? { cycleScheduleV1 } : {}),
       ...(linearCandidateV1 ? { linearCandidateV1 } : {}),
+      ...(certifiedPathGraphV1 ? { certifiedPathGraphV1 } : {}),
     })
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken

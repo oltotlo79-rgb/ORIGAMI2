@@ -103,6 +103,8 @@ pub(super) struct StackedFoldReadRequest {
     cycle_schedule_v1: Option<CycleScheduleRequestV1>,
     #[serde(default)]
     linear_candidate_v1: Option<LinearCandidateRequestV1>,
+    #[serde(default)]
+    certified_path_graph_v1: Option<CertifiedPathGraphRequestV1>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +146,95 @@ struct LinearCandidateEntryRequestV1 {
     edge: ori_domain::EdgeId,
     initial_angle_degrees: f64,
     requested_angle_degrees: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CertifiedPathGraphRequestV1 {
+    version: u32,
+    states: Vec<CertifiedPathGraphStateRequestV1>,
+    transitions: Vec<CertifiedPathGraphTransitionRequestV1>,
+    source_state: usize,
+    target_state: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CertifiedPathGraphStateRequestV1 {
+    entries: Vec<CertifiedPathGraphAngleRequestV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CertifiedPathGraphAngleRequestV1 {
+    edge: ori_domain::EdgeId,
+    angle_degrees: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CertifiedPathGraphTransitionRequestV1 {
+    source_state: usize,
+    target_state: usize,
+}
+
+fn validate_certified_path_graph_v1(
+    request: &CertifiedPathGraphRequestV1,
+    live: &ori_kinematics::CanonicalHingeAngles,
+) -> Result<Vec<ori_kinematics::CanonicalHingeAngles>, &'static str> {
+    if request.version != 1
+        || request.states.is_empty()
+        || request.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
+        || request.transitions.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+    {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE);
+    }
+    if request.source_state != 0
+        || request.target_state >= request.states.len()
+        || request.target_state == request.source_state
+    {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    let mut states = Vec::with_capacity(request.states.len());
+    for state in &request.states {
+        let angles = ori_kinematics::CanonicalHingeAngles::new(
+            state
+                .entries
+                .iter()
+                .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE)?,
+        )
+        .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
+        if angles.as_slice().len() != live.as_slice().len() {
+            return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+        }
+        states.push(angles);
+    }
+    if states.first() != Some(live)
+        || states.iter().enumerate().any(|(index, state)| {
+            states[..index]
+                .iter()
+                .any(|previous| previous.as_slice() == state.as_slice())
+        })
+    {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    let mut canonical_edges = request
+        .transitions
+        .iter()
+        .map(|edge| (edge.source_state, edge.target_state))
+        .collect::<Vec<_>>();
+    if canonical_edges.iter().any(|(source, target)| {
+        *source >= states.len() || *target >= states.len() || source == target
+    }) {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    canonical_edges.sort_unstable();
+    if canonical_edges.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    Ok(states)
 }
 
 fn validate_linear_candidate_angles_v1(
@@ -680,7 +771,18 @@ pub(super) async fn propose_current_stacked_fold_read(
                 pose_capability.pose(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            if request.cycle_schedule_v1.is_some() {
+            let path_variant_count = usize::from(request.cycle_schedule_v1.is_some())
+                + usize::from(request.linear_candidate_v1.is_some())
+                + usize::from(request.certified_path_graph_v1.is_some());
+            if path_variant_count != 1 || request.cycle_schedule_v1.is_some() {
+                return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
+            }
+            if let Some(graph) = request.certified_path_graph_v1.as_ref() {
+                validate_certified_path_graph_v1(graph, initial.pose().hinge_angles())
+                    .map_err(str::to_owned)?;
+                // Graph request admission is strict even before a supported
+                // native subset is selected. Never fall back to treating it
+                // as a direct linear candidate.
                 return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
             }
             let linear = request
@@ -1705,6 +1807,70 @@ mod tests {
             entries: request.entries,
         };
         assert!(validate_linear_candidate_angles_v1(&wrong_version, &live).is_err());
+    }
+
+    #[test]
+    fn certified_path_graph_admission_is_live_bound_canonical_and_bounded() {
+        let edge = ori_domain::EdgeId::new();
+        let live = ori_kinematics::CanonicalHingeAngles::new(vec![
+            ori_kinematics::HingeAngle::new(edge, 0.0).unwrap(),
+        ])
+        .unwrap();
+        let state = |angle_degrees| CertifiedPathGraphStateRequestV1 {
+            entries: vec![CertifiedPathGraphAngleRequestV1 {
+                edge,
+                angle_degrees,
+            }],
+        };
+        let valid = CertifiedPathGraphRequestV1 {
+            version: 1,
+            states: vec![state(0.0), state(45.0), state(90.0)],
+            transitions: vec![
+                CertifiedPathGraphTransitionRequestV1 {
+                    source_state: 0,
+                    target_state: 1,
+                },
+                CertifiedPathGraphTransitionRequestV1 {
+                    source_state: 1,
+                    target_state: 2,
+                },
+            ],
+            source_state: 0,
+            target_state: 2,
+        };
+        assert_eq!(
+            validate_certified_path_graph_v1(&valid, &live)
+                .unwrap()
+                .len(),
+            3
+        );
+
+        let stale = CertifiedPathGraphRequestV1 {
+            states: vec![state(1.0), state(45.0)],
+            target_state: 1,
+            transitions: vec![CertifiedPathGraphTransitionRequestV1 {
+                source_state: 0,
+                target_state: 1,
+            }],
+            ..valid
+        };
+        assert_eq!(
+            validate_certified_path_graph_v1(&stale, &live),
+            Err(CYCLE_PATH_UNSUPPORTED_MESSAGE)
+        );
+        let over_limit = CertifiedPathGraphRequestV1 {
+            version: 1,
+            states: (0..=ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1)
+                .map(|index| state(index as f64))
+                .collect(),
+            target_state: 1,
+            transitions: Vec::new(),
+            source_state: 0,
+        };
+        assert_eq!(
+            validate_certified_path_graph_v1(&over_limit, &live),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
     }
 
     #[test]

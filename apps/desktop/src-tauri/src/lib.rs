@@ -82,7 +82,7 @@ use ori_core::{
     PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
     VertexPositionUpdate, analyze_local_flat_foldability, create_rectangular_sheet,
     prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
-    solve_geometric_constraints_v1, validate_paper,
+    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1, validate_paper,
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
@@ -289,6 +289,11 @@ struct GeometricConstraintSolvePreviewResponse {
     revision: u64,
     iterations: usize,
     maximum_residual: f64,
+    rank: usize,
+    degrees_of_freedom: usize,
+    equation_count: usize,
+    condition_estimate: f64,
+    system_classification: &'static str,
     changed_vertices: Vec<GeometricConstraintSolveVertex>,
 }
 
@@ -2626,6 +2631,11 @@ fn preview_geometric_constraint_solve(
         revision: expected_revision,
         iterations: solved.iterations,
         maximum_residual: solved.maximum_residual,
+        rank: solved.rank,
+        degrees_of_freedom: solved.degrees_of_freedom,
+        equation_count: solved.equation_count,
+        condition_estimate: solved.condition_estimate,
+        system_classification: solve_system_classification(&solved),
         changed_vertices: solved
             .positions
             .iter()
@@ -2651,6 +2661,85 @@ fn preview_geometric_constraint_solve(
 }
 
 #[tauri::command]
+fn preview_geometric_constraint_edge_solve(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    driving_edge: EdgeId,
+    start_x_mm: f64,
+    start_y_mm: f64,
+    end_x_mm: f64,
+    end_y_mm: f64,
+) -> Result<GeometricConstraintSolvePreviewResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    if project.editor.revision() != expected_revision {
+        return Err("project revision is stale".to_owned());
+    }
+    let edge = project
+        .editor
+        .pattern()
+        .edges
+        .iter()
+        .find(|edge| edge.id == driving_edge)
+        .ok_or_else(|| "driving edge is missing".to_owned())?;
+    let solved = solve_geometric_constraints_with_drivers_v1(
+        project.editor.pattern(),
+        project.editor.geometric_constraints(),
+        &[
+            (edge.start, Point2::new(start_x_mm, start_y_mm)),
+            (edge.end, Point2::new(end_x_mm, end_y_mm)),
+        ],
+        ConstraintSolveLimitsV1::default(),
+    )
+    .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
+    let token = ProjectId::new();
+    let response = GeometricConstraintSolvePreviewResponse {
+        token,
+        revision: expected_revision,
+        iterations: solved.iterations,
+        maximum_residual: solved.maximum_residual,
+        rank: solved.rank,
+        degrees_of_freedom: solved.degrees_of_freedom,
+        equation_count: solved.equation_count,
+        condition_estimate: solved.condition_estimate,
+        system_classification: solve_system_classification(&solved),
+        changed_vertices: solved
+            .positions
+            .iter()
+            .map(|(vertex_id, point)| GeometricConstraintSolveVertex {
+                vertex_id: *vertex_id,
+                x: point.x,
+                y: point.y,
+            })
+            .collect(),
+    };
+    *state
+        .3
+        .lock()
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())? =
+        Some(GeometricConstraintSolveStage {
+            token,
+            project_instance_id: expected_project_instance_id,
+            project_id: expected_project_id,
+            revision: expected_revision,
+            positions: solved.positions,
+        });
+    Ok(response)
+}
+
+fn solve_system_classification(solved: &ori_core::ConstraintSolvePreviewV1) -> &'static str {
+    if solved.degrees_of_freedom > 0 {
+        "under_constrained"
+    } else if solved.equation_count > solved.rank {
+        "over_constrained"
+    } else {
+        "well_constrained"
+    }
+}
+
+#[tauri::command]
 fn apply_geometric_constraint_solve(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -2666,6 +2755,32 @@ fn apply_geometric_constraint_solve(
         .map_err(|_| "geometric constraint preview state unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "geometric constraint preview is missing".to_owned())?;
+    let result = apply_geometric_constraint_solve_stage(
+        &mut project,
+        &staged,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        token,
+    )?;
+    let mut slot = state
+        .3
+        .lock()
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())?;
+    if slot.as_ref().is_some_and(|current| current.token == token) {
+        *slot = None;
+    }
+    Ok(result)
+}
+
+fn apply_geometric_constraint_solve_stage(
+    project: &mut ProjectState,
+    staged: &GeometricConstraintSolveStage,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    token: ProjectId,
+) -> Result<ProjectSnapshot, String> {
     if staged.token != token
         || staged.project_instance_id != expected_project_instance_id
         || staged.project_id != expected_project_id
@@ -2674,8 +2789,8 @@ fn apply_geometric_constraint_solve(
     {
         return Err("geometric constraint preview is stale".to_owned());
     }
-    let result = execute_command(
-        &mut project,
+    execute_command(
+        project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
@@ -2689,15 +2804,7 @@ fn apply_geometric_constraint_solve(
                 })
                 .collect(),
         },
-    )?;
-    let mut slot = state
-        .3
-        .lock()
-        .map_err(|_| "geometric constraint preview state unavailable".to_owned())?;
-    if slot.as_ref().is_some_and(|current| current.token == token) {
-        *slot = None;
-    }
-    Ok(result)
+    )
 }
 
 #[tauri::command]
@@ -6958,6 +7065,7 @@ pub fn run() {
             rotate_edge_about_point,
             move_vertices,
             preview_geometric_constraint_solve,
+            preview_geometric_constraint_edge_solve,
             apply_geometric_constraint_solve,
             remove_vertex,
             add_edge,
@@ -14860,4 +14968,143 @@ mod tests {
             "the cut line must split at the X intersection"
         );
         assert!(
-            replacem
+            replacement.editor.paper().boundary_vertices.len() > 4,
+            "cut contacts must split the paper boundary at both T junctions"
+        );
+    }
+
+    fn solver_stage_fixture() -> (
+        ProjectState,
+        GeometricConstraintSolveStage,
+        VertexId,
+        Point2,
+    ) {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let original = Point2::new(0.0, 0.0);
+        let mut project = ProjectState::new(CreasePattern {
+            vertices: vec![
+                ori_domain::Vertex {
+                    id: start,
+                    position: original,
+                },
+                ori_domain::Vertex {
+                    id: end,
+                    position: Point2::new(5.0, 0.0),
+                },
+            ],
+            edges: vec![ori_domain::Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Auxiliary,
+            }],
+        });
+        project.saved_revision = Some(0);
+        let stage = GeometricConstraintSolveStage {
+            token: ProjectId::new(),
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: 0,
+            positions: vec![(start, Point2::new(2.0, 3.0))],
+        };
+        (project, stage, start, original)
+    }
+
+    fn solver_vertex_position(project: &ProjectState, id: VertexId) -> Point2 {
+        project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == id)
+            .unwrap()
+            .position
+    }
+
+    #[test]
+    fn constraint_solver_stale_token_is_atomic() {
+        let (mut project, stage, vertex, original) = solver_stage_fixture();
+        assert!(
+            apply_geometric_constraint_solve_stage(
+                &mut project,
+                &stage,
+                stage.project_instance_id,
+                stage.project_id,
+                0,
+                ProjectId::new(),
+            )
+            .is_err()
+        );
+        assert_eq!(project.editor.revision(), 0);
+        assert_eq!(solver_vertex_position(&project, vertex), original);
+    }
+
+    #[test]
+    fn constraint_solver_layer_lock_is_atomic() {
+        let (mut project, mut stage, vertex, original) = solver_stage_fixture();
+        let layer = project.editor.project_layers().layers[0].id;
+        execute_command(
+            &mut project,
+            stage.project_id,
+            0,
+            Command::UpdateLayerPresentation {
+                layer,
+                visible: true,
+                locked: true,
+                opacity: 1.0,
+            },
+        )
+        .unwrap();
+        stage.revision = 1;
+        assert!(
+            apply_geometric_constraint_solve_stage(
+                &mut project,
+                &stage,
+                stage.project_instance_id,
+                stage.project_id,
+                1,
+                stage.token,
+            )
+            .is_err()
+        );
+        assert_eq!(project.editor.revision(), 1);
+        assert_eq!(solver_vertex_position(&project, vertex), original);
+    }
+
+    #[test]
+    fn constraint_solver_apply_is_one_history_entry() {
+        let (mut project, stage, _, _) = solver_stage_fixture();
+        let snapshot = apply_geometric_constraint_solve_stage(
+            &mut project,
+            &stage,
+            stage.project_instance_id,
+            stage.project_id,
+            0,
+            stage.token,
+        )
+        .unwrap();
+        assert_eq!(snapshot.revision, 1);
+        assert!(snapshot.can_undo);
+        assert!(!snapshot.can_redo);
+    }
+
+    #[test]
+    fn constraint_solver_undo_redo_restores_exact_positions() {
+        let (mut project, stage, vertex, original) = solver_stage_fixture();
+        let target = stage.positions[0].1;
+        apply_geometric_constraint_solve_stage(
+            &mut project,
+            &stage,
+            stage.project_instance_id,
+            stage.project_id,
+            0,
+            stage.token,
+        )
+        .unwrap();
+        execute_undo(&mut project, stage.project_id, 1).unwrap();
+        assert_eq!(solver_vertex_position(&project, vertex), original);
+        execute_redo(&mut project, stage.project_id, 2).unwrap();
+        assert_eq!(solver_vertex_position(&project, vertex), target);
+    }
+}

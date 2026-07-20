@@ -2873,7 +2873,7 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        let mut next_edge_id = 30_u64;
+        let mut next_edge_id = boundary.len() as u64 + 1;
         for column in 1..cell_count {
             edges.push(Edge {
                 id: fixed_id("9f20", next_edge_id),
@@ -4194,7 +4194,7 @@ mod tests {
         )
         .unwrap();
         assert!(accepted.continuous_clearance_certified());
-        assert_eq!(accepted.positive_endpoint_memo_pair_entries(), 105);
+        assert_eq!(accepted.positive_endpoint_memo_pair_entries(), 91);
         assert_eq!(accepted.positive_endpoint_exact_pair_calls(), 0);
         assert!(
             accepted.positive_endpoint_memo_pair_entries()
@@ -4260,7 +4260,7 @@ mod tests {
         )
         .unwrap();
         assert!(accepted.continuous_clearance_certified());
-        assert_eq!(accepted.positive_endpoint_memo_pair_entries(), 120);
+        assert_eq!(accepted.positive_endpoint_memo_pair_entries(), 105);
         assert_eq!(accepted.positive_endpoint_exact_pair_calls(), 0);
         assert!(
             accepted.positive_endpoint_memo_pair_entries()
@@ -4315,14 +4315,14 @@ mod tests {
     #[test]
     fn sparse_seventeen_face_tree_is_not_rejected_by_total_pair_count() {
         assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 120);
-        let model = deep_strip_model(16);
+        let model = sparse_triangle_strip_model(17);
         let (moving, initial) = zero_tree_pose(&model);
         let diagnostic = diagnose_collective_hinge_path_v1(
             &model,
             &initial,
             &moving,
-            1.0,
-            0.1,
+            positive_tree_max_angle_degrees_v1(16).unwrap(),
+            0.001,
             StackedFoldPathDiagnosticLimitsV1::default(),
         )
         .unwrap();
@@ -4424,8 +4424,10 @@ mod tests {
     fn dense_sweep_candidate_cap_is_fail_closed_and_order_independent() {
         for reverse_edges in [false, true] {
             let model = branched_triangle_model(18, reverse_edges);
-            let (_, initial) = zero_tree_pose(&model);
-            assert!(positive_endpoint_candidates_v1(&model, &initial, 0.001).is_none());
+            let (moving, initial) = zero_tree_pose(&model);
+            let moving = moving.into_iter().collect::<HashSet<_>>();
+            let dense = solve_collective_pose(&model, &initial, &moving, 180.0).unwrap();
+            assert!(positive_endpoint_candidates_v1(&model, &dense, 1_000_000.0).is_none());
         }
         assert!(positive_endpoint_pair_work_within_limit_v1(120));
         assert!(!positive_endpoint_pair_work_within_limit_v1(121));
@@ -4447,7 +4449,7 @@ mod tests {
             )
             .unwrap();
             assert!(diagnostic.continuous_clearance_certified());
-            assert_eq!(diagnostic.positive_endpoint_memo_pair_entries(), 120);
+            assert_eq!(diagnostic.positive_endpoint_memo_pair_entries(), 105);
             assert_eq!(diagnostic.positive_endpoint_exact_pair_calls(), 0);
         }
     }

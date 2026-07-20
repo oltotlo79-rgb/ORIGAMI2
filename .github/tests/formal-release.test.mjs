@@ -361,6 +361,24 @@ test('macOS signing binds the bundle to the configured leaf identity and hardene
   assert.doesNotMatch(verifier, /echo[^\n]*expected_identity/u)
 })
 
+test('Windows signing binds each asset to the configured PFX chain and RFC 3161 timestamp', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const verifier = readFileSync(
+    join(root, '.github/scripts/verify_windows_signing_identity.ps1'),
+    'utf8',
+  )
+  assert.equal(
+    workflow.match(/verify_windows_signing_identity\.ps1/gu)?.length ?? 0,
+    2,
+  )
+  assert.match(verifier, /Get-PfxData -FilePath \$Certificate -Password \$password/u)
+  assert.match(verifier, /SignerCertificate\.Thumbprint -cne \$leafCertificates\[0\]\.Thumbprint/u)
+  assert.match(verifier, /1\.3\.6\.1\.5\.5\.7\.3\.3/u)
+  assert.match(verifier, /1\.3\.6\.1\.5\.5\.7\.3\.8/u)
+  assert.match(verifier, /signtool verify \/pa \/all \/tw \/v/u)
+  assert.doesNotMatch(verifier, /Write-Output[^\n]*(?:Thumbprint|Subject|passwordText)/u)
+})
+
 test('CI always runs release contracts with read-only short-lived evidence', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const checkoutCount = workflow.match(/actions\/checkout@/gu)?.length ?? 0

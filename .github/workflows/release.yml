@@ -133,8 +133,9 @@ jobs:
             & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
               /f $certificate /p $env:CERTIFICATE_PASSWORD $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
-            & signtool verify /pa /all $file
-            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+            $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
+            & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
+              -File $file -Certificate $certificate
           } finally {
             Remove-Item -LiteralPath $certificate -Force -ErrorAction SilentlyContinue
           }
@@ -160,8 +161,9 @@ jobs:
             & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
               /f $certificate /p $env:CERTIFICATE_PASSWORD $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
-            & signtool verify /pa /all $file
-            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+            $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
+            & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
+              -File $file -Certificate $certificate
           } finally {
             Remove-Item -LiteralPath $certificate -Force -ErrorAction SilentlyContinue
           }

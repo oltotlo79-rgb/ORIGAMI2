@@ -36,7 +36,13 @@ export type GlobalFlatFoldabilityPanelProps = Readonly<{
   localeStore?: LocaleStore
   authority?: Readonly<{ projectInstanceId: string; projectId: string; revision: number }>
   selectedFaceId?: string | null
-  onSelectFace?(faceId: string): void
+  onSelectFace?(faceId: string | null): void
+  onHoverFace?(faceId: string | null): void
+  loadLayerOrderView?(authority: {
+    projectInstanceId: string
+    projectId: string
+    revision: number
+  }): Promise<CurrentLayerOrderView>
 }>
 
 export function GlobalFlatFoldabilityPanel({
@@ -50,6 +56,8 @@ export function GlobalFlatFoldabilityPanel({
   authority,
   selectedFaceId = null,
   onSelectFace,
+  onHoverFace,
+  loadLayerOrderView = getCurrentLayerOrderView,
 }: GlobalFlatFoldabilityPanelProps) {
   const locale = useLocale(localeStore_)
   const titleId = useId()
@@ -67,6 +75,7 @@ export function GlobalFlatFoldabilityPanel({
     useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
   const [hoveredFace, setHoveredFace] = useState<string | null>(null)
+  const selectedViewerFaceRef = useRef<string | null>(null)
   const authorityInstanceId = authority?.projectInstanceId
   const authorityProjectId = authority?.projectId
   const authorityRevision = authority?.revision
@@ -88,7 +97,11 @@ export function GlobalFlatFoldabilityPanel({
 
   useEffect(() => {
     let current = true
-    setLayerView(null); setSelectedCell(null); setHoveredFace(null)
+    setLayerView(null); setSelectedCell(null); setHoveredFace(null); onHoverFace?.(null)
+    if (selectedViewerFaceRef.current !== null) {
+      selectedViewerFaceRef.current = null
+      onSelectFace?.(null)
+    }
     setLayerViewStatus('idle')
     if (authorityInstanceId === undefined || authorityProjectId === undefined
       || authorityRevision === undefined || presentation.kind !== 'possible') {
@@ -100,7 +113,7 @@ export function GlobalFlatFoldabilityPanel({
       revision: authorityRevision,
     }
     setLayerViewStatus('loading')
-    void getCurrentLayerOrderView(expected).then((result) => {
+    void loadLayerOrderView(expected).then((result) => {
       if (current
         && result.projectInstanceId === expected.projectInstanceId
         && result.projectId === expected.projectId
@@ -119,6 +132,7 @@ export function GlobalFlatFoldabilityPanel({
     authorityProjectId,
     authorityRevision,
     presentation.kind,
+    loadLayerOrderView,
   ])
 
   return (
@@ -254,8 +268,14 @@ export function GlobalFlatFoldabilityPanel({
           selectedFace={selectedFaceId}
           hoveredFace={hoveredFace}
           onSelectCell={setSelectedCell}
-          onSelectFace={(face) => onSelectFace?.(face)}
-          onHoverFace={setHoveredFace}
+          onSelectFace={(face) => {
+            selectedViewerFaceRef.current = face
+            onSelectFace?.(face)
+          }}
+          onHoverFace={(face) => {
+            setHoveredFace(face)
+            onHoverFace?.(face)
+          }}
         />
       )}
       {presentation.kind === 'possible' && layerViewStatus === 'failed' && (

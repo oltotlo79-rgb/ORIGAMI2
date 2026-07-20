@@ -577,6 +577,7 @@ function App() {
   const [assignedLocalSufficiency, setAssignedLocalSufficiency] =
     useState<AssignedLocalSufficiencyResponseV1 | null>(null)
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
+  const [hoveredLayerFaceId, setHoveredLayerFaceId] = useState<string | null>(null)
   const [mirrorVertexIds, setMirrorVertexIds] = useState<string[]>([])
   const [mirrorEdgeIds, setMirrorEdgeIds] = useState<string[]>([])
   const [mirrorMode, setMirrorMode] = useState<'move' | 'duplicate'>('duplicate')
@@ -6059,6 +6060,7 @@ function App() {
               tool={benchmarkRun ? 'select' : activeTool}
               selectedVertexId={selectedVertexId}
               selectedFaceId={selectedFaceId}
+              highlightedFaceId={hoveredLayerFaceId}
               mirrorSelectedVertexIds={mirrorVertexIds}
               mirrorSelectedLineIds={mirrorEdgeIds}
               pendingVertexId={pendingEdgeStart}
@@ -6158,6 +6160,7 @@ function App() {
               hingeAngles={foldTreeHingeAngles}
               selectedHingeId={selectedPreviewHingeId}
               selectedFaceId={selectedFaceId}
+              highlightedFaceId={hoveredLayerFaceId}
               selectedVertexId={selectedVertexId}
               fixedFaceId={effectiveFixedFaceId}
               instructionVisual={instructionVisual}
@@ -8529,6 +8532,7 @@ function App() {
             } : undefined}
             selectedFaceId={selectedFaceId}
             onSelectFace={setSelectedFaceId}
+            onHoverFace={setHoveredLayerFaceId}
             startDisabled={
               coreBusy
               || benchmarkLoading

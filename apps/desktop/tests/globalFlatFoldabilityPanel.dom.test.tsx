@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from '@testing-library/react'
 
 import {
@@ -47,6 +48,47 @@ afterEach(() => {
 })
 
 describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
+  it('shares layer face selection and hover, then clears hover on revision drift', async () => {
+    const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
+    const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
+    const loadLayerOrderView = vi.fn(async (authority) => ({
+      ...authority,
+      layerOrderGeneration: 1,
+      cells: [{
+        cellKeySha256: 'a'.repeat(64),
+        bottomToTopFaces: [instance, project],
+        boundaryWorld: [[0, 0, 0], [1, 0, 0], [0, 0, -1]],
+      }],
+      readOnly: true,
+    }))
+    const onSelectFace = vi.fn()
+    const onHoverFace = vi.fn()
+    const { rerender } = renderPanel({
+      job: terminalJob('possible'),
+      authority: { projectInstanceId: instance, projectId: project, revision: 3 },
+      onSelectFace,
+      onHoverFace,
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    })
+    const top = await screen.findByRole('button', { name: /Front \/ top/u })
+    fireEvent.mouseEnter(top)
+    expect(onHoverFace).toHaveBeenLastCalledWith(project)
+    fireEvent.click(top)
+    expect(onSelectFace).toHaveBeenCalledWith(project)
+
+    rerender(panelElement({
+      job: terminalJob('possible'),
+      authority: { projectInstanceId: instance, projectId: project, revision: 4 },
+      onSelectFace,
+      onHoverFace,
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    }))
+    await waitFor(() => expect(onHoverFace).toHaveBeenLastCalledWith(null))
+    expect(onSelectFace).toHaveBeenLastCalledWith(null)
+  })
+
   it('starts idle with the three time presets and the permanent scope caution', () => {
     renderPanel()
 
@@ -430,6 +472,11 @@ function panelElement(
       onStart={overrides.onStart ?? vi.fn()}
       onCancel={overrides.onCancel ?? vi.fn()}
       localeStore={overrides.localeStore}
+      authority={overrides.authority}
+      selectedFaceId={overrides.selectedFaceId}
+      onSelectFace={overrides.onSelectFace}
+      onHoverFace={overrides.onHoverFace}
+      loadLayerOrderView={overrides.loadLayerOrderView}
     />
   )
 }

@@ -9,6 +9,7 @@ const picking = source('../src/lib/foldPreviewPicking.ts')
 
 test('App shares line vertex and face selections across both views', () => {
   assert.match(app, /const \[selectedFaceId, setSelectedFaceId\]/u)
+  assert.match(app, /const \[hoveredLayerFaceId, setHoveredLayerFaceId\]/u)
   assert.match(
     app,
     /<CreaseCanvas[\s\S]*?selectedVertexId=\{selectedVertexId\}[\s\S]*?selectedFaceId=\{selectedFaceId\}[\s\S]*?selectedLineId=\{selectedLineId\}/u,
@@ -16,6 +17,18 @@ test('App shares line vertex and face selections across both views', () => {
   assert.match(
     app,
     /<FoldPreview[\s\S]*?selectedHingeId=\{selectedPreviewHingeId\}[\s\S]*?selectedFaceId=\{selectedFaceId\}[\s\S]*?selectedVertexId=\{selectedVertexId\}/u,
+  )
+  assert.match(
+    app,
+    /<CreaseCanvas[\s\S]*?highlightedFaceId=\{hoveredLayerFaceId\}/u,
+  )
+  assert.match(
+    app,
+    /<FoldPreview[\s\S]*?highlightedFaceId=\{hoveredLayerFaceId\}/u,
+  )
+  assert.match(
+    app,
+    /<GlobalFlatFoldabilityPanel[\s\S]*?onSelectFace=\{setSelectedFaceId\}[\s\S]*?onHoverFace=\{setHoveredLayerFaceId\}/u,
   )
   assert.match(app, /onSelectFace=\{benchmarkRun[\s\S]*?setSelectedFaceId/u)
   assert.match(app, /onSelectVertex=\{benchmarkRun[\s\S]*?setSelectedVertexId/u)
@@ -37,7 +50,7 @@ test('saved face color metadata is rendered below the selected-face highlight', 
     /element_metadata\.faces\.find\([\s\S]*?record\.face === face\.id[\s\S]*?\{ color: rgbaToCss\(color\) \}/u,
   )
   const metadataFill = canvas.indexOf('for (const face of faces)')
-  const selectedHighlight = canvas.indexOf('const selectedFace = selectedFaceId')
+  const selectedHighlight = canvas.indexOf('const selectedFace = highlightedFaceId')
   assert.ok(metadataFill >= 0)
   assert.ok(selectedHighlight > metadataFill)
   assert.match(canvas, /context\.globalAlpha = 0\.24[\s\S]*?context\.fill\(\)/u)

@@ -180,6 +180,7 @@ type FoldPreviewProps = {
   hingeAngles?: readonly FoldPreviewHingeAngle[]
   selectedHingeId?: string | null
   selectedFaceId?: string | null
+  highlightedFaceId?: string | null
   selectedVertexId?: string | null
   fixedFaceId?: string | null
   instructionVisual?: InstructionVisual | null
@@ -396,6 +397,7 @@ export function FoldPreview({
   hingeAngles,
   selectedHingeId,
   selectedFaceId,
+  highlightedFaceId,
   selectedVertexId,
   fixedFaceId,
   instructionVisual,
@@ -455,6 +457,8 @@ export function FoldPreview({
   selectedHingeIdRef.current = selectedHingeId ?? null
   const selectedFaceIdRef = useRef(selectedFaceId ?? null)
   selectedFaceIdRef.current = selectedFaceId ?? null
+  const highlightedFaceIdRef = useRef(highlightedFaceId ?? null)
+  highlightedFaceIdRef.current = highlightedFaceId ?? null
   const selectedVertexIdRef = useRef(selectedVertexId ?? null)
   selectedVertexIdRef.current = selectedVertexId ?? null
   const onSelectHingeRef = useRef(onSelectHinge)
@@ -1138,7 +1142,7 @@ export function FoldPreview({
       refreshFaceHighlights = () => {
         for (const [faceId, line] of faceEdgeLines) {
           const fixed = faceId === resolvedFixedFaceId
-          const selected = faceId === selectedFaceIdRef.current
+          const selected = faceId === (highlightedFaceIdRef.current ?? selectedFaceIdRef.current)
           const dependent = dependentFaceIdsForHighlight.has(faceId)
           const collisionSeverity = collisionSeverityByFace.get(faceId)
           line.material = collisionSeverity === 'penetrating'
@@ -3869,7 +3873,7 @@ export function FoldPreview({
       runtime.dispose()
       setRenderError('render_unavailable')
     }
-  }, [selectedFaceId, selectedVertexId])
+  }, [selectedFaceId, highlightedFaceId, selectedVertexId])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -4605,6 +4609,7 @@ export function FoldPreview({
       data-camera-controls-enabled={angleDragPresentation.cameraControlsEnabled}
       data-selected-hinge={selectedHingeId ?? undefined}
       data-selected-face={selectedFaceId ?? undefined}
+      data-highlighted-face={highlightedFaceId ?? undefined}
       data-selected-vertex={selectedVertexId ?? undefined}
       data-fixed-face={resolvedFixedFaceId ?? undefined}
       data-interactive={Boolean(

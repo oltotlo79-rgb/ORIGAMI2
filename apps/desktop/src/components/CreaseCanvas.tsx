@@ -138,6 +138,7 @@ type Props = {
   tool?: string
   selectedVertexId?: string | null
   selectedFaceId?: string | null
+  highlightedFaceId?: string | null
   mirrorSelectedVertexIds?: readonly string[]
   mirrorSelectedLineIds?: readonly string[]
   pendingVertexId?: string | null
@@ -288,6 +289,7 @@ export function CreaseCanvas({
   tool = 'select',
   selectedVertexId = null,
   selectedFaceId = null,
+  highlightedFaceId = null,
   mirrorSelectedVertexIds = [],
   mirrorSelectedLineIds = [],
   pendingVertexId = null,
@@ -508,8 +510,8 @@ export function CreaseCanvas({
         context.restore()
       }
 
-      const selectedFace = selectedFaceId
-        ? faces.find((face) => face.id === selectedFaceId)
+      const selectedFace = highlightedFaceId || selectedFaceId
+        ? faces.find((face) => face.id === (highlightedFaceId ?? selectedFaceId))
         : null
       if (
         selectedFace
@@ -808,6 +810,7 @@ export function CreaseCanvas({
     renderMetricsRequestId,
     selectedLineId,
     selectedFaceId,
+    highlightedFaceId,
     selectedVertexId,
     snapGuide,
     tool,

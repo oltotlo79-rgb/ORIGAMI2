@@ -275,9 +275,22 @@ mod tests {
             (2, 1, vec![10, 20, 30, 255, 40, 50, 60, 255])
         );
         assert_eq!(
-            decode_general_png(&encode(png::ColorType::Grayscale, &[12, 34]))
-                .expect("grayscale"),
+            decode_general_png(&encode(png::ColorType::Grayscale, &[12, 34])).expect("grayscale"),
             (2, 1, vec![12, 12, 12, 255, 34, 34, 34, 255])
+        );
+
+        let mut palette_png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut palette_png, 2, 1);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(vec![10, 20, 30, 40, 50, 60]);
+            let mut writer = encoder.write_header().expect("palette header");
+            writer.write_image_data(&[0, 1]).expect("palette pixels");
+        }
+        assert_eq!(
+            decode_general_png(&palette_png).expect("palette"),
+            (2, 1, vec![10, 20, 30, 255, 40, 50, 60, 255])
         );
     }
 }

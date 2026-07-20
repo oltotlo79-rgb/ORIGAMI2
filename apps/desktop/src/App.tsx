@@ -7885,12 +7885,12 @@ function App() {
                   >
                     {beginnerRecognitionBusy
                       ? text({ ja: '認識中…', en: 'Recognizing…' })
-                      : text({ ja: '単一輪郭PNGを認識', en: 'Recognize silhouette PNG' })}
+                      : text({ ja: '一般PNGから輪郭を認識', en: 'Recognize outline from PNG' })}
                   </button>
                   <p id="beginner-recognition-help" className="muted">
                     {text({
                       ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',
-                      en: 'Recognition produces a read-only proposal. Copying it to the editor does not change the project until you save.',
+                      en: 'RGB, grayscale, palette, and RGBA PNG input produces a read-only proposal. It grants no automatic design authority; copying remains unsaved until you save.',
                     })}
                   </p>
                   {beginnerRecognitionProposal && (

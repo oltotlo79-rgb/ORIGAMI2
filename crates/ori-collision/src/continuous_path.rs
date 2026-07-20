@@ -119,6 +119,11 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     }
 
     #[must_use]
+    pub const fn positive_endpoint_candidate_limit(&self) -> usize {
+        MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
+    }
+
+    #[must_use]
     pub const fn interval_candidate_limit(&self) -> usize {
         MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1
     }

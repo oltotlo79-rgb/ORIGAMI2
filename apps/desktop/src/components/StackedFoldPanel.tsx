@@ -251,6 +251,8 @@ export function StackedFoldPanel({
             <div><dt>{t('経路証明model', 'Path certificate model')}</dt><dd>{view.response.continuousPath.continuousCertificateModelId ?? t('なし', 'None')}</dd></div>
             <div><dt>{t('区間leaf数', 'Interval leaves')}</dt><dd>{view.response.continuousPath.intervalLeafCount}</dd></div>
             <div><dt>{t('区間pair work', 'Interval pair work')}</dt><dd>{view.response.continuousPath.intervalPairWork}</dd></div>
+            <div><dt>{t('正厚候補', 'Positive-thickness candidates')}</dt><dd>{view.response.continuousPath.positiveEndpointCandidateCount} / {view.response.continuousPath.positiveEndpointCandidateLimit}</dd></div>
+            <div><dt>{t('正厚exact呼出', 'Positive-thickness exact calls')}</dt><dd>{view.response.continuousPath.positiveEndpointExactPairCalls}</dd></div>
             <div><dt>{t('候補上限', 'Candidate limit')}</dt><dd>{view.response.continuousPath.intervalCandidateLimit}</dd></div>
             <div><dt>{t('閉路leaf数', 'Closure leaves')}</dt><dd>{view.response.continuousPath.closureLeafCount}</dd></div>
             <div><dt>{t('閉路pair work', 'Closure pair work')}</dt><dd>{view.response.continuousPath.closurePairWork}</dd></div>

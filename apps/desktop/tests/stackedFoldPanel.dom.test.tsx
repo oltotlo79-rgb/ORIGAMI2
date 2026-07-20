@@ -80,6 +80,9 @@ const ready = {
     intervalLeafCount: 8,
     intervalPairWork: 8,
     intervalCandidateLimit: 2048,
+    positiveEndpointCandidateCount: 64,
+    positiveEndpointExactPairCalls: 0,
+    positiveEndpointCandidateLimit: 120,
     closureRequired: false,
     closureLeafCount: 0,
     closurePairWork: 0,
@@ -247,6 +250,8 @@ describe('StackedFoldPanel', () => {
     const rendered = render(<StackedFoldPanel {...props} snapshot={snapshot} />)
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     await screen.findByRole('button', { name: 'Apply stacked fold' })
+    expect(screen.getByText('64 / 120')).toBeTruthy()
+    expect(screen.getByText('Positive-thickness exact calls')).toBeTruthy()
     rendered.rerender(
       <StackedFoldPanel {...props} snapshot={{ ...snapshot, revision: 4 } as ProjectSnapshot} />,
     )

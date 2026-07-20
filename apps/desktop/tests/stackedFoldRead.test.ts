@@ -87,6 +87,9 @@ describe('stacked-fold read boundary', () => {
         intervalLeafCount: 8,
         intervalPairWork: 8,
         intervalCandidateLimit: 2048,
+        positiveEndpointCandidateCount: 0,
+        positiveEndpointExactPairCalls: 0,
+        positiveEndpointCandidateLimit: 120,
         closureRequired: false,
         closureLeafCount: 0,
         closurePairWork: 0,
@@ -320,6 +323,33 @@ describe('stacked-fold read boundary', () => {
     assert.equal(
       normalizeStackedFoldReadResponse(
         { ...response, work: { ...response.work, retainedTargetFaces: 2 } },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          continuousPath: {
+            ...response.continuousPath,
+            positiveEndpointCandidateCount: 121,
+          },
+        },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          continuousPath: {
+            ...response.continuousPath,
+            positiveEndpointCandidateCount: 1,
+            positiveEndpointExactPairCalls: 2,
+          },
+        },
         request,
       ),
       null,

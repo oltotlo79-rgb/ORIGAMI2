@@ -82,6 +82,9 @@ export type StackedFoldReadResponse = Readonly<{
     intervalLeafCount: number
     intervalPairWork: number
     intervalCandidateLimit: number
+    positiveEndpointCandidateCount: number
+    positiveEndpointExactPairCalls: number
+    positiveEndpointCandidateLimit: number
     closureRequired: boolean
     closureLeafCount: number
     closurePairWork: number
@@ -273,6 +276,9 @@ export function normalizeStackedFoldReadResponse(
       'intervalLeafCount',
       'intervalPairWork',
       'intervalCandidateLimit',
+      'positiveEndpointCandidateCount',
+      'positiveEndpointExactPairCalls',
+      'positiveEndpointCandidateLimit',
       'closureRequired',
       'closureLeafCount',
       'closurePairWork',
@@ -385,6 +391,13 @@ export function normalizeStackedFoldReadResponse(
     !isCount(continuousPath.intervalLeafCount) ||
     !isCount(continuousPath.intervalPairWork) ||
     !isCount(continuousPath.intervalCandidateLimit) ||
+    !isCount(continuousPath.positiveEndpointCandidateCount) ||
+    !isCount(continuousPath.positiveEndpointExactPairCalls) ||
+    !isCount(continuousPath.positiveEndpointCandidateLimit) ||
+    continuousPath.positiveEndpointCandidateCount >
+      continuousPath.positiveEndpointCandidateLimit ||
+    continuousPath.positiveEndpointExactPairCalls >
+      continuousPath.positiveEndpointCandidateCount ||
     typeof continuousPath.closureRequired !== 'boolean' ||
     !isCount(continuousPath.closureLeafCount) ||
     !isCount(continuousPath.closurePairWork) ||

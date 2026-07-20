@@ -138,6 +138,11 @@ enum CommandV1 {
         id: VertexId,
         position: Point2,
     },
+    MoveEdge {
+        id: EdgeId,
+        start_position: Point2,
+        end_position: Point2,
+    },
     RemoveVertex {
         id: VertexId,
     },
@@ -458,6 +463,15 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             id: *id,
             position: *position,
         },
+        Command::MoveEdge {
+            id,
+            start_position,
+            end_position,
+        } => CommandV1::MoveEdge {
+            id: *id,
+            start_position: *start_position,
+            end_position: *end_position,
+        },
         Command::RemoveVertex { id } => CommandV1::RemoveVertex { id: *id },
         Command::AddEdge {
             id,
@@ -645,6 +659,15 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
     Ok(match command {
         CommandV1::AddVertex { id, position } => Command::AddVertex { id, position },
         CommandV1::MoveVertex { id, position } => Command::MoveVertex { id, position },
+        CommandV1::MoveEdge {
+            id,
+            start_position,
+            end_position,
+        } => Command::MoveEdge {
+            id,
+            start_position,
+            end_position,
+        },
         CommandV1::RemoveVertex { id } => Command::RemoveVertex { id },
         CommandV1::AddEdge {
             id,
@@ -1363,6 +1386,15 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         | Command::MoveVertex { position, .. }
         | Command::AddConnectedVertex { position, .. } => {
             if !finite_point(*position) {
+                return Err(EditorHistoryErrorV1::NonFiniteNumber);
+            }
+        }
+        Command::MoveEdge {
+            start_position,
+            end_position,
+            ..
+        } => {
+            if !finite_point(*start_position) || !finite_point(*end_position) {
                 return Err(EditorHistoryErrorV1::NonFiniteNumber);
             }
         }

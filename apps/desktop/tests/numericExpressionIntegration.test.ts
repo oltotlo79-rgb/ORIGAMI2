@@ -218,3 +218,22 @@ test('vertex and polar construction expressions retain source, ID, and native au
     /vertex_coordinate_expressions_follow_native_history_and_archive_round_trip/u,
   )
 })
+
+test('whole-line translation is one native edit with expression-backed endpoint history', () => {
+  assert.match(
+    coreClient,
+    /export function moveEdge\([\s\S]*?invoke<ProjectSnapshot>\('move_edge'[\s\S]*?deltaXExpression,[\s\S]*?deltaYExpression/u,
+  )
+  assert.match(
+    app,
+    /submitMoveSelectedEdge[\s\S]*?evaluateDisplayLengthExpression\(deltaXDisplayExpression[\s\S]*?moveEdge\(/u,
+  )
+  assert.match(
+    nativeLib,
+    /fn move_edge\([\s\S]*?Command::MoveEdge[\s\S]*?for \(vertex, previous, adopted\)[\s\S]*?adopt_vertex_coordinate_expression/u,
+  )
+  assert.match(
+    nativeLib,
+    /format!\("\(\{\}\)\+\(\{delta_x_expression\}\)"/u,
+  )
+})

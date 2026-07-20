@@ -69,6 +69,11 @@ pub enum Command {
         id: VertexId,
         position: Point2,
     },
+    MoveEdge {
+        id: EdgeId,
+        start_position: Point2,
+        end_position: Point2,
+    },
     RemoveVertex {
         id: VertexId,
     },
@@ -1781,6 +1786,39 @@ impl EditorState {
                     position: previous,
                 }))
             }
+            Command::MoveEdge {
+                id,
+                start_position,
+                end_position,
+            } => {
+                let edge = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == id)
+                    .cloned()
+                    .ok_or(CommandError::EdgeNotFound(id))?;
+                let start_index = self
+                    .vertex_index(edge.start)
+                    .ok_or(CommandError::VertexNotFound(edge.start))?;
+                let end_index = self
+                    .vertex_index(edge.end)
+                    .ok_or(CommandError::VertexNotFound(edge.end))?;
+                self.ensure_length_display_reference_survives_vertex_move(
+                    edge.start,
+                    start_position,
+                )?;
+                self.ensure_length_display_reference_survives_vertex_move(edge.end, end_position)?;
+                let previous_start = self.pattern.vertices[start_index].position;
+                let previous_end = self.pattern.vertices[end_index].position;
+                self.pattern.vertices[start_index].position = start_position;
+                self.pattern.vertices[end_index].position = end_position;
+                Ok(Inverse::Command(Command::MoveEdge {
+                    id,
+                    start_position: previous_start,
+                    end_position: previous_end,
+                }))
+            }
             Command::RemoveVertex { id } => {
                 if let Some(edge) = self
                     .pattern
@@ -2394,6 +2432,21 @@ impl EditorState {
                     self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID)
                 }
             }
+            Command::MoveEdge { id, .. } => {
+                let Some(edge) = self.pattern.edges.iter().find(|edge| edge.id == *id) else {
+                    return Ok(());
+                };
+                self.ensure_edge_layer_unlocked(*id)?;
+                for incident in self.pattern.edges.iter().filter(|candidate| {
+                    candidate.start == edge.start
+                        || candidate.end == edge.start
+                        || candidate.start == edge.end
+                        || candidate.end == edge.end
+                }) {
+                    self.ensure_edge_layer_unlocked(incident.id)?;
+                }
+                Ok(())
+            }
             Command::RemoveEdge { id }
             | Command::RemoveConnectedVertex { edge_id: id, .. }
             | Command::SplitEdge { edge: id, .. }
@@ -2649,6 +2702,34 @@ impl EditorState {
                 }
                 targets.vertices.insert(*id);
                 collect_incident_constraint_edges(&self.pattern, *id, &mut targets.edges);
+            }
+            Command::MoveEdge {
+                id,
+                start_position,
+                end_position,
+            } => {
+                if let Some(edge) = self.pattern.edges.iter().find(|edge| edge.id == *id) {
+                    if let Some(index) = self.vertex_index(edge.start)
+                        && !point_bits_equal(self.pattern.vertices[index].position, *start_position)
+                    {
+                        targets.vertices.insert(edge.start);
+                        collect_incident_constraint_edges(
+                            &self.pattern,
+                            edge.start,
+                            &mut targets.edges,
+                        );
+                    }
+                    if let Some(index) = self.vertex_index(edge.end)
+                        && !point_bits_equal(self.pattern.vertices[index].position, *end_position)
+                    {
+                        targets.vertices.insert(edge.end);
+                        collect_incident_constraint_edges(
+                            &self.pattern,
+                            edge.end,
+                            &mut targets.edges,
+                        );
+                    }
+                }
             }
             Command::RemoveVertex { id } => {
                 targets.vertices.insert(*id);
@@ -4604,6 +4685,7 @@ impl Command {
                 )
             }
             Self::MoveVertex { .. }
+            | Self::MoveEdge { .. }
             | Self::RemoveVertex { .. }
             | Self::RemoveConnectedVertex { .. }
             | Self::RemoveEdge { .. }
@@ -4640,6 +4722,7 @@ impl Command {
         match self {
             Self::AddVertex { .. }
             | Self::MoveVertex { .. }
+            | Self::MoveEdge { .. }
             | Self::RemoveVertex { .. }
             | Self::AddEdge { .. }
             | Self::AddConnectedVertex { .. }
@@ -4683,6 +4766,21 @@ impl Command {
                 instructions: false,
                 constraints: false,
             },
+            Self::MoveEdge { id, .. } => {
+                let vertices = pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == id)
+                    .map(|edge| vec![edge.start, edge.end])
+                    .unwrap_or_default();
+                Changes {
+                    vertices,
+                    edges: vec![id],
+                    settings: false,
+                    instructions: false,
+                    constraints: false,
+                }
+            }
             Self::AddEdge { id, start, end, .. } => Changes {
                 vertices: vec![start, end],
                 edges: vec![id],
@@ -6261,6 +6359,54 @@ mod tests {
             [1, 2, 3, 4]
         );
         assert_eq!(editor.revision(), 4);
+    }
+
+    #[test]
+    fn move_edge_translates_both_endpoints_as_one_undoable_edit() {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(1.0, 2.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(4.0, 6.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: edge,
+                start,
+                end,
+                kind: EdgeKind::Mountain,
+            }],
+        });
+
+        let moved = editor
+            .execute(
+                0,
+                Command::MoveEdge {
+                    id: edge,
+                    start_position: Point2::new(11.0, -3.0),
+                    end_position: Point2::new(14.0, 1.0),
+                },
+            )
+            .expect("move the whole edge");
+        assert_eq!(moved.revision, 1);
+        assert_eq!(moved.changed_vertices, vec![start, end]);
+        assert_eq!(moved.changed_edges, vec![edge]);
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(11.0, -3.0));
+        assert_eq!(editor.pattern.vertices[1].position, Point2::new(14.0, 1.0));
+
+        editor.undo(1).expect("undo the whole edge move");
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(1.0, 2.0));
+        assert_eq!(editor.pattern.vertices[1].position, Point2::new(4.0, 6.0));
+        editor.redo(2).expect("redo the whole edge move");
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(11.0, -3.0));
+        assert_eq!(editor.pattern.vertices[1].position, Point2::new(14.0, 1.0));
     }
 
     #[test]

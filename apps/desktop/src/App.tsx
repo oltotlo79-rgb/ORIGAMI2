@@ -70,6 +70,7 @@ import {
   getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
+  moveEdge,
   moveProjectLayer,
   moveVertex,
   newProject,
@@ -2654,6 +2655,49 @@ function App() {
     }))
   }
 
+  async function submitMoveSelectedEdge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedLine || benchmarkRun || selectedLine.locked) return
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const form = new FormData(event.currentTarget)
+    const deltaXDisplayExpression = String(form.get('edge_delta_x_display') ?? '')
+    const deltaYDisplayExpression = String(form.get('edge_delta_y_display') ?? '')
+    let deltaX: number | null = null
+    let deltaY: number | null = null
+    try {
+      deltaX = await evaluateDisplayLengthExpression(deltaXDisplayExpression, currentUnit)
+      deltaY = await evaluateDisplayLengthExpression(deltaYDisplayExpression, currentUnit)
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+      return
+    }
+    if (deltaX === null || deltaY === null) {
+      setCoreStatus(appMessage({
+        ja: '線の移動量には有限な数式を入力してください。',
+        en: 'Enter finite expressions for the line translation.',
+      }))
+      return
+    }
+    await runNativeEdit((projectId, revision, projectInstanceId) =>
+      moveEdge(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedLine.id,
+        millimetreExpressionSource(
+          deltaXDisplayExpression,
+          currentUnit.millimetresPerUnit,
+        ),
+        millimetreExpressionSource(
+          deltaYDisplayExpression,
+          currentUnit.millimetresPerUnit,
+        ),
+        deltaX,
+        deltaY,
+      ))
+  }
+
   function submitPaperProperties(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
@@ -5200,6 +5244,43 @@ function App() {
                     })}
                   </p>
                 ) : (
+                  <>
+                  <form onSubmit={(event) => void submitMoveSelectedEdge(event)}>
+                    <fieldset disabled={coreBusy || selectedLine.locked}>
+                      <legend>{text({ ja: '線全体を移動', en: 'Move entire line' })}</legend>
+                      <label className="field">
+                        {formattedText({
+                          ja: '横移動量 ({unit})',
+                          en: 'Horizontal offset ({unit})',
+                        }, { unit: lengthDisplayUnitLabelText })}
+                        <input
+                          name="edge_delta_x_display"
+                          type="text"
+                          inputMode="text"
+                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                          defaultValue="0"
+                        />
+                      </label>
+                      <label className="field">
+                        {formattedText({
+                          ja: '縦移動量 ({unit})',
+                          en: 'Vertical offset ({unit})',
+                        }, { unit: lengthDisplayUnitLabelText })}
+                        <input
+                          name="edge_delta_y_display"
+                          type="text"
+                          inputMode="text"
+                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                          defaultValue="0"
+                        />
+                      </label>
+                      <div className="property-actions">
+                        <button type="submit">
+                          {text({ ja: '線全体を移動', en: 'Move entire line' })}
+                        </button>
+                      </div>
+                    </fieldset>
+                  </form>
                   <div className="property-actions">
                     <button
                       type="button"
@@ -5241,6 +5322,7 @@ function App() {
                       </button>
                     )}
                   </div>
+                  </>
                 )}
                 {selectedLine.locked && (
                   <p className="muted">

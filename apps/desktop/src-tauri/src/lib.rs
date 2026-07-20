@@ -2145,6 +2145,80 @@ fn move_vertex(
 }
 
 #[tauri::command]
+fn move_edge(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    id: EdgeId,
+    delta_x_expression: String,
+    delta_y_expression: String,
+    delta_x_mm: f64,
+    delta_y_mm: f64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    validate_coordinate_expression_pair(
+        &delta_x_expression,
+        &delta_y_expression,
+        delta_x_mm,
+        delta_y_mm,
+    )?;
+    let edge = project
+        .editor
+        .pattern()
+        .edges
+        .iter()
+        .find(|edge| edge.id == id)
+        .cloned()
+        .ok_or_else(|| "edge not found".to_owned())?;
+    let position = |vertex_id| {
+        project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == vertex_id)
+            .map(|vertex| vertex.position)
+            .ok_or_else(|| "vertex not found".to_owned())
+    };
+    let start = position(edge.start)?;
+    let end = position(edge.end)?;
+    let start_position = Point2::new(start.x + delta_x_mm, start.y + delta_y_mm);
+    let end_position = Point2::new(end.x + delta_x_mm, end.y + delta_y_mm);
+    if !start_position.x.is_finite()
+        || !start_position.y.is_finite()
+        || !end_position.x.is_finite()
+        || !end_position.y.is_finite()
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::MoveEdge {
+            id,
+            start_position,
+            end_position,
+        },
+    )?;
+    for (vertex, previous, adopted) in [
+        (edge.start, start, start_position),
+        (edge.end, end, end_position),
+    ] {
+        project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
+            vertex,
+            format!("({})+({delta_x_expression})", previous.x),
+            format!("({})+({delta_y_expression})", previous.y),
+            adopted.x,
+            adopted.y,
+        ));
+    }
+    Ok(snapshot(&project))
+}
+
+#[tauri::command]
 fn remove_vertex(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -6086,6 +6160,7 @@ pub fn run() {
             cancel_svg_import,
             add_vertex,
             move_vertex,
+            move_edge,
             remove_vertex,
             add_edge,
             add_connected_vertex,

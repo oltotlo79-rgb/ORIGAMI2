@@ -1,0 +1,475 @@
+//! Deterministic bounded graph search over a native certified-transition oracle.
+//!
+//! This module is observation-only. Its result never authorizes project
+//! mutation: an oracle must independently certify every admitted transition.
+
+use std::collections::{BTreeMap, VecDeque};
+
+use ori_domain::FaceId;
+use ori_kinematics::{
+    DyadicMaterialHingeIntervalClosureCertificateV1, GeneratedMultiHingePathCandidateV1,
+    MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+};
+use sha2::{Digest, Sha256};
+
+use crate::continuous_path::diagnose_scheduled_cycle_path_v1;
+
+pub const CERTIFIED_PATH_GRAPH_MODEL_ID_V1: &str = "bounded_certified_pose_graph_path_v1";
+pub const MAX_CERTIFIED_PATH_GRAPH_STATES_V1: usize = 32;
+pub const MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1: usize = 64;
+
+pub type PoseFingerprintV1 = [u8; 32];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertifiedPathTransitionCandidateV1 {
+    pub source: PoseFingerprintV1,
+    pub target: PoseFingerprintV1,
+    /// Stable oracle-specific ordering key. It contains no project identity.
+    pub candidate_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertifiedPathTransitionEvidenceV1 {
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
+    schedule_certificate: [u8; 32],
+    collision_certificate: [u8; 32],
+    closure_certificate: [u8; 32],
+}
+
+impl CertifiedPathTransitionEvidenceV1 {
+    /// Creates the detached evidence returned by a native edge oracle.
+    ///
+    /// Construction alone is not authority. The graph certificate remains
+    /// read-only and records exactly which three edge certificates the oracle
+    /// bound to the source and target.
+    #[must_use]
+    pub const fn from_native_oracle(
+        source: PoseFingerprintV1,
+        target: PoseFingerprintV1,
+        schedule_certificate: [u8; 32],
+        collision_certificate: [u8; 32],
+        closure_certificate: [u8; 32],
+    ) -> Self {
+        Self {
+            source,
+            target,
+            schedule_certificate,
+            collision_certificate,
+            closure_certificate,
+        }
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> PoseFingerprintV1 {
+        self.source
+    }
+    #[must_use]
+    pub const fn target(&self) -> PoseFingerprintV1 {
+        self.target
+    }
+    #[must_use]
+    pub const fn schedule_certificate(&self) -> [u8; 32] {
+        self.schedule_certificate
+    }
+    #[must_use]
+    pub const fn collision_certificate(&self) -> [u8; 32] {
+        self.collision_certificate
+    }
+    #[must_use]
+    pub const fn closure_certificate(&self) -> [u8; 32] {
+        self.closure_certificate
+    }
+}
+
+/// Adapts the existing schedule, full-domain closure and bounded CCD oracles
+/// into one graph edge. Any missing or mismatched certificate rejects the
+/// edge; an unresolved CCD result is never interpreted as collision-free.
+#[must_use]
+pub fn certify_scheduled_cycle_transition_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    candidate: &GeneratedMultiHingePathCandidateV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    interval_count: usize,
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
+) -> Option<CertifiedPathTransitionEvidenceV1> {
+    let schedule = candidate.schedule();
+    if closure.fixed_face() != fixed_face
+        || closure.leaves().is_empty()
+        || closure.schedule_binding_fingerprint_v1()
+            != schedule.certificate_binding_fingerprint_v1()
+        || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+    {
+        return None;
+    }
+    let collision = diagnose_scheduled_cycle_path_v1(
+        geometry,
+        audit,
+        fixed_face,
+        candidate,
+        closure,
+        interval_count,
+    );
+    collision.continuous_certificate_model_id()?;
+    let schedule_certificate = schedule.certificate_binding_fingerprint_v1();
+    let closure_certificate = hash_certificate_binding(
+        b"dyadic_material_hinge_interval_closure_certificate_v1",
+        &[
+            &schedule_certificate,
+            &closure.graph_binding_fingerprint_v1(),
+            &(closure.leaves().len() as u64).to_be_bytes(),
+        ],
+    );
+    let collision_certificate = hash_certificate_binding(
+        b"stacked_fold_cycle_interval_continuous_certificate_v1",
+        &[
+            &schedule_certificate,
+            &closure_certificate,
+            &(collision.leaf_count() as u64).to_be_bytes(),
+            &(collision.pair_work() as u64).to_be_bytes(),
+        ],
+    );
+    Some(CertifiedPathTransitionEvidenceV1::from_native_oracle(
+        source,
+        target,
+        schedule_certificate,
+        collision_certificate,
+        closure_certificate,
+    ))
+}
+
+fn hash_certificate_binding(domain: &[u8], fields: &[&[u8]]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(domain);
+    for field in fields {
+        hash.update((field.len() as u64).to_be_bytes());
+        hash.update(field);
+    }
+    hash.finalize().into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertifiedPoseGraphPathCertificateV1 {
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
+    edges: Vec<CertifiedPathTransitionEvidenceV1>,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+}
+
+impl CertifiedPoseGraphPathCertificateV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        CERTIFIED_PATH_GRAPH_MODEL_ID_V1
+    }
+    #[must_use]
+    pub const fn version(&self) -> u8 {
+        1
+    }
+    #[must_use]
+    pub const fn source(&self) -> PoseFingerprintV1 {
+        self.source
+    }
+    #[must_use]
+    pub const fn target(&self) -> PoseFingerprintV1 {
+        self.target
+    }
+    #[must_use]
+    pub fn edges(&self) -> &[CertifiedPathTransitionEvidenceV1] {
+        &self.edges
+    }
+    #[must_use]
+    pub const fn explored_state_count(&self) -> usize {
+        self.explored_state_count
+    }
+    #[must_use]
+    pub const fn evaluated_transition_count(&self) -> usize {
+        self.evaluated_transition_count
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertifiedPathGraphIndeterminateReasonV1 {
+    ResourceLimit,
+    NoCertifiedPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertifiedPathGraphSearchResultV1 {
+    Certified(CertifiedPoseGraphPathCertificateV1),
+    Indeterminate {
+        reason: CertifiedPathGraphIndeterminateReasonV1,
+        explored_state_count: usize,
+        evaluated_transition_count: usize,
+    },
+}
+
+/// Runs canonical breadth-first search over at most 32 states and 64 candidate
+/// transitions. The oracle is called once per reachable canonical candidate;
+/// only exact source/target-bound evidence is admitted.
+pub fn search_certified_pose_graph_v1(
+    states: &[PoseFingerprintV1],
+    transitions: &[CertifiedPathTransitionCandidateV1],
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
+    mut oracle: impl FnMut(
+        &CertifiedPathTransitionCandidateV1,
+    ) -> Option<CertifiedPathTransitionEvidenceV1>,
+) -> CertifiedPathGraphSearchResultV1 {
+    if states.is_empty()
+        || states.len() > MAX_CERTIFIED_PATH_GRAPH_STATES_V1
+        || transitions.len() > MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+    {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
+    }
+    let mut canonical_states = states.to_vec();
+    canonical_states.sort_unstable();
+    canonical_states.dedup();
+    if canonical_states.len() != states.len()
+        || canonical_states.binary_search(&source).is_err()
+        || canonical_states.binary_search(&target).is_err()
+    {
+        return indeterminate(
+            CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+            0,
+            0,
+        );
+    }
+    if source == target {
+        return CertifiedPathGraphSearchResultV1::Certified(CertifiedPoseGraphPathCertificateV1 {
+            source,
+            target,
+            edges: Vec::new(),
+            explored_state_count: 1,
+            evaluated_transition_count: 0,
+        });
+    }
+
+    let mut canonical_transitions = transitions.to_vec();
+    canonical_transitions
+        .sort_unstable_by_key(|edge| (edge.source, edge.target, edge.candidate_key));
+    canonical_transitions.dedup();
+    let mut queue = VecDeque::from([source]);
+    let mut parents =
+        BTreeMap::<PoseFingerprintV1, (PoseFingerprintV1, CertifiedPathTransitionEvidenceV1)>::new(
+        );
+    let mut visited = BTreeMap::from([(source, ())]);
+    let mut evaluated = 0usize;
+    let mut explored = 0usize;
+
+    while let Some(current) = queue.pop_front() {
+        explored += 1;
+        for candidate in canonical_transitions
+            .iter()
+            .filter(|edge| edge.source == current)
+        {
+            if canonical_states.binary_search(&candidate.target).is_err() {
+                continue;
+            }
+            evaluated += 1;
+            let Some(evidence) = oracle(candidate) else {
+                continue;
+            };
+            if evidence.source != candidate.source || evidence.target != candidate.target {
+                continue;
+            }
+            if visited.contains_key(&candidate.target) {
+                continue;
+            }
+            visited.insert(candidate.target, ());
+            parents.insert(candidate.target, (current, evidence));
+            if candidate.target == target {
+                let mut edges = Vec::new();
+                let mut cursor = target;
+                while cursor != source {
+                    let Some((parent, edge)) = parents.get(&cursor).copied() else {
+                        return indeterminate(
+                            CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+                            explored,
+                            evaluated,
+                        );
+                    };
+                    edges.push(edge);
+                    cursor = parent;
+                }
+                edges.reverse();
+                return CertifiedPathGraphSearchResultV1::Certified(
+                    CertifiedPoseGraphPathCertificateV1 {
+                        source,
+                        target,
+                        edges,
+                        explored_state_count: explored,
+                        evaluated_transition_count: evaluated,
+                    },
+                );
+            }
+            queue.push_back(candidate.target);
+        }
+    }
+    indeterminate(
+        CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+        explored,
+        evaluated,
+    )
+}
+
+fn indeterminate(
+    reason: CertifiedPathGraphIndeterminateReasonV1,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+) -> CertifiedPathGraphSearchResultV1 {
+    CertifiedPathGraphSearchResultV1::Indeterminate {
+        reason,
+        explored_state_count,
+        evaluated_transition_count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fingerprint(value: u8) -> PoseFingerprintV1 {
+        [value; 32]
+    }
+    fn candidate(source: u8, target: u8, key: u8) -> CertifiedPathTransitionCandidateV1 {
+        CertifiedPathTransitionCandidateV1 {
+            source: fingerprint(source),
+            target: fingerprint(target),
+            candidate_key: fingerprint(key),
+        }
+    }
+    fn certify(
+        candidate: &CertifiedPathTransitionCandidateV1,
+    ) -> CertifiedPathTransitionEvidenceV1 {
+        CertifiedPathTransitionEvidenceV1::from_native_oracle(
+            candidate.source,
+            candidate.target,
+            fingerprint(10),
+            fingerprint(11),
+            fingerprint(12),
+        )
+    }
+
+    #[test]
+    fn canonical_bfs_uses_only_certified_edges_and_binds_all_edge_certificates() {
+        let states = [
+            fingerprint(3),
+            fingerprint(1),
+            fingerprint(4),
+            fingerprint(2),
+        ];
+        let transitions = [
+            candidate(2, 4, 3),
+            candidate(1, 3, 2),
+            candidate(3, 4, 2),
+            candidate(1, 2, 1),
+        ];
+        let result = search_certified_pose_graph_v1(
+            &states,
+            &transitions,
+            fingerprint(1),
+            fingerprint(4),
+            |candidate| Some(certify(candidate)),
+        );
+        let CertifiedPathGraphSearchResultV1::Certified(certificate) = result else {
+            panic!("a certified route must be found");
+        };
+        assert_eq!(certificate.model_id(), CERTIFIED_PATH_GRAPH_MODEL_ID_V1);
+        assert_eq!(certificate.version(), 1);
+        assert!(!certificate.authorizes_project_mutation());
+        assert_eq!(
+            certificate
+                .edges()
+                .iter()
+                .map(|edge| (edge.source(), edge.target()))
+                .collect::<Vec<_>>(),
+            vec![
+                (fingerprint(1), fingerprint(2)),
+                (fingerprint(2), fingerprint(4))
+            ],
+        );
+        assert!(certificate.edges().iter().all(|edge| {
+            edge.schedule_certificate() == fingerprint(10)
+                && edge.collision_certificate() == fingerprint(11)
+                && edge.closure_certificate() == fingerprint(12)
+        }));
+
+        let mut reversed = transitions;
+        reversed.reverse();
+        let repeated = search_certified_pose_graph_v1(
+            &states,
+            &reversed,
+            fingerprint(1),
+            fingerprint(4),
+            |candidate| Some(certify(candidate)),
+        );
+        assert_eq!(
+            repeated,
+            CertifiedPathGraphSearchResultV1::Certified(certificate),
+            "candidate enumeration order must not change the certificate"
+        );
+    }
+
+    #[test]
+    fn uncertified_and_misbound_edges_never_form_a_path() {
+        let result = search_certified_pose_graph_v1(
+            &[fingerprint(1), fingerprint(2), fingerprint(3)],
+            &[candidate(1, 2, 1), candidate(2, 3, 1)],
+            fingerprint(1),
+            fingerprint(3),
+            |candidate| {
+                (candidate.source == fingerprint(2)).then(|| {
+                    CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                        fingerprint(9),
+                        candidate.target,
+                        fingerprint(10),
+                        fingerprint(11),
+                        fingerprint(12),
+                    )
+                })
+            },
+        );
+        assert!(matches!(
+            result,
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn hard_bounds_return_resource_indeterminate_never_impossible() {
+        let states = vec![fingerprint(1); MAX_CERTIFIED_PATH_GRAPH_STATES_V1 + 1];
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &[], fingerprint(1), fingerprint(2), |_| None,),
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
+                ..
+            }
+        ));
+        let transitions = vec![candidate(1, 2, 1); MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1 + 1];
+        assert!(matches!(
+            search_certified_pose_graph_v1(
+                &[fingerprint(1), fingerprint(2)],
+                &transitions,
+                fingerprint(1),
+                fingerprint(2),
+                |_| None,
+            ),
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
+                ..
+            }
+        ));
+    }
+}

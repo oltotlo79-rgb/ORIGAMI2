@@ -22,6 +22,7 @@
 #[allow(dead_code)]
 mod cayley;
 mod cell_order_transport;
+mod certified_path_graph;
 mod continuous_path;
 mod flat_endpoint_layer_order;
 mod stacked_fold_read;
@@ -41,6 +42,13 @@ pub use cell_order_transport::{
     CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,
     NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
     prove_single_face_cell_order_transport_v1, revalidate_single_face_cell_order_transport_v1,
+};
+pub use certified_path_graph::{
+    CERTIFIED_PATH_GRAPH_MODEL_ID_V1, CertifiedPathGraphIndeterminateReasonV1,
+    CertifiedPathGraphSearchResultV1, CertifiedPathTransitionCandidateV1,
+    CertifiedPathTransitionEvidenceV1, CertifiedPoseGraphPathCertificateV1,
+    MAX_CERTIFIED_PATH_GRAPH_STATES_V1, MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1, PoseFingerprintV1,
+    certify_scheduled_cycle_transition_v1, search_certified_pose_graph_v1,
 };
 pub use continuous_path::{
     MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,

@@ -398,6 +398,9 @@ describe('StackedFoldPanel', () => {
   it.each([
     ['cycle_nonclosing', 'The cyclic hinge endpoint does not close, so apply is disabled.'],
     ['cycle_path_uncertified', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.'],
+    ['cycle_path_unsupported', 'This input is outside the supported limited linear hinge-path class, so apply is disabled.'],
+    ['cycle_path_resource_limit', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.'],
+    ['cycle_path_collision', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.'],
   ] as const)('shows the bounded cycle failure %s without an apply action', async (reason, copy) => {
     transport.cancel.mockResolvedValue(undefined)
     transport.preview.mockRejectedValue({ reason })

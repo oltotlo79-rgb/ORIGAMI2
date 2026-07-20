@@ -19,8 +19,8 @@ use ori_core::{
     prepare_stacked_fold_graph_non_flat_layer_order_v1, prepare_stacked_fold_initial_graph_pose_v1,
     prepare_stacked_fold_initial_pose_v1,
     prepare_stacked_fold_non_flat_layer_order_with_thickness_v1,
-    prepare_stacked_fold_requested_graph_pose_v1, prepare_stacked_fold_requested_pose_v1,
-    prepare_stacked_fold_target_graph_audit_v1, prepare_stacked_fold_target_model_v1,
+    prepare_stacked_fold_requested_pose_v1, prepare_stacked_fold_target_graph_audit_v1,
+    prepare_stacked_fold_target_model_v1,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_foldability::{
@@ -49,7 +49,9 @@ const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.
 const ANALYSIS_FAILED_MESSAGE: &str =
     "The stacked-fold proposal is unsupported or could not be certified.";
 const CYCLE_NONCLOSING_MESSAGE: &str = "stacked_fold_cycle_nonclosing";
-const CYCLE_PATH_UNCERTIFIED_MESSAGE: &str = "stacked_fold_cycle_path_uncertified";
+const CYCLE_PATH_UNSUPPORTED_MESSAGE: &str = "stacked_fold_cycle_path_unsupported";
+const CYCLE_PATH_RESOURCE_MESSAGE: &str = "stacked_fold_cycle_path_resource_limit";
+const CYCLE_PATH_COLLISION_MESSAGE: &str = "stacked_fold_cycle_path_collision";
 const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
@@ -679,15 +681,15 @@ pub(super) async fn propose_current_stacked_fold_read(
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             if request.cycle_schedule_v1.is_some() {
-                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+                return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
             }
             let linear = request
                 .linear_candidate_v1
                 .as_ref()
-                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+                .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
             let (initial_angles, requested_angles) =
                 validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
-                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+                    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
             let generated = generate_linear_multi_hinge_path_candidate_v1(
                 initial.target().hinge_geometry(),
                 initial.target().audit(),
@@ -696,7 +698,12 @@ pub(super) async fn propose_current_stacked_fold_read(
                 &requested_angles,
                 MultiHingePathCandidateLimitsV1::default(),
             )
-            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            .map_err(|error| match error {
+                ori_kinematics::MultiHingePathCandidateErrorV1::ResourceLimit => {
+                    CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
+                }
+                _ => CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned(),
+            })?;
             let cycle_limits = CycleScheduleLimitsV1::default();
             let interval_closure = initial
                 .target()
@@ -716,7 +723,17 @@ pub(super) async fn propose_current_stacked_fold_read(
                         },
                     },
                 )
-                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+                .map_err(|error| match error {
+                    ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit => {
+                        CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
+                    }
+                    ori_kinematics::DyadicIntervalClosureErrorV1::UnprovenClosure { .. } => {
+                        CYCLE_NONCLOSING_MESSAGE.to_owned()
+                    }
+                    ori_kinematics::DyadicIntervalClosureErrorV1::InvalidInput => {
+                        CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
+                    }
+                })?;
             let continuous = diagnose_scheduled_cycle_path_v1(
                 initial.target().hinge_geometry(),
                 initial.target().audit(),
@@ -726,7 +743,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                 StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
             );
             if continuous.continuous_certificate_model_id().is_none() {
-                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+                return Err(CYCLE_PATH_COLLISION_MESSAGE.to_owned());
             }
             let closed_endpoint = ori_core::prepare_stacked_fold_requested_scheduled_graph_pose_v1(
                 initial,

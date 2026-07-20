@@ -41,7 +41,19 @@ type View =
   | Readonly<{ kind: 'idle' }>
   | Readonly<{ kind: 'reading' }>
   | Readonly<{ kind: 'ready'; response: StackedFoldReadResponse; applyFailed: boolean }>
-  | Readonly<{ kind: 'failed'; reason: 'analysis' | 'invalid' | 'apply' | 'stale' | 'cycle_nonclosing' | 'cycle_path_uncertified' }>
+  | Readonly<{
+      kind: 'failed'
+      reason:
+        | 'analysis'
+        | 'invalid'
+        | 'apply'
+        | 'stale'
+        | 'cycle_nonclosing'
+        | 'cycle_path_uncertified'
+        | 'cycle_path_unsupported'
+        | 'cycle_path_resource_limit'
+        | 'cycle_path_collision'
+    }>
   | Readonly<{ kind: 'refresh_failed' }>
 
 export function StackedFoldPanel({
@@ -221,7 +233,11 @@ export function StackedFoldPanel({
         kind: 'failed',
         reason: result.reason === 'invalid_response'
           ? 'invalid'
-          : result.reason === 'cycle_nonclosing' || result.reason === 'cycle_path_uncertified'
+          : result.reason === 'cycle_nonclosing'
+              || result.reason === 'cycle_path_uncertified'
+              || result.reason === 'cycle_path_unsupported'
+              || result.reason === 'cycle_path_resource_limit'
+              || result.reason === 'cycle_path_collision'
             ? result.reason
             : 'analysis',
       })
@@ -364,6 +380,12 @@ export function StackedFoldPanel({
               ? t('循環hingeの終端が閉じないため適用できません。', 'The cyclic hinge endpoint does not close, so apply is disabled.')
               : view.reason === 'cycle_path_uncertified'
                 ? t('循環hingeの終端は閉じますが、連続経路を証明できないため適用できません。', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.')
+                : view.reason === 'cycle_path_unsupported'
+                  ? t('この入力は、対応している限定的な線形ヒンジ経路クラスの対象外です。適用は無効です。', 'This input is outside the supported limited linear hinge-path class, so apply is disabled.')
+                  : view.reason === 'cycle_path_resource_limit'
+                    ? t('有界証明の資源上限に達しました。安全または不可能とは判定せず、適用を無効にします。', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.')
+                    : view.reason === 'cycle_path_collision'
+                      ? t('予定された連続経路の衝突なし証明を取得できませんでした。適用は無効です。', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.')
             : view.reason === 'apply'
               ? t('適用できませんでした。プレビューは失効しました。', 'Apply failed; the preview is no longer trusted.')
               : t('この入力ではnative証明を完成できませんでした。', 'A native proof could not be completed for this input.')}

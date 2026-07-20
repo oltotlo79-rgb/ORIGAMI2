@@ -290,8 +290,14 @@ test('transport failures are sanitized and stale requests never invoke transport
   assert.equal(calls, 1)
 })
 
-test('closed failure vocabulary preserves only cycle closure and path reasons', async () => {
-  for (const reason of ['cycle_nonclosing', 'cycle_path_uncertified'] as const) {
+test('closed failure vocabulary preserves bounded cycle failure reasons', async () => {
+  for (const reason of [
+    'cycle_nonclosing',
+    'cycle_path_uncertified',
+    'cycle_path_unsupported',
+    'cycle_path_resource_limit',
+    'cycle_path_collision',
+  ] as const) {
     const coordinator = createStackedFoldReadCoordinator({
       transport: async () => {
         throw { reason, secret: 'not reflected' }

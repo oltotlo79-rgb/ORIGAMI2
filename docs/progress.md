@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約46.3%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約46.4%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.24%に対し、GLBの紙厚付き形状へ正規化RGBA頂点色で表裏色とedge色を接続し、「入出力・互換性」を81%から82%へ更新した。差分は0.05ポイント（全体比率5% × 1ポイント）で、46.29%を小数第1位へ丸めて表示している。静的3D meshの外部reader、Blender、slicer、Web viewerでの受入とanimation、texture、面間union・印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frameも未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.29%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.29%に対し、OBJ・STL・GLBの生成bytesを独立したecosystem reader 3種へ渡す自動受入を追加し、「入出力・互換性」を82%から84%へ更新した。差分は0.10ポイント（全体比率5% × 2ポイント）で、46.39%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入とanimation、texture、面間union・印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frameも未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.39%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,13 +19,14 @@
 | 3D折り・紙厚・衝突 | 17% | 56% | 9.52% | 木構造多ヒンジの姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、切断後pieceの同一sheet origin、境界間Cut、closed loop、open/branched seam、穴付き静的3D表示を接続。正厚三角柱の完全分類、native連続停止、専用層順3D表示、折り重ね、一般経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 82% | 4.10% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色、面別closed solidも実装。FOLDの3D・複数frame、animation、texture、面間union、外部3Dアプリでの受入検証を残す |
+| 入出力・互換性 | 5% | 84% | 4.20% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色、面別closed solid、独立reader 3種の自動受入も実装。FOLDの3D・複数frame、animation、texture、面間union、GUI 3Dアプリでの実機受入を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **46.29%** | — |
+| **合計** | **100%** | — | **46.39%** | — |
 
 ## 完了
 
+- OBJ・binary STL・GLBの生成bytesを、形式基盤自身のverifierとは独立した`gltf 1.4.1`、`tobj 4.0.4`、`stl_io 0.11.0`へ読み込ませる自動受入を追加した。外部reader側でscene、primitive、position・index数、normalized RGBA頂点色、STL face数、OBJ単一index meshを再確認する。全依存はtest専用で製品binaryへ含めない。`ori-formats` 263件が成功した。GUIのBlender・slicer・Web viewer実機受入は残すためIO-008は部分実装を維持し、「入出力・互換性」を84%、全体を46.39%（表示46.4%）へ更新した
 - GLBの紙厚付き形状へ紙の表裏色を反映した。version互換なoptional頂点色契約を追加し、頂点数との完全一致をadmissionで強制する。GLBは`COLOR_0`をnormalized unsigned-byte RGBA accessorとして内包し、PBR materialと乗算して表cap、裏cap、両色平均のedge wallを描き分ける。buffer view・accessor・alignment・raw color bytesを独立verifierで再検査し、色byte改変も拒否する。OBJ/STLが頂点色を保持しないこと、texture・animationが未対応であることは日英で引き続き事前表示する。`ori-formats` 262件、frontend Node 1,436件、DOM 228件、desktop全test targetのcompileが成功した。「入出力・互換性」を82%、全体を46.29%（表示46.3%）へ更新した
 - IO-008の静的用途を拡張し、GLBへ紙の表色を固定PBR materialとして内包した。紙厚が正なら、認証済み現在姿勢の各材料面を法線方向へ半分ずつ押し出し、表裏capと全境界side wallを持つ決定的な面別closed solidをOBJ・binary STL・GLBの共通meshへ生成する。幾何学的な全edge incidenceが2であること、厚さ、triangle数、形式内verifier、strict preview DTO、紙厚0とのprofile・warning切替、日英の情報損失表示を回帰した。隣接面間のboolean union、折り目の隙間・重なり除去、裏色・texture、animation、印刷可能性保証は行わない。frontend production build、Node 1,436件、DOM 228件、Rust全test targetのcompileが成功し、native test実行だけはWindows Application Control `os error 4551`で開始前に遮断された。「入出力・互換性」を81%、全体を46.24%（表示46.2%）へ更新した
 - LIN-005として、layerごとの表示・非表示、編集lock、0〜100%透明度を日英管理UI、strict IPC、native command、Undo/Redo、認証済み履歴、通常`.ori2`保存・読込、復旧checkpointへ接続した。旧layer recordは各新fieldを独立した任意fieldとして読み、欠けた値だけ`visible=true / locked=false / opacity=1`へ移行する。非表示または透明度0の辺は2D描画・選択・snap・方向参照・交差候補から除外し、共有頂点は可視incident edgeが1本でもあれば表示する。表示中のlock辺は選択・計測・参照を許可したまま、削除・分割・交差・T字・cluster・再割当と、incident edgeが1本でもlockされた共有頂点の移動・削除をUI/nativeの二重guardで原子的に拒否し、lock解除は常に可能とした。opacityのNaN・無限・負の0・範囲外、partial wire、未知field、stale binding、履歴forward/inverse改ざんを回帰し、frontend Node 1,353件・DOM 209件、lint、production build、`ori-domain` layer 10件、`ori-core` layer 14件と履歴opacity 2件、`ori-formats` 3件、desktop release checkとnative project-layer 2件が成功した。ブラウザ試作モードでは1,024×720の基本配置とconsole error/warning 0件を確認した。LIN-004は注釈・下絵objectを残すため部分実装を維持し、LIN-005を実装済み、MUST集計を49 / 30 / 8、「2D展開図エディター」を57%、全体を45.11%（表示45.1%）へ更新した

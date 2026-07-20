@@ -51,13 +51,15 @@ pub use mesh_animation_export::{
     export_animated_triangle_mesh_glb_with_limits,
 };
 pub use mesh_export::{
+    EmbeddedBaseColorTextureV1, EmbeddedTextureMediaTypeV1,
     INDEXED_TRIANGLE_MESH_SCHEMA_VERSION_V1, IndexedTriangleMeshV1, MAX_STATIC_MESH_EXPORT_BYTES,
-    MAX_STATIC_MESH_NAME_BYTES, MAX_STATIC_MESH_NAME_CHARS, MAX_STATIC_MESH_TRIANGLES,
-    MAX_STATIC_MESH_VERTICES, STATIC_MESH_SOURCE_AXIS, STATIC_MESH_SOURCE_UNIT,
-    StaticMeshEncodedPrecision, StaticMeshExportArtifact, StaticMeshExportError,
-    StaticMeshExportFormat, StaticMeshExportLimits, ValidatedIndexedTriangleMesh,
-    export_static_triangle_mesh, export_static_triangle_mesh_with_limits,
-    validate_indexed_triangle_mesh, validate_indexed_triangle_mesh_with_limits,
+    MAX_STATIC_MESH_NAME_BYTES, MAX_STATIC_MESH_NAME_CHARS, MAX_STATIC_MESH_TEXTURE_BYTES,
+    MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES, STATIC_MESH_SOURCE_AXIS,
+    STATIC_MESH_SOURCE_UNIT, StaticMeshEncodedPrecision, StaticMeshExportArtifact,
+    StaticMeshExportError, StaticMeshExportFormat, StaticMeshExportLimits,
+    ValidatedIndexedTriangleMesh, export_static_triangle_mesh,
+    export_static_triangle_mesh_with_limits, validate_indexed_triangle_mesh,
+    validate_indexed_triangle_mesh_with_limits,
 };
 pub use ori_domain::{
     DEFAULT_MAX_CONSTRAINT_EDGES as MAX_PROJECT_CONSTRAINT_INDEX_EDGES,

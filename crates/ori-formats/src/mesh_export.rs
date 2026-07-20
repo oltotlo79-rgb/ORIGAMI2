@@ -19,6 +19,8 @@ pub const MAX_STATIC_MESH_VERTICES: usize = 100_000;
 pub const MAX_STATIC_MESH_TRIANGLES: usize = 200_000;
 /// Non-relaxable maximum size of one exported file.
 pub const MAX_STATIC_MESH_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+/// Non-relaxable size of one embedded GLB base-color image.
+pub const MAX_STATIC_MESH_TEXTURE_BYTES: usize = 16 * 1024 * 1024;
 /// Non-relaxable mesh-name length in Unicode scalar values.
 pub const MAX_STATIC_MESH_NAME_CHARS: usize = 120;
 /// Non-relaxable mesh-name length in UTF-8 bytes.
@@ -72,6 +74,34 @@ pub struct IndexedTriangleMeshV1 {
     /// color applies uniformly. OBJ and STL cannot preserve this channel.
     #[serde(default)]
     pub vertex_colors_rgba: Vec<[u8; 4]>,
+    /// Optional embedded PNG/JPEG base-color texture and one UV per vertex.
+    #[serde(default)]
+    pub base_color_texture: Option<EmbeddedBaseColorTextureV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedBaseColorTextureV1 {
+    pub media_type: EmbeddedTextureMediaTypeV1,
+    pub bytes: Vec<u8>,
+    pub tex_coords: Vec<[f32; 2]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EmbeddedTextureMediaTypeV1 {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+}
+
+impl EmbeddedTextureMediaTypeV1 {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+        }
+    }
 }
 
 impl IndexedTriangleMeshV1 {
@@ -91,6 +121,7 @@ impl IndexedTriangleMeshV1 {
             triangles,
             base_color_rgba: opaque_white(),
             vertex_colors_rgba: Vec::new(),
+            base_color_texture: None,
         }
     }
 
@@ -103,6 +134,12 @@ impl IndexedTriangleMeshV1 {
     #[must_use]
     pub fn with_vertex_colors_rgba(mut self, colors: Vec<[u8; 4]>) -> Self {
         self.vertex_colors_rgba = colors;
+        self
+    }
+
+    #[must_use]
+    pub fn with_base_color_texture(mut self, texture: EmbeddedBaseColorTextureV1) -> Self {
+        self.base_color_texture = Some(texture);
         self
     }
 }
@@ -124,6 +161,7 @@ pub struct ValidatedIndexedTriangleMesh {
     triangles: Vec<[u32; 3]>,
     base_color_rgba: [u8; 4],
     vertex_colors_rgba: Vec<[u8; 4]>,
+    base_color_texture: Option<EmbeddedBaseColorTextureV1>,
 }
 
 impl ValidatedIndexedTriangleMesh {
@@ -160,6 +198,11 @@ impl ValidatedIndexedTriangleMesh {
     #[must_use]
     pub fn vertex_colors_rgba(&self) -> &[[u8; 4]] {
         &self.vertex_colors_rgba
+    }
+
+    #[must_use]
+    pub fn base_color_texture(&self) -> Option<&EmbeddedBaseColorTextureV1> {
+        self.base_color_texture.as_ref()
     }
 }
 
@@ -264,6 +307,14 @@ pub enum StaticMeshExportError {
     NormalCountMismatch { actual: usize, expected: usize },
     #[error("mesh has {actual} vertex colors; either zero or exactly {expected} are required")]
     VertexColorCountMismatch { actual: usize, expected: usize },
+    #[error("texture has {actual} UV coordinates; exactly {expected} are required")]
+    TextureCoordinateCountMismatch { actual: usize, expected: usize },
+    #[error("texture is {actual} bytes; the limit is {maximum} bytes")]
+    TextureTooLarge { actual: usize, maximum: usize },
+    #[error("texture payload does not match its declared media type")]
+    InvalidTexturePayload,
+    #[error("texture coordinate {vertex_index} is non-finite")]
+    NonFiniteTextureCoordinate { vertex_index: usize },
     #[error("mesh vertex {vertex_index} has a non-finite coordinate")]
     NonFinitePosition { vertex_index: usize },
     #[error("mesh vertex {vertex_index} has a non-finite normal")]
@@ -346,6 +397,36 @@ pub fn validate_indexed_triangle_mesh_with_limits(
             actual: document.vertex_colors_rgba.len(),
             expected: document.positions_mm.len(),
         });
+    }
+    if let Some(texture) = &document.base_color_texture {
+        if texture.bytes.len() > MAX_STATIC_MESH_TEXTURE_BYTES {
+            return Err(StaticMeshExportError::TextureTooLarge {
+                actual: texture.bytes.len(),
+                maximum: MAX_STATIC_MESH_TEXTURE_BYTES,
+            });
+        }
+        if texture.tex_coords.len() != document.positions_mm.len() {
+            return Err(StaticMeshExportError::TextureCoordinateCountMismatch {
+                actual: texture.tex_coords.len(),
+                expected: document.positions_mm.len(),
+            });
+        }
+        let valid_payload = match texture.media_type {
+            EmbeddedTextureMediaTypeV1::Png => texture.bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            EmbeddedTextureMediaTypeV1::Jpeg => {
+                texture.bytes.starts_with(&[0xff, 0xd8]) && texture.bytes.ends_with(&[0xff, 0xd9])
+            }
+        };
+        if !valid_payload {
+            return Err(StaticMeshExportError::InvalidTexturePayload);
+        }
+        if let Some(vertex_index) = texture
+            .tex_coords
+            .iter()
+            .position(|uv| uv.iter().any(|value| !value.is_finite()))
+        {
+            return Err(StaticMeshExportError::NonFiniteTextureCoordinate { vertex_index });
+        }
     }
 
     let mut positions_mm = Vec::new();
@@ -474,6 +555,7 @@ pub fn validate_indexed_triangle_mesh_with_limits(
         triangles,
         base_color_rgba: document.base_color_rgba,
         vertex_colors_rgba: document.vertex_colors_rgba.clone(),
+        base_color_texture: document.base_color_texture.clone(),
     })
 }
 
@@ -1005,6 +1087,10 @@ struct GlbRoot<'a> {
     #[serde(rename = "bufferViews")]
     buffer_views: Vec<GlbBufferView>,
     accessors: Vec<GlbAccessor>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<GlbImage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    textures: Vec<GlbTexture>,
 }
 
 #[derive(Serialize)]
@@ -1070,6 +1156,26 @@ struct GlbPbrMaterial {
     metallic_factor: f32,
     #[serde(rename = "roughnessFactor")]
     roughness_factor: f32,
+    #[serde(rename = "baseColorTexture", skip_serializing_if = "Option::is_none")]
+    base_color_texture: Option<GlbTextureInfo>,
+}
+
+#[derive(Serialize)]
+struct GlbTextureInfo {
+    index: u32,
+    #[serde(rename = "texCoord")]
+    tex_coord: u32,
+}
+#[derive(Serialize)]
+struct GlbImage {
+    #[serde(rename = "bufferView")]
+    buffer_view: u32,
+    #[serde(rename = "mimeType")]
+    mime_type: &'static str,
+}
+#[derive(Serialize)]
+struct GlbTexture {
+    source: u32,
 }
 
 #[derive(Serialize)]
@@ -1080,6 +1186,8 @@ struct GlbAttributes {
     normal: u32,
     #[serde(rename = "COLOR_0", skip_serializing_if = "Option::is_none")]
     color: Option<u32>,
+    #[serde(rename = "TEXCOORD_0", skip_serializing_if = "Option::is_none")]
+    tex_coord: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1095,7 +1203,8 @@ struct GlbBufferView {
     byte_offset: usize,
     #[serde(rename = "byteLength")]
     byte_length: usize,
-    target: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1137,6 +1246,10 @@ struct CheckedGlbRoot {
     #[serde(rename = "bufferViews")]
     buffer_views: Vec<CheckedGlbBufferView>,
     accessors: Vec<CheckedGlbAccessor>,
+    #[serde(default)]
+    images: Vec<CheckedGlbImage>,
+    #[serde(default)]
+    textures: Vec<CheckedGlbTexture>,
 }
 
 #[derive(Deserialize)]
@@ -1210,6 +1323,28 @@ struct CheckedGlbPbrMaterial {
     metallic_factor: f32,
     #[serde(rename = "roughnessFactor")]
     roughness_factor: f32,
+    #[serde(rename = "baseColorTexture", default)]
+    base_color_texture: Option<CheckedGlbTextureInfo>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedGlbTextureInfo {
+    index: u32,
+    #[serde(rename = "texCoord")]
+    tex_coord: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedGlbImage {
+    #[serde(rename = "bufferView")]
+    buffer_view: u32,
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedGlbTexture {
+    source: u32,
 }
 
 #[derive(Deserialize)]
@@ -1221,6 +1356,8 @@ struct CheckedGlbAttributes {
     normal: u32,
     #[serde(rename = "COLOR_0", default)]
     color: Option<u32>,
+    #[serde(rename = "TEXCOORD_0", default)]
+    tex_coord: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1238,7 +1375,8 @@ struct CheckedGlbBufferView {
     byte_offset: usize,
     #[serde(rename = "byteLength")]
     byte_length: usize,
-    target: u32,
+    #[serde(default)]
+    target: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1287,6 +1425,8 @@ fn serialize_glb(
             .ok_or(StaticMeshExportError::StructureNotRepresentable {
                 format: StaticMeshExportFormat::Glb20,
             })?;
+    let texture = mesh.base_color_texture.as_ref();
+    let uv_bytes = texture.map_or(0, |value| value.tex_coords.len() * 8);
     let normal_offset = position_bytes;
     let color_offset = normal_offset.checked_add(normal_bytes).ok_or(
         StaticMeshExportError::StructureNotRepresentable {
@@ -1298,11 +1438,25 @@ fn serialize_glb(
             format: StaticMeshExportFormat::Glb20,
         },
     )?;
-    let binary_length = index_offset.checked_add(index_bytes).ok_or(
+    let uv_offset = index_offset.checked_add(index_bytes).ok_or(
         StaticMeshExportError::StructureNotRepresentable {
             format: StaticMeshExportFormat::Glb20,
         },
     )?;
+    let image_offset = uv_offset.checked_add(uv_bytes).ok_or(
+        StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        },
+    )?;
+    let image_length = texture.map_or(0, |value| value.bytes.len());
+    let binary_length = align4(image_offset.checked_add(image_length).ok_or(
+        StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        },
+    )?)
+    .ok_or(StaticMeshExportError::StructureNotRepresentable {
+        format: StaticMeshExportFormat::Glb20,
+    })?;
     if normal_offset % 4 != 0
         || color_offset % 4 != 0
         || index_offset % 4 != 0
@@ -1344,19 +1498,19 @@ fn serialize_glb(
             buffer: 0,
             byte_offset: 0,
             byte_length: position_bytes,
-            target: GLTF_ARRAY_BUFFER,
+            target: Some(GLTF_ARRAY_BUFFER),
         },
         GlbBufferView {
             buffer: 0,
             byte_offset: normal_offset,
             byte_length: normal_bytes,
-            target: GLTF_ARRAY_BUFFER,
+            target: Some(GLTF_ARRAY_BUFFER),
         },
         GlbBufferView {
             buffer: 0,
             byte_offset: index_offset,
             byte_length: index_bytes,
-            target: GLTF_ELEMENT_ARRAY_BUFFER,
+            target: Some(GLTF_ELEMENT_ARRAY_BUFFER),
         },
     ];
     let mut accessors = vec![
@@ -1396,7 +1550,7 @@ fn serialize_glb(
             buffer: 0,
             byte_offset: color_offset,
             byte_length: color_bytes,
-            target: GLTF_ARRAY_BUFFER,
+            target: Some(GLTF_ARRAY_BUFFER),
         });
         accessors.push(GlbAccessor {
             buffer_view: 3,
@@ -1409,6 +1563,32 @@ fn serialize_glb(
             normalized: Some(true),
         });
     }
+    let uv_accessor = texture.map(|_| accessors.len() as u32);
+    if let Some(texture) = texture {
+        buffer_views.push(GlbBufferView {
+            buffer: 0,
+            byte_offset: uv_offset,
+            byte_length: uv_bytes,
+            target: Some(GLTF_ARRAY_BUFFER),
+        });
+        accessors.push(GlbAccessor {
+            buffer_view: (buffer_views.len() - 1) as u32,
+            byte_offset: 0,
+            component_type: GLTF_FLOAT,
+            count: texture.tex_coords.len(),
+            accessor_type: "VEC2",
+            min: None,
+            max: None,
+            normalized: None,
+        });
+        buffer_views.push(GlbBufferView {
+            buffer: 0,
+            byte_offset: image_offset,
+            byte_length: image_length,
+            target: None,
+        });
+    }
+    let image_view = texture.map(|_| (buffer_views.len() - 1) as u32);
     let root = GlbRoot {
         asset: GlbAsset {
             version: "2.0",
@@ -1437,6 +1617,7 @@ fn serialize_glb(
                     position: 0,
                     normal: 1,
                     color: color_accessor,
+                    tex_coord: uv_accessor,
                 },
                 indices: 2,
                 mode: GLTF_TRIANGLES,
@@ -1451,6 +1632,10 @@ fn serialize_glb(
                     .map(|channel| f32::from(channel) / 255.0),
                 metallic_factor: 0.0,
                 roughness_factor: 1.0,
+                base_color_texture: texture.map(|_| GlbTextureInfo {
+                    index: 0,
+                    tex_coord: 0,
+                }),
             },
             double_sided: true,
         }],
@@ -1459,6 +1644,17 @@ fn serialize_glb(
         }],
         buffer_views,
         accessors,
+        images: texture
+            .map(|value| {
+                vec![GlbImage {
+                    buffer_view: image_view.expect("texture has image view"),
+                    mime_type: value.media_type.as_str(),
+                }]
+            })
+            .unwrap_or_default(),
+        textures: texture
+            .map(|_| vec![GlbTexture { source: 0 }])
+            .unwrap_or_default(),
     };
     let json = serde_json::to_vec(&root).map_err(|_| {
         StaticMeshExportError::StructureNotRepresentable {
@@ -1536,6 +1732,15 @@ fn serialize_glb(
         for index in triangle {
             output.extend_from_slice(&index.to_le_bytes());
         }
+    }
+    if let Some(texture) = texture {
+        for uv in &texture.tex_coords {
+            for component in uv {
+                output.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+        output.extend_from_slice(&texture.bytes);
+        output.resize(total_length, 0);
     }
     debug_assert_eq!(output.len(), total_length);
     Ok(output)
@@ -1644,6 +1849,14 @@ fn verify_glb_structure(
         || root.meshes[0].primitives[0].attributes.normal != 1
         || root.meshes[0].primitives[0].attributes.color
             != (!mesh.vertex_colors_rgba.is_empty()).then_some(3)
+        || root.meshes[0].primitives[0].attributes.tex_coord
+            != mesh.base_color_texture.as_ref().map(|_| {
+                if mesh.vertex_colors_rgba.is_empty() {
+                    3
+                } else {
+                    4
+                }
+            })
         || root.meshes[0].primitives[0].indices != 2
         || root.meshes[0].primitives[0].mode != GLTF_TRIANGLES
         || root.meshes[0].primitives[0].material != 0
@@ -1655,21 +1868,23 @@ fn verify_glb_structure(
                 .map(|channel| f32::from(channel) / 255.0)
         || root.materials[0].pbr.metallic_factor.to_bits() != 0.0_f32.to_bits()
         || root.materials[0].pbr.roughness_factor.to_bits() != 1.0_f32.to_bits()
+        || root.materials[0]
+            .pbr
+            .base_color_texture
+            .as_ref()
+            .map(|v| (v.index, v.tex_coord))
+            != mesh.base_color_texture.as_ref().map(|_| (0, 0))
         || !root.materials[0].double_sided
         || root.buffers.len() != 1
         || root.buffers[0].byte_length != binary_length
         || root.buffer_views.len()
-            != if mesh.vertex_colors_rgba.is_empty() {
-                3
-            } else {
-                4
-            }
+            != 3 + usize::from(!mesh.vertex_colors_rgba.is_empty())
+                + usize::from(mesh.base_color_texture.is_some()) * 2
         || root.accessors.len()
-            != if mesh.vertex_colors_rgba.is_empty() {
-                3
-            } else {
-                4
-            }
+            != 3 + usize::from(!mesh.vertex_colors_rgba.is_empty())
+                + usize::from(mesh.base_color_texture.is_some())
+        || root.images.len() != usize::from(mesh.base_color_texture.is_some())
+        || root.textures.len() != usize::from(mesh.base_color_texture.is_some())
     {
         return false;
     }
@@ -1699,12 +1914,32 @@ fn verify_glb_structure(
         None => return false,
     };
     let mut expected_views = vec![
-        (0, 0, position_bytes, GLTF_ARRAY_BUFFER),
-        (0, normal_offset, position_bytes, GLTF_ARRAY_BUFFER),
-        (0, index_offset, index_bytes, GLTF_ELEMENT_ARRAY_BUFFER),
+        (0, 0, position_bytes, Some(GLTF_ARRAY_BUFFER)),
+        (0, normal_offset, position_bytes, Some(GLTF_ARRAY_BUFFER)),
+        (
+            0,
+            index_offset,
+            index_bytes,
+            Some(GLTF_ELEMENT_ARRAY_BUFFER),
+        ),
     ];
     if !mesh.vertex_colors_rgba.is_empty() {
-        expected_views.push((0, color_offset, color_bytes, GLTF_ARRAY_BUFFER));
+        expected_views.push((0, color_offset, color_bytes, Some(GLTF_ARRAY_BUFFER)));
+    }
+    let uv_offset = index_offset + index_bytes;
+    if let Some(texture) = &mesh.base_color_texture {
+        expected_views.push((
+            0,
+            uv_offset,
+            texture.tex_coords.len() * 8,
+            Some(GLTF_ARRAY_BUFFER),
+        ));
+        expected_views.push((
+            0,
+            uv_offset + texture.tex_coords.len() * 8,
+            texture.bytes.len(),
+            None,
+        ));
     }
     if !root
         .buffer_views
@@ -1733,6 +1968,26 @@ fn verify_glb_structure(
             "VEC4",
             Some(true),
         ));
+    }
+    if let Some(texture) = &mesh.base_color_texture {
+        expected_accessors.push((
+            if mesh.vertex_colors_rgba.is_empty() {
+                3
+            } else {
+                4
+            },
+            GLTF_FLOAT,
+            texture.tex_coords.len(),
+            "VEC2",
+            None,
+        ));
+        let image_view = root.buffer_views.len() - 1;
+        if root.images[0].buffer_view != image_view as u32
+            || root.images[0].mime_type != texture.media_type.as_str()
+            || root.textures[0].source != 0
+        {
+            return false;
+        }
     }
     root.accessors
         .iter()
@@ -1800,6 +2055,27 @@ fn verify_glb_binary(
             return false;
         }
     }
+    if let Some(texture) = &mesh.base_color_texture {
+        for expected in texture.tex_coords.iter().flatten() {
+            let Some(actual) = read_f32_le(binary, &mut cursor) else {
+                return false;
+            };
+            if actual.to_bits() != expected.to_bits() {
+                return false;
+            }
+        }
+        let Some(actual) = binary.get(cursor..cursor + texture.bytes.len()) else {
+            return false;
+        };
+        if actual != texture.bytes {
+            return false;
+        }
+        cursor += texture.bytes.len();
+        if binary[cursor..].iter().any(|byte| *byte != 0) {
+            return false;
+        }
+        cursor = binary.len();
+    }
     if cursor != binary.len() {
         return false;
     }
@@ -1838,8 +2114,9 @@ fn verify_glb_binary(
             .is_some_and(|value| check_number_vec_u32(value, [index_max]))
         && root
             .accessors
-            .get(3)
-            .is_none_or(|accessor| accessor.min.is_none() && accessor.max.is_none())
+            .iter()
+            .skip(3)
+            .all(|accessor| accessor.min.is_none() && accessor.max.is_none())
 }
 
 fn check_number_vec_f32<const N: usize>(actual: &[serde_json::Number], expected: [f32; N]) -> bool {
@@ -1928,6 +2205,78 @@ mod tests {
             vec![[0.0, 0.0, 2.0]; 4],
             vec![[0, 1, 2], [0, 2, 3]],
         )
+    }
+
+    #[test]
+    fn glb_embeds_bounded_png_texture_and_uvs_for_independent_reader() {
+        // The image reader is deliberately not invoked by this interchange
+        // test; these bytes are a complete 1x1 RGBA PNG kept in source only.
+        let png = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let uvs = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let document = sample_document().with_base_color_texture(EmbeddedBaseColorTextureV1 {
+            media_type: EmbeddedTextureMediaTypeV1::Png,
+            bytes: png.clone(),
+            tex_coords: uvs.clone(),
+        });
+        let mesh = validate_indexed_triangle_mesh(&document).unwrap();
+        let artifact = export_static_triangle_mesh(StaticMeshExportFormat::Glb20, &mesh).unwrap();
+        let gltf = gltf::Gltf::from_slice(&artifact.bytes).expect("independent glTF reader");
+        let blob = gltf.blob.as_deref().unwrap();
+        let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
+        let read_uvs: Vec<_> = primitive
+            .reader(|_| Some(blob))
+            .read_tex_coords(0)
+            .unwrap()
+            .into_f32()
+            .collect();
+        assert_eq!(read_uvs, uvs);
+        let material = primitive.material();
+        assert_eq!(
+            material
+                .pbr_metallic_roughness()
+                .base_color_texture()
+                .unwrap()
+                .texture()
+                .index(),
+            0
+        );
+        let image = gltf.images().next().unwrap();
+        let gltf::image::Source::View { view, mime_type } = image.source() else {
+            panic!("embedded image required")
+        };
+        assert_eq!(mime_type, "image/png");
+        assert_eq!(&blob[view.offset()..view.offset() + view.length()], png);
+    }
+
+    #[test]
+    fn texture_admission_rejects_bad_payload_uvs_and_resource_excess() {
+        let mut document = sample_document();
+        document.base_color_texture = Some(EmbeddedBaseColorTextureV1 {
+            media_type: EmbeddedTextureMediaTypeV1::Jpeg,
+            bytes: vec![0xff, 0xd8, 0xff, 0xd9],
+            tex_coords: vec![[0.0, 0.0]; 3],
+        });
+        assert!(matches!(
+            validate_indexed_triangle_mesh(&document),
+            Err(StaticMeshExportError::TextureCoordinateCountMismatch { .. })
+        ));
+        document.base_color_texture.as_mut().unwrap().tex_coords = vec![[0.0, 0.0]; 4];
+        document.base_color_texture.as_mut().unwrap().bytes = vec![0; 4];
+        assert_eq!(
+            validate_indexed_triangle_mesh(&document),
+            Err(StaticMeshExportError::InvalidTexturePayload)
+        );
+        document.base_color_texture.as_mut().unwrap().bytes =
+            vec![0; MAX_STATIC_MESH_TEXTURE_BYTES + 1];
+        assert!(matches!(
+            validate_indexed_triangle_mesh(&document),
+            Err(StaticMeshExportError::TextureTooLarge { .. })
+        ));
     }
 
     fn sample_mesh() -> ValidatedIndexedTriangleMesh {

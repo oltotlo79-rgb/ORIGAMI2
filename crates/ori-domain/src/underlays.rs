@@ -59,6 +59,13 @@ impl Default for UnderlayDocumentV1 {
     }
 }
 
+impl UnderlayDocumentV1 {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.underlays.is_empty()
+    }
+}
+
 pub fn validate_underlay_document_v1(document: &UnderlayDocumentV1) -> Result<(), &'static str> {
     if document.schema_version != UNDERLAY_SCHEMA_VERSION_V1 {
         return Err("unsupported underlay schema");

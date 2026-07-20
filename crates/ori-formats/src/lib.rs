@@ -17,9 +17,9 @@ use ori_domain::{
     GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
     GeometricConstraintKindV1, InstructionPose, InstructionTimeline,
     InstructionTimelineValidationError, Paper, ProjectId, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, VertexId, validate_annotation_document_v1,
+    ProjectLayerDocumentValidationErrorV1, UnderlayDocumentV1, VertexId, validate_annotation_document_v1,
     validate_geometric_constraint_document_v1, validate_instruction_timeline,
-    validate_project_layer_document_against_pattern_v1,
+    validate_project_layer_document_against_pattern_v1, validate_underlay_document_v1,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -306,6 +306,8 @@ pub struct ProjectDocument {
     pub layers: ProjectLayerDocumentV1,
     #[serde(default, skip_serializing_if = "AnnotationDocumentV1::is_empty")]
     pub annotations: AnnotationDocumentV1,
+    #[serde(default, skip_serializing_if = "UnderlayDocumentV1::is_empty")]
+    pub underlays: UnderlayDocumentV1,
     #[serde(
         default,
         skip_serializing_if = "ori_domain::ElementMetadataDocumentV1::is_empty"
@@ -333,6 +335,7 @@ impl ProjectDocument {
             geometric_constraints: GeometricConstraintDocumentV1::default(),
             layers: ProjectLayerDocumentV1::default(),
             annotations: AnnotationDocumentV1::default(),
+            underlays: UnderlayDocumentV1::default(),
             element_metadata: ori_domain::ElementMetadataDocumentV1::default(),
             texture_assets: Vec::new(),
         }
@@ -463,6 +466,8 @@ pub enum FormatError {
     InvalidProjectLayers(#[from] ProjectLayerDocumentValidationErrorV1),
     #[error("project annotation metadata is invalid")]
     InvalidAnnotations,
+    #[error("project underlays are invalid")]
+    InvalidUnderlays,
     #[error(
         "cannot validate geometric constraints against {actual} crease-pattern vertices; the hard maximum is {maximum}"
     )]
@@ -528,7 +533,25 @@ pub fn read_project_json_with_limits(
     validate_project_geometric_constraints(&document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     validate_project_annotations(&document)?;
+    validate_project_underlays(&document)?;
     Ok(document)
+}
+
+fn validate_project_underlays(document: &ProjectDocument) -> Result<(), FormatError> {
+    validate_underlay_document_v1(&document.underlays)
+        .map_err(|_| FormatError::InvalidUnderlays)?;
+    for underlay in &document.underlays.underlays {
+        let layer = document
+            .layers
+            .layers
+            .iter()
+            .find(|layer| layer.id == underlay.layer)
+            .ok_or(FormatError::InvalidUnderlays)?;
+        if layer.content_kind != ori_domain::LayerContentKindV1::Underlay {
+            return Err(FormatError::InvalidUnderlays);
+        }
+    }
+    Ok(())
 }
 
 fn validate_project_annotations(document: &ProjectDocument) -> Result<(), FormatError> {
@@ -614,12 +637,15 @@ fn validate_texture_assets(document: &ProjectDocument) -> Result<(), FormatError
     if document.texture_assets.len() > MAX_PROJECT_TEXTURE_ASSETS {
         return Err(FormatError::InvalidTextureAssets);
     }
-    let referenced = [
+    let referenced = document
+    .underlays
+    .underlays
+    .iter()
+    .map(|underlay| underlay.asset)
+    .chain([
         document.paper.front.texture_asset,
         document.paper.back.texture_asset,
-    ]
-    .into_iter()
-    .flatten()
+    ].into_iter().flatten())
     .map(|id| id.canonical_bytes())
     .collect::<BTreeSet<_>>();
     let mut ids = BTreeSet::new();

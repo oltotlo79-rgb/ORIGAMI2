@@ -508,6 +508,13 @@ pub(super) async fn propose_current_stacked_fold_read(
                     },
                 )
                 .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            // The legacy collision diagnostic below samples one collective
+            // uniform angle. It is not evidence for this per-hinge schedule.
+            // Until collision receives the exact same schedule parameter,
+            // closure proof alone must never mint an apply token.
+            if !schedule_request.entries.is_empty() {
+                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+            }
             let requested_angles = ori_kinematics::CanonicalHingeAngles::new(
                 schedule_request
                     .entries

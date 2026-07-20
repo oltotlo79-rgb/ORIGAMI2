@@ -15,6 +15,8 @@ mod project_persistence;
 mod recovery;
 mod save_path;
 mod stacked_fold_read;
+mod stacked_fold_transaction;
+use stacked_fold_transaction::StackedFoldTransactionState;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -121,6 +123,7 @@ use recovery::{
 };
 use serde::{Deserialize, Serialize};
 use stacked_fold_read::propose_current_stacked_fold_read;
+use stacked_fold_transaction::cancel_stacked_fold_transaction_preview;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -6741,6 +6744,7 @@ pub fn run() {
         .manage(MeshAnimationExportState::default())
         .manage(GlobalFlatFoldabilityState::default())
         .manage(InstructionExportState::default())
+        .manage(StackedFoldTransactionState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
@@ -6766,6 +6770,7 @@ pub fn run() {
             get_global_flat_foldability_result,
             cancel_global_flat_foldability,
             propose_current_stacked_fold_read,
+            cancel_stacked_fold_transaction_preview,
             open_project,
             save_project,
             save_project_as,

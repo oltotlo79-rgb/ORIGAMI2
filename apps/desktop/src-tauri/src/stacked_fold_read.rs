@@ -252,6 +252,7 @@ pub(super) struct StackedFoldReadResponse {
 pub(super) async fn propose_current_stacked_fold_read(
     app_state: State<'_, AppState>,
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
     let worker_permit = app_state
@@ -422,7 +423,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         if endpoint_collision.has_prominent_blocking_hold() {
             return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
         }
-        let flat_endpoint_layer_order =
+        let (flat_endpoint_layer_order, transaction_layer_order) =
             if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
                 let target_revision = geometry_proof.lineage().target_revision();
                 let topology_report = analyze_faces(FaceExtractionInput {
@@ -454,23 +455,25 @@ pub(super) async fn propose_current_stacked_fold_read(
                 )
                 .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
                 match report.outcome {
-                    GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
+                    GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => (
                         StackedFoldFlatEndpointLayerOrderDto {
                             applicable: true,
                             certified: true,
                             material_face_count: layer_order.material_faces.len(),
                             overlap_cell_count: layer_order.overlap_cells.len(),
-                        }
-                    }
+                        },
+                        None,
+                    ),
                     GlobalFlatFoldabilityOutcome::Impossible { .. }
-                    | GlobalFlatFoldabilityOutcome::Unknown { .. } => {
+                    | GlobalFlatFoldabilityOutcome::Unknown { .. } => (
                         StackedFoldFlatEndpointLayerOrderDto {
                             applicable: true,
                             certified: false,
                             material_face_count: 0,
                             overlap_cell_count: 0,
-                        }
-                    }
+                        },
+                        None,
+                    ),
                 }
             } else {
                 let non_flat = prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
@@ -480,12 +483,15 @@ pub(super) async fn propose_current_stacked_fold_read(
                     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
                 )
                 .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-                StackedFoldFlatEndpointLayerOrderDto {
-                    applicable: true,
-                    certified: true,
-                    material_face_count: non_flat.material_faces().len(),
-                    overlap_cell_count: non_flat.overlap_cell_count(),
-                }
+                (
+                    StackedFoldFlatEndpointLayerOrderDto {
+                        applicable: true,
+                        certified: true,
+                        material_face_count: non_flat.material_faces().len(),
+                        overlap_cell_count: non_flat.overlap_cell_count(),
+                    },
+                    Some(non_flat),
+                )
             };
         let lineage = geometry_proof.lineage();
         let topology_proof = StackedFoldTopologyProofDto {
@@ -558,6 +564,20 @@ pub(super) async fn propose_current_stacked_fold_read(
             failure_classes: transaction_failures,
             authorizes_project_mutation: false,
         };
+        let source_fingerprint_bytes = geometry_proof.lineage().source_fingerprint().0;
+        let native_transaction = transaction_layer_order.map(|layer_order| {
+            super::stacked_fold_transaction::PendingStackedFoldPremises {
+                expected_instance_id: binding.project_instance_id(),
+                expected_project_id: binding.project_id(),
+                expected_revision: binding.source_revision(),
+                expected_source_fingerprint: source_fingerprint_bytes,
+                expected_pose_generation: binding.pose_generation(),
+                expected_layer_generation: binding.layer_order_generation(),
+                requested: prepared_requested_pose,
+                continuous: continuous_path,
+                layer_order,
+            }
+        });
         let crossed_cells = proposal
             .crossed_cells()
             .iter()
@@ -604,6 +624,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             continuous_path,
             flat_endpoint_layer_order,
             transaction_proposal,
+            native_transaction,
         ))
     })
     .await
@@ -622,6 +643,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         continuous_path,
         flat_endpoint_layer_order,
         transaction_proposal,
+        native_transaction,
     ) = analysis;
 
     {
@@ -641,6 +663,12 @@ pub(super) async fn propose_current_stacked_fold_read(
         if !pose_is_current || !layer_is_current {
             return Err(STALE_MESSAGE.to_owned());
         }
+    }
+    if let Some(native_transaction) = native_transaction {
+        super::stacked_fold_transaction::install_pending_stacked_fold(
+            &transaction_state,
+            native_transaction,
+        )?;
     }
     drop(worker_permit);
 

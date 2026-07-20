@@ -41,7 +41,8 @@ use super::{
 };
 
 const MID_SURFACE_GEOMETRY_PROFILE: &str = "authenticated_mid_surface_triangle_mesh_v1";
-const CLOSED_FACE_SOLIDS_GEOMETRY_PROFILE: &str = "authenticated_closed_face_solids_v1";
+const CLOSED_FACE_SOLIDS_GEOMETRY_PROFILE: &str =
+    "authenticated_exact_coplanar_face_union_solids_v1";
 const MAX_EXACT_TRIANGULATION_PREDICATES: usize = 20_000_000;
 const GLTF_ENCODED_UNIT: &str = "meter";
 const GLTF_ENCODED_AXIS: &str = "glTF 2.0 right-handed -X-right Y-up Z-forward";
@@ -586,6 +587,7 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         mid_surface,
     )?;
     let (mesh, solid_regions) = if source.paper_thickness_mm > 0.0 {
+        let mid_surface = weld_exact_coplanar_mid_surface(mid_surface)?;
         let solid = extrude_closed_face_solids(
             mid_surface,
             source.paper_thickness_mm,
@@ -1049,6 +1051,70 @@ struct ExtrudedClosedFaceSolids {
     regions: Vec<ClosedSolidTriangleRegionV1>,
 }
 
+fn weld_exact_coplanar_mid_surface(
+    mesh: IndexedTriangleMeshV1,
+) -> Result<IndexedTriangleMeshV1, String> {
+    let texture = mesh.base_color_texture.as_ref();
+    let mut registry = BTreeMap::new();
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut colors = Vec::new();
+    let mut tex_coords = Vec::new();
+    let mut remap = Vec::with_capacity(mesh.positions_mm.len());
+    for index in 0..mesh.positions_mm.len() {
+        let position = mesh.positions_mm[index];
+        let normal = mesh.normals[index];
+        let uv = texture.map(|value| value.tex_coords[index]);
+        let key = (
+            position.map(f64::to_bits),
+            normal.map(f64::to_bits),
+            uv.map(|value| value.map(f32::to_bits)),
+        );
+        let mapped = if let Some(existing) = registry.get(&key).copied() {
+            existing
+        } else {
+            let next =
+                u32::try_from(positions.len()).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+            registry.insert(key, next);
+            positions.push(position);
+            normals.push(normal);
+            if !mesh.vertex_colors_rgba.is_empty() {
+                colors.push(mesh.vertex_colors_rgba[index]);
+            }
+            if let Some(uv) = uv {
+                tex_coords.push(uv);
+            }
+            next
+        };
+        remap.push(mapped);
+    }
+    let triangles = mesh
+        .triangles
+        .iter()
+        .map(|triangle| triangle.map(|index| remap[index as usize]))
+        .collect::<Vec<_>>();
+    let mut unique_triangles = std::collections::BTreeSet::new();
+    for triangle in &triangles {
+        let mut canonical = *triangle;
+        canonical.sort_unstable();
+        if !unique_triangles.insert(canonical) {
+            return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+        }
+    }
+    let mut welded = IndexedTriangleMeshV1::new(mesh.name, positions, normals, triangles)
+        .with_base_color_rgba(mesh.base_color_rgba);
+    if !colors.is_empty() {
+        welded = welded.with_vertex_colors_rgba(colors);
+    }
+    if let Some(texture) = mesh.base_color_texture {
+        welded = welded.with_base_color_texture(EmbeddedBaseColorTextureV1 {
+            tex_coords,
+            ..texture
+        });
+    }
+    Ok(welded)
+}
+
 fn extrude_closed_face_solids(
     mesh: IndexedTriangleMeshV1,
     thickness_mm: f64,
@@ -1162,10 +1228,31 @@ fn extrude_closed_face_solids(
             .resize(solid.positions_mm.len(), [0.0, 0.0]);
         solid = solid.with_base_color_texture(texture);
     }
+    validate_watertight_triangle_geometry(&solid)?;
     Ok(ExtrudedClosedFaceSolids {
         mesh: solid,
         regions,
     })
+}
+
+fn validate_watertight_triangle_geometry(mesh: &IndexedTriangleMeshV1) -> Result<(), String> {
+    let mut edges = BTreeMap::<([u64; 3], [u64; 3]), usize>::new();
+    for triangle in &mesh.triangles {
+        for (start, end) in [
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ] {
+            let a = mesh.positions_mm[start as usize].map(f64::to_bits);
+            let b = mesh.positions_mm[end as usize].map(f64::to_bits);
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *edges.entry(key).or_default() += 1;
+        }
+    }
+    if edges.is_empty() || edges.values().any(|incidence| *incidence != 2) {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1984,6 +2071,61 @@ mod tests {
             geometric_edges.values().all(|incidence| *incidence == 2),
             "every geometric edge must belong to exactly two triangles"
         );
+    }
+
+    #[test]
+    fn exact_coplanar_adjacent_faces_weld_and_remove_the_internal_wall() {
+        let duplicated = IndexedTriangleMeshV1::new(
+            "adjacent",
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            vec![[0.0, 0.0, 1.0]; 6],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        let welded = weld_exact_coplanar_mid_surface(duplicated).expect("exact weld");
+        assert_eq!(welded.positions_mm.len(), 4);
+        let solid =
+            extrude_closed_face_solids(welded, 0.2, [255, 255, 255, 255], [240, 240, 240, 255])
+                .expect("watertight union");
+        assert_eq!(solid.mesh.triangles.len(), 12);
+        assert_eq!(
+            solid
+                .regions
+                .iter()
+                .filter(|region| **region == ClosedSolidTriangleRegionV1::SideWall)
+                .count(),
+            8
+        );
+        validate_watertight_triangle_geometry(&solid.mesh).expect("manifold");
+        let validated =
+            validate_indexed_triangle_mesh(&solid.mesh).expect("validated union mesh");
+        let stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &validated)
+            .expect("independently verified STL");
+        assert_eq!(stl.triangle_count, 12);
+    }
+
+    #[test]
+    fn coincident_duplicate_faces_fail_watertight_union_closed() {
+        let duplicate = IndexedTriangleMeshV1::new(
+            "overlap",
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            vec![[0.0, 0.0, 1.0]; 6],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        assert!(weld_exact_coplanar_mid_surface(duplicate).is_err());
     }
 
     #[test]

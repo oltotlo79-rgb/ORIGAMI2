@@ -35,7 +35,7 @@ function preview(format: 'obj' | 'stl' | 'glb' = 'obj') {
       faceCount: 3,
       vertexCount: 12,
       triangleCount: 6,
-      geometryProfile: 'authenticated_closed_face_solids_v1',
+      geometryProfile: 'authenticated_exact_coplanar_face_union_solids_v1',
       sourceUnit: 'millimeter',
       encodedUnit: glb ? 'meter' : 'millimeter',
       sourceAxis: 'right-handed X-right Y-forward Z-up',

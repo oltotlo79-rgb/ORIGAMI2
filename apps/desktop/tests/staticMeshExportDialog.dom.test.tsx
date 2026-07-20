@@ -29,7 +29,7 @@ const PREVIEW: StaticMeshExportPreview = Object.freeze({
   faceCount: 3,
   vertexCount: 12,
   triangleCount: 6,
-  geometryProfile: 'authenticated_closed_face_solids_v1',
+  geometryProfile: 'authenticated_exact_coplanar_face_union_solids_v1',
   sourceUnit: 'millimeter',
   encodedUnit: 'millimeter',
   sourceAxis: 'right-handed X-right Y-forward Z-up',

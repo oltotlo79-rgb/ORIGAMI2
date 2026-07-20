@@ -101,7 +101,7 @@ const COPY = {
     midSurface:
       'Important: this exports only the paper mid-surface. It is not a paper-thickness solid, a closed manifold, or a guaranteed printable model.',
     faceSolids:
-      'Important: paper thickness is exported as one closed solid per face. Hinge unions and 3D printability are not guaranteed.',
+      'Important: exactly coplanar adjacent faces are welded and their internal wall is removed. Other face solids remain separate; hinge unions and 3D printability are not guaranteed.',
     metadata: {
       format: 'Format',
       specification: 'Specification',
@@ -288,7 +288,7 @@ export function StaticMeshExportDialog({
           {preview && (
             <>
               <p className="static-mesh-export-mid-surface">
-                {preview.geometryProfile === 'authenticated_closed_face_solids_v1'
+                {preview.geometryProfile === 'authenticated_exact_coplanar_face_union_solids_v1'
                   ? copy.faceSolids
                   : copy.midSurface}
               </p>

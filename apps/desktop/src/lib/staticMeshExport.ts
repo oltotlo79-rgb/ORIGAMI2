@@ -29,7 +29,7 @@ export type StaticMeshExportPreview = Readonly<{
   triangleCount: number
   geometryProfile:
     | 'authenticated_mid_surface_triangle_mesh_v1'
-    | 'authenticated_closed_face_solids_v1'
+    | 'authenticated_exact_coplanar_face_union_solids_v1'
   sourceUnit: 'millimeter'
   encodedUnit: 'millimeter' | 'meter'
   sourceAxis: 'right-handed X-right Y-forward Z-up'
@@ -151,7 +151,7 @@ export function normalizeStaticMeshExportPreviewResponse(
     || record.faceCount * 3 > record.vertexCount
     || record.geometryProfile !== (
       record.paperThicknessMm > 0
-        ? 'authenticated_closed_face_solids_v1'
+        ? 'authenticated_exact_coplanar_face_union_solids_v1'
         : 'authenticated_mid_surface_triangle_mesh_v1'
     )
     || record.sourceUnit !== 'millimeter'

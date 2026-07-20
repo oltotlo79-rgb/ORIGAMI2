@@ -82,6 +82,7 @@ import {
   deleteProjectLayer,
   evaluateBeginnerCandidates,
   evaluateBeginnerParameterGrid,
+  applyBeginnerParameterGridCandidate,
   getBeginnerSymmetricParameterEstimate,
   applyBeginnerSymmetricParameters,
   recognizeBeginnerTarget,
@@ -4076,6 +4077,23 @@ function App() {
     setBeginnerGrid(null)
   }
 
+  function confirmAndApplyBeginnerGridCandidate(
+    candidate: BeginnerGridEvaluationResponse['candidates'][number],
+  ) {
+    const grid = beginnerGrid
+    const current = latestSnapshotRef.current
+    if (!grid || !current || !window.confirm(text({
+      ja: 'この案の格子・形状・大域証明を再検証して適用しますか？変更全体は1回のUndoで戻せます。',
+      en: 'Revalidate this design’s grid, geometry, and global proof, then apply it? One Undo reverts the whole change.',
+    }))) return
+    void runNativeEdit(() => applyBeginnerParameterGridCandidate(
+      grid, current.beginner_design_profile, candidate,
+    )).then(() => {
+      beginnerGridRequestRef.current += 1
+      setBeginnerGrid(null)
+    })
+  }
+
   function confirmAndApplyBeginnerPlan(
     kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base',
     expectedCandidateEdgeId: string,
@@ -7749,6 +7767,13 @@ function App() {
                         }, { scale: candidate.point.scale_percent, spacing: candidate.point.spacing_percent,
                           detail: candidate.point.detail_level })}</span>
                         <span className="muted">{candidate.assessment.reason}</span>
+                        {candidate.assessment.proof_scope === 'sufficient'
+                          && candidate.assessment.reason === 'global_flat_foldability_proven'
+                          && candidate.assessment.apply_allowed && (
+                          <button type="button" onClick={() => confirmAndApplyBeginnerGridCandidate(candidate)}>
+                            {text({ ja: '再検証してこの案を適用', en: 'Revalidate and apply this design' })}
+                          </button>
+                        )}
                       </li>
                     ))}</ol>
                   </section>

@@ -1687,6 +1687,29 @@ export async function evaluateBeginnerParameterGrid(
     evaluated_grid_points: 27, candidates: Object.freeze(candidates) })
 }
 
+export function applyBeginnerParameterGridCandidate(
+  grid: BeginnerGridEvaluationResponse,
+  expectedProfile: BeginnerDesignProfileV1,
+  candidate: BeginnerGridEvaluationResponse['candidates'][number],
+) {
+  if (!grid.candidates.includes(candidate)
+    || candidate.assessment.proof_scope !== 'sufficient'
+    || candidate.assessment.reason !== 'global_flat_foldability_proven'
+    || !candidate.assessment.apply_allowed) {
+    return Promise.reject(new Error('grid candidate lacks a live sufficient proof'))
+  }
+  return invoke<ProjectSnapshot>('apply_beginner_parameter_grid_candidate', {
+    expectedProjectInstanceId: grid.project_instance_id,
+    expectedProjectId: grid.project_id,
+    expectedRevision: grid.revision,
+    expectedProfile,
+    expectedGridHash: grid.grid_hash,
+    selectedPoint: candidate.point,
+    expectedCandidateEdgeId: candidate.assessment.expected_candidate_edge_id,
+    confirmed: true,
+  })
+}
+
 export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
   project_instance_id: string; project_id: string; revision: number
   estimate: Readonly<{ protrusion_count: 2 | 4; scale_percent: number; spacing_percent: number }>

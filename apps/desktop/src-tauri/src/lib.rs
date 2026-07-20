@@ -2417,6 +2417,156 @@ fn apply_beginner_generated_plan(
     )
 }
 
+fn apply_grid_plan_document(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    plan: ori_domain::BeginnerGeneratedPlanV1,
+) -> Result<ProjectSnapshot, String> {
+    let selected_kind = plan.kind;
+    let mut pattern = project.editor.pattern().clone();
+    for vertex in plan.crease_pattern.vertices {
+        if !pattern
+            .vertices
+            .iter()
+            .any(|current| current.id == vertex.id)
+        {
+            pattern.vertices.push(vertex);
+        }
+    }
+    for edge in plan.crease_pattern.edges {
+        if pattern.edges.iter().any(|current| current.id == edge.id) {
+            return Err("grid_candidate_replayed".to_owned());
+        }
+        pattern.edges.push(edge);
+    }
+    let mut instruction_timeline = project.editor.instruction_timeline().clone();
+    let (title, description, caution) = match selected_kind {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase => (
+            "Symmetric four-leg grid candidate",
+            "Apply the globally proven parameter-grid four-leg base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase => (
+            "Symmetric wing grid candidate",
+            "Apply the globally proven parameter-grid wing base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        _ => return Err("grid_candidate_kind_invalid".to_owned()),
+    };
+    instruction_timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        caution: caution.to_owned(),
+        duration_ms: 2_000,
+        visual: InstructionVisual::default(),
+        pose: InstructionPose {
+            model: InstructionPoseModel::DeclarativeOnlyV1,
+            source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        },
+    });
+    let paper = project.editor.paper().clone();
+    let project_layers = project.editor.project_layers().clone();
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        },
+    )
+}
+
+#[tauri::command]
+fn apply_beginner_parameter_grid_candidate(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_profile: ori_domain::BeginnerDesignProfileV1,
+    expected_grid_hash: ori_domain::BeginnerParameterGridHashV1,
+    selected_point: ori_domain::BeginnerParameterGridPointV1,
+    expected_candidate_edge_id: EdgeId,
+    confirmed: bool,
+) -> Result<ProjectSnapshot, String> {
+    if !confirmed {
+        return Err("grid_candidate_confirmation_required".to_owned());
+    }
+    let grid = ori_domain::beginner_parameter_grid_v1();
+    if ori_domain::beginner_parameter_grid_hash_v1(&grid) != expected_grid_hash
+        || grid.get(usize::from(selected_point.id)).copied() != Some(selected_point)
+    {
+        return Err("grid_candidate_contract_stale".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    if project.editor.beginner_design_profile() != &expected_profile {
+        return Err("grid_candidate_profile_stale".to_owned());
+    }
+    if !target_asset_reference_is_live(
+        &project,
+        expected_profile.generation_constraints.target_asset,
+    ) {
+        return Err("grid_candidate_asset_stale".to_owned());
+    }
+    let kind = if expected_profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+    } else {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
+    };
+    let plan = grid_template_plan(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &expected_profile,
+        selected_point,
+    )
+    .map_err(|_| "grid_candidate_generation_stale".to_owned())?
+    .into_iter()
+    .find(|plan| plan.kind == kind)
+    .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
+    if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
+        return Err("grid_candidate_identity_stale".to_owned());
+    }
+    let reference = live_reference_model_suggestion_v1(&project).ok();
+    let assessment = assess_beginner_generated_plan_with_deadline(
+        project.editor.paper(),
+        project.editor.pattern(),
+        &plan,
+        reference.as_ref(),
+        std::time::Instant::now() + std::time::Duration::from_millis(750),
+    );
+    if assessment.expected_candidate_edge_id != expected_candidate_edge_id
+        || assessment.proof_scope != "sufficient"
+        || assessment.reason != "global_flat_foldability_proven"
+        || !assessment.apply_allowed
+    {
+        return Err("grid_candidate_global_proof_stale".to_owned());
+    }
+    apply_grid_plan_document(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        plan,
+    )
+}
+
 fn target_asset_reference_is_live(
     project: &ProjectState,
     reference: Option<ori_domain::BeginnerTargetAssetReferenceV1>,
@@ -9501,6 +9651,7 @@ pub fn run() {
             project_snapshot,
             evaluate_beginner_candidates,
             evaluate_beginner_parameter_grid,
+            apply_beginner_parameter_grid_candidate,
             get_beginner_symmetric_parameter_estimate,
             apply_beginner_symmetric_parameters,
             recognize_beginner_target,
@@ -9845,7 +9996,7 @@ mod tests {
             Err("beginner_parameter_grid_point_invalid".to_owned())
         );
 
-        let project = initial_project_state();
+        let mut project = initial_project_state();
         for point in ori_domain::beginner_parameter_grid_v1() {
             let plans = grid_template_plan(
                 project.project_id,
@@ -9858,6 +10009,38 @@ mod tests {
             assert!(!plans.is_empty());
             assert!(plans.len() <= ori_domain::MAX_BEGINNER_GENERATED_CANDIDATES_V1);
         }
+        let point = ori_domain::beginner_parameter_grid_v1()[26];
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &source,
+            point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|plan| plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase)
+        .unwrap();
+        let project_id = project.project_id;
+        let instance_id = project.instance_id;
+        let revision = project.editor.revision();
+        let snapshot = apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            revision,
+            plan.clone(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.revision, revision + 1);
+        assert!(
+            apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan,)
+                .is_err()
+        );
+        let undone = execute_undo(&mut project, project_id, snapshot.revision).unwrap();
+        assert_eq!(undone.revision, snapshot.revision + 1);
+        let redone = execute_redo(&mut project, project_id, undone.revision).unwrap();
+        assert_eq!(redone.revision, undone.revision + 1);
     }
 
     #[test]

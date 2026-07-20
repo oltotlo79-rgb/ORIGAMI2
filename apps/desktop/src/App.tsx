@@ -132,6 +132,7 @@ import {
   updateProjectLayerPresentation,
   updateProjectMemo,
   updateBeginnerDesignProfile,
+  importBeginnerReferenceModel,
   updatePaperProperties,
   importFrontPaperTexture,
   importBackPaperTexture,
@@ -3574,7 +3575,10 @@ function App() {
             underlay_id: targetUnderlay.id,
             asset_id: targetUnderlay.asset,
           }
-        : null,
+        : current.beginner_design_profile.generation_constraints.target_asset?.kind
+            === 'reference_model'
+          ? current.beginner_design_profile.generation_constraints.target_asset
+          : null,
       allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
     }
     if (
@@ -3629,6 +3633,11 @@ function App() {
         projectInstanceId,
         profile,
       ))
+  }
+
+  function requestBeginnerReferenceModelImport() {
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      importBeginnerReferenceModel(projectId, revision, projectInstanceId))
   }
 
   function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
@@ -7771,6 +7780,31 @@ function App() {
                     en: 'Only PNG/JPEG images already placed in this project can be referenced. Clear the reference before removing or replacing that image. Image contents are not inferred. 3D model targets are not supported in the initial release.',
                   })}
                 </p>
+                <div aria-live="polite">
+                  <button
+                    type="button"
+                    onClick={requestBeginnerReferenceModelImport}
+                    disabled={coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-reference-model-help"
+                  >
+                    {text({ ja: '3D参照モデルを読み込む', en: 'Import 3D reference model' })}
+                  </button>
+                  <p id="beginner-reference-model-help" className="muted">
+                    {text({
+                      ja: 'GLB 2.0モデルは読み取り専用の視覚参照です。形状の自動認識や折り設計の生成権限は与えません。',
+                      en: 'A GLB 2.0 model is a read-only visual reference. It grants no automatic recognition or fold-generation authority.',
+                    })}
+                  </p>
+                  {nativeSnapshot.beginner_design_profile.generation_constraints.target_asset?.kind
+                    === 'reference_model' && (
+                    <p role="status">
+                      {text({
+                        ja: '安全性を検証した3D参照モデルが設定されています。',
+                        en: 'A validated 3D reference model is attached.',
+                      })}
+                    </p>
+                  )}
+                </div>
                 <div aria-live="polite">
                   <button
                     type="button"

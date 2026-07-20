@@ -951,6 +951,7 @@ struct GlbRoot<'a> {
     scenes: [GlbScene<'a>; 1],
     nodes: [GlbNode<'a>; 1],
     meshes: [GlbMesh<'a>; 1],
+    materials: [GlbMaterial; 1],
     buffers: [GlbBuffer; 1],
     #[serde(rename = "bufferViews")]
     buffer_views: [GlbBufferView; 3],
@@ -1000,6 +1001,26 @@ struct GlbPrimitive {
     attributes: GlbAttributes,
     indices: u32,
     mode: u32,
+    material: u32,
+}
+
+#[derive(Serialize)]
+struct GlbMaterial {
+    name: &'static str,
+    #[serde(rename = "pbrMetallicRoughness")]
+    pbr: GlbPbrMaterial,
+    #[serde(rename = "doubleSided")]
+    double_sided: bool,
+}
+
+#[derive(Serialize)]
+struct GlbPbrMaterial {
+    #[serde(rename = "baseColorFactor")]
+    base_color_factor: [f32; 4],
+    #[serde(rename = "metallicFactor")]
+    metallic_factor: f32,
+    #[serde(rename = "roughnessFactor")]
+    roughness_factor: f32,
 }
 
 #[derive(Serialize)]
@@ -1056,6 +1077,7 @@ struct CheckedGlbRoot {
     scenes: Vec<CheckedGlbScene>,
     nodes: Vec<CheckedGlbNode>,
     meshes: Vec<CheckedGlbMesh>,
+    materials: Vec<CheckedGlbMaterial>,
     buffers: Vec<CheckedGlbBuffer>,
     #[serde(rename = "bufferViews")]
     buffer_views: Vec<CheckedGlbBufferView>,
@@ -1111,6 +1133,28 @@ struct CheckedGlbPrimitive {
     attributes: CheckedGlbAttributes,
     indices: u32,
     mode: u32,
+    material: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedGlbMaterial {
+    name: String,
+    #[serde(rename = "pbrMetallicRoughness")]
+    pbr: CheckedGlbPbrMaterial,
+    #[serde(rename = "doubleSided")]
+    double_sided: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedGlbPbrMaterial {
+    #[serde(rename = "baseColorFactor")]
+    base_color_factor: [f32; 4],
+    #[serde(rename = "metallicFactor")]
+    metallic_factor: f32,
+    #[serde(rename = "roughnessFactor")]
+    roughness_factor: f32,
 }
 
 #[derive(Deserialize)]
@@ -1249,7 +1293,17 @@ fn serialize_glb(
                 },
                 indices: 2,
                 mode: GLTF_TRIANGLES,
+                material: 0,
             }],
+        }],
+        materials: [GlbMaterial {
+            name: "ORIGAMI2 Paper",
+            pbr: GlbPbrMaterial {
+                base_color_factor: [1.0, 1.0, 1.0, 1.0],
+                metallic_factor: 0.0,
+                roughness_factor: 1.0,
+            },
+            double_sided: true,
         }],
         buffers: [GlbBuffer {
             byte_length: binary_length,
@@ -1485,6 +1539,13 @@ fn verify_glb_structure(
         || root.meshes[0].primitives[0].attributes.normal != 1
         || root.meshes[0].primitives[0].indices != 2
         || root.meshes[0].primitives[0].mode != GLTF_TRIANGLES
+        || root.meshes[0].primitives[0].material != 0
+        || root.materials.len() != 1
+        || root.materials[0].name != "ORIGAMI2 Paper"
+        || root.materials[0].pbr.base_color_factor != [1.0, 1.0, 1.0, 1.0]
+        || root.materials[0].pbr.metallic_factor.to_bits() != 0.0_f32.to_bits()
+        || root.materials[0].pbr.roughness_factor.to_bits() != 1.0_f32.to_bits()
+        || !root.materials[0].double_sided
         || root.buffers.len() != 1
         || root.buffers[0].byte_length != binary_length
         || root.buffer_views.len() != 3

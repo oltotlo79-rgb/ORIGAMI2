@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerTargetCategoryV1,
-    CreasePattern, Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId,
+    BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind,
+    Point2, ProjectId, Vertex, VertexId,
 };
 
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
@@ -24,6 +25,7 @@ pub struct BeginnerGeneratedPlanV1 {
     pub kind: BeginnerGeneratedPlanKindV1,
     pub crease_pattern: CreasePattern,
     pub instruction_codes: Vec<String>,
+    pub target_parts: Vec<BeginnerTargetPartRecordV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,7 @@ pub enum BeginnerGeneratorErrorV1 {
     UnsupportedPaper,
     UnsupportedTechniques,
     MissingTargetCategory,
+    MissingRequiredParts,
 }
 
 pub fn generate_beginner_plans_v1(
@@ -94,6 +97,17 @@ pub fn generate_beginner_plans_v1(
     let target_category = constraints
         .target_category
         .ok_or(BeginnerGeneratorErrorV1::MissingTargetCategory)?;
+    let has_required_part = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == kind && part.count == 1)
+    };
+    if !has_required_part(BeginnerTargetPartKindV1::Head)
+        || !has_required_part(BeginnerTargetPartKindV1::Torso)
+    {
+        return Err(BeginnerGeneratorErrorV1::MissingRequiredParts);
+    }
     let kind = if allows_valley {
         EdgeKind::Valley
     } else {
@@ -168,6 +182,7 @@ pub fn generate_beginner_plans_v1(
                     }],
                 },
                 instruction_codes: vec![instruction.to_owned()],
+                target_parts: constraints.target_parts.clone(),
             }
         })
         .collect())
@@ -196,6 +211,16 @@ mod tests {
         };
         let constraints = BeginnerGenerationConstraintsV1 {
             target_category: Some(BeginnerTargetCategoryV1::Animal),
+            target_parts: vec![
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Head,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Torso,
+                    count: 1,
+                },
+            ],
             ..BeginnerGenerationConstraintsV1::default()
         };
         let first = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();

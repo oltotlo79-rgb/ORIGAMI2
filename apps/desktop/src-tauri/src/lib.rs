@@ -1534,6 +1534,9 @@ fn evaluate_beginner_candidates(
         Err(ori_domain::BeginnerGeneratorErrorV1::MissingTargetCategory) => {
             ("missing_target_category", Vec::new())
         }
+        Err(ori_domain::BeginnerGeneratorErrorV1::MissingRequiredParts) => {
+            ("missing_required_parts", Vec::new())
+        }
     };
     generated_plans.truncate(usize::from(requested_candidate_count));
     Ok(BeginnerCandidateResponse {

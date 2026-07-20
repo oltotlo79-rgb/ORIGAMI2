@@ -85,11 +85,12 @@ use ori_core::{
     BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
     DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
     GeometricConstraintUnknownReasonV1, IntersectionEdgeTarget, JunctionVertexIntent,
-    LocalFlatFoldabilityReport, MAX_EDITOR_HISTORY_ENTRIES, MirrorAxisV1, MirrorSelectionModeV1,
-    PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput, TopologyIssue,
-    TopologySnapshot, ValidationIssue, VertexPositionUpdate, analyze_local_flat_foldability,
-    create_rectangular_sheet, prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
-    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1, validate_paper,
+    LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus, MAX_EDITOR_HISTORY_ENTRIES,
+    MirrorAxisV1, MirrorSelectionModeV1, PaperValidationIssue, PointPolygonRelation,
+    TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
+    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
+    segment_midpoint_polygon_relation, solve_geometric_constraints_v1,
+    solve_geometric_constraints_with_drivers_v1, validate_crease_pattern, validate_paper,
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
@@ -1430,6 +1431,102 @@ struct BeginnerCandidateResponse {
     candidates: Vec<ori_domain::BeginnerCandidateScoreV1>,
     generation_status: &'static str,
     generated_plans: Vec<ori_domain::BeginnerGeneratedPlanV1>,
+    plan_assessments: Vec<BeginnerGeneratedPlanAssessment>,
+}
+
+#[derive(Debug, Serialize)]
+struct BeginnerGeneratedPlanAssessment {
+    kind: ori_domain::BeginnerGeneratedPlanKindV1,
+    expected_candidate_edge_id: EdgeId,
+    proof_scope: &'static str,
+    apply_allowed: bool,
+    reason: &'static str,
+}
+
+fn assess_beginner_generated_plan(
+    paper: &Paper,
+    current_pattern: &CreasePattern,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+) -> BeginnerGeneratedPlanAssessment {
+    let expected_candidate_edge_id = plan
+        .crease_pattern
+        .edges
+        .first()
+        .map(|edge| edge.id)
+        .unwrap_or_else(EdgeId::new);
+    let mut candidate_pattern = current_pattern.clone();
+    for vertex in &plan.crease_pattern.vertices {
+        if let Some(current) = candidate_pattern
+            .vertices
+            .iter()
+            .find(|current| current.id == vertex.id)
+        {
+            if current.position != vertex.position {
+                return BeginnerGeneratedPlanAssessment {
+                    kind: plan.kind,
+                    expected_candidate_edge_id,
+                    proof_scope: "necessary",
+                    apply_allowed: false,
+                    reason: "geometry_invalid",
+                };
+            }
+        } else {
+            candidate_pattern.vertices.push(vertex.clone());
+        }
+    }
+    if plan.crease_pattern.edges.is_empty()
+        || plan.crease_pattern.edges.iter().any(|edge| {
+            candidate_pattern
+                .edges
+                .iter()
+                .any(|current| current.id == edge.id)
+        })
+    {
+        return BeginnerGeneratedPlanAssessment {
+            kind: plan.kind,
+            expected_candidate_edge_id,
+            proof_scope: "necessary",
+            apply_allowed: false,
+            reason: "geometry_invalid",
+        };
+    }
+    candidate_pattern
+        .edges
+        .extend(plan.crease_pattern.edges.iter().cloned());
+    if !validate_crease_pattern(&candidate_pattern).is_valid()
+        || !validate_paper(paper, &candidate_pattern).is_valid()
+    {
+        return BeginnerGeneratedPlanAssessment {
+            kind: plan.kind,
+            expected_candidate_edge_id,
+            proof_scope: "necessary",
+            apply_allowed: false,
+            reason: "geometry_invalid",
+        };
+    }
+    let local = analyze_local_flat_foldability(paper, &candidate_pattern);
+    let (proof_scope, apply_allowed, reason) = match local.status {
+        LocalFlatFoldabilityReportStatus::NecessaryConditionsSatisfied => {
+            ("necessary", true, "necessary_conditions_satisfied")
+        }
+        LocalFlatFoldabilityReportStatus::Violated => {
+            ("necessary", false, "necessary_conditions_violated")
+        }
+        LocalFlatFoldabilityReportStatus::Blocked => ("necessary", false, "local_analysis_blocked"),
+        LocalFlatFoldabilityReportStatus::NotApplicable => {
+            ("indeterminate", true, "local_theorem_not_applicable")
+        }
+        LocalFlatFoldabilityReportStatus::Indeterminate => {
+            ("indeterminate", true, "local_analysis_indeterminate")
+        }
+    };
+    BeginnerGeneratedPlanAssessment {
+        kind: plan.kind,
+        expected_candidate_edge_id,
+        proof_scope,
+        apply_allowed,
+        reason,
+    }
 }
 
 struct ValidationAnalysisInput {
@@ -1623,6 +1720,7 @@ fn evaluate_beginner_candidates(
             candidates,
             generation_status: "missing_target_asset",
             generated_plans: Vec::new(),
+            plan_assessments: Vec::new(),
         });
     };
     let (generation_status, mut generated_plans) = match generation {
@@ -1648,6 +1746,10 @@ fn evaluate_beginner_candidates(
         }
     };
     generated_plans.truncate(usize::from(requested_candidate_count));
+    let plan_assessments = generated_plans
+        .iter()
+        .map(|plan| assess_beginner_generated_plan(project.editor.paper(), pattern, plan))
+        .collect();
     Ok(BeginnerCandidateResponse {
         schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
         project_instance_id: project.instance_id,
@@ -1659,6 +1761,7 @@ fn evaluate_beginner_candidates(
         candidates,
         generation_status,
         generated_plans,
+        plan_assessments,
     })
 }
 
@@ -1822,6 +1925,17 @@ fn apply_beginner_generated_plan(
         .ok_or_else(|| "the generated plan is no longer available".to_owned())?;
     if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
         return Err("the generated candidate identity changed before apply".to_owned());
+    }
+    let assessment =
+        assess_beginner_generated_plan(project.editor.paper(), project.editor.pattern(), &plan);
+    if assessment.expected_candidate_edge_id != expected_candidate_edge_id {
+        return Err("the generated candidate identity changed before apply".to_owned());
+    }
+    if !assessment.apply_allowed {
+        return Err(format!(
+            "the generated plan failed validation: {}",
+            assessment.reason
+        ));
     }
     let mut pattern = project.editor.pattern().clone();
     for vertex in plan.crease_pattern.vertices {

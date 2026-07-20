@@ -79,6 +79,19 @@ test('AUT-106 presents one recommendation first and adds bounded candidates on d
   assert.match(app, /追加候補を生成して比較/)
 })
 
+test('generated candidates are geometry-gated with explicit local proof scope', () => {
+  assert.match(native, /fn assess_beginner_generated_plan/)
+  assert.match(native, /validate_crease_pattern\(&candidate_pattern\)/)
+  assert.match(native, /analyze_local_flat_foldability\(paper, &candidate_pattern\)/)
+  assert.match(native, /if !assessment\.apply_allowed/)
+  assert.match(client, /response\.plan_assessments\.length !== response\.generated_plans\.length/)
+  assert.match(client, /record\.expected_candidate_edge_id !== plan\.crease_pattern\.edges\[0\]/)
+  assert.match(client, /'necessary', 'sufficient', 'indeterminate'/)
+  assert.match(app, /候補の検証結果/)
+  assert.match(app, /Warning: applying it does not guarantee flat foldability/)
+  assert.match(app, /!assessment\.apply_allowed/)
+})
+
 test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
   assert.match(native, /fn apply_beginner_generated_plan/)
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)

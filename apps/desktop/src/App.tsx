@@ -7728,6 +7728,16 @@ function App() {
                           plan.kind === 'diagonal_fold'
                           || isBeginnerSymmetricTemplate(plan.kind)
                         ) ? plan.kind : null
+                        const assessment = beginnerCandidates.plan_assessments[index]
+                        const assessmentReason = assessment?.reason === 'geometry_invalid'
+                          ? text({ ja: '形状検証に失敗しました。', en: 'Geometry validation failed.' })
+                          : assessment?.reason === 'necessary_conditions_violated'
+                            ? text({ ja: '局所平坦折りの必要条件に違反しています。', en: 'Local flat-foldability necessary conditions are violated.' })
+                            : assessment?.reason === 'local_analysis_blocked'
+                              ? text({ ja: '局所平坦折り解析を実行できませんでした。', en: 'Local flat-foldability analysis was blocked.' })
+                              : assessment?.reason === 'necessary_conditions_satisfied'
+                                ? text({ ja: '局所平坦折りの必要条件を満たしています。', en: 'Local flat-foldability necessary conditions are satisfied.' })
+                                : text({ ja: 'この候補の局所平坦折り可否は未確定です。', en: 'Local flat-foldability is indeterminate for this candidate.' })
                         return (
                           <article key={plan.kind}>
                             <h4>
@@ -7816,6 +7826,21 @@ function App() {
                                 en: 'This is a read-only candidate. It does not become project authority without a separate review and apply action.',
                               })}
                             </p>
+                            <p
+                              role={assessment?.apply_allowed === false ? 'alert' : 'status'}
+                              aria-label={text({ ja: '候補の検証結果', en: 'Candidate validation result' })}
+                            >
+                              {assessment?.proof_scope === 'sufficient'
+                                ? text({ ja: '十分条件の証明', en: 'Sufficient proof' })
+                                : assessment?.proof_scope === 'necessary'
+                                  ? text({ ja: '必要条件の検証', en: 'Necessary-condition validation' })
+                                  : text({ ja: '判定未確定', en: 'Indeterminate' })}
+                              {': '}{assessmentReason}
+                              {assessment?.proof_scope === 'indeterminate' && ` ${text({
+                                ja: '警告: 適用しても平坦に折れることは保証されません。',
+                                en: 'Warning: applying it does not guarantee flat foldability.',
+                              })}`}
+                            </p>
                             {applicableKind && (
                               <button
                                 type="button"
@@ -7823,7 +7848,8 @@ function App() {
                                   applicableKind,
                                   plan.crease_pattern.edges[0].id,
                                 )}
-                                disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
+                                disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy
+                                  || !assessment || !assessment.apply_allowed}
                                 aria-label={text({
                                   ja: '対角折り候補を確認して適用',
                                   en: 'Review and apply this bounded generated candidate',

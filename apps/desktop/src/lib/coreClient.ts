@@ -551,7 +551,22 @@ export type BeginnerCandidateResponseV1 = {
     | 'unsupported_animal_template'
     | 'unsupported_insect_template'
   generated_plans: BeginnerGeneratedPlanV1[]
+  plan_assessments: BeginnerGeneratedPlanAssessmentV1[]
   candidates: BeginnerCandidateScoreV1[]
+}
+
+export type BeginnerGeneratedPlanAssessmentV1 = {
+  kind: BeginnerGeneratedPlanV1['kind']
+  expected_candidate_edge_id: string
+  proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
+  apply_allowed: boolean
+  reason:
+    | 'geometry_invalid'
+    | 'necessary_conditions_satisfied'
+    | 'necessary_conditions_violated'
+    | 'local_analysis_blocked'
+    | 'local_theorem_not_applicable'
+    | 'local_analysis_indeterminate'
 }
 
 export type BeginnerGeneratedPlanV1 = {
@@ -589,6 +604,7 @@ function normalizeBeginnerCandidateResponse(
     'elasticity_model',
     'generation_status',
     'generated_plans',
+    'plan_assessments',
     'candidates',
   ] as const)
   if (
@@ -604,6 +620,8 @@ function normalizeBeginnerCandidateResponse(
       .includes(String(response.generation_status))
     || !Array.isArray(response.generated_plans)
     || response.generated_plans.length > 3
+    || !Array.isArray(response.plan_assessments)
+    || response.plan_assessments.length !== response.generated_plans.length
     || !Array.isArray(response.candidates)
     || response.candidates.length < 1
     || response.candidates.length > 3
@@ -728,6 +746,37 @@ function normalizeBeginnerCandidateResponse(
   })
   if (generatedPlans.some((plan) => plan === null)
     || (response.generation_status === 'ready') !== (generatedPlans.length > 0)) return null
+  const admittedPlans = generatedPlans as BeginnerGeneratedPlanV1[]
+  const planAssessments = response.plan_assessments.map((assessment, index) => {
+    const record = exactCoreDataRecord(assessment, [
+      'kind', 'expected_candidate_edge_id', 'proof_scope', 'apply_allowed', 'reason',
+    ] as const)
+    const plan = admittedPlans[index]
+    if (!record || !plan
+      || record.kind !== plan.kind
+      || record.expected_candidate_edge_id !== plan.crease_pattern.edges[0]?.id
+      || !isCanonicalNonNilUuid(record.expected_candidate_edge_id)
+      || !['necessary', 'sufficient', 'indeterminate'].includes(String(record.proof_scope))
+      || typeof record.apply_allowed !== 'boolean'
+      || ![
+        'geometry_invalid', 'necessary_conditions_satisfied',
+        'necessary_conditions_violated', 'local_analysis_blocked',
+        'local_theorem_not_applicable', 'local_analysis_indeterminate',
+      ].includes(String(record.reason))
+      || (record.apply_allowed === false
+        && !['geometry_invalid', 'necessary_conditions_violated', 'local_analysis_blocked']
+          .includes(String(record.reason)))
+      || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true)
+    ) return null
+    return Object.freeze({
+      kind: record.kind,
+      expected_candidate_edge_id: record.expected_candidate_edge_id,
+      proof_scope: record.proof_scope,
+      apply_allowed: record.apply_allowed,
+      reason: record.reason,
+    }) as BeginnerGeneratedPlanAssessmentV1
+  })
+  if (planAssessments.some((assessment) => assessment === null)) return null
   const admitted = candidates as BeginnerCandidateScoreV1[]
   if (admitted.some((candidate, index) =>
     index > 0 && admitted[index - 1].total_score < candidate.total_score
@@ -741,7 +790,8 @@ function normalizeBeginnerCandidateResponse(
     bulge_treatment: 'target_shape_approximation',
     elasticity_model: 'not_computed',
     generation_status: response.generation_status as BeginnerCandidateResponseV1['generation_status'],
-    generated_plans: generatedPlans as BeginnerGeneratedPlanV1[],
+    generated_plans: admittedPlans,
+    plan_assessments: planAssessments as BeginnerGeneratedPlanAssessmentV1[],
     candidates: admitted.slice(),
   }) as BeginnerCandidateResponseV1
 }

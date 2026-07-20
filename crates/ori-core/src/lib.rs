@@ -75,7 +75,7 @@ pub use ori_foldability::{
 pub use ori_geometry::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, GeometryError, PaperValidationIssue,
     PointPolygonRelation, SegmentIntersection, ValidationIssue, segment_midpoint_polygon_relation,
-    validate_paper,
+    validate_crease_pattern, validate_paper,
 };
 pub use ori_topology::{
     CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, FaceExtractionReport,

@@ -22,6 +22,9 @@ const admitted = metadata.artifacts.map((artifact) => {
     || artifact.id <= 0
     || typeof artifact.name !== 'string'
     || artifact.expired !== false
+    || !Number.isSafeInteger(artifact.size_in_bytes)
+    || artifact.size_in_bytes <= 0
+    || artifact.size_in_bytes > 2_147_483_648
     || typeof artifact.digest !== 'string'
     || !/^sha256:[0-9a-f]{64}$/u.test(artifact.digest)
   ) {

@@ -227,11 +227,25 @@ jobs:
             actual_digest="$(sha256sum "$archive" | cut -d' ' -f1)"
             test "$actual_digest" = "$expected_digest"
           done < <(node .github/scripts/verify_workflow_artifact_metadata.mjs "$metadata")
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          pattern: formal-release-*
-          path: release
-          merge-multiple: true
+      - name: Extract only the digest-verified artifact archives
+        run: |
+          set -euo pipefail
+          mkdir release
+          for archive in "$RUNNER_TEMP"/formal-release-*.zip
+          do
+            entry_count=0
+            while IFS= read -r entry
+            do
+              entry_count=$((entry_count + 1))
+              test "$entry_count" -le 16
+              test -n "$entry"
+              case "$entry" in
+                */*|*\\*|.*|*[!A-Za-z0-9._-]*) exit 1 ;;
+              esac
+            done < <(unzip -Z1 "$archive")
+            test "$entry_count" -ge 4
+            unzip -q "$archive" -d release
+          done
       - name: Verify the complete merged release set before publication
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}

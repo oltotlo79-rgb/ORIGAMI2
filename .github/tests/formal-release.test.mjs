@@ -57,8 +57,12 @@ test('publication verifies current-run artifact archive digests before extractio
   assert.match(workflow, /actual_digest.*expected_digest/u)
   assert.ok(
     workflow.indexOf('Verify immutable workflow artifact archive digests') <
-      workflow.indexOf('actions/download-artifact@'),
+      workflow.indexOf('Extract only the digest-verified artifact archives'),
   )
+  const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
+  assert.doesNotMatch(publish, /actions\/download-artifact@/u)
+  assert.match(publish, /unzip -Z1/u)
+  assert.match(publish, /entry_count.*-le 16/u)
 
   const directory = mkdtempSync(join(tmpdir(), 'origami2-artifact-metadata-'))
   try {
@@ -79,6 +83,8 @@ test('publication verifies current-run artifact archive digests before extractio
       { ...valid, artifacts: [valid.artifacts[0]] },
       { ...valid, artifacts: [artifact(1, 'formal-release-macos-arm64', 'z'), valid.artifacts[0]] },
       { ...valid, artifacts: [{ ...valid.artifacts[1], expired: true }, valid.artifacts[0]] },
+      { ...valid, artifacts: [{ ...valid.artifacts[1], size_in_bytes: 0 }, valid.artifacts[0]] },
+      { ...valid, artifacts: [{ ...valid.artifacts[1], size_in_bytes: 2_147_483_649 }, valid.artifacts[0]] },
     ]) {
       writeFileSync(path, JSON.stringify(invalid))
       assert.throws(
@@ -92,7 +98,13 @@ test('publication verifies current-run artifact archive digests before extractio
 })
 
 function artifact(id, name, digestCharacter) {
-  return { id, name, expired: false, digest: `sha256:${digestCharacter.repeat(64)}` }
+  return {
+    id,
+    name,
+    expired: false,
+    size_in_bytes: 1024,
+    digest: `sha256:${digestCharacter.repeat(64)}`,
+  }
 }
 
 test('formal manifest remains an attested manual-review artifact, not an updater endpoint', () => {

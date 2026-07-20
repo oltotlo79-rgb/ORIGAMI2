@@ -45,6 +45,7 @@ pub use cell_order_transport::{
 pub use continuous_path::{
     MAX_STACKED_FOLD_PATH_SAMPLES_V1, STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
     STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+    STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1,
     StackedFoldPathDiagnosticLimitsV1, diagnose_collective_hinge_path_v1,
 };

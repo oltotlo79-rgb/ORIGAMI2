@@ -1927,11 +1927,14 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
     if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
     }
-    if paper_thickness_mm > 0.0 {
-        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
-    }
     if !paper_thickness_mm.is_finite() || paper_thickness_mm < 0.0 {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    if paper_thickness_mm > 0.0
+        && (requested.initial.target.model.face_ids().len() != 2
+            || requested.initial.target.model.hinges().len() != 1)
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
     }
     let lineage = requested.initial.target.geometry.proof.lineage();
     let provenance = &source_layer_order.provenance.source;
@@ -3787,15 +3790,14 @@ mod tests {
         );
         let positive_thickness = prepare_stacked_fold_requested_pose_v1(rebuild(), 90.0)
             .expect("solve positive-thickness endpoint");
-        assert_eq!(
-            prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
-                &positive_thickness,
-                &fixture.source_layer_order,
-                0.1,
-                usize::MAX,
-            ),
-            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported)
-        );
+        let positive_order = prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
+            &positive_thickness,
+            &fixture.source_layer_order,
+            0.1,
+            usize::MAX,
+        )
+        .expect("two-face positive-thickness layer offset");
+        assert_eq!(positive_order.material_faces().len(), 2);
     }
 
     #[test]

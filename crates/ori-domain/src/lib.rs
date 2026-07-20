@@ -7,6 +7,7 @@ mod annotations;
 mod constraints;
 mod element_metadata;
 mod layers;
+mod underlays;
 
 pub use annotations::{
     ANNOTATION_SCHEMA_VERSION_V1, AnnotationAnchorV1, AnnotationDocumentV1, AnnotationId,
@@ -34,6 +35,11 @@ pub use layers::{
     MIN_PROJECT_LAYER_OPACITY, PROJECT_LAYER_SCHEMA_VERSION_V1, ProjectLayerDocumentV1,
     ProjectLayerDocumentValidationErrorV1, validate_project_layer_document_against_pattern_v1,
     validate_project_layer_document_v1,
+};
+pub use underlays::{
+    MAX_UNDERLAYS_V1, MAX_UNDERLAY_SCALE_V1, MIN_UNDERLAY_SCALE_V1,
+    UNDERLAY_SCHEMA_VERSION_V1, UnderlayDocumentV1, UnderlayId, UnderlayRecordV1,
+    UnderlayTransformV1, validate_underlay_document_v1,
 };
 
 macro_rules! entity_id {

@@ -371,6 +371,19 @@ pub(super) fn apply_stacked_fold_transaction(
 
     let requested = &pending.requested;
     let target = requested.geometry();
+    if let PendingStackedFoldLayerProof::CertifiedFlat(snapshot) = &pending.layer_order {
+        let lineage = target.proof().lineage();
+        if !layer_guard.preflight_certified_target(
+            pending.expected_project_id,
+            lineage.target_revision(),
+            lineage.target_fingerprint().0,
+            snapshot,
+        ) {
+            return Err(
+                "The certified target layer order could not be prepared atomically.".to_owned(),
+            );
+        }
+    }
     let (face_ids, hinge_ids, fixed_face, hinge_angles) = requested.pose_components();
     let applied_pose = prepare_applied_pose_v1(
         &face_ids,

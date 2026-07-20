@@ -393,6 +393,22 @@ pub(super) struct CurrentLayerOrderCommitGuard<'a> {
 }
 
 impl CurrentLayerOrderCommitGuard<'_> {
+    pub(super) fn preflight_certified_target(
+        &self,
+        expected_project_id: ProjectId,
+        expected_revision: u64,
+        expected_fingerprint: [u8; 32],
+        snapshot: &LayerOrderSnapshot,
+    ) -> bool {
+        let provenance = snapshot.provenance.source;
+        self.slot.layer_order_generation.checked_add(1).is_some()
+            && provenance.identity_namespace == Some(expected_project_id)
+            && provenance.source_revision == expected_revision
+            && provenance
+                .source_fingerprint
+                .is_some_and(|value| value.0 == expected_fingerprint)
+    }
+
     /// Invalidates the source-revision certificate while the layer slot is
     /// still held at the native commit boundary. A later target certificate
     /// must be freshly minted; stale authority is never carried across edits.

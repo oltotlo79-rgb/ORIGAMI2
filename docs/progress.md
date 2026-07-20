@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約53.5%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約54.5%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値53.12%に対し、限定正厚SIM-010を10 triangular faces・9 hingesへ拡張し、「3D折り・紙厚・衝突」を90%から92%へ更新した。差分は0.34ポイント（17% × 2ポイント）で、53.46%を小数第1位へ丸めて表示している。実際のGitHub Release公開、SIM-010の一般姿勢・11face以上の正厚・cycle mutation・dense/証明困難な経路、一般経路探索は未完了である。入力値自体が概数なので、53.46%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値53.46%に対し、限定正厚SIM-010を11 triangular faces・10 hingesへ拡張して「3D折り・紙厚・衝突」を92%から94%へ、全11種の幾何制約作成UIで「数式・幾何制約」を22%から30%へ更新した。差分は1.06ポイント（17% × 2ポイント + 9% × 8ポイント）で、54.52%を小数第1位へ丸めて表示している。実際のGitHub Release公開、SIM-010の一般姿勢・12face以上の正厚・cycle mutation・dense/証明困難な経路、幾何制約solver、一般経路探索は未完了である。入力値自体が概数なので、54.52%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -15,17 +15,19 @@
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
 | プロジェクト・保存・履歴 | 8% | 78% | 6.24% | 原子的編集、差分Undo/Redo、`.ori2`保存、project単位の表示単位・memo・安全なthumbnail、独立した現在3D姿勢、1〜128件の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄に加え、認証済みUndo/Redo両stackと履歴上限の通常保存・復旧を実装 |
 | 2D展開図エディター | 15% | 57% | 8.55% | 基本編集、9種スナップ、白黒識別可能な5線種、layer文書・edge assignment・管理UIに加え、表示・lock・透明度を描画・選択・snap・交差・全編集guard・履歴・保存へ接続。注釈・下絵object、面編集、数式作図、対称編集を残す |
-| 数式・幾何制約 | 9% | 22% | 1.98% | 新規用紙の数式入力に加え、11種制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因・判定保留表示を接続。残る9種の作成UI、式駆動更新、拘束solverを残す |
-| 3D折り・紙厚・衝突 | 17% | 92% | 15.64% | 木構造多ヒンジ姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、折り重ねを厚さ0単一hinge・同軸multi-hinge・adaptive sparse非同軸2〜64hinge、限定正厚1〜9hingeでpreview・原子的apply・Undo/Redoへ接続。候補/current層順3D viewerも実装。一般正厚・cycle mutation・dense/証明困難な経路を残す |
+| 数式・幾何制約 | 9% | 30% | 2.70% | 数式入力、11種制約の保存・履歴・一覧・削除・原因表示に加え、全11種のtyped作成UIを接続。式駆動更新、拘束solverを残す |
+| 3D折り・紙厚・衝突 | 17% | 94% | 15.98% | 木構造多ヒンジ姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、折り重ねを厚さ0単一hinge・同軸multi-hinge・adaptive sparse非同軸2〜64hinge、限定正厚1〜10hingeでpreview・原子的apply・Undo/Redoへ接続。候補/current層順3D viewerも実装。一般正厚・cycle mutation・dense/証明困難な経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
 | 入出力・互換性 | 5% | 100% | 5.00% | `.ori2`、FOLD/SVG取込・展開図/手順/3D書出し、PBR・表裏texture、複数hinge watertight union、animation、FOLD 3D複数frame、正厚manifold reportを実装。独立reader、Khronos validator/Sample Viewer、Blender LTS、PrusaSlicer実機受入をCIへ固定 |
 | 多言語・設定・配布・QA | 5% | 75% | 3.75% | frontend/Rust自動回帰、Windows/macOS CI、診断、テーマ・shortcut・レイアウト、日英切替、更新確認に加え、署名・SBOM・checksum・provenance・prerelease/stable promotionを持つ正式版workflowを実装。実際のGitHub Release公開を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **53.46%** | — |
+| **合計** | **100%** | — | **54.52%** | — |
 
 ## 完了
 
+- SIM-010の限定正厚treeを11 triangular faces・10 hingesへ拡張した。全55 pairをmemo cap 55で完全被覆し、6度でcertificate・safe-stop requested、6度超と12-face cap超過をfail-closedにする。positive layer orderを(11,10)へ限定admitし、runtime群32.37秒、desktop checkが成功した。「3D折り・紙厚・衝突」を94%へ更新した
+- 全11種の幾何制約作成UIを接続した。fixed length/angle、horizontal/vertical、equal length、parallel、point on line、mirror/rotational symmetry、angle bisector、length ratioをtyped formから作成できる。canonical edge/vertexをrole別に選択し、数値をstrict validation後、project instance/revision固定のnative atomic commandへ送り、history・UndoRedo・保存・復旧・stale guardを共用する。frontend 1698件、build、lintが成功した。「数式・幾何制約」を30%、全体を54.52%（表示54.5%）へ更新した
 - SIM-010の限定正厚treeを10 triangular faces・9 hingesへ拡張した。全45 pairをmemo cap 45で完全被覆し、8度でcertificate・safe-stop requested、8度超と11-face cap超過をfail-closedにする。positive layer orderを(10,9)へ限定admitし、runtime群33.67秒、desktop checkが成功した。「3D折り・紙厚・衝突」を92%、全体を53.46%（表示53.5%）へ更新した
 - SIM-010の限定正厚treeを9 triangular faces・8 hingesへ拡張した。全36 pairをmemo hard cap 36で完全被覆し、10度でcertificate・safe-stop requested、10度超と10-face cap超過をfail-closedにする。runtime 3件、memo cap、desktop checkが成功した。「3D折り・紙厚・衝突」を90%へ更新した
 - 正式版配布workflowを追加した。trusted GPG signed tag、version/HEAD一致、Windows Authenticode/NSIS、macOS hardened-runtime codesign、CycloneDX SBOM、全payload checksum、GitHub provenance attestation、prereleaseからstableへの無再build promotion、権限分離、既存release上書き拒否を実装する。default dry-runとlocal artifact contract 3件が成功し、実公開は行っていない。「多言語・設定・配布・QA」を75%、全体を53.12%（表示53.1%）へ更新した

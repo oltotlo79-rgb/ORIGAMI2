@@ -4,6 +4,7 @@ mod annotation_editor;
 mod applied_pose;
 mod constraint_solver;
 mod constraints;
+mod cycle_fold_transaction;
 mod editor;
 mod fold_model_fingerprint;
 mod sheet;
@@ -34,6 +35,10 @@ pub use constraints::{
     preflight_direct_conflicts_v1, prepare_geometric_constraints_v1,
     validate_geometric_constraint_document_v1,
     validate_geometric_constraint_record_against_pattern_v1,
+};
+pub use cycle_fold_transaction::{
+    CycleFoldTransactionErrorV1, ReadyCycleFoldTransactionV1,
+    apply_ready_cycle_fold_transaction_v1, prepare_cycle_fold_transaction_v1,
 };
 pub use editor::{
     Command, CommandError, CommandResult, EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1,

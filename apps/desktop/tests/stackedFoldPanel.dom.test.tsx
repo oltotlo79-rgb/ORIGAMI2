@@ -237,14 +237,17 @@ describe('StackedFoldPanel', () => {
   it('passes an explicitly authored versioned cycle schedule to native proof', async () => {
     transport.cancel.mockResolvedValue(undefined)
     transport.preview.mockResolvedValue(ready)
+    transport.apply.mockResolvedValue(4)
+    const refreshed = { ...snapshot, revision: 4 } as ProjectSnapshot
+    const onApplied = vi.fn()
     render(
       <StackedFoldPanel
         locale="en"
         snapshot={snapshot}
         selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
         disabled={false}
-        refreshSnapshot={vi.fn()}
-        onApplied={vi.fn()}
+        refreshSnapshot={vi.fn().mockResolvedValue(refreshed)}
+        onApplied={onApplied}
       />,
     )
     const schedule = {
@@ -269,6 +272,13 @@ describe('StackedFoldPanel', () => {
     expect(transport.preview).toHaveBeenCalledWith(expect.objectContaining({
       cycleScheduleV1: schedule,
     }))
+    const apply = screen.getByRole('button', { name: 'Apply stacked fold' })
+    expect((apply as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect((apply as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(apply)
+    await waitFor(() => expect(transport.apply).toHaveBeenCalledWith(token))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
   })
 
   it('rejects an unbounded or malformed half-angle draft before native transport', async () => {

@@ -1,0 +1,244 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import {
+  createStackedFoldReadCoordinator,
+  type StackedFoldReadAuthority,
+  type StackedFoldReadCoordinatorState,
+} from '../src/lib/stackedFoldReadCoordinator.ts'
+import type {
+  StackedFoldReadRequest,
+  StackedFoldReadResponse,
+} from '../src/lib/stackedFoldRead.ts'
+
+const INSTANCE = '018f47a2-4b7a-7cc1-8abc-112233445566'
+const PROJECT = '018f47a2-4b7a-7cc1-8abc-665544332211'
+
+const request = (revision = 3): StackedFoldReadRequest => ({
+  expectedProjectInstanceId: INSTANCE,
+  expectedProjectId: PROJECT,
+  expectedRevision: revision,
+  first: [0, 0, 0],
+  second: [1, 0, 0],
+  fixedSide: 'left',
+  rotationDirection: 'positive',
+  requestedAngleDegrees: 180,
+})
+
+const response = (revision = 3): StackedFoldReadResponse =>
+  ({
+    guardModelId: 'guard-v1',
+    proposalModelId: 'proposal-v1',
+    materialMapModelId: 'material-v1',
+    binding: {
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      sourceRevision: revision,
+      poseGeneration: 1,
+      layerOrderGeneration: 1,
+    },
+    support: 'no_hinge_single_face',
+    crossedCells: [],
+    targetFaces: [PROJECT],
+    materialSegments: [{
+      faceId: PROJECT,
+      start: [0, 0],
+      end: [1, 0],
+      fixedSide: 'left',
+      assignment: 'mountain',
+    }],
+    topologyProof: {
+      targetFingerprintSha256: 'a'.repeat(64),
+      targetVertexCount: 4,
+      targetEdgeCount: 5,
+      targetBoundaryVertexCount: 4,
+      lineageRecordCount: 2,
+      sourceEdgeSubdivisionCount: 4,
+      expectedCreaseSubdivisionCount: 1,
+      targetMaterialFaceCount: 2,
+      targetHingeCount: 1,
+    },
+    endpointCollision: {
+      expectedPairCount: 0,
+      separatedPairCount: 0,
+      touchingPairCount: 0,
+      allowedPairCount: 0,
+      penetratingPairCount: 0,
+      indeterminatePairCount: 0,
+      hasBlockingHold: false,
+    },
+    work: {
+      scannedCells: 0,
+      totalBoundaryVertices: 4,
+      totalLayerRecords: 1,
+      orientationTests: 1,
+      exactArithmeticOperations: 1,
+      maximumExactIntegerBits: 1,
+      totalExactIntegerBits: 1,
+      retainedCells: 0,
+      retainedTargetFaces: 1,
+    },
+    authorizesProjectMutation: false,
+    authorizesApplyStackedFold: false,
+    flatEndpointLayerOrder: {
+      applicable: false,
+      certified: false,
+      materialFaceCount: 0,
+      overlapCellCount: 0,
+    },
+  }) as StackedFoldReadResponse
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+  return { promise, resolve, reject }
+}
+
+test('publishes a detached ready result only while authority remains current', async () => {
+  let authority: StackedFoldReadAuthority | null = {
+    projectInstanceId: INSTANCE,
+    projectId: PROJECT,
+    revision: 3,
+  }
+  const gate = deferred<StackedFoldReadResponse>()
+  const states: StackedFoldReadCoordinatorState[] = []
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gate.promise,
+    getAuthority: () => authority,
+    onState: (state) => states.push(state),
+  })
+  const mutable = request()
+  const result = coordinator.read(mutable)
+  ;(mutable.first as number[])[0] = 99
+  gate.resolve(response())
+  assert.deepEqual(await result, { status: 'ready', response: response() })
+  assert.equal(states[0]?.status, 'idle')
+  assert.equal(states[1]?.status, 'reading')
+  assert.deepEqual(
+    states[1]?.status === 'reading' ? states[1].request.first : null,
+    [0, 0, 0],
+  )
+  assert.equal(coordinator.getState().status, 'ready')
+  authority = null
+})
+
+test('replacement and invalidation settle old reads without publishing stale completions', async () => {
+  const gates = [
+    deferred<StackedFoldReadResponse>(),
+    deferred<StackedFoldReadResponse>(),
+  ]
+  let index = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gates[index++]!.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+  })
+  const first = coordinator.read(request())
+  const second = coordinator.read(request())
+  assert.deepEqual(await first, { status: 'cancelled', reason: 'superseded' })
+  gates[0].resolve(response())
+  coordinator.invalidate()
+  assert.deepEqual(await second, { status: 'cancelled', reason: 'invalidated' })
+  gates[1].resolve(response())
+  await Promise.resolve()
+  assert.equal(coordinator.getState().status, 'idle')
+})
+
+test('completion fails closed after authority drift and for forged mutation authority', async () => {
+  let revision = 3
+  const gates = [
+    deferred<StackedFoldReadResponse>(),
+    deferred<StackedFoldReadResponse>(),
+  ]
+  let index = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gates[index++]!.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision,
+    }),
+  })
+  const stale = coordinator.read(request())
+  revision = 4
+  gates[0].resolve(response())
+  assert.deepEqual(await stale, {
+    status: 'cancelled',
+    reason: 'stale_authority',
+  })
+
+  revision = 3
+  const forged = coordinator.read(request())
+  gates[1].resolve({
+    ...response(),
+    authorizesApplyStackedFold: true,
+  } as unknown as StackedFoldReadResponse)
+  assert.deepEqual(await forged, {
+    status: 'failed',
+    reason: 'invalid_response',
+  })
+})
+
+test('reentrant observer replacement owns state and disposal is terminal', async () => {
+  const gates = [
+    deferred<StackedFoldReadResponse>(),
+    deferred<StackedFoldReadResponse>(),
+  ]
+  let index = 0
+  let reentered = false
+  let nested: Promise<unknown> | null = null
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gates[index++]!.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onState(state) {
+      if (state.status === 'reading' && !reentered) {
+        reentered = true
+        nested = coordinator.read(request())
+      }
+    },
+  })
+  const outer = coordinator.read(request())
+  assert.deepEqual(await outer, { status: 'cancelled', reason: 'superseded' })
+  gates[0].resolve(response())
+  assert.deepEqual(await nested, { status: 'ready', response: response() })
+  coordinator.dispose()
+  assert.deepEqual(await coordinator.read(request()), {
+    status: 'cancelled',
+    reason: 'disposed',
+  })
+})
+
+test('transport failures are sanitized and stale requests never invoke transport', async () => {
+  let calls = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: async () => {
+      calls += 1
+      throw new Error('secret native detail')
+    },
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+  })
+  assert.deepEqual(await coordinator.read(request(2)), {
+    status: 'cancelled',
+    reason: 'stale_authority',
+  })
+  assert.equal(calls, 0)
+  assert.deepEqual(await coordinator.read(request()), {
+    status: 'failed',
+    reason: 'native_failure',
+  })
+  assert.equal(calls, 1)
+})

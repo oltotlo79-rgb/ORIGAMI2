@@ -173,6 +173,15 @@ test('all workflow actions are immutable SHA-pinned with bounded release jobs', 
   assert.doesNotMatch(build, /contents: write|id-token: write|attestations: write/u)
 })
 
+test('release build toolchains are exact versions rather than moving channels', () => {
+  for (const name of ['release.yml', 'release-windows.yml']) {
+    const workflow = readFileSync(join(root, '.github/workflows', name), 'utf8')
+    assert.match(workflow, /toolchain: 1\.90\.0/u, name)
+    assert.match(workflow, /node-version: 24\.11\.1/u, name)
+    assert.doesNotMatch(workflow, /toolchain: stable|node-version: 24\s*$/mu, name)
+  }
+})
+
 test('all direct and nested action runtimes match the audited Node.js 24 inventory', () => {
   const workflowNames = ['ci.yml', 'release.yml', 'release-windows.yml']
   const used = new Set()

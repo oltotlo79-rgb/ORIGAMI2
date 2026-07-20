@@ -70,7 +70,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          toolchain: stable
+          toolchain: 1.90.0
           components: rustfmt, clippy
 
       - name: Restore Rust build cache
@@ -79,7 +79,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.11.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 

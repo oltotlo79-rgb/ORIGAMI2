@@ -1936,7 +1936,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
                 requested.initial.target.model.face_ids().len(),
                 requested.initial.target.model.hinges().len(),
             ),
-            (2, 1) | (3, 2) | (4, 3) | (5, 4) | (6, 5)
+            (2, 1) | (3, 2) | (4, 3) | (5, 4) | (6, 5) | (7, 6)
         )
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);

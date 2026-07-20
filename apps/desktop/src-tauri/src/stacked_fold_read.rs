@@ -49,9 +49,9 @@ const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.
 const ANALYSIS_FAILED_MESSAGE: &str =
     "The stacked-fold proposal is unsupported or could not be certified.";
 const CYCLE_NONCLOSING_MESSAGE: &str = "stacked_fold_cycle_nonclosing";
+const CYCLE_PATH_UNCERTIFIED_MESSAGE: &str = "stacked_fold_cycle_path_uncertified";
 const CYCLE_PATH_UNSUPPORTED_MESSAGE: &str = "stacked_fold_cycle_path_unsupported";
 const CYCLE_PATH_RESOURCE_MESSAGE: &str = "stacked_fold_cycle_path_resource_limit";
-const CYCLE_PATH_COLLISION_MESSAGE: &str = "stacked_fold_cycle_path_collision";
 const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
@@ -743,7 +743,10 @@ pub(super) async fn propose_current_stacked_fold_read(
                 StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
             );
             if continuous.continuous_certificate_model_id().is_none() {
-                return Err(CYCLE_PATH_COLLISION_MESSAGE.to_owned());
+                // The bounded CCD diagnostic intentionally does not distinguish
+                // an actual collision from an enclosure that stayed unresolved
+                // at its subdivision limit. Do not overstate either outcome.
+                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
             let closed_endpoint = ori_core::prepare_stacked_fold_requested_scheduled_graph_pose_v1(
                 initial,

@@ -61,6 +61,8 @@ pub fn prepare_cycle_fold_transaction_v1(
     let fixed = certificate.fixed_face();
     if certificate.leaves().is_empty()
         || !schedule.matches_binding(geometry, audit, fixed)
+        || certificate.schedule_binding_fingerprint_v1()
+            != schedule.certificate_binding_fingerprint_v1()
         || certificate
             .leaves()
             .iter()

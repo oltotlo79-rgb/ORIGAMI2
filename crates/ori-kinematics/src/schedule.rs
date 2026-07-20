@@ -810,6 +810,7 @@ struct Entry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalCycleScheduleV1 {
     binding_fingerprint: [u8; 32],
+    schedule_fingerprint: [u8; 32],
     fixed_face: FaceId,
     domain: [f64; 2],
     entries: Vec<Entry>,
@@ -900,8 +901,10 @@ impl CanonicalCycleScheduleV1 {
                 derivative_bound,
             });
         }
+        let schedule_fingerprint = schedule_fingerprint_v1(&prepared, &[]);
         Ok(Self {
             binding_fingerprint: binding_fingerprint(geometry, audit, fixed_face),
+            schedule_fingerprint,
             fixed_face,
             domain,
             entries: prepared,
@@ -936,8 +939,10 @@ impl CanonicalCycleScheduleV1 {
             .into_iter()
             .map(|entry| PreparedHalfAngleRationalEntryV1::prepare(entry, limits))
             .collect::<Result<Vec<_>, _>>()?;
+        let schedule_fingerprint = schedule_fingerprint_v1(&[], &prepared);
         Ok(Self {
             binding_fingerprint: binding_fingerprint(geometry, audit, fixed_face),
+            schedule_fingerprint,
             fixed_face,
             domain: [0.0, 1.0],
             entries: Vec::new(),
@@ -1032,6 +1037,51 @@ impl CanonicalCycleScheduleV1 {
         self.fixed_face == fixed_face
             && self.binding_fingerprint == binding_fingerprint(geometry, audit, fixed_face)
     }
+
+    /// Opaque authentication value used to prevent exchanging certificates
+    /// between different schedules bound to the same material graph.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn certificate_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.schedule_fingerprint
+    }
+}
+
+fn schedule_fingerprint_v1(
+    entries: &[Entry],
+    half_angle_entries: &[PreparedHalfAngleRationalEntryV1],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"canonical_cycle_schedule_v1");
+    for entry in entries {
+        hash.update(entry.edge.canonical_bytes());
+        hash.update(entry.initial.to_bits().to_be_bytes());
+        for coefficient in &entry.coefficients {
+            hash.update(coefficient.to_bits().to_be_bytes());
+        }
+    }
+    for entry in half_angle_entries {
+        hash.update(entry.edge.canonical_bytes());
+        for value in entry
+            .u_domain
+            .iter()
+            .chain(&entry.numerator_power_coefficients)
+            .chain(&entry.denominator_power_coefficients)
+        {
+            let (numerator_sign, numerator) = value.numer().to_bytes_be();
+            let denominator = value.denom().to_bytes_be().1;
+            hash.update([match numerator_sign {
+                num_bigint::Sign::Minus => 0,
+                num_bigint::Sign::NoSign => 1,
+                num_bigint::Sign::Plus => 2,
+            }]);
+            hash.update((numerator.len() as u64).to_be_bytes());
+            hash.update(numerator);
+            hash.update((denominator.len() as u64).to_be_bytes());
+            hash.update(denominator);
+        }
+    }
+    hash.finalize().into()
 }
 
 fn binding_fingerprint(

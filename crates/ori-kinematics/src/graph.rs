@@ -50,6 +50,7 @@ pub struct DyadicIntervalClosureLimitsV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DyadicMaterialHingeIntervalClosureCertificateV1 {
     fixed_face: FaceId,
+    schedule_binding_fingerprint: [u8; 32],
     leaves: Vec<(u32, u64, MaterialHingeIntervalClosureCertificateV1)>,
 }
 
@@ -62,6 +63,12 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
     #[must_use]
     pub fn leaves(&self) -> &[(u32, u64, MaterialHingeIntervalClosureCertificateV1)] {
         &self.leaves
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn schedule_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.schedule_binding_fingerprint
     }
 }
 
@@ -207,7 +214,11 @@ impl MaterialHingeGraphGeometry {
                 }
             }
         }
-        Ok(DyadicMaterialHingeIntervalClosureCertificateV1 { fixed_face, leaves })
+        Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
+            fixed_face,
+            schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
+            leaves,
+        })
     }
 
     /// Proves closure for every value in a canonical vector of angle boxes.

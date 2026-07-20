@@ -6,7 +6,7 @@
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.74%に対し、binary64 exact一致する共面隣接faceをweldし内部wallを除いたwatertight solidへ統合する利用者経路を接続したため、「入出力・互換性」を91%から92%へ更新した。差分は0.05ポイント（全体比率5% × 1ポイント）で、46.79%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、非共面・hingeを含む一般面間union、印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、一般姿勢のnative連続経路停止、専用の層順3D viewer、SIM-010の原子的折り重ね、一般経路探索、FOLD 3D複数frameの利用者経路も未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.79%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.79%に対し、FOLD 1.2の3D複数frameをnative PNGとして選択閲覧する日英利用者経路を接続したため、「入出力・互換性」を92%から93%へ更新した。差分は0.05ポイント（全体比率5% × 1ポイント）で、46.84%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、非共面・hingeを含む一般面間union、印刷可能性保証、FOLD 3D frameのproject/applied pose変換、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、一般姿勢のnative連続経路停止、専用の層順3D viewer、SIM-010の原子的折り重ね、一般経路探索も未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.84%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,13 +19,14 @@
 | 3D折り・紙厚・衝突 | 17% | 56% | 9.52% | 木構造多ヒンジの姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、切断後pieceの同一sheet origin、境界間Cut、closed loop、open/branched seam、穴付き静的3D表示を接続。正厚三角柱の完全分類、native連続停止、専用層順3D表示、折り重ね、一般経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 92% | 4.60% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色・texture、共面隣接faceのwatertight union、独立reader 3種の自動受入、instruction timeline animation、project PNG/JPEG表裏texture利用者経路も実装。FOLD 3D複数frameの利用者経路、一般面間union、GUI 3Dアプリ実機受入を残す |
+| 入出力・互換性 | 5% | 93% | 4.65% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色・texture、共面隣接faceのwatertight union、独立reader 3種の自動受入、instruction timeline animation、project PNG/JPEG表裏texture、FOLD 3D複数frameのread-only preview利用者経路も実装。FOLD 3Dのproject/applied pose変換、一般面間union、GUI 3Dアプリ実機受入を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **46.79%** | — |
+| **合計** | **100%** | — | **46.84%** | — |
 
 ## 完了
 
+- IO-008のFOLD 3D複数frame previewを日英UIへ接続した。strict clientはexact key、UUID、revision、frame metadata、PNG data URL prefix・700 KiB・512×384、全authority falseを検証する。launcher・native picker・frame一覧・PNG preview・cancel・stale retryをbusy reentry、modal inert、focus trap/Escape、close後focus復帰へ閉じ、projectを変更しないread-only表示であることを明示する。parser 2件、DOM 231件、lint、production buildが成功した。「入出力・互換性」を93%、全体を46.84%（表示46.8%）へ更新した
 - IO-008のFOLD 3D選択frameをnative PNG preview artifactへ変換した。解決済み3D座標をnative内だけでdeterministic isometric camera-fitし、固定512×384 RGBA point-cloud PNGへrasterizeする。PNGは512 KiB上限、WebViewへは`data:image/png;base64`と寸法・bounded metadataだけを返し、source bytes・座標文字列・project/applied pose/timeline authorityは非公開のまま保つ。determinism、PNG signature、size、coordinate redactionのnative 3件とdesktop全target checkが成功した。frontend UIは未接続なので完成率は変更していない
 - 非共面正厚unionの先行条件として、限定2三角形face・1hingeの正厚境界capabilityを追加した。既存private exact corridor/classifierを全通過して`Allowed`となる場合だけ、BoundMaterialTreePose issuer・pose identity・厚さbits・hinge/face identityへ束縛し、native material-mmの左右表裏hinge offset railを観測できる。ABA・foreign issuer・厚さdriftを拒否し、90/180度や未証明分類では発行しない。clearanceやprintability authorityは付与しない。対象2件とall-target checkが成功した。mesh union consumer未接続なので完成率は変更していない
 - SIM-010のproof-bearing transaction premiseをnative private registryへ保持した。非180 workerのPrepared target pose・continuous diagnostic・target layer orderをserializeやbooleanへ落とさずmoveし、project instance・ID・revision・source fingerprint・pose generation・layer generation全次元へ束縛する。premise内部整合を検査し、live pose/layer capability再認証後だけinstallする。generation token replacement、exact tokenのidempotent cancel、stale/ABA拒否を実装し、UIには公開しない。専用2件とdesktop全target checkがwarningなしで成功した。atomic editor mutationは未実装なので完成率は変更していない

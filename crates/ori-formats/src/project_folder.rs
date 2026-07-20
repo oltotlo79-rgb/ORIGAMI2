@@ -1101,6 +1101,14 @@ pub(crate) fn generate_safe_preview_svg(
     svg.push_str("\" data-skipped-edges=\"");
     svg.push_str(&skipped_edges.to_string());
     svg.push_str("\">\n");
+    svg.push_str("  <title>Read-only crease-pattern preview</title>\n");
+    svg.push_str("  <desc>Preview status: ");
+    svg.push_str(status);
+    svg.push_str(". Skipped vertices: ");
+    svg.push_str(&skipped_vertices.to_string());
+    svg.push_str(". Skipped edges: ");
+    svg.push_str(&skipped_edges.to_string());
+    svg.push_str(".</desc>\n");
     svg.push_str("  <rect x=\"0\" y=\"0\" width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     svg.push_str("  <g fill=\"none\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\">\n");
     for (kind, [x1, y1, x2, y2]) in rendered_edges {

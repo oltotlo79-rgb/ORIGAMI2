@@ -947,6 +947,12 @@ fn capture_source(
             GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
         ));
     }
+    let fold_model_fingerprint = project.editor.fold_model_fingerprint_v1();
+    if fold_model_fingerprint != expected_fold_model_fingerprint {
+        return Err(GlobalFlatFoldabilityCommandError::new(
+            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+        ));
+    }
     if let Some(violation) =
         source_record_limit_violation(project.editor.pattern(), project.editor.paper(), limits)
     {
@@ -955,12 +961,6 @@ fn capture_source(
             runtime,
             violation,
         });
-    }
-    let fold_model_fingerprint = project.editor.fold_model_fingerprint_v1();
-    if fold_model_fingerprint != expected_fold_model_fingerprint {
-        return Err(GlobalFlatFoldabilityCommandError::new(
-            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
-        ));
     }
     let binding = Arc::new(GlobalFlatFoldabilityBinding {
         project_instance_id: project.instance_id,
@@ -2584,7 +2584,7 @@ mod tests {
     }
 
     #[test]
-    fn source_preflight_runs_before_fingerprint_binding_and_is_inclusive() {
+    fn source_preflight_is_inclusive_but_cannot_bypass_fingerprint_binding() {
         let base = initial_project_state();
         let vertex_count = base.editor.pattern().vertices.len();
         let edge_count = base.editor.pattern().edges.len();
@@ -2618,7 +2618,7 @@ mod tests {
         assert_eq!(violation.limit, vertex_count);
         assert_eq!(violation.observed, vertex_count + 1);
 
-        let capture = capture_source(
+        let stale = match capture_source(
             &project,
             project.instance_id,
             project.project_id,
@@ -2627,8 +2627,26 @@ mod tests {
             GlobalFlatFoldabilityJobId::new(),
             Arc::new(GlobalFlatFoldabilityRuntime::new(30_000)),
             exact_limits,
+        ) {
+            Ok(_) => panic!("over-limit input must still reject a stale fingerprint"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            stale.category,
+            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable
+        );
+
+        let capture = capture_source(
+            &project,
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            &project.editor.fold_model_fingerprint_v1(),
+            GlobalFlatFoldabilityJobId::new(),
+            Arc::new(GlobalFlatFoldabilityRuntime::new(30_000)),
+            exact_limits,
         )
-        .expect("over-limit input returns a conservative result before fingerprint comparison");
+        .expect("bound over-limit input returns a conservative result");
         assert!(matches!(
             capture,
             GlobalFlatFoldabilityCapture::SourceLimit { violation, .. }

@@ -1167,6 +1167,11 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.equal(policy.cargoLicenseDatabase.cargoLockSha256, policy.cargoLockSha256)
   assert.equal(policy.cargoLicenseDatabase.packages.length, policy.cargoPackages)
   assert.ok(policy.cargoLicenseDatabase.packages.every(({ package: name, license }) => name && license))
+  assert.ok(policy.cargoLicenseDatabase.packages.every(({ source, checksum }) => (
+    (source === null && checksum === null)
+    || (source === 'registry+https://github.com/rust-lang/crates.io-index'
+      && /^[0-9a-f]{64}$/u.test(checksum))
+  )))
   assert.deepEqual(
     policy.thirdPartyNotices.map(({ package: name }) => name),
     [...policy.thirdPartyNotices.map(({ package: name }) => name)].sort(),
@@ -1182,6 +1187,8 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   const policySource = readFileSync(join(root, '.github/scripts/dependency_policy.mjs'), 'utf8')
   assert.match(policySource, /npm package manifest and lockfile root are out of sync/u)
   assert.match(policySource, /canonicalRoot\(lockedRoot\) !== canonicalRoot\(packageManifest\)/u)
+  assert.match(policySource, /Cargo source provenance mismatch/u)
+  assert.match(policySource, /Cargo source provenance is not allowed/u)
 })
 
 test('dependency policy is independent of the caller working directory', () => {

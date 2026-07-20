@@ -57,6 +57,19 @@ export function buildDependencyPolicy() {
     if (identifiers.some((id) => !['AND', 'OR', 'WITH'].includes(id) && !cargoLicenseAllowlist.has(id))) {
       throw new Error(`Cargo dependency license is not allowed: ${entry.package}`)
     }
+    const lockEntry = cargoPackages.find((candidate) => (
+      /^name = "([^"]+)"$/mu.exec(candidate)?.[1]
+      + '@' + /^version = "([^"]+)"$/mu.exec(candidate)?.[1]
+    ) === entry.package)
+    const expectedSource = /^source = "([^"]+)"$/mu.exec(lockEntry ?? '')?.[1] ?? null
+    const expectedChecksum = /^checksum = "([0-9a-f]{64})"$/mu.exec(lockEntry ?? '')?.[1] ?? null
+    if (entry.source !== expectedSource || entry.checksum !== expectedChecksum) {
+      throw new Error(`Cargo source provenance mismatch: ${entry.package}`)
+    }
+    if (entry.source !== null && (
+      entry.source !== 'registry+https://github.com/rust-lang/crates.io-index'
+      || !/^[0-9a-f]{64}$/u.test(entry.checksum ?? '')
+    )) throw new Error(`Cargo source provenance is not allowed: ${entry.package}`)
     return entry.package
   }).sort()
   if (lockedCargoIdentities.join('\n') !== licensedCargoIdentities.join('\n')) {

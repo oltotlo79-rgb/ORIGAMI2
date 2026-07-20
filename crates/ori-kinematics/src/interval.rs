@@ -31,6 +31,10 @@ impl OutwardIntervalV1 {
         })
     }
 
+    pub fn from_rounded(value: f64) -> Result<Self, OutwardIntervalErrorV1> {
+        Self::new(next_down(value), next_up(value))
+    }
+
     #[must_use]
     pub const fn lower(&self) -> f64 {
         self.lower

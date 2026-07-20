@@ -7,12 +7,54 @@ use thiserror::Error;
 
 use crate::{
     CanonicalHingeAngles, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    OutwardIntervalV1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RationalCoefficientV1 {
     pub numerator: i64,
     pub denominator: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HalfAngleDomainV1 {
+    angle_degrees: [f64; 2],
+    half_angle_tangent: OutwardIntervalV1,
+}
+
+impl HalfAngleDomainV1 {
+    pub fn prepare(angle_degrees: [f64; 2]) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        if !angle_degrees[0].is_finite()
+            || !angle_degrees[1].is_finite()
+            || angle_degrees[0] >= angle_degrees[1]
+            || angle_degrees[0] <= -180.0
+            || angle_degrees[1] >= 180.0
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let lower = libm::tan(angle_degrees[0] * core::f64::consts::PI / 360.0);
+        let upper = libm::tan(angle_degrees[1] * core::f64::consts::PI / 360.0);
+        let lower = OutwardIntervalV1::from_rounded(lower)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let upper = OutwardIntervalV1::from_rounded(upper)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let half_angle_tangent = OutwardIntervalV1::new(lower.lower(), upper.upper())
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        Ok(Self {
+            angle_degrees,
+            half_angle_tangent,
+        })
+    }
+
+    #[must_use]
+    pub const fn angle_degrees(&self) -> [f64; 2] {
+        self.angle_degrees
+    }
+
+    #[must_use]
+    pub const fn half_angle_tangent(&self) -> OutwardIntervalV1 {
+        self.half_angle_tangent
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -568,5 +610,28 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn half_angle_domain_separates_tangent_poles_and_encloses_known_angles() {
+        let domain = HalfAngleDomainV1::prepare([-90.0, 90.0]).unwrap();
+        assert_eq!(domain.angle_degrees(), [-90.0, 90.0]);
+        let tangent = domain.half_angle_tangent();
+        assert!(tangent.lower() <= -1.0);
+        assert!(tangent.upper() >= 1.0);
+        for invalid in [
+            [-180.0, 0.0],
+            [0.0, 180.0],
+            [1.0, 1.0],
+            [f64::NAN, 1.0],
+        ] {
+            assert_eq!(
+                HalfAngleDomainV1::prepare(invalid),
+                Err(CycleSchedulePrepareErrorV1::InvalidInput)
+            );
+        }
+        let near_poles = HalfAngleDomainV1::prepare([-179.0, 179.0]).unwrap();
+        assert!(near_poles.half_angle_tangent().lower() < -100.0);
+        assert!(near_poles.half_angle_tangent().upper() > 100.0);
     }
 }

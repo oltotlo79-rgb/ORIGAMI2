@@ -85,7 +85,8 @@ pub use graph::{
 pub use interval::{OutwardIntervalV1, OutwardIntervalErrorV1};
 pub use schedule::{
     CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
-    CycleSchedulePrepareErrorV1, PoleFreeBernsteinCertificateV1, RationalCoefficientV1,
+    CycleSchedulePrepareErrorV1, HalfAngleDomainV1, PoleFreeBernsteinCertificateV1,
+    RationalCoefficientV1,
     prepare_pole_free_bernstein_certificate_v1,
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};

@@ -1750,6 +1750,15 @@ fn update_beginner_design_profile(
     if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
         return Err("the target reference image is unavailable".to_owned());
     }
+    let live_fingerprint = project.editor.fold_model_fingerprint_v1();
+    if profile
+        .generation_constraints
+        .bulge_targets
+        .iter()
+        .any(|target| target.source_fold_model_fingerprint != live_fingerprint)
+    {
+        return Err("the 3D bulge target fold-model binding is stale".to_owned());
+    }
     execute_command(
         &mut project,
         expected_project_instance_id,

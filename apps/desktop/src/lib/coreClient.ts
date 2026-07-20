@@ -195,6 +195,15 @@ export type BeginnerGenerationConstraintsV1 = {
     side: 'front' | 'back' | 'either'
     priority: number
   }>
+  bulge_targets: Array<{
+    id: number
+    face_ids: string[]
+    range_min_tenths_mm: [number, number, number]
+    range_max_tenths_mm: [number, number, number]
+    direction_milli: [number, number, number]
+    amount_tenths_mm: number
+    source_fold_model_fingerprint: string
+  }>
   target_asset: {
     kind: 'reference_image'
     underlay_id: string
@@ -261,6 +270,7 @@ function normalizeBeginnerGenerationConstraints(
     'target_parts',
     'skeleton_segments',
     'protrusions',
+    'bulge_targets',
     'target_asset',
     'allowed_techniques',
   ] as const)
@@ -284,6 +294,7 @@ function normalizeBeginnerGenerationConstraints(
     || record.skeleton_segments.length > 64
     || !Array.isArray(record.protrusions)
     || record.protrusions.length > 32
+    || !Array.isArray(record.bulge_targets) || record.bulge_targets.length > 32
     || !Array.isArray(record.allowed_techniques)
     || record.allowed_techniques.length < 1
     || record.allowed_techniques.length > 8
@@ -365,6 +376,33 @@ function normalizeBeginnerGenerationConstraints(
     return { ...item } as BeginnerGenerationConstraintsV1['protrusions'][number]
   })
   if (protrusions.some((target) => target === null)) return null
+  const bulgeIds = new Set<number>()
+  const bulgeTargets = record.bulge_targets.map((value) => {
+    const item = exactCoreDataRecord(value, [
+      'id', 'face_ids', 'range_min_tenths_mm', 'range_max_tenths_mm',
+      'direction_milli', 'amount_tenths_mm', 'source_fold_model_fingerprint',
+    ] as const)
+    if (!item || !Number.isInteger(item.id) || Number(item.id) < 0 || bulgeIds.has(Number(item.id))
+      || !Array.isArray(item.face_ids) || item.face_ids.length < 1 || item.face_ids.length > 32
+      || item.face_ids.some((id) => !isCanonicalNonNilUuid(id))
+      || new Set(item.face_ids).size !== item.face_ids.length
+      || !isBoundedIntegerTuple(item.range_min_tenths_mm, 3, 100_000)
+      || !isBoundedIntegerTuple(item.range_max_tenths_mm, 3, 100_000)
+      || !isBoundedIntegerTuple(item.direction_milli, 3, 1_000)
+      || !Number.isInteger(item.amount_tenths_mm) || Number(item.amount_tenths_mm) < 1
+      || Number(item.amount_tenths_mm) > 1_000_000
+      || typeof item.source_fold_model_fingerprint !== 'string'
+      || !/^[0-9a-f]{64}$/u.test(item.source_fold_model_fingerprint)) return null
+    const minimum = item.range_min_tenths_mm
+    const maximum = item.range_max_tenths_mm
+    const direction = item.direction_milli
+    if (minimum.some((value, index) => value > maximum[index])
+      || minimum.every((value, index) => value === maximum[index])
+      || direction.every((axis) => axis === 0)) return null
+    bulgeIds.add(Number(item.id))
+    return { ...item } as BeginnerGenerationConstraintsV1['bulge_targets'][number]
+  })
+  if (bulgeTargets.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
   if (record.target_asset !== null) {
     const asset = exactCoreDataRecord(
@@ -388,6 +426,7 @@ function normalizeBeginnerGenerationConstraints(
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
     protrusions,
+    bulge_targets: bulgeTargets,
     target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
@@ -429,6 +468,7 @@ function normalizeBeginnerRecognitionProposal(
     target_parts: record.target_parts,
     skeleton_segments: record.skeleton_segments,
     protrusions: [],
+    bulge_targets: [],
     target_asset: null,
     allowed_techniques: ['valley_fold'],
   })
@@ -1376,7 +1416,22 @@ export function proveCurrentAssignedLocalSufficiencyV1(
   }>,
 ): Promise<AssignedLocalSufficiencyResponseV1> {
   return invoke<unknown>('prove_current_assigned_local_sufficiency_v1', { request }).then((value) => {
-    if (!isRecord(value) || !isRecord(value.result)) throw new Error('invalid local sufficiency response')
+    const normalized = normalizeAssignedLocalSufficiencyResponseV1(value, request)
+    if (!normalized) throw new Error('invalid local sufficiency response')
+    return normalized
+  })
+}
+
+export function normalizeAssignedLocalSufficiencyResponseV1(
+  value: unknown,
+  request: Readonly<{
+    expectedProjectInstanceId: string
+    expectedProjectId: string
+    expectedRevision: number
+    vertex: string
+  }>,
+): AssignedLocalSufficiencyResponseV1 | null {
+    if (!isRecord(value) || !isRecord(value.result)) return null
     const result = value.result
     const uuid = (candidate: unknown) =>
       typeof candidate === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate)
@@ -1406,9 +1461,8 @@ export function proveCurrentAssignedLocalSufficiencyV1(
         && Object.keys(result).sort().join(',') === 'reason,status,vertex'
         && result.vertex === request.vertex
         && ['vertex_unavailable', 'necessary_conditions_not_satisfied', 'reduction_theorem_not_applicable', 'resource_limit'].includes(String(result.reason))
-    if (!exactTop || !binding || !valid) throw new Error('invalid local sufficiency response')
+    if (!exactTop || !binding || !valid) return null
     return value as AssignedLocalSufficiencyResponseV1
-  })
 }
 
 export function analyzeProjectTopology(expectedProjectId: string, expectedRevision: number) {

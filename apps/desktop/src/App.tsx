@@ -689,6 +689,8 @@ function App() {
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<BeginnerDesignProfileV1['generation_constraints']['protrusions']>([])
+  const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
+    useState<BeginnerDesignProfileV1['generation_constraints']['bulge_targets']>([])
   const beginnerCandidateRequestRef = useRef(0)
   const [beginnerRecognitionProposal, setBeginnerRecognitionProposal] =
     useState<BeginnerRecognitionProposalV1 | null>(null)
@@ -709,6 +711,9 @@ function App() {
     )
     setBeginnerProtrusions(
       nativeSnapshot?.beginner_design_profile.generation_constraints.protrusions ?? [],
+    )
+    setBeginnerBulgeTargets(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.bulge_targets ?? [],
     )
   }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
@@ -3524,6 +3529,7 @@ function App() {
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
       protrusions: beginnerProtrusions,
+      bulge_targets: beginnerBulgeTargets,
       target_asset: targetUnderlay
         ? {
             kind: 'reference_image' as const,
@@ -3749,6 +3755,34 @@ function App() {
       motion_degrees: motion.map(Math.round) as [number, number],
       side: String(data.get('protrusion_side')) as 'front' | 'back' | 'either',
       priority,
+    }])
+  }
+
+  function addBeginnerBulgeTarget(form: HTMLFormElement) {
+    const current = latestSnapshotRef.current
+    if (!current || !selectedFaceId || beginnerBulgeTargets.length >= 32) return
+    const data = new FormData(form)
+    const tuple = (prefix: string, scale: number) => ['x', 'y', 'z'].map(
+      (axis) => Math.round(Number(data.get(`${prefix}_${axis}`)) * scale),
+    ) as [number, number, number]
+    const minimum = tuple('bulge_min', 10)
+    const maximum = tuple('bulge_max', 10)
+    const direction = tuple('bulge_direction', 1000)
+    const amount = Math.round(Number(data.get('bulge_amount_mm')) * 10)
+    if ([...minimum, ...maximum, ...direction, amount].some((value) => !Number.isFinite(value))
+      || minimum.some((value, index) => value > maximum[index] || Math.abs(value) > 100_000)
+      || maximum.some((value) => Math.abs(value) > 100_000)
+      || minimum.every((value, index) => value === maximum[index])
+      || direction.some((value) => Math.abs(value) > 1_000)
+      || direction.every((value) => value === 0) || amount < 1 || amount > 1_000_000) return
+    const used = new Set(beginnerBulgeTargets.map((target) => target.id))
+    let id = 0
+    while (used.has(id) && id < 65_535) id += 1
+    setBeginnerBulgeTargets((targets) => [...targets, {
+      id, face_ids: [selectedFaceId], range_min_tenths_mm: minimum,
+      range_max_tenths_mm: maximum, direction_milli: direction,
+      amount_tenths_mm: amount,
+      source_fold_model_fingerprint: current.fold_model_fingerprint,
     }])
   }
 
@@ -7571,6 +7605,7 @@ function App() {
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.protrusions),
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.bulge_targets),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_asset),
                   nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
                 ].join(':')}
@@ -7926,6 +7961,56 @@ function App() {
                   {text({
                     ja: '本数、寸法、完成位置、向き、対称性、曲がり、関節、可動範囲、表裏、優先度を明示します。保存するまでプロジェクトは変更されません。',
                     en: 'Explicitly sets count, dimensions, final position, direction, symmetry, curvature, joint, motion range, side, and priority. The project is unchanged until saved.',
+                  })}
+                </p>
+                <fieldset aria-describedby="beginner-bulge-help">
+                  <legend>{text({ ja: '3D膨らみ目標', en: '3D bulge targets' })}</legend>
+                  <p>{selectedFaceId
+                    ? formattedText({ ja: '選択面: {id}', en: 'Selected face: {id}' }, { id: selectedFaceId })
+                    : text({ ja: '2Dまたは3D表示で対象面を選択してください。', en: 'Select a target face in the 2D or 3D view.' })}</p>
+                  {([
+                    ['bulge_min_x', 'Range minimum X (mm)', -5],
+                    ['bulge_min_y', 'Range minimum Y (mm)', -5],
+                    ['bulge_min_z', 'Range minimum Z (mm)', -5],
+                    ['bulge_max_x', 'Range maximum X (mm)', 5],
+                    ['bulge_max_y', 'Range maximum Y (mm)', 5],
+                    ['bulge_max_z', 'Range maximum Z (mm)', 5],
+                    ['bulge_direction_x', 'Bulge direction X', 0],
+                    ['bulge_direction_y', 'Bulge direction Y', 0],
+                    ['bulge_direction_z', 'Bulge direction Z', 1],
+                    ['bulge_amount_mm', 'Bulge amount (mm)', 5],
+                  ] as const).map(([name, label, initial]) => (
+                    <label className="field" key={name}><span>{label}</span>
+                      <input name={name} type="number" step={name.includes('direction') ? 0.001 : 0.1}
+                        min={name === 'bulge_amount_mm' ? 0.1 : name.includes('direction') ? -1 : -10000}
+                        max={name === 'bulge_amount_mm' ? 100000 : name.includes('direction') ? 1 : 10000}
+                        defaultValue={initial} required />
+                    </label>
+                  ))}
+                  <button type="button"
+                    disabled={!selectedFaceId || beginnerBulgeTargets.length >= 32 || coreBusy}
+                    onClick={(event) => event.currentTarget.form
+                      && addBeginnerBulgeTarget(event.currentTarget.form)}>
+                    {text({ ja: '選択面の膨らみ目標を追加', en: 'Add bulge target for selected face' })}
+                  </button>
+                  <ul aria-label={text({ ja: '3D膨らみ目標一覧', en: '3D bulge target list' })}>
+                    {beginnerBulgeTargets.map((target) => (
+                      <li key={target.id}>
+                        {formattedText({
+                          ja: '面 {face}・量 {amount} mm',
+                          en: 'Face {face} · amount {amount} mm',
+                        }, { face: target.face_ids[0], amount: target.amount_tenths_mm / 10 })}
+                        <button type="button" onClick={() => setBeginnerBulgeTargets(
+                          (targets) => targets.filter((item) => item.id !== target.id),
+                        )}>{text({ ja: '削除', en: 'Remove' })}</button>
+                      </li>
+                    ))}
+                  </ul>
+                </fieldset>
+                <p id="beginner-bulge-help" className="muted">
+                  {text({
+                    ja: '現在のプロジェクトと折りモデル指紋に結び付けて範囲、方向、量だけを保存します。弾性は計算せず、保存前に編集できます。',
+                    en: 'Stores only the bounded range, direction, and amount bound to the current project and fold-model fingerprint. Elasticity is not computed, and values remain editable before save.',
                   })}
                 </p>
                 <label className="field">

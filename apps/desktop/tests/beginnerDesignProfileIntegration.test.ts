@@ -110,6 +110,19 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(formats, /beginner_design_profile/u)
 })
 
+test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {
+  assert.match(generation, /struct BeginnerBulgeTargetV1/u)
+  assert.match(generation, /pub face_ids: Vec<FaceId>/u)
+  assert.match(generation, /pub range_min_tenths_mm: \[i32; 3\]/u)
+  assert.match(generation, /pub direction_milli: \[i16; 3\]/u)
+  assert.match(generation, /pub amount_tenths_mm: u32/u)
+  assert.match(native, /bulge_targets[\s\S]*source_fold_model_fingerprint != live_fingerprint/u)
+  assert.match(client, /'bulge_targets'/u)
+  assert.match(app, /3D bulge targets/u)
+  assert.match(app, /selectedFaceId/u)
+  assert.match(app, /Elasticity is not computed/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

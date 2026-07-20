@@ -9,6 +9,30 @@ if [[ ! -d "$bundle" ]]; then
   exit 1
 fi
 
+file_count="$(find "$bundle" -xdev -type f | wc -l | tr -d ' ')"
+[[ "$file_count" -gt 0 && "$file_count" -le 100000 ]] || {
+  echo "macOS bundle file count is outside the audited bound: $file_count" >&2
+  exit 1
+}
+[[ -z "$(find "$bundle" -xdev -type l -print | sed -n '1p')" ]] || {
+  echo "macOS bundle must not contain symbolic links." >&2
+  exit 1
+}
+[[ -z "$(find "$bundle" -xdev -type f -links +1 -print | sed -n '1p')" ]] || {
+  echo "macOS bundle must not contain hard-linked files." >&2
+  exit 1
+}
+largest_file="$(find "$bundle" -xdev -type f -exec stat -f '%z' {} + | sort -nr | head -n 1)"
+[[ "$largest_file" -le 536870912 ]] || {
+  echo "macOS bundle contains an oversized file: $largest_file bytes." >&2
+  exit 1
+}
+bundle_kib="$(du -sk "$bundle" | awk '{print $1}')"
+[[ "$bundle_kib" -le 1048576 ]] || {
+  echo "macOS bundle exceeds the 1 GiB audit bound." >&2
+  exit 1
+}
+
 info_plist="$bundle/Contents/Info.plist"
 [[ -f "$info_plist" ]] || { echo "Info.plist is missing." >&2; exit 1; }
 
@@ -34,6 +58,12 @@ fi
 }
 [[ -x "$bundle/Contents/MacOS/$executable_name" ]] || {
   echo "Bundle executable is missing or is not executable." >&2
+  exit 1
+}
+executable_entry_count="$(find "$bundle/Contents/MacOS" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+only_executable="$(find "$bundle/Contents/MacOS" -mindepth 1 -maxdepth 1 -print | sed -n '1p')"
+[[ "$executable_entry_count" -eq 1 && "$only_executable" == "$bundle/Contents/MacOS/$executable_name" ]] || {
+  echo "Contents/MacOS must contain exactly the declared executable." >&2
   exit 1
 }
 

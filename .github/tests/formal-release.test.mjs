@@ -78,6 +78,33 @@ test('CI retains bounded browser accessibility evidence only on failure', () => 
   assert.match(smoke, /fullPage: true/u)
 })
 
+test('macOS CI rejects bounded adversarial bundle fixtures', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const verifier = readFileSync(
+    join(root, '.github/scripts/verify_macos_bundle.sh'),
+    'utf8',
+  )
+  const adversarial = readFileSync(
+    join(root, '.github/tests/macos_bundle_adversarial_contract.sh'),
+    'utf8',
+  )
+  assert.match(workflow, /macos_bundle_adversarial_contract\.sh/u)
+  assert.match(verifier, /-type l -print \| sed/u)
+  assert.match(verifier, /-links \+1/u)
+  assert.match(verifier, /536870912/u)
+  assert.match(verifier, /1048576/u)
+  assert.match(verifier, /Contents\/MacOS must contain exactly/u)
+  for (const fixture of [
+    'symbolic-link',
+    'hard-link',
+    'extra-executable',
+    'oversized-file',
+    'wrong-version',
+  ]) {
+    assert.match(adversarial, new RegExp(fixture, 'u'))
+  }
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

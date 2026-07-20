@@ -377,6 +377,12 @@ jobs:
       - name: Verify macOS bundle resources
         shell: bash
         run: ./.github/scripts/verify_macos_bundle.sh
+      - name: Reject adversarial macOS bundle fixtures
+        shell: bash
+        run: |
+          app_version="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          ./.github/tests/macos_bundle_adversarial_contract.sh \
+            target/release/bundle/macos/ORIGAMI2.app "$app_version"
       - name: Archive verified macOS app bundle
         shell: bash
         run: tar -C target/release/bundle/macos -czf ORIGAMI2-macos-app.tar.gz ORIGAMI2.app

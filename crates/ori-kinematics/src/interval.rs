@@ -283,6 +283,20 @@ impl OutwardIntervalV1 {
         }
         self.mul(Self::new(1.0 / rhs.upper, 1.0 / rhs.lower)?)
     }
+
+    pub(crate) fn intersect_bounds(
+        self,
+        lower: f64,
+        upper: f64,
+    ) -> Result<Self, OutwardIntervalErrorV1> {
+        let lower = canonical_finite(lower)?;
+        let upper = canonical_finite(upper)?;
+        let intersection = Self::new(self.lower.max(lower), self.upper.min(upper))?;
+        Ok(Self {
+            work: self.work,
+            ..intersection
+        })
+    }
 }
 
 pub fn atan_interval_v1(

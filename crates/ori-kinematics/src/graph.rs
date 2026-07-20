@@ -180,14 +180,28 @@ impl MaterialHingeGraphGeometry {
                 .checked_add(1)
                 .filter(|value| *value <= limits.max_work)
                 .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
-            let boxes = schedule
-                .evaluate_angle_box_dyadic(depth, index, limits.schedule_limits)
-                .map_err(|error| match error {
-                    crate::CycleSchedulePrepareErrorV1::ResourceLimit => {
-                        DyadicIntervalClosureErrorV1::ResourceLimit
+            let boxes =
+                match schedule.evaluate_angle_box_dyadic(depth, index, limits.schedule_limits) {
+                    Ok(boxes) => boxes,
+                    Err(crate::CycleSchedulePrepareErrorV1::ResourceLimit)
+                        if depth < limits.max_depth =>
+                    {
+                        let child_depth = depth + 1;
+                        let left = index
+                            .checked_mul(2)
+                            .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+                        pending.push((child_depth, left + 1));
+                        pending.push((child_depth, left));
+                        if pending.len().saturating_add(leaves.len()) > limits.max_leaves {
+                            return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                        }
+                        continue;
                     }
-                    _ => DyadicIntervalClosureErrorV1::InvalidInput,
-                })?;
+                    Err(crate::CycleSchedulePrepareErrorV1::ResourceLimit) => {
+                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                    }
+                    Err(_) => return Err(DyadicIntervalClosureErrorV1::InvalidInput),
+                };
             match self.prove_interval_closure_v1(
                 audit,
                 fixed_face,

@@ -1367,6 +1367,11 @@ pub(super) mod tests {
             TreeKinematicsLimits::default(),
         )
         .expect("tree pose fixture");
+        let fixed_face_id = topology
+            .faces
+            .iter()
+            .min_by_key(|face| (face.key, face.id.canonical_bytes()))
+            .map(|face| face.id);
         let authority = project.applied_pose_authority.clone();
         let captured = authority
             .capture_request(
@@ -1375,7 +1380,7 @@ pub(super) mod tests {
                     expected_project_instance_id: project.instance_id,
                     expected_project_id: project.project_id,
                     expected_revision: project.editor.revision(),
-                    fixed_face_id: model.face_ids().first().copied(),
+                    fixed_face_id,
                     complete_hinge_angles: model
                         .hinges()
                         .iter()

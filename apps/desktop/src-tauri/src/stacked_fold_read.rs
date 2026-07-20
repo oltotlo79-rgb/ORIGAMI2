@@ -1315,6 +1315,11 @@ async fn propose_current_stacked_fold_read_inner(
                 _ => CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned(),
             })? };
             let cycle_limits = CycleScheduleLimitsV1::default();
+            let closure_schedule_limits = CycleScheduleLimitsV1 {
+                max_degree: 1,
+                max_work: 1_048_576,
+                ..cycle_limits
+            };
             let interval_closure = initial
                 .target()
                 .hinge_geometry()
@@ -1324,13 +1329,10 @@ async fn propose_current_stacked_fold_read_inner(
                     generated.schedule(),
                     ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
                     DyadicIntervalClosureLimitsV1 {
-                        max_depth: 8,
-                        max_leaves: 256,
-                        max_work: cycle_limits.max_work,
-                        schedule_limits: CycleScheduleLimitsV1 {
-                            max_degree: 1,
-                            ..cycle_limits
-                        },
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: closure_schedule_limits.max_work,
+                        schedule_limits: closure_schedule_limits,
                     },
                 )
                 .map_err(|error| match error {
@@ -2221,33 +2223,51 @@ mod tests {
             entries: registry
                 .entries
                 .iter()
-                .map(|entry| CycleScheduleEntryRequestV1 {
-                    edge: entry.edge,
-                    u_domain: [
-                        RationalCoefficientRequestV1 {
-                            numerator: 0,
-                            denominator: 1,
+                .map(|entry| {
+                    let is_source_hinge =
+                        entry.initial_angle_degrees.to_bits() == 180.0_f64.to_bits();
+                    CycleScheduleEntryRequestV1 {
+                        edge: entry.edge,
+                        u_domain: [
+                            RationalCoefficientRequestV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            RationalCoefficientRequestV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            },
+                        ],
+                        numerator_power_coefficients: if is_source_hinge {
+                            vec![RationalCoefficientRequestV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            }]
+                        } else {
+                            vec![
+                                RationalCoefficientRequestV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientRequestV1 {
+                                    numerator: 1,
+                                    denominator: 1,
+                                },
+                            ]
                         },
-                        RationalCoefficientRequestV1 {
-                            numerator: 1,
-                            denominator: 1,
+                        denominator_power_coefficients: if is_source_hinge {
+                            vec![RationalCoefficientRequestV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            }]
+                        } else {
+                            vec![RationalCoefficientRequestV1 {
+                                numerator: 5,
+                                denominator: 1,
+                            }]
                         },
-                    ],
-                    numerator_power_coefficients: vec![RationalCoefficientRequestV1 {
-                        numerator: 1,
-                        denominator: 1,
-                    }],
-                    denominator_power_coefficients: vec![
-                        RationalCoefficientRequestV1 {
-                            numerator: 0,
-                            denominator: 1,
-                        },
-                        RationalCoefficientRequestV1 {
-                            numerator: 5,
-                            denominator: 1,
-                        },
-                    ],
-                    requested_angle_degrees: angle,
+                        requested_angle_degrees: if is_source_hinge { 180.0 } else { angle },
+                    }
                 })
                 .collect(),
         };

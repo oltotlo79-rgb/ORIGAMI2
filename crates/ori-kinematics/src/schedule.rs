@@ -425,10 +425,19 @@ pub fn evaluate_half_angle_rational_degrees_interval_v1(
         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
     let pi = OutwardIntervalV1::from_rounded(core::f64::consts::PI)
         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
-    radians
+    let enclosure = radians
         .mul(two)
         .and_then(|value| value.mul(degrees))
         .and_then(|value| value.div(pi))
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+    const ENDPOINT_ROUNDING_GUARD_DEGREES: f64 = 1.0e-9;
+    if enclosure.lower() < -ENDPOINT_ROUNDING_GUARD_DEGREES
+        || enclosure.upper() > 180.0 + ENDPOINT_ROUNDING_GUARD_DEGREES
+    {
+        return Err(CycleSchedulePrepareErrorV1::AngleRange);
+    }
+    enclosure
+        .intersect_bounds(0.0, 180.0)
         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
 }
 
@@ -809,7 +818,7 @@ impl PreparedHalfAngleRationalEntryV1 {
         let upper =
             &self.u_domain[0] + width * BigRational::new(BigInt::from(index + 1), denominator);
         let domain = [lower, upper];
-        let numerator = prepare_exact_pole_free_bernstein_certificate(
+        let numerator = prepare_exact_signed_bernstein_certificate(
             affine_reparameterize_power(
                 &self.numerator_power_coefficients,
                 &domain,
@@ -819,8 +828,9 @@ impl PreparedHalfAngleRationalEntryV1 {
             max_degree,
             max_coefficient_bits,
             max_work,
+            true,
         )?;
-        let denominator = prepare_exact_pole_free_bernstein_certificate(
+        let denominator = prepare_exact_signed_bernstein_certificate(
             affine_reparameterize_power(
                 &self.denominator_power_coefficients,
                 &domain,
@@ -830,7 +840,16 @@ impl PreparedHalfAngleRationalEntryV1 {
             max_degree,
             max_coefficient_bits,
             max_work,
+            true,
         )?;
+        if numerator
+            .coefficients
+            .iter()
+            .zip(&denominator.coefficients)
+            .any(|(numerator, denominator)| numerator.is_zero() && denominator.is_zero())
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
         evaluate_half_angle_rational_degrees_interval_v1(&numerator, &denominator, max_work)
     }
 
@@ -2405,6 +2424,65 @@ mod tests {
         assert_eq!(
             schedule.evaluate_angle_box_dyadic(1, 2, CycleScheduleLimitsV1::default()),
             Err(CycleSchedulePrepareErrorV1::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn dyadic_angle_boxes_admit_a_certified_flat_endpoint() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let mut inputs = edges
+            .into_iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+                denominator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 5,
+                        denominator: 1,
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+
+        let root = schedule
+            .evaluate_angle_box_dyadic(
+                8,
+                0,
+                CycleScheduleLimitsV1 {
+                    max_work: 1_048_576,
+                    ..CycleScheduleLimitsV1::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            root.iter()
+                .all(|(_, angle)| angle.lower() <= 180.0 && angle.upper() >= 180.0)
         );
     }
 

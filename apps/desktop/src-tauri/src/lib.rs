@@ -272,6 +272,7 @@ struct GeometricConstraintSolveStage {
     project_id: ProjectId,
     revision: u64,
     positions: Vec<(VertexId, Point2)>,
+    expression_bindings: Option<Vec<VertexCoordinateExpressions>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,7 +491,6 @@ impl ProjectState {
         }
     }
 
-    #[cfg(test)]
     fn from_document(mut document: ProjectDocument, current_path: PathBuf) -> Self {
         if document.thumbnail_svg.is_none() {
             document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
@@ -2656,6 +2656,7 @@ fn preview_geometric_constraint_solve(
         project_id: expected_project_id,
         revision: expected_revision,
         positions: solved.positions,
+        expression_bindings: None,
     });
     Ok(response)
 }
@@ -2725,6 +2726,7 @@ fn preview_geometric_constraint_edge_solve(
             project_id: expected_project_id,
             revision: expected_revision,
             positions: solved.positions,
+            expression_bindings: None,
         });
     Ok(response)
 }
@@ -2751,6 +2753,23 @@ fn preview_geometric_constraint_expression_solve(
     .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
     let token = ProjectId::new();
     let response = geometric_constraint_solve_response(token, expected_revision, &solved);
+    let expression_bindings = project
+        .numeric_expressions
+        .vertex_coordinates
+        .iter()
+        .filter_map(|binding| {
+            solved
+                .positions
+                .iter()
+                .find(|(vertex, _)| *vertex == binding.vertex)
+                .map(|(_, point)| {
+                    let mut binding = binding.clone();
+                    binding.adopted_x_mm = point.x;
+                    binding.adopted_y_mm = point.y;
+                    binding
+                })
+        })
+        .collect();
     *state
         .3
         .lock()
@@ -2761,6 +2780,7 @@ fn preview_geometric_constraint_expression_solve(
             project_id: expected_project_id,
             revision: expected_revision,
             positions: solved.positions,
+            expression_bindings: Some(expression_bindings),
         });
     Ok(response)
 }
@@ -3026,7 +3046,13 @@ fn apply_geometric_constraint_solve_stage(
                 })
                 .collect(),
         },
-    )
+    )?;
+    if let Some(bindings) = &staged.expression_bindings {
+        for binding in bindings {
+            project.adopt_vertex_coordinate_expression(binding.clone());
+        }
+    }
+    Ok(snapshot(project))
 }
 
 #[tauri::command]
@@ -5566,12 +5592,14 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
         validate_loaded_numeric_expression_binding(binding)?;
     }
     for binding in &document.numeric_expressions.vertex_coordinates {
-        validate_coordinate_expression_pair(
-            &binding.x_source,
-            &binding.y_source,
-            binding.adopted_x_mm,
-            binding.adopted_y_mm,
-        )?;
+        if !binding.x_source.contains("v.") && !binding.y_source.contains("v.") {
+            validate_coordinate_expression_pair(
+                &binding.x_source,
+                &binding.y_source,
+                binding.adopted_x_mm,
+                binding.adopted_y_mm,
+            )?;
+        }
         let matching = document
             .crease_pattern
             .vertices
@@ -5597,6 +5625,28 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
                     != binding.adopted_x_mm.to_bits()
                 || (polar.adopted_start_y_mm + length_mm * radians.sin()).to_bits()
                     != binding.adopted_y_mm.to_bits()
+            {
+                return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+            }
+        }
+    }
+    if document
+        .numeric_expressions
+        .vertex_coordinates
+        .iter()
+        .any(|binding| binding.x_source.contains("v.") || binding.y_source.contains("v."))
+    {
+        let staged = ProjectState::from_document(document.clone(), PathBuf::new());
+        let resolved = reevaluate_saved_vertex_expressions(&staged)
+            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+        for binding in &document.numeric_expressions.vertex_coordinates {
+            let point = resolved
+                .iter()
+                .find(|(vertex, _)| *vertex == binding.vertex)
+                .map(|(_, point)| *point)
+                .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+            if point.x.to_bits() != binding.adopted_x_mm.to_bits()
+                || point.y.to_bits() != binding.adopted_y_mm.to_bits()
             {
                 return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
             }
@@ -15242,6 +15292,7 @@ mod tests {
             project_id: project.project_id,
             revision: 0,
             positions: vec![(start, Point2::new(2.0, 3.0))],
+            expression_bindings: None,
         };
         (project, stage, start, original)
     }
@@ -15392,8 +15443,11 @@ mod tests {
         format!("v.{id}.{axis}")
     }
 
+    static VERTEX_REFERENCE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn saved_vertex_reference_dag_is_evaluated_topologically() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
         let (mut project, _, first, _) = solver_stage_fixture();
         let second = project.editor.pattern().vertices[1].id;
         project.numeric_expressions.vertex_coordinates = vec![
@@ -15417,6 +15471,7 @@ mod tests {
 
     #[test]
     fn saved_vertex_reference_self_cycle_and_dangling_fail_closed() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
         let (mut project, _, vertex, _) = solver_stage_fixture();
         project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
             vertex,
@@ -15437,6 +15492,131 @@ mod tests {
     }
 
     #[test]
+    fn vertex_reference_requires_lowercase_canonical_uuid_and_allows_equal_values() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (mut project, _, first, _) = solver_stage_fixture();
+        let second = project.editor.pattern().vertices[1].id;
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(first, "2", "2", 2.0, 2.0),
+            VertexCoordinateExpressions::new(second, "2", "2", 2.0, 2.0),
+        ];
+        reevaluate_saved_vertex_expressions(&project).expect("distinct bindings may share values");
+        project.numeric_expressions.vertex_coordinates[1].x_source =
+            vertex_reference(first, 'x').to_uppercase();
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    }
+
+    fn dependency_chain(project: &mut ProjectState, count: usize) {
+        let ids = (0..count).map(|_| VertexId::new()).collect::<Vec<_>>();
+        project.numeric_expressions.vertex_coordinates = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let source = ids
+                    .get(index + 1)
+                    .map_or_else(|| "1".to_owned(), |next| vertex_reference(*next, 'x'));
+                VertexCoordinateExpressions::new(*id, source, "0", 0.0, 0.0)
+            })
+            .collect();
+    }
+
+    #[test]
+    fn vertex_reference_depth_64_is_allowed_and_65_is_rejected() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (mut project, _, _, _) = solver_stage_fixture();
+        dependency_chain(&mut project, 65);
+        assert!(reevaluate_saved_vertex_expressions(&project).is_ok());
+        dependency_chain(&mut project, 66);
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    }
+
+    #[test]
+    fn vertex_reference_4096_boundary_is_bounded_and_4097_is_rejected() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (project, _, vertex, _) = solver_stage_fixture();
+        let reference = vertex_reference(vertex, 'x');
+        let source = std::iter::repeat_n(reference.as_str(), 4_096)
+            .collect::<Vec<_>>()
+            .join("+");
+        let mut memo = HashMap::new();
+        let mut visiting = HashSet::new();
+        let mut work = 0;
+        let started = std::time::Instant::now();
+        assert!(
+            expand_saved_vertex_references(
+                &project,
+                &source,
+                &mut memo,
+                &mut visiting,
+                &mut work,
+                0,
+            )
+            .is_ok()
+        );
+        assert_eq!(work, 4_096);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let too_many = format!("{source}+{reference}");
+        assert!(
+            expand_saved_vertex_references(
+                &project,
+                &too_many,
+                &mut HashMap::new(),
+                &mut HashSet::new(),
+                &mut 0,
+                0,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn referenced_expression_still_obeys_numeric_operation_limit() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (mut project, _, first, _) = solver_stage_fixture();
+        let second = project.editor.pattern().vertices[1].id;
+        let oversized = std::iter::repeat_n("1", 20_000)
+            .collect::<Vec<_>>()
+            .join("+");
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(first, oversized, "0", 0.0, 0.0),
+            VertexCoordinateExpressions::new(second, vertex_reference(first, 'x'), "0", 0.0, 0.0),
+        ];
+        let started = std::time::Instant::now();
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn referenced_expression_round_trip_detects_saved_value_tampering() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (mut project, _, first, _) = solver_stage_fixture();
+        let second = project.editor.pattern().vertices[1].id;
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(first, "2", "3", 2.0, 3.0),
+            VertexCoordinateExpressions::new(
+                second,
+                vertex_reference(first, 'x'),
+                vertex_reference(first, 'y'),
+                2.0,
+                3.0,
+            ),
+        ];
+        let mut document = project.document();
+        for binding in &document.numeric_expressions.vertex_coordinates {
+            let vertex = document
+                .crease_pattern
+                .vertices
+                .iter_mut()
+                .find(|vertex| vertex.id == binding.vertex)
+                .unwrap();
+            vertex.position = Point2::new(binding.adopted_x_mm, binding.adopted_y_mm);
+        }
+        assert!(validate_loaded_numeric_expression_bindings(&document).is_ok());
+        document.numeric_expressions.vertex_coordinates[1].adopted_x_mm = 9.0;
+        assert!(validate_loaded_numeric_expression_bindings(&document).is_err());
+    }
+
+    #[test]
     fn ten_thousand_saved_expressions_are_rejected_before_evaluation_within_bound() {
         let (mut project, _, _, _) = solver_stage_fixture();
         project.numeric_expressions.vertex_coordinates = (0..10_000)
@@ -15449,9 +15629,33 @@ mod tests {
 
     #[test]
     fn expression_reexecution_after_undo_redo_uses_the_restored_binding() {
-        let (mut project, stage, vertex, _) = solver_stage_fixture();
-        project.numeric_expressions.vertex_coordinates =
-            vec![VertexCoordinateExpressions::new(vertex, "2", "3", 0.0, 0.0)];
+        let (mut project, mut stage, vertex, _) = solver_stage_fixture();
+        let dependent = project.editor.pattern().vertices[1].id;
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(vertex, "2", "3", 0.0, 0.0),
+            VertexCoordinateExpressions::new(
+                dependent,
+                format!("{}+1", vertex_reference(vertex, 'x')),
+                format!("{}+1", vertex_reference(vertex, 'y')),
+                0.0,
+                0.0,
+            ),
+        ];
+        stage.positions.push((dependent, Point2::new(3.0, 4.0)));
+        stage.expression_bindings = Some(
+            project
+                .numeric_expressions
+                .vertex_coordinates
+                .iter()
+                .cloned()
+                .zip([Point2::new(2.0, 3.0), Point2::new(3.0, 4.0)])
+                .map(|(mut binding, point)| {
+                    binding.adopted_x_mm = point.x;
+                    binding.adopted_y_mm = point.y;
+                    binding
+                })
+                .collect(),
+        );
         apply_geometric_constraint_solve_stage(
             &mut project,
             &stage,
@@ -15465,7 +15669,10 @@ mod tests {
         execute_redo(&mut project, stage.project_id, 2).unwrap();
         assert_eq!(
             reevaluate_saved_vertex_expressions(&project).unwrap(),
-            vec![(vertex, Point2::new(2.0, 3.0))]
+            vec![
+                (vertex, Point2::new(2.0, 3.0)),
+                (dependent, Point2::new(3.0, 4.0)),
+            ]
         );
     }
 

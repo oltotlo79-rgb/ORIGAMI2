@@ -1,0 +1,19 @@
+import { chromium } from 'playwright'; import { spawn } from 'node:child_process'; import { mkdir, writeFile } from 'node:fs/promises'; import { join, resolve } from 'node:path'
+const origin = 'http://127.0.0.1:4176'; const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4176', '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'] }); let serverOutput = ''; server.stdout.on('data', x => { serverOutput += x }); server.stderr.on('data', x => { serverOutput += x }); let browser; let page
+try {
+  for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {} await new Promise(r => setTimeout(r, 100)) }
+  browser = await chromium.launch({ headless: true }); page = await browser.newPage({ viewport: { width: 1000, height: 800 } }); await page.goto(`${origin}/scripts/fold-preview-browser-harness.html`, { waitUntil: 'networkidle' })
+  const group = page.getByRole('group', { name: '3D fold preview' }); const viewport = page.getByRole('region', { name: '3D view' }); await viewport.waitFor(); await viewport.focus()
+  const shortcuts = await viewport.getAttribute('aria-keyshortcuts'); for (const token of ['ArrowUp', 'Shift+ArrowLeft', '+', '-', 'Home', '0', 'H', 'Escape']) if (!shortcuts?.includes(token)) throw new Error(`missing ARIA shortcut ${token}`)
+  for (const key of ['ArrowUp', 'Shift+ArrowLeft', '+', '-', 'Home', '0']) { await page.keyboard.press(key); if (!await viewport.evaluate(n => n === document.activeElement)) throw new Error(`focus lost after ${key}`) }
+  await page.keyboard.press('h'); await page.waitForTimeout(100)
+  if (!(await page.evaluate(() => window.__ORIGAMI2_FOLD_PREVIEW_EVIDENCE__.hingeSelections)).includes('hinge-main')) throw new Error('keyboard hinge selection did not reach production callback')
+  await page.keyboard.press('Escape')
+  const canvas = group.locator('canvas'); await canvas.waitFor(); const box = await canvas.boundingBox(); if (!box) throw new Error('canvas has no layout box')
+  for (const pointerType of ['mouse', 'pen', 'touch']) await canvas.dispatchEvent('pointerdown', { pointerId: pointerType === 'mouse' ? 1 : pointerType === 'pen' ? 2 : 3, pointerType, button: 0, buttons: 1, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2, isPrimary: true })
+  await page.keyboard.press('ArrowRight')
+  for (const pointerType of ['mouse', 'pen', 'touch']) await page.evaluate(({ pointerType, x, y }) => document.dispatchEvent(new PointerEvent('pointerup', { pointerId: pointerType === 'mouse' ? 1 : pointerType === 'pen' ? 2 : 3, pointerType, button: 0, clientX: x, clientY: y, bubbles: true })), { pointerType, x: box.x + box.width / 2, y: box.y + box.height / 2 })
+  await group.getByRole('button', { name: 'Reset view' }).click(); const description = await viewport.getAttribute('aria-describedby'); if (!description || !(await page.locator(`#${description}`).textContent())?.includes('Touch controls')) throw new Error('input help is not exposed to ARIA')
+  const risk = page.locator('[data-collision-risk="blocking"]'); if (await risk.count() < 1 || await risk.first().getAttribute('role') !== 'alert') throw new Error('collision block is not assertive')
+  console.log('fold preview browser E2E passed: keyboard camera, hinge selection, pointer modalities, focus/ARIA, collision vocabulary')
+} catch (error) { const output = process.env.ORIGAMI2_FOLD_PREVIEW_ARTIFACT_DIRECTORY; if (output) { await mkdir(resolve(output), { recursive: true }); await writeFile(join(resolve(output), 'fold-preview-failure.json'), JSON.stringify({ message: String(error), serverOutput: serverOutput.slice(-16000) })); try { await page?.screenshot({ path: join(resolve(output), 'fold-preview-failure.png'), fullPage: true }) } catch {} } throw error } finally { await browser?.close(); server.kill('SIGTERM') }

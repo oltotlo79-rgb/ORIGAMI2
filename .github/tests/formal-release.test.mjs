@@ -208,9 +208,10 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
   assert.match(workflow, /PrusaSlicer-2\.9\.6\.zip[\s\S]*Get-FileHash[\s\S]*checksum mismatch/u)
   assert.match(workflow, /--require-hashes --no-deps -r \.github\/release-audit-requirements\.txt/u)
   assert.match(workflow, /npm audit --package-lock-only --audit-level=low/u)
-  assert.match(workflow, /cargo install cargo-audit --version 0\.21\.2 --locked/u)
+  assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/u)
   assert.match(workflow, /checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0/u)
   assert.match(workflow, /cargo audit --db "\$database" --no-fetch --deny warnings/u)
+  assert.match(workflow, /rustsec-allowed-warnings\.txt/u)
   assert.doesNotMatch(workflow, /npx (?!--no-install)/u)
   for (const command of workflow.matchAll(/cargo test[^\r\n]*/gu)) {
     assert.match(command[0], /--locked/u)
@@ -1174,7 +1175,11 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.deepEqual(policy.vulnerabilityAssessment, {
     status: 'ci-gated',
     npm: 'npm-audit-v2;node-24.11.1;audit-level-low',
-    cargo: 'cargo-audit-0.21.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
+    cargo: 'cargo-audit-0.22.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
+    rustsecAllowedWarnings: readFileSync(
+      join(root, '.github/rustsec-allowed-warnings.txt'),
+      'utf8',
+    ).trim().split(/\r?\n/u),
     scope: 'package-lock.json;Cargo.lock',
   })
   assert.ok(policy.cargoRegistryPackages > 0 && policy.cargoRegistryPackages <= 10000)

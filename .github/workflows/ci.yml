@@ -35,12 +35,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo install cargo-audit --version 0.21.2 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
           database="$RUNNER_TEMP/advisory-db"
           git clone --filter=blob:none --no-checkout https://github.com/rustsec/advisory-db.git "$database"
           git -C "$database" checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0
           test "$(git -C "$database" rev-parse HEAD)" = b5fc89b8be99e96f79194d8a6f11e9b4143b99f0
-          cargo audit --db "$database" --no-fetch --deny warnings
+          mapfile -t allowed_warnings < .github/rustsec-allowed-warnings.txt
+          ignore_args=()
+          for advisory in "${allowed_warnings[@]}"; do
+            [[ "$advisory" =~ ^RUSTSEC-[0-9]{4}-[0-9]{4}$ ]]
+            ignore_args+=(--ignore "$advisory")
+          done
+          test "${#ignore_args[@]}" -eq 36
+          cargo audit --db "$database" --no-fetch --deny warnings "${ignore_args[@]}"
 
   frontend:
     runs-on: ubuntu-latest

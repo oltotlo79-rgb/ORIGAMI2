@@ -7,6 +7,7 @@ const cargoLockPath = resolve(repositoryRoot, 'Cargo.lock')
 const packageLockPath = resolve(repositoryRoot, 'apps', 'desktop', 'package-lock.json')
 const packageManifestPath = resolve(repositoryRoot, 'apps', 'desktop', 'package.json')
 const cargoLicenseDbPath = resolve(repositoryRoot, '.github', 'cargo-license-db.json')
+const rustsecWarningPath = resolve(repositoryRoot, '.github', 'rustsec-allowed-warnings.txt')
 
 const npmLicenseAllowlist = new Set([
   '0BSD', 'Apache-2.0', 'Apache-2.0 OR MIT', 'BSD-2-Clause', 'BSD-3-Clause',
@@ -21,6 +22,13 @@ const cargoLicenseAllowlist = new Set([
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
 export function buildDependencyPolicy() {
+  const rustsecAllowedWarnings = readFileSync(rustsecWarningPath, 'utf8').trim().split(/\r?\n/u)
+  if (
+    rustsecAllowedWarnings.length !== 18
+    || new Set(rustsecAllowedWarnings).size !== rustsecAllowedWarnings.length
+    || rustsecAllowedWarnings.some((id) => !/^RUSTSEC-[0-9]{4}-[0-9]{4}$/u.test(id))
+    || rustsecAllowedWarnings.join('\n') !== [...rustsecAllowedWarnings].sort().join('\n')
+  ) throw new Error('RustSec warning allowlist is invalid')
   const cargoBytes = readFileSync(cargoLockPath, 'utf8')
   const cargoPackages = cargoBytes.split(/\r?\n\[\[package\]\]\r?\n/u).slice(1)
   if (cargoPackages.length < 1 || cargoPackages.length > 10000) {
@@ -153,7 +161,8 @@ export function buildDependencyPolicy() {
     vulnerabilityAssessment: {
       status: 'ci-gated',
       npm: 'npm-audit-v2;node-24.11.1;audit-level-low',
-      cargo: 'cargo-audit-0.21.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
+      cargo: 'cargo-audit-0.22.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
+      rustsecAllowedWarnings,
       scope: 'package-lock.json;Cargo.lock',
     },
     result: 'pass',

@@ -57,6 +57,11 @@ export function buildDependencyPolicy() {
     npmIntegrity: 'sha512-required',
     npmLicenses: [...new Set(npmPackages.map(([, pkg]) => pkg.license))].sort(),
     cargoSources: 'registry-checksum-required;git-forbidden',
+    vulnerabilityAssessment: {
+      status: 'not-performed',
+      reason: 'external-vulnerability-database-not-queried',
+      scope: 'this-release-policy-evidence',
+    },
     result: 'pass',
   }
 }

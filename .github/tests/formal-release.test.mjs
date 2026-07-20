@@ -675,6 +675,11 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.equal(policy.result, 'pass')
   assert.equal(policy.cargoSources, 'registry-checksum-required;git-forbidden')
   assert.equal(policy.npmIntegrity, 'sha512-required')
+  assert.deepEqual(policy.vulnerabilityAssessment, {
+    status: 'not-performed',
+    reason: 'external-vulnerability-database-not-queried',
+    scope: 'this-release-policy-evidence',
+  })
   assert.ok(policy.cargoRegistryPackages > 0 && policy.cargoRegistryPackages <= 10000)
   assert.ok(policy.npmPackages > 0 && policy.npmPackages <= 10000)
   assert.match(policy.cargoLockSha256, /^[0-9a-f]{64}$/u)

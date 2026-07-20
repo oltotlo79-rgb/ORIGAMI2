@@ -185,6 +185,8 @@ pub const DEFAULT_MAX_STACKED_FOLD_BUILD_CARRIERS: usize = 12_048;
 pub const DEFAULT_MAX_STACKED_FOLD_BUILD_INTERSECTIONS: usize = 2_000_000;
 pub const DEFAULT_MAX_STACKED_FOLD_BUILD_VERTICES: usize = 100_000;
 pub const DEFAULT_MAX_STACKED_FOLD_BUILD_EDGES: usize = 200_000;
+pub const STACKED_FOLD_TARGET_GRAPH_AUDIT_MODEL_ID_V1: &str =
+    "native_stacked_fold_target_graph_audit_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldTopologyBuildLimitsV1 {
@@ -220,6 +222,18 @@ pub struct PreparedStackedFoldGeometryV1 {
 pub struct PreparedStackedFoldTargetModelV1 {
     geometry: PreparedStackedFoldGeometryV1,
     model: MaterialTreeKinematicsModel,
+}
+
+/// Read-only, topology-bound transport for a proved target hinge graph.
+///
+/// Unlike [`PreparedStackedFoldTargetModelV1`], this package also admits
+/// cyclic graphs.  Its audit can subsequently be supplied to
+/// `MaterialHingeClosureCertificate::observe` once a caller has candidate
+/// transforms for every target face.  Merely preparing or transporting this
+/// package grants no pose, closure, or mutation authority.
+pub struct PreparedStackedFoldTargetGraphAuditV1 {
+    geometry: PreparedStackedFoldGeometryV1,
+    audit: MaterialHingeGraphAudit,
 }
 
 pub struct PreparedStackedFoldInitialPoseV1 {
@@ -271,6 +285,40 @@ impl PreparedStackedFoldTargetModelV1 {
     #[must_use]
     pub const fn model(&self) -> &MaterialTreeKinematicsModel {
         &self.model
+    }
+}
+
+impl PreparedStackedFoldTargetGraphAuditV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        STACKED_FOLD_TARGET_GRAPH_AUDIT_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn geometry(&self) -> &PreparedStackedFoldGeometryV1 {
+        &self.geometry
+    }
+
+    /// Canonical face, spanning-hinge, and closure-hinge identities needed by
+    /// a later observation-only closure certificate.
+    #[must_use]
+    pub const fn audit(&self) -> &MaterialHingeGraphAudit {
+        &self.audit
+    }
+
+    #[must_use]
+    pub const fn requires_closure_certificate(&self) -> bool {
+        !self.audit.is_tree()
+    }
+
+    #[must_use]
+    pub const fn authorizes_pose(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply_stacked_fold(&self) -> bool {
+        false
     }
 }
 
@@ -344,6 +392,18 @@ pub enum PrepareStackedFoldTargetModelErrorV1 {
     Kinematics(#[from] KinematicsError),
 }
 
+/// Strict failure classes for the read-only target graph audit stage.
+#[derive(Debug, Error, PartialEq)]
+pub enum PrepareStackedFoldTargetGraphAuditErrorV1 {
+    #[error("proved target topology could not be reconstructed: {0}")]
+    Topology(#[from] FaceLineageError),
+    #[error("target hinge graph exceeds the configured resource limit")]
+    ResourceLimit,
+    #[error("target hinge graph is disconnected, duplicate, or otherwise unsupported")]
+    UnsupportedTopology,
+    #[error("target hinge graph geometry is not finitely representable")]
+    UnrepresentableGeometry,
+}
 #[derive(Debug, Error, PartialEq)]
 pub enum PrepareStackedFoldInitialPoseErrorV1 {
     #[error("source pose was not issued by the supplied source model")]
@@ -1303,6 +1363,40 @@ pub fn prepare_stacked_fold_geometry_candidate_v1(
     Ok(PreparedStackedFoldGeometryV1 { candidate, proof })
 }
 
+/// Reconstructs and audits the proved target hinge graph without attempting
+/// to solve it.
+///
+/// Cycles are retained as explicit closure hinges rather than rejected or
+/// silently reduced to a tree. The returned package is the opaque transport
+/// premise for a later [`ori_kinematics::MaterialHingeClosureCertificate`].
+pub fn prepare_stacked_fold_target_graph_audit_v1(
+    geometry: PreparedStackedFoldGeometryV1,
+    limits: TreeKinematicsLimits,
+) -> Result<PreparedStackedFoldTargetGraphAuditV1, PrepareStackedFoldTargetGraphAuditErrorV1> {
+    let lineage = geometry.proof.lineage();
+    let topology = simulation_snapshot(
+        lineage.identity_namespace(),
+        lineage.target_revision(),
+        &geometry.candidate.paper,
+        &geometry.candidate.pattern,
+        FaceLineageTopology::Target,
+    )?;
+    let audit =
+        MaterialHingeGraphAudit::prepare(&topology, limits).map_err(|error| match error {
+            KinematicsError::ResourceLimitExceeded => {
+                PrepareStackedFoldTargetGraphAuditErrorV1::ResourceLimit
+            }
+            KinematicsError::UnsupportedTopology => {
+                PrepareStackedFoldTargetGraphAuditErrorV1::UnsupportedTopology
+            }
+            KinematicsError::UnrepresentableGeometry => {
+                PrepareStackedFoldTargetGraphAuditErrorV1::UnrepresentableGeometry
+            }
+            _ => PrepareStackedFoldTargetGraphAuditErrorV1::UnsupportedTopology,
+        })?;
+    Ok(PreparedStackedFoldTargetGraphAuditV1 { geometry, audit })
+}
+
 /// Reconstructs and admits the proved target as a native material-tree model.
 ///
 /// This rejects planar arrangements whose face adjacency cannot be represented
@@ -1312,6 +1406,36 @@ pub fn prepare_stacked_fold_target_model_v1(
     geometry: PreparedStackedFoldGeometryV1,
     limits: TreeKinematicsLimits,
 ) -> Result<PreparedStackedFoldTargetModelV1, PrepareStackedFoldTargetModelErrorV1> {
+    let audited = prepare_stacked_fold_target_graph_audit_v1(geometry, limits).map_err(
+        |error| match error {
+            PrepareStackedFoldTargetGraphAuditErrorV1::Topology(error) => {
+                PrepareStackedFoldTargetModelErrorV1::Topology(error)
+            }
+            PrepareStackedFoldTargetGraphAuditErrorV1::ResourceLimit => {
+                PrepareStackedFoldTargetModelErrorV1::Kinematics(
+                    KinematicsError::ResourceLimitExceeded,
+                )
+            }
+            PrepareStackedFoldTargetGraphAuditErrorV1::UnsupportedTopology => {
+                PrepareStackedFoldTargetModelErrorV1::Kinematics(
+                    KinematicsError::UnsupportedTopology,
+                )
+            }
+            PrepareStackedFoldTargetGraphAuditErrorV1::UnrepresentableGeometry => {
+                PrepareStackedFoldTargetModelErrorV1::Kinematics(
+                    KinematicsError::UnrepresentableGeometry,
+                )
+            }
+        },
+    )?;
+    if !audited.audit.is_tree() {
+        return Err(
+            PrepareStackedFoldTargetModelErrorV1::CyclicTargetUnsupported {
+                closure_hinge_count: audited.audit.closure_hinges().len(),
+            },
+        );
+    }
+    let geometry = audited.geometry;
     let lineage = geometry.proof.lineage();
     let topology = simulation_snapshot(
         lineage.identity_namespace(),
@@ -1320,14 +1444,6 @@ pub fn prepare_stacked_fold_target_model_v1(
         &geometry.candidate.pattern,
         FaceLineageTopology::Target,
     )?;
-    let graph = MaterialHingeGraphAudit::prepare(&topology, limits)?;
-    if !graph.is_tree() {
-        return Err(
-            PrepareStackedFoldTargetModelErrorV1::CyclicTargetUnsupported {
-                closure_hinge_count: graph.closure_hinges().len(),
-            },
-        );
-    }
     let model = MaterialTreeKinematicsModel::prepare(
         &geometry.candidate.pattern,
         &geometry.candidate.paper,
@@ -2675,6 +2791,73 @@ mod tests {
     }
 
     #[test]
+    fn target_graph_audit_transports_cycle_constraints_without_authority() {
+        let identity = ProjectId::new();
+        let source_revision = 41;
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (source_pattern, source_paper) = sheet.into_parts();
+        let corners = source_paper
+            .boundary_vertices
+            .iter()
+            .map(|id| vertex_position(&source_pattern, *id))
+            .collect::<Vec<_>>();
+        let expected = [
+            ExpectedStackedFoldCreaseV1 {
+                start: corners[0],
+                end: corners[2],
+                kind: EdgeKind::Mountain,
+            },
+            ExpectedStackedFoldCreaseV1 {
+                start: corners[1],
+                end: corners[3],
+                kind: EdgeKind::Valley,
+            },
+        ];
+        let source_layer_order =
+            proven_layer_order(identity, source_revision, &source_pattern, &source_paper);
+        let prepare_geometry = || {
+            prepare_stacked_fold_geometry_candidate_v1(
+                identity,
+                source_revision,
+                &source_pattern,
+                &source_paper,
+                &source_layer_order,
+                &expected,
+                StackedFoldTopologyBuildLimitsV1::default(),
+                FaceLineageLimits::default(),
+                StackedFoldGeometryLimitsV1::default(),
+            )
+            .expect("prepare cyclic geometry")
+        };
+
+        let package = prepare_stacked_fold_target_graph_audit_v1(
+            prepare_geometry(),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("retain cycle audit");
+        assert_eq!(
+            package.model_id(),
+            STACKED_FOLD_TARGET_GRAPH_AUDIT_MODEL_ID_V1
+        );
+        assert_eq!(package.audit().faces().len(), 4);
+        assert_eq!(package.audit().spanning_hinges().len(), 3);
+        assert_eq!(package.audit().closure_hinges().len(), 1);
+        assert!(package.requires_closure_certificate());
+        assert!(!package.authorizes_pose());
+        assert!(!package.authorizes_apply_stacked_fold());
+        assert_eq!(package.geometry().proof().expected_creases().len(), 2);
+
+        let limited = TreeKinematicsLimits {
+            max_faces: 3,
+            ..TreeKinematicsLimits::default()
+        };
+        assert!(matches!(
+            prepare_stacked_fold_target_graph_audit_v1(prepare_geometry(), limited),
+            Err(PrepareStackedFoldTargetGraphAuditErrorV1::ResourceLimit)
+        ));
+    }
+
+    #[test]
     fn prepared_target_is_admitted_by_native_tree_kinematics() {
         let fixture = simple_geometry_fixture();
         let geometry = prepare_stacked_fold_geometry_candidate_v1(
@@ -2689,6 +2872,23 @@ mod tests {
             StackedFoldGeometryLimitsV1::default(),
         )
         .expect("prepare geometry");
+        let audited =
+            prepare_stacked_fold_target_graph_audit_v1(geometry, TreeKinematicsLimits::default())
+                .expect("audit tree target");
+        assert!(!audited.requires_closure_certificate());
+        assert_eq!(audited.audit().closure_hinges(), &[]);
+        let geometry = prepare_stacked_fold_geometry_candidate_v1(
+            fixture.identity,
+            fixture.source_revision,
+            &fixture.source_pattern,
+            &fixture.source_paper,
+            &fixture.source_layer_order,
+            &fixture.expected_creases,
+            StackedFoldTopologyBuildLimitsV1::default(),
+            FaceLineageLimits::default(),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("prepare geometry after audit");
         let target =
             prepare_stacked_fold_target_model_v1(geometry, TreeKinematicsLimits::default())
                 .expect("prepare target material tree");

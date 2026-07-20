@@ -53,6 +53,7 @@ const mutationContracts = [
   ['setElementMetadata', 'set_element_metadata'],
   ['updateProjectMemo', 'update_project_memo'],
   ['updateBeginnerDesignProfile', 'update_beginner_design_profile'],
+  ['applyBeginnerGeneratedPlan', 'apply_beginner_generated_plan'],
   ['updatePaperProperties', 'update_paper_properties'],
   ['importFrontPaperTexture', 'import_front_paper_texture'],
   ['importBackPaperTexture', 'import_back_paper_texture'],
@@ -66,9 +67,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 51)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 51)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 51)
+  assert.equal(mutationContracts.length, 52)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 52)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 52)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

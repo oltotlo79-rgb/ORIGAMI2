@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
-use ori_domain::{FaceId, ProjectId};
+use num_traits::{Signed, ToPrimitive, Zero};
+use ori_domain::{FaceId, Point2, ProjectId};
 use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{MaterialTreeKinematicsModel, MaterialTreePose, Point3};
 use thiserror::Error;
@@ -28,6 +28,8 @@ use crate::flat_endpoint_layer_order::{
 pub const STACKED_FOLD_READ_GUARD_MODEL_ID_V1: &str = "native_flat_stacked_fold_read_guard_v1";
 pub const STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1: &str =
     "native_linear_stacked_fold_read_proposal_v1";
+pub const STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1: &str = "native_flat_stacked_fold_material_map_v1";
+pub const DEFAULT_MAX_STACKED_FOLD_MAPPED_BOUNDARY_VERTICES: usize = 500_000;
 
 /// The native project-side identities that a future fixed-lock-order desktop
 /// capture must read while both the pose and layer-order capabilities are
@@ -412,6 +414,94 @@ pub struct NativeStackedFoldReadProposalV1<'snapshot> {
     proof: Arc<StackedFoldReadProposalProofV1<'snapshot>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StackedFoldMaterialSegmentV1 {
+    face: FaceId,
+    start: Point2,
+    end: Point2,
+}
+
+impl StackedFoldMaterialSegmentV1 {
+    #[must_use]
+    pub const fn face(self) -> FaceId {
+        self.face
+    }
+
+    #[must_use]
+    pub const fn start(self) -> Point2 {
+        self.start
+    }
+
+    #[must_use]
+    pub const fn end(self) -> Point2 {
+        self.end
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackedFoldMaterialMapLimitsV1 {
+    pub max_faces: usize,
+    pub max_total_boundary_vertices: usize,
+}
+
+impl Default for StackedFoldMaterialMapLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_faces: 10_001,
+            max_total_boundary_vertices: DEFAULT_MAX_STACKED_FOLD_MAPPED_BOUNDARY_VERTICES,
+        }
+    }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum StackedFoldMaterialMapErrorV1 {
+    #[error("the read proposal is stale, foreign, or failed revalidation")]
+    ReadProposalInvalid,
+    #[error("material reverse mapping exceeds its bounded face or vertex limits")]
+    ResourceLimitExceeded,
+    #[error("a target material face or transform is unavailable")]
+    MaterialFaceUnavailable,
+    #[error("the world line cannot be mapped exactly into a target material plane")]
+    MaterialPlaneMismatch,
+    #[error("the line does not cut one positive-length segment through every target material face")]
+    MaterialIntersectionIndeterminate,
+    #[error("material reverse-mapping output allocation failed")]
+    AllocationFailed,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeStackedFoldMaterialMapV1<'snapshot> {
+    proposal: NativeStackedFoldReadProposalV1<'snapshot>,
+    segments: Vec<StackedFoldMaterialSegmentV1>,
+}
+
+impl NativeStackedFoldMaterialMapV1<'_> {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub fn segments(&self) -> &[StackedFoldMaterialSegmentV1] {
+        &self.segments
+    }
+
+    #[must_use]
+    pub fn is_for_proposal(&self, proposal: &NativeStackedFoldReadProposalV1<'_>) -> bool {
+        self.proposal.same_proposal(proposal)
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply_stacked_fold(&self) -> bool {
+        false
+    }
+}
+
 impl NativeStackedFoldReadProposalV1<'_> {
     #[must_use]
     pub const fn model_id(&self) -> &'static str {
@@ -568,6 +658,166 @@ pub fn revalidate_linear_stacked_fold_read_proposal_v1(
         return Err(StackedFoldReadErrorV1::ProposalReverificationFailed);
     }
     Ok(())
+}
+
+pub fn reverse_map_linear_stacked_fold_material_v1<'snapshot>(
+    proposal: &NativeStackedFoldReadProposalV1<'snapshot>,
+    guard: &NativeStackedFoldReadGuardV1<'snapshot>,
+    binding: StackedFoldReadBindingV1,
+    input: FlatEndpointLayerOrderInputV1<'_, '_>,
+    read_limits: StackedFoldReadLimitsV1,
+    map_limits: StackedFoldMaterialMapLimitsV1,
+) -> Result<NativeStackedFoldMaterialMapV1<'snapshot>, StackedFoldMaterialMapErrorV1> {
+    revalidate_linear_stacked_fold_read_proposal_v1(
+        proposal,
+        guard,
+        binding,
+        input,
+        proposal.candidate(),
+        read_limits,
+    )
+    .map_err(|_| StackedFoldMaterialMapErrorV1::ReadProposalInvalid)?;
+    if proposal.target_faces().is_empty() || proposal.target_faces().len() > map_limits.max_faces {
+        return Err(StackedFoldMaterialMapErrorV1::ResourceLimitExceeded);
+    }
+    input
+        .model
+        .bind_pose(input.pose)
+        .map_err(|_| StackedFoldMaterialMapErrorV1::ReadProposalInvalid)?;
+
+    let mut total_boundary_vertices = 0_usize;
+    let mut segments = Vec::new();
+    segments
+        .try_reserve_exact(proposal.target_faces().len())
+        .map_err(|_| StackedFoldMaterialMapErrorV1::AllocationFailed)?;
+    for face in proposal.target_faces() {
+        let boundary = input
+            .model
+            .face_boundary(*face)
+            .ok_or(StackedFoldMaterialMapErrorV1::MaterialFaceUnavailable)?;
+        total_boundary_vertices = total_boundary_vertices
+            .checked_add(boundary.vertices().len())
+            .ok_or(StackedFoldMaterialMapErrorV1::ResourceLimitExceeded)?;
+        if boundary.vertices().len() < 3
+            || total_boundary_vertices > map_limits.max_total_boundary_vertices
+        {
+            return Err(StackedFoldMaterialMapErrorV1::ResourceLimitExceeded);
+        }
+        let transform = input
+            .pose
+            .face_transform(*face)
+            .ok_or(StackedFoldMaterialMapErrorV1::MaterialFaceUnavailable)?;
+        let first = transform
+            .inverse_apply_point(proposal.candidate().first())
+            .map_err(|_| StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)?;
+        let second = transform
+            .inverse_apply_point(proposal.candidate().second())
+            .map_err(|_| StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)?;
+        if first.y().to_bits() != 0.0_f64.to_bits() || second.y().to_bits() != 0.0_f64.to_bits() {
+            return Err(StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch);
+        }
+        let line_first = rational_point_from_material(first)?;
+        let line_second = rational_point_from_material(second)?;
+        let mut polygon = Vec::new();
+        polygon
+            .try_reserve_exact(boundary.vertices().len())
+            .map_err(|_| StackedFoldMaterialMapErrorV1::AllocationFailed)?;
+        for vertex in boundary.vertices() {
+            let point = input
+                .pose
+                .vertex_position(*vertex)
+                .ok_or(StackedFoldMaterialMapErrorV1::MaterialFaceUnavailable)?;
+            polygon.push(rational_point_from_material(point)?);
+        }
+        let (start, end) =
+            clip_infinite_line_to_convex_polygon(&line_first, &line_second, &polygon)?;
+        segments.push(StackedFoldMaterialSegmentV1 {
+            face: *face,
+            start: rational_point_to_point2(&start)?,
+            end: rational_point_to_point2(&end)?,
+        });
+    }
+    Ok(NativeStackedFoldMaterialMapV1 {
+        proposal: proposal.clone(),
+        segments,
+    })
+}
+
+fn rational_point_from_material(
+    point: Point3,
+) -> Result<RationalPoint, StackedFoldMaterialMapErrorV1> {
+    Ok(RationalPoint {
+        x: BigRational::from_float(point.x())
+            .ok_or(StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)?,
+        y: BigRational::from_float(canonical_zero(-point.z()))
+            .ok_or(StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)?,
+    })
+}
+
+fn clip_infinite_line_to_convex_polygon(
+    first: &RationalPoint,
+    second: &RationalPoint,
+    polygon: &[RationalPoint],
+) -> Result<(RationalPoint, RationalPoint), StackedFoldMaterialMapErrorV1> {
+    let direction = RationalPoint {
+        x: &second.x - &first.x,
+        y: &second.y - &first.y,
+    };
+    if direction.x.is_zero() && direction.y.is_zero() {
+        return Err(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate);
+    }
+    let mut lower: Option<BigRational> = None;
+    let mut upper: Option<BigRational> = None;
+    for index in 0..polygon.len() {
+        let start = &polygon[index];
+        let end = &polygon[(index + 1) % polygon.len()];
+        let edge_x = &end.x - &start.x;
+        let edge_y = &end.y - &start.y;
+        let coefficient = &edge_x * &direction.y - &edge_y * &direction.x;
+        let offset = &edge_x * (&first.y - &start.y) - &edge_y * (&first.x - &start.x);
+        if coefficient.is_zero() {
+            if offset.is_negative() {
+                return Err(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate);
+            }
+            continue;
+        }
+        let bound = -offset / &coefficient;
+        if coefficient.is_positive() {
+            if lower.as_ref().is_none_or(|current| bound > *current) {
+                lower = Some(bound);
+            }
+        } else if upper.as_ref().is_none_or(|current| bound < *current) {
+            upper = Some(bound);
+        }
+    }
+    let (Some(lower), Some(upper)) = (lower, upper) else {
+        return Err(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate);
+    };
+    if lower >= upper {
+        return Err(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate);
+    }
+    let point_at = |parameter: &BigRational| RationalPoint {
+        x: &first.x + &direction.x * parameter,
+        y: &first.y + &direction.y * parameter,
+    };
+    Ok((point_at(&lower), point_at(&upper)))
+}
+
+fn rational_point_to_point2(
+    point: &RationalPoint,
+) -> Result<Point2, StackedFoldMaterialMapErrorV1> {
+    let x = point
+        .x
+        .to_f64()
+        .ok_or(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate)?;
+    let y = point
+        .y
+        .to_f64()
+        .ok_or(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate)?;
+    if !x.is_finite() || !y.is_finite() {
+        return Err(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate);
+    }
+    Ok(Point2::new(canonical_zero(x), canonical_zero(y)))
 }
 
 fn validate_project_binding(

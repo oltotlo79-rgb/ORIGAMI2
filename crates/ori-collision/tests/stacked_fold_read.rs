@@ -1,12 +1,14 @@
 use ori_collision::{
     FlatEndpointLayerOrderAnchorErrorV1, FlatEndpointLayerOrderInputV1,
     FlatEndpointLayerOrderLimitsV1, FlatEndpointLayerOrderResourceV1, NativeStackedFoldReadGuardV1,
-    STACKED_FOLD_READ_GUARD_MODEL_ID_V1, STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
-    StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldReadBindingV1,
+    STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1, STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+    STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
+    StackedFoldMaterialMapErrorV1, StackedFoldMaterialMapLimitsV1, StackedFoldReadBindingV1,
     StackedFoldReadErrorV1, StackedFoldReadFailureClassV1, StackedFoldReadLimitsV1,
     StackedFoldReadResourceV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
     capture_stacked_fold_read_guard_v1, propose_linear_stacked_fold_read_v1,
     revalidate_linear_stacked_fold_read_proposal_v1, revalidate_stacked_fold_read_guard_v1,
+    reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
@@ -306,6 +308,30 @@ fn no_hinge_and_flat_tree_issue_complete_read_only_proposals() {
         }));
         assert!(!proposal.authorizes_project_mutation());
         assert!(!proposal.authorizes_apply_stacked_fold());
+        let material_map = reverse_map_linear_stacked_fold_material_v1(
+            &proposal,
+            &guard,
+            binding(&fixture),
+            input(&fixture, &pose, &fixture.layer_order),
+            StackedFoldReadLimitsV1::default(),
+            StackedFoldMaterialMapLimitsV1::default(),
+        )
+        .expect("world line maps to every crossed material face");
+        assert_eq!(
+            material_map.model_id(),
+            STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1
+        );
+        assert!(material_map.is_for_proposal(&proposal));
+        assert_eq!(material_map.segments().len(), proposal.target_faces().len());
+        assert!(
+            material_map
+                .segments()
+                .iter()
+                .zip(proposal.target_faces())
+                .all(|(segment, face)| segment.face() == *face && segment.start() != segment.end())
+        );
+        assert!(!material_map.authorizes_project_mutation());
+        assert!(!material_map.authorizes_apply_stacked_fold());
         revalidate_linear_stacked_fold_read_proposal_v1(
             &proposal,
             &guard,
@@ -316,6 +342,58 @@ fn no_hinge_and_flat_tree_issue_complete_read_only_proposals() {
         )
         .expect("immutable proposal revalidation");
     }
+}
+
+#[test]
+fn material_reverse_mapping_is_bounded_and_revalidates_the_exact_proposal() {
+    let fixture = fixture(false);
+    let pose = admitted_pose(&fixture);
+    let limits = StackedFoldReadLimitsV1::default();
+    let guard = capture(&fixture, &pose, &fixture.layer_order, limits);
+    let proposal = propose_linear_stacked_fold_read_v1(
+        &guard,
+        binding(&fixture),
+        input(&fixture, &pose, &fixture.layer_order),
+        crossing_candidate(200.0),
+        limits,
+    )
+    .expect("proposal");
+
+    for map_limits in [
+        StackedFoldMaterialMapLimitsV1 {
+            max_faces: 0,
+            ..StackedFoldMaterialMapLimitsV1::default()
+        },
+        StackedFoldMaterialMapLimitsV1 {
+            max_total_boundary_vertices: 0,
+            ..StackedFoldMaterialMapLimitsV1::default()
+        },
+    ] {
+        assert!(matches!(
+            reverse_map_linear_stacked_fold_material_v1(
+                &proposal,
+                &guard,
+                binding(&fixture),
+                input(&fixture, &pose, &fixture.layer_order),
+                limits,
+                map_limits,
+            ),
+            Err(StackedFoldMaterialMapErrorV1::ResourceLimitExceeded)
+        ));
+    }
+
+    let foreign_guard = capture(&fixture, &pose, &fixture.layer_order, limits);
+    assert!(matches!(
+        reverse_map_linear_stacked_fold_material_v1(
+            &proposal,
+            &foreign_guard,
+            binding(&fixture),
+            input(&fixture, &pose, &fixture.layer_order),
+            limits,
+            StackedFoldMaterialMapLimitsV1::default(),
+        ),
+        Err(StackedFoldMaterialMapErrorV1::ReadProposalInvalid)
+    ));
 }
 
 #[test]

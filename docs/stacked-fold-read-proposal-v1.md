@@ -68,18 +68,20 @@ proposalは次だけを観測用に返す。
 - 厳密に横断したcanonical cell key
 - 各cellの完全なbottom-to-top face列
 - 横断cell全体のtarget face和集合
+- 各target faceの材料2D座標へ逆写像した正の長さを持つ切断segment
 - 決定論的work count
 
 cellごとの層順序を一つのglobal face列へ潰さない。離れたcellで順序または対象集合が異なる可能性を保持する。
 
 target face和集合はface IDのcanonical byte順へ正規化する。material face数とretained target face上限の小さい方まで出力容量を先行予約し、各追加の上限確認後は再allocationを発生させない。
 
+material map `native_flat_stacked_fold_material_map_v1`は、proposalを同じguard・binding・exact pose・layer snapshotへ再検証してから構築する。成功対象がno-hingeまたはbit-exact 180度だけであることを利用し、world直線を各faceのrigid transformの逆変換で材料平面へ戻す。canonical CCW face境界との交差区間はbinary64比較ではなく、入力binary64を正確な有理数へliftした凸polygon clippingで求める。面外drift、接線、境界一致、ゼロ長、欠損transform、非凸・不完全な交差、face・全境界頂点上限超過は推測せず失敗する。
+
 proposalが保証しないものは次のとおりである。
 
 - current poseへ到達したcontinuous path
 - staticまたはcontinuous collision safety
 - 紙厚層offset
-- 操作線の各材料面への逆写像
 - 固定側・移動側partition
 - 層別Mountain/Valley
 - candidate patternまたはface lineage
@@ -101,6 +103,7 @@ guardとproposalの`authorizes_project_mutation`および`authorizes_apply_stack
 - 全orientationへ課金する予測integer bits合計
 - retained crossed cells
 - retained target faces
+- material mapのface数と全boundary vertex数
 
 下位flat anchorの15上限（source vertex、source edge、paper boundary vertex、face、hinge、cell、cellごとのboundary vertex、全boundary vertex、layer record、face-pair order、supporting cell、exact payload byte、exact integer bit、包含orientation、cell分離orientation）も同じcapture内で適用する。15項目すべてについて上限一致の成功とone-shortの失敗を回帰する。上限到達、checked overflow、allocation失敗では部分proposalを返さない。
 
@@ -114,6 +117,7 @@ guardとproposalの`authorizes_project_mutation`および`authorizes_apply_stack
 - cell keyおよびlayer certificate改変
 - candidateの第一点、第二点、fixed side、rotation direction、requested angleの各差
 - cell境界一致、接線、対象cellなし
+- no-hinge・全180度treeの材料面逆写像、face/全境界頂点上限、foreign proposal
 - proposal全counterのexact-limitとone-short、下位anchor全15上限のexact-limitとone-short
 - checked count・exact bit-bound overflowおよび出力reserve失敗
 - guard/proposalがSerialize不可かつmutation authorityを持たないこと

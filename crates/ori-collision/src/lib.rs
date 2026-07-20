@@ -41,14 +41,16 @@ pub use flat_endpoint_layer_order::{
     revalidate_flat_endpoint_layer_order_anchor_v1,
 };
 pub use stacked_fold_read::{
-    NativeStackedFoldReadGuardV1, NativeStackedFoldReadProposalV1,
-    STACKED_FOLD_READ_GUARD_MODEL_ID_V1, STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
-    StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldReadBindingV1,
-    StackedFoldReadCellV1, StackedFoldReadErrorV1, StackedFoldReadFailureClassV1,
-    StackedFoldReadLimitsV1, StackedFoldReadResourceV1, StackedFoldReadSupportV1,
-    StackedFoldReadWorkV1, StackedFoldRotationDirectionV1, capture_stacked_fold_read_guard_v1,
-    propose_linear_stacked_fold_read_v1, revalidate_linear_stacked_fold_read_proposal_v1,
-    revalidate_stacked_fold_read_guard_v1,
+    NativeStackedFoldMaterialMapV1, NativeStackedFoldReadGuardV1, NativeStackedFoldReadProposalV1,
+    STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1, STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+    STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
+    StackedFoldMaterialMapErrorV1, StackedFoldMaterialMapLimitsV1, StackedFoldMaterialSegmentV1,
+    StackedFoldReadBindingV1, StackedFoldReadCellV1, StackedFoldReadErrorV1,
+    StackedFoldReadFailureClassV1, StackedFoldReadLimitsV1, StackedFoldReadResourceV1,
+    StackedFoldReadSupportV1, StackedFoldReadWorkV1, StackedFoldRotationDirectionV1,
+    capture_stacked_fold_read_guard_v1, propose_linear_stacked_fold_read_v1,
+    revalidate_linear_stacked_fold_read_proposal_v1, revalidate_stacked_fold_read_guard_v1,
+    reverse_map_linear_stacked_fold_material_v1,
 };
 pub use static_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,

@@ -6,9 +6,9 @@
 
 use ori_collision::{
     FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
-    StackedFoldReadBindingV1, StackedFoldReadLimitsV1, StackedFoldReadSupportV1,
-    StackedFoldRotationDirectionV1, capture_stacked_fold_read_guard_v1,
-    propose_linear_stacked_fold_read_v1,
+    StackedFoldMaterialMapLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
+    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, capture_stacked_fold_read_guard_v1,
+    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::Point3;
@@ -113,6 +113,14 @@ struct StackedFoldReadCellDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct StackedFoldMaterialSegmentDto {
+    face_id: FaceId,
+    start: [f64; 2],
+    end: [f64; 2],
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StackedFoldReadWorkDto {
     scanned_cells: usize,
     total_boundary_vertices: usize,
@@ -130,10 +138,12 @@ struct StackedFoldReadWorkDto {
 pub(super) struct StackedFoldReadResponse {
     guard_model_id: &'static str,
     proposal_model_id: &'static str,
+    material_map_model_id: &'static str,
     binding: StackedFoldReadBindingDto,
     support: StackedFoldReadSupportDto,
     crossed_cells: Vec<StackedFoldReadCellDto>,
     target_faces: Vec<FaceId>,
+    material_segments: Vec<StackedFoldMaterialSegmentDto>,
     work: StackedFoldReadWorkDto,
     authorizes_project_mutation: bool,
     authorizes_apply_stacked_fold: bool,
@@ -208,6 +218,15 @@ pub(super) async fn propose_current_stacked_fold_read(
         let proposal =
             propose_linear_stacked_fold_read_v1(&guard, binding, input, candidate, limits)
                 .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let material_map = reverse_map_linear_stacked_fold_material_v1(
+            &proposal,
+            &guard,
+            binding,
+            input,
+            limits,
+            StackedFoldMaterialMapLimitsV1::default(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let crossed_cells = proposal
             .crossed_cells()
             .iter()
@@ -219,6 +238,16 @@ pub(super) async fn propose_current_stacked_fold_read(
         let work = proposal.work();
         let support = proposal.support();
         let target_faces = proposal.target_faces().to_vec();
+        let material_segments = material_map
+            .segments()
+            .iter()
+            .map(|segment| StackedFoldMaterialSegmentDto {
+                face_id: segment.face(),
+                start: [segment.start().x, segment.start().y],
+                end: [segment.end().x, segment.end().y],
+            })
+            .collect();
+        drop(material_map);
         drop(proposal);
         drop(guard);
         Ok::<_, String>((
@@ -228,6 +257,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             support,
             crossed_cells,
             target_faces,
+            material_segments,
             work,
         ))
     })
@@ -240,6 +270,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         support,
         crossed_cells,
         target_faces,
+        material_segments,
         work,
     ) = analysis;
 
@@ -266,6 +297,7 @@ pub(super) async fn propose_current_stacked_fold_read(
     Ok(StackedFoldReadResponse {
         guard_model_id: ori_collision::STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
         proposal_model_id: ori_collision::STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
+        material_map_model_id: ori_collision::STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
         binding: StackedFoldReadBindingDto {
             project_instance_id: binding.project_instance_id(),
             project_id: binding.project_id(),
@@ -276,6 +308,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         support: support.into(),
         crossed_cells,
         target_faces,
+        material_segments,
         work: StackedFoldReadWorkDto {
             scanned_cells: work.scanned_cells,
             total_boundary_vertices: work.total_boundary_vertices,

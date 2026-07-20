@@ -31,6 +31,7 @@ use thiserror::Error;
 
 /// Stable semantic model identifier for the first applied-pose representation.
 pub const APPLIED_POSE_MODEL_ID_V1: &str = "tree_absolute_hinge_angles_v1";
+pub const CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1: &str = "closed_graph_absolute_hinge_angles_v1";
 
 /// Resource class checked while preparing an applied pose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +121,7 @@ pub enum AppliedPoseErrorV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppliedPoseModelV1 {
     TreeAbsoluteHingeAnglesV1,
+    ClosedGraphAbsoluteHingeAnglesV1,
 }
 
 /// One canonical absolute hinge angle in an [`AppliedPoseV1`].
@@ -159,6 +161,9 @@ impl AppliedPoseV1 {
     pub const fn model_id(&self) -> &'static str {
         match self.model {
             AppliedPoseModelV1::TreeAbsoluteHingeAnglesV1 => APPLIED_POSE_MODEL_ID_V1,
+            AppliedPoseModelV1::ClosedGraphAbsoluteHingeAnglesV1 => {
+                CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1
+            }
         }
     }
 
@@ -209,6 +214,41 @@ pub fn prepare_applied_pose_v1(
     hinge_angles: &[(EdgeId, f64)],
     limits: AppliedPoseLimitsV1,
 ) -> Result<AppliedPoseV1, AppliedPoseErrorV1> {
+    prepare_applied_pose_inner(
+        expected_faces,
+        expected_hinges,
+        fixed_face,
+        hinge_angles,
+        limits,
+        AppliedPoseModelV1::TreeAbsoluteHingeAnglesV1,
+    )
+}
+
+pub fn prepare_closed_graph_applied_pose_v1(
+    expected_faces: &[FaceId],
+    expected_hinges: &[EdgeId],
+    fixed_face: FaceId,
+    hinge_angles: &[(EdgeId, f64)],
+    limits: AppliedPoseLimitsV1,
+) -> Result<AppliedPoseV1, AppliedPoseErrorV1> {
+    prepare_applied_pose_inner(
+        expected_faces,
+        expected_hinges,
+        Some(fixed_face),
+        hinge_angles,
+        limits,
+        AppliedPoseModelV1::ClosedGraphAbsoluteHingeAnglesV1,
+    )
+}
+
+fn prepare_applied_pose_inner(
+    expected_faces: &[FaceId],
+    expected_hinges: &[EdgeId],
+    fixed_face: Option<FaceId>,
+    hinge_angles: &[(EdgeId, f64)],
+    limits: AppliedPoseLimitsV1,
+    model: AppliedPoseModelV1,
+) -> Result<AppliedPoseV1, AppliedPoseErrorV1> {
     check_resource(
         AppliedPoseResourceV1::Faces,
         expected_faces.len(),
@@ -237,7 +277,11 @@ pub fn prepare_applied_pose_v1(
     validate_face_registry(expected_faces)?;
     validate_hinge_registry(expected_hinges)?;
     validate_angle_order(hinge_angles)?;
-    validate_tree_cardinality(expected_faces.len(), expected_hinges.len())?;
+    if model == AppliedPoseModelV1::TreeAbsoluteHingeAnglesV1 {
+        validate_tree_cardinality(expected_faces.len(), expected_hinges.len())?;
+    } else if expected_faces.is_empty() || expected_hinges.is_empty() {
+        return Err(AppliedPoseErrorV1::EmptyFaceRegistry);
+    }
 
     match (expected_hinges.is_empty(), fixed_face) {
         (true, Some(_)) => return Err(AppliedPoseErrorV1::UnexpectedFixedFace),
@@ -280,7 +324,7 @@ pub fn prepare_applied_pose_v1(
     }));
 
     Ok(AppliedPoseV1 {
-        model: AppliedPoseModelV1::TreeAbsoluteHingeAnglesV1,
+        model,
         fixed_face,
         hinge_angles: owned_angles,
     })
@@ -470,6 +514,33 @@ mod tests {
         assert_eq!(pose.hinge_angles()[0].angle_degrees().to_bits(), 0);
         assert_eq!(pose.hinge_angles()[1].edge(), hinges[1]);
         assert_eq!(pose.hinge_angles()[1].angle_degrees(), 180.0);
+    }
+
+    #[test]
+    fn prepares_closed_graph_pose_without_tree_cardinality() {
+        let faces = sorted_faces(3);
+        let hinges = sorted_edges(3);
+        let pose = prepare_closed_graph_applied_pose_v1(
+            &faces,
+            &hinges,
+            faces[0],
+            &[(hinges[0], 30.0), (hinges[1], 60.0), (hinges[2], 90.0)],
+            limits(),
+        )
+        .expect("closed graph semantic pose");
+        assert_eq!(pose.model_id(), CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1);
+        assert_eq!(pose.fixed_face(), Some(faces[0]));
+
+        assert!(
+            prepare_applied_pose_v1(
+                &faces,
+                &hinges,
+                Some(faces[0]),
+                &[(hinges[0], 30.0), (hinges[1], 60.0), (hinges[2], 90.0),],
+                limits(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ use ori_collision::StackedFoldBoundedPathDiagnosticV1;
 use ori_core::{
     AppliedPoseLimitsV1, PreparedStackedFoldGeometryV1, PreparedStackedFoldRequestedGraphPoseV1,
     PreparedStackedFoldRequestedPoseV1, StackedFoldNonFlatLayerOrderV1, prepare_applied_pose_v1,
+    prepare_closed_graph_applied_pose_v1,
 };
 use ori_domain::{
     InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
@@ -74,6 +75,9 @@ pub(super) struct PendingCertifiedPathEdgeV1 {
 }
 
 impl PendingStackedFoldRequestedPose {
+    fn is_graph(&self) -> bool {
+        matches!(self, Self::Graph { .. })
+    }
     fn geometry(&self) -> &PreparedStackedFoldGeometryV1 {
         match self {
             Self::Tree { requested, .. } => requested.initial().target().geometry(),
@@ -482,13 +486,23 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
         }
     }
     let (face_ids, hinge_ids, fixed_face, hinge_angles) = requested.pose_components();
-    let applied_pose = prepare_applied_pose_v1(
-        &face_ids,
-        &hinge_ids,
-        fixed_face,
-        &hinge_angles,
-        AppliedPoseLimitsV1::default(),
-    )
+    let applied_pose = if requested.is_graph() {
+        prepare_closed_graph_applied_pose_v1(
+            &face_ids,
+            &hinge_ids,
+            fixed_face.ok_or_else(|| "The target pose is inconsistent.".to_owned())?,
+            &hinge_angles,
+            AppliedPoseLimitsV1::default(),
+        )
+    } else {
+        prepare_applied_pose_v1(
+            &face_ids,
+            &hinge_ids,
+            fixed_face,
+            &hinge_angles,
+            AppliedPoseLimitsV1::default(),
+        )
+    }
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
     let candidate = target.candidate();
     let mut timeline = project.editor.instruction_timeline().clone();

@@ -172,6 +172,30 @@ impl MaterialHingeGraphGeometry {
         {
             return Err(DyadicIntervalClosureErrorV1::InvalidInput);
         }
+        if collective_flat_stack_cycle_closure_premises_v1(
+            self, audit, fixed_face, schedule, tolerance,
+        ) {
+            let mut checked_hinges = self
+                .hinges()
+                .iter()
+                .map(|hinge| hinge.edge())
+                .collect::<Vec<_>>();
+            checked_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+            return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
+                fixed_face,
+                schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
+                graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
+                leaves: vec![(
+                    0,
+                    0,
+                    MaterialHingeIntervalClosureCertificateV1 {
+                        version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
+                        fixed_face,
+                        checked_hinges,
+                    },
+                )],
+            });
+        }
         let mut pending = vec![(0u32, 0u64)];
         let mut leaves = Vec::new();
         let mut work = 0usize;
@@ -882,6 +906,132 @@ fn union(parent: &mut [usize], rank: &mut [u8], first: usize, second: usize) -> 
         rank[first] = rank[first].saturating_add(1);
     }
     true
+}
+
+// Narrow analytic identity for a flat stack cut by one collective world-axis
+// fold. Exact profile equality and exact initial-axis collinearity carry the
+// loop identity over the full rational parameter domain; midpoint and target
+// solves revalidate the claimed branch before a certificate is issued.
+fn collective_flat_stack_cycle_closure_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if audit.closure_hinges().is_empty() || !tolerance.is_finite() || tolerance < 0.0 {
+        return false;
+    }
+    let Some(moving_edges) = schedule.collective_half_angle_profile_edges_v1() else {
+        return false;
+    };
+    if moving_edges.len() < 2 {
+        return false;
+    }
+    let moving = moving_edges.into_iter().collect::<HashSet<_>>();
+    let (Some(initial_angles), Some(midpoint_angles), Some(requested_angles)) = (
+        schedule.evaluate(0.0),
+        schedule.evaluate(0.5),
+        schedule.evaluate(1.0),
+    ) else {
+        return false;
+    };
+    let requested_moving = requested_angles
+        .as_slice()
+        .iter()
+        .filter(|angle| moving.contains(&angle.edge()))
+        .map(|angle| angle.angle_degrees().to_bits())
+        .collect::<HashSet<_>>();
+    if requested_moving.len() != 1
+        || requested_moving.iter().next().is_none_or(|bits| {
+            let angle = f64::from_bits(*bits);
+            !angle.is_finite() || angle <= 0.0 || angle >= 180.0
+        })
+        || initial_angles.as_slice().iter().any(|angle| {
+            if moving.contains(&angle.edge()) {
+                angle.angle_degrees().to_bits() != 0.0_f64.to_bits()
+            } else {
+                angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
+            }
+        })
+        || requested_angles.as_slice().iter().any(|angle| {
+            !moving.contains(&angle.edge())
+                && angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
+        })
+    {
+        return false;
+    }
+    let Ok(initial_pose) = geometry.solve_closed(audit, fixed_face, &initial_angles, tolerance)
+    else {
+        return false;
+    };
+    let mut moving_hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving.contains(&hinge.edge()));
+    let Some(reference) = moving_hinges.next() else {
+        return false;
+    };
+    let Some(reference_transform) = initial_pose.face_transform(reference.left_face()) else {
+        return false;
+    };
+    let (Ok(reference_start), Ok(reference_end), Ok(reference_axis)) = (
+        reference_transform.apply_point(reference.start()),
+        reference_transform.apply_point(reference.end()),
+        reference_transform.apply_vector(reference.axis()),
+    ) else {
+        return false;
+    };
+    if !moving_hinges.all(|hinge| {
+        let Some(transform) = initial_pose.face_transform(hinge.left_face()) else {
+            return false;
+        };
+        let (Ok(start), Ok(end), Ok(axis)) = (
+            transform.apply_point(hinge.start()),
+            transform.apply_point(hinge.end()),
+            transform.apply_vector(hinge.axis()),
+        ) else {
+            return false;
+        };
+        exact_same_infinite_line(reference_start, reference_axis, start, axis)
+            && exact_same_infinite_line(reference_start, reference_axis, end, axis)
+            && exact_same_infinite_line(reference_start, reference_axis, reference_end, axis)
+    }) {
+        return false;
+    }
+    [midpoint_angles, requested_angles]
+        .into_iter()
+        .all(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, tolerance)
+                .is_ok()
+        })
+}
+
+fn exact_same_infinite_line(
+    origin: crate::Point3,
+    axis: crate::Point3,
+    point: crate::Point3,
+    candidate_axis: crate::Point3,
+) -> bool {
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let reference = [axis.x(), axis.y(), axis.z()];
+    let candidate = [candidate_axis.x(), candidate_axis.y(), candidate_axis.z()];
+    let offset = [
+        point.x() - origin.x(),
+        point.y() - origin.y(),
+        point.z() - origin.z(),
+    ];
+    cross(reference, candidate)
+        .into_iter()
+        .chain(cross(offset, reference))
+        .all(|value| value == 0.0)
 }
 
 #[cfg(test)]

@@ -2184,8 +2184,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
+    fn assert_two_hinge_projective_schedule_round_trip(first: [f64; 3], second: [f64; 3]) {
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let instance = project.instance_id;
@@ -2208,8 +2207,8 @@ mod tests {
                 expected_project_instance_id: instance,
                 expected_project_id: project_id,
                 expected_revision: revision,
-                first: [50.0, 0.0, 0.0],
-                second: [50.0, 0.0, -100.0],
+                first,
+                second,
                 fixed_side: FixedSideRequest::Left,
                 rotation_direction: RotationDirectionRequest::Positive,
                 requested_angle_degrees: angle,
@@ -2282,8 +2281,8 @@ mod tests {
                 expected_project_instance_id: instance,
                 expected_project_id: project_id,
                 expected_revision: revision,
-                first: [50.0, 0.0, 0.0],
-                second: [50.0, 0.0, -100.0],
+                first,
+                second,
                 fixed_side: FixedSideRequest::Left,
                 rotation_direction: RotationDirectionRequest::Positive,
                 requested_angle_degrees: angle,
@@ -2327,6 +2326,16 @@ mod tests {
             project.editor.current_applied_pose(),
             after.current_applied_pose()
         );
+    }
+
+    #[test]
+    fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
+        assert_two_hinge_projective_schedule_round_trip([50.0, 0.0, 0.0], [50.0, 0.0, -100.0]);
+    }
+
+    #[test]
+    fn genuine_common_axis_cycle_previews_applies_and_round_trips_history() {
+        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0]);
     }
 
     #[test]

@@ -1538,11 +1538,6 @@ fn scheduled_collinear_flat_stack_premises_v1(
     fixed_face: FaceId,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> bool {
-    if !audit.closure_hinges().is_empty()
-        || geometry.face_ids().len() != geometry.hinges().len().saturating_add(1)
-    {
-        return false;
-    }
     let Some(moving_edges) = schedule.collective_half_angle_profile_edges_v1() else {
         return false;
     };

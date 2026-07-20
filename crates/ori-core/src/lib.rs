@@ -16,7 +16,8 @@ mod validation;
 pub use annotation_editor::{AnnotationEditErrorV1, AnnotationEditorV1};
 pub use applied_pose::{
     APPLIED_POSE_MODEL_ID_V1, AppliedHingeAngleV1, AppliedPoseErrorV1, AppliedPoseLimitsV1,
-    AppliedPoseResourceV1, AppliedPoseV1, prepare_applied_pose_v1,
+    AppliedPoseResourceV1, AppliedPoseV1, CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1,
+    prepare_applied_pose_v1, prepare_closed_graph_applied_pose_v1,
 };
 pub use constraint_solver::{
     ConstraintSolveErrorV1, ConstraintSolveLimitsV1, ConstraintSolvePreviewV1,

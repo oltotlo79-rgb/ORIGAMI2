@@ -346,6 +346,21 @@ test('signing secrets are approval-gated masked cleaned and absent from fork CI'
   }
 })
 
+test('macOS signing binds the bundle to the configured leaf identity and hardened runtime', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const verifier = readFileSync(
+    join(root, '.github/scripts/verify_macos_signing_identity.sh'),
+    'utf8',
+  )
+  assert.match(workflow, /APPLE_SIGNING_IDENTITY="\$SIGNING_IDENTITY"[\s\\]*bash \.\.\/\.\.\/\.github\/scripts\/verify_macos_signing_identity\.sh/u)
+  assert.match(verifier, /Developer\\ ID\\ Application/u)
+  assert.match(verifier, /grep -Fqx "Authority=\$expected_identity"/u)
+  assert.match(verifier, /TeamIdentifier=\[A-Z0-9\]\{10\}/u)
+  assert.match(verifier, /flags=\.\*runtime/u)
+  assert.match(verifier, /codesign --verify --deep --strict/u)
+  assert.doesNotMatch(verifier, /echo[^\n]*expected_identity/u)
+})
+
 test('CI always runs release contracts with read-only short-lived evidence', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const checkoutCount = workflow.match(/actions\/checkout@/gu)?.length ?? 0

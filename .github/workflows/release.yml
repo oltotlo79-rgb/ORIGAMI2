@@ -207,7 +207,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
           codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
             target/release/bundle/macos/ORIGAMI2.app
-          codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/ORIGAMI2.app
+          APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY" \
+            bash ../../.github/scripts/verify_macos_signing_identity.sh \
+              target/release/bundle/macos/ORIGAMI2.app
       - name: Notarize and staple macOS application
         if: matrix.platform == 'macos-arm64' && needs.validate.outputs.mode != 'dry-run'
         env:

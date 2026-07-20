@@ -526,6 +526,11 @@ function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
+  const [compassCircles, setCompassCircles] = useState<readonly {
+    centerX: number
+    centerY: number
+    radius: number
+  }[]>([])
   const [foldAngle, setFoldAngle] = useState(52)
   const [foldAngleOverrides, setFoldAngleOverrides] = useState<FoldAngleOverrides>({
     projectId: null,
@@ -911,6 +916,7 @@ function App() {
       foldModelFingerprint: admittedSnapshot.fold_model_fingerprint,
     }, forceReplacement)
     setNativeSnapshot(admittedSnapshot)
+    if (forceReplacement) setCompassCircles([])
     setGeometricConstraintDocumentInvalid(constraintDocumentInvalid)
     setProjectLayerDocumentInvalid(layerDocumentInvalid)
     setValidation(null)
@@ -5012,6 +5018,7 @@ function App() {
               snapSettings={snapSettings}
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
+              compassCircles={benchmarkRun ? [] : compassCircles}
               validationVertexHighlights={canvasLocalFlatFoldabilityHighlights}
               lockedVertexIds={
                 benchmarkRun ? undefined : nativeLayerView.lockedVertexIds
@@ -5978,6 +5985,61 @@ function App() {
                         })}
                       </button>
                     </div>
+                  </fieldset>
+                  <fieldset>
+                    <legend>
+                      {text({ ja: 'コンパス円', en: 'Compass circle' })}
+                    </legend>
+                    <label className="field">
+                      {`${text({ ja: '半径', en: 'Radius' })} (${lengthDisplayUnitLabelText})`}
+                      <input
+                        name="compass_radius_display"
+                        type="number"
+                        inputMode="decimal"
+                        min="0.000001"
+                        step="any"
+                        defaultValue="10"
+                        disabled={coreBusy}
+                      />
+                    </label>
+                    <div className="property-actions">
+                      <button
+                        type="button"
+                        disabled={coreBusy}
+                        onClick={(event) => {
+                          const form = event.currentTarget.form
+                          const input = form?.elements.namedItem('compass_radius_display')
+                          if (!(input instanceof HTMLInputElement)) return
+                          const displayRadius = Number(input.value)
+                          const radius = displayRadius
+                            * lengthDisplayUnit.millimetresPerUnit
+                          if (!Number.isFinite(radius) || radius <= 0) return
+                          setCompassCircles((current) => [
+                            ...current,
+                            {
+                              centerX: selectedVertex.position.x,
+                              centerY: selectedVertex.position.y,
+                              radius,
+                            },
+                          ].slice(-64))
+                        }}
+                      >
+                        {text({ ja: '選択頂点を中心に円を追加', en: 'Add circle at selected vertex' })}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={coreBusy || compassCircles.length === 0}
+                        onClick={() => setCompassCircles([])}
+                      >
+                        {text({ ja: 'コンパス円を消去', en: 'Clear compass circles' })}
+                      </button>
+                    </div>
+                    <p className="muted">
+                      {formattedText({
+                        ja: '補助円 {count} 個。交点を見ながら定規相当の線作図を行えます。',
+                        en: '{count} construction circles. Use their visible intersections with the ruler-equivalent line tools.',
+                      }, { count: compassCircles.length })}
+                    </p>
                   </fieldset>
                   {selectedVertexLocked && (
                     <p className="muted">

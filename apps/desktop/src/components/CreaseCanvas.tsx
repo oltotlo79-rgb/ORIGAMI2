@@ -96,6 +96,12 @@ export type CreaseCanvasFace = Readonly<{
   polygon: readonly Readonly<{ x: number; y: number }>[]
 }>
 
+export type CompassConstructionCircle = Readonly<{
+  centerX: number
+  centerY: number
+  radius: number
+}>
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
@@ -112,6 +118,7 @@ type Props = {
   snapSettings?: SnapSettings
   parallelReference?: ParallelSnapReference | null
   angleConfig?: AngleSnapConfig
+  compassCircles?: readonly CompassConstructionCircle[]
   validationVertexHighlights?: ReadonlyMap<string, ValidationVertexHighlight>
   lockedVertexIds?: ReadonlySet<string>
   ariaDescribedBy?: string
@@ -212,6 +219,7 @@ export function CreaseCanvas({
   snapSettings = DEFAULT_SNAP_SETTINGS,
   parallelReference = null,
   angleConfig,
+  compassCircles = [],
   validationVertexHighlights = EMPTY_VALIDATION_VERTEX_HIGHLIGHTS,
   lockedVertexIds = EMPTY_LOCKED_VERTEX_IDS,
   ariaDescribedBy,
@@ -465,6 +473,20 @@ export function CreaseCanvas({
         }
       }
 
+      for (const circle of compassCircles) {
+        const center = mapPaperPoint(transform, circle.centerX, circle.centerY)
+        const radius = circle.radius * transform.scale
+        if (!center || !Number.isFinite(radius) || radius <= 0) continue
+        context.save()
+        context.beginPath()
+        context.arc(center.x, center.y, radius, 0, Math.PI * 2)
+        context.strokeStyle = '#8b4fb3'
+        context.lineWidth = 1.5
+        context.setLineDash([7, 4])
+        context.stroke()
+        context.restore()
+      }
+
       const mappedVertices: Array<{
         id: string
         x: number
@@ -608,6 +630,7 @@ export function CreaseCanvas({
   }, [
     canvasSize.height,
     canvasSize.width,
+    compassCircles,
     dragPreview,
     faces,
     lineDrawBatches,

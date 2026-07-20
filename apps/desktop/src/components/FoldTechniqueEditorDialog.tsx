@@ -31,6 +31,8 @@ export type FoldTechniqueEditorDialogProps = Readonly<{
   saveFailed?: boolean
   onConfirm: (document: FoldTechniqueFileDocumentV1) => void
   onCancel: () => void
+  onDirtyChange?: (dirty: boolean) => void
+  returnFocusTo?: HTMLElement | null
 }>
 
 const FOCUSABLE_SELECTOR = [
@@ -251,6 +253,8 @@ export function FoldTechniqueEditorDialog({
   saveFailed = false,
   onConfirm,
   onCancel,
+  onDirtyChange,
+  returnFocusTo,
 }: FoldTechniqueEditorDialogProps) {
   const locale = useLocale()
   const copy = COPY[locale]
@@ -292,9 +296,11 @@ export function FoldTechniqueEditorDialog({
   }, [baseline, initialSelectedIndex])
 
   useEffect(() => {
-    const previouslyFocused = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null
+    const previouslyFocused = returnFocusTo?.isConnected
+      ? returnFocusTo
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null
     const frame = requestAnimationFrame(() => {
       if (initialCanEditRef.current) firstInputRef.current?.focus()
       else dialogRef.current?.focus()
@@ -303,7 +309,7 @@ export function FoldTechniqueEditorDialog({
       cancelAnimationFrame(frame)
       if (previouslyFocused?.isConnected) previouslyFocused.focus()
     }
-  }, [])
+  }, [returnFocusTo])
 
   useEffect(() => {
     const handleFocusIn = (event: FocusEvent) => {
@@ -333,11 +339,23 @@ export function FoldTechniqueEditorDialog({
     : null
   const versionIsValid = /^(?:[1-9][0-9]{0,6})$/u.test(versionInput)
     && Number(versionInput) <= FOLD_TECHNIQUE_LIMITS_V1.techniqueVersion
-  const hasChanges = Boolean(
+  const draftHasChanges = Boolean(
     baseline
-    && validation?.ok
-    && !foldTechniqueDocumentsEqualV1(baseline, validation.document),
+    && draft
+    && (
+      !foldTechniqueDocumentsEqualV1(baseline, draft)
+      || (
+        selectedIndex >= 0
+        && draft.techniques[selectedIndex]
+        && versionInput !== String(draft.techniques[selectedIndex].version)
+      )
+    ),
   )
+  const hasChanges = Boolean(
+    draftHasChanges
+    && validation?.ok,
+  )
+  const hasUnsavedDraft = mode === 'create' || draftHasChanges
   const canConfirm = Boolean(
     validation?.ok
     && versionIsValid
@@ -348,6 +366,11 @@ export function FoldTechniqueEditorDialog({
   const technique = selectedIndex >= 0
     ? draft?.techniques[selectedIndex] ?? null
     : null
+
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedDraft)
+    return () => onDirtyChange?.(false)
+  }, [hasUnsavedDraft, onDirtyChange])
 
   const applyUpdate = (
     update: Parameters<typeof updateFoldTechniqueDocumentDraftV1>[1],
@@ -634,7 +657,7 @@ export function FoldTechniqueEditorDialog({
                         selectTechnique(event.currentTarget.value)}
                     >
                       {draft.techniques.map((candidate, index) => (
-                        <option key={candidate.id} value={index}>
+                        <option key={`technique-slot-${index}`} value={index}>
                           {index + 1}/{draft.techniques.length}
                           {' · '}
                           {foldTechniqueLocalizedTextV1(

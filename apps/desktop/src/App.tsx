@@ -688,7 +688,12 @@ function App() {
   const benchmarkRequestIdRef = useRef(0)
   const topologyRequestIdRef = useRef(0)
   const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
-  const foldTechniqueCreateButtonRef = useRef<HTMLButtonElement>(null)
+  const foldTechniqueWorkspaceRef = useRef<FoldTechniqueWorkspace | null>(
+    foldTechniqueWorkspace,
+  )
+  const foldTechniqueBusyRef = useRef(foldTechniqueBusy)
+  const foldTechniqueEditorDirtyRef = useRef(false)
+  const foldTechniqueEditorOpenerRef = useRef<HTMLButtonElement | null>(null)
   const foldTechniqueRequestIdRef = useRef(0)
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
@@ -702,6 +707,21 @@ function App() {
   recoveryStartupRef.current = recoveryStartup
   recoveryBlockingRef.current = recoveryBlocking
   appliedFoldPoseRef.current = appliedFoldPose
+  foldTechniqueWorkspaceRef.current = foldTechniqueWorkspace
+  foldTechniqueBusyRef.current = foldTechniqueBusy
+  const replaceFoldTechniqueWorkspace = useCallback((
+    workspace: FoldTechniqueWorkspace,
+  ) => {
+    foldTechniqueWorkspaceRef.current = workspace
+    setFoldTechniqueWorkspace(workspace)
+  }, [])
+  const setFoldTechniqueOperationBusy = useCallback((busy: boolean) => {
+    foldTechniqueBusyRef.current = busy
+    setFoldTechniqueBusy(busy)
+  }, [])
+  const noteFoldTechniqueEditorDirty = useCallback((dirty: boolean) => {
+    foldTechniqueEditorDirtyRef.current = dirty
+  }, [])
   const getProjectSnapshot = useCallback(() => {
     const pending = initialProjectSnapshotRequestRef.current
     if (pending) return pending
@@ -1643,6 +1663,7 @@ function App() {
             recoveryBlockingRef.current
             || recoveryOperationRef.current
           ) return 'recovery'
+          if (foldTechniqueBusyRef.current) return 'core'
           return (
             coreOperationRef.current
             && !windowCloseHandshakeStateRef.current.interaction_locked
@@ -1657,7 +1678,9 @@ function App() {
             project_instance_id: current.project_instance_id,
             project_id: current.project_id,
             revision: current.revision,
-            is_dirty: current.is_dirty,
+            is_dirty: current.is_dirty
+              || foldTechniqueWorkspaceRef.current?.dirty === true
+              || foldTechniqueEditorDirtyRef.current,
           }
         },
         confirmDiscard: () => window.confirm(
@@ -2774,12 +2797,20 @@ function App() {
     }
   }
 
-  function openNewFoldTechniqueEditor() {
+  function openNewFoldTechniqueEditor(opener: HTMLButtonElement) {
     if (
       foldTechniqueBusy
       || coreBusy
       || !isNativeFoldTechniqueFileAvailable()
     ) return
+    if (
+      foldTechniqueWorkspaceRef.current?.dirty
+      && !window.confirm(
+        appConfirmationText(locale, 'replaceFoldTechnique'),
+      )
+    ) return
+    foldTechniqueEditorOpenerRef.current = opener
+    foldTechniqueEditorDirtyRef.current = true
     setFoldTechniqueSaveFailed(false)
     setFoldTechniqueEditor({
       mode: 'create',
@@ -2788,8 +2819,10 @@ function App() {
     })
   }
 
-  function openCurrentFoldTechniqueEditor() {
+  function openCurrentFoldTechniqueEditor(opener: HTMLButtonElement) {
     if (foldTechniqueBusy || coreBusy || !foldTechniqueWorkspace) return
+    foldTechniqueEditorOpenerRef.current = opener
+    foldTechniqueEditorDirtyRef.current = false
     setFoldTechniqueSaveFailed(false)
     setFoldTechniqueEditor({
       mode: 'edit',
@@ -2799,20 +2832,34 @@ function App() {
   }
 
   function closeFoldTechniqueEditor() {
-    if (foldTechniqueBusy) return
+    if (foldTechniqueBusy || coreBusy) return
+    if (
+      foldTechniqueEditorDirtyRef.current
+      && !window.confirm(
+        appConfirmationText(locale, 'discardFoldTechniqueDraft'),
+      )
+    ) return
+    foldTechniqueEditorDirtyRef.current = false
+    foldTechniqueEditorOpenerRef.current = null
     setFoldTechniqueEditor(null)
     setFoldTechniqueSaveFailed(false)
-    requestAnimationFrame(() => foldTechniqueCreateButtonRef.current?.focus())
   }
 
-  async function importFoldTechniqueFile() {
+  async function importFoldTechniqueFile(opener: HTMLButtonElement) {
     if (
       foldTechniqueBusy
       || coreBusy
       || !isNativeFoldTechniqueFileAvailable()
     ) return
+    if (
+      foldTechniqueWorkspaceRef.current?.dirty
+      && !window.confirm(
+        appConfirmationText(locale, 'replaceFoldTechnique'),
+      )
+    ) return
+    foldTechniqueEditorOpenerRef.current = opener
     const requestId = nextFoldTechniqueRequestId(foldTechniqueRequestIdRef)
-    setFoldTechniqueBusy(true)
+    setFoldTechniqueOperationBusy(true)
     setFoldTechniqueSaveFailed(false)
     try {
       const response = await openFoldTechniqueFileV1(requestId, locale)
@@ -2825,10 +2872,11 @@ function App() {
         return
       }
       if (!response.document) throw new Error('missing admitted document')
-      setFoldTechniqueWorkspace({
+      replaceFoldTechniqueWorkspace({
         document: response.document,
         dirty: false,
       })
+      foldTechniqueEditorDirtyRef.current = false
       setFoldTechniqueEditor({
         mode: 'edit',
         initialDocument: response.document,
@@ -2843,7 +2891,7 @@ function App() {
       setCoreStatus(foldTechniqueFileErrorAppMessage(error))
     } finally {
       if (foldTechniqueRequestIdRef.current === requestId) {
-        setFoldTechniqueBusy(false)
+        setFoldTechniqueOperationBusy(false)
       }
     }
   }
@@ -2852,16 +2900,17 @@ function App() {
     document: FoldTechniqueFileDocumentV1,
   ) {
     const editor = foldTechniqueEditor
-    if (!editor || foldTechniqueBusy) return
+    if (!editor || foldTechniqueBusy || coreBusy) return
     if (editor.mode === 'edit') {
-      setFoldTechniqueWorkspace({ document, dirty: true })
+      replaceFoldTechniqueWorkspace({ document, dirty: true })
+      foldTechniqueEditorDirtyRef.current = false
+      foldTechniqueEditorOpenerRef.current = null
       setFoldTechniqueEditor(null)
       setFoldTechniqueSaveFailed(false)
       setCoreStatus(appMessage({
         ja: '折り技法の変更を保持しました。共有するには「別名保存」を実行してください。',
         en: 'Kept the fold-technique changes. Choose “Save as” to share them.',
       }))
-      requestAnimationFrame(() => foldTechniqueCreateButtonRef.current?.focus())
       return
     }
     await saveCreatedFoldTechnique(document)
@@ -2871,7 +2920,7 @@ function App() {
     document: FoldTechniqueFileDocumentV1,
   ) {
     const requestId = nextFoldTechniqueRequestId(foldTechniqueRequestIdRef)
-    setFoldTechniqueBusy(true)
+    setFoldTechniqueOperationBusy(true)
     setFoldTechniqueSaveFailed(false)
     try {
       const response = await saveFoldTechniqueFileAsV1(
@@ -2888,23 +2937,24 @@ function App() {
         return
       }
       if (!response.document) throw new Error('missing admitted document')
-      setFoldTechniqueWorkspace({
+      replaceFoldTechniqueWorkspace({
         document: response.document,
         dirty: false,
       })
+      foldTechniqueEditorDirtyRef.current = false
+      foldTechniqueEditorOpenerRef.current = null
       setFoldTechniqueEditor(null)
       setCoreStatus(appMessage({
         ja: '新しい折り技法を作成し、共有ファイルへ保存しました。',
         en: 'Created the fold technique and saved it to a shared file.',
       }))
-      requestAnimationFrame(() => foldTechniqueCreateButtonRef.current?.focus())
     } catch (error) {
       if (foldTechniqueRequestIdRef.current !== requestId) return
       setFoldTechniqueSaveFailed(true)
       setCoreStatus(foldTechniqueFileErrorAppMessage(error))
     } finally {
       if (foldTechniqueRequestIdRef.current === requestId) {
-        setFoldTechniqueBusy(false)
+        setFoldTechniqueOperationBusy(false)
       }
     }
   }
@@ -2918,7 +2968,7 @@ function App() {
       || !isNativeFoldTechniqueFileAvailable()
     ) return
     const requestId = nextFoldTechniqueRequestId(foldTechniqueRequestIdRef)
-    setFoldTechniqueBusy(true)
+    setFoldTechniqueOperationBusy(true)
     try {
       const response = await saveFoldTechniqueFileAsV1(
         requestId,
@@ -2934,7 +2984,7 @@ function App() {
         return
       }
       if (!response.document) throw new Error('missing admitted document')
-      setFoldTechniqueWorkspace({
+      replaceFoldTechniqueWorkspace({
         document: response.document,
         dirty: false,
       })
@@ -2947,7 +2997,7 @@ function App() {
       setCoreStatus(foldTechniqueFileErrorAppMessage(error))
     } finally {
       if (foldTechniqueRequestIdRef.current === requestId) {
-        setFoldTechniqueBusy(false)
+        setFoldTechniqueOperationBusy(false)
       }
     }
   }
@@ -5402,7 +5452,6 @@ function App() {
             )}
             <div className="property-actions fold-technique-actions">
               <button
-                ref={foldTechniqueCreateButtonRef}
                 type="button"
                 disabled={
                   coreBusy
@@ -5410,7 +5459,8 @@ function App() {
                   || !isNativeFoldTechniqueFileAvailable()
                 }
                 aria-haspopup="dialog"
-                onClick={openNewFoldTechniqueEditor}
+                onClick={(event) =>
+                  openNewFoldTechniqueEditor(event.currentTarget)}
               >
                 {text({ ja: '新規作成', en: 'Create' })}
               </button>
@@ -5422,7 +5472,8 @@ function App() {
                   || !isNativeFoldTechniqueFileAvailable()
                 }
                 aria-haspopup="dialog"
-                onClick={() => void importFoldTechniqueFile()}
+                onClick={(event) =>
+                  void importFoldTechniqueFile(event.currentTarget)}
               >
                 {text({ ja: 'ファイル取込', en: 'Import file' })}
               </button>
@@ -5434,7 +5485,8 @@ function App() {
                   || !foldTechniqueWorkspace
                 }
                 aria-haspopup="dialog"
-                onClick={openCurrentFoldTechniqueEditor}
+                onClick={(event) =>
+                  openCurrentFoldTechniqueEditor(event.currentTarget)}
               >
                 {text({ ja: '編集', en: 'Edit' })}
               </button>
@@ -5841,12 +5893,14 @@ function App() {
           mode={foldTechniqueEditor.mode}
           initialDocument={foldTechniqueEditor.initialDocument}
           techniqueIndex={foldTechniqueEditor.techniqueIndex}
-          busy={foldTechniqueBusy}
+          busy={foldTechniqueBusy || coreBusy}
           saveFailed={foldTechniqueSaveFailed}
           onConfirm={(document) => {
             void confirmFoldTechniqueEditor(document)
           }}
           onCancel={closeFoldTechniqueEditor}
+          onDirtyChange={noteFoldTechniqueEditorDirty}
+          returnFocusTo={foldTechniqueEditorOpenerRef.current}
         />
       )}
 

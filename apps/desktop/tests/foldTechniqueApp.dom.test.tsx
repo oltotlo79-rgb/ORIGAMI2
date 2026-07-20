@@ -51,6 +51,7 @@ import { themeStore } from '../src/lib/theme.ts'
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   fileMocks.open.mockReset()
   fileMocks.saveAs.mockReset()
   localeStore.setLocale('ja')
@@ -138,6 +139,194 @@ describe('App fold-technique file workflow', () => {
       (screen.getByLabelText('技法名（日本語）') as HTMLInputElement).value,
     ).toBe('保存前の編集内容')
     expect(within(section).getByText('user.local.techniques')).toBeTruthy()
+  })
+
+  it('requires confirmation before a dirty workspace is replaced', async () => {
+    fileMocks.saveAs.mockImplementation(async (
+      requestId: number,
+      _locale: string,
+      document: FoldTechniqueFileDocumentV1,
+    ) => ({ requestId, canceled: false, document }))
+    const imported = {
+      ...createInitialFoldTechniqueDocumentV1(),
+      package_id: 'user.imported.techniques',
+    }
+    fileMocks.open.mockImplementation(async (requestId: number) => ({
+      requestId,
+      canceled: false,
+      document: imported,
+    }))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<App />)
+    const section = techniqueSection()
+
+    fireEvent.click(within(section).getByRole('button', { name: '新規作成' }))
+    fireEvent.click(screen.getByRole('button', { name: '技法を作成' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', {
+        name: '説明テンプレートを編集',
+      })).toBeNull()
+    })
+    fireEvent.click(within(section).getByRole('button', { name: '編集' }))
+    fireEvent.change(screen.getByLabelText('技法名（日本語）'), {
+      target: { value: '未保存の折り技法' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '変更を確定' }))
+    await waitFor(() => {
+      expect(within(section).getByText('変更あり・別名保存が必要'))
+        .toBeTruthy()
+    })
+
+    fireEvent.click(within(section).getByRole('button', {
+      name: 'ファイル取込',
+    }))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0]?.[0]).toContain('未保存の折り技法')
+    expect(fileMocks.open).not.toHaveBeenCalled()
+    expect(within(section).getByText('変更あり・別名保存が必要')).toBeTruthy()
+
+    fireEvent.click(within(section).getByRole('button', { name: '新規作成' }))
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('dialog', {
+      name: '説明テンプレートを編集',
+    })).toBeNull()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(within(section).getByRole('button', {
+      name: 'ファイル取込',
+    }))
+    await waitFor(() => expect(fileMocks.open).toHaveBeenCalledTimes(1))
+    expect(within(section).getByText('user.imported.techniques')).toBeTruthy()
+    expect(screen.getByRole('dialog', {
+      name: '説明テンプレートを編集',
+    })).toBeTruthy()
+  })
+
+  it('protects create and invalid edit drafts and restores opener focus', async () => {
+    fileMocks.saveAs.mockImplementation(async (
+      requestId: number,
+      _locale: string,
+      document: FoldTechniqueFileDocumentV1,
+    ) => ({ requestId, canceled: false, document }))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<App />)
+    const section = techniqueSection()
+    const create = within(section).getByRole('button', { name: '新規作成' })
+    create.focus()
+    fireEvent.click(create)
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText('パッケージID'))
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('dialog', {
+      name: '説明テンプレートを編集',
+    })).toBeTruthy()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', {
+        name: '説明テンプレートを編集',
+      })).toBeNull()
+      expect(document.activeElement).toBe(create)
+    })
+
+    fireEvent.click(create)
+    fireEvent.click(screen.getByRole('button', { name: '技法を作成' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', {
+        name: '説明テンプレートを編集',
+      })).toBeNull()
+    })
+    const edit = within(section).getByRole('button', { name: '編集' })
+    edit.focus()
+    fireEvent.click(edit)
+    fireEvent.change(screen.getByLabelText('パッケージID'), {
+      target: { value: '../invalid' },
+    })
+    confirm.mockReturnValue(false)
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+    expect(screen.getByRole('dialog', {
+      name: '説明テンプレートを編集',
+    })).toBeTruthy()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', {
+        name: '説明テンプレートを編集',
+      })).toBeNull()
+      expect(document.activeElement).toBe(edit)
+    })
+  })
+
+  it('keeps the editor locked until an in-flight save settles', async () => {
+    let settleSave: (() => void) | undefined
+    fileMocks.saveAs.mockImplementation((
+      requestId: number,
+    ) => new Promise((resolve) => {
+      settleSave = () => resolve({
+        requestId,
+        canceled: true,
+        document: null,
+      })
+    }))
+    render(<App />)
+    const section = techniqueSection()
+    fireEvent.click(within(section).getByRole('button', { name: '新規作成' }))
+    fireEvent.click(screen.getByRole('button', { name: '技法を作成' }))
+
+    await waitFor(() => expect(fileMocks.saveAs).toHaveBeenCalledTimes(1))
+    const cancel = screen.getByRole('button', { name: 'キャンセル' })
+    expect((cancel as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', {
+      name: '処理中…',
+    }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(cancel)
+    expect(screen.getByRole('dialog', {
+      name: '説明テンプレートを編集',
+    })).toBeTruthy()
+
+    settleSave?.()
+    await waitFor(() => {
+      expect((screen.getByRole('button', {
+        name: 'キャンセル',
+      }) as HTMLButtonElement).disabled).toBe(false)
+    })
+    expect(screen.getByRole('dialog', {
+      name: '説明テンプレートを編集',
+    })).toBeTruthy()
+  })
+
+  it('restores focus to the asynchronous import opener', async () => {
+    const imported = createInitialFoldTechniqueDocumentV1()
+    fileMocks.open.mockImplementation(async (requestId: number) => ({
+      requestId,
+      canceled: false,
+      document: imported,
+    }))
+    render(<App />)
+    const section = techniqueSection()
+    const importButton = within(section).getByRole('button', {
+      name: 'ファイル取込',
+    })
+    importButton.focus()
+    fireEvent.click(importButton)
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', {
+        name: '説明テンプレートを編集',
+      })).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', {
+        name: '説明テンプレートを編集',
+      })).toBeNull()
+      expect(document.activeElement).toBe(importButton)
+    })
   })
 })
 

@@ -25,6 +25,14 @@ const APP_CONFIRMATIONS = Object.freeze({
     ja: '未保存の変更があります。保存せずにSVG展開図へ置き換えますか？',
     en: 'There are unsaved changes. Replace them with the SVG crease pattern?',
   },
+  replaceFoldTechnique: {
+    ja: '未保存の折り技法があります。保存せずに別の折り技法へ置き換えますか？',
+    en: 'There are unsaved fold-technique changes. Replace them without saving?',
+  },
+  discardFoldTechniqueDraft: {
+    ja: '保存していない折り技法の編集内容があります。破棄して閉じますか？',
+    en: 'There are unsaved fold-technique edits. Discard them and close the editor?',
+  },
 } satisfies Readonly<Record<string, LocalizedText>>)
 
 export type AppConfirmation = keyof typeof APP_CONFIRMATIONS

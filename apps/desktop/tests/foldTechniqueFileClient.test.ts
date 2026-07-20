@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   FoldTechniqueFileClientError,
+  encodeFoldTechniqueDocumentForSaveV1,
   foldTechniqueFileClientErrorCode,
   normalizeFoldTechniqueFileResponseV1,
 } from '../src/lib/foldTechniqueFileClient.ts'
@@ -98,6 +99,31 @@ test('maps only closed client error categories and never reflects raw text', () 
       new Error(String.raw`C:\Users\alice\secret.json`),
     ),
     'invalid_response',
+  )
+})
+
+test('encodes only a strictly admitted canonical document for native save', () => {
+  const candidate = JSON.parse(
+    JSON.stringify(createInitialFoldTechniqueDocumentV1()),
+  )
+  candidate.metadata.authors = ['Zulu', 'Alpha']
+  candidate.techniques[0].names.reverse()
+
+  const encoded = encodeFoldTechniqueDocumentForSaveV1(candidate)
+  const decoded = JSON.parse(encoded)
+  assert.deepEqual(decoded.metadata.authors, ['Alpha', 'Zulu'])
+  assert.deepEqual(
+    decoded.techniques[0].names.map(({ locale }: { locale: string }) => locale),
+    ['en', 'ja'],
+  )
+  assert.equal(encoded.includes('\n'), false)
+  assert.throws(
+    () => encodeFoldTechniqueDocumentForSaveV1({
+      ...candidate,
+      execute: 'hostile',
+    }),
+    (error) => error instanceof FoldTechniqueFileClientError
+      && error.code === 'invalid_document',
   )
 })
 

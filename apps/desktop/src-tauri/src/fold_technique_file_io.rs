@@ -10,7 +10,7 @@ use std::{
 
 use ori_instructions::{
     FoldTechniqueFileDocumentV1, FoldTechniqueFileError, MAX_FOLD_TECHNIQUE_FILE_BYTES,
-    read_fold_technique_file_v1, validate_fold_technique_file_v1, write_fold_technique_file_v1,
+    read_fold_technique_file_v1, write_fold_technique_file_v1,
 };
 use serde::Serialize;
 use tauri::AppHandle;
@@ -169,19 +169,20 @@ pub(super) async fn save_fold_technique_file_as(
     state: tauri::State<'_, FoldTechniqueFileIoState>,
     request_id: u32,
     locale: String,
-    document: FoldTechniqueFileDocumentV1,
+    document_json: String,
 ) -> Result<SaveFoldTechniqueFileResponse, String> {
     validate_request_id(request_id)?;
+    if document_json.len() > MAX_FOLD_TECHNIQUE_FILE_BYTES {
+        return Err(ERROR_TOO_LARGE.to_owned());
+    }
     let locale = DialogLocale::parse(&locale)?;
     let _permit = state.try_acquire()?;
 
-    // Native ori-instructions validation is the trust boundary for every
-    // caller-created document. Serialization includes an independent strict
-    // read-back before the file picker is shown.
-    let file =
-        validate_fold_technique_file_v1(document).map_err(map_fold_technique_validation_error)?;
-    let bytes = write_fold_technique_file_v1(&file).map_err(map_fold_technique_validation_error)?;
-    let canonical_document = file.document().clone();
+    // IPC admits one bounded string rather than a typed document graph.
+    // The byte ceiling therefore runs before serde allocates nested vectors,
+    // and the strict reader enforces structural depth, closed fields, fixed
+    // collection limits, and semantic consistency before the picker appears.
+    let (bytes, canonical_document) = prepare_fold_technique_save_json(&document_json)?;
     let suggested_name = suggested_file_name(&canonical_document);
     let selected = app
         .dialog()
@@ -215,6 +216,18 @@ pub(super) async fn save_fold_technique_file_as(
         canceled: false,
         document: Some(saved_document),
     })
+}
+
+fn prepare_fold_technique_save_json(
+    document_json: &str,
+) -> Result<(Vec<u8>, FoldTechniqueFileDocumentV1), String> {
+    if document_json.len() > MAX_FOLD_TECHNIQUE_FILE_BYTES {
+        return Err(ERROR_TOO_LARGE.to_owned());
+    }
+    let file = read_fold_technique_file_v1(document_json.as_bytes())
+        .map_err(map_fold_technique_validation_error)?;
+    let bytes = write_fold_technique_file_v1(&file).map_err(map_fold_technique_validation_error)?;
+    Ok((bytes, file.document().clone()))
 }
 
 fn validate_request_id(request_id: u32) -> Result<(), String> {
@@ -491,6 +504,55 @@ mod tests {
         assert_eq!(
             load_fold_technique_document(&path).expect("read saved document"),
             document
+        );
+    }
+
+    #[test]
+    fn save_json_checks_exact_byte_boundary_before_strict_reading() {
+        let document_json = serde_json::to_string(&fixture_document()).expect("serialize fixture");
+        assert!(document_json.len() < MAX_FOLD_TECHNIQUE_FILE_BYTES);
+        let exact = format!(
+            "{document_json}{}",
+            " ".repeat(MAX_FOLD_TECHNIQUE_FILE_BYTES - document_json.len())
+        );
+
+        let (canonical, document) =
+            prepare_fold_technique_save_json(&exact).expect("exact limit is admitted");
+        assert_eq!(document, fixture_document());
+        assert!(canonical.len() < MAX_FOLD_TECHNIQUE_FILE_BYTES);
+
+        let over_limit = format!("{exact} ");
+        assert_eq!(
+            prepare_fold_technique_save_json(&over_limit),
+            Err(ERROR_TOO_LARGE.to_owned())
+        );
+    }
+
+    #[test]
+    fn save_json_rejects_excessive_structural_depth_before_deserialization() {
+        let depth = 512;
+        let deeply_nested = format!("{}null{}", "[".repeat(depth), "]".repeat(depth));
+        assert!(deeply_nested.len() < MAX_FOLD_TECHNIQUE_FILE_BYTES);
+        assert_eq!(
+            prepare_fold_technique_save_json(&deeply_nested),
+            Err(ERROR_INVALID_DOCUMENT.to_owned())
+        );
+    }
+
+    #[test]
+    fn save_json_rejects_large_collections_within_the_byte_ceiling() {
+        let mut document = serde_json::to_value(fixture_document()).expect("encode fixture value");
+        document["metadata"]["authors"] = json!(
+            (0..10_000)
+                .map(|index| format!("author-{index}"))
+                .collect::<Vec<_>>()
+        );
+        let large_collection =
+            serde_json::to_string(&document).expect("serialize large collection");
+        assert!(large_collection.len() < MAX_FOLD_TECHNIQUE_FILE_BYTES);
+        assert_eq!(
+            prepare_fold_technique_save_json(&large_collection),
+            Err(ERROR_INVALID_DOCUMENT.to_owned())
         );
     }
 

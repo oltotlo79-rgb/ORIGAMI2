@@ -609,11 +609,24 @@ export function changeFoldTechniqueOperationActionV1(
   actionKind: FoldTechniqueActionKindV1,
 ): FoldTechniqueOperationV1 {
   if (operation.action.kind === actionKind) return operation
+  const previousPolicy = actionPolicy(operation.action.kind)
   const policy = actionPolicy(actionKind)
+  const requiredCapabilities = Array.from(new Set(
+    operation.required_capabilities.filter(
+      (capability) => capability !== previousPolicy.requiredCapability,
+    ),
+  ))
+  if (!requiredCapabilities.includes(policy.requiredCapability)) {
+    requiredCapabilities.push(policy.requiredCapability)
+  }
+  requiredCapabilities.sort(
+    (left, right) =>
+      (CAPABILITY_ORDER.get(left) ?? 0) - (CAPABILITY_ORDER.get(right) ?? 0),
+  )
   return freezeDeep({
     ...operation,
     action: initialAction(actionKind),
-    required_capabilities: [policy.requiredCapability],
+    required_capabilities: requiredCapabilities,
     execution_support: policy.executionSupport,
   })
 }

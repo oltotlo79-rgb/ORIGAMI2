@@ -70,19 +70,37 @@ export async function saveFoldTechniqueFileAsV1(
   document: unknown,
 ): Promise<FoldTechniqueFileResponseV1> {
   validateRequest(requestId, locale)
-  const admitted = admitFoldTechniqueDocumentV1(document)
-  if (!admitted) throw new FoldTechniqueFileClientError('invalid_document')
+  const documentJson = encodeFoldTechniqueDocumentForSaveV1(document)
   ensureNativeAvailable()
   try {
     const response = await invoke<unknown>('save_fold_technique_file_as', {
       requestId,
       locale,
-      document: admitted,
+      documentJson,
     })
     return normalizeFoldTechniqueFileResponseV1(response, requestId)
   } catch (error) {
     throw mapNativeError(error)
   }
+}
+
+/**
+ * Produces the compact canonical JSON accepted by the native save boundary.
+ *
+ * Sending one bounded string keeps native IPC deserialization from allocating
+ * an attacker-controlled typed document graph before the native byte/depth
+ * checks and strict reader run.
+ */
+export function encodeFoldTechniqueDocumentForSaveV1(
+  document: unknown,
+): string {
+  const admitted = admitFoldTechniqueDocumentV1(document)
+  if (!admitted) throw new FoldTechniqueFileClientError('invalid_document')
+  const encoded = JSON.stringify(admitted)
+  if (typeof encoded !== 'string') {
+    throw new FoldTechniqueFileClientError('invalid_document')
+  }
+  return encoded
 }
 
 export function normalizeFoldTechniqueFileResponseV1(

@@ -150,6 +150,35 @@ test('unsupported physical actions cannot be downgraded or mislabeled', () => {
   })
 })
 
+test('changing an action preserves non-action capabilities canonically', () => {
+  const operation = clone(createInitialFoldTechniqueOperationV1(1))
+  operation.required_capabilities = [
+    'manual_pose_registration_v1',
+    'human_interpretation_v1',
+    'instruction_timeline_v1',
+    'manual_pose_registration_v1',
+    'inside_reverse_fold_motion_v1',
+  ]
+  const changed = changeFoldTechniqueOperationActionV1(
+    operation,
+    'inside_reverse_fold',
+  )
+
+  assert.deepEqual(changed.required_capabilities, [
+    'instruction_timeline_v1',
+    'manual_pose_registration_v1',
+    'inside_reverse_fold_motion_v1',
+  ])
+  assert.deepEqual(changed.execution_support, {
+    status: 'unsupported_physical_operation',
+    operation: 'inside_reverse_fold_motion_v1',
+  })
+
+  const document = clone(createInitialFoldTechniqueDocumentV1())
+  document.techniques[0].operations[0] = clone(changed)
+  assert.ok(admitFoldTechniqueDocumentV1(document))
+})
+
 test('basic edits canonically preserve V1 parameters, preconditions, bindings, locales, and capabilities', () => {
   const candidate = clone(createInitialFoldTechniqueDocumentV1())
   const technique = candidate.techniques[0]

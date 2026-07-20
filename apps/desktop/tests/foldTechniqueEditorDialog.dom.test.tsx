@@ -20,6 +20,7 @@ import { localeStore } from '../src/lib/i18n.ts'
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   localeStore.setLocale('ja')
   localeStore.dispose()
   document.body.replaceChildren()
@@ -116,6 +117,34 @@ describe('FoldTechniqueEditorDialog', () => {
     expect(after?.operations[0]?.required_capabilities).toEqual([
       'human_interpretation_v1',
       'instruction_timeline_v1',
+    ])
+  })
+
+  it('preserves hidden timeline and pose capabilities when changing an action', () => {
+    const initial = advancedDocument()
+    initial.techniques[0].operations[0].required_capabilities.push(
+      'manual_pose_registration_v1',
+    )
+    const onConfirm = vi.fn()
+    renderDialog({
+      mode: 'edit',
+      initialDocument: initial,
+      onConfirm,
+    })
+
+    fireEvent.change(screen.getAllByLabelText('動作区分')[0], {
+      target: { value: 'inside_reverse_fold' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '変更を確定' }))
+
+    const confirmed =
+      onConfirm.mock.calls[0]?.[0] as FoldTechniqueFileDocumentV1
+    expect(
+      confirmed.techniques[0]?.operations[0]?.required_capabilities,
+    ).toEqual([
+      'instruction_timeline_v1',
+      'manual_pose_registration_v1',
+      'inside_reverse_fold_motion_v1',
     ])
   })
 
@@ -228,6 +257,67 @@ describe('FoldTechniqueEditorDialog', () => {
     })
   })
 
+  it('keeps multi-technique selection stable while editable IDs are duplicated', () => {
+    localeStore.setLocale('en')
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const initial = clone(createInitialFoldTechniqueDocumentV1())
+    const second = clone(initial.techniques[0])
+    second.id = 'user.second-technique'
+    second.names = [
+      { locale: 'en', text: 'Second folding technique' },
+      { locale: 'ja', text: '二つ目の折り技法' },
+    ]
+    initial.techniques.push(second)
+    renderDialog({ mode: 'edit', initialDocument: initial })
+
+    fireEvent.change(screen.getByLabelText('Technique ID'), {
+      target: { value: 'user.second-technique' },
+    })
+    const selection = screen.getByLabelText(
+      'Technique to edit',
+    ) as HTMLSelectElement
+    expect(selection.options).toHaveLength(2)
+    fireEvent.change(selection, { target: { value: '1' } })
+    expect((screen.getByLabelText('Technique ID') as HTMLInputElement).value)
+      .toBe('user.second-technique')
+    fireEvent.change(screen.getByLabelText('Technique name (English)'), {
+      target: { value: 'Second remains isolated' },
+    })
+    fireEvent.change(selection, { target: { value: '0' } })
+    expect(
+      (screen.getByLabelText('Technique name (English)') as HTMLInputElement)
+        .value,
+    ).toBe('New folding technique')
+    expect(consoleError.mock.calls.flat().join(' ')).not.toMatch(
+      /same key|duplicate key/u,
+    )
+  })
+
+  it('reports create and invalid edit drafts as unsaved until unmount', async () => {
+    const editDirty = vi.fn()
+    const rendered = renderDialog({
+      mode: 'edit',
+      onDirtyChange: editDirty,
+    })
+    await waitFor(() => expect(editDirty).toHaveBeenLastCalledWith(false))
+
+    fireEvent.change(screen.getByLabelText('パッケージID'), {
+      target: { value: '../invalid' },
+    })
+    await waitFor(() => expect(editDirty).toHaveBeenLastCalledWith(true))
+    rendered.unmount()
+    expect(editDirty).toHaveBeenLastCalledWith(false)
+
+    const createDirty = vi.fn()
+    const created = renderDialog({
+      mode: 'create',
+      onDirtyChange: createDirty,
+    })
+    await waitFor(() => expect(createDirty).toHaveBeenLastCalledWith(true))
+    created.unmount()
+    expect(createDirty).toHaveBeenLastCalledWith(false)
+  })
+
   it('rejects hostile initial values without invoking accessors', () => {
     const hostile = clone(createInitialFoldTechniqueDocumentV1())
     let calls = 0
@@ -320,6 +410,8 @@ function dialog(overrides: Partial<FoldTechniqueEditorDialogProps> = {}) {
       saveFailed={overrides.saveFailed}
       onConfirm={overrides.onConfirm ?? vi.fn()}
       onCancel={overrides.onCancel ?? vi.fn()}
+      onDirtyChange={overrides.onDirtyChange}
+      returnFocusTo={overrides.returnFocusTo}
     />
   )
 }

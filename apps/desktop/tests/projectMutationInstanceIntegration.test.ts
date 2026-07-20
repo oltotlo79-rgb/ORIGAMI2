@@ -19,6 +19,7 @@ const mutationContracts = [
     'append_named_technique_instruction_steps',
   ],
   ['addVertex', 'add_vertex'],
+  ['addConnectedVertex', 'add_connected_vertex'],
   ['addEdge', 'add_edge'],
   ['moveVertex', 'move_vertex'],
   ['removeVertex', 'remove_vertex'],
@@ -46,9 +47,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 31)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 31)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 31)
+  assert.equal(mutationContracts.length, 32)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 32)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 32)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

@@ -47,6 +47,7 @@ import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import {
   addEdge,
   addEdgeOrientationConstraint,
+  addConnectedVertex,
   addVertex,
   appendNamedTechniqueInstructionSteps,
   analyzeGeometricConstraints,
@@ -2415,15 +2416,23 @@ function App() {
         currentUnit,
       )
       const angleDegrees = Number(form.get('polar_angle_degrees'))
+      const edgeKind = form.get('polar_edge_kind')
       if (
         length === null
         || length <= 0
         || !Number.isFinite(angleDegrees)
         || Math.abs(angleDegrees) > 360_000
+        || (
+          edgeKind !== 'mountain'
+          && edgeKind !== 'valley'
+          && edgeKind !== 'auxiliary'
+          && edgeKind !== 'cut'
+        )
+        || (edgeKind === 'cut' && !current.cutting_allowed)
       ) {
         setCoreStatus(appMessage({
-          ja: '正の有限な長さと有限な角度を入力してください。',
-          en: 'Enter a positive finite length and a finite angle.',
+          ja: '正の有限な長さ、有限な角度、利用可能な線種を入力してください。',
+          en: 'Enter a positive finite length, a finite angle, and an available line type.',
         }))
         return
       }
@@ -2446,12 +2455,14 @@ function App() {
         revision,
         projectInstanceId,
       ) => {
-        const snapshot = await addVertex(
+        const snapshot = await addConnectedVertex(
           projectId,
           revision,
           projectInstanceId,
+          selectedVertex.id,
           x,
           y,
+          edgeKind,
         )
         result.snapshot = snapshot
         return snapshot
@@ -2465,8 +2476,8 @@ function App() {
       setSelectedVertexId(added?.id ?? null)
       setActiveTool('select')
       setCoreStatus(appMessage({
-        ja: '指定した長さと角度から終点を追加しました。',
-        en: 'Added an endpoint from the specified length and angle.',
+        ja: '指定した長さと角度から終点と線を追加しました。',
+        en: 'Added an endpoint and line from the specified length and angle.',
       }))
       return
     }
@@ -5152,6 +5163,33 @@ function App() {
                         })}
                       />
                     </label>
+                    <label className="field">
+                      {text({ ja: '線種', en: 'Line type' })}
+                      <select
+                        name="polar_edge_kind"
+                        defaultValue="mountain"
+                        disabled={coreBusy || selectedVertexLocked}
+                        aria-label={text({
+                          ja: '長さ・角度指定作図の線種',
+                          en: 'Line type for length and angle drawing',
+                        })}
+                      >
+                        <option value="mountain">
+                          {text({ ja: '山折り', en: 'Mountain fold' })}
+                        </option>
+                        <option value="valley">
+                          {text({ ja: '谷折り', en: 'Valley fold' })}
+                        </option>
+                        <option value="auxiliary">
+                          {text({ ja: '補助線', en: 'Auxiliary line' })}
+                        </option>
+                        {nativeSnapshot?.cutting_allowed && (
+                          <option value="cut">
+                            {text({ ja: '切断線', en: 'Cut' })}
+                          </option>
+                        )}
+                      </select>
+                    </label>
                     <div className="property-actions">
                       <button
                         type="submit"
@@ -5160,8 +5198,8 @@ function App() {
                         disabled={coreBusy || selectedVertexLocked}
                       >
                         {text({
-                          ja: '長さと角度から終点を追加',
-                          en: 'Add endpoint by length and angle',
+                          ja: '長さと角度から線を作図',
+                          en: 'Draw line by length and angle',
                         })}
                       </button>
                     </div>

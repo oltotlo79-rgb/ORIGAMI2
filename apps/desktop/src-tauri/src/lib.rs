@@ -1880,6 +1880,34 @@ fn add_edge(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn add_connected_vertex(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    start: VertexId,
+    x: f64,
+    y: f64,
+    kind: EdgeKind,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddConnectedVertex {
+            vertex_id: VertexId::new(),
+            position: Point2::new(x, y),
+            edge_id: EdgeId::new(),
+            start,
+            kind,
+        },
+    )
+}
+
+#[tauri::command]
 fn remove_edge(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -5577,6 +5605,7 @@ pub fn run() {
             move_vertex,
             remove_vertex,
             add_edge,
+            add_connected_vertex,
             remove_edge,
             create_project_layer,
             rename_project_layer,

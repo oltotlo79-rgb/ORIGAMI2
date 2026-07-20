@@ -927,6 +927,26 @@ export function addEdge(
   })
 }
 
+export function addConnectedVertex(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  start: string,
+  x: number,
+  y: number,
+  kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
+) {
+  return invoke<ProjectSnapshot>('add_connected_vertex', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    start,
+    x,
+    y,
+    kind,
+  })
+}
+
 export function moveVertex(
   expectedProjectId: string,
   expectedRevision: number,

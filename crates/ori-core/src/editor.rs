@@ -78,6 +78,17 @@ pub enum Command {
         end: VertexId,
         kind: EdgeKind,
     },
+    AddConnectedVertex {
+        vertex_id: VertexId,
+        position: Point2,
+        edge_id: EdgeId,
+        start: VertexId,
+        kind: EdgeKind,
+    },
+    RemoveConnectedVertex {
+        vertex_id: VertexId,
+        edge_id: EdgeId,
+    },
     RemoveEdge {
         id: EdgeId,
     },
@@ -1820,6 +1831,77 @@ impl EditorState {
                 });
                 Ok(Inverse::Command(Command::RemoveEdge { id }))
             }
+            Command::AddConnectedVertex {
+                vertex_id,
+                position,
+                edge_id,
+                start,
+                kind,
+            } => {
+                if kind == EdgeKind::Boundary {
+                    return Err(CommandError::BoundaryEdgeRequiresSheetOperation(edge_id));
+                }
+                if kind == EdgeKind::Cut && !self.paper.cutting_allowed {
+                    return Err(CommandError::CuttingDisabled);
+                }
+                if self.vertex_index(vertex_id).is_some() {
+                    return Err(CommandError::VertexAlreadyExists(vertex_id));
+                }
+                if self.edge_index(edge_id).is_some() {
+                    return Err(CommandError::EdgeAlreadyExists(edge_id));
+                }
+                if self.vertex_index(start).is_none() {
+                    return Err(CommandError::VertexNotFound(start));
+                }
+                self.pattern.vertices.push(Vertex {
+                    id: vertex_id,
+                    position,
+                });
+                self.pattern.edges.push(Edge {
+                    id: edge_id,
+                    start,
+                    end: vertex_id,
+                    kind,
+                });
+                Ok(Inverse::Command(Command::RemoveConnectedVertex {
+                    vertex_id,
+                    edge_id,
+                }))
+            }
+            Command::RemoveConnectedVertex { vertex_id, edge_id } => {
+                let edge_index = self
+                    .edge_index(edge_id)
+                    .ok_or(CommandError::EdgeNotFound(edge_id))?;
+                let edge = self.pattern.edges[edge_index].clone();
+                if edge.end != vertex_id {
+                    return Err(CommandError::VertexHasConnectedEdge {
+                        vertex: vertex_id,
+                        edge: edge_id,
+                    });
+                }
+                if let Some(other) = self.pattern.edges.iter().find(|candidate| {
+                    candidate.id != edge_id
+                        && (candidate.start == vertex_id || candidate.end == vertex_id)
+                }) {
+                    return Err(CommandError::VertexHasConnectedEdge {
+                        vertex: vertex_id,
+                        edge: other.id,
+                    });
+                }
+                let vertex_index = self
+                    .vertex_index(vertex_id)
+                    .ok_or(CommandError::VertexNotFound(vertex_id))?;
+                let vertex = self.pattern.vertices[vertex_index].clone();
+                self.pattern.edges.remove(edge_index);
+                self.pattern.vertices.remove(vertex_index);
+                Ok(Inverse::Command(Command::AddConnectedVertex {
+                    vertex_id,
+                    position: vertex.position,
+                    edge_id,
+                    start: edge.start,
+                    kind: edge.kind,
+                }))
+            }
             Command::RemoveEdge { id } => {
                 let index = self.edge_index(id).ok_or(CommandError::EdgeNotFound(id))?;
                 if self.pattern.edges[index].kind == EdgeKind::Boundary {
@@ -2287,7 +2369,9 @@ impl EditorState {
     /// also affect every incident edge layer when moved or removed.
     fn ensure_project_layers_allow(&self, command: &Command) -> Result<(), CommandError> {
         match command {
-            Command::AddVertex { .. } | Command::AddEdge { .. } => {
+            Command::AddVertex { .. }
+            | Command::AddEdge { .. }
+            | Command::AddConnectedVertex { .. } => {
                 self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID)
             }
             Command::MoveVertex { id, .. } | Command::RemoveVertex { id } => {
@@ -2311,6 +2395,7 @@ impl EditorState {
                 }
             }
             Command::RemoveEdge { id }
+            | Command::RemoveConnectedVertex { edge_id: id, .. }
             | Command::SplitEdge { edge: id, .. }
             | Command::SplitBoundaryEdge { edge: id, .. } => self.ensure_edge_layer_unlocked(*id),
             Command::ConnectEdgeIntersection {
@@ -2570,6 +2655,10 @@ impl EditorState {
                 collect_incident_constraint_edges(&self.pattern, *id, &mut targets.edges);
             }
             Command::RemoveEdge { id }
+            | Command::RemoveConnectedVertex {
+                vertex_id: _,
+                edge_id: id,
+            }
             | Command::SplitEdge { edge: id, .. }
             | Command::SplitBoundaryEdge { edge: id, .. } => {
                 targets.edges.insert(*id);
@@ -2613,6 +2702,7 @@ impl EditorState {
             }
             Command::AddVertex { .. }
             | Command::AddEdge { .. }
+            | Command::AddConnectedVertex { .. }
             | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
             | Command::SetLengthDisplayUnit { .. }
@@ -4492,6 +4582,7 @@ impl Command {
     fn geometric_resource_growth(&self) -> Result<Option<(usize, usize)>, CommandError> {
         let growth = match self {
             Self::AddVertex { .. } => (1, 0),
+            Self::AddConnectedVertex { .. } => (1, 1),
             Self::AddEdge { .. } | Self::ConnectTJunction { .. } => (0, 1),
             Self::SplitEdge { .. } | Self::SplitBoundaryEdge { .. } => (1, 1),
             Self::ConnectEdgeIntersection { .. } => (1, 2),
@@ -4514,6 +4605,7 @@ impl Command {
             }
             Self::MoveVertex { .. }
             | Self::RemoveVertex { .. }
+            | Self::RemoveConnectedVertex { .. }
             | Self::RemoveEdge { .. }
             | Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
@@ -4550,6 +4642,8 @@ impl Command {
             | Self::MoveVertex { .. }
             | Self::RemoveVertex { .. }
             | Self::AddEdge { .. }
+            | Self::AddConnectedVertex { .. }
+            | Self::RemoveConnectedVertex { .. }
             | Self::RemoveEdge { .. }
             | Self::ResizeRectangularPaper { .. }
             | Self::SplitEdge { .. }
@@ -4592,6 +4686,25 @@ impl Command {
             Self::AddEdge { id, start, end, .. } => Changes {
                 vertices: vec![start, end],
                 edges: vec![id],
+                settings: false,
+                instructions: false,
+                constraints: false,
+            },
+            Self::AddConnectedVertex {
+                vertex_id,
+                edge_id,
+                start,
+                ..
+            } => Changes {
+                vertices: vec![start, vertex_id],
+                edges: vec![edge_id],
+                settings: false,
+                instructions: false,
+                constraints: false,
+            },
+            Self::RemoveConnectedVertex { vertex_id, edge_id } => Changes {
+                vertices: vec![vertex_id],
+                edges: vec![edge_id],
                 settings: false,
                 instructions: false,
                 constraints: false,
@@ -6211,6 +6324,89 @@ mod tests {
         assert!(editor.pattern().edges.is_empty());
         editor.redo(4).expect("redo edge");
         assert_eq!(editor.pattern().edges[0].id, edge);
+    }
+
+    #[test]
+    fn connected_vertex_and_edge_are_one_atomic_undoable_command() {
+        let start = VertexId::new();
+        let endpoint = VertexId::new();
+        let edge = EdgeId::new();
+        let position = Point2::new(3.0, 4.0);
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: vec![Vertex {
+                id: start,
+                position: Point2::new(0.0, 0.0),
+            }],
+            edges: Vec::new(),
+        });
+
+        editor
+            .execute(
+                0,
+                Command::AddConnectedVertex {
+                    vertex_id: endpoint,
+                    position,
+                    edge_id: edge,
+                    start,
+                    kind: EdgeKind::Valley,
+                },
+            )
+            .expect("add endpoint and edge atomically");
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(editor.pattern().vertices.len(), 2);
+        assert_eq!(editor.pattern().vertices[1].id, endpoint);
+        assert_eq!(editor.pattern().vertices[1].position, position);
+        assert_eq!(editor.pattern().edges.len(), 1);
+        assert_eq!(
+            editor.pattern().edges[0],
+            Edge {
+                id: edge,
+                start,
+                end: endpoint,
+                kind: EdgeKind::Valley,
+            }
+        );
+
+        editor.undo(1).expect("one undo removes both records");
+        assert_eq!(editor.pattern().vertices.len(), 1);
+        assert!(editor.pattern().edges.is_empty());
+        editor.redo(2).expect("one redo restores both records");
+        assert_eq!(editor.pattern().vertices[1].id, endpoint);
+        assert_eq!(editor.pattern().edges[0].id, edge);
+    }
+
+    #[test]
+    fn connected_vertex_failure_preserves_the_entire_editor() {
+        let start = VertexId::new();
+        let existing_edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![Vertex {
+                id: start,
+                position: Point2::new(0.0, 0.0),
+            }],
+            edges: vec![Edge {
+                id: existing_edge,
+                start,
+                end: VertexId::new(),
+                kind: EdgeKind::Mountain,
+            }],
+        };
+        let mut editor = EditorState::new(pattern);
+        let before = editor_state_snapshot(&editor);
+        assert!(matches!(
+            editor.execute(
+                0,
+                Command::AddConnectedVertex {
+                    vertex_id: VertexId::new(),
+                    position: Point2::new(5.0, 0.0),
+                    edge_id: existing_edge,
+                    start,
+                    kind: EdgeKind::Mountain,
+                },
+            ),
+            Err(CommandError::EdgeAlreadyExists(id)) if id == existing_edge
+        ));
+        assert_eq!(editor_state_snapshot(&editor), before);
     }
 
     #[test]

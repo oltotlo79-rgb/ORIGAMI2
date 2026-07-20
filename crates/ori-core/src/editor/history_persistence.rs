@@ -137,6 +137,17 @@ enum CommandV1 {
         end: VertexId,
         edge_kind: EdgeKind,
     },
+    AddConnectedVertex {
+        vertex_id: VertexId,
+        position: Point2,
+        edge_id: EdgeId,
+        start: VertexId,
+        edge_kind: EdgeKind,
+    },
+    RemoveConnectedVertex {
+        vertex_id: VertexId,
+        edge_id: EdgeId,
+    },
     RemoveEdge {
         id: EdgeId,
     },
@@ -449,6 +460,23 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             end: *end,
             edge_kind: *kind,
         },
+        Command::AddConnectedVertex {
+            vertex_id,
+            position,
+            edge_id,
+            start,
+            kind,
+        } => CommandV1::AddConnectedVertex {
+            vertex_id: *vertex_id,
+            position: *position,
+            edge_id: *edge_id,
+            start: *start,
+            edge_kind: *kind,
+        },
+        Command::RemoveConnectedVertex { vertex_id, edge_id } => CommandV1::RemoveConnectedVertex {
+            vertex_id: *vertex_id,
+            edge_id: *edge_id,
+        },
         Command::RemoveEdge { id } => CommandV1::RemoveEdge { id: *id },
         Command::SetCuttingAllowed { allowed } => {
             CommandV1::SetCuttingAllowed { allowed: *allowed }
@@ -619,6 +647,22 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             end,
             kind: edge_kind,
         },
+        CommandV1::AddConnectedVertex {
+            vertex_id,
+            position,
+            edge_id,
+            start,
+            edge_kind,
+        } => Command::AddConnectedVertex {
+            vertex_id,
+            position,
+            edge_id,
+            start,
+            kind: edge_kind,
+        },
+        CommandV1::RemoveConnectedVertex { vertex_id, edge_id } => {
+            Command::RemoveConnectedVertex { vertex_id, edge_id }
+        }
         CommandV1::RemoveEdge { id } => Command::RemoveEdge { id },
         CommandV1::SetCuttingAllowed { allowed } => Command::SetCuttingAllowed { allowed },
         CommandV1::UpdatePaperProperties {
@@ -1305,7 +1349,9 @@ fn validate_constraint_finite(
 
 fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1> {
     match command {
-        Command::AddVertex { position, .. } | Command::MoveVertex { position, .. } => {
+        Command::AddVertex { position, .. }
+        | Command::MoveVertex { position, .. }
+        | Command::AddConnectedVertex { position, .. } => {
             if !finite_point(*position) {
                 return Err(EditorHistoryErrorV1::NonFiniteNumber);
             }
@@ -1354,6 +1400,7 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         }
         Command::RemoveVertex { .. }
         | Command::AddEdge { .. }
+        | Command::RemoveConnectedVertex { .. }
         | Command::RemoveEdge { .. }
         | Command::SetCuttingAllowed { .. }
         | Command::SetLengthDisplayUnit { .. }
@@ -2104,6 +2151,17 @@ mod tests {
                 end: other_vertex,
                 kind: EdgeKind::Mountain,
             },
+            Command::AddConnectedVertex {
+                vertex_id: other_vertex,
+                position: Point2::new(4.0, 5.0),
+                edge_id: other_edge,
+                start: vertex,
+                kind: EdgeKind::Valley,
+            },
+            Command::RemoveConnectedVertex {
+                vertex_id: other_vertex,
+                edge_id: other_edge,
+            },
             Command::RemoveEdge { id: edge },
             Command::SetCuttingAllowed { allowed: true },
             Command::UpdatePaperProperties {
@@ -2229,6 +2287,8 @@ mod tests {
             "move_vertex",
             "remove_vertex",
             "add_edge",
+            "add_connected_vertex",
+            "remove_connected_vertex",
             "remove_edge",
             "set_cutting_allowed",
             "update_paper_properties",

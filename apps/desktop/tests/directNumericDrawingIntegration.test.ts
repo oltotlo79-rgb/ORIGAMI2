@@ -31,14 +31,15 @@ test('direct coordinate creation uses the guarded native edit and selects only i
 test('a selected vertex can create an endpoint from an explicit length and angle', () => {
   assert.match(appSource, /name="polar_length_display"/)
   assert.match(appSource, /name="polar_angle_degrees"/)
+  assert.match(appSource, /name="polar_edge_kind"/)
   assert.match(appSource, /value="polar_endpoint"/)
-  assert.match(appSource, /Add endpoint by length and angle/)
+  assert.match(appSource, /Draw line by length and angle/)
   assert.match(
     appSource,
     /form\.get\('vertex_action'\) === 'polar_endpoint'[\s\S]*?Math\.cos[\s\S]*?Math\.sin/,
   )
   assert.match(
     appSource,
-    /polar_endpoint[\s\S]*?await runNativeEdit[\s\S]*?await addVertex/,
+    /polar_endpoint[\s\S]*?await runNativeEdit[\s\S]*?await addConnectedVertex/,
   )
 })

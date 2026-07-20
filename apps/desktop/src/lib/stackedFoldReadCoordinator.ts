@@ -28,7 +28,7 @@ export type StackedFoldReadCoordinatorState =
       status: 'failed'
       generation: number
       request: StackedFoldReadRequest
-      reason: 'native_failure' | 'invalid_response' | 'cycle_nonclosing' | 'cycle_path_uncertified' | 'cycle_path_unsupported' | 'cycle_path_resource_limit' | 'cycle_path_collision'
+      reason: 'native_failure' | 'invalid_response' | 'cycle_nonclosing' | 'cycle_path_uncertified' | 'cycle_path_unsupported' | 'cycle_path_resource_limit' | 'cycle_path_no_certified_path' | 'cycle_path_collision'
     }>
 
 export type StackedFoldReadCoordinatorResult =
@@ -37,7 +37,7 @@ export type StackedFoldReadCoordinatorResult =
       status: 'cancelled'
       reason: 'superseded' | 'invalidated' | 'disposed' | 'stale_authority'
     }>
-  | Readonly<{ status: 'failed'; reason: 'native_failure' | 'invalid_response' | 'cycle_nonclosing' | 'cycle_path_uncertified' | 'cycle_path_unsupported' | 'cycle_path_resource_limit' | 'cycle_path_collision' }>
+  | Readonly<{ status: 'failed'; reason: 'native_failure' | 'invalid_response' | 'cycle_nonclosing' | 'cycle_path_uncertified' | 'cycle_path_unsupported' | 'cycle_path_resource_limit' | 'cycle_path_no_certified_path' | 'cycle_path_collision' }>
 
 export type StackedFoldReadCoordinator = Readonly<{
   read(request: StackedFoldReadRequest): Promise<StackedFoldReadCoordinatorResult>
@@ -233,6 +233,7 @@ export function createStackedFoldReadCoordinator(
                 error.reason === 'cycle_path_uncertified' ||
                 error.reason === 'cycle_path_unsupported' ||
                 error.reason === 'cycle_path_resource_limit' ||
+                error.reason === 'cycle_path_no_certified_path' ||
                 error.reason === 'cycle_path_collision')
                 ? error.reason
                 : 'native_failure'

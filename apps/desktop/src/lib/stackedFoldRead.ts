@@ -206,6 +206,23 @@ export type StackedFoldReadResponse = Readonly<{
     authorizesProjectMutation: boolean
     paperThicknessMm: number
   }>
+  certifiedPathGraph: Readonly<{
+    modelId: 'bounded_certified_pose_graph_path_v1'
+    version: 1
+    sourceFingerprintSha256: string
+    targetFingerprintSha256: string
+    exploredStateCount: number
+    evaluatedTransitionCount: number
+    edges: readonly Readonly<{
+      sourceFingerprintSha256: string
+      targetFingerprintSha256: string
+      scheduleCertificateSha256: string
+      collisionCertificateSha256: string
+      closureCertificateSha256: string
+      hinges: readonly string[]
+    }>[]
+    authorizesProjectMutation: false
+  }> | null
   transactionProposal: Readonly<{
     transactionToken: string | null
     sourceProjectId: string
@@ -453,6 +470,10 @@ export function normalizeStackedFoldReadResponse(
   const topologyProof = value.topologyProof
   const endpointCollision = value.endpointCollision
   const continuousPath = value.continuousPath
+  const certifiedGraph = value.certifiedPathGraph
+  const certifiedEdges = isRecord(certifiedGraph) && Array.isArray(certifiedGraph.edges)
+    ? certifiedGraph.edges
+    : null
   const transaction = value.transactionProposal
   const work = value.work
   const layerOrder = value.flatEndpointLayerOrder
@@ -484,6 +505,7 @@ export function normalizeStackedFoldReadResponse(
       'liveGraphHingeAngles',
       'endpointCollision',
       'continuousPath',
+      'certifiedPathGraph',
       'flatEndpointLayerOrder',
       'transactionProposal',
       'work',
@@ -534,6 +556,52 @@ export function normalizeStackedFoldReadResponse(
       'authorizesProjectMutation',
       'paperThicknessMm',
     ]) ||
+    !(certifiedGraph === null || (
+      isRecord(certifiedGraph) &&
+      hasExactKeys(certifiedGraph, [
+        'modelId', 'version', 'sourceFingerprintSha256',
+        'targetFingerprintSha256', 'exploredStateCount',
+        'evaluatedTransitionCount', 'edges', 'authorizesProjectMutation',
+      ]) &&
+      certifiedGraph.modelId === 'bounded_certified_pose_graph_path_v1' &&
+      certifiedGraph.version === 1 &&
+      isLowerSha256(certifiedGraph.sourceFingerprintSha256) &&
+      isLowerSha256(certifiedGraph.targetFingerprintSha256) &&
+      isCount(certifiedGraph.exploredStateCount) &&
+      Number(certifiedGraph.exploredStateCount) >= 1 &&
+      Number(certifiedGraph.exploredStateCount) <= 32 &&
+      isCount(certifiedGraph.evaluatedTransitionCount) &&
+      Number(certifiedGraph.evaluatedTransitionCount) <= 64 &&
+      certifiedEdges !== null &&
+      certifiedEdges.length >= 1 &&
+      certifiedEdges.length <= 31 &&
+      certifiedEdges.every((edge, index, edges) =>
+        isRecord(edge) &&
+        hasExactKeys(edge, [
+          'sourceFingerprintSha256', 'targetFingerprintSha256',
+          'scheduleCertificateSha256', 'collisionCertificateSha256',
+          'closureCertificateSha256', 'hinges',
+        ]) &&
+        isLowerSha256(edge.sourceFingerprintSha256) &&
+        isLowerSha256(edge.targetFingerprintSha256) &&
+        isLowerSha256(edge.scheduleCertificateSha256) &&
+        isLowerSha256(edge.collisionCertificateSha256) &&
+        isLowerSha256(edge.closureCertificateSha256) &&
+        Array.isArray(edge.hinges) &&
+        edge.hinges.length >= 1 &&
+        edge.hinges.length <= 64 &&
+        edge.hinges.every((hinge, hingeIndex, hinges) =>
+          isCanonicalNonNilUuid(hinge) &&
+          (hingeIndex === 0 || String(hinges[hingeIndex - 1]) < hinge)) &&
+        (index === 0
+          ? edge.sourceFingerprintSha256 === certifiedGraph.sourceFingerprintSha256
+          : edge.sourceFingerprintSha256 ===
+            (edges[index - 1] as Record<string, unknown>).targetFingerprintSha256) &&
+        (index !== certifiedEdges.length - 1 ||
+          edge.targetFingerprintSha256 === certifiedGraph.targetFingerprintSha256)
+      ) &&
+      certifiedGraph.authorizesProjectMutation === false
+    )) ||
     !hasExactKeys(transaction, [
       'transactionToken',
       'sourceProjectId',

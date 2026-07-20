@@ -53,6 +53,7 @@ type View =
         | 'cycle_path_uncertified'
         | 'cycle_path_unsupported'
         | 'cycle_path_resource_limit'
+        | 'cycle_path_no_certified_path'
         | 'cycle_path_collision'
     }>
   | Readonly<{ kind: 'refresh_failed' }>
@@ -247,6 +248,7 @@ export function StackedFoldPanel({
               || result.reason === 'cycle_path_uncertified'
               || result.reason === 'cycle_path_unsupported'
               || result.reason === 'cycle_path_resource_limit'
+              || result.reason === 'cycle_path_no_certified_path'
               || result.reason === 'cycle_path_collision'
             ? result.reason
             : 'analysis',
@@ -394,6 +396,8 @@ export function StackedFoldPanel({
                   ? t('この入力は、対応している限定的な線形ヒンジ経路クラスの対象外です。適用は無効です。', 'This input is outside the supported limited linear hinge-path class, so apply is disabled.')
                   : view.reason === 'cycle_path_resource_limit'
                     ? t('有界証明の資源上限に達しました。安全または不可能とは判定せず、適用を無効にします。', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.')
+                    : view.reason === 'cycle_path_no_certified_path'
+                      ? t('証明済み遷移だけでは目標への経路が見つかりませんでした。不可能とは判定しません。', 'No path to the target was found using certified transitions only. This does not claim impossibility.')
                     : view.reason === 'cycle_path_collision'
                       ? t('予定された連続経路の衝突なし証明を取得できませんでした。適用は無効です。', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.')
             : view.reason === 'apply'
@@ -428,6 +432,7 @@ export function StackedFoldPanel({
                   <label>
                     <span>{t('要求角度', 'Requested angle')}</span>
                     <input
+                      id={`stacked-fold-proof-hinge-${hinge.edge}`}
                       aria-label={`${t('要求角度', 'Requested angle')} ${hinge.edge}`}
                       type="number"
                       min="0"
@@ -475,6 +480,40 @@ export function StackedFoldPanel({
             <div><dt>{t('層順序', 'Layer order')}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
           </dl>
+          {view.response.certifiedPathGraph && (
+            <section aria-label={t('証明済み候補経路', 'Certified candidate path')}>
+              <h4>{t('証明済み候補経路', 'Certified candidate path')}</h4>
+              <p>
+                {t(
+                  `${view.response.certifiedPathGraph.edges.length} 遷移。read-only previewであり、作品変更を許可しません。`,
+                  `${view.response.certifiedPathGraph.edges.length} transition(s). This read-only preview does not authorize project mutation.`,
+                )}
+              </p>
+              <ol>
+                {view.response.certifiedPathGraph.edges.map((edge, index) => (
+                  <li key={`${edge.sourceFingerprintSha256}:${edge.targetFingerprintSha256}`}>
+                    <strong>{t(`遷移 ${index + 1}`, `Transition ${index + 1}`)}</strong>
+                    <dl>
+                      <div><dt>schedule</dt><dd>{edge.scheduleCertificateSha256}</dd></div>
+                      <div><dt>collision</dt><dd>{edge.collisionCertificateSha256}</dd></div>
+                      <div><dt>closure</dt><dd>{edge.closureCertificateSha256}</dd></div>
+                    </dl>
+                    {edge.hinges.map((hinge) => (
+                      <button
+                        key={hinge}
+                        type="button"
+                        onClick={() => document.getElementById(
+                          `stacked-fold-proof-hinge-${hinge}`,
+                        )?.focus()}
+                      >
+                        {t('関連hingeを選択', 'Select related hinge')} {hinge.slice(0, 8)}
+                      </button>
+                    ))}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
           <p>{t(
             'この証明は表示された紙厚・2三角形・1ヒンジ・90度以下だけを対象とします。一般の多面、別の紙厚、工作性は保証しません。',
             'This certificate covers only the displayed thickness, two triangular faces, one hinge, and a path up to 90°. It does not guarantee general multi-face folds, another thickness, or physical manufacturability.',

@@ -95,6 +95,7 @@ const response = (revision = 3): StackedFoldReadResponse =>
       safeStopAngleDegrees: 0,
       authorizesProjectMutation: false,
     },
+    certifiedPathGraph: null,
     transactionProposal: {
       transactionToken: null,
       sourceProjectId: PROJECT,

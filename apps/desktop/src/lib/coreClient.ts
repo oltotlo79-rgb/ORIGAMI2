@@ -208,6 +208,9 @@ export type BeginnerGenerationConstraintsV1 = {
     kind: 'reference_image'
     underlay_id: string
     asset_id: string
+  } | {
+    kind: 'reference_model'
+    asset_id: string
   } | null
   allowed_techniques: Array<
     | 'valley_fold'
@@ -424,17 +427,24 @@ function normalizeBeginnerGenerationConstraints(
   if (bulgeTargets.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
   if (record.target_asset !== null) {
-    const asset = exactCoreDataRecord(
-      record.target_asset,
-      ['kind', 'underlay_id', 'asset_id'] as const,
-    )
-    if (!asset || asset.kind !== 'reference_image'
-      || !isCanonicalNonNilUuid(asset.underlay_id)
-      || !isCanonicalNonNilUuid(asset.asset_id)) return null
-    targetAsset = {
-      kind: 'reference_image',
-      underlay_id: asset.underlay_id,
-      asset_id: asset.asset_id,
+    const candidate = coreDataRecord(record.target_asset)
+    if (candidate?.kind === 'reference_image') {
+      const asset = exactCoreDataRecord(candidate, ['kind', 'underlay_id', 'asset_id'] as const)
+      if (!asset || !isCanonicalNonNilUuid(asset.underlay_id)
+        || !isCanonicalNonNilUuid(asset.asset_id)) return null
+      targetAsset = {
+        kind: 'reference_image',
+        underlay_id: asset.underlay_id,
+        asset_id: asset.asset_id,
+      }
+    } else {
+      const asset = exactCoreDataRecord(candidate, ['kind', 'asset_id'] as const)
+      if (!asset || asset.kind !== 'reference_model'
+        || !isCanonicalNonNilUuid(asset.asset_id)) return null
+      targetAsset = {
+        kind: 'reference_model',
+        asset_id: asset.asset_id,
+      }
     }
   }
   return Object.freeze({
@@ -1349,6 +1359,18 @@ export function updateBeginnerDesignProfile(
   })
 }
 
+export function importBeginnerReferenceModel(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<ProjectSnapshot>('import_beginner_reference_model', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
+}
+
 export function evaluateBeginnerCandidates(
   expectedProjectId: string,
   expectedRevision: number,
@@ -1661,6 +1683,9 @@ export function proposeCurrentStackedFoldRead(
     if (error === 'stacked_fold_cycle_path_resource_limit') {
       throw new StackedFoldReadNativeError('cycle_path_resource_limit')
     }
+    if (error === 'stacked_fold_cycle_path_no_certified_path') {
+      throw new StackedFoldReadNativeError('cycle_path_no_certified_path')
+    }
     if (error === 'stacked_fold_cycle_path_collision') {
       throw new StackedFoldReadNativeError('cycle_path_collision')
     }
@@ -1684,6 +1709,7 @@ export class StackedFoldReadNativeError extends Error {
     | 'cycle_path_uncertified'
     | 'cycle_path_unsupported'
     | 'cycle_path_resource_limit'
+    | 'cycle_path_no_certified_path'
     | 'cycle_path_collision'
     | 'native_failure'
 

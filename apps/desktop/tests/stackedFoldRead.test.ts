@@ -232,6 +232,7 @@ describe('stacked-fold read boundary', () => {
         safeStopAngleDegrees: 0,
         authorizesProjectMutation: false,
       },
+      certifiedPathGraph: null,
       transactionProposal: {
         transactionToken: null,
         sourceProjectId: projectId,
@@ -271,6 +272,40 @@ describe('stacked-fold read boundary', () => {
       },
     }
     assert.deepEqual(normalizeStackedFoldReadResponse(response, request), response)
+    const graphResponse = {
+      ...response,
+      certifiedPathGraph: {
+        modelId: 'bounded_certified_pose_graph_path_v1',
+        version: 1,
+        sourceFingerprintSha256: '1'.repeat(64),
+        targetFingerprintSha256: '2'.repeat(64),
+        exploredStateCount: 2,
+        evaluatedTransitionCount: 1,
+        edges: [{
+          sourceFingerprintSha256: '1'.repeat(64),
+          targetFingerprintSha256: '2'.repeat(64),
+          scheduleCertificateSha256: '3'.repeat(64),
+          collisionCertificateSha256: '4'.repeat(64),
+          closureCertificateSha256: '5'.repeat(64),
+          hinges: [faceId],
+        }],
+        authorizesProjectMutation: false,
+      },
+    } as const
+    assert.deepEqual(
+      normalizeStackedFoldReadResponse(graphResponse, request),
+      graphResponse,
+    )
+    assert.equal(normalizeStackedFoldReadResponse({
+      ...graphResponse,
+      certifiedPathGraph: {
+        ...graphResponse.certifiedPathGraph,
+        edges: [{
+          ...graphResponse.certifiedPathGraph.edges[0],
+          closureCertificateSha256: 'private-path',
+        }],
+      },
+    }, request), null)
     const ready = {
       ...response,
       continuousPath: {

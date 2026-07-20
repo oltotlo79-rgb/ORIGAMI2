@@ -99,6 +99,7 @@ const ready = {
     safeStopAngleDegrees: 180,
     authorizesProjectMutation: false,
   },
+  certifiedPathGraph: null,
   flatEndpointLayerOrder: {
     applicable: true,
     certified: true,
@@ -260,6 +261,60 @@ describe('StackedFoldPanel', () => {
     expect((apply as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(screen.getByRole('checkbox'))
     expect((apply as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('shows every certified graph edge as read-only evidence and focuses its related hinge', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockResolvedValue({
+      ...ready,
+      certifiedPathGraph: {
+        modelId: 'bounded_certified_pose_graph_path_v1',
+        version: 1,
+        sourceFingerprintSha256: '1'.repeat(64),
+        targetFingerprintSha256: '2'.repeat(64),
+        exploredStateCount: 2,
+        evaluatedTransitionCount: 1,
+        edges: [{
+          sourceFingerprintSha256: '1'.repeat(64),
+          targetFingerprintSha256: '2'.repeat(64),
+          scheduleCertificateSha256: '3'.repeat(64),
+          collisionCertificateSha256: '4'.repeat(64),
+          closureCertificateSha256: '5'.repeat(64),
+          hinges: [project],
+        }],
+        authorizesProjectMutation: false,
+      },
+      transactionProposal: {
+        ...ready.transactionProposal,
+        transactionToken: null,
+        readyForAtomicApply: false,
+        authorizesProjectMutation: false,
+      },
+    })
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const path = await screen.findByRole('region', {
+      name: 'Certified candidate path',
+    })
+    expect(path.textContent).toContain('read-only preview')
+    expect(path.textContent).toContain('3'.repeat(64))
+    expect(path.textContent).toContain('4'.repeat(64))
+    expect(path.textContent).toContain('5'.repeat(64))
+    fireEvent.click(screen.getByRole('button', {
+      name: /Select related hinge/u,
+    }))
+    expect(document.activeElement?.getAttribute('id')).toBe(
+      `stacked-fold-proof-hinge-${project}`,
+    )
   })
 
   it('uses the selected canvas line and applies only after explicit confirmation', async () => {

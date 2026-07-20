@@ -32,6 +32,7 @@ use ori_kinematics::{
 };
 use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use super::{
@@ -52,6 +53,7 @@ const CYCLE_NONCLOSING_MESSAGE: &str = "stacked_fold_cycle_nonclosing";
 const CYCLE_PATH_UNCERTIFIED_MESSAGE: &str = "stacked_fold_cycle_path_uncertified";
 const CYCLE_PATH_UNSUPPORTED_MESSAGE: &str = "stacked_fold_cycle_path_unsupported";
 const CYCLE_PATH_RESOURCE_MESSAGE: &str = "stacked_fold_cycle_path_resource_limit";
+const CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE: &str = "stacked_fold_cycle_path_no_certified_path";
 const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
@@ -410,6 +412,30 @@ struct StackedFoldContinuousPathDto {
     paper_thickness_mm: f64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertifiedPathGraphPreviewDto {
+    model_id: &'static str,
+    version: u32,
+    source_fingerprint_sha256: String,
+    target_fingerprint_sha256: String,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+    edges: Vec<CertifiedPathGraphEdgeDto>,
+    authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertifiedPathGraphEdgeDto {
+    source_fingerprint_sha256: String,
+    target_fingerprint_sha256: String,
+    schedule_certificate_sha256: String,
+    collision_certificate_sha256: String,
+    closure_certificate_sha256: String,
+    hinges: Vec<ori_domain::EdgeId>,
+}
+
 enum StackedFoldPathAnalysis {
     Tree(ori_collision::StackedFoldBoundedPathDiagnosticV1),
     Graph {
@@ -651,6 +677,7 @@ pub(super) struct StackedFoldReadResponse {
     live_graph_hinge_angles: Vec<LiveGraphHingeAngleDto>,
     endpoint_collision: StackedFoldEndpointCollisionDto,
     continuous_path: StackedFoldContinuousPathDto,
+    certified_path_graph: Option<CertifiedPathGraphPreviewDto>,
     flat_endpoint_layer_order: StackedFoldFlatEndpointLayerOrderDto,
     transaction_proposal: StackedFoldTransactionProposalDto,
     work: StackedFoldReadWorkDto,
@@ -777,21 +804,183 @@ pub(super) async fn propose_current_stacked_fold_read(
             if path_variant_count != 1 || request.cycle_schedule_v1.is_some() {
                 return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
             }
-            if let Some(graph) = request.certified_path_graph_v1.as_ref() {
-                validate_certified_path_graph_v1(graph, initial.pose().hinge_angles())
-                    .map_err(str::to_owned)?;
-                // Graph request admission is strict even before a supported
-                // native subset is selected. Never fall back to treating it
-                // as a direct linear candidate.
-                return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
-            }
-            let linear = request
-                .linear_candidate_v1
-                .as_ref()
-                .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
-            let (initial_angles, requested_angles) =
-                validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
-                    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+            let (initial_angles, requested_angles, all_requested_flat, certified_path_graph) =
+                if let Some(graph) = request.certified_path_graph_v1.as_ref() {
+                    let states =
+                        validate_certified_path_graph_v1(graph, initial.pose().hinge_angles())
+                            .map_err(str::to_owned)?;
+                    if states[graph.target_state]
+                        .as_slice()
+                        .iter()
+                        .zip(states[graph.source_state].as_slice())
+                        .any(|(target, source)| {
+                            target.angle_degrees().to_bits()
+                                != source.angle_degrees().to_bits()
+                                && target.angle_degrees().to_bits()
+                                    != candidate.requested_angle_degrees().to_bits()
+                        })
+                    {
+                        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
+                    }
+                    let fingerprints = states
+                        .iter()
+                        .map(pose_state_fingerprint_v1)
+                        .collect::<Vec<_>>();
+                    let candidates = graph
+                        .transitions
+                        .iter()
+                        .enumerate()
+                        .map(|(index, edge)| {
+                            let mut key = [0_u8; 32];
+                            key[24..].copy_from_slice(&(index as u64).to_be_bytes());
+                            ori_collision::CertifiedPathTransitionCandidateV1 {
+                                source: fingerprints[edge.source_state],
+                                target: fingerprints[edge.target_state],
+                                candidate_key: key,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let index_by_fingerprint = fingerprints
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .map(|(index, fingerprint)| (fingerprint, index))
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    let mut resource_exhausted = false;
+                    let searched = ori_collision::search_certified_pose_graph_v1(
+                        &fingerprints,
+                        &candidates,
+                        fingerprints[graph.source_state],
+                        fingerprints[graph.target_state],
+                        |edge| {
+                            let source_index = *index_by_fingerprint.get(&edge.source)?;
+                            let target_index = *index_by_fingerprint.get(&edge.target)?;
+                            let generated = match generate_linear_multi_hinge_path_candidate_v1(
+                                initial.target().hinge_geometry(),
+                                initial.target().audit(),
+                                initial.pose().fixed_face(),
+                                &states[source_index],
+                                &states[target_index],
+                                MultiHingePathCandidateLimitsV1::default(),
+                            ) {
+                                Ok(value) => value,
+                                Err(ori_kinematics::MultiHingePathCandidateErrorV1::ResourceLimit) => {
+                                    resource_exhausted = true;
+                                    return None;
+                                }
+                                Err(_) => return None,
+                            };
+                            let cycle_limits = CycleScheduleLimitsV1::default();
+                            let closure = match initial.target().hinge_geometry()
+                                .prove_dyadic_schedule_closure_v1(
+                                    initial.target().audit(),
+                                    initial.pose().fixed_face(),
+                                    generated.schedule(),
+                                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                                    DyadicIntervalClosureLimitsV1 {
+                                        max_depth: 8,
+                                        max_leaves: 256,
+                                        max_work: cycle_limits.max_work,
+                                        schedule_limits: CycleScheduleLimitsV1 {
+                                            max_degree: 1,
+                                            ..cycle_limits
+                                        },
+                                    },
+                                ) {
+                                    Ok(value) => value,
+                                    Err(ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit) => {
+                                        resource_exhausted = true;
+                                        return None;
+                                    }
+                                    Err(_) => return None,
+                                };
+                            ori_collision::certify_scheduled_cycle_transition_v1(
+                                initial.target().hinge_geometry(),
+                                initial.target().audit(),
+                                initial.pose().fixed_face(),
+                                &generated,
+                                &closure,
+                                StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
+                                edge.source,
+                                edge.target,
+                            )
+                        },
+                    );
+                    let certificate = match searched {
+                        ori_collision::CertifiedPathGraphSearchResultV1::Certified(value) => value,
+                        ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
+                            reason: ori_collision::CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
+                            ..
+                        } => return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned()),
+                        ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate { .. }
+                            if resource_exhausted =>
+                        {
+                            return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+                        }
+                        ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate { .. } => {
+                            return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
+                        }
+                    };
+                    let edges = certificate
+                        .edges()
+                        .iter()
+                        .map(|edge| {
+                            let source_index = index_by_fingerprint[&edge.source()];
+                            let target_index = index_by_fingerprint[&edge.target()];
+                            let hinges = states[source_index]
+                                .as_slice()
+                                .iter()
+                                .zip(states[target_index].as_slice())
+                                .filter_map(|(source, target)| {
+                                    (source.angle_degrees().to_bits()
+                                        != target.angle_degrees().to_bits())
+                                        .then_some(source.edge())
+                                })
+                                .collect();
+                            CertifiedPathGraphEdgeDto {
+                                source_fingerprint_sha256: lowercase_hex(edge.source()),
+                                target_fingerprint_sha256: lowercase_hex(edge.target()),
+                                schedule_certificate_sha256: lowercase_hex(
+                                    edge.schedule_certificate(),
+                                ),
+                                collision_certificate_sha256: lowercase_hex(
+                                    edge.collision_certificate(),
+                                ),
+                                closure_certificate_sha256: lowercase_hex(
+                                    edge.closure_certificate(),
+                                ),
+                                hinges,
+                            }
+                        })
+                        .collect();
+                    let preview = CertifiedPathGraphPreviewDto {
+                        model_id: certificate.model_id(),
+                        version: u32::from(certificate.version()),
+                        source_fingerprint_sha256: lowercase_hex(certificate.source()),
+                        target_fingerprint_sha256: lowercase_hex(certificate.target()),
+                        explored_state_count: certificate.explored_state_count(),
+                        evaluated_transition_count: certificate.evaluated_transition_count(),
+                        edges,
+                        authorizes_project_mutation: false,
+                    };
+                    let requested = states[graph.target_state].clone();
+                    let all_flat = requested.as_slice().iter().all(|entry| {
+                        entry.angle_degrees().to_bits() == 180.0_f64.to_bits()
+                    });
+                    (states[0].clone(), requested, all_flat, Some(preview))
+                } else {
+                    let linear = request
+                        .linear_candidate_v1
+                        .as_ref()
+                        .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+                    let (initial_angles, requested_angles) =
+                        validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
+                            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+                    let all_flat = linear.entries.iter().all(|entry| {
+                        entry.requested_angle_degrees.to_bits() == 180.0_f64.to_bits()
+                    });
+                    (initial_angles, requested_angles, all_flat, None)
+                };
             let generated = generate_linear_multi_hinge_path_candidate_v1(
                 initial.target().hinge_geometry(),
                 initial.target().audit(),
@@ -866,9 +1055,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                 .candidate();
             let lineage = geometry_proof.lineage();
             let (layer_proof, layer_material_face_count, layer_overlap_cell_count) =
-                if linear.entries.iter().all(|entry| {
-                    entry.requested_angle_degrees.to_bits() == 180.0_f64.to_bits()
-                }) {
+                if all_requested_flat {
                     let report = analyze_faces(FaceExtractionInput {
                         identity_namespace: binding.project_id(),
                         source_revision: lineage.target_revision(),
@@ -1014,12 +1201,13 @@ pub(super) async fn propose_current_stacked_fold_read(
             };
             let live_graph_hinge_angles =
                 live_hinge_registry(closed_endpoint.initial().pose().hinge_angles().as_slice());
-            let native_transaction = Some(NativeStackedFoldPremises::Graph(
+            let transaction_source_fingerprint = lineage.source_fingerprint().0;
+            let native_transaction = certified_path_graph.is_none().then(|| NativeStackedFoldPremises::Graph(
                 super::stacked_fold_transaction::PendingStackedFoldGraphPremises {
                     expected_instance_id: binding.project_instance_id(),
                     expected_project_id: binding.project_id(),
                     expected_revision: binding.source_revision(),
-                    expected_source_fingerprint: lineage.source_fingerprint().0,
+                    expected_source_fingerprint: transaction_source_fingerprint,
                     expected_pose_generation: binding.pose_generation(),
                     expected_layer_generation: binding.layer_order_generation(),
                     requested: closed_endpoint,
@@ -1077,6 +1265,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                     diagnostic: continuous,
                     requested_angle_degrees: candidate.requested_angle_degrees(),
                 },
+                certified_path_graph,
                 StackedFoldFlatEndpointLayerOrderDto {
                     applicable: true,
                     certified: true,
@@ -1379,6 +1568,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             work,
             endpoint_collision,
             StackedFoldPathAnalysis::Tree(continuous_path),
+            None,
             flat_endpoint_layer_order,
             transaction_proposal,
             native_transaction,
@@ -1399,6 +1589,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         work,
         endpoint_collision,
         continuous_path,
+        certified_path_graph,
         flat_endpoint_layer_order,
         mut transaction_proposal,
         native_transaction,
@@ -1528,6 +1719,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                 paper_thickness_mm,
             },
         },
+        certified_path_graph,
         flat_endpoint_layer_order,
         transaction_proposal,
         work: StackedFoldReadWorkDto {
@@ -1554,6 +1746,17 @@ fn lowercase_hex(bytes: [u8; 32]) -> String {
         output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn pose_state_fingerprint_v1(angles: &ori_kinematics::CanonicalHingeAngles) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"stacked_fold_certified_path_graph_state_v1");
+    hash.update((angles.as_slice().len() as u64).to_be_bytes());
+    for angle in angles.as_slice() {
+        hash.update(angle.edge().canonical_bytes());
+        hash.update(angle.angle_degrees().to_bits().to_be_bytes());
+    }
+    hash.finalize().into()
 }
 
 fn transaction_failure_classes(

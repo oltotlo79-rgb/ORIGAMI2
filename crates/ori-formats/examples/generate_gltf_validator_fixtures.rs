@@ -37,6 +37,12 @@ fn main() {
     let static_glb = export_static_triangle_mesh(StaticMeshExportFormat::Glb20, &static_mesh)
         .expect("static GLB");
     fs::write(output.join("static.glb"), static_glb.bytes).expect("write static GLB");
+    let static_obj =
+        export_static_triangle_mesh(StaticMeshExportFormat::Obj, &static_mesh).expect("static OBJ");
+    fs::write(output.join("static.obj"), static_obj.bytes).expect("write static OBJ");
+    let static_stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &static_mesh)
+        .expect("static STL");
+    fs::write(output.join("static.stl"), static_stl.bytes).expect("write static STL");
 
     let textured = mesh("textured", 0.0).with_base_color_texture(EmbeddedBaseColorTextureV1 {
         media_type: EmbeddedTextureMediaTypeV1::Png,

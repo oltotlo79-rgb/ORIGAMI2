@@ -15,7 +15,7 @@ concurrency:
 jobs:
   frontend:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: apps/desktop
@@ -34,6 +34,31 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Load generated GLB in pinned Khronos Sample Viewer
         run: npm run test:gltf-sample-viewer
+      - name: Cache pinned Blender LTS
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/origami2/blender-4.5.11-linux-x64.tar.xz
+          key: blender-linux-x64-4.5.11-05ed7bd41bf3e61ae4f4a7cdc364c43088bf8b3fed702c2269c018fdf63a2188
+      - name: Install checksum-verified Blender 4.5.11 LTS
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$HOME/.cache/origami2/blender-4.5.11-linux-x64.tar.xz"
+          blender_root="$RUNNER_TEMP/blender-4.5.11"
+          if [ ! -f "$archive" ]; then
+            mkdir -p "$(dirname "$archive")"
+            curl --fail --location --retry 3 \
+              --output "$archive" \
+              https://download.blender.org/release/Blender4.5/blender-4.5.11-linux-x64.tar.xz
+          fi
+          echo "05ed7bd41bf3e61ae4f4a7cdc364c43088bf8b3fed702c2269c018fdf63a2188  $archive" \
+            | sha256sum --check --strict
+          mkdir -p "$blender_root"
+          tar --extract --xz --file "$archive" --strip-components=1 --directory "$blender_root"
+      - name: Import generated exports in Blender LTS
+        env:
+          BLENDER_BIN: ${{ runner.temp }}/blender-4.5.11/blender
+        run: npm run test:blender
       - run: npm run build
       - run: npm run lint
 

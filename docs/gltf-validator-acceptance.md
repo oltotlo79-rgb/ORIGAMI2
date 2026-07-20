@@ -23,9 +23,8 @@ validator checks the embedded buffer and image resources. Warnings and
 informational diagnostics are printed but do not weaken the error-zero gate.
 
 This automated format acceptance is not a substitute for opening exported
-files in external GUI applications. Blender and other target viewers still
-require a separate manual interoperability pass covering appearance,
-animation playback, axes, units, and user workflow.
+files in target slicers. Slicer appearance, axes, units, and user workflow
+still require a separate manual interoperability pass.
 
 ## Khronos Sample Viewer runtime gate
 
@@ -38,4 +37,19 @@ headless Chromium with WebGL enabled. CI requires:
 - a non-empty visible WebGL canvas for static and textured GLB;
 - visible frame changes while the animated GLB is playing.
 
-This does not replace the remaining Blender and slicer interoperability pass.
+This does not replace the remaining slicer interoperability pass.
+
+## Blender LTS import gate
+
+`npm run test:blender` generates release-mode OBJ, binary STL, and static,
+textured, and animated GLB fixtures. CI downloads the official Blender 4.5.11
+LTS Linux archive and verifies SHA-256
+`05ed7bd41bf3e61ae4f4a7cdc364c43088bf8b3fed702c2269c018fdf63a2188`
+on every run, including cache hits, before extracting the cached archive.
+
+Blender runs with `--background`, factory settings, automatic scripts disabled,
+and a nonzero Python exception exit code. The gate requires clean stderr and
+checks imported mesh and triangle counts, material and embedded-image presence,
+animation and morph-target playback, open-sheet manifold status, documented
+millimetre/metre conversion, axes, and world-space bounds. Slicer acceptance
+remains a separate residual.

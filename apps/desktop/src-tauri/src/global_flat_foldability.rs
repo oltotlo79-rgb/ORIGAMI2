@@ -2198,6 +2198,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn certified_target_preflight_rejects_every_stale_binding_without_project_mutation() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let capability = capture_current_layer_order_capability(&state, &project)
+            .unwrap()
+            .expect("current layer capability");
+        let snapshot = capability.snapshot().clone();
+        let fingerprint = snapshot
+            .provenance
+            .source
+            .source_fingerprint
+            .expect("bound fingerprint")
+            .0;
+        let revision = project.editor.revision();
+        let guard = lock_revalidated_current_layer_order_for_commit(&state, &project, &capability)
+            .unwrap()
+            .expect("commit guard");
+        assert!(guard.preflight_certified_target(
+            project.project_id,
+            revision,
+            fingerprint,
+            &snapshot,
+        ));
+        assert!(!guard.preflight_certified_target(
+            ProjectId::new(),
+            revision,
+            fingerprint,
+            &snapshot,
+        ));
+        assert!(!guard.preflight_certified_target(
+            project.project_id,
+            revision + 1,
+            fingerprint,
+            &snapshot,
+        ));
+        assert!(!guard.preflight_certified_target(
+            project.project_id,
+            revision,
+            [0xa5; 32],
+            &snapshot,
+        ));
+        assert_eq!(project.editor.revision(), revision);
+    }
+
     fn deep_clone_layer_order_certificate(
         certificate: &CurrentLayerOrderCertificate,
     ) -> CurrentLayerOrderCertificate {

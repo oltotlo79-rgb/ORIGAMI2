@@ -78,7 +78,7 @@ use thiserror::Error;
 
 pub use graph::{
     CandidateFaceTransform, ClosedMaterialHingeGraphPose, MaterialHingeClosureCertificate,
-    MaterialHingeGraphAudit,
+    MaterialHingeClosureResidual, MaterialHingeGraphAudit,
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{

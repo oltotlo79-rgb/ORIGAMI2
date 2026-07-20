@@ -271,6 +271,15 @@ pub struct MaterialHingeGraphGeometry {
 }
 
 impl MaterialHingeGraphGeometry {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(face_ids: Vec<FaceId>, hinges: Vec<TreeHinge>) -> Self {
+        Self {
+            face_ids,
+            hinges,
+            positions: HashMap::new(),
+            face_boundaries: Vec::new(),
+        }
+    }
     /// Prepares canonical material-mm hinge axes without imposing the tree
     /// cardinality required by [`MaterialTreeKinematicsModel`].
     pub fn prepare(

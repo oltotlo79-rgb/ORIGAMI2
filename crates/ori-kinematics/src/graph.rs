@@ -76,6 +76,21 @@ impl ClosedMaterialHingeGraphPose {
 }
 
 impl MaterialHingeGraphGeometry {
+    /// Measures the canonical spanning candidate against every retained hinge
+    /// without promoting it to a closure certificate.
+    pub fn measure_spanning_closure(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        angles: &CanonicalHingeAngles,
+    ) -> Result<MaterialHingeClosureResidual, KinematicsError> {
+        let observed = self.solve_closed(audit, fixed_face, angles, f64::MAX)?;
+        Ok(MaterialHingeClosureResidual {
+            maximum_axis_point_error: observed.closure.maximum_axis_point_error,
+            maximum_relative_transform_error: observed.closure.maximum_relative_transform_error,
+        })
+    }
+
     /// Validates a complete caller-derived embedding against every material
     /// hinge and packages it only when closure succeeds.
     pub fn observe_closed(
@@ -227,6 +242,28 @@ impl MaterialHingeGraphGeometry {
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.observe_closed(audit, fixed_face, angles, &transforms, tolerance)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaterialHingeClosureResidual {
+    maximum_axis_point_error: f64,
+    maximum_relative_transform_error: f64,
+}
+
+impl MaterialHingeClosureResidual {
+    #[must_use]
+    pub const fn maximum_axis_point_error(self) -> f64 {
+        self.maximum_axis_point_error
+    }
+    #[must_use]
+    pub const fn maximum_relative_transform_error(self) -> f64 {
+        self.maximum_relative_transform_error
+    }
+    #[must_use]
+    pub fn maximum_error(self) -> f64 {
+        self.maximum_axis_point_error
+            .max(self.maximum_relative_transform_error)
     }
 }
 
@@ -716,6 +753,24 @@ mod tests {
                 .closure_hinges()
                 .iter()
                 .all(|edge| certificate.checked_hinges().contains(edge))
+        );
+        let geometry =
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges.to_vec());
+        let zero = geometry
+            .measure_spanning_closure(&audit, audit.faces()[0], &angles)
+            .unwrap();
+        assert_eq!(zero.maximum_error().to_bits(), 0.0_f64.to_bits());
+        let mut nonzero = [ab, bc, ca]
+            .map(|edge| HingeAngle::new(edge, 90.0).unwrap())
+            .to_vec();
+        nonzero.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+        let nonzero = CanonicalHingeAngles::new(nonzero).unwrap();
+        assert!(
+            geometry
+                .measure_spanning_closure(&audit, audit.faces()[0], &nonzero)
+                .unwrap()
+                .maximum_error()
+                > 0.0
         );
     }
 }

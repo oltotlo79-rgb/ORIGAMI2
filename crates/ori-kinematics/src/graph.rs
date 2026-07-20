@@ -3,7 +3,171 @@ use std::collections::{HashMap, HashSet};
 use ori_domain::{EdgeId, FaceId};
 use ori_topology::TopologySnapshot;
 
-use crate::{KinematicsError, TreeKinematicsLimits};
+use crate::{
+    CanonicalHingeAngles, KinematicsError, RigidTransform, TreeHinge, TreeKinematicsLimits,
+};
+
+/// One caller-supplied face transform used only as closure evidence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CandidateFaceTransform {
+    face: FaceId,
+    transform: RigidTransform,
+}
+
+impl CandidateFaceTransform {
+    #[must_use]
+    pub const fn new(face: FaceId, transform: RigidTransform) -> Self {
+        Self { face, transform }
+    }
+}
+
+/// Observation-only evidence that every material hinge closes in a candidate
+/// embedding. It grants neither solve nor mutation authority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialHingeClosureCertificate {
+    checked_hinges: Vec<EdgeId>,
+    maximum_axis_point_error: f64,
+    maximum_relative_transform_error: f64,
+}
+
+impl MaterialHingeClosureCertificate {
+    /// Checks both material-axis endpoints and the complete expected relative
+    /// rigid rotation on every hinge, including non-tree closure hinges.
+    pub fn observe(
+        audit: &MaterialHingeGraphAudit,
+        hinges: &[TreeHinge],
+        angles: &CanonicalHingeAngles,
+        candidate: &[CandidateFaceTransform],
+        tolerance: f64,
+    ) -> Result<Self, KinematicsError> {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return Err(KinematicsError::UnrepresentableGeometry);
+        }
+        if hinges.len() != audit.spanning_hinges.len() + audit.closure_hinges.len()
+            || candidate.len() != audit.faces.len()
+            || angles.as_slice().len() != hinges.len()
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let transforms = canonical_transforms(audit, candidate)?;
+        let mut hinges = hinges.iter().collect::<Vec<_>>();
+        hinges.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
+        let mut checked_hinges = Vec::new();
+        checked_hinges
+            .try_reserve_exact(hinges.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        let mut maximum_axis_point_error = 0.0_f64;
+        let mut maximum_relative_transform_error = 0.0_f64;
+
+        for (hinge, angle) in hinges.into_iter().zip(angles.as_slice()) {
+            if hinge.edge() != angle.edge()
+                || !audit.spanning_hinges.contains(&hinge.edge())
+                    && !audit.closure_hinges.contains(&hinge.edge())
+            {
+                return Err(KinematicsError::UnsupportedTopology);
+            }
+            let left = transform_for(&transforms, hinge.left_face())?;
+            let right = transform_for(&transforms, hinge.right_face())?;
+            for point in [hinge.start(), hinge.end()] {
+                let error = point_distance(left.apply_point(point)?, right.apply_point(point)?)?;
+                maximum_axis_point_error = maximum_axis_point_error.max(error);
+                if error > tolerance {
+                    return Err(KinematicsError::UnsupportedTopology);
+                }
+            }
+            let sign = match hinge.assignment() {
+                ori_topology::FoldAssignment::Mountain => 1.0,
+                ori_topology::FoldAssignment::Valley => -1.0,
+            };
+            let expected = left.compose(RigidTransform::around_axis(
+                hinge.start(),
+                hinge.axis(),
+                angle.angle_degrees() * sign,
+            )?)?;
+            let error = transform_error(expected, right)?;
+            maximum_relative_transform_error = maximum_relative_transform_error.max(error);
+            if error > tolerance {
+                return Err(KinematicsError::UnsupportedTopology);
+            }
+            checked_hinges.push(hinge.edge());
+        }
+        Ok(Self {
+            checked_hinges,
+            maximum_axis_point_error,
+            maximum_relative_transform_error,
+        })
+    }
+
+    #[must_use]
+    pub fn checked_hinges(&self) -> &[EdgeId] {
+        &self.checked_hinges
+    }
+
+    #[must_use]
+    pub const fn maximum_axis_point_error(&self) -> f64 {
+        self.maximum_axis_point_error
+    }
+
+    #[must_use]
+    pub const fn maximum_relative_transform_error(&self) -> f64 {
+        self.maximum_relative_transform_error
+    }
+}
+
+fn canonical_transforms(
+    audit: &MaterialHingeGraphAudit,
+    candidate: &[CandidateFaceTransform],
+) -> Result<Vec<CandidateFaceTransform>, KinematicsError> {
+    let mut transforms = candidate.to_vec();
+    transforms.sort_unstable_by_key(|item| item.face.canonical_bytes());
+    if transforms
+        .windows(2)
+        .any(|pair| pair[0].face == pair[1].face)
+        || transforms
+            .iter()
+            .map(|item| item.face)
+            .ne(audit.faces.iter().copied())
+    {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    Ok(transforms)
+}
+
+fn transform_for(
+    transforms: &[CandidateFaceTransform],
+    face: FaceId,
+) -> Result<RigidTransform, KinematicsError> {
+    transforms
+        .binary_search_by_key(&face.canonical_bytes(), |item| item.face.canonical_bytes())
+        .map(|index| transforms[index].transform)
+        .map_err(|_| KinematicsError::UnsupportedTopology)
+}
+
+fn point_distance(first: crate::Point3, second: crate::Point3) -> Result<f64, KinematicsError> {
+    let squared = (first.x() - second.x()).powi(2)
+        + (first.y() - second.y()).powi(2)
+        + (first.z() - second.z()).powi(2);
+    let distance = libm::sqrt(squared);
+    if distance.is_finite() {
+        Ok(distance)
+    } else {
+        Err(KinematicsError::UnrepresentableGeometry)
+    }
+}
+
+fn transform_error(first: RigidTransform, second: RigidTransform) -> Result<f64, KinematicsError> {
+    let mut maximum = point_distance(first.translation(), second.translation())?;
+    for (first_row, second_row) in first
+        .rotation_rows()
+        .into_iter()
+        .zip(second.rotation_rows())
+    {
+        for (first_value, second_value) in first_row.into_iter().zip(second_row) {
+            maximum = maximum.max((first_value - second_value).abs());
+        }
+    }
+    Ok(maximum)
+}
 
 /// A bounded, geometry-free audit of a connected material hinge graph.
 ///
@@ -147,6 +311,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::{HingeAngle, Point3};
 
     fn face(id: FaceId) -> Face {
         Face {
@@ -231,6 +396,117 @@ mod tests {
         assert_eq!(
             MaterialHingeGraphAudit::prepare(&topology(&[a, b], &[(ab, a, b)]), limits),
             Err(KinematicsError::ResourceLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn closure_certificate_checks_axis_and_relative_rotation_on_every_hinge() {
+        let namespace = ProjectId::new();
+        let a = FaceId::derive_v5(namespace, b"a");
+        let b = FaceId::derive_v5(namespace, b"b");
+        let ab = EdgeId::derive_v5(namespace, b"ab");
+        let topology = topology(&[a, b], &[(ab, a, b)]);
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let axis = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let hinge = TreeHinge::new_for_test(ab, FoldAssignment::Mountain, a, b, start, end, axis);
+        let right = RigidTransform::around_axis(start, axis, 90.0).unwrap();
+        let angles = CanonicalHingeAngles::new(vec![HingeAngle::new(ab, 90.0).unwrap()]).unwrap();
+        let candidate = [
+            CandidateFaceTransform::new(b, right),
+            CandidateFaceTransform::new(a, RigidTransform::identity()),
+        ];
+        let certificate =
+            MaterialHingeClosureCertificate::observe(&audit, &[hinge], &angles, &candidate, 0.0)
+                .unwrap();
+        assert_eq!(certificate.checked_hinges(), &[ab]);
+        assert_eq!(certificate.maximum_axis_point_error(), 0.0);
+        assert_eq!(certificate.maximum_relative_transform_error(), 0.0);
+    }
+
+    #[test]
+    fn closure_certificate_rejects_incomplete_duplicate_and_nonclosing_evidence() {
+        let namespace = ProjectId::new();
+        let a = FaceId::derive_v5(namespace, b"a");
+        let b = FaceId::derive_v5(namespace, b"b");
+        let ab = EdgeId::derive_v5(namespace, b"ab");
+        let topology = topology(&[a, b], &[(ab, a, b)]);
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let axis = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let hinge = TreeHinge::new_for_test(ab, FoldAssignment::Mountain, a, b, start, axis, axis);
+        let angles = CanonicalHingeAngles::new(vec![HingeAngle::new(ab, 90.0).unwrap()]).unwrap();
+        let identity = RigidTransform::identity();
+        let duplicate = [
+            CandidateFaceTransform::new(a, identity),
+            CandidateFaceTransform::new(a, identity),
+        ];
+        assert_eq!(
+            MaterialHingeClosureCertificate::observe(
+                &audit,
+                std::slice::from_ref(&hinge),
+                &angles,
+                &duplicate,
+                0.0,
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+        let nonclosing = [
+            CandidateFaceTransform::new(a, identity),
+            CandidateFaceTransform::new(b, identity),
+        ];
+        assert_eq!(
+            MaterialHingeClosureCertificate::observe(
+                &audit,
+                &[hinge],
+                &angles,
+                &nonclosing,
+                1.0e-12,
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+    }
+
+    #[test]
+    fn closure_certificate_does_not_skip_cycle_closure_hinges() {
+        let namespace = ProjectId::new();
+        let a = FaceId::derive_v5(namespace, b"a");
+        let b = FaceId::derive_v5(namespace, b"b");
+        let c = FaceId::derive_v5(namespace, b"c");
+        let ab = EdgeId::derive_v5(namespace, b"ab");
+        let bc = EdgeId::derive_v5(namespace, b"bc");
+        let ca = EdgeId::derive_v5(namespace, b"ca");
+        let topology = topology(&[a, b, c], &[(ab, a, b), (bc, b, c), (ca, c, a)]);
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        assert_eq!(audit.closure_hinges().len(), 1);
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let axis = end;
+        let hinges = [
+            TreeHinge::new_for_test(ab, FoldAssignment::Mountain, a, b, start, end, axis),
+            TreeHinge::new_for_test(bc, FoldAssignment::Mountain, b, c, start, end, axis),
+            TreeHinge::new_for_test(ca, FoldAssignment::Mountain, c, a, start, end, axis),
+        ];
+        let mut raw_angles = [ab, bc, ca]
+            .map(|edge| HingeAngle::new(edge, 0.0).unwrap())
+            .to_vec();
+        raw_angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+        let angles = CanonicalHingeAngles::new(raw_angles).unwrap();
+        let candidate =
+            [a, b, c].map(|face| CandidateFaceTransform::new(face, RigidTransform::identity()));
+        let certificate =
+            MaterialHingeClosureCertificate::observe(&audit, &hinges, &angles, &candidate, 0.0)
+                .unwrap();
+        assert_eq!(certificate.checked_hinges().len(), 3);
+        assert!(
+            audit
+                .closure_hinges()
+                .iter()
+                .all(|edge| certificate.checked_hinges().contains(edge))
         );
     }
 }

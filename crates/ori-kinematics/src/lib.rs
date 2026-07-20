@@ -76,7 +76,7 @@ mod tree;
 use ori_domain::{EdgeId, FaceId};
 use thiserror::Error;
 
-pub use graph::MaterialHingeGraphAudit;
+pub use graph::{CandidateFaceTransform, MaterialHingeClosureCertificate, MaterialHingeGraphAudit};
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{
     BoundMaterialTreePose, CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles, HingeAngle,

@@ -152,6 +152,27 @@ pub struct TreeHinge {
 }
 
 impl TreeHinge {
+    #[cfg(test)]
+    pub(crate) const fn new_for_test(
+        edge: EdgeId,
+        assignment: FoldAssignment,
+        left_face: FaceId,
+        right_face: FaceId,
+        start: Point3,
+        end: Point3,
+        axis: Point3,
+    ) -> Self {
+        Self {
+            edge,
+            assignment,
+            left_face,
+            right_face,
+            start,
+            end,
+            axis,
+        }
+    }
+
     #[must_use]
     pub const fn edge(&self) -> EdgeId {
         self.edge
@@ -180,6 +201,11 @@ impl TreeHinge {
     #[must_use]
     pub const fn end(&self) -> Point3 {
         self.end
+    }
+
+    #[must_use]
+    pub const fn axis(&self) -> Point3 {
+        self.axis
     }
 }
 

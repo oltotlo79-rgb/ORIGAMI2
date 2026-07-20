@@ -60,6 +60,10 @@ const response = (revision = 3): StackedFoldReadResponse =>
       targetMaterialFaceCount: 2,
       targetHingeCount: 1,
     },
+    liveGraphHingeAngles: [{
+      edge: PROJECT,
+      initialAngleDegrees: 0,
+    }],
     endpointCollision: {
       expectedPairCount: 0,
       separatedPairCount: 0,

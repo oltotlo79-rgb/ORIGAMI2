@@ -62,6 +62,10 @@ const ready = {
     targetMaterialFaceCount: 3,
     targetHingeCount: 2,
   },
+  liveGraphHingeAngles: [
+    { edge: project, initialAngleDegrees: 0 },
+    { edge: token, initialAngleDegrees: 0 },
+  ],
   endpointCollision: {
     expectedPairCount: 3,
     separatedPairCount: 0,

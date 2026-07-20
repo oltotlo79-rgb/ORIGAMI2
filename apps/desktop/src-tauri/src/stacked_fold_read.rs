@@ -343,6 +343,25 @@ struct StackedFoldTransactionProposalDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LiveGraphHingeAngleDto {
+    edge: ori_domain::EdgeId,
+    initial_angle_degrees: f64,
+}
+
+fn live_hinge_registry(
+    angles: &[ori_kinematics::HingeAngle],
+) -> Vec<LiveGraphHingeAngleDto> {
+    angles
+        .iter()
+        .map(|angle| LiveGraphHingeAngleDto {
+            edge: angle.edge(),
+            initial_angle_degrees: angle.angle_degrees(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldReadResponse {
     guard_model_id: &'static str,
     proposal_model_id: &'static str,
@@ -353,6 +372,7 @@ pub(super) struct StackedFoldReadResponse {
     target_faces: Vec<FaceId>,
     material_segments: Vec<StackedFoldMaterialSegmentDto>,
     topology_proof: StackedFoldTopologyProofDto,
+    live_graph_hinge_angles: Vec<LiveGraphHingeAngleDto>,
     endpoint_collision: StackedFoldEndpointCollisionDto,
     continuous_path: StackedFoldContinuousPathDto,
     flat_endpoint_layer_order: StackedFoldFlatEndpointLayerOrderDto,
@@ -687,6 +707,8 @@ pub(super) async fn propose_current_stacked_fold_read(
                 failure_classes: Vec::new(),
                 authorizes_project_mutation: false,
             };
+            let live_graph_hinge_angles =
+                live_hinge_registry(closed_endpoint.initial().pose().hinge_angles().as_slice());
             let native_transaction = Some(NativeStackedFoldPremises::Graph(
                 super::stacked_fold_transaction::PendingStackedFoldGraphPremises {
                     expected_instance_id: binding.project_instance_id(),
@@ -743,6 +765,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                 target_faces,
                 material_segments,
                 topology_proof,
+                live_graph_hinge_angles,
                 work,
                 endpoint_collision,
                 StackedFoldPathAnalysis::Graph {
@@ -990,6 +1013,8 @@ pub(super) async fn propose_current_stacked_fold_read(
             authorizes_project_mutation: false,
         };
         let source_fingerprint_bytes = geometry_proof.lineage().source_fingerprint().0;
+        let live_graph_hinge_angles =
+            live_hinge_registry(prepared_requested_pose.initial().pose().hinge_angles());
         let native_transaction = transaction_layer_order.map(|layer_order| {
             NativeStackedFoldPremises::Tree(super::stacked_fold_transaction::PendingStackedFoldPremises {
                 expected_instance_id: binding.project_instance_id(),
@@ -1045,6 +1070,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             target_faces,
             material_segments,
             topology_proof,
+            live_graph_hinge_angles,
             work,
             endpoint_collision,
             StackedFoldPathAnalysis::Tree(continuous_path),
@@ -1064,6 +1090,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         target_faces,
         material_segments,
         topology_proof,
+        live_graph_hinge_angles,
         work,
         endpoint_collision,
         continuous_path,
@@ -1131,6 +1158,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         target_faces,
         material_segments,
         topology_proof,
+        live_graph_hinge_angles,
         endpoint_collision,
         continuous_path: match continuous_path {
             StackedFoldPathAnalysis::Tree(value) => StackedFoldContinuousPathDto {

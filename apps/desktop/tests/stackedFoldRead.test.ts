@@ -123,6 +123,10 @@ describe('stacked-fold read boundary', () => {
         targetMaterialFaceCount: 2,
         targetHingeCount: 1,
       },
+      liveGraphHingeAngles: [{
+        edge: faceId,
+        initialAngleDegrees: 0,
+      }],
       endpointCollision: {
         expectedPairCount: 1,
         separatedPairCount: 0,
@@ -266,6 +270,10 @@ describe('stacked-fold read boundary', () => {
         targetMaterialFaceCount: 2,
         targetHingeCount: 1,
       },
+      liveGraphHingeAngles: [{
+        edge: faceId,
+        initialAngleDegrees: 0,
+      }],
       endpointCollision: {
         expectedPairCount: 1,
         separatedPairCount: 0,
@@ -379,6 +387,26 @@ describe('stacked-fold read boundary', () => {
         { ...response, work: { ...response.work, retainedTargetFaces: 2 } },
         request,
       ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse({
+        ...response,
+        liveGraphHingeAngles: [
+          response.liveGraphHingeAngles[0],
+          response.liveGraphHingeAngles[0],
+        ],
+      }, request),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse({
+        ...response,
+        liveGraphHingeAngles: [{
+          ...response.liveGraphHingeAngles[0],
+          authority: true,
+        }],
+      }, request),
       null,
     )
     assert.equal(

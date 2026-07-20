@@ -291,6 +291,54 @@ export function StackedFoldPanel({
       )}
       {view.kind === 'ready' && (
         <div className="stacked-fold-proof" data-ready={ready}>
+          {view.response.liveGraphHingeAngles.length > 0 && (
+            <fieldset>
+              <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
+              {view.response.liveGraphHingeAngles.map((hinge) => (
+                <div key={hinge.edge}>
+                  <label>
+                    <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
+                    <input
+                      aria-label={`${t('初期角度', 'Initial angle')} ${hinge.edge}`}
+                      type="number"
+                      value={hinge.initialAngleDegrees}
+                      readOnly
+                    />
+                  </label>
+                  <label>
+                    <span>{t('要求角度', 'Requested angle')}</span>
+                    <input
+                      aria-label={`${t('要求角度', 'Requested angle')} ${hinge.edge}`}
+                      type="number"
+                      min="0"
+                      max="180"
+                      step="any"
+                      defaultValue={hinge.initialAngleDegrees}
+                      disabled={disabled || applying}
+                      onChange={(event) => {
+                        const requested = Number(event.target.value)
+                        if (!Number.isFinite(requested) || requested < 0 || requested > 180) return
+                        const current = view.response.liveGraphHingeAngles.map((entry) => ({
+                          edge: entry.edge,
+                          initialAngleDegrees: entry.initialAngleDegrees,
+                          requestedAngleDegrees: entry.edge === hinge.edge
+                            ? requested
+                            : entry.initialAngleDegrees,
+                        }))
+                        setCycleScheduleText(JSON.stringify({ version: 1, entries: current }))
+                      }}
+                    />
+                  </label>
+                </div>
+              ))}
+              <p className="muted">
+                {t(
+                  '要求角度を変更すると、正規順序のlinearCandidateV1が内部で構築されます。初期角度はnative姿勢へbit単位で再検証されます。',
+                  'Editing a requested angle builds canonical linearCandidateV1 internally. Native revalidates initial angles bit-for-bit.',
+                )}
+              </p>
+            </fieldset>
+          )}
           <dl>
             <div><dt>{t('対象面', 'Target faces')}</dt><dd>{view.response.targetFaces.length}</dd></div>
             <div><dt>{t('折り線', 'Creases')}</dt><dd>{view.response.materialSegments.length}</dd></div>

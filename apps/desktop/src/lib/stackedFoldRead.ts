@@ -92,6 +92,10 @@ export type StackedFoldReadResponse = Readonly<{
     targetMaterialFaceCount: number
     targetHingeCount: number
   }>
+  liveGraphHingeAngles: readonly Readonly<{
+    edge: string
+    initialAngleDegrees: number
+  }>[]
   endpointCollision: Readonly<{
     expectedPairCount: number
     separatedPairCount: number
@@ -333,6 +337,7 @@ export function normalizeStackedFoldReadResponse(
       'targetFaces',
       'materialSegments',
       'topologyProof',
+      'liveGraphHingeAngles',
       'endpointCollision',
       'continuousPath',
       'flatEndpointLayerOrder',
@@ -447,6 +452,20 @@ export function normalizeStackedFoldReadResponse(
     !Array.isArray(value.targetFaces) ||
     value.targetFaces.length === 0 ||
     !value.targetFaces.every(isCanonicalNonNilUuid) ||
+    !Array.isArray(value.liveGraphHingeAngles) ||
+    value.liveGraphHingeAngles.length > 64 ||
+    value.liveGraphHingeAngles.length !== topologyProof.targetHingeCount ||
+    !value.liveGraphHingeAngles.every(
+      (entry, index, entries) =>
+        isRecord(entry) &&
+        hasExactKeys(entry, ['edge', 'initialAngleDegrees']) &&
+        isCanonicalNonNilUuid(entry.edge) &&
+        typeof entry.initialAngleDegrees === 'number' &&
+        Number.isFinite(entry.initialAngleDegrees) &&
+        entry.initialAngleDegrees >= 0 &&
+        entry.initialAngleDegrees <= 180 &&
+        (index === 0 || String(entries[index - 1]?.edge) < entry.edge),
+    ) ||
     !Array.isArray(value.materialSegments) ||
     value.materialSegments.length !== value.targetFaces.length ||
     !value.materialSegments.every(

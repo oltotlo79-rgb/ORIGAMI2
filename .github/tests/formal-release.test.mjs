@@ -201,6 +201,36 @@ test('formal manifest remains an attested manual-review artifact, not an updater
   assert.match(runtimeContract, /runtimeUpdaterAvailable: false/u)
 })
 
+test('provenance subjects cover the complete verified nine-asset set', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
+  const promote = workflow.slice(workflow.indexOf('  promote:'))
+  for (const pattern of [
+    'release/*.exe',
+    'release/*.zip',
+    'release/*.tar.gz',
+    'release/*.cdx.json',
+    'release/*.update.json',
+    'release/SHA256SUMS-*.txt',
+  ]) {
+    assert.ok(publish.includes(pattern), pattern)
+  }
+  for (const name of [
+    'windows-x64-setup.exe',
+    'windows-x64-portable.zip',
+    'windows-x64.cdx.json',
+    'windows-x64.update.json',
+    'macos-arm64-app.tar.gz',
+    'macos-arm64.cdx.json',
+    'macos-arm64.update.json',
+    'SHA256SUMS-windows-x64.txt',
+    'SHA256SUMS-macos-arm64.txt',
+  ]) {
+    assert.ok(promote.includes(name), name)
+  }
+  assert.equal(promote.match(/gh attestation verify "\$asset"/gu)?.length, 1)
+})
+
 test('CI always runs release contracts with read-only short-lived evidence', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const checkoutCount = workflow.match(/actions\/checkout@/gu)?.length ?? 0

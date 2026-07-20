@@ -1597,6 +1597,96 @@ export function evaluateBeginnerCandidates(
   })
 }
 
+export type BeginnerParameterGridPointV1 = Readonly<{
+  id: number
+  scale_percent: number
+  spacing_percent: number
+  detail_level: 'simple' | 'standard' | 'detailed'
+}>
+
+export type BeginnerGridEvaluationResponse = Readonly<{
+  project_instance_id: string
+  project_id: string
+  revision: number
+  grid_hash: ReadonlyArray<number>
+  evaluated_grid_points: 27
+  candidates: ReadonlyArray<Readonly<{
+    point: BeginnerParameterGridPointV1
+    primary_score: number
+    plan: BeginnerGeneratedPlanV1
+    assessment: BeginnerGeneratedPlanAssessmentV1
+  }>>
+}>
+
+export async function evaluateBeginnerParameterGrid(
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+): Promise<BeginnerGridEvaluationResponse> {
+  const value = await invoke<unknown>('evaluate_beginner_parameter_grid', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+  })
+  const response = exactCoreDataRecord(value, [
+    'project_instance_id', 'project_id', 'revision', 'grid_hash',
+    'evaluated_grid_points', 'candidates',
+  ] as const)
+  if (!response || response.project_instance_id !== expectedProjectInstanceId
+    || response.project_id !== expectedProjectId || response.revision !== expectedRevision
+    || response.evaluated_grid_points !== 27 || !Array.isArray(response.grid_hash)
+    || response.grid_hash.length !== 32
+    || response.grid_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
+    || !Array.isArray(response.candidates) || response.candidates.length !== 3) {
+    throw new Error('invalid beginner parameter grid response')
+  }
+  const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(
+    value, ['point', 'primary_score', 'plan', 'assessment'] as const,
+  ))
+  if (rawCandidates.some((candidate) => candidate === null)) {
+    throw new Error('invalid beginner parameter grid response')
+  }
+  const admitted = rawCandidates as NonNullable<(typeof rawCandidates)[number]>[]
+  const normalizedPlans = normalizeBeginnerCandidateResponse({
+    schema_version: 1,
+    project_instance_id: expectedProjectInstanceId,
+    project_id: expectedProjectId,
+    revision: expectedRevision,
+    requested_candidate_count: 3,
+    bulge_treatment: 'target_shape_approximation',
+    elasticity_model: 'not_computed',
+    generation_status: 'ready',
+    generated_plans: admitted.map((candidate) => candidate.plan),
+    plan_assessments: admitted.map((candidate) => candidate.assessment),
+    candidates: [0, 1, 2].map((index) => ({
+      schema_version: 1, kind: ['recommended', 'shape_focused', 'foldability_focused'][index],
+      rank: index + 1, total_score: 100 - index, shape_score: 100 - index,
+      target_approximation_score: 100 - index, foldability_score: 100 - index,
+      step_count_score: 100 - index, paper_efficiency_score: 100 - index,
+    })),
+  }, expectedProjectInstanceId, expectedProjectId, expectedRevision, 3)
+  if (!normalizedPlans) throw new Error('invalid beginner parameter grid response')
+  const candidates = admitted.map((candidate, index) => {
+    const point = exactCoreDataRecord(candidate.point, [
+      'id', 'scale_percent', 'spacing_percent', 'detail_level',
+    ] as const)
+    if (!point || !Number.isInteger(point.id) || Number(point.id) < 0 || Number(point.id) > 26
+      || !Number.isInteger(point.scale_percent) || Number(point.scale_percent) < 10 || Number(point.scale_percent) > 45
+      || !Number.isInteger(point.spacing_percent) || Number(point.spacing_percent) < 20 || Number(point.spacing_percent) > 80
+      || !['simple', 'standard', 'detailed'].includes(String(point.detail_level))
+      || !Number.isInteger(candidate.primary_score) || Number(candidate.primary_score) < 0
+      || Number(candidate.primary_score) > 1000
+      || (index > 0 && Number(admitted[index - 1].primary_score) < Number(candidate.primary_score))) {
+      throw new Error('invalid beginner parameter grid response')
+    }
+    return Object.freeze({ point: Object.freeze(point) as BeginnerParameterGridPointV1,
+      primary_score: Number(candidate.primary_score), plan: normalizedPlans.generated_plans[index],
+      assessment: normalizedPlans.plan_assessments[index] })
+  })
+  if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {
+    throw new Error('invalid beginner parameter grid response')
+  }
+  return Object.freeze({ project_instance_id: expectedProjectInstanceId, project_id: expectedProjectId,
+    revision: expectedRevision, grid_hash: Object.freeze(response.grid_hash.slice()) as ReadonlyArray<number>,
+    evaluated_grid_points: 27, candidates: Object.freeze(candidates) })
+}
+
 export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
   project_instance_id: string; project_id: string; revision: number
   estimate: Readonly<{ protrusion_count: 2 | 4; scale_percent: number; spacing_percent: number }>

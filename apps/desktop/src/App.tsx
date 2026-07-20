@@ -81,6 +81,7 @@ import {
   createProjectLayer,
   deleteProjectLayer,
   evaluateBeginnerCandidates,
+  evaluateBeginnerParameterGrid,
   getBeginnerSymmetricParameterEstimate,
   applyBeginnerSymmetricParameters,
   recognizeBeginnerTarget,
@@ -148,6 +149,7 @@ import {
   type ProjectSnapshot,
   type BeginnerDesignProfileV1,
   type BeginnerCandidateResponseV1,
+  type BeginnerGridEvaluationResponse,
   type BeginnerSymmetricParameterEstimateResponse,
   type BeginnerRecognitionProposalV1,
   type BeginnerReferenceModelGeometry,
@@ -707,6 +709,9 @@ function App() {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
+  const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
+  const beginnerGridRequestRef = useRef(0)
   const [beginnerSymmetricEstimate, setBeginnerSymmetricEstimate] =
     useState<BeginnerSymmetricParameterEstimateResponse | null>(null)
   const [beginnerSymmetricScale, setBeginnerSymmetricScale] = useState(25)
@@ -4041,6 +4046,34 @@ function App() {
     beginnerCandidateRequestRef.current += 1
     setBeginnerCandidateBusy(false)
     setBeginnerCandidates(null)
+  }
+
+  function requestBeginnerGrid() {
+    if (beginnerGridBusy) return
+    const current = latestSnapshotRef.current
+    if (!current) return
+    const requestId = ++beginnerGridRequestRef.current
+    setBeginnerGridBusy(true)
+    void evaluateBeginnerParameterGrid(
+      current.project_id, current.revision, current.project_instance_id,
+    ).then((response) => {
+      const latest = latestSnapshotRef.current
+      if (requestId === beginnerGridRequestRef.current
+        && latest?.project_instance_id === response.project_instance_id
+        && latest.project_id === response.project_id && latest.revision === response.revision) {
+        setBeginnerGrid(response)
+      }
+    }).catch(() => {
+      if (requestId === beginnerGridRequestRef.current) setBeginnerGrid(null)
+    }).finally(() => {
+      if (requestId === beginnerGridRequestRef.current) setBeginnerGridBusy(false)
+    })
+  }
+
+  function cancelBeginnerGrid() {
+    beginnerGridRequestRef.current += 1
+    setBeginnerGridBusy(false)
+    setBeginnerGrid(null)
   }
 
   function confirmAndApplyBeginnerPlan(
@@ -7688,6 +7721,38 @@ function App() {
                     ? text({ ja: '候補を評価中…', en: 'Scoring candidates…' })
                     : text({ ja: '候補を評価', en: 'Score candidates' })}
                 </button>
+                <button type="button" onClick={requestBeginnerGrid}
+                  disabled={coreBusy || recoveryBlocking || beginnerGridBusy}>
+                  {beginnerGridBusy
+                    ? text({ ja: '27案を評価中…', en: 'Evaluating 27 designs…' })
+                    : text({ ja: '27案から上位3案を評価', en: 'Evaluate top 3 of 27 designs' })}
+                </button>
+                {beginnerGridBusy && <button type="button" onClick={cancelBeginnerGrid}>
+                  {text({ ja: '27案の評価をキャンセル', en: 'Cancel 27-design evaluation' })}
+                </button>}
+                {beginnerGrid && (
+                  <section aria-label={text({ ja: '27案探索の上位3案', en: 'Top 3 from the 27-design search' })}>
+                    <p className="muted">{formattedText({
+                      ja: '{count}案を評価・格子ハッシュ {hash}',
+                      en: '{count} designs evaluated · grid hash {hash}',
+                    }, { count: beginnerGrid.evaluated_grid_points,
+                      hash: beginnerGrid.grid_hash.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('') })}</p>
+                    <ol>{beginnerGrid.candidates.map((candidate) => (
+                      <li key={candidate.point.id}>
+                        <strong>{formattedText({
+                          ja: '案 {id}・一次評価 {score}/1000',
+                          en: 'Design {id} · primary score {score}/1000',
+                        }, { id: candidate.point.id + 1, score: candidate.primary_score })}</strong>
+                        <span className="muted">{formattedText({
+                          ja: '尺度 {scale}%・間隔 {spacing}%・詳細度 {detail}',
+                          en: 'Scale {scale}% · spacing {spacing}% · detail {detail}',
+                        }, { scale: candidate.point.scale_percent, spacing: candidate.point.spacing_percent,
+                          detail: candidate.point.detail_level })}</span>
+                        <span className="muted">{candidate.assessment.reason}</span>
+                      </li>
+                    ))}</ol>
+                  </section>
+                )}
                 {beginnerCandidates && (
                   <>
                   <p role="note" className="muted">

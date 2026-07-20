@@ -153,11 +153,16 @@ const MAX_INSTRUCTION_STEPS = 512
 const MAX_INSTRUCTION_HINGES_PER_STEP = 10_000
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u
 
-function parseAnnotations(value: unknown, layers: ProjectSnapshot['project_layers']) {
+function parseAnnotations(
+  value: unknown,
+  layers: ProjectSnapshot['project_layers'],
+  vertices: readonly { id: string }[],
+) {
   const record = exactDataRecord(value, ['schema_version', 'annotations'] as const)
   if (record?.schema_version !== 1 || !Array.isArray(record.annotations) || record.annotations.length > 10_000) return null
   const layerIds = new Set(layers.layers.filter((layer) => layer.content_kind === 'annotation').map((layer) => layer.id))
   const ids = new Set<string>()
+  const vertexIds = new Set(vertices.map(({ id }) => id))
   for (const value of record.annotations) {
     const item = exactDataRecord(value, ['id', 'text', 'anchor', 'style', 'layer'] as const)
     const anchorRecord = item && exactDataRecord(item.anchor,
@@ -171,10 +176,12 @@ function parseAnnotations(value: unknown, layers: ProjectSnapshot['project_layer
     const style = item && exactDataRecord(item.style, ['color', 'font_size_mm', 'bold', 'italic'] as const)
     const color = style && exactDataRecord(style.color, ['red', 'green', 'blue', 'alpha'] as const)
     if (!item || !isCanonicalNonNilUuid(item.id) || ids.has(item.id)
-      || typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 4096
+      || typeof item.text !== 'string' || item.text.length === 0
+      || new TextEncoder().encode(item.text).length > 4096 || /[\u0000-\u001f\u007f]/u.test(item.text)
       || typeof item.layer !== 'string' || !layerIds.has(item.layer)
       || !anchorRecord || !anchorPoint || !finite(anchorPoint.x) || !finite(anchorPoint.y)
-      || (anchorRecord.kind !== 'absolute' && (anchorRecord.kind !== 'vertex' || !isCanonicalNonNilUuid(anchorRecord.vertex)))
+      || (anchorRecord.kind !== 'absolute' && (anchorRecord.kind !== 'vertex'
+        || !isCanonicalNonNilUuid(anchorRecord.vertex) || !vertexIds.has(anchorRecord.vertex)))
       || !style || !color || !finite(style.font_size_mm) || style.font_size_mm < 0.5 || style.font_size_mm > 200
       || typeof style.bold !== 'boolean' || typeof style.italic !== 'boolean'
       || !rgbaChannel(color.red) || !rgbaChannel(color.green) || !rgbaChannel(color.blue) || !rgbaChannel(color.alpha)) return null
@@ -663,7 +670,8 @@ export function parseRestoredRecoverySnapshot(
       record.project_layers,
       creasePattern?.edges ?? [],
     )
-    const annotations = projectLayers && parseAnnotations(record.annotations, projectLayers)
+    const annotations = projectLayers && creasePattern
+      && parseAnnotations(record.annotations, projectLayers, creasePattern.vertices)
     const underlays = projectLayers && parseUnderlays(record.underlays, projectLayers)
     const elementMetadata = exactDataRecord(record.element_metadata, [
       'vertices',
@@ -756,7 +764,8 @@ export function parsePathlessProjectSnapshot(
       record.project_layers,
       creasePattern?.edges ?? [],
     )
-    const annotations = projectLayers && parseAnnotations(record.annotations, projectLayers)
+    const annotations = projectLayers && creasePattern
+      && parseAnnotations(record.annotations, projectLayers, creasePattern.vertices)
     const underlays = projectLayers && parseUnderlays(record.underlays, projectLayers)
     const elementMetadata = exactDataRecord(record.element_metadata, [
       'vertices',

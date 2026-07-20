@@ -3823,9 +3823,9 @@ fn import_underlay_image(
                 .read_to_end(&mut bytes)
         })
         .map_err(|_| "could not read image".to_owned())?;
-    let media_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    let media_type = if valid_png_image_envelope(&bytes) {
         ProjectTextureMediaTypeV1::Png
-    } else if bytes.starts_with(&[0xff, 0xd8]) && bytes.ends_with(&[0xff, 0xd9]) {
+    } else if valid_jpeg_image_envelope(&bytes) {
         ProjectTextureMediaTypeV1::Jpeg
     } else {
         return Err("selected file is not a valid PNG/JPEG".to_owned());
@@ -3875,6 +3875,60 @@ fn import_underlay_image(
             .retain(|candidate| candidate.id != asset);
     }
     result
+}
+
+fn valid_png_image_envelope(bytes: &[u8]) -> bool {
+    if bytes.len() < 45
+        || !bytes.starts_with(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+        || !bytes.ends_with(b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    {
+        return false;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap_or_default());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap_or_default());
+    (1..=32_768).contains(&width) && (1..=32_768).contains(&height)
+}
+
+fn valid_jpeg_image_envelope(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 || !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
+        return false;
+    }
+    let mut offset = 2usize;
+    while offset + 4 <= bytes.len() - 2 {
+        if bytes[offset] != 0xff {
+            offset += 1;
+            continue;
+        }
+        let marker = bytes[offset + 1];
+        offset += 2;
+        if marker == 0xd9 || marker == 0xda {
+            break;
+        }
+        if marker == 0x00 || marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        if offset + 2 > bytes.len() {
+            return false;
+        }
+        let length = usize::from(u16::from_be_bytes([bytes[offset], bytes[offset + 1]]));
+        if length < 2
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > bytes.len())
+        {
+            return false;
+        }
+        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
+            if length < 7 {
+                return false;
+            }
+            let height = u16::from_be_bytes([bytes[offset + 3], bytes[offset + 4]]);
+            let width = u16::from_be_bytes([bytes[offset + 5], bytes[offset + 6]]);
+            return width != 0 && height != 0 && width <= 32_768 && height <= 32_768;
+        }
+        offset += length;
+    }
+    false
 }
 
 #[tauri::command]

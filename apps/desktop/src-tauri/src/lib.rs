@@ -2411,6 +2411,117 @@ fn mirror_edge_left_right(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MirrorSelectionModeV1 {
+    Move,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MirrorAxisV1 {
+    start: Point2,
+    end: Point2,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MirrorSelectionRequestV1 {
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+    axis: MirrorAxisV1,
+    mode: MirrorSelectionModeV1,
+    new_vertices: Vec<VertexId>,
+    new_edges: Vec<EdgeId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct MirrorSelectionPreflightV1 {
+    allowed: bool,
+    mode: MirrorSelectionModeV1,
+    vertex_count: usize,
+    edge_count: usize,
+    issue: Option<&'static str>,
+}
+
+fn validate_mirror_selection_request_v1(
+    request: &MirrorSelectionRequestV1,
+) -> MirrorSelectionPreflightV1 {
+    let finite_axis = request.axis.start.x.is_finite()
+        && request.axis.start.y.is_finite()
+        && request.axis.end.x.is_finite()
+        && request.axis.end.y.is_finite();
+    let nondegenerate_axis = finite_axis
+        && (request.axis.start.x != request.axis.end.x
+            || request.axis.start.y != request.axis.end.y);
+    let canonical_vertices = request
+        .vertices
+        .windows(2)
+        .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes());
+    let canonical_edges = request
+        .edges
+        .windows(2)
+        .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes());
+    let new_vertex_count_ok = match request.mode {
+        MirrorSelectionModeV1::Move => request.new_vertices.is_empty(),
+        MirrorSelectionModeV1::Duplicate => {
+            request.new_vertices.len() == request.vertices.len()
+                && request
+                    .new_vertices
+                    .windows(2)
+                    .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+        }
+    };
+    let new_edge_count_ok = match request.mode {
+        MirrorSelectionModeV1::Move => request.new_edges.is_empty(),
+        MirrorSelectionModeV1::Duplicate => {
+            request.new_edges.len() == request.edges.len()
+                && request
+                    .new_edges
+                    .windows(2)
+                    .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+        }
+    };
+    let issue = if !nondegenerate_axis {
+        Some("invalid_axis")
+    } else if request.vertices.is_empty() && request.edges.is_empty() {
+        Some("empty_selection")
+    } else if !canonical_vertices || !canonical_edges {
+        Some("noncanonical_selection")
+    } else if !new_vertex_count_ok || !new_edge_count_ok {
+        Some("invalid_new_ids")
+    } else {
+        None
+    };
+    MirrorSelectionPreflightV1 {
+        allowed: issue.is_none(),
+        mode: request.mode,
+        vertex_count: request.vertices.len(),
+        edge_count: request.edges.len(),
+        issue,
+    }
+}
+
+fn mirror_point_about_axis(point: Point2, axis: MirrorAxisV1) -> Option<Point2> {
+    let dx = axis.end.x - axis.start.x;
+    let dy = axis.end.y - axis.start.y;
+    let length_squared = dx.mul_add(dx, dy * dy);
+    if !length_squared.is_finite() || length_squared <= 0.0 {
+        return None;
+    }
+    let relative_x = point.x - axis.start.x;
+    let relative_y = point.y - axis.start.y;
+    let projection = relative_x.mul_add(dx, relative_y * dy) / length_squared;
+    let projected_x = axis.start.x + projection * dx;
+    let projected_y = axis.start.y + projection * dy;
+    let mirrored = Point2::new(
+        projected_x.mul_add(2.0, -point.x),
+        projected_y.mul_add(2.0, -point.y),
+    );
+    (mirrored.x.is_finite() && mirrored.y.is_finite()).then_some(mirrored)
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn rotate_edge_about_point(

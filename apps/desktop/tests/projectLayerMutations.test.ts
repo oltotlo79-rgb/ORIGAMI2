@@ -304,6 +304,7 @@ function validSnapshot() {
         target_category: null,
         target_parts: [],
         skeleton_segments: [],
+        target_asset: null,
         allowed_techniques: ['valley_fold', 'mountain_fold'],
       },
     },

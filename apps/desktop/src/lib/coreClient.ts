@@ -178,6 +178,11 @@ export type BeginnerGenerationConstraintsV1 = {
     end: { x_tenths_mm: number; y_tenths_mm: number }
     thickness_tenths_mm: number
   }>
+  target_asset: {
+    kind: 'reference_image'
+    underlay_id: string
+    asset_id: string
+  } | null
   allowed_techniques: Array<
     | 'valley_fold'
     | 'mountain_fold'
@@ -211,6 +216,7 @@ function normalizeBeginnerGenerationConstraints(
     'target_category',
     'target_parts',
     'skeleton_segments',
+    'target_asset',
     'allowed_techniques',
   ] as const)
   if (
@@ -283,6 +289,21 @@ function normalizeBeginnerGenerationConstraints(
     }
   })
   if (skeletonSegments.some((segment) => segment === null)) return null
+  let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
+  if (record.target_asset !== null) {
+    const asset = exactCoreDataRecord(
+      record.target_asset,
+      ['kind', 'underlay_id', 'asset_id'] as const,
+    )
+    if (!asset || asset.kind !== 'reference_image'
+      || !isCanonicalNonNilUuid(asset.underlay_id)
+      || !isCanonicalNonNilUuid(asset.asset_id)) return null
+    targetAsset = {
+      kind: 'reference_image',
+      underlay_id: asset.underlay_id,
+      asset_id: asset.asset_id,
+    }
+  }
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
@@ -290,6 +311,7 @@ function normalizeBeginnerGenerationConstraints(
     target_category: record.target_category,
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
+    target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
 }
@@ -320,6 +342,7 @@ export type BeginnerCandidateResponseV1 = {
     | 'unsupported_techniques'
     | 'missing_target_category'
     | 'missing_required_parts'
+    | 'missing_target_asset'
   generated_plans: BeginnerGeneratedPlanV1[]
   candidates: BeginnerCandidateScoreV1[]
 }
@@ -334,6 +357,7 @@ export type BeginnerGeneratedPlanV1 = {
   instruction_codes: string[]
   target_parts: BeginnerGenerationConstraintsV1['target_parts']
   skeleton_segments: BeginnerGenerationConstraintsV1['skeleton_segments']
+  target_asset: BeginnerGenerationConstraintsV1['target_asset']
 }
 
 function normalizeBeginnerCandidateResponse(
@@ -364,7 +388,7 @@ function normalizeBeginnerCandidateResponse(
     || response.requested_candidate_count !== requestedCandidateCount
     || response.bulge_treatment !== 'target_shape_approximation'
     || response.elasticity_model !== 'not_computed'
-    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques', 'missing_target_category', 'missing_required_parts']
+    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques', 'missing_target_category', 'missing_required_parts', 'missing_target_asset']
       .includes(String(response.generation_status))
     || !Array.isArray(response.generated_plans)
     || response.generated_plans.length > 3
@@ -419,6 +443,7 @@ function normalizeBeginnerCandidateResponse(
     const record = exactCoreDataRecord(plan, [
       'schema_version', 'kind', 'crease_pattern', 'instruction_codes', 'target_parts',
       'skeleton_segments',
+      'target_asset',
     ] as const)
     const pattern = record && exactCoreDataRecord(record.crease_pattern, ['vertices', 'edges'] as const)
     if (
@@ -442,6 +467,7 @@ function normalizeBeginnerCandidateResponse(
       target_category: 'animal',
       target_parts: record.target_parts,
       skeleton_segments: record.skeleton_segments,
+      target_asset: record.target_asset,
       allowed_techniques: ['valley_fold'],
     })
     if (!normalizedPlanInputs) return null
@@ -463,6 +489,7 @@ function normalizeBeginnerCandidateResponse(
       instruction_codes: record.instruction_codes.slice(),
       target_parts: normalizedPlanInputs.target_parts,
       skeleton_segments: normalizedPlanInputs.skeleton_segments,
+      target_asset: normalizedPlanInputs.target_asset,
     } as BeginnerGeneratedPlanV1
   })
   if (generatedPlans.some((plan) => plan === null)

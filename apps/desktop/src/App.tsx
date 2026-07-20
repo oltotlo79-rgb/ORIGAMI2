@@ -3463,6 +3463,9 @@ function App() {
     const maximumSteps = Number(data.get('maximum_steps'))
     const detailLevel = String(data.get('detail_level'))
     const targetCategory = String(data.get('target_category'))
+    const targetUnderlayId = String(data.get('target_reference_underlay'))
+    const targetUnderlay = current.underlays?.underlays
+      .find((underlay) => underlay.id === targetUnderlayId)
     const targetParts = ([
       'head', 'torso', 'leg', 'horn', 'ear', 'wing', 'tail',
     ] as const).map((kind) => ({
@@ -3477,6 +3480,13 @@ function App() {
       target_category: targetCategory as 'animal' | 'insect',
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
+      target_asset: targetUnderlay
+        ? {
+            kind: 'reference_image' as const,
+            underlay_id: targetUnderlay.id,
+            asset_id: targetUnderlay.asset,
+          }
+        : null,
       allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
     }
     if (
@@ -3485,6 +3495,7 @@ function App() {
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
       || !['animal', 'insect'].includes(targetCategory)
+      || (targetUnderlayId !== '' && !targetUnderlay)
       || targetParts.some((part) => !Number.isInteger(part.count) || part.count > 8)
       || targetParts.reduce((sum, part) => sum + part.count, 0) > 32
       || allowedTechniques.length < 1
@@ -7310,6 +7321,14 @@ function App() {
                                 ))}
                               </svg>
                             )}
+                            {plan.target_asset && (
+                              <p role="note">
+                                {text({
+                                  ja: 'この候補は選択したプロジェクト内の参照画像を目標入力として使用しています。',
+                                  en: 'This candidate uses the selected project reference image as target input.',
+                                })}
+                              </p>
+                            )}
                             <p className="muted">
                               {text({
                                 ja: 'これは読取専用の候補です。確認・適用操作を行うまでプロジェクト権限にはなりません。',
@@ -7342,6 +7361,8 @@ function App() {
                         ? text({ ja: '先に動物または昆虫の目標カテゴリを保存してください。', en: 'Save an animal or insect target category first.' })
                         : beginnerCandidates.generation_status === 'missing_required_parts'
                           ? text({ ja: '頭1個と胴体1個を目標部品として保存してください。', en: 'Save one head and one torso as required target parts.' })
+                          : beginnerCandidates.generation_status === 'missing_target_asset'
+                            ? text({ ja: '参照画像が削除または変更されています。別の配置画像を選択してください。', en: 'The reference image was removed or changed. Select another underlay image.' })
                         : beginnerCandidates.generation_status === 'unsupported_techniques'
                         ? text({ ja: '谷折りまたは山折りを許可してください。', en: 'Allow valley or mountain folds to generate plans.' })
                         : beginnerCandidates.generation_status === 'resource_limit'
@@ -7374,6 +7395,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_asset),
                   nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
                 ].join(':')}
                 onSubmit={submitBeginnerDesignProfile}
@@ -7428,6 +7450,34 @@ function App() {
                   {text({
                     ja: '初版で対応する目標形状は動物と昆虫だけです。未対応カテゴリは推測しません。',
                     en: 'The initial release supports only animal and insect targets. Unsupported categories are not inferred.',
+                  })}
+                </p>
+                <label className="field">
+                  <span>{text({ ja: '参照画像', en: 'Reference image' })}</span>
+                  <select
+                    name="target_reference_underlay"
+                    defaultValue={
+                      nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
+                        ?.underlay_id ?? ''
+                    }
+                    disabled={coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-target-asset-help"
+                  >
+                    <option value="">{text({ ja: '使用しない', en: 'None' })}</option>
+                    {(nativeSnapshot.underlays?.underlays ?? []).map((underlay, index) => (
+                      <option key={underlay.id} value={underlay.id}>
+                        {formattedText({
+                          ja: '配置画像 {index}',
+                          en: 'Underlay image {index}',
+                        }, { index: index + 1 })}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p id="beginner-target-asset-help" className="muted">
+                  {text({
+                    ja: '既にプロジェクトへ配置したPNG/JPEGだけを参照できます。参照を解除するまで画像の削除・差し替えはできません。画像内容を自動推測しません。3Dモデルの目標入力は初版では未対応です。',
+                    en: 'Only PNG/JPEG images already placed in this project can be referenced. Clear the reference before removing or replacing that image. Image contents are not inferred. 3D model targets are not supported in the initial release.',
                   })}
                 </p>
                 <fieldset

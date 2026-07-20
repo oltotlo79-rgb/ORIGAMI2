@@ -81,6 +81,17 @@ test('AUT-003 stores and previews bounded stick skeleton bars with explicit dime
   assert.match(app, /Only bars with explicit length and thickness are used for generation/u)
 })
 
+test('AUT-004 binds an existing project image without inferring unsupported 3D targets', () => {
+  assert.match(generation, /BeginnerTargetAssetReferenceV1/u)
+  assert.match(client, /asset\.kind !== 'reference_image'/u)
+  assert.match(client, /isCanonicalNonNilUuid\(asset\.underlay_id\)/u)
+  assert.match(client, /isCanonicalNonNilUuid\(asset\.asset_id\)/u)
+  assert.match(app, /name="target_reference_underlay"/u)
+  assert.match(app, /Image contents are not inferred/u)
+  assert.match(app, /3D model targets are not supported/u)
+  assert.match(app, /selected project reference image as target input/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

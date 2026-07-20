@@ -14,6 +14,7 @@
     "test:gltf-sample-viewer": "node scripts/sample-viewer-runtime-e2e.mjs",
     "test:a11y-browser": "node scripts/accessibility-browser-smoke.mjs",
     "test:diagnostics-browser": "node scripts/diagnostics-browser-e2e.mjs",
+    "test:project-lifecycle-browser": "node scripts/project-lifecycle-browser-e2e.mjs",
     "test:blender": "node scripts/run-blender-acceptance.mjs",
     "test:prusaslicer": "node scripts/run-prusaslicer-acceptance.mjs",
     "preview": "vite preview",

@@ -2714,6 +2714,32 @@ mod tests {
         );
         assert_eq!(requested.requested_angle_degrees(), 90.0);
         assert_eq!(requested.pose().hinge_angles()[0].angle_degrees(), 90.0);
+
+        let rebuild = || {
+            let geometry = prepare_stacked_fold_geometry_candidate_v1(
+                fixture.identity,
+                fixture.source_revision,
+                &fixture.source_pattern,
+                &fixture.source_paper,
+                &fixture.source_layer_order,
+                &fixture.expected_creases,
+                StackedFoldTopologyBuildLimitsV1::default(),
+                FaceLineageLimits::default(),
+                StackedFoldGeometryLimitsV1::default(),
+            )
+            .expect("rebuild geometry");
+            let target =
+                prepare_stacked_fold_target_model_v1(geometry, TreeKinematicsLimits::default())
+                    .expect("rebuild target");
+            prepare_stacked_fold_initial_pose_v1(target, &source_model, &source_pose)
+                .expect("rebuild initial pose")
+        };
+        for invalid in [0.0, -0.0, -1.0, 180.000_000_1, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                prepare_stacked_fold_requested_pose_v1(rebuild(), invalid),
+                Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle)
+            ));
+        }
     }
 
     #[test]

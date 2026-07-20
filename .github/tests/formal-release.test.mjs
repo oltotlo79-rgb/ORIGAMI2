@@ -48,6 +48,53 @@ test('all workflow actions are immutable SHA-pinned with bounded release jobs', 
   assert.doesNotMatch(build, /contents: write|id-token: write|attestations: write/u)
 })
 
+test('publication verifies current-run artifact archive digests before extraction', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const verifier = join(root, '.github/scripts/verify_workflow_artifact_metadata.mjs')
+  assert.match(workflow, /actions: read/u)
+  assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/artifacts/u)
+  assert.match(workflow, /actions\/artifacts\/\$artifact_id\/zip/u)
+  assert.match(workflow, /actual_digest.*expected_digest/u)
+  assert.ok(
+    workflow.indexOf('Verify immutable workflow artifact archive digests') <
+      workflow.indexOf('actions/download-artifact@'),
+  )
+
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-artifact-metadata-'))
+  try {
+    const valid = {
+      total_count: 2,
+      artifacts: [
+        artifact(2, 'formal-release-windows-x64', 'a'),
+        artifact(1, 'formal-release-macos-arm64', 'b'),
+      ],
+    }
+    const path = join(directory, 'metadata.json')
+    writeFileSync(path, JSON.stringify(valid))
+    const output = execFileSync('node', [verifier, path], { encoding: 'utf8' })
+    assert.match(output, /^formal-release-macos-arm64\t1\tb{64}$/mu)
+    for (const invalid of [
+      { ...valid, total_count: 3 },
+      { ...valid, artifacts: [valid.artifacts[0], valid.artifacts[0]] },
+      { ...valid, artifacts: [valid.artifacts[0]] },
+      { ...valid, artifacts: [artifact(1, 'formal-release-macos-arm64', 'z'), valid.artifacts[0]] },
+      { ...valid, artifacts: [{ ...valid.artifacts[1], expired: true }, valid.artifacts[0]] },
+    ]) {
+      writeFileSync(path, JSON.stringify(invalid))
+      assert.throws(
+        () => execFileSync('node', [verifier, path], { stdio: 'pipe' }),
+        /workflow artifact/u,
+      )
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+function artifact(id, name, digestCharacter) {
+  return { id, name, expired: false, digest: `sha256:${digestCharacter.repeat(64)}` }
+}
+
 test('formal manifest remains an attested manual-review artifact, not an updater endpoint', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const manifestWriter = readFileSync(

@@ -203,6 +203,7 @@ jobs:
     timeout-minutes: 15
     environment: formal-release
     permissions:
+      actions: read
       contents: write
       id-token: write
       attestations: write
@@ -211,6 +212,21 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.tag }}
           persist-credentials: false
+      - name: Verify immutable workflow artifact archive digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/formal-release-artifacts.json"
+          gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$metadata"
+          while IFS=$'\t' read -r name artifact_id expected_digest
+          do
+            archive="$RUNNER_TEMP/$name.zip"
+            gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$archive"
+            actual_digest="$(sha256sum "$archive" | cut -d' ' -f1)"
+            test "$actual_digest" = "$expected_digest"
+          done < <(node .github/scripts/verify_workflow_artifact_metadata.mjs "$metadata")
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: formal-release-*

@@ -18,11 +18,11 @@ test('App applies one snapshot display unit to every authoring length surface', 
   )
   assert.match(app, /measurementLabel=\{formatLineMeasurementLabel\([\s\S]*?displayedLengthUnit/u)
   assert.match(app, /formatLengthPoint\([\s\S]*?displayedLengthUnit,[\s\S]*?locale/u)
-  assert.match(app, /name="x_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
-  assert.match(app, /name="y_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
+  assert.match(app, /name="x_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
+  assert.match(app, /name="y_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
   assert.match(app, /name="thickness_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
-  assert.match(app, /name="width_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
-  assert.match(app, /name="height_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
+  assert.match(app, /name="width_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
+  assert.match(app, /name="height_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
   assert.match(app, /lengthDisplayUnit=\{lengthDisplayUnit\}/u)
   assert.match(
     preview,
@@ -38,7 +38,7 @@ test('App applies one snapshot display unit to every authoring length surface', 
 test('converted editing crosses the native boundary only as millimetres', () => {
   assert.match(
     app,
-    /readLengthInputMillimetres\([\s\S]*?'x_display'[\s\S]*?moveVertex\([\s\S]*?x, y/u,
+    /evaluateDisplayLengthExpression\([\s\S]*?'x_display'[\s\S]*?moveVertex\([\s\S]*?x, y/u,
   )
   assert.match(
     app,
@@ -46,7 +46,7 @@ test('converted editing crosses the native boundary only as millimetres', () => 
   )
   assert.match(
     app,
-    /readLengthInputMillimetres\([\s\S]*?'width_display'[\s\S]*?resizeRectangularPaper\([\s\S]*?widthMm, heightMm/u,
+    /evaluateDisplayLengthExpression\([\s\S]*?'width_display'[\s\S]*?resizeRectangularPaper\([\s\S]*?widthMm, heightMm/u,
   )
   assert.doesNotMatch(app, /resizeRectangularPaper\([\s\S]{0,160}width_display/u)
 })
@@ -61,11 +61,11 @@ test('paper thickness stepping stays a physical 0.01 mm operation', () => {
 test('paper-edge ratio resize keeps the reference-parallel physical dimension', () => {
   assert.match(
     app,
-    /referenceAxis === 'width'\s*\?\s*currentSize\.width/u,
+    /referenceAxis !== 'width'[\s\S]*?evaluateDisplayLengthExpression/u,
   )
   assert.match(
     app,
-    /referenceAxis === 'height'\s*\?\s*currentSize\.height/u,
+    /referenceAxis !== 'height'[\s\S]*?evaluateDisplayLengthExpression/u,
   )
   assert.match(
     app,

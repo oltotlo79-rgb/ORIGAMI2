@@ -71,6 +71,12 @@ export type AdoptedMillimetreExpression = Readonly<{
   evaluation: NumericExpressionEvaluation
 }>
 
+export type AdoptedFiniteExpression = Readonly<{
+  source: string
+  value: number
+  evaluation: NumericExpressionEvaluation
+}>
+
 type UserInputEvaluationJob = Readonly<{
   source: string
   transport: NumericExpressionNativeTransport
@@ -151,6 +157,28 @@ export function evaluatePositiveMillimetreExpression(
   })
 }
 
+export async function evaluateFiniteNumericExpression(
+  source: string,
+  transport: NumericExpressionNativeTransport =
+    createNumericExpressionNativeTransport(),
+): Promise<AdoptedFiniteExpression> {
+  if (!validSource(source)) {
+    throw new NumericExpressionNativeError('invalid_request')
+  }
+  const evaluation = await transport.evaluate(
+    source,
+    USER_INPUT_NUMERIC_EXPRESSION_PRECISION_BITS,
+  )
+  const value = adoptFiniteAdjacentInterval(
+    evaluation.lowerBound,
+    evaluation.upperBound,
+  )
+  if (value === null) {
+    throw new NumericExpressionNativeError('result_out_of_range')
+  }
+  return Object.freeze({ source, value, evaluation })
+}
+
 async function runUserInputEvaluation(job: UserInputEvaluationJob) {
   try {
     const evaluation = await job.transport.evaluate(
@@ -193,6 +221,36 @@ export function adoptPositiveAdjacentInterval(
   if (lower === upper) return lower
   if (nextUpPositive(lower) !== upper) return null
   return lower
+}
+
+export function adoptFiniteAdjacentInterval(
+  lower: number,
+  upper: number,
+): number | null {
+  if (
+    !Number.isFinite(lower)
+    || !Number.isFinite(upper)
+    || lower > upper
+  ) return null
+  if (lower === upper) return lower === 0 ? 0 : lower
+  if (nextUp(lower) !== upper) return null
+  return lower === 0 ? 0 : lower
+}
+
+function nextUp(value: number) {
+  if (Object.is(value, -0)) return Number.MIN_VALUE
+  if (value >= 0) return nextUpPositive(value)
+  return -nextDownPositive(-value)
+}
+
+function nextDownPositive(value: number) {
+  if (value === Number.POSITIVE_INFINITY) return Number.MAX_VALUE
+  if (value <= 0 || !Number.isFinite(value)) return Number.NaN
+  const buffer = new ArrayBuffer(8)
+  const view = new DataView(buffer)
+  view.setFloat64(0, value)
+  view.setBigUint64(0, view.getBigUint64(0) - 1n)
+  return view.getFloat64(0)
 }
 
 export function parseNumericExpressionResponseDto(

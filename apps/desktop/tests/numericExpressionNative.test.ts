@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  adoptFiniteAdjacentInterval,
   adoptPositiveAdjacentInterval,
   createNumericExpressionNativeTransport,
+  evaluateFiniteNumericExpression,
   evaluatePositiveMillimetreExpression,
   MAX_NUMERIC_EXPRESSION_SOURCE_BYTES,
   numericExpressionNativeErrorCategory,
@@ -378,6 +380,34 @@ test('millimetre adoption accepts only positive exact or adjacent-f64 enclosures
   assert.equal(adopted.source, '200 * 2')
   assert.equal(adopted.evaluation.requestedPrecisionBits, 192)
   assert.equal(Object.isFrozen(adopted), true)
+})
+
+test('general scalar adoption accepts signed zero and adjacent finite enclosures', async () => {
+  assert.equal(adoptFiniteAdjacentInterval(-12.5, -12.5), -12.5)
+  assert.equal(Object.is(adoptFiniteAdjacentInterval(-0, 0), 0), true)
+  const adjacentNegativeLower = floatFromBits(floatBits(-2) + 1n)
+  assert.equal(
+    adoptFiniteAdjacentInterval(adjacentNegativeLower, -2),
+    adjacentNegativeLower,
+  )
+  assert.equal(adoptFiniteAdjacentInterval(-2, -1.9999999999999996), null)
+  assert.equal(adoptFiniteAdjacentInterval(Number.NEGATIVE_INFINITY, -1), null)
+
+  const transport: NumericExpressionNativeTransport = {
+    async evaluate(source, precisionBits) {
+      return response({
+        source,
+        requestedPrecisionBits: precisionBits,
+        lowerBound: -45,
+        upperBound: -45,
+        lowerDisplay: display(-45),
+        upperDisplay: display(-45),
+      }) as unknown as NumericExpressionEvaluation
+    },
+  }
+  const adopted = await evaluateFiniteNumericExpression('-90 / 2', transport)
+  assert.equal(adopted.value, -45)
+  assert.equal(adopted.source, '-90 / 2')
 })
 
 test('user-input burst keeps one running and only the latest pending native job', async () => {

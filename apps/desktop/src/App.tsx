@@ -32,7 +32,6 @@ import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LanguageControl } from './components/LanguageControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
-import { LengthValueInput } from './components/LengthValueInput'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
 import { ProjectLayerPanel } from './components/ProjectLayerPanel'
 import { RecoveryAutosaveStatusBanner } from './components/RecoveryAutosaveStatusBanner'
@@ -198,6 +197,7 @@ import {
   ratioReferenceAxis,
   readLengthInputMillimetres,
   resolveLengthDisplayUnit,
+  type ResolvedLengthDisplayUnit,
 } from './lib/lengthUnit'
 import {
   ANGLE_SNAP_PRESETS,
@@ -242,7 +242,9 @@ import {
 } from './lib/keyboardShortcutSettings'
 import { workspaceLayoutStore } from './lib/workspaceLayout'
 import {
+  evaluateFiniteNumericExpression,
   evaluatePositiveMillimetreExpression,
+  MAX_NUMERIC_EXPRESSION_SOURCE_BYTES,
   numericExpressionNativeErrorCategory,
 } from './lib/numericExpressionNative'
 import {
@@ -2409,13 +2411,22 @@ function App() {
     const currentUnit = resolveLengthDisplayUnit(current)
     const form = new FormData(event.currentTarget)
     if (form.get('vertex_action') === 'polar_endpoint') {
-      const length = readLengthInputMillimetres(
-        event.currentTarget,
-        'polar_length_display',
-        1,
-        currentUnit,
-      )
-      const angleDegrees = Number(form.get('polar_angle_degrees'))
+      let length: number
+      let angleDegrees: number
+      try {
+        length = await evaluateDisplayLengthExpression(
+          String(form.get('polar_length_display') ?? ''),
+          currentUnit,
+        )
+        angleDegrees = (
+          await evaluateFiniteNumericExpression(
+            String(form.get('polar_angle_degrees') ?? ''),
+          )
+        ).value
+      } catch (error) {
+        setCoreStatus(editExpressionErrorMessage(error))
+        return
+      }
       const edgeKind = form.get('polar_edge_kind')
       if (
         length === null
@@ -2481,18 +2492,21 @@ function App() {
       }))
       return
     }
-    const x = readLengthInputMillimetres(
-      event.currentTarget,
-      'x_display',
-      currentVertex.position.x,
-      currentUnit,
-    )
-    const y = readLengthInputMillimetres(
-      event.currentTarget,
-      'y_display',
-      currentVertex.position.y,
-      currentUnit,
-    )
+    let x: number | null = null
+    let y: number | null = null
+    try {
+      x = await evaluateDisplayLengthExpression(
+        String(form.get('x_display') ?? ''),
+        currentUnit,
+      )
+      y = await evaluateDisplayLengthExpression(
+        String(form.get('y_display') ?? ''),
+        currentUnit,
+      )
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+      return
+    }
     if (x === null || y === null) {
       setCoreStatus(appMessage({
         ja: '座標には有限の数値を入力してください',
@@ -2509,18 +2523,22 @@ function App() {
     const current = latestSnapshotRef.current
     if (!current || benchmarkRun || nativeLayerView.defaultLayerLocked) return
     const currentUnit = resolveLengthDisplayUnit(current)
-    const x = readLengthInputMillimetres(
-      event.currentTarget,
-      'direct_x_display',
-      0,
-      currentUnit,
-    )
-    const y = readLengthInputMillimetres(
-      event.currentTarget,
-      'direct_y_display',
-      0,
-      currentUnit,
-    )
+    const form = new FormData(event.currentTarget)
+    let x: number | null = null
+    let y: number | null = null
+    try {
+      x = await evaluateDisplayLengthExpression(
+        String(form.get('direct_x_display') ?? ''),
+        currentUnit,
+      )
+      y = await evaluateDisplayLengthExpression(
+        String(form.get('direct_y_display') ?? ''),
+        currentUnit,
+      )
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+      return
+    }
     if (x === null || y === null) {
       setCoreStatus(appMessage({
         ja: '有限な数値座標を入力してください。',
@@ -2601,7 +2619,7 @@ function App() {
       }))
   }
 
-  function submitPaperResize(event: FormEvent<HTMLFormElement>) {
+  async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
     if (!current || coreOperationRef.current) return
@@ -2616,22 +2634,26 @@ function App() {
 
     const currentUnit = resolveLengthDisplayUnit(current)
     const referenceAxis = ratioReferenceAxis(currentUnit)
-    const widthMm = referenceAxis === 'width'
-      ? currentSize.width
-      : readLengthInputMillimetres(
-          event.currentTarget,
-          'width_display',
-          currentSize.width,
+    const form = new FormData(event.currentTarget)
+    let widthMm: number | null = currentSize.width
+    let heightMm: number | null = currentSize.height
+    try {
+      if (referenceAxis !== 'width') {
+        widthMm = await evaluateDisplayLengthExpression(
+          String(form.get('width_display') ?? ''),
           currentUnit,
         )
-    const heightMm = referenceAxis === 'height'
-      ? currentSize.height
-      : readLengthInputMillimetres(
-          event.currentTarget,
-          'height_display',
-          currentSize.height,
+      }
+      if (referenceAxis !== 'height') {
+        heightMm = await evaluateDisplayLengthExpression(
+          String(form.get('height_display') ?? ''),
           currentUnit,
         )
+      }
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+      return
+    }
     if (widthMm === null || widthMm <= 0) {
       setCoreStatus(appMessage({
         ja: '用紙の幅には0より大きい有限の数値を入力してください',
@@ -5079,12 +5101,17 @@ function App() {
                 >
                   <label className="field">
                     {`X (${lengthDisplayUnitLabelText})`}
-                    <LengthValueInput
+                    <input
                       name="x_display"
+                      type="text"
+                      inputMode="text"
+                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                      defaultValue={formatLengthInput(
+                        selectedVertex.position.x,
+                        lengthDisplayUnit,
+                      )}
                       disabled={coreBusy || selectedVertexLocked}
-                      initialMillimetres={selectedVertex.position.x}
-                      unit={lengthDisplayUnit}
-                      ariaLabel={formattedText({
+                      aria-label={formattedText({
                         ja: '頂点のX座標 ({unit})',
                         en: 'Vertex X coordinate ({unit})',
                       }, { unit: lengthDisplayUnitLabelText })}
@@ -5092,12 +5119,17 @@ function App() {
                   </label>
                   <label className="field">
                     {`Y (${lengthDisplayUnitLabelText})`}
-                    <LengthValueInput
+                    <input
                       name="y_display"
+                      type="text"
+                      inputMode="text"
+                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                      defaultValue={formatLengthInput(
+                        selectedVertex.position.y,
+                        lengthDisplayUnit,
+                      )}
                       disabled={coreBusy || selectedVertexLocked}
-                      initialMillimetres={selectedVertex.position.y}
-                      unit={lengthDisplayUnit}
-                      ariaLabel={formattedText({
+                      aria-label={formattedText({
                         ja: '頂点のY座標 ({unit})',
                         en: 'Vertex Y coordinate ({unit})',
                       }, { unit: lengthDisplayUnitLabelText })}
@@ -5136,12 +5168,14 @@ function App() {
                     </legend>
                     <label className="field">
                       {`${text({ ja: '長さ', en: 'Length' })} (${lengthDisplayUnitLabelText})`}
-                      <LengthValueInput
+                      <input
                         name="polar_length_display"
+                        type="text"
+                        inputMode="text"
+                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                        defaultValue={formatLengthInput(10, lengthDisplayUnit)}
                         disabled={coreBusy || selectedVertexLocked}
-                        initialMillimetres={10}
-                        unit={lengthDisplayUnit}
-                        ariaLabel={formattedText({
+                        aria-label={formattedText({
                           ja: '始点からの長さ ({unit})',
                           en: 'Length from the start vertex ({unit})',
                         }, { unit: lengthDisplayUnitLabelText })}
@@ -5151,11 +5185,10 @@ function App() {
                       {text({ ja: '角度 (度)', en: 'Angle (degrees)' })}
                       <input
                         name="polar_angle_degrees"
-                        type="number"
+                        type="text"
+                        inputMode="text"
+                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
                         defaultValue="0"
-                        step="any"
-                        min="-360000"
-                        max="360000"
                         disabled={coreBusy || selectedVertexLocked}
                         aria-label={text({
                           ja: '始点からの角度 (度)',
@@ -5240,12 +5273,14 @@ function App() {
                 >
                   <label className="field">
                     {`X (${lengthDisplayUnitLabelText})`}
-                    <LengthValueInput
+                    <input
                       name="direct_x_display"
+                      type="text"
+                      inputMode="text"
+                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                      defaultValue="0"
                       disabled={coreBusy || nativeLayerView.defaultLayerLocked}
-                      initialMillimetres={0}
-                      unit={lengthDisplayUnit}
-                      ariaLabel={formattedText({
+                      aria-label={formattedText({
                         ja: '新しい頂点のX座標 ({unit})',
                         en: 'New vertex X coordinate ({unit})',
                       }, { unit: lengthDisplayUnitLabelText })}
@@ -5253,12 +5288,14 @@ function App() {
                   </label>
                   <label className="field">
                     {`Y (${lengthDisplayUnitLabelText})`}
-                    <LengthValueInput
+                    <input
                       name="direct_y_display"
+                      type="text"
+                      inputMode="text"
+                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                      defaultValue="0"
                       disabled={coreBusy || nativeLayerView.defaultLayerLocked}
-                      initialMillimetres={0}
-                      unit={lengthDisplayUnit}
-                      ariaLabel={formattedText({
+                      aria-label={formattedText({
                         ja: '新しい頂点のY座標 ({unit})',
                         en: 'New vertex Y coordinate ({unit})',
                       }, { unit: lengthDisplayUnitLabelText })}
@@ -5738,15 +5775,19 @@ function App() {
                 <div className="paper-size-fields">
                   <label className="field">
                     <span>{text({ ja: '幅', en: 'Width' })}</span>
-                    <LengthValueInput
+                    <input
                       name="width_display"
-                      minimumMillimetres={0}
-                      initialMillimetres={rectangularPaperSize?.width ?? 0}
-                      unit={lengthDisplayUnit}
+                      type="text"
+                      inputMode="text"
+                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                      defaultValue={formatLengthInput(
+                        rectangularPaperSize?.width ?? 0,
+                        lengthDisplayUnit,
+                      )}
                       readOnly={rectangularRatioReferenceAxis === 'width'}
                       required
                       disabled={coreBusy || !rectangularPaperSize}
-                      ariaLabel={formattedText({
+                      aria-label={formattedText({
                         ja: '用紙の幅 ({unit})',
                         en: 'Paper width ({unit})',
                       }, { unit: lengthDisplayUnitLabelText })}
@@ -5755,15 +5796,19 @@ function App() {
                   </label>
                   <label className="field">
                     <span>{text({ ja: '高さ', en: 'Height' })}</span>
-                    <LengthValueInput
+                    <input
                       name="height_display"
-                      minimumMillimetres={0}
-                      initialMillimetres={rectangularPaperSize?.height ?? 0}
-                      unit={lengthDisplayUnit}
+                      type="text"
+                      inputMode="text"
+                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                      defaultValue={formatLengthInput(
+                        rectangularPaperSize?.height ?? 0,
+                        lengthDisplayUnit,
+                      )}
                       readOnly={rectangularRatioReferenceAxis === 'height'}
                       required
                       disabled={coreBusy || !rectangularPaperSize}
-                      ariaLabel={formattedText({
+                      aria-label={formattedText({
                         ja: '用紙の高さ ({unit})',
                         en: 'Paper height ({unit})',
                       }, { unit: lengthDisplayUnitLabelText })}
@@ -7136,6 +7181,38 @@ function newProjectExpressionErrorMessage(
         en: 'The evaluated width or height result could not be used.',
       })
   }
+}
+
+async function evaluateDisplayLengthExpression(
+  source: string,
+  unit: ResolvedLengthDisplayUnit,
+) {
+  const adopted = await evaluateFiniteNumericExpression(source)
+  const millimetres = adopted.value * unit.millimetresPerUnit
+  if (!Number.isFinite(millimetres)) {
+    throw new Error('display length expression overflow')
+  }
+  return millimetres === 0 ? 0 : millimetres
+}
+
+function editExpressionErrorMessage(error: unknown) {
+  const category = numericExpressionNativeErrorCategory(error)
+  if (category === 'native_unavailable') {
+    return appMessage({
+      ja: '数式入力はデスクトップ版で利用できます。',
+      en: 'Expression input is available in the desktop app.',
+    })
+  }
+  if (category === 'resource_limit') {
+    return appMessage({
+      ja: '数式が複雑すぎるため評価を中止しました。',
+      en: 'Evaluation stopped because the expression is too complex.',
+    })
+  }
+  return appMessage({
+    ja: '小数・分数・平方根・π・四則演算・括弧を使った有限の数式を入力してください。',
+    en: 'Enter a finite expression using decimals, fractions, square roots, pi, operators, or parentheses.',
+  })
 }
 
 function isEditingText(target: EventTarget | null) {

@@ -9,8 +9,8 @@ test('the empty inspector exposes direct coordinate vertex creation in both loca
   assert.match(appSource, /name="direct_y_display"/)
   assert.match(appSource, /Add vertex by coordinates/)
   assert.match(appSource, /座標から頂点を追加/)
-  assert.match(appSource, /readLengthInputMillimetres\([\s\S]*?'direct_x_display'/)
-  assert.match(appSource, /readLengthInputMillimetres\([\s\S]*?'direct_y_display'/)
+  assert.match(appSource, /evaluateDisplayLengthExpression\([\s\S]*?'direct_x_display'/)
+  assert.match(appSource, /evaluateDisplayLengthExpression\([\s\S]*?'direct_y_display'/)
 })
 
 test('direct coordinate creation uses the guarded native edit and selects only its new vertex', () => {
@@ -41,5 +41,9 @@ test('a selected vertex can create an endpoint from an explicit length and angle
   assert.match(
     appSource,
     /polar_endpoint[\s\S]*?await runNativeEdit[\s\S]*?await addConnectedVertex/,
+  )
+  assert.match(
+    appSource,
+    /polar_endpoint[\s\S]*?evaluateDisplayLengthExpression[\s\S]*?evaluateFiniteNumericExpression/,
   )
 })

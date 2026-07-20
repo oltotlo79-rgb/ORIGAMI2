@@ -443,6 +443,7 @@ struct ProjectState {
     /// `project -> pose -> layer order`. It is never persisted.
     applied_pose_authority: CurrentAppliedPoseAuthority,
     numeric_expressions: ProjectNumericExpressions,
+    annotations: ori_domain::AnnotationDocumentV1,
     texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
@@ -464,6 +465,7 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
+            annotations: ori_domain::AnnotationDocumentV1::default(),
             texture_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
@@ -485,6 +487,7 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
+            annotations: ori_domain::AnnotationDocumentV1::default(),
             texture_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
@@ -501,6 +504,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
+        let annotations = document.annotations;
         let texture_assets = document.texture_assets;
         let editor = EditorState::with_all_document_parts_and_memo(
             document.crease_pattern,
@@ -519,6 +523,7 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions,
+            annotations,
             texture_assets,
             saved_document: Some(saved_document),
             editor,
@@ -553,6 +558,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let texture_assets = document.texture_assets.clone();
+        let annotations = document.annotations.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -561,6 +567,7 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
+            annotations,
             texture_assets,
             saved_document: Some(saved_document),
             editor,
@@ -590,6 +597,7 @@ impl ProjectState {
             history_lengths.1,
         )?;
         let texture_assets = document.texture_assets.clone();
+        let annotations = document.annotations.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -598,6 +606,7 @@ impl ProjectState {
             saved_revision: None,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
+            annotations,
             texture_assets,
             saved_document: None,
             editor,
@@ -627,7 +636,7 @@ impl ProjectState {
             numeric_expressions,
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
-            annotations: ori_domain::AnnotationDocumentV1::default(),
+            annotations: self.annotations.clone(),
             element_metadata: self.editor.element_metadata().clone(),
             texture_assets: self.texture_assets.clone(),
         };

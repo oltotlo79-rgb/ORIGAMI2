@@ -94,6 +94,24 @@ pub(crate) struct BeginnerOutlineCandidatesResponse {
     candidates: Vec<ori_domain::BeginnerOutlineCandidateV1>,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct BeginnerPartSuggestionV1 {
+    candidate_id: u8,
+    suggested_kind: ori_domain::BeginnerTargetPartKindV1,
+    confidence_reason: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BeginnerPartSuggestionsResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    underlay_id: UnderlayId,
+    asset_id: AssetId,
+    selected_outline_id: u8,
+    suggestions: Vec<BeginnerPartSuggestionV1>,
+}
+
 #[tauri::command]
 pub(crate) fn recognize_beginner_outline_candidates(
     state: State<'_, AppState>,
@@ -130,6 +148,64 @@ pub(crate) fn recognize_beginner_outline_candidates(
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
         candidates,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn recognize_beginner_part_suggestions(
+    state: State<'_, AppState>,
+    request: ApplyBeginnerOutlineCandidateRequest,
+) -> Result<BeginnerPartSuggestionsResponse, String> {
+    let binding = RecognizeBeginnerTargetRequest {
+        expected_project_instance_id: request.expected_project_instance_id,
+        expected_project_id: request.expected_project_id,
+        expected_revision: request.expected_revision,
+        underlay_id: request.underlay_id,
+        asset_id: request.asset_id,
+    };
+    let bytes = {
+        let project = lock_project(&state)?;
+        ensure_recognition_binding(&project, binding)?;
+        project.texture_assets.iter().find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.clone()).ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+    };
+    let (width, height, rgba) = decode_general_image(&bytes)?;
+    let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
+        .map_err(|_| "recognition_resource_limit".to_owned())?;
+    if candidates.get(usize::from(request.candidate.id)) != Some(&request.candidate) {
+        return Err("outline_candidate_stale".to_owned());
+    }
+    let others = candidates.iter().filter(|candidate| candidate.id != request.candidate.id)
+        .take(7).collect::<Vec<_>>();
+    if others.is_empty() {
+        return Err("part_suggestion_ambiguous".to_owned());
+    }
+    let mut suggestions = vec![BeginnerPartSuggestionV1 {
+        candidate_id: request.candidate.id,
+        suggested_kind: ori_domain::BeginnerTargetPartKindV1::Torso,
+        confidence_reason: "selected_primary_outline",
+    }];
+    for (index, candidate) in others.into_iter().enumerate() {
+        suggestions.push(BeginnerPartSuggestionV1 {
+            candidate_id: candidate.id,
+            suggested_kind: if index == 0 && candidate.area_pixels.saturating_mul(4) >= request.candidate.area_pixels {
+                ori_domain::BeginnerTargetPartKindV1::Head
+            } else {
+                ori_domain::BeginnerTargetPartKindV1::Leg
+            },
+            confidence_reason: if index == 0 { "largest_secondary_outline" } else { "small_secondary_outline" },
+        });
+    }
+    let project = lock_project(&state)?;
+    ensure_recognition_binding(&project, binding)?;
+    Ok(BeginnerPartSuggestionsResponse {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        underlay_id: request.underlay_id,
+        asset_id: request.asset_id,
+        selected_outline_id: request.candidate.id,
+        suggestions,
     })
 }
 

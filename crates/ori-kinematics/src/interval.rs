@@ -22,6 +22,71 @@ pub struct IntervalRotationMatrixV1 {
     entries: [[OutwardIntervalV1; 3]; 3],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntervalRigidTransformV1 {
+    rotation: IntervalRotationMatrixV1,
+    translation: [OutwardIntervalV1; 3],
+}
+
+impl IntervalRigidTransformV1 {
+    pub fn about_axis(
+        axis: [f64; 3],
+        point: [f64; 3],
+        degrees: OutwardIntervalV1,
+        max_work: usize,
+    ) -> Result<Self, OutwardIntervalErrorV1> {
+        let rotation = IntervalRotationMatrixV1::from_unit_axis_degrees(axis, degrees, max_work)?;
+        let point: [OutwardIntervalV1; 3] = point
+            .map(OutwardIntervalV1::from_rounded)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| OutwardIntervalErrorV1::InvalidEndpoint)?;
+        let rotated = rotation.apply(point, max_work)?;
+        let mut translation = point;
+        for index in 0..3 {
+            translation[index] = point[index].sub(rotated[index])?;
+            if translation[index].work() > max_work {
+                return Err(OutwardIntervalErrorV1::ResourceLimit);
+            }
+        }
+        Ok(Self {
+            rotation,
+            translation,
+        })
+    }
+
+    pub fn apply(
+        self,
+        point: [OutwardIntervalV1; 3],
+        max_work: usize,
+    ) -> Result<[OutwardIntervalV1; 3], OutwardIntervalErrorV1> {
+        let mut output = self.rotation.apply(point, max_work)?;
+        for (value, translation) in output.iter_mut().zip(self.translation) {
+            *value = value.add(translation)?;
+            if value.work() > max_work {
+                return Err(OutwardIntervalErrorV1::ResourceLimit);
+            }
+        }
+        Ok(output)
+    }
+
+    pub fn compose(self, rhs: Self, max_work: usize) -> Result<Self, OutwardIntervalErrorV1> {
+        let rotation = self.rotation.compose(rhs.rotation, max_work)?;
+        let mut translation = self.rotation.apply(rhs.translation, max_work)?;
+        for (value, offset) in translation.iter_mut().zip(self.translation) {
+            *value = value.add(offset)?;
+            if value.work() > max_work {
+                return Err(OutwardIntervalErrorV1::ResourceLimit);
+            }
+        }
+        Ok(Self {
+            rotation,
+            translation,
+        })
+    }
+}
+
 impl IntervalRotationMatrixV1 {
     pub fn from_unit_axis_degrees(
         axis: [f64; 3],

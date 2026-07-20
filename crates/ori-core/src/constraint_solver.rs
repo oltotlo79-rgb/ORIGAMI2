@@ -128,7 +128,7 @@ pub fn solve_geometric_constraints_with_drivers_v1(
         let maximum_residual = maximum_absolute(&residuals);
         return (maximum_residual <= limits.residual_tolerance)
             .then_some(ConstraintSolvePreviewV1 {
-                positions: driving_positions.to_vec(),
+                positions: sorted_positions(driving_positions.to_vec()),
                 iterations: 0,
                 maximum_residual,
                 rank: 0,
@@ -149,10 +149,14 @@ pub fn solve_geometric_constraints_with_drivers_v1(
         if maximum_residual <= limits.residual_tolerance {
             let diagnostics = rank_diagnostics(pattern, document, &positions, &variables)?;
             return Ok(ConstraintSolvePreviewV1 {
-                positions: positions
-                    .into_iter()
-                    .filter(|(vertex, point)| original.get(vertex).is_none_or(|old| old != point))
-                    .collect(),
+                positions: sorted_positions(
+                    positions
+                        .into_iter()
+                        .filter(|(vertex, point)| {
+                            original.get(vertex).is_none_or(|old| old != point)
+                        })
+                        .collect(),
+                ),
                 iterations: iteration,
                 maximum_residual,
                 rank: diagnostics.0,
@@ -222,6 +226,11 @@ pub fn solve_geometric_constraints_with_drivers_v1(
         }
     }
     Err(ConstraintSolveErrorV1::NonConvergent)
+}
+
+fn sorted_positions(mut positions: Vec<(VertexId, Point2)>) -> Vec<(VertexId, Point2)> {
+    positions.sort_by_key(|(vertex, _)| vertex.canonical_bytes());
+    positions
 }
 
 fn rank_diagnostics(
@@ -343,16 +352,30 @@ fn hard_len(document: &GeometricConstraintDocumentV1) -> Result<usize, Constrain
     for record in &document.constraints {
         match record.constraint {
             GeometricConstraintKindV1::FixedLength { .. }
+            | GeometricConstraintKindV1::FixedAngle { .. }
             | GeometricConstraintKindV1::Horizontal { .. }
             | GeometricConstraintKindV1::Vertical { .. }
             | GeometricConstraintKindV1::EqualLength { .. }
             | GeometricConstraintKindV1::Parallel { .. }
             | GeometricConstraintKindV1::PointOnLine { .. }
-            | GeometricConstraintKindV1::LengthRatio { .. } => {}
-            _ => return Err(ConstraintSolveErrorV1::UnsupportedConstraintKind),
+            | GeometricConstraintKindV1::LengthRatio { .. }
+            | GeometricConstraintKindV1::MirrorSymmetry { .. }
+            | GeometricConstraintKindV1::RotationalSymmetry { .. }
+            | GeometricConstraintKindV1::AngleBisector { .. } => {}
         }
     }
-    Ok(document.constraints.len())
+    document
+        .constraints
+        .iter()
+        .try_fold(0usize, |count, record| {
+            count
+                .checked_add(match record.constraint {
+                    GeometricConstraintKindV1::MirrorSymmetry { .. }
+                    | GeometricConstraintKindV1::RotationalSymmetry { .. } => 2,
+                    _ => 1,
+                })
+                .ok_or(ConstraintSolveErrorV1::WorkLimitExceeded)
+        })
 }
 
 fn involved_vertices(
@@ -396,7 +419,44 @@ fn involved_vertices(
                 add_edge_vertices(&edges, &mut result, numerator_edge);
                 add_edge_vertices(&edges, &mut result, denominator_edge);
             }
-            _ => return Err(ConstraintSolveErrorV1::UnsupportedConstraintKind),
+            GeometricConstraintKindV1::FixedAngle {
+                vertex,
+                first_edge,
+                second_edge,
+                ..
+            } => {
+                result.insert(vertex);
+                add_edge_vertices(&edges, &mut result, first_edge);
+                add_edge_vertices(&edges, &mut result, second_edge);
+            }
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex,
+                second_vertex,
+                axis_edge,
+            } => {
+                result.insert(first_vertex);
+                result.insert(second_vertex);
+                add_edge_vertices(&edges, &mut result, axis_edge);
+            }
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex,
+                source_vertex,
+                target_vertex,
+                ..
+            } => {
+                result.extend([center_vertex, source_vertex, target_vertex]);
+            }
+            GeometricConstraintKindV1::AngleBisector {
+                vertex,
+                first_edge,
+                second_edge,
+                bisector_edge,
+            } => {
+                result.insert(vertex);
+                add_edge_vertices(&edges, &mut result, first_edge);
+                add_edge_vertices(&edges, &mut result, second_edge);
+                add_edge_vertices(&edges, &mut result, bisector_edge);
+            }
         }
     }
     Ok(result)
@@ -436,47 +496,122 @@ fn residuals(
         .constraints
         .iter()
         .map(|record| {
-            let value = match record.constraint {
+            let values = match record.constraint {
                 GeometricConstraintKindV1::FixedLength { edge, length_mm } => {
-                    length(edge) - length_mm
+                    vec![length(edge) - length_mm]
                 }
-                GeometricConstraintKindV1::Horizontal { edge } => vector(edge).1,
-                GeometricConstraintKindV1::Vertical { edge } => vector(edge).0,
+                GeometricConstraintKindV1::Horizontal { edge } => vec![vector(edge).1],
+                GeometricConstraintKindV1::Vertical { edge } => vec![vector(edge).0],
                 GeometricConstraintKindV1::EqualLength {
                     first_edge,
                     second_edge,
-                } => length(first_edge) - length(second_edge),
+                } => vec![length(first_edge) - length(second_edge)],
                 GeometricConstraintKindV1::Parallel {
                     first_edge,
                     second_edge,
                 } => {
                     let first = vector(first_edge);
                     let second = vector(second_edge);
-                    (first.0 * second.1 - first.1 * second.0)
-                        / (first.0.hypot(first.1) * second.0.hypot(second.1))
+                    vec![
+                        (first.0 * second.1 - first.1 * second.0)
+                            / (first.0.hypot(first.1) * second.0.hypot(second.1)),
+                    ]
                 }
                 GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
                     let edge = edges[&line_edge];
                     let start = positions[&edge.start];
                     let point = positions[&vertex];
                     let direction = vector(line_edge);
-                    ((point.x - start.x) * direction.1 - (point.y - start.y) * direction.0)
-                        / direction.0.hypot(direction.1)
+                    vec![
+                        ((point.x - start.x) * direction.1 - (point.y - start.y) * direction.0)
+                            / direction.0.hypot(direction.1),
+                    ]
                 }
                 GeometricConstraintKindV1::LengthRatio {
                     numerator_edge,
                     denominator_edge,
                     ratio,
-                } => length(numerator_edge) - ratio * length(denominator_edge),
-                _ => return Err(ConstraintSolveErrorV1::UnsupportedConstraintKind),
+                } => vec![length(numerator_edge) - ratio * length(denominator_edge)],
+                GeometricConstraintKindV1::FixedAngle {
+                    first_edge,
+                    second_edge,
+                    angle_degrees,
+                    ..
+                } => {
+                    let first = vector(first_edge);
+                    let second = vector(second_edge);
+                    let actual = (first.0 * second.1 - first.1 * second.0)
+                        .atan2(first.0 * second.0 + first.1 * second.1);
+                    vec![wrap_angle(actual - angle_degrees.to_radians())]
+                }
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex,
+                    second_vertex,
+                    axis_edge,
+                } => {
+                    let axis = edges[&axis_edge];
+                    let origin = positions[&axis.start];
+                    let direction = vector(axis_edge);
+                    let norm = direction.0 * direction.0 + direction.1 * direction.1;
+                    let first = positions[&first_vertex];
+                    let projection = ((first.x - origin.x) * direction.0
+                        + (first.y - origin.y) * direction.1)
+                        / norm;
+                    let reflected = Point2::new(
+                        2.0 * (origin.x + projection * direction.0) - first.x,
+                        2.0 * (origin.y + projection * direction.1) - first.y,
+                    );
+                    let second = positions[&second_vertex];
+                    vec![second.x - reflected.x, second.y - reflected.y]
+                }
+                GeometricConstraintKindV1::RotationalSymmetry {
+                    center_vertex,
+                    source_vertex,
+                    target_vertex,
+                    angle_degrees,
+                } => {
+                    let center = positions[&center_vertex];
+                    let source = positions[&source_vertex];
+                    let target = positions[&target_vertex];
+                    let angle = angle_degrees.to_radians();
+                    let x = source.x - center.x;
+                    let y = source.y - center.y;
+                    vec![
+                        target.x - center.x - (x * angle.cos() - y * angle.sin()),
+                        target.y - center.y - (x * angle.sin() + y * angle.cos()),
+                    ]
+                }
+                GeometricConstraintKindV1::AngleBisector {
+                    first_edge,
+                    second_edge,
+                    bisector_edge,
+                    ..
+                } => {
+                    let first = vector(first_edge);
+                    let second = vector(second_edge);
+                    let bisector = vector(bisector_edge);
+                    let sum_x =
+                        first.0 / first.0.hypot(first.1) + second.0 / second.0.hypot(second.1);
+                    let sum_y =
+                        first.1 / first.0.hypot(first.1) + second.1 / second.0.hypot(second.1);
+                    vec![
+                        (sum_x * bisector.1 - sum_y * bisector.0)
+                            / (sum_x.hypot(sum_y) * bisector.0.hypot(bisector.1)),
+                    ]
+                }
             };
-            if value.is_finite() {
-                Ok(value)
+            if values.iter().all(|value| value.is_finite()) {
+                Ok(values)
             } else {
                 Err(ConstraintSolveErrorV1::NonConvergent)
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(|rows| rows.into_iter().flatten().collect())
+}
+
+fn wrap_angle(angle: f64) -> f64 {
+    (angle + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI
 }
 
 fn maximum_absolute(values: &[f64]) -> f64 {
@@ -669,6 +804,100 @@ mod tests {
         assert_eq!(preview.positions.len(), 2);
         assert_eq!(preview.maximum_residual, 0.0);
         assert_eq!(preview.degrees_of_freedom, 0);
+    }
+
+    #[test]
+    fn constraint_input_order_does_not_change_the_solution() {
+        let (pattern, mut document, driving) = single_edge(
+            Point2 { x: 0.0, y: 0.0 },
+            Point2 { x: 4.0, y: 0.0 },
+            |edge| {
+                vec![
+                    GeometricConstraintKindV1::Horizontal { edge },
+                    GeometricConstraintKindV1::FixedLength {
+                        edge,
+                        length_mm: 4.0,
+                    },
+                ]
+            },
+        );
+        let first = solve_geometric_constraints_v1(
+            &pattern,
+            &document,
+            driving,
+            Point2 { x: 2.0, y: 3.0 },
+            ConstraintSolveLimitsV1::default(),
+        )
+        .unwrap();
+        document.constraints.reverse();
+        let second = solve_geometric_constraints_v1(
+            &pattern,
+            &document,
+            driving,
+            Point2 { x: 2.0, y: 3.0 },
+            ConstraintSolveLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(first.positions, second.positions);
+        assert_eq!(first.rank, second.rank);
+    }
+
+    #[test]
+    fn contradiction_degeneracy_nonfinite_and_ten_thousand_vertices_fail_closed() {
+        let (pattern, document, start) = single_edge(
+            Point2 { x: 0.0, y: 0.0 },
+            Point2 { x: 1.0, y: 0.0 },
+            |edge| {
+                vec![GeometricConstraintKindV1::FixedLength {
+                    edge,
+                    length_mm: 1.0,
+                }]
+            },
+        );
+        let end = pattern.vertices[1].id;
+        assert!(matches!(
+            solve_geometric_constraints_with_drivers_v1(
+                &pattern,
+                &document,
+                &[
+                    (start, Point2 { x: 0.0, y: 0.0 }),
+                    (end, Point2 { x: 2.0, y: 0.0 }),
+                ],
+                ConstraintSolveLimitsV1::default(),
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent)
+        ));
+        assert!(matches!(
+            solve_geometric_constraints_v1(
+                &pattern,
+                &document,
+                start,
+                Point2 {
+                    x: f64::NAN,
+                    y: 0.0
+                },
+                ConstraintSolveLimitsV1::default(),
+            ),
+            Err(ConstraintSolveErrorV1::NonFiniteDrivingPosition)
+        ));
+
+        let mut large = CreasePattern::empty();
+        large.vertices = (0..10_000)
+            .map(|index| Vertex {
+                id: VertexId::new(),
+                position: Point2::new(index as f64, 0.0),
+            })
+            .collect();
+        assert!(matches!(
+            solve_geometric_constraints_v1(
+                &large,
+                &GeometricConstraintDocumentV1::default(),
+                large.vertices[0].id,
+                Point2::new(0.0, 0.0),
+                ConstraintSolveLimitsV1::default(),
+            ),
+            Err(ConstraintSolveErrorV1::WorkLimitExceeded)
+        ));
     }
 
     fn driving_placeholder() -> VertexId {

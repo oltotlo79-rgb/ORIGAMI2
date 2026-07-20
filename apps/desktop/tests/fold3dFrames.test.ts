@@ -4,6 +4,7 @@ import {
   normalizeFold3dFrameSelection,
   normalizeFold3dFramesPicker,
   normalizeFold3dPoseCompatibility,
+  normalizeFold3dTimelineCompatibility,
 } from '../src/lib/fold3dFrames.ts'
 
 const id = '00000000-0000-4000-8000-000000000001'
@@ -25,6 +26,27 @@ test('strict FOLD 3D picker parser admits bounded metadata only', () => {
   assert.equal(normalizeFold3dFramesPicker({
     canceled: false,
     preview: { ...parsed?.preview, coordinates: [[0, 0, 0]] },
+  }), null)
+})
+
+test('timeline compatibility admits only bounded inert atomic proposals', () => {
+  const value = {
+    token: id,
+    frameCount: 3,
+    hingeCount: 2,
+    durationMs: 1_000,
+    sourceFingerprint: 'ab'.repeat(32),
+    geometryUnchanged: true,
+    requiresExplicitConfirmation: true,
+  }
+  assert.ok(normalizeFold3dTimelineCompatibility(value))
+  assert.equal(normalizeFold3dTimelineCompatibility({
+    ...value,
+    geometryUnchanged: false,
+  }), null)
+  assert.equal(normalizeFold3dTimelineCompatibility({
+    ...value,
+    frameCount: 257,
   }), null)
 })
 

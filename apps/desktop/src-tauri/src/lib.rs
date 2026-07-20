@@ -45,8 +45,9 @@ use diagnostics::{
     save_diagnostics_share_preview,
 };
 use fold_3d_frames_import::{
-    Fold3dFramesImportState, apply_fold_3d_applied_pose, cancel_fold_3d_frames,
-    prepare_fold_3d_applied_pose, preview_fold_3d_frames, select_fold_3d_frame,
+    Fold3dFramesImportState, apply_fold_3d_applied_pose, apply_fold_3d_instruction_timeline,
+    cancel_fold_3d_frames, prepare_fold_3d_applied_pose, prepare_fold_3d_instruction_timeline,
+    preview_fold_3d_frames, select_fold_3d_frame,
 };
 use fold_technique_file_io::{
     FoldTechniqueFileIoState, open_fold_technique_file, save_fold_technique_file_as,
@@ -6803,6 +6804,8 @@ pub fn run() {
             apply_fold_3d_applied_pose,
             cancel_fold_3d_frames,
             apply_fold_import,
+            prepare_fold_3d_instruction_timeline,
+            apply_fold_3d_instruction_timeline,
             cancel_fold_import,
             preview_svg_import,
             validate_svg_import_settings,

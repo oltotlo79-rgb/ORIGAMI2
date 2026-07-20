@@ -4,10 +4,13 @@ import {
   applyFold3dAppliedPose,
   pickFold3dFrames,
   prepareFold3dAppliedPose,
+  prepareFold3dInstructionTimeline,
+  applyFold3dInstructionTimeline,
   selectFold3dFrame,
   type Fold3dFrameSelection,
   type Fold3dFramesMetadata,
   type Fold3dPoseCompatibility,
+  type Fold3dTimelineCompatibility,
 } from '../lib/fold3dFrames.ts'
 import { useLocale } from '../lib/i18n.ts'
 
@@ -24,6 +27,8 @@ export function Fold3dFramesLauncher({ disabled, onApplied }: Readonly<{
   const [compatibility, setCompatibility] = useState<Fold3dPoseCompatibility | null>(null)
   const [confirmed, setConfirmed] = useState(false)
   const [applied, setApplied] = useState(false)
+  const [timeline, setTimeline] = useState<Fold3dTimelineCompatibility | null>(null)
+  const [timelineConfirmed, setTimelineConfirmed] = useState(false)
   const launcher = useRef<HTMLButtonElement>(null)
   const dialog = useRef<HTMLElement>(null)
 
@@ -44,6 +49,7 @@ export function Fold3dFramesLauncher({ disabled, onApplied }: Readonly<{
         setPreview(result.preview)
         setSelection(await selectFold3dFrame(result.preview, 0))
         setCompatibility(await prepareFold3dAppliedPose(result.preview, 0))
+        setTimeline(await prepareFold3dInstructionTimeline(result.preview).catch(() => null))
       }
     } catch {
       setError(en ? 'The FOLD 3D preview became stale or invalid.' : 'FOLD 3Dプレビューが古いか無効です。')
@@ -52,9 +58,24 @@ export function Fold3dFramesLauncher({ disabled, onApplied }: Readonly<{
 
   async function close() {
     const token = preview?.token
-    setPreview(null); setSelection(null); setCompatibility(null); setError(null)
+    setPreview(null); setSelection(null); setCompatibility(null); setTimeline(null); setError(null)
     if (token) await cancelFold3dFrames(token).catch(() => undefined)
     requestAnimationFrame(() => launcher.current?.focus())
+  }
+
+  async function applyTimeline() {
+    if (!preview || !timeline || !timelineConfirmed || busy) return
+    setBusy(true); setError(null)
+    try {
+      await applyFold3dInstructionTimeline(preview, timeline.durationMs)
+      await onApplied?.()
+      setPreview(null)
+      requestAnimationFrame(() => launcher.current?.focus())
+    } catch {
+      setTimeline(null)
+      setError(en ? 'The project changed or these frames are not one compatible linear chain.'
+        : 'プロジェクトが変更されたか、frameが互換性のある一本道ではありません。')
+    } finally { setBusy(false) }
   }
 
   async function choose(index: number) {
@@ -149,6 +170,22 @@ export function Fold3dFramesLauncher({ disabled, onApplied }: Readonly<{
               : (en ? 'Apply current 3D pose' : '現在の3D姿勢へ適用')}
           </button>
         </>}
+        {timeline && <section>
+          <h3>{en ? 'Add all frames to instructions' : '全frameを折り手順へ追加'}</h3>
+          <p>{en
+            ? `${timeline.frameCount} complete poses will be appended atomically at 1.0 second each. Geometry is unchanged; Undo/Redo treats this as one history entry.`
+            : `${timeline.frameCount}件の完全poseを各1.0秒で一括追加します。geometryは不変で、Undo/Redoでは1件の履歴です。`}</p>
+          <label><input type="checkbox" checked={timelineConfirmed} disabled={busy}
+            onChange={(event) => setTimelineConfirmed(event.target.checked)} />
+            {en
+              ? 'I confirm adding every authenticated frame pose to the instruction timeline.'
+              : '認証済みの全frame poseを折り手順へ追加することを確認します。'}
+          </label>
+          <button type="button" disabled={busy || !timelineConfirmed}
+            onClick={() => void applyTimeline()}>
+            {en ? 'Add all frames atomically' : '全frameを一括追加'}
+          </button>
+        </section>}
         {error && <p role="alert">{error}</p>}
         <button type="button" disabled={busy} onClick={() => void close()}>
           {en ? 'Close' : '閉じる'}

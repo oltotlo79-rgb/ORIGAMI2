@@ -40,6 +40,16 @@ export type Fold3dPoseCompatibility = Readonly<{
   requiresExplicitApply: true
 }>
 
+export type Fold3dTimelineCompatibility = Readonly<{
+  token: string
+  frameCount: number
+  hingeCount: number
+  durationMs: number
+  sourceFingerprint: string
+  geometryUnchanged: true
+  requiresExplicitConfirmation: true
+}>
+
 const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -183,6 +193,63 @@ export async function applyFold3dAppliedPose(
     revision: number
     poseGeneration: string
   }>
+}
+
+export async function prepareFold3dInstructionTimeline(
+  preview: Fold3dFramesMetadata,
+  durationMs = 1_000,
+) {
+  const value = normalizeFold3dTimelineCompatibility(await invoke<unknown>(
+    'prepare_fold_3d_instruction_timeline', {
+    request: {
+      token: preview.token,
+      expectedProjectInstanceId: preview.projectInstanceId,
+      expectedProjectId: preview.projectId,
+      expectedRevision: preview.revision,
+      durationMs,
+      confirmed: false,
+    },
+    },
+  ))
+  if (!value || value.token !== preview.token || value.frameCount !== preview.frameCount
+    || value.durationMs !== durationMs) {
+    throw new Error('invalid FOLD 3D timeline compatibility response')
+  }
+  return value
+}
+
+export function normalizeFold3dTimelineCompatibility(
+  input: unknown,
+): Fold3dTimelineCompatibility | null {
+  const value = record(input)
+  if (!value || !exactKeys(value, ['token', 'frameCount', 'hingeCount', 'durationMs',
+    'sourceFingerprint', 'geometryUnchanged', 'requiresExplicitConfirmation'])
+    || !id(value.token) || !integer(value.frameCount) || (value.frameCount as number) === 0
+    || (value.frameCount as number) > 256 || !integer(value.hingeCount)
+    || !integer(value.durationMs) || (value.durationMs as number) < 100
+    || (value.durationMs as number) > 600_000
+    || typeof value.sourceFingerprint !== 'string'
+    || !/^[0-9a-f]{64}$/.test(value.sourceFingerprint)
+    || value.geometryUnchanged !== true || value.requiresExplicitConfirmation !== true) {
+    return null
+  }
+  return value as unknown as Fold3dTimelineCompatibility
+}
+
+export async function applyFold3dInstructionTimeline(
+  preview: Fold3dFramesMetadata,
+  durationMs = 1_000,
+) {
+  return invoke<unknown>('apply_fold_3d_instruction_timeline', {
+    request: {
+      token: preview.token,
+      expectedProjectInstanceId: preview.projectInstanceId,
+      expectedProjectId: preview.projectId,
+      expectedRevision: preview.revision,
+      durationMs,
+      confirmed: true,
+    },
+  })
 }
 
 export const cancelFold3dFrames = (token: string) =>

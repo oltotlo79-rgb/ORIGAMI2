@@ -429,7 +429,7 @@ pub(super) fn apply_stacked_fold_transaction(
     apply_stacked_fold_transaction_inner(&app_state, &foldability_state, &transaction_state, token)
 }
 
-fn apply_stacked_fold_transaction_inner(
+pub(crate) fn apply_stacked_fold_transaction_inner(
     app_state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,
     transaction_state: &StackedFoldTransactionState,

@@ -674,6 +674,14 @@ pub(super) async fn read_live_hinge_registry_v1(
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
     request: LiveHingeRegistryRequestV1,
 ) -> Result<LiveHingeRegistryResponseV1, String> {
+    read_live_hinge_registry_inner(&app_state, &foldability_state, request).await
+}
+
+async fn read_live_hinge_registry_inner(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    request: LiveHingeRegistryRequestV1,
+) -> Result<LiveHingeRegistryResponseV1, String> {
     let worker_permit = app_state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
@@ -2163,6 +2171,134 @@ mod tests {
             capture_current_layer_order_capability(&layer_state, &project)
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[test]
+    #[ignore = "two-hinge layer-side admission fixture is not yet deterministic"]
+    fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
+        let mut project = two_hinge_tree_project();
+        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let app_state = AppState::new(project);
+        let layer_state = GlobalFlatFoldabilityState::default();
+        {
+            let project = super::super::lock_project(&app_state).unwrap();
+            super::super::global_flat_foldability::tests::install_possible_layer_order(
+                &layer_state,
+                &project,
+            );
+        }
+        let angle = 2.0 * 1.0_f64.atan2(5.0).to_degrees();
+        let registry = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
+            &app_state,
+            &layer_state,
+            LiveHingeRegistryRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                first: [0.0, 0.0, -50.0],
+                second: [100.0, 0.0, -50.0],
+                fixed_side: FixedSideRequest::Left,
+                rotation_direction: RotationDirectionRequest::Positive,
+                requested_angle_degrees: angle,
+            },
+        ))
+        .expect("live target hinge registry");
+        assert!(registry.entries.len() >= 2);
+        let cycle_schedule_v1 = CycleScheduleRequestV1 {
+            version: 1,
+            entries: registry
+                .entries
+                .iter()
+                .map(|entry| CycleScheduleEntryRequestV1 {
+                    edge: entry.edge,
+                    u_domain: [
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    }],
+                    denominator_power_coefficients: vec![
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 5,
+                            denominator: 1,
+                        },
+                    ],
+                    requested_angle_degrees: angle,
+                })
+                .collect(),
+        };
+        let transaction_state =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let response = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
+            None,
+            &app_state,
+            &layer_state,
+            &transaction_state,
+            StackedFoldReadRequest {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                first: [0.0, 0.0, -50.0],
+                second: [100.0, 0.0, -50.0],
+                fixed_side: FixedSideRequest::Left,
+                rotation_direction: RotationDirectionRequest::Positive,
+                requested_angle_degrees: angle,
+                cycle_schedule_v1: Some(cycle_schedule_v1),
+                linear_candidate_v1: None,
+                certified_path_graph_v1: None,
+            },
+        ))
+        .expect("genuine ready preview");
+        assert!(response.transaction_proposal.ready_for_atomic_apply);
+        let token = response
+            .transaction_proposal
+            .transaction_token
+            .expect("ready token");
+        let before = {
+            let project = super::super::lock_project(&app_state).unwrap();
+            project.editor.clone()
+        };
+        let applied_revision =
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &app_state,
+                &layer_state,
+                &transaction_state,
+                token,
+            )
+            .expect("atomic apply");
+        let mut project = super::super::lock_project(&app_state).unwrap();
+        assert_eq!(project.editor.revision(), applied_revision);
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let after = project.editor.clone();
+        project.editor.undo(applied_revision).unwrap();
+        assert_eq!(project.editor.pattern(), before.pattern());
+        assert_eq!(
+            project.editor.current_applied_pose(),
+            before.current_applied_pose()
+        );
+        let undo_revision = project.editor.revision();
+        project.editor.redo(undo_revision).unwrap();
+        assert_eq!(project.editor.pattern(), after.pattern());
+        assert_eq!(
+            project.editor.current_applied_pose(),
+            after.current_applied_pose()
         );
     }
 

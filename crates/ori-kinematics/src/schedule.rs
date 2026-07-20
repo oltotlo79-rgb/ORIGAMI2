@@ -565,7 +565,6 @@ fn prepare_exact_signed_bernstein_certificate(
         .iter()
         .all(|value| value.is_negative());
     let endpoint_zero = allow_endpoint_zero
-        && !exact_range.coefficients.iter().all(Zero::is_zero)
         && exact_range
             .coefficients
             .iter()
@@ -2281,6 +2280,23 @@ mod tests {
             .endpoint_angle_enclosure(false, 128, CycleScheduleLimitsV1::default().max_work)
             .unwrap();
         assert!(endpoint.lower() <= 180.0 && endpoint.upper() >= 180.0);
+        assert!(
+            PreparedHalfAngleRationalEntryV1::prepare(
+                input(
+                    vec![RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1
+                    }],
+                    vec![RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1
+                    }],
+                ),
+                CycleScheduleLimitsV1::default(),
+            )
+            .is_ok(),
+            "constant 180-degree projective entry is regular"
+        );
 
         for invalid in [
             input(

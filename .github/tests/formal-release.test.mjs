@@ -14,7 +14,8 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const validator = readFileSync(join(root, '.github/scripts/validate_formal_release.mjs'), 'utf8')
   assert.match(workflow, /options: \[dry-run, prerelease, stable, promote\]/u)
-  assert.match(validator, /'git', \['verify-tag', tag\]/u)
+  assert.match(validator, /execFileSync\('git', args,[\s\S]*cwd: repositoryRoot/u)
+  assert.match(validator, /git\(\['verify-tag', tag\]/u)
   assert.match(workflow, /permissions:\s*\n\s+contents: read/u)
   assert.match(workflow, /attest-build-provenance@43d14bc2/u)
   assert.match(workflow, /releases\/\$release_id[\s\S]*prerelease=false/u)
@@ -469,12 +470,24 @@ test('CI and formal release share the strict Windows bundle contract', () => {
 })
 
 test('dry-run validates without a tag or GitHub mutation', () => {
-  const output = execFileSync('node', ['.github/scripts/validate_formal_release.mjs'], {
-    cwd: root,
-    encoding: 'utf8',
-    env: { ...process.env, REQUESTED_MODE: 'dry-run', REQUESTED_TAG: '' },
-  })
-  assert.match(output, /mode=dry-run/u)
+  const temporary = mkdtempSync(join(tmpdir(), 'origami2-caller-cwd-'))
+  try {
+    const outputs = [root, join(root, 'apps', 'desktop'), temporary].map((cwd) =>
+      execFileSync('node', [join(root, '.github/scripts/validate_formal_release.mjs')], {
+        cwd,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: undefined,
+          REQUESTED_MODE: 'dry-run',
+          REQUESTED_TAG: '',
+        },
+      }))
+    assert.equal(new Set(outputs).size, 1)
+    assert.match(outputs[0], /mode=dry-run/u)
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
   assert.throws(
     () => execFileSync('node', ['.github/scripts/validate_formal_release.mjs'], {
       cwd: root,
@@ -621,6 +634,20 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
       },
     )
     assert.match(output, /verified merged release set v0\.1\.0/u)
+    const alternateCwdOutput = execFileSync(
+      'node',
+      [join(root, '.github/scripts/verify_merged_release_set.mjs'), directory],
+      {
+        cwd: directory,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          RELEASE_VERSION: version,
+          RELEASE_COMMIT: 'a'.repeat(40),
+        },
+      },
+    )
+    assert.match(alternateCwdOutput, /verified merged release set v0\.1\.0/u)
     assert.equal(readdirSync(directory).length, 9)
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -703,6 +730,31 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         checks: [{ name: 'test', conclusion: 'success' }],
       },
     }))
+    const rootBoundBytes = readFileSync(path, 'utf8')
+    execFileSync('node', [join(root, '.github/scripts/bind_release_sbom.mjs'), path], {
+      cwd: directory,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        VERSION: '0.1.0',
+        PLATFORM: 'windows-x64',
+        RELEASE_COMMIT: 'a'.repeat(40),
+        RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
+        NODE_VERSION: 'v24.0.0',
+        BUILD_MODE: 'unsigned-dry-run',
+        TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
+        RELEASE_RUN_ID: '12345',
+        EXECUTED_TEST_COUNT: '28',
+        CI_CHECK_EVIDENCE_JSON: JSON.stringify({
+          schema: 'origami2.ci-check-evidence.v1',
+          sourceCommit: 'a'.repeat(40),
+          workflow: '.github/workflows/ci.yml',
+          workflowRunId: '67890',
+          checks: [{ name: 'test', conclusion: 'success' }],
+        }),
+      },
+    })
+    assert.equal(readFileSync(path, 'utf8'), rootBoundBytes)
 
     writeFileSync(path, JSON.stringify({
       bomFormat: 'CycloneDX',

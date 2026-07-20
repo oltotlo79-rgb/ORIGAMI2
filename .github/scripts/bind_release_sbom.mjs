@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { buildDependencyPolicy } from './dependency_policy.mjs'
 
 const path = process.argv[2]
+const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const sbom = JSON.parse(readFileSync(path, 'utf8'))
 const version = process.env.VERSION
 const platform = process.env.PLATFORM
@@ -48,7 +50,7 @@ for (const key of ['bom-ref', 'purl']) {
   const values = sbom.components.map((component) => component?.[key]).filter(Boolean)
   if (new Set(values).size !== values.length) throw new Error(`duplicate CycloneDX ${key}`)
 }
-const digest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+const digest = (file) => createHash('sha256').update(readFileSync(resolve(repositoryRoot, file))).digest('hex')
 const properties = {
   'origami2.build.cargo-lock-sha256': digest('Cargo.lock'),
   'origami2.build.node-version': node,

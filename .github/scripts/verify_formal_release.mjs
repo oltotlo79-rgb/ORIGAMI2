@@ -6,6 +6,7 @@ import { validateReleaseArchiveEntries } from './release_archive_contract.mjs'
 import { buildDependencyPolicy } from './dependency_policy.mjs'
 
 const directory = resolve(process.argv[2])
+const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const platform = process.env.RELEASE_PLATFORM
 const version = process.env.RELEASE_VERSION
 if (!['windows-x64', 'macos-arm64'].includes(platform)) {
@@ -64,7 +65,7 @@ if (process.env.RELEASE_COMMIT !== undefined && !Array.isArray(sbomProperties)) 
 if (Array.isArray(sbomProperties)) {
 const propertyMap = new Map(sbomProperties.map((property) => [property?.name, property?.value]))
 if (propertyMap.size !== sbomProperties.length) throw new Error('CycloneDX SBOM properties are duplicated')
-const lockDigest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+const lockDigest = (file) => createHash('sha256').update(readFileSync(resolve(repositoryRoot, file))).digest('hex')
 const expectedSbomProperties = new Map([
   ['origami2.build.cargo-lock-sha256', lockDigest('Cargo.lock')],
   ['origami2.build.package-lock-sha256', lockDigest('apps/desktop/package-lock.json')],

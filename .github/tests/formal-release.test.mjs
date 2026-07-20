@@ -9,6 +9,12 @@ import { validateReleaseArchiveEntries } from '../scripts/release_archive_contra
 import { buildDependencyPolicy } from '../scripts/dependency_policy.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
+const ciArtifactFixture = {
+  artifactId: '7', name: 'rustsec-warning-review', digest: `sha256:${'c'.repeat(64)}`,
+  archiveSha256: 'c'.repeat(64), size: 128,
+  createdAt: '2026-07-20T00:00:00.000Z', expiresAt: '2026-07-27T00:00:00.000Z',
+  workflowRunId: '67890', runAttempt: 1, checkSuiteId: '24680',
+}
 
 test('PowerShell and bash release helpers anchor repository paths to their script', () => {
   const packageScript = readFileSync(
@@ -725,6 +731,7 @@ test('CI attempt and suite evidence is transitively bound to every release integ
   )
   assert.match(artifactVerifier, /runAttempt: releaseEvidence\.ciChecks\.runAttempt/u)
   assert.match(artifactVerifier, /checkSuiteId: releaseEvidence\.ciChecks\.checkSuiteId/u)
+  assert.match(artifactVerifier, /rustsecReviewArtifact/u)
   assert.match(artifactVerifier, /CycloneDX SBOM canonical release evidence mismatch/u)
   assert.match(manifestWriter, /`\$\{prefix\}\.cdx\.json`/u)
   assert.match(provenanceVerifier, /\.cdx\.json"/u)
@@ -985,6 +992,7 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
               runAttempt: 1,
               checkSuiteId: '24680',
               checks: [{ name: 'test', conclusion: 'success' }],
+              rustsecReviewArtifact: ciArtifactFixture,
             }),
           },
         },
@@ -1076,6 +1084,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
           runAttempt: 1,
           checkSuiteId: '24680',
           checks: [{ name: 'test', conclusion: 'success' }],
+          rustsecReviewArtifact: ciArtifactFixture,
         }),
       },
     })
@@ -1128,6 +1137,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         runAttempt: 1,
         checkSuiteId: '24680',
         checks: [{ name: 'test', conclusion: 'success' }],
+        rustsecReviewArtifact: ciArtifactFixture,
       },
       rustsecWarningReview: buildDependencyPolicy().vulnerabilityAssessment.rustsecReviewReport,
     }))
@@ -1154,6 +1164,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
           runAttempt: 1,
           checkSuiteId: '24680',
           checks: [{ name: 'test', conclusion: 'success' }],
+          rustsecReviewArtifact: ciArtifactFixture,
         }),
       },
     })
@@ -1245,7 +1256,12 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
   try {
     const runsPath = join(directory, 'runs.json')
     const checksPath = join(directory, 'checks.json')
+    const artifactsPath = join(directory, 'artifacts.json')
+    const artifactArchivePath = join(directory, 'artifact.zip')
     const commit = 'b'.repeat(40)
+    const artifactBytes = Buffer.from('rustsec-review-fixture')
+    const artifactDigest = createHash('sha256').update(artifactBytes).digest('hex')
+    writeFileSync(artifactArchivePath, artifactBytes)
     const successfulRun = (id = 42) => ({
       id,
       head_sha: commit,
@@ -1270,6 +1286,8 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
         RELEASE_COMMIT: commit,
         WORKFLOW_RUNS_FIXTURE: runsPath,
         CHECK_RUNS_FIXTURE: checksPath,
+        ARTIFACTS_FIXTURE: artifactsPath,
+        ARTIFACT_ARCHIVE_FIXTURE: artifactArchivePath,
       },
     })
     const check = (name, status = 'completed', conclusion = 'success') => ({
@@ -1287,6 +1305,18 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       total_count: requiredChecks.length,
       check_runs: requiredChecks.map((name) => check(name)),
     }))
+    const createdAt = new Date().toISOString()
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    const artifactRecord = {
+      id: 7, name: 'rustsec-warning-review', expired: false,
+      size_in_bytes: artifactBytes.length, digest: `sha256:${artifactDigest}`,
+      created_at: createdAt, expires_at: expiresAt,
+      workflow_run: { id: 42, head_sha: commit },
+    }
+    writeFileSync(artifactsPath, JSON.stringify({
+      total_count: 1,
+      artifacts: [artifactRecord],
+    }))
     assert.deepEqual(JSON.parse(verify()), {
       schema: 'origami2.ci-check-evidence.v1',
       sourceCommit: commit,
@@ -1295,7 +1325,22 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       runAttempt: 1,
       checkSuiteId: '84',
       checks: requiredChecks.map((name) => ({ name, conclusion: 'success' })),
+      rustsecReviewArtifact: {
+        artifactId: '7', name: 'rustsec-warning-review',
+        digest: `sha256:${artifactDigest}`, archiveSha256: artifactDigest,
+        size: artifactBytes.length, createdAt, expiresAt,
+        workflowRunId: '42', runAttempt: 1, checkSuiteId: '84',
+      },
     })
+    writeFileSync(artifactArchivePath, Buffer.from('tampered'))
+    assert.throws(verify, /artifact digest mismatch/u)
+    writeFileSync(artifactArchivePath, artifactBytes)
+    writeFileSync(artifactsPath, JSON.stringify({
+      total_count: 1,
+      artifacts: [{ ...artifactRecord, expired: true }],
+    }))
+    assert.throws(verify, /identity or retention/u)
+    writeFileSync(artifactsPath, JSON.stringify({ total_count: 1, artifacts: [artifactRecord] }))
     writeFileSync(checksPath, JSON.stringify({
       total_count: requiredChecks.length - 1,
       check_runs: requiredChecks.slice(1).map((name) => check(name)),

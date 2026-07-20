@@ -54,6 +54,19 @@ if (
   || ciChecks.schema !== 'origami2.ci-check-evidence.v1'
   || ciChecks.sourceCommit !== commit
 ) throw new Error('CI check evidence is non-canonical or bound to another commit')
+const reviewArtifact = ciChecks.rustsecReviewArtifact
+if (
+  !/^[1-9][0-9]*$/u.test(reviewArtifact?.artifactId ?? '')
+  || reviewArtifact?.name !== 'rustsec-warning-review'
+  || !/^sha256:[0-9a-f]{64}$/u.test(reviewArtifact?.digest ?? '')
+  || reviewArtifact.digest !== `sha256:${reviewArtifact.archiveSha256}`
+  || !Number.isSafeInteger(reviewArtifact.size) || reviewArtifact.size < 1 || reviewArtifact.size > 16_777_216
+  || reviewArtifact.workflowRunId !== ciChecks.workflowRunId
+  || reviewArtifact.runAttempt !== ciChecks.runAttempt
+  || reviewArtifact.checkSuiteId !== ciChecks.checkSuiteId
+  || Date.parse(reviewArtifact.expiresAt) - Date.parse(reviewArtifact.createdAt) < 6 * 86_400_000
+  || Date.parse(reviewArtifact.expiresAt) - Date.parse(reviewArtifact.createdAt) > 8 * 86_400_000
+) throw new Error('RustSec review artifact evidence is invalid')
 
 for (const key of ['bom-ref', 'purl']) {
   const values = sbom.components.map((component) => component?.[key]).filter(Boolean)

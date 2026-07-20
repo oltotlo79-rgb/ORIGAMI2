@@ -151,6 +151,15 @@ if (
   || releaseEvidence.ciChecks.runAttempt < 1
   || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciChecks?.checkSuiteId ?? '')
   || releaseEvidence.ciChecks?.workflow !== '.github/workflows/ci.yml'
+  || releaseEvidence.ciChecks?.rustsecReviewArtifact?.name !== 'rustsec-warning-review'
+  || releaseEvidence.ciChecks?.rustsecReviewArtifact?.digest
+    !== `sha256:${releaseEvidence.ciChecks?.rustsecReviewArtifact?.archiveSha256}`
+  || releaseEvidence.ciChecks?.rustsecReviewArtifact?.workflowRunId
+    !== releaseEvidence.ciChecks?.workflowRunId
+  || releaseEvidence.ciChecks?.rustsecReviewArtifact?.runAttempt
+    !== releaseEvidence.ciChecks?.runAttempt
+  || releaseEvidence.ciChecks?.rustsecReviewArtifact?.checkSuiteId
+    !== releaseEvidence.ciChecks?.checkSuiteId
   || !Array.isArray(releaseEvidence.ciChecks?.checks)
   || releaseEvidence.ciChecks.checks.length < 1
   || releaseEvidence.ciChecks.checks.length > 100
@@ -173,6 +182,7 @@ if (
     runAttempt: releaseEvidence.ciChecks.runAttempt,
     checkSuiteId: releaseEvidence.ciChecks.checkSuiteId,
     checks: releaseEvidence.ciChecks.checks,
+    rustsecReviewArtifact: releaseEvidence.ciChecks.rustsecReviewArtifact,
   })
   || (process.env.RELEASE_RUN_ID !== undefined && releaseEvidence.ciRunId !== process.env.RELEASE_RUN_ID)
   || (process.env.EXECUTED_TEST_COUNT !== undefined

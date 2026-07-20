@@ -95,6 +95,7 @@ export type CreaseCanvasFace = Readonly<{
   vertexIds: readonly string[]
   edgeIds: readonly string[]
   polygon: readonly Readonly<{ x: number; y: number }>[]
+  color?: string
 }>
 
 export type CompassConstructionCircle = Readonly<{
@@ -491,6 +492,15 @@ export function CreaseCanvas({
         context.rotate(underlay.rotationDegrees * Math.PI / 180)
         context.scale(underlay.scaleX * transform.scale, underlay.scaleY * transform.scale)
         context.drawImage(underlay.image, 0, 0)
+        context.restore()
+      }
+
+      for (const face of faces) {
+        if (!face.color || !tracePolygonPath(context, transform, face.polygon)) continue
+        context.save()
+        context.fillStyle = face.color
+        context.globalAlpha = 0.24
+        context.fill()
         context.restore()
       }
 

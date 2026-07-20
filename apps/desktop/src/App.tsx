@@ -1406,16 +1406,22 @@ function App() {
         }
         polygon.push({ x: matches[0].x, y: matches[0].y })
       }
-      if (valid) faces.push(Object.freeze({
-        id: face.id,
-        vertexIds: Object.freeze(
-          face.outer.half_edges.map((halfEdge) => halfEdge.origin),
-        ),
-        edgeIds: Object.freeze(
-          face.outer.half_edges.map((halfEdge) => halfEdge.edge),
-        ),
-        polygon: Object.freeze(polygon),
-      }))
+      if (valid) {
+        const color = nativeSnapshot.element_metadata.faces.find(
+          (record) => record.face === face.id,
+        )?.metadata.color
+        faces.push(Object.freeze({
+          id: face.id,
+          vertexIds: Object.freeze(
+            face.outer.half_edges.map((halfEdge) => halfEdge.origin),
+          ),
+          edgeIds: Object.freeze(
+            face.outer.half_edges.map((halfEdge) => halfEdge.edge),
+          ),
+          polygon: Object.freeze(polygon),
+          ...(color ? { color: rgbaToCss(color) } : {}),
+        }))
+      }
     }
     return Object.freeze(faces)
   }, [nativeSnapshot, topologyResponse])
@@ -2219,6 +2225,27 @@ function App() {
     setMirrorPreview(null)
     setMirrorVertexIds([])
     setMirrorEdgeIds([])
+  }
+
+  function mirrorPreflightIssueText(issue: string | null) {
+    switch (issue) {
+      case 'invalid_axis':
+        return text({ ja: '対称軸が無効です。', en: 'The mirror axis is invalid.' })
+      case 'empty_selection':
+        return text({ ja: '選択が空です。', en: 'The selection is empty.' })
+      case 'noncanonical_selection':
+      case 'invalid_new_ids':
+      case 'core_rejected':
+        return text({
+          ja: '現在の形状またはレイヤーでは安全に適用できません。',
+          en: 'This edit is unsafe for the current geometry or layers.',
+        })
+      default:
+        return text({
+          ja: '対称編集を適用できません。',
+          en: 'The mirror edit cannot be applied.',
+        })
+    }
   }
 
   useEffect(() => {
@@ -6166,10 +6193,7 @@ function App() {
                         ja: '適用できます。内容を確認して明示的に適用してください。',
                         en: 'Ready. Review and explicitly apply the edit.',
                       })
-                    : formattedText({
-                        ja: '適用できません: {issue}',
-                        en: 'Cannot apply: {issue}',
-                      }, { issue: mirrorPreview.result.issue ?? 'unknown' })}
+                    : mirrorPreflightIssueText(mirrorPreview.result.issue)}
                 </p>
               )}
             </section>

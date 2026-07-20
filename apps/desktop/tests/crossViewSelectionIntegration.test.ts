@@ -31,6 +31,18 @@ test('2D topology faces and 3D element markers are selectable and highlighted', 
   assert.match(picking, /\{ kind: 'vertex', vertexId \}/u)
 })
 
+test('saved face color metadata is rendered below the selected-face highlight', () => {
+  assert.match(
+    app,
+    /element_metadata\.faces\.find\([\s\S]*?record\.face === face\.id[\s\S]*?\{ color: rgbaToCss\(color\) \}/u,
+  )
+  const metadataFill = canvas.indexOf('for (const face of faces)')
+  const selectedHighlight = canvas.indexOf('const selectedFace = selectedFaceId')
+  assert.ok(metadataFill >= 0)
+  assert.ok(selectedHighlight > metadataFill)
+  assert.match(canvas, /context\.globalAlpha = 0\.24[\s\S]*?context\.fill\(\)/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

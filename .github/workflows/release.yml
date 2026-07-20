@@ -66,6 +66,7 @@ jobs:
             platform: macos-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    environment: ${{ needs.validate.outputs.mode != 'dry-run' && 'formal-release-signing' || '' }}
     permissions:
       contents: read
     steps:
@@ -100,13 +101,17 @@ jobs:
             throw 'Windows signing credentials are required for publication.'
           }
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
-          [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
-          $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
-          & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-            /f $certificate /p $env:CERTIFICATE_PASSWORD $file
-          if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
-          & signtool verify /pa /all $file
-          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+          try {
+            [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
+            & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+              /f $certificate /p $env:CERTIFICATE_PASSWORD $file
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
+            & signtool verify /pa /all $file
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+          } finally {
+            Remove-Item -LiteralPath $certificate -Force -ErrorAction SilentlyContinue
+          }
       - name: Bundle Windows installer around the tested executable
         if: matrix.platform == 'windows-x64'
         working-directory: apps/desktop
@@ -123,12 +128,17 @@ jobs:
             throw 'Windows signing credentials are required for publication.'
           }
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
-          $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
-          & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-            /f $certificate /p $env:CERTIFICATE_PASSWORD $file
-          if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
-          & signtool verify /pa /all $file
-          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+          try {
+            [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
+            & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+              /f $certificate /p $env:CERTIFICATE_PASSWORD $file
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
+            & signtool verify /pa /all $file
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+          } finally {
+            Remove-Item -LiteralPath $certificate -Force -ErrorAction SilentlyContinue
+          }
       - name: Verify Windows installer and portable executable contract
         if: matrix.platform == 'windows-x64'
         shell: pwsh
@@ -156,8 +166,14 @@ jobs:
           test -n "$CERTIFICATE_BASE64"
           test -n "$CERTIFICATE_PASSWORD"
           test -n "$SIGNING_IDENTITY"
+          echo "::add-mask::$SIGNING_IDENTITY"
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
           certificate="$RUNNER_TEMP/apple-signing.p12"
+          cleanup_signing_material() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f -- "$certificate"
+          }
+          trap cleanup_signing_material EXIT
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
           security create-keychain -p temporary "$keychain"
           security unlock-keychain -p temporary "$keychain"
@@ -177,6 +193,8 @@ jobs:
           test -n "$APPLE_NOTARY_KEY_BASE64"
           test -n "$APPLE_NOTARY_KEY_ID"
           test -n "$APPLE_NOTARY_ISSUER_ID"
+          echo "::add-mask::$APPLE_NOTARY_KEY_ID"
+          echo "::add-mask::$APPLE_NOTARY_ISSUER_ID"
           key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
           archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
           trap 'rm -f -- "$key" "$archive"' EXIT

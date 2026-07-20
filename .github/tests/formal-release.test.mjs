@@ -231,6 +231,40 @@ test('provenance subjects cover the complete verified nine-asset set', () => {
   assert.equal(promote.match(/gh attestation verify "\$asset"/gu)?.length, 1)
 })
 
+test('signing secrets are approval-gated masked cleaned and absent from fork CI', () => {
+  const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const build = release.slice(release.indexOf('  build:'), release.indexOf('  publish:'))
+  assert.match(
+    build,
+    /environment: \$\{\{ needs\.validate\.outputs\.mode != 'dry-run' && 'formal-release-signing' \|\| '' \}\}/u,
+  )
+  assert.match(release, /environment: formal-release/u)
+  assert.doesNotMatch(ci, /\$\{\{ secrets\./u)
+  assert.doesNotMatch(release, /pull_request:/u)
+  assert.match(build, /Remove-Item -LiteralPath \$certificate -Force/u)
+  assert.match(build, /security delete-keychain "\$keychain"/u)
+  assert.match(build, /trap cleanup_signing_material EXIT/u)
+  assert.match(build, /trap 'rm -f -- "\$key" "\$archive"' EXIT/u)
+  assert.match(build, /::add-mask::\$SIGNING_IDENTITY/u)
+  assert.match(build, /::add-mask::\$APPLE_NOTARY_KEY_ID/u)
+  const secretReferences = build.match(/\$\{\{ secrets\.[A-Z0-9_]+ \}\}/gu) ?? []
+  assert.equal(secretReferences.length, 10)
+  for (const step of [
+    'Sign Windows portable executable',
+    'Sign Windows installer',
+    'Sign macOS application',
+    'Notarize and staple macOS application',
+  ]) {
+    const offset = build.indexOf(`- name: ${step}`)
+    assert.ok(offset >= 0)
+    assert.match(
+      build.slice(offset, offset + 300),
+      /needs\.validate\.outputs\.mode != 'dry-run'/u,
+    )
+  }
+})
+
 test('CI always runs release contracts with read-only short-lived evidence', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const checkoutCount = workflow.match(/actions\/checkout@/gu)?.length ?? 0

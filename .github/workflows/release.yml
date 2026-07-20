@@ -428,6 +428,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: bash .github/scripts/verify_release_provenance.sh release "$RELEASE_VERSION" "$GH_REPO"
+      - name: Seal the verified release staging directory read-only
+        run: |
+          set -euo pipefail
+          test "$(find release -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 9
+          find release -mindepth 1 -maxdepth 1 -type f -exec chmod 0444 {} +
+          chmod 0555 release
+          sha256sum release/* > "$RUNNER_TEMP/release-staging.sha256"
+          sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
       - name: Publish immutable tagged release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -470,6 +478,9 @@ jobs:
             exit "$status"
           }
           trap cleanup_partial_draft EXIT
+          test "$(stat -c '%a' release)" = 555
+          test -z "$(find release -mindepth 1 -maxdepth 1 -type f -printf '%m\n' | grep -vx 444 || true)"
+          sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
           ! timeout 60s gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1
           remote_commit="$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
           test "$remote_commit" = "$RELEASE_COMMIT"
@@ -495,15 +506,21 @@ jobs:
           test "$(jq -r .target_commitish "$created")" = "$RELEASE_COMMIT"
           for asset in release/*
           do
+            sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
             state_id="$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
             test "$state_id" = "$created_release_id"
+            exec {asset_fd}<"$asset"
             timeout 600s gh api --method POST --hostname uploads.github.com \
               "repos/$GH_REPO/releases/$created_release_id/assets?name=$(basename "$asset")" \
-              --header 'Content-Type: application/octet-stream' --input "$asset" >/dev/null
+              --header 'Content-Type: application/octet-stream' \
+              --input "/proc/$$/fd/$asset_fd" >/dev/null
+            exec {asset_fd}<&-
+            sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
           done
           remote_release="$RUNNER_TEMP/remote-draft-release.json"
           timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$remote_release"
           node .github/scripts/verify_remote_release_assets.mjs release "$remote_release"
+          sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
           test "$(jq -r .draft "$remote_release")" = true
           test "$(jq -r .tag_name "$remote_release")" = "$RELEASE_TAG"
           test "$(jq -r .target_commitish "$remote_release")" = "$RELEASE_COMMIT"

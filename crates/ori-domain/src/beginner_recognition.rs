@@ -425,6 +425,7 @@ pub fn analyze_marker_png_rgba_v1(
         BeginnerTargetPartKindV1::Horn,
         BeginnerTargetPartKindV1::Ear,
         BeginnerTargetPartKindV1::Wing,
+        BeginnerTargetPartKindV1::Fin,
         BeginnerTargetPartKindV1::Tail,
     ];
     let target_parts = kinds

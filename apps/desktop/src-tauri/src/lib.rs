@@ -2129,6 +2129,29 @@ fn grid_template_plan(
     )
 }
 
+fn symmetric_plan_kind(
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> ori_domain::BeginnerGeneratedPlanKindV1 {
+    let has = |kind| {
+        profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == kind && part.count == 2)
+    };
+    if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+    } else if has(ori_domain::BeginnerTargetPartKindV1::Wing) {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
+    } else if has(ori_domain::BeginnerTargetPartKindV1::Fin) {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
+    } else {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct BeginnerGridCandidateResponse {
     point: ori_domain::BeginnerParameterGridPointV1,
@@ -2192,13 +2215,7 @@ fn evaluate_beginner_parameter_grid(
     }
     let _registration = BeginnerGridWorkRegistration(request_generation_id);
     let grid = ori_domain::beginner_parameter_grid_v1();
-    let expected_kind = if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
-    } else {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
-    };
+    let expected_kind = symmetric_plan_kind(profile);
     let mut primary = Vec::with_capacity(grid.len());
     for point in grid.iter().copied() {
         if work.cancelled.load(Ordering::Acquire) {
@@ -2444,6 +2461,8 @@ fn apply_beginner_generated_plan(
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2521,6 +2540,16 @@ fn apply_beginner_generated_plan(
             "Create the four bounded base creases for the bilateral wing layout.",
             "Confirm that the saved two-wing target and bilateral protrusion still match.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase => (
+            "Symmetric bird base",
+            "Create the bounded bilateral bird-wing base creases.",
+            "Confirm the saved head, torso, and two-wing target still match.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
+            "Symmetric fish base",
+            "Create the bounded bilateral fish-fin base creases.",
+            "Confirm the saved head, torso, and two-fin target still match.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2592,6 +2621,16 @@ fn apply_grid_plan_document(
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase => (
             "Symmetric wing grid candidate",
             "Apply the globally proven parameter-grid wing base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase => (
+            "Symmetric bird grid candidate",
+            "Apply the globally proven parameter-grid bird base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
+            "Symmetric fish grid candidate",
+            "Apply the globally proven parameter-grid fish base.",
             "The canonical grid tuple and proof were revalidated immediately before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
@@ -2675,13 +2714,7 @@ fn apply_beginner_parameter_grid_candidate(
     ) {
         return Err("grid_candidate_asset_stale".to_owned());
     }
-    let kind = if expected_profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
-    } else {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
-    };
+    let kind = symmetric_plan_kind(&expected_profile);
     let plan = grid_template_plan(
         project.project_id,
         project.editor.pattern(),

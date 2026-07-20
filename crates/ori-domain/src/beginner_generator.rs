@@ -100,6 +100,8 @@ pub fn beginner_parameter_grid_hash_v1(
 pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricFourLegBase,
     SymmetricWingBase,
+    SymmetricBirdBase,
+    SymmetricFishBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -189,6 +191,8 @@ pub fn estimate_symmetric_parameters_v1(
     }
     let protrusion_count = match constraints.target_category? {
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         _ => return None,
     };
@@ -294,26 +298,51 @@ pub fn generate_beginner_plans_v1(
     };
     let template = match target_category {
         BeginnerTargetCategoryV1::Animal => {
-            if part_count(BeginnerTargetPartKindV1::Leg) != 4
-                || constraints.skeleton_segments.len() < 3
+            let (required_count, vertical, plan_kind, instruction) =
+                if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
+                    (
+                        4,
+                        true,
+                        BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
+                        "symmetric_four_leg_base",
+                    )
+                } else if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
+                    (
+                        2,
+                        false,
+                        BeginnerGeneratedPlanKindV1::SymmetricBirdBase,
+                        "symmetric_bird_base",
+                    )
+                } else if part_count(BeginnerTargetPartKindV1::Fin) == 2 {
+                    (
+                        2,
+                        false,
+                        BeginnerGeneratedPlanKindV1::SymmetricFishBase,
+                        "symmetric_fish_base",
+                    )
+                } else {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                };
+            if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
                 || !has_bilateral_skeleton(constraints)
-                || !has_bilateral_protrusion_count(constraints, 4)
+                || !has_bilateral_protrusion_count(constraints, required_count)
             {
                 return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
             }
-            let endpoints = parameterized_symmetric_endpoints(constraints, 4, true)
-                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+            let endpoints =
+                parameterized_symmetric_endpoints(constraints, required_count, vertical)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
             symmetric_template(
                 namespace,
                 source,
-                BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
+                plan_kind,
                 kind,
                 min_x,
                 max_x,
                 min_y,
                 max_y,
                 &endpoints,
-                "symmetric_four_leg_base",
+                instruction,
                 constraints,
             )
         }
@@ -426,11 +455,20 @@ pub fn generate_beginner_plans_v1(
 pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
     let target = match constraints.target_category {
         Some(BeginnerTargetCategoryV1::Animal) => {
-            parameterized_symmetric_endpoints(constraints, 4, true).and_then(|_| {
+            let (count, vertical) = if constraints
+                .target_parts
+                .iter()
+                .any(|part| part.kind == BeginnerTargetPartKindV1::Leg && part.count == 4)
+            {
+                (4, true)
+            } else {
+                (2, false)
+            };
+            parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
                 constraints
                     .protrusions
                     .iter()
-                    .find(|target| target.count == 4)
+                    .find(|target| target.count == count)
             })
         }
         Some(BeginnerTargetCategoryV1::Insect) => {
@@ -713,6 +751,28 @@ mod tests {
                 .iter()
                 .all(|plan| plan.crease_pattern.edges.len() == 1)
         );
+        for (part_kind, expected_kind) in [
+            (
+                BeginnerTargetPartKindV1::Wing,
+                BeginnerGeneratedPlanKindV1::SymmetricBirdBase,
+            ),
+            (
+                BeginnerTargetPartKindV1::Fin,
+                BeginnerGeneratedPlanKindV1::SymmetricFishBase,
+            ),
+        ] {
+            let mut family = constraints.clone();
+            family.target_parts[2] = BeginnerTargetPartRecordV1 {
+                kind: part_kind,
+                count: 2,
+            };
+            family.skeleton_segments.truncate(2);
+            family.protrusions[0] = bilateral_protrusion(1, 2);
+            let plans = generate_beginner_plans_v1(namespace, &source, &ids, &family).unwrap();
+            assert_eq!(plans[0].kind, expected_kind);
+            assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+            assert_eq!(beginner_target_approximation_score_v1(&family), 92);
+        }
         let mut higher_priority = constraints.clone();
         higher_priority.protrusions[0].priority = 100;
         let scaled =

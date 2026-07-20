@@ -54,6 +54,7 @@ pub enum BeginnerTargetPartKindV1 {
     Horn,
     Ear,
     Wing,
+    Fin,
     Tail,
 }
 

@@ -20,6 +20,7 @@ use crate::{
     FaceAdjacency, FaceExtractionInput, FoldAssignment, HalfEdgeRef, TopologyIssueKind,
     TopologySnapshot,
     admission::{PaperGraphAdmissionError, build_admitted_paper_walks_with_checkpoint},
+    connected_sheet_component,
     dcel::{HalfEdgeIndex, PaperWalkSet, WalkIndex},
     face_from_walk, poll_cooperative_checkpoint, run_cooperative_checkpoint,
 };
@@ -134,6 +135,7 @@ where
 
     Ok(TopologySnapshot {
         source_revision: input.source_revision,
+        material_components: vec![connected_sheet_component(input.identity_namespace, &faces)],
         faces,
         edge_incidence,
         hinge_adjacency,

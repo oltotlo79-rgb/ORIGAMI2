@@ -425,11 +425,18 @@ export type TopologyFaceAdjacency = {
   assignment: FoldAssignment
 }
 
+export type TopologyMaterialComponent = {
+  key: number[]
+  sheet_origin: string
+  faces: string[]
+}
+
 export type TopologySnapshot = {
   source_revision: number
   faces: TopologyFace[]
   edge_incidence: Array<[string, TopologyEdgeIncidence]>
   hinge_adjacency: TopologyFaceAdjacency[]
+  material_components: TopologyMaterialComponent[]
 }
 
 export type TopologyIssueKind =

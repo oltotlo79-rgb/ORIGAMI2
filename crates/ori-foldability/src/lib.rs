@@ -1566,6 +1566,7 @@ mod tests {
 
     fn zero_hinge() -> TopologySnapshot {
         TopologySnapshot {
+            material_components: Vec::new(),
             source_revision: REVISION,
             faces: vec![face(0x101, 0x10)],
             edge_incidence: Vec::new(),
@@ -1578,6 +1579,7 @@ mod tests {
         let second = face(0x102, 0x20);
         let edge = fixed_id(0x301);
         TopologySnapshot {
+            material_components: Vec::new(),
             source_revision: REVISION,
             faces: vec![second.clone(), first.clone()],
             edge_incidence: vec![(
@@ -1604,6 +1606,7 @@ mod tests {
         let first_edge = fixed_id(0x301);
         let second_edge = fixed_id(0x302);
         TopologySnapshot {
+            material_components: Vec::new(),
             source_revision: REVISION,
             faces: vec![third.clone(), first.clone(), second.clone()],
             edge_incidence: vec![

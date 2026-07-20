@@ -219,6 +219,19 @@ pub struct FaceAdjacency {
     pub assignment: FoldAssignment,
 }
 
+/// Canonical SHA-256 digest of one connected material component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MaterialComponentKey(pub [u8; 32]);
+
+/// Faces still belonging to one connected piece of the original sheet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterialComponent {
+    pub key: MaterialComponentKey,
+    pub sheet_origin: ProjectId,
+    pub faces: Vec<FaceId>,
+}
+
 /// Canonical, revision-labelled output of face extraction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TopologySnapshot {
@@ -227,6 +240,31 @@ pub struct TopologySnapshot {
     pub edge_incidence: Vec<(EdgeId, EdgeIncidence)>,
     #[serde(default)]
     pub hinge_adjacency: Vec<FaceAdjacency>,
+    #[serde(default)]
+    pub material_components: Vec<MaterialComponent>,
+}
+
+pub(crate) fn connected_sheet_component(
+    sheet_origin: ProjectId,
+    faces: &[Face],
+) -> MaterialComponent {
+    let mut keyed_faces = faces
+        .iter()
+        .map(|face| (face.key, face.id))
+        .collect::<Vec<_>>();
+    keyed_faces.sort_by_key(|(key, _)| *key);
+    let mut hasher = Sha256::new();
+    hasher.update(b"ORIGAMI2_MATERIAL_COMPONENT_KEY_V1");
+    hasher.update(sheet_origin.canonical_bytes());
+    hasher.update((keyed_faces.len() as u64).to_be_bytes());
+    for (key, _) in &keyed_faces {
+        hasher.update(key.0);
+    }
+    MaterialComponent {
+        key: MaterialComponentKey(hasher.finalize().into()),
+        sheet_origin,
+        faces: keyed_faces.into_iter().map(|(_, id)| id).collect(),
+    }
 }
 
 /// Whether a topology issue permits downstream simulation.
@@ -764,6 +802,7 @@ fn extract_single_fold_snapshot(
     }];
     Ok(TopologySnapshot {
         source_revision: input.source_revision,
+        material_components: vec![connected_sheet_component(input.identity_namespace, &faces)],
         faces,
         edge_incidence,
         hinge_adjacency,
@@ -941,6 +980,10 @@ fn extract_boundary_face(
 
     Ok(TopologySnapshot {
         source_revision: input.source_revision,
+        material_components: vec![connected_sheet_component(
+            input.identity_namespace,
+            std::slice::from_ref(&face),
+        )],
         faces: vec![face],
         edge_incidence,
         hinge_adjacency: Vec::new(),

@@ -198,6 +198,7 @@ fn unchecked_single_face_fixture(points: &[(f64, f64)]) -> FoldFixture {
         area: signed_double_area * 0.5,
     };
     let topology = TopologySnapshot {
+        material_components: Vec::new(),
         source_revision: 17,
         edge_incidence: edges
             .iter()

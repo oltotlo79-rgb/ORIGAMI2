@@ -182,11 +182,21 @@ export function buildFoldPreviewModel(
     || !Array.isArray(snapshot.faces)
     || !Array.isArray(snapshot.edge_incidence)
     || !Array.isArray(snapshot.hinge_adjacency)
+    || !Array.isArray(snapshot.material_components)
   ) return null
 
   const faces = parseFaces(snapshot.faces, parsedProject.positions, parsedProject.frame)
   const incidences = parseIncidences(snapshot.edge_incidence)
-  if (!faces || !incidences || !incidencesMatchProject(parsedProject.edges, faces, incidences)) {
+  if (
+    !faces
+    || !incidences
+    || !materialComponentsPartitionFaces(
+      snapshot.material_components,
+      parsedProject.projectId,
+      faces,
+    )
+    || !incidencesMatchProject(parsedProject.edges, faces, incidences)
+  ) {
     return null
   }
 
@@ -614,6 +624,37 @@ function parseFaces(
     })
   }
   return faces
+}
+
+function materialComponentsPartitionFaces(
+  rawComponents: readonly unknown[],
+  projectId: string,
+  faces: readonly ParsedFace[],
+) {
+  if (rawComponents.length < 1) return false
+  const expected = new Set(faces.map((face) => face.id))
+  const observed = new Set<string>()
+  const keys = new Set<string>()
+  for (const rawComponent of rawComponents) {
+    if (!isRecord(rawComponent)) return false
+    const key = faceKey(rawComponent.key)
+    const sheetOrigin = canonicalEntityId(rawComponent.sheet_origin)
+    if (
+      !key
+      || sheetOrigin !== projectId
+      || !Array.isArray(rawComponent.faces)
+      || rawComponent.faces.length < 1
+    ) return false
+    const keyToken = key.join(',')
+    if (keys.has(keyToken)) return false
+    keys.add(keyToken)
+    for (const rawFace of rawComponent.faces) {
+      const face = canonicalEntityId(rawFace)
+      if (!face || !expected.has(face) || observed.has(face)) return false
+      observed.add(face)
+    }
+  }
+  return observed.size === expected.size
 }
 
 function parseHalfEdges(

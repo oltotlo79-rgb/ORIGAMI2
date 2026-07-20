@@ -136,6 +136,7 @@ function topologyFixture(): ProjectTopologyResponse {
     snapshot: {
       source_revision: 7,
       faces: [west, east],
+      material_components: [materialComponent(west, east)],
       edge_incidence: [
         [ids.ab, { kind: 'boundary', material: ids.west }],
         [ids.bc, { kind: 'boundary', material: ids.east }],
@@ -216,6 +217,7 @@ function foldGraphFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
     snapshot: {
       source_revision: 7,
       faces: [west, south, east, north],
+      material_components: [materialComponent(west, south, east, north)],
       edge_incidence: [
         [ids.fa, { kind: 'boundary', material: ids.west }],
         [ids.ef, { kind: 'boundary', material: ids.north }],
@@ -395,6 +397,7 @@ function foldTreeFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
     snapshot: {
       source_revision: 7,
       faces: [west, middle, east],
+      material_components: [materialComponent(west, middle, east)],
       edge_incidence: [
         ...boundaryIds.map((edgeId, index) => [
           edgeId,
@@ -459,6 +462,7 @@ function flatFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
     snapshot: {
       source_revision: 7,
       faces: [face],
+      material_components: [materialComponent(face)],
       edge_incidence: boundaryEdgeIds.map((edgeId) => [
         edgeId,
         { kind: 'boundary', material: ids.whole },
@@ -467,6 +471,14 @@ function flatFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {
     },
     issues: [],
   }]
+}
+
+function materialComponent(...faces: TopologyFace[]) {
+  return {
+    key: [0xa5, ...Array<number>(31).fill(0)],
+    sheet_origin: ids.project,
+    faces: faces.map((face) => face.id),
+  }
 }
 
 function extremeTranslatedFlatFixtures(): [ProjectSnapshot, ProjectTopologyResponse] {

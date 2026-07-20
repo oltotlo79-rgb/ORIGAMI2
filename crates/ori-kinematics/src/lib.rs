@@ -70,6 +70,7 @@
 #![forbid(unsafe_code)]
 
 mod graph;
+mod schedule;
 mod transform;
 mod tree;
 
@@ -79,6 +80,10 @@ use thiserror::Error;
 pub use graph::{
     CandidateFaceTransform, ClosedMaterialHingeGraphPose, MaterialHingeClosureCertificate,
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
+};
+pub use schedule::{
+    CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
+    CycleSchedulePrepareErrorV1, RationalCoefficientV1,
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{

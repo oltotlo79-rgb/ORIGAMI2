@@ -378,6 +378,22 @@ pub fn evaluate_pole_free_atan2_interval_v1(
     x: &PoleFreeBernsteinCertificateV1,
     max_work: usize,
 ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+    let x_has_endpoint_zero = x.coefficients.first().is_some_and(Zero::is_zero)
+        || x.coefficients.last().is_some_and(Zero::is_zero);
+    if x_has_endpoint_zero
+        && x.positive
+        && y.positive
+        && y.coefficients.iter().all(|value| value.is_positive())
+    {
+        let ratio = evaluate_pole_free_rational_interval_v1(x, y, max_work)?;
+        let atan = crate::atan_interval_v1(ratio, max_work)
+            .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+        let half_pi = OutwardIntervalV1::from_rounded(core::f64::consts::FRAC_PI_2)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        return half_pi
+            .sub(atan)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput);
+    }
     let ratio = evaluate_pole_free_rational_interval_v1(y, x, max_work)?;
     let mut angle = crate::atan_interval_v1(ratio, max_work)
         .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
@@ -502,6 +518,22 @@ fn prepare_exact_pole_free_bernstein_certificate(
     max_coefficient_bits: u32,
     max_work: usize,
 ) -> Result<PoleFreeBernsteinCertificateV1, CycleSchedulePrepareErrorV1> {
+    prepare_exact_signed_bernstein_certificate(
+        power,
+        max_degree,
+        max_coefficient_bits,
+        max_work,
+        false,
+    )
+}
+
+fn prepare_exact_signed_bernstein_certificate(
+    power: Vec<BigRational>,
+    max_degree: usize,
+    max_coefficient_bits: u32,
+    max_work: usize,
+    allow_endpoint_zero: bool,
+) -> Result<PoleFreeBernsteinCertificateV1, CycleSchedulePrepareErrorV1> {
     if power.is_empty()
         || power.len() > max_degree.saturating_add(1)
         || power.len().saturating_mul(power.len()) > max_work
@@ -524,20 +556,31 @@ fn prepare_exact_pole_free_bernstein_certificate(
     }
     validate_exact_bits(&coefficients, max_coefficient_bits)?;
     let exact_range = ExactBernsteinRangeV1 { coefficients };
-    let positive = exact_range
+    let strictly_positive = exact_range
         .coefficients
         .iter()
         .all(|value| value.is_positive());
-    let negative = exact_range
+    let strictly_negative = exact_range
         .coefficients
         .iter()
         .all(|value| value.is_negative());
-    if !positive && !negative {
+    let endpoint_zero = allow_endpoint_zero
+        && !exact_range.coefficients.iter().all(Zero::is_zero)
+        && exact_range
+            .coefficients
+            .iter()
+            .enumerate()
+            .all(|(index, value)| {
+                value.is_positive()
+                    || (value.is_zero()
+                        && (index == 0 || index + 1 == exact_range.coefficients.len()))
+            });
+    if !strictly_positive && !strictly_negative && !endpoint_zero {
         return Err(CycleSchedulePrepareErrorV1::InvalidInput);
     }
     Ok(PoleFreeBernsteinCertificateV1 {
         degree,
-        positive,
+        positive: strictly_positive || endpoint_zero,
         coefficients: exact_range.coefficients,
     })
 }
@@ -625,7 +668,7 @@ impl PreparedHalfAngleRationalEntryV1 {
             .into_iter()
             .map(to_exact)
             .collect::<Result<Vec<_>, _>>()?;
-        let numerator_certificate = prepare_exact_pole_free_bernstein_certificate(
+        let numerator_certificate = prepare_exact_signed_bernstein_certificate(
             affine_reparameterize_power(
                 &numerator_power_coefficients,
                 &u_domain,
@@ -635,8 +678,9 @@ impl PreparedHalfAngleRationalEntryV1 {
             limits.max_degree,
             limits.max_coefficient_bits,
             limits.max_work,
+            true,
         )?;
-        let denominator_certificate = prepare_exact_pole_free_bernstein_certificate(
+        let denominator_certificate = prepare_exact_signed_bernstein_certificate(
             affine_reparameterize_power(
                 &denominator_power_coefficients,
                 &u_domain,
@@ -646,7 +690,16 @@ impl PreparedHalfAngleRationalEntryV1 {
             limits.max_degree,
             limits.max_coefficient_bits,
             limits.max_work,
+            true,
         )?;
+        if numerator_certificate
+            .coefficients
+            .iter()
+            .zip(&denominator_certificate.coefficients)
+            .any(|(numerator, denominator)| numerator.is_zero() && denominator.is_zero())
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
         let derivative = evaluate_half_angle_rational_derivative_interval_v1(
             &numerator_certificate,
             &denominator_certificate,
@@ -801,12 +854,12 @@ impl PreparedHalfAngleRationalEntryV1 {
             max_coefficient_bits,
             max_work,
         )?;
-        if numerator.is_zero() || denominator.is_zero() {
+        if numerator.is_zero() && denominator.is_zero() {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
         let certificate = |value: BigRational| PoleFreeBernsteinCertificateV1 {
             degree: 0,
-            positive: value.is_positive(),
+            positive: !value.is_negative(),
             coefficients: vec![value],
         };
         evaluate_half_angle_rational_degrees_interval_v1(
@@ -2184,6 +2237,93 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn projective_half_angle_allows_closed_q_zero_endpoint_but_not_crossing_or_origin() {
+        let edge = EdgeId::derive_v5(ProjectId::new(), b"projective-endpoint");
+        let input = |numerator, denominator| HalfAngleRationalEntryInputV1 {
+            edge,
+            u_domain: [
+                RationalCoefficientV1 {
+                    numerator: 0,
+                    denominator: 1,
+                },
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+            ],
+            numerator_power_coefficients: numerator,
+            denominator_power_coefficients: denominator,
+        };
+        let entry = PreparedHalfAngleRationalEntryV1::prepare(
+            input(
+                vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+                vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+            ),
+            CycleScheduleLimitsV1::default(),
+        )
+        .expect("q=u is projectively regular on the closed domain");
+        let endpoint = entry
+            .endpoint_angle_enclosure(false, 128, CycleScheduleLimitsV1::default().max_work)
+            .unwrap();
+        assert!(endpoint.lower() <= 180.0 && endpoint.upper() >= 180.0);
+
+        for invalid in [
+            input(
+                vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+                vec![
+                    RationalCoefficientV1 {
+                        numerator: -1,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 2,
+                        denominator: 1,
+                    },
+                ],
+            ),
+            input(
+                vec![RationalCoefficientV1 {
+                    numerator: 0,
+                    denominator: 1,
+                }],
+                vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+            ),
+        ] {
+            assert!(
+                PreparedHalfAngleRationalEntryV1::prepare(
+                    invalid,
+                    CycleScheduleLimitsV1::default(),
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

@@ -94,7 +94,7 @@ describe('InstructionTimelinePanel localization', () => {
       name: '折り図を書き出す',
     })).toBeTruthy()
 
-    fireEvent.click(screen.getByText('1. Fold crane').closest('button')!)
+    fireEvent.click(screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!)
     expect(await screen.findByRole('textbox', { name: 'タイトル' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: '説明' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '現在の3D姿勢で更新' })).toBeTruthy()
@@ -125,7 +125,7 @@ describe('InstructionTimelinePanel localization', () => {
     localeStore.setLocale('en')
     renderPanel()
 
-    fireEvent.click(screen.getByText('1. Fold crane').closest('button')!)
+    fireEvent.click(screen.getByText('1. Fold crane · Completed-form thumbnail').closest('button')!)
     const title = await screen.findByRole('textbox', { name: 'Title' })
     fireEvent.change(title, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save details' }))
@@ -251,7 +251,7 @@ describe('InstructionTimelinePanel localization', () => {
     expect(appliedIds).not.toContain('declarative')
     expect(screen.getAllByText(/手順 3「Physical two」を表示/u).length)
       .toBeGreaterThan(0)
-    expect(screen.getByText('3. Physical two').closest('button')
+    expect(screen.getByText('3. Physical two · 完成形サムネイル').closest('button')
       ?.getAttribute('aria-pressed')).toBe('true')
   })
 

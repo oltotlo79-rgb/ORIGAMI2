@@ -152,7 +152,9 @@ import {
   validateSvgImportSettings,
   validateProject,
   proveCurrentAssignedLocalSufficiencyV1,
+  summarizeCurrentAssignedLocalSufficiencyV1,
   type AssignedLocalSufficiencyResponseV1,
+  type AssignedLocalSufficiencySummaryResponseV1,
 } from './lib/coreClient'
 import {
   isNativeProjectFolderAvailable,
@@ -576,6 +578,10 @@ function App() {
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [assignedLocalSufficiency, setAssignedLocalSufficiency] =
     useState<AssignedLocalSufficiencyResponseV1 | null>(null)
+  const [assignedLocalSummary, setAssignedLocalSummary] =
+    useState<AssignedLocalSufficiencySummaryResponseV1 | null>(null)
+  const [assignedLocalSummaryStatus, setAssignedLocalSummaryStatus] =
+    useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
   const [hoveredLayerFaceId, setHoveredLayerFaceId] = useState<string | null>(null)
   const [mirrorVertexIds, setMirrorVertexIds] = useState<string[]>([])
@@ -1377,7 +1383,30 @@ function App() {
     : undefined
   useEffect(() => {
     let current = true
-    if (!selectedVertexId || !nativeSnapshot) {
+    setAssignedLocalSummary(null)
+    if (!nativeSnapshot) {
+      setAssignedLocalSummaryStatus('idle')
+      return () => { current = false }
+    }
+    setAssignedLocalSummaryStatus('loading')
+    void summarizeCurrentAssignedLocalSufficiencyV1({
+      expectedProjectInstanceId: nativeSnapshot.project_instance_id,
+      expectedProjectId: nativeSnapshot.project_id,
+      expectedRevision: nativeSnapshot.revision,
+      expectedFoldModelFingerprint: nativeSnapshot.fold_model_fingerprint,
+    }).then((response) => {
+      if (current) {
+        setAssignedLocalSummary(response)
+        setAssignedLocalSummaryStatus('ready')
+      }
+    }).catch(() => {
+      if (current) setAssignedLocalSummaryStatus('failed')
+    })
+    return () => { current = false }
+  }, [nativeSnapshot])
+  useEffect(() => {
+    let current = true
+    if (!selectedVertexId || !nativeSnapshot || assignedLocalSummaryStatus === 'loading') {
       setAssignedLocalSufficiency(null)
       return () => {
         current = false
@@ -1396,7 +1425,7 @@ function App() {
     return () => {
       current = false
     }
-  }, [nativeSnapshot, selectedVertexId])
+  }, [assignedLocalSummaryStatus, nativeSnapshot, selectedVertexId])
   const canvasLocalFlatFoldabilityHighlights = !benchmarkRun
     && localFlatFoldabilityPresentation?.kind === 'ready'
     ? localFlatFoldabilityPresentation.highlights
@@ -8317,6 +8346,42 @@ function App() {
                       </li>
                     ))}
                   </ul>
+                  {assignedLocalSummaryStatus === 'loading' && (
+                    <p role="status">{text({
+                      ja: '全頂点の指定M/V局所十分性を有界解析しています…',
+                      en: 'Running the bounded assigned M/V local-sufficiency summary…',
+                    })}</p>
+                  )}
+                  {assignedLocalSummaryStatus === 'failed' && (
+                    <p role="alert">{text({
+                      ja: '全頂点の局所十分性summaryを取得できませんでした。',
+                      en: 'The all-vertex local-sufficiency summary is unavailable.',
+                    })}</p>
+                  )}
+                  {assignedLocalSummary && (
+                    <section aria-label={text({
+                      ja: '全頂点の局所十分性summary',
+                      en: 'All-vertex local-sufficiency summary',
+                    })}>
+                      <p>{text({
+                        ja: '必要条件不成立・十分性証明済み・判定不能を区別します。必要条件の通過だけを証明とは扱いません。',
+                        en: 'Necessary-condition failure, proven sufficiency, and indeterminate are separate. Passing necessary conditions alone is not treated as proof.',
+                      })}</p>
+                      <ul>
+                        {assignedLocalSummary.vertices.map((item) => (
+                          <li key={item.vertex}>
+                            <button type="button" onClick={() => setSelectedVertexId(item.vertex)}>
+                              {item.vertex.slice(0, 8)} · {item.status === 'necessary_failed'
+                                ? text({ ja: '必要条件不成立', en: 'Necessary failed' })
+                                : item.status === 'sufficient_proven'
+                                  ? text({ ja: '局所十分性を証明', en: 'Sufficiency proven' })
+                                  : text({ ja: '判定不能', en: 'Indeterminate' })}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
                   {selectedLocalFlatFoldability && (
                     <div className="selected-local-flat-foldability">
                       <h3>

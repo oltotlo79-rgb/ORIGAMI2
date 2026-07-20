@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerSkeletonSegmentV1,
-    BeginnerProtrusionSymmetryV1, BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1,
+    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerProtrusionSymmetryV1,
+    BeginnerSkeletonSegmentV1, BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1,
     BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind,
     Point2, ProjectId, Vertex, VertexId,
 };
@@ -125,6 +125,7 @@ pub fn generate_beginner_plans_v1(
         BeginnerTargetCategoryV1::Animal => {
             if part_count(BeginnerTargetPartKindV1::Leg) != 4
                 || constraints.skeleton_segments.len() < 3
+                || !has_bilateral_skeleton(constraints)
                 || !has_bilateral_protrusion_count(constraints, 4)
             {
                 return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
@@ -138,12 +139,7 @@ pub fn generate_beginner_plans_v1(
                 max_x,
                 min_y,
                 max_y,
-                &[
-                    (0.25, 0.0),
-                    (0.75, 0.0),
-                    (0.25, 1.0),
-                    (0.75, 1.0),
-                ],
+                &[(0.25, 0.0), (0.75, 0.0), (0.25, 1.0), (0.75, 1.0)],
                 "symmetric_four_leg_base",
                 constraints,
             )
@@ -151,6 +147,7 @@ pub fn generate_beginner_plans_v1(
         BeginnerTargetCategoryV1::Insect => {
             if part_count(BeginnerTargetPartKindV1::Wing) != 2
                 || constraints.skeleton_segments.len() < 2
+                || !has_bilateral_skeleton(constraints)
                 || !has_bilateral_protrusion_count(constraints, 2)
             {
                 return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
@@ -197,53 +194,56 @@ pub fn generate_beginner_plans_v1(
         }
     };
     let mut plans = vec![template];
-    plans.extend(variants.into_iter().take(MAX_BEGINNER_GENERATED_CANDIDATES_V1 - 1).map(
-        |(plan_kind, start, end, instruction)| {
-            let prefix = format!("beginner-plan-{plan_kind:?}");
-            let start_id = source
-                .vertices
-                .iter()
-                .find(|vertex| vertex.position == start)
-                .map_or_else(
-                    || VertexId::derive_v5(namespace, format!("{prefix}-start").as_bytes()),
-                    |vertex| vertex.id,
-                );
-            let end_id = source
-                .vertices
-                .iter()
-                .find(|vertex| vertex.position == end)
-                .map_or_else(
-                    || VertexId::derive_v5(namespace, format!("{prefix}-end").as_bytes()),
-                    |vertex| vertex.id,
-                );
-            BeginnerGeneratedPlanV1 {
-                schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
-                kind: plan_kind,
-                crease_pattern: CreasePattern {
-                    vertices: vec![
-                        Vertex {
-                            id: start_id,
-                            position: start,
-                        },
-                        Vertex {
-                            id: end_id,
-                            position: end,
-                        },
-                    ],
-                    edges: vec![Edge {
-                        id: EdgeId::derive_v5(namespace, format!("{prefix}-edge").as_bytes()),
-                        start: start_id,
-                        end: end_id,
-                        kind,
-                    }],
-                },
-                instruction_codes: vec![instruction.to_owned()],
-                target_parts: constraints.target_parts.clone(),
-                skeleton_segments: constraints.skeleton_segments.clone(),
-                target_asset: constraints.target_asset,
-            }
-        },
-    ));
+    plans.extend(
+        variants
+            .into_iter()
+            .take(MAX_BEGINNER_GENERATED_CANDIDATES_V1 - 1)
+            .map(|(plan_kind, start, end, instruction)| {
+                let prefix = format!("beginner-plan-{plan_kind:?}");
+                let start_id = source
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.position == start)
+                    .map_or_else(
+                        || VertexId::derive_v5(namespace, format!("{prefix}-start").as_bytes()),
+                        |vertex| vertex.id,
+                    );
+                let end_id = source
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.position == end)
+                    .map_or_else(
+                        || VertexId::derive_v5(namespace, format!("{prefix}-end").as_bytes()),
+                        |vertex| vertex.id,
+                    );
+                BeginnerGeneratedPlanV1 {
+                    schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
+                    kind: plan_kind,
+                    crease_pattern: CreasePattern {
+                        vertices: vec![
+                            Vertex {
+                                id: start_id,
+                                position: start,
+                            },
+                            Vertex {
+                                id: end_id,
+                                position: end,
+                            },
+                        ],
+                        edges: vec![Edge {
+                            id: EdgeId::derive_v5(namespace, format!("{prefix}-edge").as_bytes()),
+                            start: start_id,
+                            end: end_id,
+                            kind,
+                        }],
+                    },
+                    instruction_codes: vec![instruction.to_owned()],
+                    target_parts: constraints.target_parts.clone(),
+                    skeleton_segments: constraints.skeleton_segments.clone(),
+                    target_asset: constraints.target_asset,
+                }
+            }),
+    );
     Ok(plans)
 }
 
@@ -253,6 +253,46 @@ fn has_bilateral_protrusion_count(
 ) -> bool {
     constraints.protrusions.iter().any(|target| {
         target.count == count && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+    })
+}
+
+fn has_bilateral_skeleton(constraints: &BeginnerGenerationConstraintsV1) -> bool {
+    let minimum_x = constraints
+        .skeleton_segments
+        .iter()
+        .flat_map(|segment| [segment.start.x_tenths_mm, segment.end.x_tenths_mm])
+        .min();
+    let maximum_x = constraints
+        .skeleton_segments
+        .iter()
+        .flat_map(|segment| [segment.start.x_tenths_mm, segment.end.x_tenths_mm])
+        .max();
+    let Some(axis_twice) = minimum_x
+        .zip(maximum_x)
+        .and_then(|(minimum, maximum)| minimum.checked_add(maximum))
+    else {
+        return false;
+    };
+    constraints.skeleton_segments.iter().all(|segment| {
+        let mirror_start = (
+            axis_twice.checked_sub(segment.start.x_tenths_mm),
+            segment.start.y_tenths_mm,
+        );
+        let mirror_end = (
+            axis_twice.checked_sub(segment.end.x_tenths_mm),
+            segment.end.y_tenths_mm,
+        );
+        constraints.skeleton_segments.iter().any(|candidate| {
+            candidate.thickness_tenths_mm == segment.thickness_tenths_mm
+                && (mirror_start.0 == Some(candidate.start.x_tenths_mm)
+                    && mirror_start.1 == candidate.start.y_tenths_mm
+                    && mirror_end.0 == Some(candidate.end.x_tenths_mm)
+                    && mirror_end.1 == candidate.end.y_tenths_mm
+                    || mirror_start.0 == Some(candidate.end.x_tenths_mm)
+                        && mirror_start.1 == candidate.end.y_tenths_mm
+                        && mirror_end.0 == Some(candidate.start.x_tenths_mm)
+                        && mirror_end.1 == candidate.start.y_tenths_mm)
+        })
     })
 }
 
@@ -272,7 +312,14 @@ fn symmetric_template(
 ) -> BeginnerGeneratedPlanV1 {
     let prefix = format!("beginner-plan-{plan_kind:?}");
     let center = Point2::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
-    let center_id = VertexId::derive_v5(namespace, format!("{prefix}-center").as_bytes());
+    let center_id = source
+        .vertices
+        .iter()
+        .find(|vertex| vertex.position == center)
+        .map_or_else(
+            || VertexId::derive_v5(namespace, format!("{prefix}-center").as_bytes()),
+            |vertex| vertex.id,
+        );
     let mut vertices = vec![Vertex {
         id: center_id,
         position: center,
@@ -366,7 +413,11 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
         );
         assert_eq!(first[0].crease_pattern.edges.len(), 4);
-        assert!(first[1..].iter().all(|plan| plan.crease_pattern.edges.len() == 1));
+        assert!(
+            first[1..]
+                .iter()
+                .all(|plan| plan.crease_pattern.edges.len() == 1)
+        );
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids[..3], &constraints),
             Err(BeginnerGeneratorErrorV1::UnsupportedPaper)
@@ -406,16 +457,22 @@ mod tests {
                     count: 2,
                 },
             ],
-            skeleton_segments: vec![
-                skeleton(1, -10, 0, 0, 10),
-                skeleton(2, 10, 0, 0, 10),
-            ],
+            skeleton_segments: vec![skeleton(1, -10, 0, 0, 10), skeleton(2, 10, 0, 0, 10)],
             protrusions: vec![bilateral_protrusion(1, 2)],
             ..BeginnerGenerationConstraintsV1::default()
         };
         let plans = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
-        assert_eq!(plans[0].kind, BeginnerGeneratedPlanKindV1::SymmetricWingBase);
+        assert_eq!(
+            plans[0].kind,
+            BeginnerGeneratedPlanKindV1::SymmetricWingBase
+        );
         assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+        constraints.skeleton_segments[1].end.y_tenths_mm = 11;
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
+        constraints.skeleton_segments[1].end.y_tenths_mm = 10;
         constraints.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &constraints),

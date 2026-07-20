@@ -770,6 +770,7 @@ pub struct CanonicalCycleScheduleV1 {
     fixed_face: FaceId,
     domain: [f64; 2],
     entries: Vec<Entry>,
+    half_angle_entries: Vec<PreparedHalfAngleRationalEntryV1>,
 }
 
 impl CanonicalCycleScheduleV1 {
@@ -861,10 +862,50 @@ impl CanonicalCycleScheduleV1 {
             fixed_face,
             domain,
             entries: prepared,
+            half_angle_entries: Vec::new(),
+        })
+    }
+
+    pub fn prepare_half_angle_rational(
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        entries: Vec<HalfAngleRationalEntryInputV1>,
+        limits: CycleScheduleLimitsV1,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        if entries.is_empty()
+            || entries.len() > limits.max_hinges
+            || entries.len() != geometry.hinges().len()
+            || !audit.faces().contains(&fixed_face)
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let mut expected = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        expected.sort_unstable_by_key(EdgeId::canonical_bytes);
+        if entries.iter().map(|entry| entry.edge).collect::<Vec<_>>() != expected {
+            return Err(CycleSchedulePrepareErrorV1::NonCanonical);
+        }
+        let prepared = entries
+            .into_iter()
+            .map(|entry| PreparedHalfAngleRationalEntryV1::prepare(entry, limits))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            binding_fingerprint: binding_fingerprint(geometry, audit, fixed_face),
+            fixed_face,
+            domain: [0.0, 1.0],
+            entries: Vec::new(),
+            half_angle_entries: prepared,
         })
     }
 
     pub fn evaluate(&self, parameter: f64) -> Option<CanonicalHingeAngles> {
+        if !self.half_angle_entries.is_empty() {
+            return None;
+        }
         if !parameter.is_finite() || parameter < self.domain[0] || parameter > self.domain[1] {
             return None;
         }
@@ -884,6 +925,19 @@ impl CanonicalCycleScheduleV1 {
             })
             .collect::<Option<Vec<_>>>()
             .and_then(|angles| CanonicalHingeAngles::new(angles).ok())
+    }
+
+    pub fn evaluate_angle_box(
+        &self,
+        max_work: usize,
+    ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
+        if self.half_angle_entries.is_empty() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        self.half_angle_entries
+            .iter()
+            .map(|entry| Ok((entry.edge(), entry.angle_enclosure(max_work)?)))
+            .collect()
     }
 
     #[must_use]

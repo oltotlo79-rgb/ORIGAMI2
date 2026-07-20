@@ -227,7 +227,7 @@ export function staticMeshExportWarningMessage(
       independent_face_solids:
         '紙厚は面ごとの閉じた立体として出力します。折り目で隣接する立体の和集合や隙間・重なりの除去は保証しません。',
       no_textures_animation:
-        'GLBには紙の表色をマテリアルとして含めます。裏色、テクスチャ、カメラ、折りアニメーションは含みません。',
+        'GLBには紙色を含め、紙厚付き形状では表裏色を分けます。テクスチャ、カメラ、折りアニメーションは含みません。',
       no_project_semantics:
         '折り線、山谷、面ID、編集履歴、折り手順などORIGAMI2固有情報は含みません。',
       stl_triangle_soup_facet_normals:
@@ -243,7 +243,7 @@ export function staticMeshExportWarningMessage(
       independent_face_solids:
         'Paper thickness is exported as one closed solid per face. The solids are not unioned, and hinge gaps or overlaps are not removed.',
       no_textures_animation:
-        'GLB includes the paper front color as a material. Back color, textures, camera, and folding animation are not included.',
+        'GLB includes paper colors and distinguishes front and back on thickness geometry. Textures, camera, and folding animation are not included.',
       no_project_semantics:
         'Creases, mountain/valley assignments, face IDs, edit history, folding steps, and other ORIGAMI2 semantics are not included.',
       stl_triangle_soup_facet_normals:

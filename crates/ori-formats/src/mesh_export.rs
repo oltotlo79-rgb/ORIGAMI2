@@ -43,6 +43,7 @@ const GLTF_ARRAY_BUFFER: u32 = 34_962;
 const GLTF_ELEMENT_ARRAY_BUFFER: u32 = 34_963;
 const GLTF_FLOAT: u32 = 5_126;
 const GLTF_UNSIGNED_INT: u32 = 5_125;
+const GLTF_UNSIGNED_BYTE: u32 = 5_121;
 const GLTF_TRIANGLES: u32 = 4;
 const GLTF_NODE_MATRIX: [f32; 16] = [
     -1.0, 0.0, 0.0, 0.0, //
@@ -1002,8 +1003,8 @@ struct GlbRoot<'a> {
     materials: [GlbMaterial; 1],
     buffers: [GlbBuffer; 1],
     #[serde(rename = "bufferViews")]
-    buffer_views: [GlbBufferView; 3],
-    accessors: [GlbAccessor; 3],
+    buffer_views: Vec<GlbBufferView>,
+    accessors: Vec<GlbAccessor>,
 }
 
 #[derive(Serialize)]
@@ -1077,6 +1078,8 @@ struct GlbAttributes {
     position: u32,
     #[serde(rename = "NORMAL")]
     normal: u32,
+    #[serde(rename = "COLOR_0", skip_serializing_if = "Option::is_none")]
+    color: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1106,8 +1109,12 @@ struct GlbAccessor {
     count: usize,
     #[serde(rename = "type")]
     accessor_type: &'static str,
-    min: GlbAccessorBounds,
-    max: GlbAccessorBounds,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min: Option<GlbAccessorBounds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max: Option<GlbAccessorBounds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    normalized: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -1212,6 +1219,8 @@ struct CheckedGlbAttributes {
     position: u32,
     #[serde(rename = "NORMAL")]
     normal: u32,
+    #[serde(rename = "COLOR_0", default)]
+    color: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1244,8 +1253,12 @@ struct CheckedGlbAccessor {
     count: usize,
     #[serde(rename = "type")]
     accessor_type: String,
-    min: Vec<serde_json::Number>,
-    max: Vec<serde_json::Number>,
+    #[serde(default)]
+    min: Option<Vec<serde_json::Number>>,
+    #[serde(default)]
+    max: Option<Vec<serde_json::Number>>,
+    #[serde(default)]
+    normalized: Option<bool>,
 }
 
 fn serialize_glb(
@@ -1258,6 +1271,11 @@ fn serialize_glb(
         },
     )?;
     let normal_bytes = position_bytes;
+    let color_bytes = mesh.vertex_colors_rgba.len().checked_mul(4).ok_or(
+        StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        },
+    )?;
     let index_count = mesh.triangles.len().checked_mul(3).ok_or(
         StaticMeshExportError::StructureNotRepresentable {
             format: StaticMeshExportFormat::Glb20,
@@ -1270,7 +1288,12 @@ fn serialize_glb(
                 format: StaticMeshExportFormat::Glb20,
             })?;
     let normal_offset = position_bytes;
-    let index_offset = normal_offset.checked_add(normal_bytes).ok_or(
+    let color_offset = normal_offset.checked_add(normal_bytes).ok_or(
+        StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        },
+    )?;
+    let index_offset = color_offset.checked_add(color_bytes).ok_or(
         StaticMeshExportError::StructureNotRepresentable {
             format: StaticMeshExportFormat::Glb20,
         },
@@ -1280,7 +1303,11 @@ fn serialize_glb(
             format: StaticMeshExportFormat::Glb20,
         },
     )?;
-    if normal_offset % 4 != 0 || index_offset % 4 != 0 || binary_length % 4 != 0 {
+    if normal_offset % 4 != 0
+        || color_offset % 4 != 0
+        || index_offset % 4 != 0
+        || binary_length % 4 != 0
+    {
         return Err(StaticMeshExportError::StructureNotRepresentable {
             format: StaticMeshExportFormat::Glb20,
         });
@@ -1311,6 +1338,77 @@ fn serialize_glb(
         index_bounds(&mesh.triangles).ok_or(StaticMeshExportError::StructureNotRepresentable {
             format: StaticMeshExportFormat::Glb20,
         })?;
+    let color_accessor = (!mesh.vertex_colors_rgba.is_empty()).then_some(3_u32);
+    let mut buffer_views = vec![
+        GlbBufferView {
+            buffer: 0,
+            byte_offset: 0,
+            byte_length: position_bytes,
+            target: GLTF_ARRAY_BUFFER,
+        },
+        GlbBufferView {
+            buffer: 0,
+            byte_offset: normal_offset,
+            byte_length: normal_bytes,
+            target: GLTF_ARRAY_BUFFER,
+        },
+        GlbBufferView {
+            buffer: 0,
+            byte_offset: index_offset,
+            byte_length: index_bytes,
+            target: GLTF_ELEMENT_ARRAY_BUFFER,
+        },
+    ];
+    let mut accessors = vec![
+        GlbAccessor {
+            buffer_view: 0,
+            byte_offset: 0,
+            component_type: GLTF_FLOAT,
+            count: positions.len(),
+            accessor_type: "VEC3",
+            min: Some(GlbAccessorBounds::Vec3(position_min)),
+            max: Some(GlbAccessorBounds::Vec3(position_max)),
+            normalized: None,
+        },
+        GlbAccessor {
+            buffer_view: 1,
+            byte_offset: 0,
+            component_type: GLTF_FLOAT,
+            count: normals.len(),
+            accessor_type: "VEC3",
+            min: Some(GlbAccessorBounds::Vec3(normal_min)),
+            max: Some(GlbAccessorBounds::Vec3(normal_max)),
+            normalized: None,
+        },
+        GlbAccessor {
+            buffer_view: 2,
+            byte_offset: 0,
+            component_type: GLTF_UNSIGNED_INT,
+            count: index_count,
+            accessor_type: "SCALAR",
+            min: Some(GlbAccessorBounds::Scalar([index_min])),
+            max: Some(GlbAccessorBounds::Scalar([index_max])),
+            normalized: None,
+        },
+    ];
+    if color_accessor.is_some() {
+        buffer_views.push(GlbBufferView {
+            buffer: 0,
+            byte_offset: color_offset,
+            byte_length: color_bytes,
+            target: GLTF_ARRAY_BUFFER,
+        });
+        accessors.push(GlbAccessor {
+            buffer_view: 3,
+            byte_offset: 0,
+            component_type: GLTF_UNSIGNED_BYTE,
+            count: mesh.vertex_colors_rgba.len(),
+            accessor_type: "VEC4",
+            min: None,
+            max: None,
+            normalized: Some(true),
+        });
+    }
     let root = GlbRoot {
         asset: GlbAsset {
             version: "2.0",
@@ -1338,6 +1436,7 @@ fn serialize_glb(
                 attributes: GlbAttributes {
                     position: 0,
                     normal: 1,
+                    color: color_accessor,
                 },
                 indices: 2,
                 mode: GLTF_TRIANGLES,
@@ -1358,55 +1457,8 @@ fn serialize_glb(
         buffers: [GlbBuffer {
             byte_length: binary_length,
         }],
-        buffer_views: [
-            GlbBufferView {
-                buffer: 0,
-                byte_offset: 0,
-                byte_length: position_bytes,
-                target: GLTF_ARRAY_BUFFER,
-            },
-            GlbBufferView {
-                buffer: 0,
-                byte_offset: normal_offset,
-                byte_length: normal_bytes,
-                target: GLTF_ARRAY_BUFFER,
-            },
-            GlbBufferView {
-                buffer: 0,
-                byte_offset: index_offset,
-                byte_length: index_bytes,
-                target: GLTF_ELEMENT_ARRAY_BUFFER,
-            },
-        ],
-        accessors: [
-            GlbAccessor {
-                buffer_view: 0,
-                byte_offset: 0,
-                component_type: GLTF_FLOAT,
-                count: positions.len(),
-                accessor_type: "VEC3",
-                min: GlbAccessorBounds::Vec3(position_min),
-                max: GlbAccessorBounds::Vec3(position_max),
-            },
-            GlbAccessor {
-                buffer_view: 1,
-                byte_offset: 0,
-                component_type: GLTF_FLOAT,
-                count: normals.len(),
-                accessor_type: "VEC3",
-                min: GlbAccessorBounds::Vec3(normal_min),
-                max: GlbAccessorBounds::Vec3(normal_max),
-            },
-            GlbAccessor {
-                buffer_view: 2,
-                byte_offset: 0,
-                component_type: GLTF_UNSIGNED_INT,
-                count: index_count,
-                accessor_type: "SCALAR",
-                min: GlbAccessorBounds::Scalar([index_min]),
-                max: GlbAccessorBounds::Scalar([index_max]),
-            },
-        ],
+        buffer_views,
+        accessors,
     };
     let json = serde_json::to_vec(&root).map_err(|_| {
         StaticMeshExportError::StructureNotRepresentable {
@@ -1476,6 +1528,9 @@ fn serialize_glb(
         for component in normal {
             output.extend_from_slice(&component.to_le_bytes());
         }
+    }
+    for color in &mesh.vertex_colors_rgba {
+        output.extend_from_slice(color);
     }
     for triangle in &mesh.triangles {
         for index in triangle {
@@ -1587,6 +1642,8 @@ fn verify_glb_structure(
         || root.meshes[0].primitives.len() != 1
         || root.meshes[0].primitives[0].attributes.position != 0
         || root.meshes[0].primitives[0].attributes.normal != 1
+        || root.meshes[0].primitives[0].attributes.color
+            != (!mesh.vertex_colors_rgba.is_empty()).then_some(3)
         || root.meshes[0].primitives[0].indices != 2
         || root.meshes[0].primitives[0].mode != GLTF_TRIANGLES
         || root.meshes[0].primitives[0].material != 0
@@ -1601,8 +1658,18 @@ fn verify_glb_structure(
         || !root.materials[0].double_sided
         || root.buffers.len() != 1
         || root.buffers[0].byte_length != binary_length
-        || root.buffer_views.len() != 3
-        || root.accessors.len() != 3
+        || root.buffer_views.len()
+            != if mesh.vertex_colors_rgba.is_empty() {
+                3
+            } else {
+                4
+            }
+        || root.accessors.len()
+            != if mesh.vertex_colors_rgba.is_empty() {
+                3
+            } else {
+                4
+            }
     {
         return false;
     }
@@ -1611,7 +1678,15 @@ fn verify_glb_structure(
         None => return false,
     };
     let normal_offset = position_bytes;
-    let index_offset = match normal_offset.checked_add(position_bytes) {
+    let color_offset = match normal_offset.checked_add(position_bytes) {
+        Some(value) => value,
+        None => return false,
+    };
+    let color_bytes = match mesh.vertex_colors_rgba.len().checked_mul(4) {
+        Some(value) => value,
+        None => return false,
+    };
+    let index_offset = match color_offset.checked_add(color_bytes) {
         Some(value) => value,
         None => return false,
     };
@@ -1623,11 +1698,14 @@ fn verify_glb_structure(
         Some(value) => value,
         None => return false,
     };
-    let expected_views = [
+    let mut expected_views = vec![
         (0, 0, position_bytes, GLTF_ARRAY_BUFFER),
         (0, normal_offset, position_bytes, GLTF_ARRAY_BUFFER),
         (0, index_offset, index_bytes, GLTF_ELEMENT_ARRAY_BUFFER),
     ];
+    if !mesh.vertex_colors_rgba.is_empty() {
+        expected_views.push((0, color_offset, color_bytes, GLTF_ARRAY_BUFFER));
+    }
     if !root
         .buffer_views
         .iter()
@@ -1642,11 +1720,20 @@ fn verify_glb_structure(
     {
         return false;
     }
-    let expected_accessors = [
-        (0, GLTF_FLOAT, mesh.positions_mm.len(), "VEC3"),
-        (1, GLTF_FLOAT, mesh.normals.len(), "VEC3"),
-        (2, GLTF_UNSIGNED_INT, index_count, "SCALAR"),
+    let mut expected_accessors = vec![
+        (0, GLTF_FLOAT, mesh.positions_mm.len(), "VEC3", None),
+        (1, GLTF_FLOAT, mesh.normals.len(), "VEC3", None),
+        (2, GLTF_UNSIGNED_INT, index_count, "SCALAR", None),
     ];
+    if !mesh.vertex_colors_rgba.is_empty() {
+        expected_accessors.push((
+            3,
+            GLTF_UNSIGNED_BYTE,
+            mesh.vertex_colors_rgba.len(),
+            "VEC4",
+            Some(true),
+        ));
+    }
     root.accessors
         .iter()
         .zip(expected_accessors)
@@ -1656,6 +1743,7 @@ fn verify_glb_structure(
                 && actual.component_type == expected.1
                 && actual.count == expected.2
                 && actual.accessor_type == expected.3
+                && actual.normalized == expected.4
         })
 }
 
@@ -1691,6 +1779,15 @@ fn verify_glb_binary(
             return false;
         }
     }
+    for expected in &mesh.vertex_colors_rgba {
+        let Some(actual) = binary.get(cursor..cursor + 4) else {
+            return false;
+        };
+        if actual != expected {
+            return false;
+        }
+        cursor += 4;
+    }
     for expected in mesh.triangles.iter().flatten() {
         let Some(actual) = read_u32_le(binary, &mut cursor) else {
             return false;
@@ -1715,12 +1812,34 @@ fn verify_glb_binary(
     let Some((index_min, index_max)) = index_bounds(&mesh.triangles) else {
         return false;
     };
-    check_number_vec_f32(&root.accessors[0].min, position_min)
-        && check_number_vec_f32(&root.accessors[0].max, position_max)
-        && check_number_vec_f32(&root.accessors[1].min, normal_min)
-        && check_number_vec_f32(&root.accessors[1].max, normal_max)
-        && check_number_vec_u32(&root.accessors[2].min, [index_min])
-        && check_number_vec_u32(&root.accessors[2].max, [index_max])
+    root.accessors[0]
+        .min
+        .as_deref()
+        .is_some_and(|value| check_number_vec_f32(value, position_min))
+        && root.accessors[0]
+            .max
+            .as_deref()
+            .is_some_and(|value| check_number_vec_f32(value, position_max))
+        && root.accessors[1]
+            .min
+            .as_deref()
+            .is_some_and(|value| check_number_vec_f32(value, normal_min))
+        && root.accessors[1]
+            .max
+            .as_deref()
+            .is_some_and(|value| check_number_vec_f32(value, normal_max))
+        && root.accessors[2]
+            .min
+            .as_deref()
+            .is_some_and(|value| check_number_vec_u32(value, [index_min]))
+        && root.accessors[2]
+            .max
+            .as_deref()
+            .is_some_and(|value| check_number_vec_u32(value, [index_max]))
+        && root
+            .accessors
+            .get(3)
+            .is_none_or(|accessor| accessor.min.is_none() && accessor.max.is_none())
 }
 
 fn check_number_vec_f32<const N: usize>(actual: &[serde_json::Number], expected: [f32; N]) -> bool {
@@ -2291,6 +2410,42 @@ mod tests {
         let mut bad_chunk_type = bytes;
         bad_chunk_type[16..20].copy_from_slice(&0_u32.to_le_bytes());
         assert!(!verify_glb(&bad_chunk_type, &mesh, bad_chunk_type.len()));
+    }
+
+    #[test]
+    fn glb_preserves_normalized_rgba_vertex_colors() {
+        let colors = vec![
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 255, 128],
+        ];
+        let mesh = validate_indexed_triangle_mesh(
+            &sample_document().with_vertex_colors_rgba(colors.clone()),
+        )
+        .expect("colored mesh");
+        let artifact =
+            export_static_triangle_mesh(StaticMeshExportFormat::Glb20, &mesh).expect("GLB");
+        let json_length = usize::try_from(read_u32_le_at(&artifact.bytes, 12).unwrap()).unwrap();
+        let json = std::str::from_utf8(&artifact.bytes[20..20 + json_length]).unwrap();
+        assert!(json.contains("\"COLOR_0\":3"));
+        assert!(
+            json.contains(
+                "\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",\"normalized\":true"
+            )
+        );
+        assert!(verify_glb(&artifact.bytes, &mesh, artifact.bytes.len()));
+
+        let binary_header = 20 + json_length;
+        let binary_start = binary_header + GLB_CHUNK_HEADER_BYTES;
+        let color_start = binary_start + mesh.positions_mm.len() * 24;
+        assert_eq!(
+            &artifact.bytes[color_start..color_start + colors.len() * 4],
+            colors.as_flattened()
+        );
+        let mut changed = artifact.bytes;
+        changed[color_start] = 0;
+        assert!(!verify_glb(&changed, &mesh, changed.len()));
     }
 
     #[test]

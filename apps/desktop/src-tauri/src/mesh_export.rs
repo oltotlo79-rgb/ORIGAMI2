@@ -87,6 +87,7 @@ struct StaticMeshExportSource {
     format: StaticMeshExportFormatRequest,
     project_name: String,
     paper_front_color_rgba: [u8; 4],
+    paper_back_color_rgba: [u8; 4],
     paper_thickness_mm: f64,
     paper_thickness_bits: u64,
     model: MaterialTreeKinematicsModel,
@@ -369,6 +370,10 @@ fn capture_export_source(
             let color = project.editor.paper().front.color;
             [color.red, color.green, color.blue, color.alpha]
         },
+        paper_back_color_rgba: {
+            let color = project.editor.paper().back.color;
+            [color.red, color.green, color.blue, color.alpha]
+        },
         paper_thickness_mm: canonical_zero(paper_thickness_mm),
         paper_thickness_bits,
         model: view.model().clone(),
@@ -387,11 +392,15 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
     let mid_surface =
         build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)?;
     let mesh = if source.paper_thickness_mm > 0.0 {
-        extrude_closed_face_solids(mid_surface, source.paper_thickness_mm)?
+        extrude_closed_face_solids(
+            mid_surface,
+            source.paper_thickness_mm,
+            source.paper_front_color_rgba,
+            source.paper_back_color_rgba,
+        )?
     } else {
-        mid_surface
-    }
-    .with_base_color_rgba(source.paper_front_color_rgba);
+        mid_surface.with_base_color_rgba(source.paper_front_color_rgba)
+    };
     let validated =
         validate_indexed_triangle_mesh(&mesh).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let artifact = export_static_triangle_mesh(source.format.exporter_format(), &validated)
@@ -765,6 +774,8 @@ fn build_current_pose_mid_surface_mesh(
 fn extrude_closed_face_solids(
     mesh: IndexedTriangleMeshV1,
     thickness_mm: f64,
+    front_color: [u8; 4],
+    back_color: [u8; 4],
 ) -> Result<IndexedTriangleMeshV1, String> {
     if !thickness_mm.is_finite() || thickness_mm <= 0.0 {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
@@ -773,10 +784,14 @@ fn extrude_closed_face_solids(
     let half = thickness_mm / 2.0;
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut colors = Vec::new();
     positions
         .try_reserve(source_vertex_count.saturating_mul(2))
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     normals
+        .try_reserve(source_vertex_count.saturating_mul(2))
+        .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    colors
         .try_reserve(source_vertex_count.saturating_mul(2))
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     for (position, normal) in mesh.positions_mm.iter().zip(&mesh.normals) {
@@ -786,6 +801,7 @@ fn extrude_closed_face_solids(
             position[2] + normal[2] * half,
         ]);
         normals.push(*normal);
+        colors.push(front_color);
     }
     for (position, normal) in mesh.positions_mm.iter().zip(&mesh.normals) {
         positions.push([
@@ -794,6 +810,7 @@ fn extrude_closed_face_solids(
             position[2] - normal[2] * half,
         ]);
         normals.push(normal.map(|component| -component));
+        colors.push(back_color);
     }
     let bottom_offset =
         u32::try_from(source_vertex_count).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
@@ -841,6 +858,11 @@ fn extrude_closed_face_solids(
         let bottom_b = positions[end_index + source_vertex_count];
         positions.extend([top_a, top_b, bottom_b, bottom_a]);
         normals.extend([side_normal; 4]);
+        let edge_color = std::array::from_fn(|index| {
+            let total = u16::from(front_color[index]) + u16::from(back_color[index]);
+            u8::try_from(total / 2).expect("the average of two u8 values is a u8")
+        });
+        colors.extend([edge_color; 4]);
         triangles.push([base, base + 1, base + 2]);
         triangles.push([base, base + 2, base + 3]);
     }
@@ -849,7 +871,7 @@ fn extrude_closed_face_solids(
     }
     Ok(
         IndexedTriangleMeshV1::new(mesh.name, positions, normals, triangles)
-            .with_base_color_rgba(mesh.base_color_rgba),
+            .with_vertex_colors_rgba(colors),
     )
 }
 
@@ -1411,9 +1433,14 @@ mod tests {
         let mid =
             build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)
                 .expect("mid surface");
-        let solid = extrude_closed_face_solids(mid, 0.1).expect("solid extrusion");
+        let mid_vertex_count = mid.positions_mm.len();
+        let solid = extrude_closed_face_solids(mid, 0.1, [255, 0, 0, 255], [0, 0, 255, 255])
+            .expect("solid extrusion");
         assert_eq!(solid.positions_mm.len(), 24);
         assert_eq!(solid.triangles.len(), 12);
+        assert_eq!(solid.vertex_colors_rgba.len(), solid.positions_mm.len());
+        assert_eq!(solid.vertex_colors_rgba[0], [255, 0, 0, 255]);
+        assert_eq!(solid.vertex_colors_rgba[mid_vertex_count], [0, 0, 255, 255]);
         let min_z = solid
             .positions_mm
             .iter()

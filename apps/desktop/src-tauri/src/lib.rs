@@ -31,10 +31,33 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+
+#[derive(Default)]
+struct BeginnerGridWork {
+    cancelled: AtomicBool,
+    enumerated: AtomicU64,
+    global_checked: AtomicU64,
+}
+
+static BEGINNER_GRID_WORK: OnceLock<Mutex<HashMap<ProjectId, Arc<BeginnerGridWork>>>> =
+    OnceLock::new();
+
+fn beginner_grid_work() -> &'static Mutex<HashMap<ProjectId, Arc<BeginnerGridWork>>> {
+    BEGINNER_GRID_WORK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct BeginnerGridWorkRegistration(ProjectId);
+impl Drop for BeginnerGridWorkRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = beginner_grid_work().lock() {
+            registry.remove(&self.0);
+        }
+    }
+}
 
 use applied_pose::{
     ApplyCurrentNativePoseResponse, CurrentAppliedPoseAuthority,
@@ -2111,11 +2134,13 @@ struct BeginnerGridCandidateResponse {
 
 #[derive(Debug, Serialize)]
 struct BeginnerGridEvaluationResponse {
+    request_generation_id: ProjectId,
     project_instance_id: ProjectId,
     project_id: ProjectId,
     revision: u64,
     grid_hash: ori_domain::BeginnerParameterGridHashV1,
     evaluated_grid_points: u8,
+    global_checked_candidates: u8,
     candidates: Vec<BeginnerGridCandidateResponse>,
 }
 
@@ -2125,6 +2150,7 @@ fn evaluate_beginner_parameter_grid(
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
+    request_generation_id: ProjectId,
 ) -> Result<BeginnerGridEvaluationResponse, String> {
     let project = lock_project(&state)?;
     ensure_expected_project(
@@ -2139,6 +2165,19 @@ fn evaluate_beginner_parameter_grid(
     }
     let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
         .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+    let work = Arc::new(BeginnerGridWork::default());
+    {
+        let mut registry = beginner_grid_work()
+            .lock()
+            .map_err(|_| "grid_work_unavailable")?;
+        if registry
+            .insert(request_generation_id, Arc::clone(&work))
+            .is_some()
+        {
+            return Err("grid_generation_reused".to_owned());
+        }
+    }
+    let _registration = BeginnerGridWorkRegistration(request_generation_id);
     let grid = ori_domain::beginner_parameter_grid_v1();
     let expected_kind = if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
@@ -2149,6 +2188,9 @@ fn evaluate_beginner_parameter_grid(
     };
     let mut primary = Vec::with_capacity(grid.len());
     for point in grid.iter().copied() {
+        if work.cancelled.load(Ordering::Acquire) {
+            return Err("grid_evaluation_cancelled".to_owned());
+        }
         let plan = grid_template_plan(
             project.project_id,
             project.editor.pattern(),
@@ -2172,6 +2214,7 @@ fn evaluate_beginner_parameter_grid(
             point,
             plan,
         ));
+        work.enumerated.fetch_add(1, Ordering::Release);
     }
     primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));
     primary.truncate(3);
@@ -2181,6 +2224,9 @@ fn evaluate_beginner_parameter_grid(
     let candidates = primary
         .into_iter()
         .map(|(primary_score, point, plan)| {
+            if work.cancelled.load(Ordering::Acquire) {
+                return Err("grid_evaluation_cancelled".to_owned());
+            }
             let assessment = assess_beginner_generated_plan_with_deadline(
                 project.editor.paper(),
                 project.editor.pattern(),
@@ -2188,22 +2234,61 @@ fn evaluate_beginner_parameter_grid(
                 reference.as_ref(),
                 deadline,
             );
-            BeginnerGridCandidateResponse {
+            work.global_checked.fetch_add(1, Ordering::Release);
+            Ok(BeginnerGridCandidateResponse {
                 point,
                 primary_score,
                 plan,
                 assessment,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(BeginnerGridEvaluationResponse {
+        request_generation_id,
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         revision: project.editor.revision(),
         grid_hash: ori_domain::beginner_parameter_grid_hash_v1(&grid),
         evaluated_grid_points: ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 as u8,
+        global_checked_candidates: 3,
         candidates,
     })
+}
+
+#[derive(Serialize)]
+struct BeginnerGridProgressResponse {
+    request_generation_id: ProjectId,
+    enumerated_grid_points: u8,
+    global_checked_candidates: u8,
+}
+
+#[tauri::command]
+fn get_beginner_parameter_grid_progress(
+    request_generation_id: ProjectId,
+) -> Result<BeginnerGridProgressResponse, String> {
+    let registry = beginner_grid_work()
+        .lock()
+        .map_err(|_| "grid_work_unavailable")?;
+    let work = registry
+        .get(&request_generation_id)
+        .ok_or_else(|| "grid_generation_not_running".to_owned())?;
+    Ok(BeginnerGridProgressResponse {
+        request_generation_id,
+        enumerated_grid_points: work.enumerated.load(Ordering::Acquire).min(27) as u8,
+        global_checked_candidates: work.global_checked.load(Ordering::Acquire).min(3) as u8,
+    })
+}
+
+#[tauri::command]
+fn cancel_beginner_parameter_grid(request_generation_id: ProjectId) -> Result<(), String> {
+    let registry = beginner_grid_work()
+        .lock()
+        .map_err(|_| "grid_work_unavailable")?;
+    let work = registry
+        .get(&request_generation_id)
+        .ok_or_else(|| "grid_generation_not_running".to_owned())?;
+    work.cancelled.store(true, Ordering::Release);
+    Ok(())
 }
 
 fn configure_symmetric_profile(
@@ -9651,6 +9736,8 @@ pub fn run() {
             project_snapshot,
             evaluate_beginner_candidates,
             evaluate_beginner_parameter_grid,
+            get_beginner_parameter_grid_progress,
+            cancel_beginner_parameter_grid,
             apply_beginner_parameter_grid_candidate,
             get_beginner_symmetric_parameter_estimate,
             apply_beginner_symmetric_parameters,
@@ -9951,6 +10038,25 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped() {
+        let generation = ProjectId::new();
+        let work = Arc::new(BeginnerGridWork::default());
+        work.enumerated.store(99, Ordering::Release);
+        work.global_checked.store(99, Ordering::Release);
+        beginner_grid_work()
+            .lock()
+            .unwrap()
+            .insert(generation, Arc::clone(&work));
+        let progress = get_beginner_parameter_grid_progress(generation).unwrap();
+        assert_eq!(progress.enumerated_grid_points, 27);
+        assert_eq!(progress.global_checked_candidates, 3);
+        cancel_beginner_parameter_grid(generation).unwrap();
+        assert!(work.cancelled.load(Ordering::Acquire));
+        beginner_grid_work().lock().unwrap().remove(&generation);
+        assert!(get_beginner_parameter_grid_progress(generation).is_err());
+    }
 
     #[test]
     fn grid_profile_is_temporary_canonical_and_does_not_change_free_parameters() {

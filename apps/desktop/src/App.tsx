@@ -83,6 +83,8 @@ import {
   evaluateBeginnerCandidates,
   evaluateBeginnerParameterGrid,
   applyBeginnerParameterGridCandidate,
+  getBeginnerParameterGridProgress,
+  cancelBeginnerParameterGrid,
   getBeginnerSymmetricParameterEstimate,
   applyBeginnerSymmetricParameters,
   recognizeBeginnerTarget,
@@ -713,6 +715,13 @@ function App() {
   const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
   const beginnerGridRequestRef = useRef(0)
+  const beginnerGridGenerationRef = useRef<string | null>(null)
+  const [beginnerGridProgress, setBeginnerGridProgress] = useState({ enumerated: 0, globalChecked: 0 })
+  useEffect(() => () => {
+    const generationId = beginnerGridGenerationRef.current
+    beginnerGridRequestRef.current += 1
+    if (generationId) void cancelBeginnerParameterGrid(generationId).catch(() => undefined)
+  }, [])
   const [beginnerSymmetricEstimate, setBeginnerSymmetricEstimate] =
     useState<BeginnerSymmetricParameterEstimateResponse | null>(null)
   const [beginnerSymmetricScale, setBeginnerSymmetricScale] = useState(25)
@@ -1099,6 +1108,17 @@ function App() {
         projectLayers ?? DEFAULT_PROJECT_LAYER_DOCUMENT_V1,
     }
     topologyRequestIdRef.current += 1
+    const priorSnapshot = latestSnapshotRef.current
+    if (priorSnapshot && (priorSnapshot.project_instance_id !== admittedSnapshot.project_instance_id
+      || priorSnapshot.project_id !== admittedSnapshot.project_id
+      || priorSnapshot.revision !== admittedSnapshot.revision)) {
+      const gridGeneration = beginnerGridGenerationRef.current
+      beginnerGridRequestRef.current += 1
+      beginnerGridGenerationRef.current = null
+      if (gridGeneration) void cancelBeginnerParameterGrid(gridGeneration).catch(() => undefined)
+      setBeginnerGridBusy(false)
+      setBeginnerGrid(null)
+    }
     latestSnapshotRef.current = admittedSnapshot
     globalFlatFoldabilityCoordinatorRef.current?.invalidate({
       projectInstanceId: admittedSnapshot.project_instance_id,
@@ -4054,25 +4074,43 @@ function App() {
     const current = latestSnapshotRef.current
     if (!current) return
     const requestId = ++beginnerGridRequestRef.current
+    const generationId = crypto.randomUUID()
+    beginnerGridGenerationRef.current = generationId
+    setBeginnerGridProgress({ enumerated: 0, globalChecked: 0 })
     setBeginnerGridBusy(true)
+    const poll = window.setInterval(() => {
+      void getBeginnerParameterGridProgress(generationId).then((progress) => {
+        if (requestId !== beginnerGridRequestRef.current) return
+        setBeginnerGridProgress((currentProgress) => ({
+          enumerated: Math.max(currentProgress.enumerated, progress.enumerated_grid_points),
+          globalChecked: Math.max(currentProgress.globalChecked, progress.global_checked_candidates),
+        }))
+      }).catch(() => undefined)
+    }, 50)
     void evaluateBeginnerParameterGrid(
       current.project_id, current.revision, current.project_instance_id,
+      generationId,
     ).then((response) => {
       const latest = latestSnapshotRef.current
       if (requestId === beginnerGridRequestRef.current
         && latest?.project_instance_id === response.project_instance_id
         && latest.project_id === response.project_id && latest.revision === response.revision) {
         setBeginnerGrid(response)
+        setBeginnerGridProgress({ enumerated: 27, globalChecked: 3 })
       }
     }).catch(() => {
       if (requestId === beginnerGridRequestRef.current) setBeginnerGrid(null)
     }).finally(() => {
+      window.clearInterval(poll)
       if (requestId === beginnerGridRequestRef.current) setBeginnerGridBusy(false)
     })
   }
 
   function cancelBeginnerGrid() {
+    const generationId = beginnerGridGenerationRef.current
     beginnerGridRequestRef.current += 1
+    beginnerGridGenerationRef.current = null
+    if (generationId) void cancelBeginnerParameterGrid(generationId).catch(() => undefined)
     setBeginnerGridBusy(false)
     setBeginnerGrid(null)
   }
@@ -7749,6 +7787,11 @@ function App() {
                 {beginnerGridBusy && <button type="button" onClick={cancelBeginnerGrid}>
                   {text({ ja: '27案の評価をキャンセル', en: 'Cancel 27-design evaluation' })}
                 </button>}
+                {beginnerGridBusy && <p role="status" className="muted">{formattedText({
+                  ja: '列挙 {enumerated}/27・大域検証 {checked}/3',
+                  en: 'Enumerated {enumerated}/27 · globally checked {checked}/3',
+                }, { enumerated: beginnerGridProgress.enumerated,
+                  checked: beginnerGridProgress.globalChecked })}</p>}
                 {beginnerGrid && (
                   <section aria-label={text({ ja: '27案探索の上位3案', en: 'Top 3 from the 27-design search' })}>
                     <p className="muted">{formattedText({

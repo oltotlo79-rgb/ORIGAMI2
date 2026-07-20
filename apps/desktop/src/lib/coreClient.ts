@@ -1605,11 +1605,13 @@ export type BeginnerParameterGridPointV1 = Readonly<{
 }>
 
 export type BeginnerGridEvaluationResponse = Readonly<{
+  request_generation_id: string
   project_instance_id: string
   project_id: string
   revision: number
   grid_hash: ReadonlyArray<number>
   evaluated_grid_points: 27
+  global_checked_candidates: 3
   candidates: ReadonlyArray<Readonly<{
     point: BeginnerParameterGridPointV1
     primary_score: number
@@ -1620,17 +1622,20 @@ export type BeginnerGridEvaluationResponse = Readonly<{
 
 export async function evaluateBeginnerParameterGrid(
   expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+  requestGenerationId: string,
 ): Promise<BeginnerGridEvaluationResponse> {
   const value = await invoke<unknown>('evaluate_beginner_parameter_grid', {
-    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, requestGenerationId,
   })
   const response = exactCoreDataRecord(value, [
-    'project_instance_id', 'project_id', 'revision', 'grid_hash',
-    'evaluated_grid_points', 'candidates',
+    'request_generation_id', 'project_instance_id', 'project_id', 'revision', 'grid_hash',
+    'evaluated_grid_points', 'global_checked_candidates', 'candidates',
   ] as const)
-  if (!response || response.project_instance_id !== expectedProjectInstanceId
+  if (!response || response.request_generation_id !== requestGenerationId
+    || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
-    || response.evaluated_grid_points !== 27 || !Array.isArray(response.grid_hash)
+    || response.evaluated_grid_points !== 27 || response.global_checked_candidates !== 3
+    || !Array.isArray(response.grid_hash)
     || response.grid_hash.length !== 32
     || response.grid_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
     || !Array.isArray(response.candidates) || response.candidates.length !== 3) {
@@ -1682,9 +1687,27 @@ export async function evaluateBeginnerParameterGrid(
   if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {
     throw new Error('invalid beginner parameter grid response')
   }
-  return Object.freeze({ project_instance_id: expectedProjectInstanceId, project_id: expectedProjectId,
+  return Object.freeze({ request_generation_id: requestGenerationId,
+    project_instance_id: expectedProjectInstanceId, project_id: expectedProjectId,
     revision: expectedRevision, grid_hash: Object.freeze(response.grid_hash.slice()) as ReadonlyArray<number>,
-    evaluated_grid_points: 27, candidates: Object.freeze(candidates) })
+    evaluated_grid_points: 27, global_checked_candidates: 3, candidates: Object.freeze(candidates) })
+}
+
+export async function getBeginnerParameterGridProgress(requestGenerationId: string) {
+  const value = await invoke<unknown>('get_beginner_parameter_grid_progress', { requestGenerationId })
+  const record = exactCoreDataRecord(value, ['request_generation_id', 'enumerated_grid_points', 'global_checked_candidates'] as const)
+  if (!record || record.request_generation_id !== requestGenerationId
+    || !Number.isInteger(record.enumerated_grid_points) || Number(record.enumerated_grid_points) < 0 || Number(record.enumerated_grid_points) > 27
+    || !Number.isInteger(record.global_checked_candidates) || Number(record.global_checked_candidates) < 0 || Number(record.global_checked_candidates) > 3) {
+    throw new Error('invalid beginner grid progress')
+  }
+  return Object.freeze({ request_generation_id: requestGenerationId,
+    enumerated_grid_points: Number(record.enumerated_grid_points),
+    global_checked_candidates: Number(record.global_checked_candidates) })
+}
+
+export function cancelBeginnerParameterGrid(requestGenerationId: string) {
+  return invoke<void>('cancel_beginner_parameter_grid', { requestGenerationId })
 }
 
 export function applyBeginnerParameterGridCandidate(

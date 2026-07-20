@@ -1341,6 +1341,8 @@ struct BeginnerCandidateResponse {
     project_instance_id: ProjectId,
     project_id: ProjectId,
     revision: u64,
+    bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1,
+    elasticity_model: ori_domain::BeginnerElasticityModelV1,
     candidates: Vec<ori_domain::BeginnerCandidateScoreV1>,
 }
 
@@ -1509,6 +1511,8 @@ fn evaluate_beginner_candidates(
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         revision: project.editor.revision(),
+        bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
+        elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
         candidates,
     })
 }

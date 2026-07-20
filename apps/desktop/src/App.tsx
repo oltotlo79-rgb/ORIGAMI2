@@ -7099,6 +7099,13 @@ function App() {
                     : text({ ja: '候補を評価', en: 'Score candidates' })}
                 </button>
                 {beginnerCandidates && (
+                  <>
+                  <p role="note" className="muted">
+                    {text({
+                      ja: '初期設計では膨らみを目標形状への近似として扱い、紙の弾性は計算しません。',
+                      en: 'Initial design treats bulges as target-shape approximations and does not compute paper elasticity.',
+                    })}
+                  </p>
                   <ol aria-label={text({ ja: '評価順の設計候補', en: 'Design candidates in score order' })}>
                     {beginnerCandidates.candidates.map((candidate) => (
                       <li key={candidate.kind}>
@@ -7124,6 +7131,7 @@ function App() {
                       </li>
                     ))}
                   </ol>
+                  </>
                 )}
               </div>
             </section>

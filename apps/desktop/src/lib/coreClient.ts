@@ -240,6 +240,8 @@ export type BeginnerCandidateResponseV1 = {
   project_instance_id: string
   project_id: string
   revision: number
+  bulge_treatment: 'target_shape_approximation'
+  elasticity_model: 'not_computed'
   candidates: BeginnerCandidateScoreV1[]
 }
 
@@ -254,6 +256,8 @@ function normalizeBeginnerCandidateResponse(
     'project_instance_id',
     'project_id',
     'revision',
+    'bulge_treatment',
+    'elasticity_model',
     'candidates',
   ] as const)
   if (
@@ -262,6 +266,8 @@ function normalizeBeginnerCandidateResponse(
     || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId
     || response.revision !== expectedRevision
+    || response.bulge_treatment !== 'target_shape_approximation'
+    || response.elasticity_model !== 'not_computed'
     || !Array.isArray(response.candidates)
     || response.candidates.length < 1
     || response.candidates.length > 3
@@ -317,6 +323,8 @@ function normalizeBeginnerCandidateResponse(
     project_instance_id: expectedProjectInstanceId,
     project_id: expectedProjectId,
     revision: expectedRevision,
+    bulge_treatment: 'target_shape_approximation',
+    elasticity_model: 'not_computed',
     candidates: Object.freeze(admitted.slice()),
   }) as BeginnerCandidateResponseV1
 }

@@ -28,3 +28,13 @@ test('candidate UI is bilingual, accessible, single-flight, and rejects stale AB
   assert.match(app, /if \(beginnerCandidateBusy\) return/)
   assert.match(app, /latestSnapshotRef\.current !== current/)
 })
+
+test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and UI', () => {
+  assert.match(native, /TargetShapeApproximation/)
+  assert.match(native, /BeginnerElasticityModelV1::NotComputed/)
+  assert.match(client, /response\.bulge_treatment !== 'target_shape_approximation'/)
+  assert.match(client, /response\.elasticity_model !== 'not_computed'/)
+  assert.match(app, /膨らみを目標形状への近似として扱い/)
+  assert.match(app, /does not compute paper elasticity/)
+  assert.match(app, /role="note"/)
+})

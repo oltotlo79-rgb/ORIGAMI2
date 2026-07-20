@@ -7,6 +7,18 @@ pub const MAX_BEGINNER_CANDIDATES_V1: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BeginnerBulgeTreatmentV1 {
+    TargetShapeApproximation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerElasticityModelV1 {
+    NotComputed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BeginnerCandidateKindV1 {
     Recommended,
     ShapeFocused,

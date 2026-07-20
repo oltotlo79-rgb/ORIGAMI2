@@ -19,8 +19,9 @@ pub use annotations::{
     validate_annotation_document_v1,
 };
 pub use beginner_candidates::{
-    BEGINNER_CANDIDATE_SCHEMA_VERSION_V1, BeginnerCandidateInputV1, BeginnerCandidateKindV1,
-    BeginnerCandidateScoreV1, MAX_BEGINNER_CANDIDATES_V1, score_beginner_candidates_v1,
+    BEGINNER_CANDIDATE_SCHEMA_VERSION_V1, BeginnerBulgeTreatmentV1, BeginnerCandidateInputV1,
+    BeginnerCandidateKindV1, BeginnerCandidateScoreV1, BeginnerElasticityModelV1,
+    MAX_BEGINNER_CANDIDATES_V1, score_beginner_candidates_v1,
 };
 pub use beginner_design::{
     BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1, BeginnerDesignPresetV1, BeginnerDesignProfileV1,

@@ -804,7 +804,14 @@ pub(super) async fn propose_current_stacked_fold_read(
             if path_variant_count != 1 || request.cycle_schedule_v1.is_some() {
                 return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
             }
-            let (initial_angles, requested_angles, all_requested_flat, certified_path_graph) =
+            let (
+                initial_angles,
+                requested_angles,
+                all_requested_flat,
+                certified_path_graph,
+                certified_path_certificate,
+                certified_path_edges,
+            ) =
                 if let Some(graph) = request.certified_path_graph_v1.as_ref() {
                     let states =
                         validate_certified_path_graph_v1(graph, initial.pose().hinge_angles())
@@ -847,6 +854,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                         .map(|(index, fingerprint)| (fingerprint, index))
                         .collect::<std::collections::BTreeMap<_, _>>();
                     let mut resource_exhausted = false;
+                    let mut oracle_edges = std::collections::BTreeMap::new();
                     let searched = ori_collision::search_certified_pose_graph_v1(
                         &fingerprints,
                         &candidates,
@@ -894,7 +902,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                                     }
                                     Err(_) => return None,
                                 };
-                            ori_collision::certify_scheduled_cycle_transition_v1(
+                            let expected = ori_collision::certify_scheduled_cycle_transition_v1(
                                 initial.target().hinge_geometry(),
                                 initial.target().audit(),
                                 initial.pose().fixed_face(),
@@ -903,7 +911,21 @@ pub(super) async fn propose_current_stacked_fold_read(
                                 StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
                                 edge.source,
                                 edge.target,
-                            )
+                            )?;
+                            oracle_edges.insert(
+                                (edge.source, edge.target),
+                                super::stacked_fold_transaction::PendingCertifiedPathEdgeV1 {
+                                    generated,
+                                    closure,
+                                    expected,
+                                    target_angles: states[target_index]
+                                        .as_slice()
+                                        .iter()
+                                        .map(|angle| (angle.edge(), angle.angle_degrees()))
+                                        .collect(),
+                                },
+                            );
+                            Some(expected)
                         },
                     );
                     let certificate = match searched {
@@ -921,6 +943,15 @@ pub(super) async fn propose_current_stacked_fold_read(
                             return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
                         }
                     };
+                    let registry_edges = certificate
+                        .edges()
+                        .iter()
+                        .map(|edge| {
+                            oracle_edges
+                                .remove(&(edge.source(), edge.target()))
+                                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
                     let edges = certificate
                         .edges()
                         .iter()
@@ -967,7 +998,14 @@ pub(super) async fn propose_current_stacked_fold_read(
                     let all_flat = requested.as_slice().iter().all(|entry| {
                         entry.angle_degrees().to_bits() == 180.0_f64.to_bits()
                     });
-                    (states[0].clone(), requested, all_flat, Some(preview))
+                    (
+                        states[0].clone(),
+                        requested,
+                        all_flat,
+                        Some(preview),
+                        Some(certificate),
+                        registry_edges,
+                    )
                 } else {
                     let linear = request
                         .linear_candidate_v1
@@ -979,7 +1017,14 @@ pub(super) async fn propose_current_stacked_fold_read(
                     let all_flat = linear.entries.iter().all(|entry| {
                         entry.requested_angle_degrees.to_bits() == 180.0_f64.to_bits()
                     });
-                    (initial_angles, requested_angles, all_flat, None)
+                    (
+                        initial_angles,
+                        requested_angles,
+                        all_flat,
+                        None,
+                        None,
+                        Vec::new(),
+                    )
                 };
             let generated = generate_linear_multi_hinge_path_candidate_v1(
                 initial.target().hinge_geometry(),
@@ -1188,7 +1233,9 @@ pub(super) async fn propose_current_stacked_fold_read(
                 added_edge_count,
                 mountain_crease_count,
                 valley_crease_count,
-                timeline_step_count: 1,
+                timeline_step_count: certified_path_certificate
+                    .as_ref()
+                    .map_or(1, |path| path.edges().len()),
                 timeline_complete_hinge_angle_count: closed_endpoint
                     .pose()
                     .hinge_angles()
@@ -1202,7 +1249,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             let live_graph_hinge_angles =
                 live_hinge_registry(closed_endpoint.initial().pose().hinge_angles().as_slice());
             let transaction_source_fingerprint = lineage.source_fingerprint().0;
-            let native_transaction = certified_path_graph.is_none().then(|| NativeStackedFoldPremises::Graph(
+            let native_transaction = Some(NativeStackedFoldPremises::Graph(
                 super::stacked_fold_transaction::PendingStackedFoldGraphPremises {
                     expected_instance_id: binding.project_instance_id(),
                     expected_project_id: binding.project_id(),
@@ -1214,6 +1261,8 @@ pub(super) async fn propose_current_stacked_fold_read(
                     continuous,
                     interval_closure,
                     layer_order: layer_proof,
+                    certified_path: certified_path_certificate,
+                    certified_edges: certified_path_edges,
                 },
             ));
             let crossed_cells = proposal

@@ -61,7 +61,16 @@ pub(super) enum PendingStackedFoldRequestedPose {
         requested: PreparedStackedFoldRequestedGraphPoseV1,
         continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
         interval_closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+        certified_path: Option<ori_collision::CertifiedPoseGraphPathCertificateV1>,
+        certified_edges: Vec<PendingCertifiedPathEdgeV1>,
     },
+}
+
+pub(super) struct PendingCertifiedPathEdgeV1 {
+    pub generated: ori_kinematics::GeneratedMultiHingePathCandidateV1,
+    pub closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
+    pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
 impl PendingStackedFoldRequestedPose {
@@ -77,10 +86,38 @@ impl PendingStackedFoldRequestedPose {
             Self::Graph {
                 continuous,
                 interval_closure,
+                certified_path,
+                certified_edges,
+                requested,
                 ..
             } => {
-                continuous.continuous_certificate_model_id().is_some()
-                    && !interval_closure.leaves().is_empty()
+                if continuous.continuous_certificate_model_id().is_none()
+                    || interval_closure.leaves().is_empty()
+                {
+                    return false;
+                }
+                let Some(path) = certified_path else {
+                    return true;
+                };
+                path.edges().len() == certified_edges.len()
+                    && !path.authorizes_project_mutation()
+                    && path
+                        .edges()
+                        .iter()
+                        .zip(certified_edges)
+                        .all(|(expected, edge)| {
+                            ori_collision::certify_scheduled_cycle_transition_v1(
+                                requested.initial().target().hinge_geometry(),
+                                requested.initial().target().audit(),
+                                requested.pose().fixed_face(),
+                                &edge.generated,
+                                &edge.closure,
+                                8,
+                                expected.source(),
+                                expected.target(),
+                            )
+                            .is_some_and(|actual| actual == edge.expected && actual == *expected)
+                        })
             }
         }
     }
@@ -132,6 +169,20 @@ impl PendingStackedFoldRequestedPose {
             }
         }
     }
+
+    fn ordered_timeline_angles(&self) -> Vec<Vec<(ori_domain::EdgeId, f64)>> {
+        match self {
+            Self::Graph {
+                certified_path: Some(_),
+                certified_edges,
+                ..
+            } => certified_edges
+                .iter()
+                .map(|edge| edge.target_angles.clone())
+                .collect(),
+            _ => vec![self.pose_components().3],
+        }
+    }
 }
 
 pub(super) struct PendingStackedFoldPremises {
@@ -157,6 +208,8 @@ pub(super) struct PendingStackedFoldGraphPremises {
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
     pub interval_closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     pub layer_order: PendingStackedFoldLayerProof,
+    pub certified_path: Option<ori_collision::CertifiedPoseGraphPathCertificateV1>,
+    pub certified_edges: Vec<PendingCertifiedPathEdgeV1>,
 }
 
 #[derive(Clone)]
@@ -288,6 +341,8 @@ pub(super) fn install_pending_stacked_fold_graph(
             requested: premises.requested,
             continuous: premises.continuous,
             interval_closure: premises.interval_closure,
+            certified_path: premises.certified_path,
+            certified_edges: premises.certified_edges,
         },
         layer_order: premises.layer_order,
         pose_capability,
@@ -403,26 +458,36 @@ pub(super) fn apply_stacked_fold_transaction(
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
     let candidate = target.candidate();
     let mut timeline = project.editor.instruction_timeline().clone();
-    timeline.steps.push(InstructionStep {
-        id: InstructionStepId::new(),
-        title: "Stacked fold".to_owned(),
-        description: String::new(),
-        caution: String::new(),
-        duration_ms: MIN_INSTRUCTION_DURATION_MS,
-        visual: InstructionVisual::default(),
-        pose: InstructionPose {
-            model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-            source_model_fingerprint: target.proof().lineage().target_fingerprint().to_hex(),
-            fixed_face,
-            hinge_angles: hinge_angles
-                .iter()
-                .map(|(edge, angle_degrees)| InstructionHingeAngle {
-                    edge: *edge,
-                    angle_degrees: *angle_degrees,
-                })
-                .collect(),
-        },
-    });
+    let ordered_timeline_angles = requested.ordered_timeline_angles();
+    if ordered_timeline_angles.is_empty() || ordered_timeline_angles.len() > 31 {
+        return Err("The certified path timeline is inconsistent.".to_owned());
+    }
+    for (index, step_angles) in ordered_timeline_angles.into_iter().enumerate() {
+        timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: if index == 0 {
+                "Stacked fold".to_owned()
+            } else {
+                format!("Stacked fold {}", index + 1)
+            },
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: MIN_INSTRUCTION_DURATION_MS,
+            visual: InstructionVisual::default(),
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: target.proof().lineage().target_fingerprint().to_hex(),
+                fixed_face,
+                hinge_angles: step_angles
+                    .iter()
+                    .map(|(edge, angle_degrees)| InstructionHingeAngle {
+                        edge: *edge,
+                        angle_degrees: *angle_degrees,
+                    })
+                    .collect(),
+            },
+        });
+    }
     let layers = project.editor.project_layers().clone();
     let applied_layer_order = pending.layer_order.clone();
     let result = project

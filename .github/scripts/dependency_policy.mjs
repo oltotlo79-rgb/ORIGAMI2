@@ -6,10 +6,16 @@ const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const cargoLockPath = resolve(repositoryRoot, 'Cargo.lock')
 const packageLockPath = resolve(repositoryRoot, 'apps', 'desktop', 'package-lock.json')
 const packageManifestPath = resolve(repositoryRoot, 'apps', 'desktop', 'package.json')
+const cargoLicenseDbPath = resolve(repositoryRoot, '.github', 'cargo-license-db.json')
 
 const npmLicenseAllowlist = new Set([
   '0BSD', 'Apache-2.0', 'Apache-2.0 OR MIT', 'BSD-2-Clause', 'BSD-3-Clause',
   'BlueOak-1.0.0', 'CC0-1.0', 'ISC', 'MIT', 'MIT-0', 'MPL-2.0',
+])
+const cargoLicenseAllowlist = new Set([
+  '0BSD', 'Apache-2.0', 'BSD-3-Clause', 'CC0-1.0', 'GPL-3.0', 'ISC',
+  'LGPL-2.1-or-later', 'LLVM-exception', 'MIT', 'MIT-0', 'MPL-2.0',
+  'Unicode-3.0', 'Unlicense', 'Zlib',
 ])
 
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -30,6 +36,31 @@ export function buildDependencyPolicy() {
         throw new Error('Cargo registry dependency lacks a SHA-256 checksum')
       }
     }
+  }
+  const cargoLicenseDb = JSON.parse(readFileSync(cargoLicenseDbPath, 'utf8'))
+  if (
+    cargoLicenseDb.schema !== 'origami2.cargo-license-db.v1'
+    || cargoLicenseDb.cargoLockSha256 !== digest(cargoLockPath)
+    || !Array.isArray(cargoLicenseDb.packages)
+    || cargoLicenseDb.packages.length !== cargoPackages.length
+  ) throw new Error('Cargo license database is stale or invalid')
+  const lockedCargoIdentities = cargoPackages.map((entry) => {
+    const name = /^name = "([^"]+)"$/mu.exec(entry)?.[1]
+    const version = /^version = "([^"]+)"$/mu.exec(entry)?.[1]
+    return `${name}@${version}`
+  }).sort()
+  const licensedCargoIdentities = cargoLicenseDb.packages.map((entry) => {
+    if (typeof entry?.package !== 'string' || typeof entry?.license !== 'string') {
+      throw new Error('Cargo license database entry is incomplete')
+    }
+    const identifiers = entry.license.match(/[A-Za-z0-9][A-Za-z0-9.-]*/gu) ?? []
+    if (identifiers.some((id) => !['AND', 'OR', 'WITH'].includes(id) && !cargoLicenseAllowlist.has(id))) {
+      throw new Error(`Cargo dependency license is not allowed: ${entry.package}`)
+    }
+    return entry.package
+  }).sort()
+  if (lockedCargoIdentities.join('\n') !== licensedCargoIdentities.join('\n')) {
+    throw new Error('Cargo license database does not cover the complete lockfile')
   }
 
   const packageLock = JSON.parse(readFileSync(packageLockPath, 'utf8'))
@@ -88,6 +119,7 @@ export function buildDependencyPolicy() {
     },
     thirdPartyNotices,
     cargoSources: 'registry-checksum-required;git-forbidden',
+    cargoLicenseDatabase: cargoLicenseDb,
     vulnerabilityAssessment: {
       status: 'ci-gated',
       npm: 'npm-audit-v2;node-24.11.1;audit-level-low',

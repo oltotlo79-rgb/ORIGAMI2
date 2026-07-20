@@ -1163,6 +1163,10 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.equal(policy.licenseDatabase.schema, 'origami2.lockfile-license-db.v1')
   assert.equal(policy.licenseDatabase.sha256, policy.packageLockSha256)
   assert.equal(policy.thirdPartyNotices.length, policy.npmPackages)
+  assert.equal(policy.cargoLicenseDatabase.schema, 'origami2.cargo-license-db.v1')
+  assert.equal(policy.cargoLicenseDatabase.cargoLockSha256, policy.cargoLockSha256)
+  assert.equal(policy.cargoLicenseDatabase.packages.length, policy.cargoPackages)
+  assert.ok(policy.cargoLicenseDatabase.packages.every(({ package: name, license }) => name && license))
   assert.deepEqual(
     policy.thirdPartyNotices.map(({ package: name }) => name),
     [...policy.thirdPartyNotices.map(({ package: name }) => name)].sort(),

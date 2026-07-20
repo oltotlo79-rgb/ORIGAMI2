@@ -128,7 +128,7 @@ test('dirty-project confirmation is deferred until immediately before replacemen
 test('the FOLD modal makes all background regions inert', () => {
   assert.match(
     appSource,
-    /const modalOpen = newProjectOpen\s*\|\| diagnosticsDialogOpen\s*\|\| foldTechniqueEditor !== null\s*\|\| foldTechniqueBusy\s*\|\| foldImportPreview !== null\s*\|\| svgImportPreview !== null/u,
+    /const modalOpen = newProjectOpen\s*\|\| diagnosticsDialogOpen\s*\|\| foldTechniqueEditor !== null\s*\|\| foldTechniqueBusy\s*\|\| foldTechniqueTimelinePreview !== null\s*\|\| foldTechniqueTimelineBusy\s*\|\| foldImportPreview !== null\s*\|\| svgImportPreview !== null/u,
   )
   assert.equal(
     appSource.match(/inert=\{modalOpen\}/gu)?.length,

@@ -134,10 +134,11 @@ test('App guards dirty workspaces, raw editor drafts, busy saves, and focus', ()
   )
 })
 
-test('requirements distinguish file sharing completion from timeline application', () => {
-  assert.match(requirements, /\| INS-008 \| 部分実装 \|/u)
+test('requirements distinguish inert timeline application from file sharing', () => {
+  assert.match(requirements, /\| INS-008 \| 実装済み \|/u)
   assert.match(requirements, /\| INS-009 \| 実装済み \|/u)
-  assert.match(requirements, /timeline手順を生成・適用/u)
+  assert.match(requirements, /一つの原子的command/u)
+  assert.match(requirements, /3D姿勢や物理commandを実行しない/u)
   assert.match(requirements, /path\/raw bytesはWebViewへ渡さず/u)
 })
 

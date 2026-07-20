@@ -7,7 +7,7 @@ use std::{
 };
 
 use ori_core::TopologyAnalysisInput;
-use ori_domain::ProjectId;
+use ori_domain::{InstructionPoseModel, ProjectId};
 use ori_formats::{
     INSTRUCTION_EXPORT_PROFILE, INSTRUCTION_EXPORT_WARNINGS,
     INSTRUCTION_PROJECTION_PROFILE as INSTRUCTION_EXPORT_PROJECTION_PROFILE,
@@ -582,11 +582,10 @@ fn capture_export_source(
         project.editor.pattern().edges.len(),
     )?;
     let current_fold_model_fingerprint = project.editor.fold_model_fingerprint_v1();
-    if timeline
-        .steps
-        .iter()
-        .any(|step| step.pose.source_model_fingerprint != current_fold_model_fingerprint)
-    {
+    if timeline.steps.iter().any(|step| {
+        step.pose.model == InstructionPoseModel::AbsoluteHingeAnglesV1
+            && step.pose.source_model_fingerprint != current_fold_model_fingerprint
+    }) {
         return Err(InstructionExportErrorCategory::TimelineStale);
     }
     Ok(InstructionExportSource {

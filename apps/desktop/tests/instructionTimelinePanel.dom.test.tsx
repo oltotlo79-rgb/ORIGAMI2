@@ -67,6 +67,7 @@ const APPLIED_POSE: FoldPreviewAppliedPoseSnapshot = {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   localeStore.setLocale('ja')
   localeStore.dispose()
   document.body.replaceChildren()
@@ -143,12 +144,221 @@ describe('InstructionTimelinePanel localization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(confirm).toHaveBeenLastCalledWith('Delete “Fold crane”?')
   })
+
+  it('shows declarative steps as explanation-only and blocks every 3D playback path', async () => {
+    const declarativeSnapshot: ProjectSnapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [{
+          ...SNAPSHOT.instruction_timeline.steps[0]!,
+          id: 'declarative-step',
+          title: '中割り折り',
+          pose: {
+            model: 'declarative_only_v1',
+            source_model_fingerprint: 'cd'.repeat(32),
+            fixed_face: null,
+            hinge_angles: [],
+          },
+        }],
+      },
+    }
+    const applyStepPose = vi.fn(() => true)
+    renderPanel(declarativeSnapshot, applyStepPose)
+
+    expect(screen.getByText('説明専用')).toBeTruthy()
+    expect((screen.getByRole('button', {
+      name: '最初の実姿勢手順を3Dに表示',
+    }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', {
+      name: '折り図を書き出す',
+    }) as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(screen.getByText('1. 中割り折り').closest('button')!)
+    expect((await screen.findByRole('button', {
+      name: '3Dに表示',
+    }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', {
+      name: '現在の3D姿勢で更新',
+    }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(/説明専用ステップです/u)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '選択手順から再生',
+    }))
+    expect(screen.getAllByText(/3D姿勢を持たないため再生できません/u))
+      .not.toHaveLength(0)
+    expect(applyStepPose).not.toHaveBeenCalled()
+  })
+
+  it('plays only physical steps in a mixed timeline and keeps the original step number visible', async () => {
+    vi.useFakeTimers()
+    const mixedSnapshot: ProjectSnapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [
+          {
+            ...SNAPSHOT.instruction_timeline.steps[0]!,
+            id: 'physical-1',
+            title: 'Physical one',
+            duration_ms: 100,
+          },
+          {
+            ...SNAPSHOT.instruction_timeline.steps[0]!,
+            id: 'declarative',
+            title: 'Explanation',
+            duration_ms: 100,
+            pose: {
+              model: 'declarative_only_v1',
+              source_model_fingerprint: FINGERPRINT,
+              fixed_face: null,
+              hinge_angles: [],
+            },
+          },
+          {
+            ...SNAPSHOT.instruction_timeline.steps[0]!,
+            id: 'physical-2',
+            title: 'Physical two',
+            duration_ms: 100,
+          },
+        ],
+      },
+    }
+    const applyStepPose = vi.fn(() => true)
+    renderPanel(mixedSnapshot, applyStepPose)
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '選択手順から再生',
+    }))
+    await act(async () => Promise.resolve())
+    expect(applyStepPose.mock.calls.map(([step]) => step.id))
+      .toEqual(['physical-1'])
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(applyStepPose.mock.calls.map(([step]) => step.id))
+      .toEqual(['physical-1', 'physical-2'])
+    expect(screen.getAllByText(/手順 3「Physical two」を表示/u).length)
+      .toBeGreaterThan(0)
+    expect(screen.getByText('3. Physical two').closest('button')
+      ?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('keeps a direct 3D route to the first physical step after a leading explanation', async () => {
+    const applyStepPose = vi.fn(() => true)
+    renderPanel({
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [
+          {
+            ...SNAPSHOT.instruction_timeline.steps[0]!,
+            id: 'declarative',
+            title: 'Explanation',
+            pose: {
+              model: 'declarative_only_v1',
+              source_model_fingerprint: FINGERPRINT,
+              fixed_face: null,
+              hinge_angles: [],
+            },
+          },
+          {
+            ...SNAPSHOT.instruction_timeline.steps[0]!,
+            id: 'physical',
+            title: 'Physical',
+          },
+        ],
+      },
+    }, applyStepPose)
+
+    const showFirstPhysical = screen.getByRole('button', {
+      name: '最初の実姿勢手順を3Dに表示',
+    })
+    expect((showFirstPhysical as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(showFirstPhysical)
+    expect(applyStepPose.mock.calls.map(([step]) => step.id))
+      .toEqual(['physical'])
+  })
+
+  it('does not apply a later physical step after cancellation or a stale boundary', async () => {
+    vi.useFakeTimers()
+    const mixedSteps: ProjectSnapshot['instruction_timeline']['steps'] = [
+      {
+        ...SNAPSHOT.instruction_timeline.steps[0]!,
+        id: 'physical-1',
+        title: 'Physical one',
+        duration_ms: 100,
+      },
+      {
+        ...SNAPSHOT.instruction_timeline.steps[0]!,
+        id: 'declarative',
+        title: 'Explanation',
+        duration_ms: 100,
+        pose: {
+          model: 'declarative_only_v1',
+          source_model_fingerprint: FINGERPRINT,
+          fixed_face: null,
+          hinge_angles: [],
+        },
+      },
+      {
+        ...SNAPSHOT.instruction_timeline.steps[0]!,
+        id: 'physical-2',
+        title: 'Physical two',
+        duration_ms: 100,
+      },
+    ]
+    const applyThenCancel = vi.fn(() => true)
+    const { unmount } = renderPanel({
+      ...SNAPSHOT,
+      instruction_timeline: { steps: mixedSteps },
+    }, applyThenCancel)
+    fireEvent.click(screen.getByRole('button', {
+      name: '選択手順から再生',
+    }))
+    await act(async () => Promise.resolve())
+    expect(applyThenCancel).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '再生を停止' }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(applyThenCancel).toHaveBeenCalledTimes(1)
+    unmount()
+
+    const applyUntilStale = vi.fn(() => true)
+    renderPanel({
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: mixedSteps.map((step, index) => index === 2
+          ? {
+              ...step,
+              pose: {
+                ...step.pose,
+                source_model_fingerprint: 'cd'.repeat(32),
+              },
+            }
+          : step),
+      },
+    }, applyUntilStale)
+    fireEvent.click(screen.getByRole('button', {
+      name: '選択手順から再生',
+    }))
+    await act(async () => Promise.resolve())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(applyUntilStale).toHaveBeenCalledTimes(1)
+    expect(screen.getAllByText(/展開図が変わった手順のため再生を停止/u).length)
+      .toBeGreaterThan(0)
+  })
 })
 
-function renderPanel() {
+function renderPanel(
+  snapshot = SNAPSHOT,
+  applyStepPose = vi.fn(() => true),
+) {
   return render(
     <InstructionTimelinePanel
-      snapshot={SNAPSHOT}
+      snapshot={snapshot}
       appliedPose={APPLIED_POSE}
       poseModelKey="model-1"
       manualPoseChangeSequence={0}
@@ -157,8 +367,8 @@ function renderPanel() {
       fileOperationActive={false}
       exportAvailable
       exportButtonRef={{ current: null }}
-      runNativeEdit={vi.fn(async () => SNAPSHOT)}
-      applyStepPose={vi.fn(() => true)}
+      runNativeEdit={vi.fn(async () => snapshot)}
+      applyStepPose={applyStepPose}
       onExport={vi.fn()}
     />,
   )

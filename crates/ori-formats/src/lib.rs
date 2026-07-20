@@ -57,12 +57,13 @@ pub use ori_domain::{
 };
 pub use ori2::{
     CURRENT_ORI2_CONTAINER_VERSION, MAX_EDITOR_HISTORY_JSON_BYTES, ORI2_CONTAINER_IDENTIFIER,
-    ORI2_EDITOR_HISTORY_PATH, ORI2_FEATURE_EDITOR_HISTORY_V1,
-    ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH,
-    ORI2_PROJECT_PATH, Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive,
-    Ori2ProjectEntry, read_project_archive_ori2, read_project_archive_ori2_with_limits,
-    read_project_ori2, read_project_ori2_with_limits, write_project_archive_ori2,
+    ORI2_EDITOR_HISTORY_PATH, ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1,
+    ORI2_FEATURE_EDITOR_HISTORY_V1, ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_LAYERS_V1,
+    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
+    Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
+    read_project_archive_ori2, read_project_archive_ori2_with_limits, read_project_ori2,
+    read_project_ori2_with_limits, write_project_archive_ori2,
     write_project_archive_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use project_folder::{

@@ -116,6 +116,7 @@ export function InstructionTimelinePanel({
   const previousManualPoseChangeRef = useRef(manualPoseChangeSequence)
 
   const steps = presentation.kind === 'ready' ? presentation.steps : []
+  const firstPhysicalStep = steps.find((step) => !step.declarativeOnly)
   const selectedStep = presentation.kind === 'ready' && selectedStepId
     ? presentation.stepsById.get(selectedStepId) ?? null
     : null
@@ -409,7 +410,12 @@ export function InstructionTimelinePanel({
   }
 
   async function replaceSelectedPose() {
-    if (editingDisabled || !selectedStep || !captureDraft) return
+    if (
+      editingDisabled
+      || !selectedStep
+      || selectedStep.declarativeOnly
+      || !captureDraft
+    ) return
     cancelPlayback('revision_changed')
     const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       replaceInstructionStepPose(
@@ -464,6 +470,10 @@ export function InstructionTimelinePanel({
 
   function showStepPose(step: InstructionStepPresentation) {
     cancelPlayback('manual_pose')
+    if (step.declarativeOnly) {
+      setNotice({ kind: 'declarative_playback_unsupported' })
+      return
+    }
     if (step.stale) {
       setNotice({ kind: 'stale_pose' })
       return
@@ -487,6 +497,13 @@ export function InstructionTimelinePanel({
       cancelPlayback('canceled')
       return
     }
+    if (
+      steps.length > 0
+      && steps.every((step) => step.declarativeOnly)
+    ) {
+      setNotice({ kind: 'declarative_playback_unsupported' })
+      return
+    }
     if (!snapshot || !poseModelKey) {
       setNotice({ kind: 'model_required' })
       return
@@ -500,9 +517,14 @@ export function InstructionTimelinePanel({
       setNotice({ kind: 'no_steps' })
       return
     }
-    const selectedIndex = selectedStep && !selectedStep.stale
-      ? selectedStep.index
-      : 0
+    const selectedIndex = selectedStep
+      && !selectedStep.stale
+      && !selectedStep.declarativeOnly
+        ? Math.max(
+            0,
+            plan.steps.findIndex((step) => step.id === selectedStep.id),
+          )
+        : 0
     playbackModelKeyRef.current = poseModelKey
     applyAttemptRef.current = null
     setPlayback((current) => reduceInstructionPlayback(current, {
@@ -526,11 +548,19 @@ export function InstructionTimelinePanel({
       <div className="timeline-controls">
         <button
           type="button"
-          aria-label={selectLocalizedText(locale, TEXT.showFirstStep)}
-          disabled={coreBusy || steps.length === 0 || steps[0]?.stale}
+          aria-label={selectLocalizedText(
+            locale,
+            steps[0]?.declarativeOnly
+              ? TEXT.showFirstPhysicalStep
+              : TEXT.showFirstStep,
+          )}
+          disabled={
+            coreBusy
+            || !firstPhysicalStep
+            || firstPhysicalStep.stale
+          }
           onClick={() => {
-            const first = steps[0]
-            if (first) showStepPose(first)
+            if (firstPhysicalStep) showStepPose(firstPhysicalStep)
           }}
         >
           |◀
@@ -617,6 +647,8 @@ export function InstructionTimelinePanel({
                     <small>
                       {step.stale
                         ? selectLocalizedText(locale, TEXT.needsUpdate)
+                        : step.declarativeOnly
+                          ? selectLocalizedText(locale, TEXT.descriptionOnly)
                         : displayed
                           ? selectLocalizedText(locale, TEXT.shownIn3d)
                           : formatInstructionDuration(step.durationMs, locale)}
@@ -708,14 +740,23 @@ export function InstructionTimelinePanel({
                     </button>
                     <button
                       type="button"
-                      disabled={editingDisabled || selectedStep.stale || !poseModelKey}
+                      disabled={
+                        editingDisabled
+                        || selectedStep.stale
+                        || selectedStep.declarativeOnly
+                        || !poseModelKey
+                      }
                       onClick={() => showStepPose(selectedStep)}
                     >
                       {selectLocalizedText(locale, TEXT.showIn3d)}
                     </button>
                     <button
                       type="button"
-                      disabled={editingDisabled || !captureDraft}
+                      disabled={
+                        editingDisabled
+                        || selectedStep.declarativeOnly
+                        || !captureDraft
+                      }
                       title={captureStatus}
                       onClick={() => void replaceSelectedPose()}
                     >
@@ -747,6 +788,11 @@ export function InstructionTimelinePanel({
                   {selectedStep.stale && (
                     <p className="instruction-stale-guidance">
                       {selectLocalizedText(locale, TEXT.staleGuidance)}
+                    </p>
+                  )}
+                  {selectedStep.declarativeOnly && (
+                    <p className="instruction-stale-guidance">
+                      {selectLocalizedText(locale, TEXT.declarativeGuidance)}
                     </p>
                   )}
                   {selectedPoseIsDisplayed && (
@@ -821,6 +867,10 @@ const TEXT = Object.freeze({
     '先頭の手順を3Dに表示',
     'Show the first step in 3D',
   ),
+  showFirstPhysicalStep: localized(
+    '最初の実姿勢手順を3Dに表示',
+    'Show the first physical-pose step in 3D',
+  ),
   stopPlayback: localized('再生を停止', 'Stop playback'),
   playFromSelection: localized(
     '選択手順から再生',
@@ -849,6 +899,7 @@ const TEXT = Object.freeze({
   ),
   timelineList: localized('折り手順一覧', 'Folding-step list'),
   needsUpdate: localized('要更新', 'Needs update'),
+  descriptionOnly: localized('説明専用', 'Description only'),
   shownIn3d: localized('3D表示中', 'Shown in 3D'),
   addCurrentPose: localized(
     '＋ 現在の3D姿勢を追加',
@@ -870,6 +921,10 @@ const TEXT = Object.freeze({
   staleGuidance: localized(
     '展開図が記録時から変わりました。内容を確認し、現在の3D姿勢で更新すると再生できます。',
     'The crease pattern changed after this step was recorded. Review it and update it with the current 3D pose before playback.',
+  ),
+  declarativeGuidance: localized(
+    '名前付き技法から追加された説明専用ステップです。3D表示・姿勢更新・自動再生・物理的な折り操作は行いません。',
+    'This description-only step came from a named technique. It cannot show or update a 3D pose, play automatically, or execute a physical fold.',
   ),
   currentPose: localized(
     'この保存姿勢を3Dに表示中です。',

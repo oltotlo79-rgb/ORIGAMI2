@@ -196,6 +196,9 @@ enum CommandV1 {
     AddInstructionStep {
         step: InstructionStep,
     },
+    AppendInstructionSteps {
+        steps: Vec<InstructionStep>,
+    },
     UpdateInstructionStepMetadata {
         step_id: InstructionStepId,
         title: String,
@@ -358,6 +361,9 @@ enum InverseV1 {
     },
     RemoveAddedInstructionStep {
         step_id: InstructionStepId,
+    },
+    RemoveAppendedInstructionSteps {
+        step_ids: Vec<InstructionStepId>,
     },
     RestoreInstructionStepMetadata {
         step_id: InstructionStepId,
@@ -528,6 +534,9 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
         Command::AddInstructionStep { step } => {
             CommandV1::AddInstructionStep { step: step.clone() }
         }
+        Command::AppendInstructionSteps { steps } => CommandV1::AppendInstructionSteps {
+            steps: steps.clone(),
+        },
         Command::UpdateInstructionStepMetadata {
             step_id,
             title,
@@ -685,6 +694,7 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
         CommandV1::AddGeometricConstraint { record } => Command::AddGeometricConstraint { record },
         CommandV1::RemoveGeometricConstraint { id } => Command::RemoveGeometricConstraint { id },
         CommandV1::AddInstructionStep { step } => Command::AddInstructionStep { step },
+        CommandV1::AppendInstructionSteps { steps } => Command::AppendInstructionSteps { steps },
         CommandV1::UpdateInstructionStepMetadata {
             step_id,
             title,
@@ -953,6 +963,11 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
         Inverse::RemoveAddedInstructionStep { step_id } => {
             InverseV1::RemoveAddedInstructionStep { step_id: *step_id }
         }
+        Inverse::RemoveAppendedInstructionSteps { step_ids } => {
+            InverseV1::RemoveAppendedInstructionSteps {
+                step_ids: step_ids.clone(),
+            }
+        }
         Inverse::RestoreInstructionStepMetadata {
             step_id,
             title,
@@ -1179,6 +1194,9 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
         InverseV1::RemoveAddedInstructionStep { step_id } => {
             Inverse::RemoveAddedInstructionStep { step_id }
         }
+        InverseV1::RemoveAppendedInstructionSteps { step_ids } => {
+            Inverse::RemoveAppendedInstructionSteps { step_ids }
+        }
         InverseV1::RestoreInstructionStepMetadata {
             step_id,
             title,
@@ -1312,6 +1330,14 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         }
         Command::AddGeometricConstraint { record } => validate_constraint_finite(record)?,
         Command::AddInstructionStep { step } => validate_instruction_step_finite(step)?,
+        Command::AppendInstructionSteps { steps } => {
+            if steps.is_empty() {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
+            for step in steps {
+                validate_instruction_step_finite(step)?;
+            }
+        }
         Command::ReplaceInstructionStepPose { pose, .. } => {
             validate_instruction_pose_finite(pose)?;
         }
@@ -1380,6 +1406,7 @@ fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1
         Inverse::RestoreTJunction { .. }
         | Inverse::RemoveAddedGeometricConstraint { .. }
         | Inverse::RemoveAddedInstructionStep { .. }
+        | Inverse::RemoveAppendedInstructionSteps { .. }
         | Inverse::RestoreInstructionStepMetadata { .. }
         | Inverse::RestoreInstructionStepOrder { .. } => {}
         Inverse::RestoreIntersectionCluster { created_vertex, .. } => {
@@ -1744,6 +1771,19 @@ fn validate_inverse_application(
                 return Err(invalid());
             }
         }
+        Inverse::RemoveAppendedInstructionSteps { step_ids } => {
+            if step_ids.is_empty() || step_ids.len() > editor.instruction_timeline.steps.len() {
+                return Err(invalid());
+            }
+            let suffix_start = editor.instruction_timeline.steps.len() - step_ids.len();
+            if editor.instruction_timeline.steps[suffix_start..]
+                .iter()
+                .map(|step| step.id)
+                .ne(step_ids.iter().copied())
+            {
+                return Err(invalid());
+            }
+        }
         Inverse::RestoreInstructionStepMetadata { step_id, .. }
         | Inverse::RestoreInstructionStepPose { step_id, .. }
         | Inverse::RestoreInstructionStepOrder { step_id, .. } => {
@@ -2007,6 +2047,22 @@ mod tests {
         }
     }
 
+    fn declarative_instruction_step(title: &str) -> InstructionStep {
+        InstructionStep {
+            id: InstructionStepId::new(),
+            title: title.to_owned(),
+            description: "description-only".to_owned(),
+            caution: "no physical command".to_owned(),
+            duration_ms: 1_000,
+            pose: InstructionPose {
+                model: InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint: "0".repeat(64),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        }
+    }
+
     fn constraint_record() -> GeometricConstraintRecordV1 {
         GeometricConstraintRecordV1 {
             id: ConstraintId::new(),
@@ -2114,6 +2170,9 @@ mod tests {
                 id: ConstraintId::new(),
             },
             Command::AddInstructionStep { step: step.clone() },
+            Command::AppendInstructionSteps {
+                steps: vec![step.clone(), instruction_step()],
+            },
             Command::UpdateInstructionStepMetadata {
                 step_id: step.id,
                 title: "updated".to_owned(),
@@ -2184,6 +2243,7 @@ mod tests {
             "add_geometric_constraint",
             "remove_geometric_constraint",
             "add_instruction_step",
+            "append_instruction_steps",
             "update_instruction_step_metadata",
             "replace_instruction_step_pose",
             "remove_instruction_step",
@@ -2342,6 +2402,9 @@ mod tests {
                 record: constraint_record(),
             },
             Inverse::RemoveAddedInstructionStep { step_id: step.id },
+            Inverse::RemoveAppendedInstructionSteps {
+                step_ids: vec![step.id, InstructionStepId::new()],
+            },
             Inverse::RestoreInstructionStepMetadata {
                 step_id: step.id,
                 title: "old".to_owned(),
@@ -2404,6 +2467,7 @@ mod tests {
             "remove_added_geometric_constraint",
             "restore_removed_geometric_constraint",
             "remove_added_instruction_step",
+            "remove_appended_instruction_steps",
             "restore_instruction_step_metadata",
             "restore_instruction_step_pose",
             "restore_removed_instruction_step",
@@ -2584,6 +2648,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first, second]
         );
+    }
+
+    #[test]
+    fn declarative_batch_append_history_reopens_as_one_undoable_edit() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let steps = vec![
+            declarative_instruction_step("Technique"),
+            declarative_instruction_step("Operation"),
+        ];
+        editor
+            .execute(
+                0,
+                Command::AppendInstructionSteps {
+                    steps: steps.clone(),
+                },
+            )
+            .expect("append declarative steps");
+        let project_id = ProjectId::new();
+        let history = editor
+            .export_history_v1(project_id)
+            .expect("export append history");
+        let mut reopened = restore(&editor, history).expect("restore append history");
+
+        assert_eq!(reopened.instruction_timeline().steps, steps);
+        reopened.undo(0).expect("undo complete append");
+        assert!(reopened.instruction_timeline().steps.is_empty());
+        assert!(!reopened.can_undo());
+        assert!(reopened.can_redo());
+        reopened.redo(1).expect("redo complete append");
+        assert_eq!(reopened.instruction_timeline().steps, steps);
     }
 
     #[test]

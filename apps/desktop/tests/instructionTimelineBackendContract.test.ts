@@ -7,6 +7,10 @@ const nativeSource = readSource('../src-tauri/src/lib.rs')
 
 const commands = [
   ['addInstructionStep', 'add_instruction_step'],
+  [
+    'appendNamedTechniqueInstructionSteps',
+    'append_named_technique_instruction_steps',
+  ],
   ['updateInstructionStepMetadata', 'update_instruction_step_metadata'],
   ['replaceInstructionStepPose', 'replace_instruction_step_pose'],
   ['removeInstructionStep', 'remove_instruction_step'],
@@ -35,6 +39,13 @@ test('all instruction commands keep camel-case invoke arguments and registered n
     assert.match(add, new RegExp(`\\b${argument},`, 'u'), argument)
   }
   assert.doesNotMatch(add, /fingerprint|sourceModel/u)
+
+  const append = exportedFunction('appendNamedTechniqueInstructionSteps')
+  assert.match(
+    append,
+    /\{\s*expectedProjectInstanceId,\s*expectedProjectId,\s*expectedRevision,\s*proposalJson,\s*\}/u,
+  )
+  assert.doesNotMatch(append, /\bfixedFace\b|\bhingeAngles\b/u)
 
   const replace = exportedFunction('replaceInstructionStepPose')
   assert.match(
@@ -126,6 +137,18 @@ test('only Rust derives pose provenance and persistence includes instruction cha
     dirty,
     /saved\.instruction_timeline != \*self\.editor\.instruction_timeline\(\)/u,
   )
+
+  const append = sourceSection(
+    nativeSource,
+    'fn append_named_technique_instruction_steps(',
+    '\n#[allow(clippy::too_many_arguments)]',
+  )
+  assert.match(append, /parse_named_technique_timeline_proposal\(&proposal_json\)/u)
+  assert.match(append, /InstructionPoseModel::DeclarativeOnlyV1/u)
+  assert.match(append, /fixed_face: None/u)
+  assert.match(append, /hinge_angles: Vec::new\(\)/u)
+  assert.match(append, /Command::AppendInstructionSteps \{ steps \}/u)
+  assert.doesNotMatch(append, /analyze_instruction_pose|finish_instruction_pose/u)
 })
 
 function exportedFunction(name: string) {

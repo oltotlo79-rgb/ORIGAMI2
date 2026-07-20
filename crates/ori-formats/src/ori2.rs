@@ -20,6 +20,7 @@ pub const ORI2_MANIFEST_PATH: &str = "manifest.json";
 pub const ORI2_PROJECT_PATH: &str = "project.json";
 pub const ORI2_EDITOR_HISTORY_PATH: &str = "editor-history.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
+pub const ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1: &str = "declarative_instruction_steps_v1";
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
 pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v1";
 pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
@@ -234,6 +235,14 @@ fn write_project_archive_parts(
     if !document.instruction_timeline.steps.is_empty() {
         required_features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
     }
+    if document
+        .instruction_timeline
+        .steps
+        .iter()
+        .any(|step| step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1)
+    {
+        required_features.push(ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1.to_owned());
+    }
     if !document.numeric_expressions.is_empty() {
         required_features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
     }
@@ -416,6 +425,20 @@ pub fn read_project_archive_ori2_with_limits(
     {
         return Err(FormatError::MissingRequiredFeature {
             feature: ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+        });
+    }
+    if project
+        .instruction_timeline
+        .steps
+        .iter()
+        .any(|step| step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1)
+        && !manifest
+            .required_features
+            .iter()
+            .any(|feature| feature == ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1)
+    {
+        return Err(FormatError::MissingRequiredFeature {
+            feature: ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1,
         });
     }
     if !project.numeric_expressions.is_empty()
@@ -691,6 +714,7 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
             !matches!(
                 feature.as_str(),
                 ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+                    | ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
                     | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
                     | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
                     | ORI2_FEATURE_LAYERS_V1
@@ -1098,6 +1122,22 @@ mod tests {
                     edge,
                     angle_degrees: 180.0,
                 }],
+            },
+        });
+    }
+
+    fn add_sample_declarative_instruction(document: &mut ProjectDocument) {
+        document.instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "中割り折り（説明）".to_owned(),
+            description: "説明テンプレートとして追加します。".to_owned(),
+            caution: "物理操作は自動実行しません。".to_owned(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint: "0123456789abcdef".repeat(4),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
             },
         });
     }
@@ -1701,6 +1741,29 @@ mod tests {
     }
 
     #[test]
+    fn ori2_round_trip_preserves_declarative_instructions_and_declares_both_features() {
+        let mut original = sample_document();
+        add_sample_declarative_instruction(&mut original);
+
+        let bytes = write_project_ori2(&original).expect("write declarative instructions");
+        let manifest = manifest_from_archive(&bytes);
+        assert_eq!(
+            manifest.required_features,
+            vec![
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
+                ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1.to_owned(),
+            ]
+        );
+
+        let restored = read_project_ori2(&bytes).expect("read declarative instructions");
+        assert_eq!(restored.instruction_timeline, original.instruction_timeline);
+        assert_eq!(
+            restored.instruction_timeline.steps[0].pose.model,
+            InstructionPoseModel::DeclarativeOnlyV1
+        );
+    }
+
+    #[test]
     fn ori2_preserves_numeric_expressions_and_declares_the_required_feature() {
         let mut original = sample_document();
         original.numeric_expressions.rectangular_paper_creation =
@@ -2022,6 +2085,30 @@ mod tests {
             error,
             FormatError::MissingRequiredFeature {
                 feature: ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_declarative_instruction_without_its_dedicated_required_feature() {
+        let mut document = sample_document();
+        add_sample_declarative_instruction(&mut document);
+        let project = write_project_json(&document).expect("project JSON");
+        let manifest = manifest_for_features(
+            &project,
+            vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()],
+        );
+        let bytes = raw_zip(&[
+            (ORI2_MANIFEST_PATH, &manifest),
+            (ORI2_PROJECT_PATH, &project),
+        ]);
+
+        let error = read_project_ori2(&bytes)
+            .expect_err("declarative instruction feature declaration is required");
+        assert!(matches!(
+            error,
+            FormatError::MissingRequiredFeature {
+                feature: ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
             }
         ));
     }

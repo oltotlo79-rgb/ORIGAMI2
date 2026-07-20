@@ -167,10 +167,51 @@ export type InstructionHingeAngle = {
 }
 
 export type InstructionPose = {
-  model: 'absolute_hinge_angles_v1'
+  model: 'absolute_hinge_angles_v1' | 'declarative_only_v1'
   source_model_fingerprint: string
   fixed_face: string | null
   hinge_angles: readonly InstructionHingeAngle[]
+}
+
+export type NamedTechniqueTimelineSourceKindV1 =
+  | 'technique'
+  | 'parameter'
+  | 'precondition'
+  | 'operation'
+
+export type NamedTechniqueTimelineProposalStepV1 = Readonly<{
+  source_kind: NamedTechniqueTimelineSourceKindV1
+  source_id: string
+  chunk_index: number
+  chunk_count: number
+  title: string
+  description: string
+  caution: string
+  duration_ms: number
+}>
+
+export type NamedTechniqueTimelineProposalV1 = Readonly<{
+  schema_version: 1
+  package_id: string
+  technique_id: string
+  technique_version: number
+  steps: readonly NamedTechniqueTimelineProposalStepV1[]
+}>
+
+export type NamedTechniqueTimelineClientErrorCode =
+  | 'invalid_request'
+  | 'native_unavailable'
+
+export class NamedTechniqueTimelineClientError extends Error {
+  readonly code: NamedTechniqueTimelineClientErrorCode
+
+  constructor(code: NamedTechniqueTimelineClientErrorCode) {
+    super(code === 'invalid_request'
+      ? '名前付き折り技法のタイムライン案が正しくありません。'
+      : '名前付き折り技法をタイムラインへ追加できませんでした。')
+    this.name = 'NamedTechniqueTimelineClientError'
+    this.code = code
+  }
 }
 
 export type InstructionStep = {
@@ -719,6 +760,46 @@ export function addInstructionStep(
     durationMs,
     fixedFace,
     hingeAngles,
+  })
+}
+
+export function appendNamedTechniqueInstructionSteps(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  proposal: NamedTechniqueTimelineProposalV1,
+) {
+  if (
+    !isCanonicalNonNilUuid(expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(expectedProjectId)
+    || !isProjectRevision(expectedRevision)
+    || expectedRevision >= Number.MAX_SAFE_INTEGER
+    || !isNamedTechniqueTimelineProposalV1(proposal)
+  ) {
+    return Promise.reject(
+      new NamedTechniqueTimelineClientError('invalid_request'),
+    )
+  }
+  let proposalJson: string
+  try {
+    proposalJson = JSON.stringify(proposal)
+  } catch {
+    return Promise.reject(
+      new NamedTechniqueTimelineClientError('invalid_request'),
+    )
+  }
+  if (new TextEncoder().encode(proposalJson).length > 2 * 1024 * 1024) {
+    return Promise.reject(
+      new NamedTechniqueTimelineClientError('invalid_request'),
+    )
+  }
+  return invoke<ProjectSnapshot>('append_named_technique_instruction_steps', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    proposalJson,
+  }).catch(() => {
+    throw new NamedTechniqueTimelineClientError('native_unavailable')
   })
 }
 
@@ -1613,6 +1694,139 @@ function isProjectRevision(value: unknown): value is number {
     && !Object.is(value, -0)
 }
 
+function isNamedTechniqueTimelineProposalV1(
+  value: unknown,
+): value is NamedTechniqueTimelineProposalV1 {
+  try {
+    const record = exactCoreDataRecord(value, [
+      'schema_version',
+      'package_id',
+      'technique_id',
+      'technique_version',
+      'steps',
+    ] as const)
+    if (
+      !record
+      || record.schema_version !== 1
+      || !isNamedTechniqueIdentifier(record.package_id)
+      || !isNamedTechniqueIdentifier(record.technique_id)
+      || !Number.isSafeInteger(record.technique_version)
+      || (record.technique_version as number) < 1
+      || (record.technique_version as number) > 1_000_000
+    ) return false
+    const rawSteps = snapshotCoreDataArray(record.steps, 512)
+    if (!rawSteps || rawSteps.length === 0) return false
+
+    const rank = Object.freeze({
+      technique: 0,
+      parameter: 1,
+      precondition: 2,
+      operation: 3,
+    }) satisfies Readonly<Record<NamedTechniqueTimelineSourceKindV1, number>>
+    let previous:
+      | Readonly<{
+          kind: NamedTechniqueTimelineSourceKindV1
+          id: string
+          chunkIndex: number
+          chunkCount: number
+        }>
+      | null = null
+    const seen = new Set<string>()
+    for (const rawStep of rawSteps) {
+      const step = exactCoreDataRecord(rawStep, [
+        'source_kind',
+        'source_id',
+        'chunk_index',
+        'chunk_count',
+        'title',
+        'description',
+        'caution',
+        'duration_ms',
+      ] as const)
+      if (
+        !step
+        || typeof step.source_kind !== 'string'
+        || !Object.hasOwn(rank, step.source_kind)
+        || !isNamedTechniqueIdentifier(step.source_id)
+        || !Number.isSafeInteger(step.chunk_index)
+        || !Number.isSafeInteger(step.chunk_count)
+        || (step.chunk_count as number) < 1
+        || (step.chunk_count as number) > 512
+        || (step.chunk_index as number) < 1
+        || (step.chunk_index as number) > (step.chunk_count as number)
+        || !isInstructionProposalTitle(step.title)
+        || !isInstructionProposalText(step.description, 4_000)
+        || !isInstructionProposalText(step.caution, 2_000)
+        || !Number.isSafeInteger(step.duration_ms)
+        || (step.duration_ms as number) < 100
+        || (step.duration_ms as number) > 600_000
+      ) return false
+      const kind = step.source_kind as NamedTechniqueTimelineSourceKindV1
+      const sourceId = step.source_id as string
+      const chunkIndex = step.chunk_index as number
+      const chunkCount = step.chunk_count as number
+      if (
+        (previous === null && kind !== 'technique')
+        || (kind === 'technique' && sourceId !== record.technique_id)
+      ) return false
+      if (previous !== null && rank[kind] < rank[previous.kind]) return false
+      if (
+        previous !== null
+        && previous.kind === kind
+        && previous.id === sourceId
+      ) {
+        if (chunkIndex !== previous.chunkIndex + 1) return false
+      } else {
+        if (
+          chunkIndex !== 1
+          || (previous && previous.chunkIndex !== previous.chunkCount)
+        ) return false
+        const sourceKey = `${kind}\0${sourceId}`
+        if (seen.has(sourceKey)) return false
+        seen.add(sourceKey)
+      }
+      previous = { kind, id: sourceId, chunkIndex, chunkCount }
+    }
+    return previous !== null && previous.chunkIndex === previous.chunkCount
+  } catch {
+    return false
+  }
+}
+
+function isNamedTechniqueIdentifier(value: unknown): value is string {
+  return typeof value === 'string'
+    && new TextEncoder().encode(value).length <= 96
+    && /^[a-z](?:[a-z0-9]|[._-](?=[a-z0-9]))*$/u.test(value)
+}
+
+function isInstructionProposalTitle(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && [...value].length <= 120
+    && [...value].every((character) => {
+      const code = character.codePointAt(0)
+      return code !== undefined
+        && !(code <= 0x1f || (code >= 0x7f && code <= 0x9f))
+    })
+}
+
+function isInstructionProposalText(
+  value: unknown,
+  maximum: number,
+): value is string {
+  return typeof value === 'string'
+    && [...value].length <= maximum
+    && [...value].every((character) => {
+      const code = character.codePointAt(0)
+      return code !== undefined
+        && (
+          !(code <= 0x1f || (code >= 0x7f && code <= 0x9f))
+          || character === '\n'
+          || character === '\t'
+        )
+    })
+}
+
 function isCoreDataRecord(value: unknown): value is Record<string, unknown> {
   return snapshotCoreDataRecord(value) !== null
 }
@@ -1654,6 +1868,55 @@ function snapshotCoreDataRecord(
       snapshot[key] = descriptor.value
     }
     return snapshot
+  } catch {
+    return null
+  }
+}
+
+function snapshotCoreDataArray(
+  value: unknown,
+  maximumLength: number,
+): readonly unknown[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+      return null
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const lengthDescriptor = Reflect.getOwnPropertyDescriptor(value, 'length')
+    const lengthValue = lengthDescriptor && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : null
+    if (
+      typeof lengthValue !== 'number'
+      || !Number.isSafeInteger(lengthValue)
+      || lengthValue < 0
+      || lengthValue > maximumLength
+    ) return null
+    const length = lengthValue
+    const keys = Reflect.ownKeys(descriptors)
+    if (
+      keys.length !== length + 1
+      || keys.some((key) =>
+        typeof key !== 'string'
+        || (
+          key !== 'length'
+          && (
+            !/^(?:0|[1-9][0-9]*)$/u.test(key)
+            || Number(key) >= length
+          )
+        ))
+    ) return null
+    const snapshot: unknown[] = []
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)]
+      if (
+        !descriptor
+        || !('value' in descriptor)
+        || !descriptor.enumerable
+      ) return null
+      snapshot.push(descriptor.value)
+    }
+    return Object.freeze(snapshot)
   } catch {
     return null
   }

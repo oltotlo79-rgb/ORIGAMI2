@@ -506,6 +506,184 @@ test('localizes timeline notices, capture guidance, validation, and durations li
   assert.equal(formatInstructionDuration(90_000, 'en'), '1:30')
 })
 
+test('admits declarative-only steps but never treats them as a playable 3D pose', () => {
+  const declarative = {
+    ...step('declarative', OLD_FINGERPRINT, []),
+    title: '中割り折りの説明',
+    pose: {
+      model: 'declarative_only_v1' as const,
+      source_model_fingerprint: OLD_FINGERPRINT,
+      fixed_face: null,
+      hinge_angles: [],
+    },
+  }
+  const presentation = createInstructionTimelinePresentation({
+    steps: [declarative],
+  }, CURRENT_FINGERPRINT)
+  assert.equal(presentation.kind, 'ready')
+  if (presentation.kind !== 'ready') return
+  assert.equal(presentation.steps[0]?.declarativeOnly, true)
+  assert.equal(presentation.steps[0]?.stale, false)
+  assert.equal(
+    createInstructionPlaybackPlan('project', 0, presentation),
+    null,
+  )
+  assert.equal(
+    instructionPoseMatchesApplied(declarative.pose, {
+      projectId: 'project',
+      revision: 0,
+      fixedFaceId: null,
+      hingeAngles: [],
+      state: 'stable',
+    }),
+    false,
+  )
+  assert.match(
+    instructionTimelineNoticeText({
+      kind: 'declarative_playback_unsupported',
+    }, 'en'),
+    /cannot be played/u,
+  )
+})
+
+test('mixed playback skips declarative steps without changing executable order or timeline ordinals', () => {
+  const declarative = {
+    ...step('declarative', OLD_FINGERPRINT, [], 100),
+    pose: {
+      model: 'declarative_only_v1' as const,
+      source_model_fingerprint: OLD_FINGERPRINT,
+      fixed_face: null,
+      hinge_angles: [],
+    },
+  }
+  const presentation = createInstructionTimelinePresentation({
+    steps: [
+      step('physical-1', CURRENT_FINGERPRINT, [], 100),
+      declarative,
+      step('physical-2', CURRENT_FINGERPRINT, [], 100),
+    ],
+  }, CURRENT_FINGERPRINT)
+  const plan = createInstructionPlaybackPlan('project', 0, presentation)
+  assert.ok(plan)
+  assert.deepEqual(
+    plan.steps.map(({ id, index }) => ({ id, index })),
+    [
+      { id: 'physical-1', index: 0 },
+      { id: 'physical-2', index: 2 },
+    ],
+  )
+
+  let state = reduceInstructionPlayback(createInstructionPlaybackState(), {
+    kind: 'start',
+    plan,
+    startIndex: 0,
+  })
+  assert.equal(state.status === 'applying' ? state.target.id : null, 'physical-1')
+  state = reduceInstructionPlayback(state, {
+    kind: 'pose_applied',
+    stepId: 'physical-1',
+    now: 0,
+  })
+  state = reduceInstructionPlayback(state, { kind: 'tick', now: 100 })
+  assert.equal(state.status === 'applying' ? state.target.id : null, 'physical-2')
+  assert.equal(
+    instructionPlaybackStatusText(state, 'en'),
+    'Applying step 3, “手順”',
+  )
+
+  const canceled = reduceInstructionPlayback(state, {
+    kind: 'cancel',
+    reason: 'canceled',
+  })
+  assert.equal(canceled.status === 'stopped' ? canceled.reason : null, 'canceled')
+  assert.deepEqual(
+    reduceInstructionPlayback(canceled, { kind: 'tick', now: 1_000 }),
+    canceled,
+  )
+})
+
+test('mixed playback stops before a stale physical step and rejects a forged declarative plan', () => {
+  const declarative = {
+    ...step('declarative', CURRENT_FINGERPRINT, [], 100),
+    pose: {
+      model: 'declarative_only_v1' as const,
+      source_model_fingerprint: CURRENT_FINGERPRINT,
+      fixed_face: null,
+      hinge_angles: [],
+    },
+  }
+  const presentation = createInstructionTimelinePresentation({
+    steps: [
+      step('physical-1', CURRENT_FINGERPRINT, [], 100),
+      declarative,
+      step('physical-stale', OLD_FINGERPRINT, [], 100),
+    ],
+  }, CURRENT_FINGERPRINT)
+  assert.equal(presentation.kind, 'ready')
+  if (presentation.kind !== 'ready') return
+  const plan = createInstructionPlaybackPlan('project', 0, presentation)
+  assert.ok(plan)
+
+  let state = reduceInstructionPlayback(createInstructionPlaybackState(), {
+    kind: 'start',
+    plan,
+    startIndex: 0,
+  })
+  state = reduceInstructionPlayback(state, {
+    kind: 'pose_applied',
+    stepId: 'physical-1',
+    now: 0,
+  })
+  state = reduceInstructionPlayback(state, { kind: 'tick', now: 100 })
+  assert.deepEqual(state, {
+    status: 'stopped',
+    sequence: 1,
+    reason: 'stale_step',
+    stepId: 'physical-stale',
+  })
+
+  const forged = {
+    projectId: 'project',
+    revision: 0,
+    modelFingerprint: CURRENT_FINGERPRINT,
+    steps: [presentation.steps[1]!],
+  }
+  assert.equal(
+    reduceInstructionPlayback(createInstructionPlaybackState(), {
+      kind: 'start',
+      plan: forged,
+      startIndex: 0,
+    }).status,
+    'stopped',
+  )
+})
+
+test('rejects declarative steps that smuggle a fixed face or hinge angle', () => {
+  const base = {
+    ...step('declarative', CURRENT_FINGERPRINT, []),
+    pose: {
+      model: 'declarative_only_v1' as const,
+      source_model_fingerprint: CURRENT_FINGERPRINT,
+      fixed_face: null,
+      hinge_angles: [],
+    },
+  }
+  for (const pose of [{
+    ...base.pose,
+    fixed_face: 'face-1',
+  }, {
+    ...base.pose,
+    hinge_angles: [angle('hinge-1', 0)],
+  }]) {
+    assert.equal(
+      createInstructionTimelinePresentation({
+        steps: [{ ...base, pose }],
+      }, CURRENT_FINGERPRINT).kind,
+      'invalid',
+    )
+  }
+})
+
 function step(
   id: string,
   fingerprint: string,

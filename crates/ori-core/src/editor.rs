@@ -142,6 +142,12 @@ pub enum Command {
     AddInstructionStep {
         step: InstructionStep,
     },
+    /// Appends a bounded group of instruction steps as one revision and one
+    /// Undo/Redo history entry. Validation is performed against the complete
+    /// candidate timeline before any step becomes visible.
+    AppendInstructionSteps {
+        steps: Vec<InstructionStep>,
+    },
     UpdateInstructionStepMetadata {
         step_id: InstructionStepId,
         title: String,
@@ -435,6 +441,12 @@ pub enum CommandError {
     InstructionStepAlreadyExists(InstructionStepId),
     #[error("instruction step {0:?} was not found")]
     InstructionStepNotFound(InstructionStepId),
+    #[error("a declarative-only instruction step cannot be converted into an executable pose")]
+    DeclarativeInstructionPoseImmutable,
+    #[error("an instruction-step append batch must not be empty")]
+    InstructionStepAppendBatchEmpty,
+    #[error("the appended instruction steps are no longer the exact timeline suffix")]
+    InstructionStepAppendHistoryMismatch,
     #[error("instruction step target index {target_index} is out of bounds for {step_count} steps")]
     InstructionStepTargetIndexOutOfBounds {
         target_index: usize,
@@ -666,6 +678,9 @@ enum Inverse {
     },
     RemoveAddedInstructionStep {
         step_id: InstructionStepId,
+    },
+    RemoveAppendedInstructionSteps {
+        step_ids: Vec<InstructionStepId>,
     },
     RestoreInstructionStepMetadata {
         step_id: InstructionStepId,
@@ -1943,6 +1958,27 @@ impl EditorState {
                 self.commit_instruction_timeline(candidate)?;
                 Ok(Inverse::RemoveAddedInstructionStep { step_id: step.id })
             }
+            Command::AppendInstructionSteps { ref steps } => {
+                if steps.is_empty() {
+                    return Err(CommandError::InstructionStepAppendBatchEmpty);
+                }
+                for step in steps {
+                    if self
+                        .instruction_timeline
+                        .steps
+                        .iter()
+                        .any(|candidate| candidate.id == step.id)
+                    {
+                        return Err(CommandError::InstructionStepAlreadyExists(step.id));
+                    }
+                }
+                let mut candidate = self.instruction_timeline.clone();
+                candidate.steps.extend(steps.iter().cloned());
+                self.commit_instruction_timeline(candidate)?;
+                Ok(Inverse::RemoveAppendedInstructionSteps {
+                    step_ids: steps.iter().map(|step| step.id).collect(),
+                })
+            }
             Command::UpdateInstructionStepMetadata {
                 step_id,
                 ref title,
@@ -1977,6 +2013,9 @@ impl EditorState {
                     .iter_mut()
                     .find(|step| step.id == step_id)
                     .ok_or(CommandError::InstructionStepNotFound(step_id))?;
+                if step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1 {
+                    return Err(CommandError::DeclarativeInstructionPoseImmutable);
+                }
                 let inverse = Inverse::RestoreInstructionStepPose {
                     step_id,
                     pose: step.pose.clone(),
@@ -2333,6 +2372,7 @@ impl EditorState {
             | Command::AddGeometricConstraint { .. }
             | Command::RemoveGeometricConstraint { .. }
             | Command::AddInstructionStep { .. }
+            | Command::AppendInstructionSteps { .. }
             | Command::UpdateInstructionStepMetadata { .. }
             | Command::ReplaceInstructionStepPose { .. }
             | Command::RemoveInstructionStep { .. }
@@ -2579,6 +2619,7 @@ impl EditorState {
             | Command::AddGeometricConstraint { .. }
             | Command::RemoveGeometricConstraint { .. }
             | Command::AddInstructionStep { .. }
+            | Command::AppendInstructionSteps { .. }
             | Command::UpdateInstructionStepMetadata { .. }
             | Command::ReplaceInstructionStepPose { .. }
             | Command::RemoveInstructionStep { .. }
@@ -4279,6 +4320,22 @@ impl EditorState {
                 candidate.steps.remove(index);
                 self.commit_instruction_timeline(candidate)?;
             }
+            Inverse::RemoveAppendedInstructionSteps { step_ids } => {
+                if step_ids.is_empty() || step_ids.len() > self.instruction_timeline.steps.len() {
+                    return Err(CommandError::InstructionStepAppendHistoryMismatch);
+                }
+                let suffix_start = self.instruction_timeline.steps.len() - step_ids.len();
+                if self.instruction_timeline.steps[suffix_start..]
+                    .iter()
+                    .map(|step| step.id)
+                    .ne(step_ids.iter().copied())
+                {
+                    return Err(CommandError::InstructionStepAppendHistoryMismatch);
+                }
+                let mut candidate = self.instruction_timeline.clone();
+                candidate.steps.truncate(suffix_start);
+                self.commit_instruction_timeline(candidate)?;
+            }
             Inverse::RestoreInstructionStepMetadata {
                 step_id,
                 title,
@@ -4466,6 +4523,7 @@ impl Command {
             | Self::AddGeometricConstraint { .. }
             | Self::RemoveGeometricConstraint { .. }
             | Self::AddInstructionStep { .. }
+            | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
@@ -4506,6 +4564,7 @@ impl Command {
             | Self::AddGeometricConstraint { .. }
             | Self::RemoveGeometricConstraint { .. }
             | Self::AddInstructionStep { .. }
+            | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
@@ -4724,6 +4783,7 @@ impl Command {
                 }
             }
             Self::AddInstructionStep { .. }
+            | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
@@ -4882,6 +4942,7 @@ impl Inverse {
                 ..Changes::default()
             },
             Self::RemoveAddedInstructionStep { .. }
+            | Self::RemoveAppendedInstructionSteps { .. }
             | Self::RestoreInstructionStepMetadata { .. }
             | Self::RestoreInstructionStepPose { .. }
             | Self::RestoreRemovedInstructionStep { .. }
@@ -12084,6 +12145,26 @@ mod tests {
         }
     }
 
+    fn declarative_instruction_step(
+        id: InstructionStepId,
+        title: &str,
+        source_model_fingerprint: String,
+    ) -> InstructionStep {
+        InstructionStep {
+            id,
+            title: title.to_owned(),
+            description: "説明テンプレート".to_owned(),
+            caution: "物理操作は自動実行しません。".to_owned(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: ori_domain::InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint,
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        }
+    }
+
     #[test]
     fn persisted_instruction_timeline_restores_without_creating_history() {
         let pattern = CreasePattern::empty();
@@ -12231,6 +12312,135 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first_id]
         );
+    }
+
+    #[test]
+    fn instruction_batch_append_is_one_atomic_revision_and_one_undo_redo_entry() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let existing = instruction_step(InstructionStepId::new(), "既存", fingerprint.clone());
+        editor
+            .execute(
+                0,
+                Command::AddInstructionStep {
+                    step: existing.clone(),
+                },
+            )
+            .expect("seed timeline");
+        let batch = vec![
+            declarative_instruction_step(InstructionStepId::new(), "技法", fingerprint.clone()),
+            declarative_instruction_step(InstructionStepId::new(), "操作 1", fingerprint),
+        ];
+
+        let applied = editor
+            .execute(
+                1,
+                Command::AppendInstructionSteps {
+                    steps: batch.clone(),
+                },
+            )
+            .expect("append batch");
+        assert_eq!(applied.revision, 2);
+        assert!(applied.instructions_changed);
+        assert_eq!(
+            editor.instruction_timeline().steps,
+            vec![existing.clone(), batch[0].clone(), batch[1].clone()]
+        );
+        assert!(matches!(
+            editor.undo_stack.last().map(|entry| &entry.inverse),
+            Some(Inverse::RemoveAppendedInstructionSteps { step_ids })
+                if step_ids == &batch.iter().map(|step| step.id).collect::<Vec<_>>()
+        ));
+
+        editor.undo(2).expect("undo entire append");
+        assert_eq!(editor.instruction_timeline().steps, vec![existing.clone()]);
+        editor.redo(3).expect("redo entire append");
+        assert_eq!(
+            editor.instruction_timeline().steps,
+            vec![existing, batch[0].clone(), batch[1].clone()]
+        );
+    }
+
+    #[test]
+    fn invalid_instruction_batch_append_is_atomic_and_preserves_redo() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let seed = instruction_step(InstructionStepId::new(), "既存", fingerprint.clone());
+        editor
+            .execute(0, Command::AddInstructionStep { step: seed })
+            .expect("seed timeline");
+        editor.undo(1).expect("prepare redo");
+
+        let before = editor.instruction_timeline.clone();
+        let revision = editor.revision();
+        let undo_before = format!("{:?}", editor.undo_stack);
+        let redo_before = format!("{:?}", editor.redo_stack);
+        let mut invalid =
+            declarative_instruction_step(InstructionStepId::new(), "不正", fingerprint.clone());
+        invalid.pose.fixed_face = Some(ori_domain::FaceId::new());
+
+        assert_eq!(
+            editor.execute(
+                revision,
+                Command::AppendInstructionSteps { steps: Vec::new() },
+            ),
+            Err(CommandError::InstructionStepAppendBatchEmpty)
+        );
+        assert!(matches!(
+            editor.execute(
+                revision,
+                Command::AppendInstructionSteps {
+                    steps: vec![
+                        declarative_instruction_step(
+                            InstructionStepId::new(),
+                            "有効だが追加されない",
+                            fingerprint,
+                        ),
+                        invalid,
+                    ],
+                },
+            ),
+            Err(CommandError::InstructionTimelineInvalid(
+                ori_domain::InstructionTimelineValidationError::DeclarativePoseHasFixedFace {
+                    step_index: 1
+                }
+            ))
+        ));
+        assert_eq!(editor.instruction_timeline, before);
+        assert_eq!(editor.revision(), revision);
+        assert_eq!(format!("{:?}", editor.undo_stack), undo_before);
+        assert_eq!(format!("{:?}", editor.redo_stack), redo_before);
+    }
+
+    #[test]
+    fn declarative_instruction_pose_cannot_be_replaced_by_an_executable_pose() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let step =
+            declarative_instruction_step(InstructionStepId::new(), "説明専用", fingerprint.clone());
+        let step_id = step.id;
+        editor
+            .execute(0, Command::AddInstructionStep { step })
+            .expect("add declarative instruction");
+        let before = editor.instruction_timeline.clone();
+
+        assert_eq!(
+            editor.execute(
+                1,
+                Command::ReplaceInstructionStepPose {
+                    step_id,
+                    pose: InstructionPose {
+                        model: ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1,
+                        source_model_fingerprint: fingerprint,
+                        fixed_face: None,
+                        hinge_angles: Vec::new(),
+                    },
+                },
+            ),
+            Err(CommandError::DeclarativeInstructionPoseImmutable)
+        );
+        assert_eq!(editor.instruction_timeline, before);
+        assert_eq!(editor.revision(), 1);
     }
 
     #[test]

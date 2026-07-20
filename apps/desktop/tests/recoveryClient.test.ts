@@ -280,6 +280,55 @@ test('restore rejects identity, fresh-editor, envelope, and nested DTO drift', (
   }
 })
 
+test('restore preserves declarative instruction text but rejects executable pose data', () => {
+  const declarativeStep = {
+    id: RECOVERY_ID,
+    title: '中割り折り（説明）',
+    description: '説明テンプレート',
+    caution: '物理操作は自動実行しません。',
+    duration_ms: 1_500,
+    pose: {
+      model: 'declarative_only_v1',
+      source_model_fingerprint: 'f'.repeat(64),
+      fixed_face: null,
+      hinge_angles: [],
+    },
+  }
+  const restored = parseRestoredRecoverySnapshot(
+    validSnapshot({
+      instruction_timeline: { steps: [declarativeStep] },
+    }),
+    AVAILABLE,
+    EXPECTED,
+  )
+  assert.ok(restored)
+  assert.deepEqual(restored.instruction_timeline.steps, [declarativeStep])
+
+  for (const pose of [
+    { ...declarativeStep.pose, fixed_face: CURRENT_PROJECT_ID },
+    {
+      ...declarativeStep.pose,
+      hinge_angles: [{
+        edge: CURRENT_PROJECT_ID,
+        angle_degrees: 45,
+      }],
+    },
+  ]) {
+    assert.equal(
+      parseRestoredRecoverySnapshot(
+        validSnapshot({
+          instruction_timeline: {
+            steps: [{ ...declarativeStep, pose }],
+          },
+        }),
+        AVAILABLE,
+        EXPECTED,
+      ),
+      null,
+    )
+  }
+})
+
 test('restore response admission rejects accessors and proxies without leaking details', async () => {
   let getterCalls = 0
   const accessor = validSnapshot()

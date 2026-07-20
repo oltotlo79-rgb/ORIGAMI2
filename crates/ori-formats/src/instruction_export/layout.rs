@@ -467,6 +467,26 @@ fn first_step_page(
     )?;
     cursor += 8.0;
 
+    if diagram_step.declarative_only {
+        draw_declarative_placeholder(&mut page, cursor, font, glyphs)?;
+        cursor += DIAGRAM_HEIGHT + 10.0;
+        add_text(
+            &mut page,
+            PAGE_MARGIN,
+            cursor + 9.0,
+            9.0,
+            PageColor::MUTED,
+            format!(
+                "所要時間: {} / 説明専用・3D姿勢なし",
+                format_duration(step.duration_ms)
+            ),
+            font,
+            glyphs,
+        )?;
+        cursor += 20.0;
+        return Ok((page, cursor));
+    }
+
     draw_diagram(&mut page, diagram_step, bounds, cursor)?;
     let legend_baseline = cursor + DIAGRAM_HEIGHT - 9.0;
     for (x, label, color) in [
@@ -503,6 +523,41 @@ fn first_step_page(
     )?;
     cursor += 20.0;
     Ok((page, cursor))
+}
+
+fn draw_declarative_placeholder(
+    page: &mut InstructionPage,
+    top: f64,
+    font: &InstructionFont<'_>,
+    glyphs: &mut GlyphBudget,
+) -> Result<(), InstructionExportError> {
+    let left = PAGE_MARGIN;
+    let right = PAGE_WIDTH_POINTS - PAGE_MARGIN;
+    let bottom = top + DIAGRAM_HEIGHT;
+    page.polygons.push(PagePolygon {
+        points: vec![
+            PagePoint { x: left, y: top },
+            PagePoint { x: right, y: top },
+            PagePoint {
+                x: right,
+                y: bottom,
+            },
+            PagePoint { x: left, y: bottom },
+        ],
+        fill: PageColor::WHITE,
+        stroke: PageColor::BORDER,
+        stroke_width: 0.7,
+    });
+    add_text(
+        page,
+        left + 24.0,
+        top + DIAGRAM_HEIGHT / 2.0,
+        13.0,
+        PageColor::MUTED,
+        "説明専用ステップ（3D姿勢・物理操作なし）".to_owned(),
+        font,
+        glyphs,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -888,6 +943,11 @@ fn format_duration(duration_ms: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ori_domain::{
+        InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId,
+        InstructionTimeline,
+    };
+
     use super::*;
 
     #[test]
@@ -924,6 +984,62 @@ mod tests {
         assert_eq!(format_duration(1_000), "1秒");
         assert_eq!(format_duration(1_250), "1.25秒");
         assert_eq!(format_duration(100), "0.1秒");
+    }
+
+    #[test]
+    fn declarative_layout_preserves_text_and_draws_no_fold_pose() {
+        let timeline = InstructionTimeline {
+            steps: vec![InstructionStep {
+                id: InstructionStepId::new(),
+                title: "中割り折り（説明）".to_owned(),
+                description: "この説明はPDFとSVGに残ります。".to_owned(),
+                caution: "自動実行せず層を確認してください。".to_owned(),
+                duration_ms: 1_500,
+                pose: InstructionPose {
+                    model: InstructionPoseModel::DeclarativeOnlyV1,
+                    source_model_fingerprint: "f".repeat(64),
+                    fixed_face: None,
+                    hinge_angles: Vec::new(),
+                },
+            }],
+        };
+        let diagram = InstructionDiagramPlan {
+            bounds: DiagramBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 10.0,
+                max_y: 10.0,
+            },
+            steps: vec![InstructionDiagramStep {
+                faces: Vec::new(),
+                hinges: Vec::new(),
+                changed_hinge_count: 0,
+                declarative_only: true,
+            }],
+            projected_vertex_visits: 1,
+        };
+        let font = InstructionFont::load().expect("bundled font");
+        let layout = layout_instruction_pages(
+            "説明書",
+            &timeline,
+            &diagram,
+            &font,
+            InstructionExportLimits::default(),
+        )
+        .expect("declarative layout");
+        let text = layout
+            .pages
+            .iter()
+            .flat_map(|page| page.texts.iter())
+            .map(PageText::scalar_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("説明専用ステップ（3D姿勢・物理操作なし）"));
+        assert!(text.contains("この説明はPDFとSVGに残ります。"));
+        assert!(text.contains("自動実行せず層を確認してください。"));
+        assert!(text.contains("説明専用・3D姿勢なし"));
+        assert!(layout.pages.iter().all(|page| page.lines.is_empty()));
     }
 
     #[test]

@@ -1231,7 +1231,10 @@ function parseInstructionTimeline(
     ])
     if (
       !pose
-      || pose.model !== 'absolute_hinge_angles_v1'
+      || (
+        pose.model !== 'absolute_hinge_angles_v1'
+        && pose.model !== 'declarative_only_v1'
+      )
       || typeof pose.source_model_fingerprint !== 'string'
       || !FINGERPRINT_PATTERN.test(pose.source_model_fingerprint)
       || (
@@ -1259,6 +1262,10 @@ function parseInstructionTimeline(
         angle_degrees: normalizeZero(hinge.angle_degrees),
       })
     }
+    if (
+      pose.model === 'declarative_only_v1'
+      && (pose.fixed_face !== null || hingeAngles.length !== 0)
+    ) return null
     steps.push({
       id: step.id,
       title: step.title,
@@ -1266,7 +1273,7 @@ function parseInstructionTimeline(
       caution: step.caution,
       duration_ms: step.duration_ms,
       pose: {
-        model: 'absolute_hinge_angles_v1',
+        model: pose.model,
         source_model_fingerprint: pose.source_model_fingerprint,
         fixed_face: pose.fixed_face,
         hinge_angles: hingeAngles,

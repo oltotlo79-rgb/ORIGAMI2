@@ -268,6 +268,10 @@ pub struct InstructionPose {
 #[serde(rename_all = "snake_case")]
 pub enum InstructionPoseModel {
     AbsoluteHingeAnglesV1,
+    /// A human-readable instruction step that deliberately carries no
+    /// executable 3D pose. This is used by named-technique templates until a
+    /// future, explicitly supported physical operation is authored.
+    DeclarativeOnlyV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -325,6 +329,13 @@ pub enum InstructionTimelineValidationError {
     },
     InvalidSourceModelFingerprint {
         step_index: usize,
+    },
+    DeclarativePoseHasFixedFace {
+        step_index: usize,
+    },
+    DeclarativePoseHasHingeAngles {
+        step_index: usize,
+        actual: usize,
     },
     TooManyHingesInStep {
         step_index: usize,
@@ -422,6 +433,14 @@ impl fmt::Display for InstructionTimelineValidationError {
             Self::InvalidSourceModelFingerprint { step_index } => write!(
                 formatter,
                 "instruction step {step_index} has an invalid source-model fingerprint"
+            ),
+            Self::DeclarativePoseHasFixedFace { step_index } => write!(
+                formatter,
+                "declarative instruction step {step_index} must not specify a fixed face"
+            ),
+            Self::DeclarativePoseHasHingeAngles { step_index, actual } => write!(
+                formatter,
+                "declarative instruction step {step_index} has {actual} hinge angles; expected none"
             ),
             Self::TooManyHingesInStep {
                 step_index,
@@ -563,6 +582,22 @@ fn validate_instruction_step(
         return Err(
             InstructionTimelineValidationError::InvalidSourceModelFingerprint { step_index },
         );
+    }
+
+    if step.pose.model == InstructionPoseModel::DeclarativeOnlyV1 {
+        if step.pose.fixed_face.is_some() {
+            return Err(
+                InstructionTimelineValidationError::DeclarativePoseHasFixedFace { step_index },
+            );
+        }
+        if !step.pose.hinge_angles.is_empty() {
+            return Err(
+                InstructionTimelineValidationError::DeclarativePoseHasHingeAngles {
+                    step_index,
+                    actual: step.pose.hinge_angles.len(),
+                },
+            );
+        }
     }
 
     if step.pose.hinge_angles.len() > MAX_INSTRUCTION_HINGES_PER_STEP {
@@ -757,6 +792,22 @@ mod tests {
         }
     }
 
+    fn valid_declarative_instruction_step() -> InstructionStep {
+        InstructionStep {
+            id: InstructionStepId::new(),
+            title: "中割り折り（説明）".to_owned(),
+            description: "説明テンプレートです。自動実行しません。".to_owned(),
+            caution: "層を確認してください。".to_owned(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint: "0123456789abcdef".repeat(4),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        }
+    }
+
     #[test]
     fn instruction_timeline_survives_json_round_trip() {
         let timeline = InstructionTimeline {
@@ -771,6 +822,50 @@ mod tests {
 
         assert_eq!(restored, timeline);
         validate_instruction_timeline(&restored).expect("restored timeline");
+    }
+
+    #[test]
+    fn declarative_instruction_step_round_trips_without_executable_pose_data() {
+        let timeline = InstructionTimeline {
+            steps: vec![valid_declarative_instruction_step()],
+        };
+
+        validate_instruction_timeline(&timeline).expect("valid declarative timeline");
+        let json = serde_json::to_string(&timeline).expect("serialize declarative timeline");
+        assert!(json.contains(r#""model":"declarative_only_v1""#));
+        let restored: InstructionTimeline =
+            serde_json::from_str(&json).expect("deserialize declarative timeline");
+
+        assert_eq!(restored, timeline);
+        assert!(restored.steps[0].pose.fixed_face.is_none());
+        assert!(restored.steps[0].pose.hinge_angles.is_empty());
+    }
+
+    #[test]
+    fn declarative_instruction_step_rejects_smuggled_pose_data() {
+        let mut fixed = valid_declarative_instruction_step();
+        fixed.pose.fixed_face = Some(FaceId::new());
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline { steps: vec![fixed] }),
+            Err(InstructionTimelineValidationError::DeclarativePoseHasFixedFace { step_index: 0 })
+        ));
+
+        let mut hinged = valid_declarative_instruction_step();
+        hinged.pose.hinge_angles.push(InstructionHingeAngle {
+            edge: EdgeId::new(),
+            angle_degrees: 45.0,
+        });
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![hinged]
+            }),
+            Err(
+                InstructionTimelineValidationError::DeclarativePoseHasHingeAngles {
+                    step_index: 0,
+                    actual: 1
+                }
+            )
+        ));
     }
 
     #[test]

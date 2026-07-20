@@ -16,10 +16,10 @@ use thiserror::Error;
 
 use crate::{
     CURRENT_FORMAT_VERSION, FormatError, MAX_EDITOR_HISTORY_JSON_BYTES, MAX_PROJECT_JSON_BYTES,
-    ORI2_FEATURE_EDITOR_HISTORY_V1, ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_LAYERS_V1,
-    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, Ori2ProjectArchive, ProjectDocument, ProjectJsonLimits,
-    read_project_json_with_limits, write_project_json,
+    ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
+    ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, Ori2ProjectArchive,
+    ProjectDocument, ProjectJsonLimits, read_project_json_with_limits, write_project_json,
 };
 
 pub const PROJECT_FOLDER_CONTAINER_IDENTIFIER: &str = "ORIGAMI2_EXPANDED_FOLDER";
@@ -740,6 +740,14 @@ fn required_features(document: &ProjectDocument, has_history: bool) -> Vec<Strin
     if !document.instruction_timeline.steps.is_empty() {
         features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
     }
+    if document
+        .instruction_timeline
+        .steps
+        .iter()
+        .any(|step| step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1)
+    {
+        features.push(ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1.to_owned());
+    }
     if !document.numeric_expressions.is_empty() {
         features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
     }
@@ -759,6 +767,7 @@ fn is_known_feature(feature: &str) -> bool {
     matches!(
         feature,
         ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+            | ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
             | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
             | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
             | ORI2_FEATURE_LAYERS_V1
@@ -1186,7 +1195,10 @@ fn canonical_number(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ori_domain::{CreasePattern, Edge, EdgeId, ProjectId, Vertex};
+    use ori_domain::{
+        CreasePattern, Edge, EdgeId, InstructionPose, InstructionPoseModel, InstructionStep,
+        InstructionStepId, ProjectId, Vertex,
+    };
 
     fn sample_document() -> ProjectDocument {
         let first = VertexId::new();
@@ -1236,6 +1248,22 @@ mod tests {
             "redo_stack": [],
         }))
         .expect("valid non-default history")
+    }
+
+    fn add_declarative_instruction(document: &mut ProjectDocument) {
+        document.instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "説明専用".to_owned(),
+            description: "3D姿勢を変更しません。".to_owned(),
+            caution: "物理操作は自動実行しません。".to_owned(),
+            duration_ms: 1_500,
+            pose: InstructionPose {
+                model: InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint: "0123456789abcdef".repeat(4),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        });
     }
 
     fn manifest(entries: &[ProjectFolderEntryV1]) -> ProjectFolderManifestV1 {
@@ -1300,6 +1328,38 @@ mod tests {
             .expect("mountain line");
         assert!(mountain.contains("y1=\"0\""));
         assert!(mountain.contains("y2=\"200\""));
+    }
+
+    #[test]
+    fn declarative_instruction_folder_round_trip_requires_both_timeline_features() {
+        let mut document = sample_document();
+        add_declarative_instruction(&mut document);
+        let original =
+            write_project_folder_v1(&Ori2ProjectArchive::document_only(document.clone()))
+                .expect("write declarative project folder")
+                .entries()
+                .to_vec();
+        assert_eq!(
+            manifest(&original).required_features,
+            vec![
+                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+                ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1,
+            ]
+        );
+        let restored = read_project_folder_v1(&original).expect("read declarative project folder");
+        assert_eq!(
+            restored.archive.document.instruction_timeline,
+            document.instruction_timeline
+        );
+
+        let mut missing_feature = original.clone();
+        let mut missing_manifest = manifest(&missing_feature);
+        missing_manifest.required_features.pop();
+        replace_manifest(&mut missing_feature, &missing_manifest);
+        assert!(matches!(
+            read_project_folder_v1(&missing_feature),
+            Err(ProjectFolderError::RequiredFeaturesMismatch { .. })
+        ));
     }
 
     #[test]

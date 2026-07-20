@@ -13,6 +13,7 @@ import {
 } from './i18n.ts'
 
 export const INSTRUCTION_POSE_MODEL = 'absolute_hinge_angles_v1' as const
+export const DECLARATIVE_INSTRUCTION_POSE_MODEL = 'declarative_only_v1' as const
 export const MAX_INSTRUCTION_STEPS = 512
 export const MAX_INSTRUCTION_HINGES_PER_STEP = 10_000
 export const MAX_INSTRUCTION_TOTAL_HINGES = 100_000
@@ -35,6 +36,7 @@ export type InstructionStepPresentation = Readonly<{
   durationMs: number
   pose: InstructionPose
   stale: boolean
+  declarativeOnly: boolean
 }>
 
 export type InstructionTimelinePresentation =
@@ -157,6 +159,7 @@ export type InstructionTimelineNotice =
   | Readonly<{ kind: 'pose_applying'; title: string }>
   | Readonly<{ kind: 'model_required' }>
   | Readonly<{ kind: 'no_steps' }>
+  | Readonly<{ kind: 'declarative_playback_unsupported' }>
 
 export type InstructionCaptureStatus =
   | 'project_required'
@@ -240,13 +243,16 @@ export function createInstructionPlaybackPlan(
     presentation.kind !== 'ready'
     || !validIdentity(projectId)
     || !validRevision(revision)
-    || presentation.steps.length === 0
   ) return null
+  const executableSteps = presentation.steps.filter(
+    (step) => !step.declarativeOnly,
+  )
+  if (executableSteps.length === 0) return null
   return Object.freeze({
     projectId,
     revision,
     modelFingerprint: presentation.currentFingerprint,
-    steps: presentation.steps,
+    steps: Object.freeze(executableSteps),
   })
 }
 
@@ -342,7 +348,8 @@ export function instructionPoseMatchesApplied(
   applied: FoldPreviewAppliedPoseSnapshot | null,
 ): boolean {
   if (
-    !applied
+    pose.model !== INSTRUCTION_POSE_MODEL
+    || !applied
     || applied.state === 'running'
     || pose.fixed_face !== applied.fixedFaceId
     || pose.hinge_angles.length !== applied.hingeAngles.length
@@ -416,12 +423,12 @@ export function instructionPlaybackStatusText(
       return selectLocalizedText(locale, PLAYBACK_IDLE_TEXT)
     case 'applying':
       return formatLocalizedText(locale, PLAYBACK_APPLYING_TEXT, {
-        step: state.cursor + 1,
+        step: state.target.index + 1,
         title: state.target.title,
       })
     case 'holding':
       return formatLocalizedText(locale, PLAYBACK_HOLDING_TEXT, {
-        step: state.cursor + 1,
+        step: state.target.index + 1,
         title: state.target.title,
       })
     case 'complete':
@@ -472,6 +479,11 @@ export function instructionTimelineNoticeText(
       return selectLocalizedText(locale, NOTICE_MODEL_REQUIRED)
     case 'no_steps':
       return selectLocalizedText(locale, NOTICE_NO_STEPS)
+    case 'declarative_playback_unsupported':
+      return selectLocalizedText(
+        locale,
+        NOTICE_DECLARATIVE_PLAYBACK_UNSUPPORTED,
+      )
   }
 }
 
@@ -586,6 +598,10 @@ const NOTICE_NO_STEPS = localized(
   '再生する手順がありません',
   'There are no steps to play',
 )
+const NOTICE_DECLARATIVE_PLAYBACK_UNSUPPORTED = localized(
+  '説明専用ステップは3D姿勢を持たないため再生できません。内容は一覧で確認してください',
+  'Description-only steps have no 3D pose and cannot be played. Review them in the timeline list.',
+)
 const EDITOR_INVALID_METADATA = localized(
   'タイトルは必須・改行なし{titleMaximum}文字以内、表示時間は{durationMinimum}〜{durationMaximum}msです。',
   'The title is required, must be one line, and must be at most {titleMaximum} characters. Display time must be {durationMinimum}–{durationMaximum} ms.',
@@ -692,7 +708,9 @@ function parseStep(
     caution: value.caution,
     durationMs: value.duration_ms,
     pose,
-    stale: pose.source_model_fingerprint !== currentFingerprint,
+    stale: pose.model === INSTRUCTION_POSE_MODEL
+      && pose.source_model_fingerprint !== currentFingerprint,
+    declarativeOnly: pose.model === DECLARATIVE_INSTRUCTION_POSE_MODEL,
   })
 }
 
@@ -705,7 +723,10 @@ function parsePose(value: unknown): InstructionPose | null {
       'fixed_face',
       'hinge_angles',
     ])
-    || value.model !== INSTRUCTION_POSE_MODEL
+    || (
+      value.model !== INSTRUCTION_POSE_MODEL
+      && value.model !== DECLARATIVE_INSTRUCTION_POSE_MODEL
+    )
     || !validFingerprint(value.source_model_fingerprint)
     || !(value.fixed_face === null || validIdentity(value.fixed_face))
     || !Array.isArray(value.hinge_angles)
@@ -714,11 +735,18 @@ function parsePose(value: unknown): InstructionPose | null {
   const hingeAngles = parseHingeAngles(value.hinge_angles)
   if (!hingeAngles) return null
   if (
-    (value.fixed_face === null && hingeAngles.length !== 0)
-    || (value.fixed_face !== null && hingeAngles.length === 0)
+    value.model === DECLARATIVE_INSTRUCTION_POSE_MODEL
+    && (value.fixed_face !== null || hingeAngles.length !== 0)
+  ) return null
+  if (
+    value.model === INSTRUCTION_POSE_MODEL
+    && (
+      (value.fixed_face === null && hingeAngles.length !== 0)
+      || (value.fixed_face !== null && hingeAngles.length === 0)
+    )
   ) return null
   return Object.freeze({
-    model: INSTRUCTION_POSE_MODEL,
+    model: value.model,
     source_model_fingerprint: value.source_model_fingerprint,
     fixed_face: value.fixed_face,
     hinge_angles: hingeAngles,
@@ -757,6 +785,8 @@ function validPlaybackPlan(plan: InstructionPlaybackPlan) {
     && validFingerprint(plan.modelFingerprint)
     && plan.steps.length > 0
     && plan.steps.length <= MAX_INSTRUCTION_STEPS
+    && plan.steps.every((step) =>
+      !step.declarativeOnly && step.pose.model === INSTRUCTION_POSE_MODEL)
 }
 
 function stopped(

@@ -25,8 +25,8 @@ use std::{
 };
 
 use ori_domain::{
-    CreasePattern, EdgeId, FaceId, InstructionTimeline, Paper, RgbaColor, VertexId,
-    validate_instruction_timeline,
+    CreasePattern, EdgeId, FaceId, InstructionPoseModel, InstructionTimeline, Paper, RgbaColor,
+    VertexId, validate_instruction_timeline,
 };
 use ori_kinematics::{
     CanonicalHingeAngles, HingeAngle, KinematicsError, ObservationTreeKinematicsModel, Point3,
@@ -127,6 +127,8 @@ pub struct InstructionDiagramStep {
     pub faces: Vec<InstructionDiagramFace>,
     pub hinges: Vec<InstructionDiagramHinge>,
     pub changed_hinge_count: usize,
+    /// Whether this page is an intentionally non-executable explanation.
+    pub declarative_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,7 +204,9 @@ pub fn build_instruction_diagram_plan_with_limits(
         return Err(InstructionDiagramError::ResourceLimitExceeded);
     }
     for (step_index, step) in timeline.steps.iter().enumerate() {
-        if step.pose.source_model_fingerprint != current_fold_model_fingerprint {
+        if step.pose.model == InstructionPoseModel::AbsoluteHingeAnglesV1
+            && step.pose.source_model_fingerprint != current_fold_model_fingerprint
+        {
             return Err(InstructionDiagramError::StaleStep { step_index });
         }
     }
@@ -213,10 +217,15 @@ pub fn build_instruction_diagram_plan_with_limits(
         .iter()
         .try_fold(0_usize, |total, face| total.checked_add(face.points.len()))
         .ok_or(InstructionDiagramError::ResourceLimitExceeded)?;
+    let physical_step_count = timeline
+        .steps
+        .iter()
+        .filter(|step| step.pose.model == InstructionPoseModel::AbsoluteHingeAnglesV1)
+        .count();
     let total_visits = checked_projected_vertex_visits(
         face_visits_per_step,
         model.kinematics.hinges().len(),
-        timeline.steps.len(),
+        physical_step_count,
         limits.max_projected_vertex_visits,
     )?;
 
@@ -224,6 +233,15 @@ pub fn build_instruction_diagram_plan_with_limits(
     let mut previous_angles = HashMap::<EdgeId, f64>::new();
     let mut steps = Vec::with_capacity(timeline.steps.len());
     for step in &timeline.steps {
+        if step.pose.model == InstructionPoseModel::DeclarativeOnlyV1 {
+            steps.push(InstructionDiagramStep {
+                faces: Vec::new(),
+                hinges: Vec::new(),
+                changed_hinge_count: 0,
+                declarative_only: true,
+            });
+            continue;
+        }
         let angles = CanonicalHingeAngles::new(
             step.pose
                 .hinge_angles
@@ -316,9 +334,18 @@ pub fn build_instruction_diagram_plan_with_limits(
             faces: rendered_faces,
             hinges: rendered_hinges,
             changed_hinge_count,
+            declarative_only: false,
         });
     }
 
+    if bounds.is_none() {
+        for face in &model.faces {
+            for point in &face.points {
+                let (projected, _) = project(*point)?;
+                bounds = Some(expand_bounds(bounds, projected));
+            }
+        }
+    }
     let bounds = bounds.ok_or(InstructionDiagramError::UnrepresentableGeometry)?;
     if !(bounds.max_x > bounds.min_x && bounds.max_y > bounds.min_y) {
         return Err(InstructionDiagramError::UnrepresentableGeometry);
@@ -333,9 +360,16 @@ pub fn build_instruction_diagram_plan_with_limits(
 fn checked_projected_vertex_visits(
     face_vertices_per_step: usize,
     hinge_count: usize,
-    step_count: usize,
+    physical_step_count: usize,
     maximum: usize,
 ) -> Result<usize, InstructionDiagramError> {
+    if physical_step_count == 0 {
+        return if face_vertices_per_step > maximum {
+            Err(InstructionDiagramError::ResourceLimitExceeded)
+        } else {
+            Ok(face_vertices_per_step)
+        };
+    }
     let hinge_endpoints_per_step = hinge_count
         .checked_mul(2)
         .ok_or(InstructionDiagramError::ResourceLimitExceeded)?;
@@ -343,7 +377,7 @@ fn checked_projected_vertex_visits(
         .checked_add(hinge_endpoints_per_step)
         .ok_or(InstructionDiagramError::ResourceLimitExceeded)?;
     let total = visits_per_step
-        .checked_mul(step_count)
+        .checked_mul(physical_step_count)
         .ok_or(InstructionDiagramError::ResourceLimitExceeded)?;
     if total > maximum {
         Err(InstructionDiagramError::ResourceLimitExceeded)
@@ -761,6 +795,22 @@ mod tests {
         }
     }
 
+    fn declarative_step(title: &str) -> InstructionStep {
+        InstructionStep {
+            id: InstructionStepId::new(),
+            title: title.to_owned(),
+            description: "説明テンプレート".to_owned(),
+            caution: "物理操作なし".to_owned(),
+            duration_ms: 1_000,
+            pose: InstructionPose {
+                model: InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint: "f".repeat(64),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        }
+    }
+
     #[test]
     fn projects_every_pose_with_one_global_deterministic_camera() {
         let fixture = single_fold_fixture();
@@ -798,6 +848,175 @@ mod tests {
                 && face.depth.is_finite()
         }));
         assert_ne!(first.steps[0].faces, first.steps[1].faces);
+    }
+
+    #[test]
+    fn declarative_step_exports_without_pose_solving_or_stale_rejection() {
+        let fixture = single_fold_fixture();
+        let timeline = InstructionTimeline {
+            steps: vec![declarative_step("中割り折り（説明）")],
+        };
+
+        let plan = build_instruction_diagram_plan(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &timeline,
+            &fixture.topology,
+        )
+        .expect("declarative diagram");
+        assert_eq!(plan.steps.len(), 1);
+        assert!(plan.steps[0].declarative_only);
+        assert!(plan.steps[0].faces.is_empty());
+        assert!(plan.steps[0].hinges.is_empty());
+        assert_eq!(plan.steps[0].changed_hinge_count, 0);
+        assert_eq!(
+            plan.projected_vertex_visits,
+            fixture
+                .topology
+                .faces
+                .iter()
+                .map(|face| face.outer.half_edges.len())
+                .sum::<usize>()
+        );
+        assert!(plan.bounds.max_x > plan.bounds.min_x);
+        assert!(plan.bounds.max_y > plan.bounds.min_y);
+    }
+
+    #[test]
+    fn declarative_steps_do_not_consume_physical_projection_work_budget() {
+        let fixture = single_fold_fixture();
+        let physical = timeline(&fixture.topology, fixture.fold, &[0.0, 90.0]);
+        let physical_plan = build_instruction_diagram_plan(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &physical,
+            &fixture.topology,
+        )
+        .expect("physical baseline");
+        assert_eq!(physical_plan.projected_vertex_visits, 20);
+
+        let mut mixed = physical.clone();
+        mixed.steps.insert(0, declarative_step("導入説明"));
+        mixed.steps.insert(2, declarative_step("途中説明"));
+        mixed.steps.push(declarative_step("補足説明"));
+
+        let exact = InstructionDiagramLimits {
+            max_projected_vertex_visits: 20,
+            ..InstructionDiagramLimits::default()
+        };
+        let mixed_plan = build_instruction_diagram_plan_with_limits(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &mixed,
+            &fixture.topology,
+            exact,
+        )
+        .expect("declarative steps add no physical projection work");
+        assert_eq!(mixed_plan.projected_vertex_visits, 20);
+        assert_eq!(
+            mixed_plan
+                .steps
+                .iter()
+                .filter(|step| !step.declarative_only)
+                .collect::<Vec<_>>(),
+            physical_plan.steps.iter().collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            build_instruction_diagram_plan_with_limits(
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &mixed,
+                &fixture.topology,
+                InstructionDiagramLimits {
+                    max_projected_vertex_visits: 19,
+                    ..exact
+                },
+            ),
+            Err(InstructionDiagramError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            build_instruction_diagram_plan_with_limits(
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &mixed,
+                &fixture.topology,
+                InstructionDiagramLimits {
+                    max_projected_vertex_visits: 21,
+                    ..exact
+                },
+            )
+            .expect("one spare projected visit")
+            .projected_vertex_visits,
+            20
+        );
+    }
+
+    #[test]
+    fn all_declarative_timeline_only_counts_one_rest_bounds_projection_at_step_limit() {
+        let fixture = single_fold_fixture();
+        let timeline = InstructionTimeline {
+            steps: (0..ori_domain::MAX_INSTRUCTION_STEPS)
+                .map(|index| declarative_step(&format!("説明 {}", index + 1)))
+                .collect(),
+        };
+        let face_boundary_vertices = fixture
+            .topology
+            .faces
+            .iter()
+            .map(|face| face.outer.half_edges.len())
+            .sum();
+        let exact = InstructionDiagramLimits {
+            max_projected_vertex_visits: face_boundary_vertices,
+            ..InstructionDiagramLimits::default()
+        };
+        let plan = build_instruction_diagram_plan_with_limits(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &timeline,
+            &fixture.topology,
+            exact,
+        )
+        .expect("description-only timeline does not spend physical-pose budget");
+        assert_eq!(plan.steps.len(), ori_domain::MAX_INSTRUCTION_STEPS);
+        assert!(plan.steps.iter().all(|step| step.declarative_only));
+        assert_eq!(plan.projected_vertex_visits, face_boundary_vertices);
+        assert_eq!(
+            build_instruction_diagram_plan_with_limits(
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+                InstructionDiagramLimits {
+                    max_projected_vertex_visits: face_boundary_vertices - 1,
+                    ..exact
+                },
+            ),
+            Err(InstructionDiagramError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            build_instruction_diagram_plan_with_limits(
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+                InstructionDiagramLimits {
+                    max_projected_vertex_visits: face_boundary_vertices + 1,
+                    ..exact
+                },
+            )
+            .expect("one spare rest-bounds projection")
+            .projected_vertex_visits,
+            face_boundary_vertices
+        );
     }
 
     #[test]

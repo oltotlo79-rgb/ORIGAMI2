@@ -637,8 +637,10 @@ mod tests {
             Err(KinematicsError::UnsupportedTopology)
         );
 
-        let mut limits = TreeKinematicsLimits::default();
-        limits.max_faces = 1;
+        let limits = TreeKinematicsLimits {
+            max_faces: 1,
+            ..TreeKinematicsLimits::default()
+        };
         assert_eq!(
             MaterialHingeGraphAudit::prepare(&topology(&[a, b], &[(ab, a, b)]), limits),
             Err(KinematicsError::ResourceLimitExceeded)

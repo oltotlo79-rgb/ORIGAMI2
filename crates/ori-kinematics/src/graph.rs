@@ -909,7 +909,7 @@ fn union(parent: &mut [usize], rank: &mut [u8], first: usize, second: usize) -> 
 }
 
 // Narrow analytic identity for a flat stack cut by one collective world-axis
-// fold. Exact profile equality and exact initial-axis collinearity carry the
+// fold. Exact profile equality and bounded revalidated initial-axis collinearity carry the
 // loop identity over the full rational parameter domain; midpoint and target
 // solves revalidate the claimed branch before a certificate is issued.
 fn collective_flat_stack_cycle_closure_premises_v1(
@@ -922,7 +922,7 @@ fn collective_flat_stack_cycle_closure_premises_v1(
     if audit.closure_hinges().is_empty() || !tolerance.is_finite() || tolerance < 0.0 {
         return false;
     }
-    let Some(moving_edges) = schedule.collective_half_angle_profile_edges_v1() else {
+    let Some(moving_edges) = schedule.collective_profile_edges_v1() else {
         return false;
     };
     if moving_edges.len() < 2 {
@@ -942,17 +942,21 @@ fn collective_flat_stack_cycle_closure_premises_v1(
         .filter(|angle| moving.contains(&angle.edge()))
         .map(|angle| angle.angle_degrees().to_bits())
         .collect::<HashSet<_>>();
+    let initial_moving = initial_angles
+        .as_slice()
+        .iter()
+        .filter(|angle| moving.contains(&angle.edge()))
+        .map(|angle| angle.angle_degrees().to_bits())
+        .collect::<HashSet<_>>();
     if requested_moving.len() != 1
+        || initial_moving.len() != 1
         || requested_moving.iter().next().is_none_or(|bits| {
             let angle = f64::from_bits(*bits);
             !angle.is_finite() || angle <= 0.0 || angle >= 180.0
         })
         || initial_angles.as_slice().iter().any(|angle| {
-            if moving.contains(&angle.edge()) {
-                angle.angle_degrees().to_bits() != 0.0_f64.to_bits()
-            } else {
-                angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
-            }
+            !moving.contains(&angle.edge())
+                && angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
         })
         || requested_angles.as_slice().iter().any(|angle| {
             !moving.contains(&angle.edge())
@@ -993,9 +997,15 @@ fn collective_flat_stack_cycle_closure_premises_v1(
         ) else {
             return false;
         };
-        exact_same_infinite_line(reference_start, reference_axis, start, axis)
-            && exact_same_infinite_line(reference_start, reference_axis, end, axis)
-            && exact_same_infinite_line(reference_start, reference_axis, reference_end, axis)
+        bounded_same_infinite_line(reference_start, reference_axis, start, axis, tolerance)
+            && bounded_same_infinite_line(reference_start, reference_axis, end, axis, tolerance)
+            && bounded_same_infinite_line(
+                reference_start,
+                reference_axis,
+                reference_end,
+                axis,
+                tolerance,
+            )
     }) {
         return false;
     }
@@ -1008,11 +1018,12 @@ fn collective_flat_stack_cycle_closure_premises_v1(
         })
 }
 
-fn exact_same_infinite_line(
+fn bounded_same_infinite_line(
     origin: crate::Point3,
     axis: crate::Point3,
     point: crate::Point3,
     candidate_axis: crate::Point3,
+    tolerance: f64,
 ) -> bool {
     let cross = |a: [f64; 3], b: [f64; 3]| {
         [
@@ -1028,10 +1039,13 @@ fn exact_same_infinite_line(
         point.y() - origin.y(),
         point.z() - origin.z(),
     ];
-    cross(reference, candidate)
-        .into_iter()
-        .chain(cross(offset, reference))
-        .all(|value| value == 0.0)
+    let axis_error = cross(reference, candidate);
+    let offset_error = cross(offset, reference);
+    let offset_scale = offset.into_iter().map(f64::abs).fold(1.0_f64, f64::max);
+    axis_error.into_iter().all(|value| value.abs() <= tolerance)
+        && offset_error
+            .into_iter()
+            .all(|value| value.abs() <= tolerance * offset_scale)
 }
 
 #[cfg(test)]

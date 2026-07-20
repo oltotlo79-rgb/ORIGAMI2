@@ -1538,7 +1538,7 @@ fn scheduled_collinear_flat_stack_premises_v1(
     fixed_face: FaceId,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> bool {
-    let Some(moving_edges) = schedule.collective_half_angle_profile_edges_v1() else {
+    let Some(moving_edges) = schedule.collective_profile_edges_v1() else {
         return false;
     };
     if moving_edges.len() < 2 {
@@ -1558,17 +1558,21 @@ fn scheduled_collinear_flat_stack_premises_v1(
         .filter(|angle| moving.contains(&angle.edge()))
         .map(|angle| angle.angle_degrees().to_bits())
         .collect::<HashSet<_>>();
+    let initial_moving = initial_angles
+        .as_slice()
+        .iter()
+        .filter(|angle| moving.contains(&angle.edge()))
+        .map(|angle| angle.angle_degrees().to_bits())
+        .collect::<HashSet<_>>();
     if requested_moving.len() != 1
+        || initial_moving.len() != 1
         || requested_moving.iter().next().is_none_or(|bits| {
             let angle = f64::from_bits(*bits);
             !angle.is_finite() || angle <= 0.0 || angle >= 180.0
         })
         || initial_angles.as_slice().iter().any(|angle| {
-            if moving.contains(&angle.edge()) {
-                angle.angle_degrees().to_bits() != 0.0_f64.to_bits()
-            } else {
-                angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
-            }
+            !moving.contains(&angle.edge())
+                && angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
         })
         || requested_angles.as_slice().iter().any(|angle| {
             !moving.contains(&angle.edge())
@@ -1608,9 +1612,9 @@ fn scheduled_collinear_flat_stack_premises_v1(
         ) else {
             return false;
         };
-        exact_collinear_line(reference_start, reference_axis, start, axis)
-            && exact_collinear_line(reference_start, reference_axis, end, axis)
-            && exact_collinear_line(reference_start, reference_axis, reference_end, axis)
+        bounded_collinear_line(reference_start, reference_axis, start, axis, 1.0e-9)
+            && bounded_collinear_line(reference_start, reference_axis, end, axis, 1.0e-9)
+            && bounded_collinear_line(reference_start, reference_axis, reference_end, axis, 1.0e-9)
     }) {
         return false;
     }
@@ -1631,6 +1635,36 @@ fn scheduled_collinear_flat_stack_premises_v1(
                     result
                 })
         })
+}
+
+fn bounded_collinear_line(
+    origin: ori_kinematics::Point3,
+    axis: ori_kinematics::Point3,
+    point: ori_kinematics::Point3,
+    candidate_axis: ori_kinematics::Point3,
+    tolerance: f64,
+) -> bool {
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let reference = [axis.x(), axis.y(), axis.z()];
+    let candidate = [candidate_axis.x(), candidate_axis.y(), candidate_axis.z()];
+    let offset = [
+        point.x() - origin.x(),
+        point.y() - origin.y(),
+        point.z() - origin.z(),
+    ];
+    let axis_error = cross(reference, candidate);
+    let offset_error = cross(offset, reference);
+    let offset_scale = offset.into_iter().map(f64::abs).fold(1.0_f64, f64::max);
+    axis_error.into_iter().all(|value| value.abs() <= tolerance)
+        && offset_error
+            .into_iter()
+            .all(|value| value.abs() <= tolerance * offset_scale)
 }
 
 fn graph_pose_preserves_common_axis_layers(

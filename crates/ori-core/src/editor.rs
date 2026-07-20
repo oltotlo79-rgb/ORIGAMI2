@@ -2378,8 +2378,9 @@ impl EditorState {
             } => {
                 if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
                     || (*pattern == self.pattern && *paper == self.paper)
+                    || instruction_timeline.steps.len() <= self.instruction_timeline.steps.len()
                     || instruction_timeline.steps.len()
-                        != self.instruction_timeline.steps.len().saturating_add(1)
+                        > self.instruction_timeline.steps.len().saturating_add(31)
                     || self
                         .pattern
                         .vertices
@@ -15016,6 +15017,25 @@ mod tests {
                 target_pattern.clone(),
                 one_ulp_thickness,
                 timeline.clone(),
+                ProjectLayerDocumentV1::default(),
+                after_pose.clone(),
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor_state_snapshot(&editor), before_failure);
+        let mut oversized_timeline = InstructionTimeline::default();
+        for index in 0..32 {
+            let mut step = timeline.steps[0].clone();
+            step.id = InstructionStepId::new();
+            step.title = format!("Stacked fold {index}");
+            oversized_timeline.steps.push(step);
+        }
+        assert_eq!(
+            editor.execute_stacked_fold_document(
+                0,
+                target_pattern.clone(),
+                source_paper.clone(),
+                oversized_timeline,
                 ProjectLayerDocumentV1::default(),
                 after_pose.clone(),
             ),

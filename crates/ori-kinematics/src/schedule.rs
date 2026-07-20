@@ -1481,6 +1481,34 @@ impl CanonicalCycleScheduleV1 {
     /// This is intentionally narrower than comparing sampled angles.
     #[must_use]
     pub fn collective_half_angle_profile_edges_v1(&self) -> Option<Vec<EdgeId>> {
+        self.collective_profile_edges_v1()
+    }
+
+    /// Returns the exact carrier set of one collective profile for either
+    /// admitted schedule representation. Constant hinges are excluded.
+    #[must_use]
+    pub fn collective_profile_edges_v1(&self) -> Option<Vec<EdgeId>> {
+        if self.half_angle_entries.is_empty() {
+            let mut moving = Vec::new();
+            let mut profile: Option<&Entry> = None;
+            for entry in &self.entries {
+                let constant = entry.coefficients.iter().all(|value| *value == 0.0);
+                if constant {
+                    continue;
+                }
+                if let Some(expected) = profile {
+                    if entry.initial.to_bits() != expected.initial.to_bits()
+                        || entry.coefficients != expected.coefficients
+                    {
+                        return None;
+                    }
+                } else {
+                    profile = Some(entry);
+                }
+                moving.push(entry.edge);
+            }
+            return (!moving.is_empty()).then_some(moving);
+        }
         let mut moving = Vec::new();
         let mut profile: Option<&PreparedHalfAngleRationalEntryV1> = None;
         for entry in &self.half_angle_entries {
@@ -1752,6 +1780,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(candidate.moving_hinges(), edges);
+        assert_eq!(
+            candidate.schedule().collective_profile_edges_v1(),
+            Some(edges.clone())
+        );
         assert!(!candidate.authorizes_closure());
         assert!(!candidate.authorizes_collision_clearance());
         for (parameter, expected) in [(0.0, 20.0), (1.0, 40.0)] {

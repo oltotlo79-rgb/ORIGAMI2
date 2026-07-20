@@ -2184,7 +2184,11 @@ mod tests {
         );
     }
 
-    fn assert_two_hinge_projective_schedule_round_trip(first: [f64; 3], second: [f64; 3]) {
+    fn assert_two_hinge_projective_schedule_round_trip(
+        first: [f64; 3],
+        second: [f64; 3],
+        certified_path: bool,
+    ) {
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let instance = project.instance_id;
@@ -2199,7 +2203,11 @@ mod tests {
                 &project,
             );
         }
-        let angle = 2.0 * 1.0_f64.atan2(5.0).to_degrees();
+        let angle = if certified_path {
+            20.0
+        } else {
+            2.0 * 1.0_f64.atan2(5.0).to_degrees()
+        };
         let registry = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
             &app_state,
             &layer_state,
@@ -2269,6 +2277,40 @@ mod tests {
                 })
                 .collect(),
         };
+        let certified_path_graph_v1 = certified_path.then(|| CertifiedPathGraphRequestV1 {
+            version: 1,
+            states: [0.0, 0.5, 1.0]
+                .into_iter()
+                .map(|progress| CertifiedPathGraphStateRequestV1 {
+                    entries: registry
+                        .entries
+                        .iter()
+                        .map(|entry| CertifiedPathGraphAngleRequestV1 {
+                            edge: entry.edge,
+                            angle_degrees: if entry.initial_angle_degrees.to_bits()
+                                == 180.0_f64.to_bits()
+                            {
+                                180.0
+                            } else {
+                                angle * progress
+                            },
+                        })
+                        .collect(),
+                })
+                .collect(),
+            transitions: vec![
+                CertifiedPathGraphTransitionRequestV1 {
+                    source_state: 0,
+                    target_state: 1,
+                },
+                CertifiedPathGraphTransitionRequestV1 {
+                    source_state: 1,
+                    target_state: 2,
+                },
+            ],
+            source_state: 0,
+            target_state: 2,
+        });
         let transaction_state =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
         let response = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
@@ -2286,9 +2328,9 @@ mod tests {
                 fixed_side: FixedSideRequest::Left,
                 rotation_direction: RotationDirectionRequest::Positive,
                 requested_angle_degrees: angle,
-                cycle_schedule_v1: Some(cycle_schedule_v1),
+                cycle_schedule_v1: (!certified_path).then_some(cycle_schedule_v1),
                 linear_candidate_v1: None,
-                certified_path_graph_v1: None,
+                certified_path_graph_v1,
             },
         ))
         .expect("genuine ready preview");
@@ -2311,7 +2353,10 @@ mod tests {
             .expect("atomic apply");
         let mut project = super::super::lock_project(&app_state).unwrap();
         assert_eq!(project.editor.revision(), applied_revision);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        assert_eq!(
+            project.editor.instruction_timeline().steps.len(),
+            if certified_path { 2 } else { 1 }
+        );
         let after = project.editor.clone();
         project.editor.undo(applied_revision).unwrap();
         assert_eq!(project.editor.pattern(), before.pattern());
@@ -2330,12 +2375,29 @@ mod tests {
 
     #[test]
     fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([50.0, 0.0, 0.0], [50.0, 0.0, -100.0]);
+        assert_two_hinge_projective_schedule_round_trip(
+            [50.0, 0.0, 0.0],
+            [50.0, 0.0, -100.0],
+            false,
+        );
     }
 
     #[test]
     fn genuine_common_axis_cycle_previews_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0]);
+        assert_two_hinge_projective_schedule_round_trip(
+            [0.0, 0.0, -50.0],
+            [100.0, 0.0, -50.0],
+            false,
+        );
+    }
+
+    #[test]
+    fn genuine_common_axis_cycle_certified_path_applies_and_round_trips_history() {
+        assert_two_hinge_projective_schedule_round_trip(
+            [0.0, 0.0, -50.0],
+            [100.0, 0.0, -50.0],
+            true,
+        );
     }
 
     #[test]

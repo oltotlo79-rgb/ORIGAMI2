@@ -1555,6 +1555,7 @@ fn apply_beginner_generated_plan(
     expected_revision: u64,
     expected_profile: ori_domain::BeginnerDesignProfileV1,
     selected_kind: ori_domain::BeginnerGeneratedPlanKindV1,
+    expected_candidate_edge_id: EdgeId,
 ) -> Result<ProjectSnapshot, String> {
     if selected_kind != ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold {
         return Err("only the validated diagonal plan can currently be applied".to_owned());
@@ -1580,6 +1581,9 @@ fn apply_beginner_generated_plan(
         .into_iter()
         .find(|plan| plan.kind == selected_kind)
         .ok_or_else(|| "the generated plan is no longer available".to_owned())?;
+    if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
+        return Err("the generated candidate identity changed before apply".to_owned());
+    }
     let mut pattern = project.editor.pattern().clone();
     for vertex in plan.crease_pattern.vertices {
         if !pattern

@@ -61,3 +61,16 @@ test('AUT-106 presents one recommendation first and adds bounded candidates on d
   assert.match(app, /Generate and compare another candidate/)
   assert.match(app, /追加候補を生成して比較/)
 })
+
+test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
+  assert.match(native, /fn apply_beginner_generated_plan/)
+  assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)
+  assert.match(native, /expected_candidate_edge_id: EdgeId/)
+  assert.match(native, /generated candidate identity changed before apply/)
+  assert.match(native, /Command::ApplyStackedFoldDocument/)
+  assert.match(client, /invoke<ProjectSnapshot>\('apply_beginner_generated_plan'/)
+  assert.match(client, /isCanonicalNonNilUuid\(expectedCandidateEdgeId\)/)
+  assert.match(app, /window\.confirm/)
+  assert.match(app, /Review and apply this candidate/)
+  assert.match(app, /対角折り候補を確認して適用/)
+})

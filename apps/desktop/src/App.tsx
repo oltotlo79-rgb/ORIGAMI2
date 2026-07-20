@@ -63,6 +63,7 @@ import {
   analyzeGeometricConstraints,
   analyzeProjectTopology,
   applyGeometricConstraintSolve,
+  applyBeginnerGeneratedPlan,
   applyMirrorSelection,
   applyFoldImport,
   applySvgImport,
@@ -3536,6 +3537,26 @@ function App() {
     beginnerCandidateRequestRef.current += 1
     setBeginnerCandidateBusy(false)
     setBeginnerCandidates(null)
+  }
+
+  function confirmAndApplyBeginnerPlan(kind: 'diagonal_fold', expectedCandidateEdgeId: string) {
+    const current = latestSnapshotRef.current
+    if (!current) return
+    const confirmed = window.confirm(text({
+      ja: 'この候補を展開図と折り手順へ適用します。適用後もUndoで元に戻せます。続行しますか？',
+      en: 'Apply this candidate to the crease pattern and instructions? You can undo the whole change.',
+    }))
+    if (!confirmed) return
+    const expectedProfile = current.beginner_design_profile
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      applyBeginnerGeneratedPlan(
+        projectId,
+        revision,
+        projectInstanceId,
+        expectedProfile,
+        kind,
+        expectedCandidateEdgeId,
+      ))
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -7207,6 +7228,22 @@ function App() {
                                 en: 'This is a read-only candidate. It does not become project authority without a separate review and apply action.',
                               })}
                             </p>
+                            {plan.kind === 'diagonal_fold' && (
+                              <button
+                                type="button"
+                                onClick={() => confirmAndApplyBeginnerPlan(
+                                  'diagonal_fold',
+                                  plan.crease_pattern.edges[0].id,
+                                )}
+                                disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
+                                aria-label={text({
+                                  ja: '対角折り候補を確認して適用',
+                                  en: 'Review and apply the diagonal-fold candidate',
+                                })}
+                              >
+                                {text({ ja: 'この候補を確認して適用', en: 'Review and apply this candidate' })}
+                              </button>
+                            )}
                           </article>
                         )
                       })}

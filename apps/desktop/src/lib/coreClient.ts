@@ -987,6 +987,27 @@ export function evaluateBeginnerCandidates(
   })
 }
 
+export function applyBeginnerGeneratedPlan(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  expectedProfile: BeginnerDesignProfileV1,
+  selectedKind: BeginnerGeneratedPlanV1['kind'],
+  expectedCandidateEdgeId: string,
+) {
+  if (selectedKind !== 'diagonal_fold' || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
+    return Promise.reject(new Error('unsupported generated plan'))
+  }
+  return invoke<ProjectSnapshot>('apply_beginner_generated_plan', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    expectedProfile,
+    selectedKind,
+    expectedCandidateEdgeId,
+  })
+}
+
 export function validateProject() {
   return invoke<ValidationSnapshot>('validate_project')
 }

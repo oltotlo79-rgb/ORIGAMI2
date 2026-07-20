@@ -38,7 +38,7 @@ pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
 pub const STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
-const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 36;
+const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 45;
 pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 64;
 const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 2_048;
 const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
@@ -255,14 +255,15 @@ pub fn diagnose_collective_hinge_path_v1(
             &mut interval_metrics,
         );
     let positive_two_hinge_topology = positive_thickness
-        && (3..=9).contains(&model.face_ids().len())
-        && (2..=8).contains(&model.hinges().len())
+        && (3..=10).contains(&model.face_ids().len())
+        && (2..=9).contains(&model.hinges().len())
         && model.hinges().len() + 1 == model.face_ids().len()
         && moving.len() == model.hinges().len()
         && model.face_ids().len() * model.face_ids().len().saturating_sub(1) / 2
             <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
         && requested_angle_degrees
             <= match model.hinges().len() {
+                9 => 8.0,
                 8 => 10.0,
                 7 => 15.0,
                 6 => 20.0,
@@ -449,6 +450,7 @@ pub fn diagnose_collective_hinge_path_v1(
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
             && requested_angle_degrees
                 <= match model.hinges().len() {
+                    9 => 8.0,
                     8 => 10.0,
                     7 => 15.0,
                     6 => 20.0,
@@ -1742,6 +1744,70 @@ mod tests {
         .expect("eight-hinge triangular tree")
     }
 
+    fn nine_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        let points = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (530.0, 45.0),
+            (720.0, 140.0),
+            (850.0, 300.0),
+            (900.0, 490.0),
+            (860.0, 680.0),
+            (730.0, 840.0),
+            (530.0, 940.0),
+            (310.0, 960.0),
+            (120.0, 850.0),
+            (0.0, 460.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("8c00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("9c00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for (offset, end) in [2, 3, 4, 5, 6, 7, 8, 9, 10].into_iter().enumerate() {
+            edges.push(Edge {
+                id: fixed_id("9c00", 20 + offset as u64),
+                start: boundary[0],
+                end: boundary[end],
+                kind: if offset % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("bc00", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("ten triangles"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("nine-hinge triangular tree")
+    }
+
     fn two_hinge_strip_model() -> MaterialTreeKinematicsModel {
         let points = [
             (0.0, 0.0),
@@ -2776,6 +2842,123 @@ mod tests {
             .expect("nine-face boundary");
         assert!(
             revalidate_tree_hinge_thickness_boundaries_v1(&capability, aba_bound, 0.1).is_none()
+        );
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(&capability, bound, 0.100_000_000_1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ten_triangle_positive_thickness_tree_rejects_over_angle() {
+        let model = nine_hinge_triangle_model();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let angles = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let initial = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let diagnostic = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            8.000_000_1,
+            0.1,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(!diagnostic.continuous_clearance_certified());
+    }
+
+    #[test]
+    fn ten_triangle_positive_thickness_tree_gets_bounded_certificate() {
+        let model = nine_hinge_triangle_model();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let angles = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let initial = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let diagnostic = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            8.0,
+            0.1,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(diagnostic.continuous_clearance_certified());
+        assert_eq!(diagnostic.safe_stop_angle_degrees(), 8.0);
+    }
+
+    #[test]
+    fn positive_endpoint_memo_cap_rejects_eleven_face_tree() {
+        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 45);
+        let model = deep_strip_model(10);
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let angles = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let initial = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let diagnostic = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            1.0,
+            0.1,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(!diagnostic.continuous_clearance_certified());
+    }
+
+    #[test]
+    fn ten_triangle_boundary_rejects_aba_and_thickness_drift() {
+        let model = nine_hinge_triangle_model();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 8.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let aba_pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let bound = model.bind_pose(&pose).unwrap();
+        let capability = prepare_tree_hinge_thickness_boundaries_v1(bound, 0.1)
+            .unwrap()
+            .expect("ten-face boundary");
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(
+                &capability,
+                model.bind_pose(&aba_pose).unwrap(),
+                0.1
+            )
+            .is_none()
         );
         assert!(
             revalidate_tree_hinge_thickness_boundaries_v1(&capability, bound, 0.100_000_000_1)

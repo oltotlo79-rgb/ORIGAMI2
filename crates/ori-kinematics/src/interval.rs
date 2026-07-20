@@ -17,6 +17,58 @@ pub struct OutwardIntervalV1 {
     work: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntervalRotationMatrixV1 {
+    entries: [[OutwardIntervalV1; 3]; 3],
+}
+
+impl IntervalRotationMatrixV1 {
+    pub fn from_unit_axis_degrees(
+        axis: [f64; 3],
+        degrees: OutwardIntervalV1,
+        max_work: usize,
+    ) -> Result<Self, OutwardIntervalErrorV1> {
+        if axis.iter().any(|value| !value.is_finite()) {
+            return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+        }
+        let norm_squared = axis.iter().map(|value| value * value).sum::<f64>();
+        if (norm_squared - 1.0).abs() > 32.0 * f64::EPSILON {
+            return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+        }
+        let (sin, cos) = sin_cos_degrees_interval_v1(degrees, max_work)?;
+        let one = OutwardIntervalV1::new(1.0, 1.0)?;
+        let one_minus_cos = one.sub(cos)?;
+        let scalar = |value: f64| OutwardIntervalV1::from_rounded(value);
+        let mut entries = [[OutwardIntervalV1::new(0.0, 0.0)?; 3]; 3];
+        for row in 0..3 {
+            for column in 0..3 {
+                let identity = if row == column { cos } else { scalar(0.0)? };
+                let symmetric = one_minus_cos.mul(scalar(axis[row] * axis[column])?)?;
+                let levi_civita = match (row, column) {
+                    (0, 1) => -axis[2],
+                    (0, 2) => axis[1],
+                    (1, 0) => axis[2],
+                    (1, 2) => -axis[0],
+                    (2, 0) => -axis[1],
+                    (2, 1) => axis[0],
+                    _ => 0.0,
+                };
+                let skew = sin.mul(scalar(levi_civita)?)?;
+                entries[row][column] = identity.add(symmetric)?.add(skew)?;
+                if entries[row][column].work() > max_work {
+                    return Err(OutwardIntervalErrorV1::ResourceLimit);
+                }
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    #[must_use]
+    pub const fn entries(&self) -> &[[OutwardIntervalV1; 3]; 3] {
+        &self.entries
+    }
+}
+
 impl OutwardIntervalV1 {
     pub fn new(lower: f64, upper: f64) -> Result<Self, OutwardIntervalErrorV1> {
         let lower = canonical_finite(lower)?;
@@ -391,6 +443,30 @@ mod tests {
         assert_eq!(
             sin_cos_degrees_interval_v1(near, 95),
             Err(OutwardIntervalErrorV1::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn interval_rotation_matrix_contains_cardinal_z_rotation() {
+        let rotation = IntervalRotationMatrixV1::from_unit_axis_degrees(
+            [0.0, 0.0, 1.0],
+            OutwardIntervalV1::new(90.0, 90.0).unwrap(),
+            512,
+        )
+        .unwrap();
+        let expected = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        for (actual_row, expected_row) in rotation.entries().iter().zip(expected) {
+            for (actual, expected) in actual_row.iter().zip(expected_row) {
+                assert!(actual.lower() <= expected && expected <= actual.upper());
+            }
+        }
+        assert!(
+            IntervalRotationMatrixV1::from_unit_axis_degrees(
+                [1.0, 1.0, 0.0],
+                OutwardIntervalV1::new(0.0, 1.0).unwrap(),
+                512,
+            )
+            .is_err()
         );
     }
 }

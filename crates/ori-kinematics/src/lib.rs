@@ -83,7 +83,8 @@ pub use graph::{
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
 };
 pub use interval::{
-    OutwardIntervalErrorV1, OutwardIntervalV1, atan_interval_v1, sin_cos_degrees_interval_v1,
+    IntervalRotationMatrixV1, OutwardIntervalErrorV1, OutwardIntervalV1, atan_interval_v1,
+    sin_cos_degrees_interval_v1,
 };
 pub use schedule::{
     CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,

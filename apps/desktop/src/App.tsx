@@ -133,6 +133,7 @@ import {
   updateProjectMemo,
   updateBeginnerDesignProfile,
   importBeginnerReferenceModel,
+  recognizeBeginnerOutlineCandidates,
   getBeginnerReferenceModelGeometry,
   updatePaperProperties,
   importFrontPaperTexture,
@@ -142,6 +143,7 @@ import {
   type BeginnerCandidateResponseV1,
   type BeginnerRecognitionProposalV1,
   type BeginnerReferenceModelGeometry,
+  type BeginnerOutlineCandidatesResponse,
   BeginnerRecognitionError,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
@@ -707,6 +709,8 @@ function App() {
     useState<BeginnerRecognitionProposalV1 | null>(null)
   const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
   const beginnerRecognitionRequestRef = useRef(0)
+  const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
+    useState<BeginnerOutlineCandidatesResponse | null>(null)
   const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
     useState<BeginnerReferenceModelGeometry | null>(null)
   const beginnerReferenceRequestRef = useRef(0)
@@ -716,6 +720,7 @@ function App() {
     beginnerRecognitionRequestRef.current += 1
     setBeginnerRecognitionBusy(false)
     setBeginnerRecognitionProposal(null)
+    setBeginnerOutlineCandidates(null)
     beginnerReferenceRequestRef.current += 1
     setBeginnerReferenceGeometry(null)
     setBeginnerPartTotal(
@@ -3738,6 +3743,34 @@ function App() {
               ? 'Use one solid black silhouette on a transparent background.'
               : 'The image could not be recognized safely.',
       }))
+    }).finally(() => {
+      if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
+    })
+  }
+
+  function requestBeginnerOutlineCandidates() {
+    const current = latestSnapshotRef.current
+    const form = beginnerDesignFormRef.current
+    if (!current || !form || beginnerRecognitionBusy || coreBusy || recoveryBlocking) return
+    const underlayId = String(new FormData(form).get('target_reference_underlay') ?? '')
+    const underlay = current.underlays?.underlays.find((item) => item.id === underlayId)
+    if (!underlay) return
+    const requestId = ++beginnerRecognitionRequestRef.current
+    setBeginnerRecognitionBusy(true)
+    setBeginnerOutlineCandidates(null)
+    void recognizeBeginnerOutlineCandidates(
+      current.project_id, current.revision, current.project_instance_id,
+      underlay.id, underlay.asset,
+    ).then((proposal) => {
+      const latest = latestSnapshotRef.current
+      if (requestId === beginnerRecognitionRequestRef.current
+        && latest?.project_instance_id === proposal.project_instance_id
+        && latest.project_id === proposal.project_id
+        && latest.revision === proposal.revision) {
+        setBeginnerOutlineCandidates(proposal)
+      }
+    }).catch(() => {
+      if (requestId === beginnerRecognitionRequestRef.current) setBeginnerOutlineCandidates(null)
     }).finally(() => {
       if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
     })
@@ -7893,6 +7926,41 @@ function App() {
                       en: 'Bounded PNG or JPEG input produces a read-only outline proposal. It grants no automatic design authority; copying remains unsaved until you save.',
                     })}
                   </p>
+                  <button
+                    type="button"
+                    onClick={requestBeginnerOutlineCandidates}
+                    disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
+                  >
+                    {text({ ja: '複数の輪郭候補を表示', en: 'Show outline candidates' })}
+                  </button>
+                  {beginnerOutlineCandidates && (
+                    <section aria-labelledby="beginner-outline-candidates-heading">
+                      <h3 id="beginner-outline-candidates-heading">
+                        {text({ ja: '読み取り専用の輪郭候補', en: 'Read-only outline candidates' })}
+                      </h3>
+                      <p>{text({
+                        ja: '候補は境界・面積・判定理由だけを示し、自動生成の権限を与えません。',
+                        en: 'Candidates expose only bounds, area, and reason. They grant no generation authority.',
+                      })}</p>
+                      <ol>
+                        {beginnerOutlineCandidates.candidates.map((candidate) => (
+                          <li key={candidate.id}>
+                            {formattedText({
+                              ja: '面積 {area}px・境界 ({minX},{minY})–({maxX},{maxY})・理由 {reason}',
+                              en: 'Area {area}px · bounds ({minX},{minY})–({maxX},{maxY}) · reason {reason}',
+                            }, {
+                              area: candidate.area_pixels,
+                              minX: candidate.bounds.min_x, minY: candidate.bounds.min_y,
+                              maxX: candidate.bounds.max_x, maxY: candidate.bounds.max_y,
+                              reason: candidate.confidence_reason === 'solid_component'
+                                ? text({ ja: '十分な連結領域', en: 'solid component' })
+                                : text({ ja: '小さい連結領域', en: 'small component' }),
+                            })}
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
+                  )}
                   {beginnerRecognitionProposal && (
                     <section aria-labelledby="beginner-recognition-heading">
                       <h3 id="beginner-recognition-heading">

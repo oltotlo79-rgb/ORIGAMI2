@@ -1543,6 +1543,74 @@ export function recognizeBeginnerSilhouette(
   })
 }
 
+export type BeginnerOutlineCandidatesResponse = Readonly<{
+  project_instance_id: string
+  project_id: string
+  revision: number
+  underlay_id: string
+  asset_id: string
+  candidates: ReadonlyArray<Readonly<{
+    id: number
+    bounds: Readonly<{ min_x: number; min_y: number; max_x: number; max_y: number }>
+    area_pixels: number
+    confidence_reason: 'solid_component' | 'small_component'
+  }>>
+}>
+
+export async function recognizeBeginnerOutlineCandidates(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  underlayId: string,
+  assetId: string,
+): Promise<BeginnerOutlineCandidatesResponse> {
+  const request = {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, underlayId, assetId,
+  }
+  const value = await invoke<unknown>('recognize_beginner_outline_candidates', { request })
+  const record = exactCoreDataRecord(value, [
+    'project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'candidates',
+  ] as const)
+  if (!record || record.project_instance_id !== expectedProjectInstanceId
+    || record.project_id !== expectedProjectId || record.revision !== expectedRevision
+    || record.underlay_id !== underlayId || record.asset_id !== assetId
+    || !Array.isArray(record.candidates) || record.candidates.length > 16) {
+    throw new BeginnerRecognitionError('native_failure')
+  }
+  const candidates = record.candidates.map((value, index) => {
+    const candidate = exactCoreDataRecord(value, [
+      'id', 'bounds', 'area_pixels', 'confidence_reason',
+    ] as const)
+    const bounds = exactCoreDataRecord(candidate?.bounds, ['min_x', 'min_y', 'max_x', 'max_y'] as const)
+    if (!candidate || candidate.id !== index || !bounds
+      || !Number.isSafeInteger(candidate.area_pixels) || Number(candidate.area_pixels) < 4
+      || !['solid_component', 'small_component'].includes(String(candidate.confidence_reason))
+      || [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y]
+        .some((coordinate) => !Number.isSafeInteger(coordinate) || Number(coordinate) < 0)
+      || Number(bounds.min_x) > Number(bounds.max_x)
+      || Number(bounds.min_y) > Number(bounds.max_y)) {
+      throw new BeginnerRecognitionError('native_failure')
+    }
+    return Object.freeze({
+      id: index,
+      bounds: Object.freeze({
+        min_x: Number(bounds.min_x), min_y: Number(bounds.min_y),
+        max_x: Number(bounds.max_x), max_y: Number(bounds.max_y),
+      }),
+      area_pixels: Number(candidate.area_pixels),
+      confidence_reason: candidate.confidence_reason as 'solid_component' | 'small_component',
+    })
+  })
+  return Object.freeze({
+    project_instance_id: expectedProjectInstanceId,
+    project_id: expectedProjectId,
+    revision: expectedRevision,
+    underlay_id: underlayId,
+    asset_id: assetId,
+    candidates: Object.freeze(candidates),
+  })
+}
+
 export function applyBeginnerGeneratedPlan(
   expectedProjectId: string,
   expectedRevision: number,

@@ -57,6 +57,16 @@ test('bounded PNG or JPEG silhouette recognition fails closed without inferred p
   assert.match(app, /proposal\.target_parts\.length > 0/u)
 })
 
+test('multiple outline candidates stay strict, stale-safe, and read-only', () => {
+  assert.match(client, /record\.candidates\.length > 16/u)
+  assert.match(client, /'id', 'bounds', 'area_pixels', 'confidence_reason'/u)
+  assert.match(client, /record\.project_instance_id !== expectedProjectInstanceId/u)
+  assert.match(app, /Show outline candidates/u)
+  assert.match(app, /Read-only outline candidates/u)
+  assert.match(app, /They grant no generation authority/u)
+  assert.match(app, /requestId === beginnerRecognitionRequestRef\.current/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

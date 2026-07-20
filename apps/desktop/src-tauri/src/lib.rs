@@ -1357,6 +1357,48 @@ struct AssignedLocalSufficiencyResponseV1 {
     authorizes_project_mutation: bool,
 }
 
+const MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1: usize = 4096;
+const MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1: usize = 16_384;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AssignedLocalSufficiencySummaryRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_fold_model_fingerprint: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssignedLocalSufficiencySummaryResponseV1 {
+    version: u32,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    fold_model_fingerprint: String,
+    vertices: Vec<AssignedLocalSufficiencySummaryVertexV1>,
+    total_reduction_steps: usize,
+    authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum AssignedLocalSufficiencySummaryVertexV1 {
+    NecessaryFailed {
+        vertex: VertexId,
+    },
+    SufficientProven {
+        vertex: VertexId,
+        model_id: &'static str,
+        reduction_steps: usize,
+    },
+    Indeterminate {
+        vertex: VertexId,
+        reason: ori_topology::AssignedLocalSufficiencyReasonV1,
+    },
+}
+
 #[derive(Debug, Serialize)]
 struct BeginnerCandidateResponse {
     schema_version: u32,
@@ -1868,6 +1910,104 @@ async fn prove_current_assigned_local_sufficiency_v1(
         project_id: request.expected_project_id,
         revision: request.expected_revision,
         result,
+        authorizes_project_mutation: false,
+    })
+}
+
+#[tauri::command]
+async fn summarize_current_assigned_local_sufficiency_v1(
+    state: State<'_, AppState>,
+    request: AssignedLocalSufficiencySummaryRequestV1,
+) -> Result<AssignedLocalSufficiencySummaryResponseV1, String> {
+    let permit = state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| "Another native pose analysis is already running.".to_owned())?;
+    let (paper, pattern) = {
+        let project = lock_project(&state)?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+            || project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint
+        {
+            return Err("The project changed while local sufficiency was analyzed.".to_owned());
+        }
+        if project.editor.pattern().vertices.len() > MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1 {
+            return Err("The local sufficiency summary vertex limit was reached.".to_owned());
+        }
+        (
+            project.editor.paper().clone(),
+            project.editor.pattern().clone(),
+        )
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let mut vertices = Vec::with_capacity(pattern.vertices.len());
+        let mut total_reduction_steps = 0usize;
+        for source_vertex in &pattern.vertices {
+            let remaining =
+                MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1.saturating_sub(total_reduction_steps);
+            let proof = ori_topology::prove_assigned_local_sufficiency_v1(
+                &paper,
+                &pattern,
+                source_vertex.id,
+                ori_topology::AssignedLocalSufficiencyLimitsV1 {
+                    max_vertices: MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1,
+                    max_reductions: remaining.min(
+                        ori_topology::AssignedLocalSufficiencyLimitsV1::default().max_reductions,
+                    ),
+                },
+            );
+            vertices.push(match proof {
+                ori_topology::AssignedLocalSufficiencyV1::Proven {
+                    vertex,
+                    model_id,
+                    reduction_steps,
+                    ..
+                } => {
+                    total_reduction_steps = total_reduction_steps
+                        .checked_add(reduction_steps)
+                        .filter(|total| *total <= MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1)
+                        .ok_or_else(|| {
+                            "The local sufficiency summary work limit was reached.".to_owned()
+                        })?;
+                    AssignedLocalSufficiencySummaryVertexV1::SufficientProven {
+                        vertex,
+                        model_id,
+                        reduction_steps,
+                    }
+                }
+                ori_topology::AssignedLocalSufficiencyV1::Indeterminate {
+                    vertex,
+                    reason:
+                        ori_topology::AssignedLocalSufficiencyReasonV1::NecessaryConditionsNotSatisfied,
+                } => AssignedLocalSufficiencySummaryVertexV1::NecessaryFailed { vertex },
+                ori_topology::AssignedLocalSufficiencyV1::Indeterminate { vertex, reason } => {
+                    AssignedLocalSufficiencySummaryVertexV1::Indeterminate { vertex, reason }
+                }
+            });
+        }
+        Ok::<_, String>((vertices, total_reduction_steps))
+    })
+    .await
+    .map_err(|_| "Local sufficiency summary analysis failed.".to_owned())??;
+    {
+        let project = lock_project(&state)?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+            || project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint
+        {
+            return Err("The project changed while local sufficiency was analyzed.".to_owned());
+        }
+    }
+    Ok(AssignedLocalSufficiencySummaryResponseV1 {
+        version: 1,
+        project_instance_id: request.expected_project_instance_id,
+        project_id: request.expected_project_id,
+        revision: request.expected_revision,
+        fold_model_fingerprint: request.expected_fold_model_fingerprint,
+        vertices: result.0,
+        total_reduction_steps: result.1,
         authorizes_project_mutation: false,
     })
 }
@@ -8264,6 +8404,7 @@ pub fn run() {
             new_project,
             validate_project,
             prove_current_assigned_local_sufficiency_v1,
+            summarize_current_assigned_local_sufficiency_v1,
             apply_current_native_pose,
             inspect_current_static_collision,
             analyze_geometric_constraints,

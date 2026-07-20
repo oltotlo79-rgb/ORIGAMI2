@@ -1385,7 +1385,7 @@ mod tests {
             roots,
             UniformCycleClosureRootsV1::Indeterminate { .. }
         ));
-        let mut reversed = moving;
+        let mut reversed = moving.clone();
         reversed.reverse();
         assert_eq!(
             enumerate_uniform_cycle_closure_roots_v1(

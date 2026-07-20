@@ -39,6 +39,9 @@ const mutationContracts = [
   ['addEdgeOrientationConstraint', 'add_edge_orientation_constraint'],
   ['addGeometricConstraint', 'add_geometric_constraint'],
   ['removeGeometricConstraint', 'remove_geometric_constraint'],
+  ['addAnnotation', 'add_annotation'],
+  ['updateAnnotation', 'update_annotation'],
+  ['removeAnnotation', 'remove_annotation'],
   ['undo', 'undo'],
   ['redo', 'redo'],
   ['setCuttingAllowed', 'set_cutting_allowed'],
@@ -57,9 +60,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 42)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 42)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 42)
+  assert.equal(mutationContracts.length, 45)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 45)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 45)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

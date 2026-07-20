@@ -6,7 +6,7 @@ use crate::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 use ori_domain::{
-    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, ConstraintId, CreasePattern,
+    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, AssetId, ConstraintId, CreasePattern,
     DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
     ElementMetadataDocumentV1, ElementMetadataV1, FaceId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
     GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
@@ -14,9 +14,10 @@ use ori_domain::{
     InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, InstructionVisual,
     LayerId, LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS,
     MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, RgbaColor, UnderlayDocumentV1, Vertex, VertexId,
-    validate_element_metadata_v1, validate_geometric_constraint_document_v1,
-    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
+    ProjectLayerDocumentValidationErrorV1, RgbaColor, UnderlayDocumentV1, UnderlayId,
+    UnderlayRecordV1, Vertex, VertexId, validate_element_metadata_v1,
+    validate_geometric_constraint_document_v1, validate_instruction_timeline,
+    validate_project_layer_document_against_pattern_v1, validate_underlay_document_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -48,6 +49,71 @@ impl JunctionVertexIntent {
         match self {
             Self::Create { id } | Self::Reuse { id } => id,
         }
+    }
+
+    #[test]
+    fn underlay_crud_undo_redo_and_layer_guards_are_atomic() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Reference".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::Underlay,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+        };
+        editor
+            .execute(
+                0,
+                Command::CreateLayer {
+                    layer: layer.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create underlay layer");
+        let mut record = UnderlayRecordV1 {
+            id: UnderlayId::new(),
+            asset: AssetId::new(),
+            transform: ori_domain::UnderlayTransformV1 {
+                position: Point2::new(0.0, 0.0),
+                scale_x: 1.0,
+                scale_y: 1.0,
+                rotation_degrees: 0.0,
+            },
+            opacity: 0.5,
+            layer: layer.id,
+        };
+        editor
+            .execute(
+                1,
+                Command::AddUnderlay {
+                    record: record.clone(),
+                },
+            )
+            .expect("add underlay");
+        record.opacity = 0.75;
+        editor
+            .execute(
+                2,
+                Command::UpdateUnderlay {
+                    record: record.clone(),
+                },
+            )
+            .expect("update underlay");
+        assert_eq!(editor.underlays().underlays[0].opacity, 0.75);
+        assert_eq!(
+            editor.execute(3, Command::DeleteLayer { layer: layer.id }),
+            Err(CommandError::InvalidUnderlay)
+        );
+        editor
+            .execute(3, Command::RemoveUnderlay { id: record.id })
+            .expect("remove underlay");
+        editor.undo(4).expect("undo remove");
+        assert_eq!(editor.underlays().underlays, vec![record.clone()]);
+        editor.undo(5).expect("undo update");
+        assert_eq!(editor.underlays().underlays[0].opacity, 0.5);
+        editor.redo(6).expect("redo update");
+        assert_eq!(editor.underlays().underlays[0].opacity, 0.75);
     }
 }
 
@@ -192,6 +258,15 @@ pub enum Command {
     RemoveAnnotation {
         id: AnnotationId,
     },
+    AddUnderlay {
+        record: UnderlayRecordV1,
+    },
+    UpdateUnderlay {
+        record: UnderlayRecordV1,
+    },
+    RemoveUnderlay {
+        id: UnderlayId,
+    },
     AddInstructionStep {
         step: InstructionStep,
     },
@@ -272,6 +347,12 @@ pub enum CommandError {
     AnnotationNotFound(AnnotationId),
     #[error("annotation {0:?} already exists")]
     AnnotationAlreadyExists(AnnotationId),
+    #[error("underlay is invalid or unavailable")]
+    InvalidUnderlay,
+    #[error("underlay {0:?} was not found")]
+    UnderlayNotFound(UnderlayId),
+    #[error("underlay {0:?} already exists")]
+    UnderlayAlreadyExists(UnderlayId),
     #[error("the stacked-fold target document is invalid")]
     InvalidStackedFoldDocument,
     #[error("expected revision {expected}, but the current revision is {actual}")]
@@ -2477,6 +2558,45 @@ impl EditorState {
                 let record = self.annotations.annotations.remove(index);
                 Ok(Inverse::Command(Command::AddAnnotation { record }))
             }
+            Command::AddUnderlay { ref record } => {
+                if self
+                    .underlays
+                    .underlays
+                    .iter()
+                    .any(|item| item.id == record.id)
+                {
+                    return Err(CommandError::UnderlayAlreadyExists(record.id));
+                }
+                self.validate_underlay_record(record)?;
+                self.underlays.underlays.push(record.clone());
+                self.underlays
+                    .underlays
+                    .sort_by_key(|item| item.id.canonical_bytes());
+                Ok(Inverse::Command(Command::RemoveUnderlay { id: record.id }))
+            }
+            Command::UpdateUnderlay { ref record } => {
+                self.validate_underlay_record(record)?;
+                let current = self
+                    .underlays
+                    .underlays
+                    .iter_mut()
+                    .find(|item| item.id == record.id)
+                    .ok_or(CommandError::UnderlayNotFound(record.id))?;
+                let previous = std::mem::replace(current, record.clone());
+                Ok(Inverse::Command(Command::UpdateUnderlay {
+                    record: previous,
+                }))
+            }
+            Command::RemoveUnderlay { id } => {
+                let index = self
+                    .underlays
+                    .underlays
+                    .iter()
+                    .position(|item| item.id == id)
+                    .ok_or(CommandError::UnderlayNotFound(id))?;
+                let record = self.underlays.underlays.remove(index);
+                Ok(Inverse::Command(Command::AddUnderlay { record }))
+            }
             Command::AddInstructionStep { ref step } => {
                 if self
                     .instruction_timeline
@@ -2826,6 +2946,14 @@ impl EditorState {
             Command::AddAnnotation { record } | Command::UpdateAnnotation { record } => {
                 self.ensure_layer_unlocked(record.layer)?;
             }
+            Command::AddUnderlay { record } | Command::UpdateUnderlay { record } => {
+                self.ensure_layer_unlocked(record.layer)?;
+            }
+            Command::RemoveUnderlay { id } => {
+                let record = self.underlays.underlays.iter().find(|item| item.id == *id)
+                    .ok_or(CommandError::UnderlayNotFound(*id))?;
+                self.ensure_layer_unlocked(record.layer)?;
+            }
             Command::RemoveAnnotation { id } => {
                 let record = self.annotations.annotations.iter().find(|item| item.id == *id)
                     .ok_or(CommandError::AnnotationNotFound(*id))?;
@@ -2834,6 +2962,10 @@ impl EditorState {
             Command::DeleteLayer { layer } if self.annotations.annotations.iter()
                 .any(|annotation| annotation.layer == *layer) => {
                 return Err(CommandError::InvalidAnnotation);
+            }
+            Command::DeleteLayer { layer } if self.underlays.underlays.iter()
+                .any(|underlay| underlay.layer == *layer) => {
+                return Err(CommandError::InvalidUnderlay);
             }
             Command::RemoveVertex { id } if self.annotations.annotations.iter().any(|annotation| {
                 matches!(annotation.anchor, ori_domain::AnnotationAnchorV1::Vertex { vertex, .. } if vertex == *id)
@@ -2969,6 +3101,9 @@ impl EditorState {
             | Command::AddAnnotation { .. }
             | Command::UpdateAnnotation { .. }
             | Command::RemoveAnnotation { .. }
+            | Command::AddUnderlay { .. }
+            | Command::UpdateUnderlay { .. }
+            | Command::RemoveUnderlay { .. }
             | Command::AddInstructionStep { .. }
             | Command::AppendInstructionSteps { .. }
             | Command::UpdateInstructionStepMetadata { .. }
@@ -3197,6 +3332,20 @@ impl EditorState {
             .map_err(|_| CommandError::InvalidAnnotation)
     }
 
+    fn validate_underlay_record(&self, record: &UnderlayRecordV1) -> Result<(), CommandError> {
+        self.project_layers
+            .layers
+            .iter()
+            .find(|layer| layer.id == record.layer)
+            .filter(|layer| {
+                layer.content_kind == ori_domain::LayerContentKindV1::Underlay && !layer.locked
+            })
+            .ok_or(CommandError::InvalidUnderlay)?;
+        let mut document = UnderlayDocumentV1::default();
+        document.underlays.push(record.clone());
+        validate_underlay_document_v1(&document).map_err(|_| CommandError::InvalidUnderlay)
+    }
+
     fn constraint_mutation_targets(
         &self,
         command: &Command,
@@ -3317,6 +3466,9 @@ impl EditorState {
             | Command::AddAnnotation { .. }
             | Command::UpdateAnnotation { .. }
             | Command::RemoveAnnotation { .. }
+            | Command::AddUnderlay { .. }
+            | Command::UpdateUnderlay { .. }
+            | Command::RemoveUnderlay { .. }
             | Command::AddInstructionStep { .. }
             | Command::AppendInstructionSteps { .. }
             | Command::UpdateInstructionStepMetadata { .. }
@@ -5304,6 +5456,9 @@ impl Command {
             | Self::AddAnnotation { .. }
             | Self::UpdateAnnotation { .. }
             | Self::RemoveAnnotation { .. }
+            | Self::AddUnderlay { .. }
+            | Self::UpdateUnderlay { .. }
+            | Self::RemoveUnderlay { .. }
             | Self::AddInstructionStep { .. }
             | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
@@ -5360,6 +5515,9 @@ impl Command {
             | Self::AddAnnotation { .. }
             | Self::UpdateAnnotation { .. }
             | Self::RemoveAnnotation { .. }
+            | Self::AddUnderlay { .. }
+            | Self::UpdateUnderlay { .. }
+            | Self::RemoveUnderlay { .. }
             | Self::AddInstructionStep { .. }
             | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
@@ -5648,6 +5806,12 @@ impl Command {
             Self::AddAnnotation { .. }
             | Self::UpdateAnnotation { .. }
             | Self::RemoveAnnotation { .. } => Changes {
+                settings: true,
+                ..Changes::default()
+            },
+            Self::AddUnderlay { .. }
+            | Self::UpdateUnderlay { .. }
+            | Self::RemoveUnderlay { .. } => Changes {
                 settings: true,
                 ..Changes::default()
             },

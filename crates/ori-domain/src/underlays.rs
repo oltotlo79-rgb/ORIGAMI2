@@ -19,6 +19,11 @@ impl UnderlayId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    #[must_use]
+    pub const fn canonical_bytes(&self) -> [u8; 16] {
+        self.0.into_bytes()
+    }
 }
 
 impl Default for UnderlayId {
@@ -55,7 +60,10 @@ pub struct UnderlayDocumentV1 {
 
 impl Default for UnderlayDocumentV1 {
     fn default() -> Self {
-        Self { schema_version: UNDERLAY_SCHEMA_VERSION_V1, underlays: Vec::new() }
+        Self {
+            schema_version: UNDERLAY_SCHEMA_VERSION_V1,
+            underlays: Vec::new(),
+        }
     }
 }
 
@@ -116,7 +124,10 @@ mod tests {
 
     #[test]
     fn validates_strict_bounded_document() {
-        let document = UnderlayDocumentV1 { schema_version: 1, underlays: vec![record()] };
+        let document = UnderlayDocumentV1 {
+            schema_version: 1,
+            underlays: vec![record()],
+        };
         assert_eq!(validate_underlay_document_v1(&document), Ok(()));
         let value = serde_json::to_value(document).unwrap();
         assert!(serde_json::from_value::<UnderlayDocumentV1>(value).is_ok());
@@ -127,7 +138,10 @@ mod tests {
         let first = record();
         let mut second = first.clone();
         second.transform.scale_x = 0.0;
-        let document = UnderlayDocumentV1 { schema_version: 1, underlays: vec![first, second] };
+        let document = UnderlayDocumentV1 {
+            schema_version: 1,
+            underlays: vec![first, second],
+        };
         assert!(validate_underlay_document_v1(&document).is_err());
     }
 }

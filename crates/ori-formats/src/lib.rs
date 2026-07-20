@@ -17,9 +17,10 @@ use ori_domain::{
     GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
     GeometricConstraintKindV1, InstructionPose, InstructionTimeline,
     InstructionTimelineValidationError, Paper, ProjectId, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, UnderlayDocumentV1, VertexId, validate_annotation_document_v1,
-    validate_geometric_constraint_document_v1, validate_instruction_timeline,
-    validate_project_layer_document_against_pattern_v1, validate_underlay_document_v1,
+    ProjectLayerDocumentValidationErrorV1, UnderlayDocumentV1, VertexId,
+    validate_annotation_document_v1, validate_geometric_constraint_document_v1,
+    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
+    validate_underlay_document_v1,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -638,16 +639,20 @@ fn validate_texture_assets(document: &ProjectDocument) -> Result<(), FormatError
         return Err(FormatError::InvalidTextureAssets);
     }
     let referenced = document
-    .underlays
-    .underlays
-    .iter()
-    .map(|underlay| underlay.asset)
-    .chain([
-        document.paper.front.texture_asset,
-        document.paper.back.texture_asset,
-    ].into_iter().flatten())
-    .map(|id| id.canonical_bytes())
-    .collect::<BTreeSet<_>>();
+        .underlays
+        .underlays
+        .iter()
+        .map(|underlay| underlay.asset)
+        .chain(
+            [
+                document.paper.front.texture_asset,
+                document.paper.back.texture_asset,
+            ]
+            .into_iter()
+            .flatten(),
+        )
+        .map(|id| id.canonical_bytes())
+        .collect::<BTreeSet<_>>();
     let mut ids = BTreeSet::new();
     let mut total = 0usize;
     for asset in &document.texture_assets {

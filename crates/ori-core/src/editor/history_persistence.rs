@@ -249,6 +249,15 @@ enum CommandV1 {
     RemoveAnnotation {
         id: AnnotationId,
     },
+    AddUnderlay {
+        record: UnderlayRecordV1,
+    },
+    UpdateUnderlay {
+        record: UnderlayRecordV1,
+    },
+    RemoveUnderlay {
+        id: UnderlayId,
+    },
     AddInstructionStep {
         step: InstructionStep,
     },
@@ -665,6 +674,13 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             record: record.clone(),
         },
         Command::RemoveAnnotation { id } => CommandV1::RemoveAnnotation { id: *id },
+        Command::AddUnderlay { record } => CommandV1::AddUnderlay {
+            record: record.clone(),
+        },
+        Command::UpdateUnderlay { record } => CommandV1::UpdateUnderlay {
+            record: record.clone(),
+        },
+        Command::RemoveUnderlay { id } => CommandV1::RemoveUnderlay { id: *id },
         Command::AddInstructionStep { step } => {
             CommandV1::AddInstructionStep { step: step.clone() }
         }
@@ -885,6 +901,9 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
         CommandV1::AddAnnotation { record } => Command::AddAnnotation { record },
         CommandV1::UpdateAnnotation { record } => Command::UpdateAnnotation { record },
         CommandV1::RemoveAnnotation { id } => Command::RemoveAnnotation { id },
+        CommandV1::AddUnderlay { record } => Command::AddUnderlay { record },
+        CommandV1::UpdateUnderlay { record } => Command::UpdateUnderlay { record },
+        CommandV1::RemoveUnderlay { id } => Command::RemoveUnderlay { id },
         CommandV1::AddInstructionStep { step } => Command::AddInstructionStep { step },
         CommandV1::AppendInstructionSteps { steps } => Command::AppendInstructionSteps { steps },
         CommandV1::UpdateInstructionStepMetadata {
@@ -1677,6 +1696,12 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
                 return Err(EditorHistoryErrorV1::InvalidCommand);
             }
         }
+        Command::AddUnderlay { record } | Command::UpdateUnderlay { record } => {
+            let mut document = UnderlayDocumentV1::default();
+            document.underlays.push(record.clone());
+            validate_underlay_document_v1(&document)
+                .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
+        }
         Command::RemoveVertex { .. }
         | Command::AddEdge { .. }
         | Command::RemoveConnectedVertex { .. }
@@ -1691,6 +1716,7 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         | Command::AddAnnotation { .. }
         | Command::UpdateAnnotation { .. }
         | Command::RemoveAnnotation { .. }
+        | Command::RemoveUnderlay { .. }
         | Command::UpdateInstructionStepMetadata { .. }
         | Command::RemoveInstructionStep { .. }
         | Command::MoveInstructionStep { .. }
@@ -1804,6 +1830,8 @@ fn validate_editor_finite(editor: &EditorState) -> Result<(), EditorHistoryError
         .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
     ori_domain::validate_annotation_document_v1(&editor.annotations)
         .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
+    validate_underlay_document_v1(&editor.underlays)
+        .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
     Ok(())
 }
 
@@ -1816,6 +1844,7 @@ struct EditorDocumentPartsRef<'a> {
     project_layers: &'a ProjectLayerDocumentV1,
     element_metadata: &'a ElementMetadataDocumentV1,
     annotations: &'a AnnotationDocumentV1,
+    underlays: &'a UnderlayDocumentV1,
 }
 
 fn editor_document_parts_bytes(editor: &EditorState) -> Result<Vec<u8>, EditorHistoryErrorV1> {
@@ -1828,6 +1857,7 @@ fn editor_document_parts_bytes(editor: &EditorState) -> Result<Vec<u8>, EditorHi
         project_layers: &editor.project_layers,
         element_metadata: &editor.element_metadata,
         annotations: &editor.annotations,
+        underlays: &editor.underlays,
     })
     .map_err(|_| EditorHistoryErrorV1::EncodingFailed)
 }
@@ -2385,8 +2415,7 @@ impl EditorState {
         project_memo: String,
         history: EditorHistoryV1,
     ) -> Result<Self, EditorHistoryErrorV1> {
-        let limit = history.validate_shape()?;
-        let mut current = Self::with_all_document_parts_annotations_and_memo(
+        Self::with_all_document_parts_annotations_underlays_memo_and_history_v1(
             pattern,
             paper,
             instruction_timeline,
@@ -2394,6 +2423,34 @@ impl EditorState {
             project_layers,
             element_metadata,
             annotations,
+            UnderlayDocumentV1::default(),
+            project_memo,
+            history,
+        )
+    }
+
+    pub fn with_all_document_parts_annotations_underlays_memo_and_history_v1(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        annotations: AnnotationDocumentV1,
+        underlays: UnderlayDocumentV1,
+        project_memo: String,
+        history: EditorHistoryV1,
+    ) -> Result<Self, EditorHistoryErrorV1> {
+        let limit = history.validate_shape()?;
+        let mut current = Self::with_all_document_parts_annotations_underlays_and_memo(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+            annotations,
+            underlays,
             project_memo,
         );
         validate_editor_finite(&current)?;

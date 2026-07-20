@@ -937,12 +937,12 @@ fn apply_vertex_expression_binding(
 }
 
 fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, ()> {
-    let mut editor = match &project.editor_history {
+    let editor = match &project.editor_history {
         Some(history) => {
             if history.project_id() != project.document.project_id {
                 return Err(());
             }
-            EditorState::with_all_document_parts_annotations_memo_and_history_v1(
+            EditorState::with_all_document_parts_annotations_underlays_memo_and_history_v1(
                 project.document.crease_pattern.clone(),
                 project.document.paper.clone(),
                 project.document.instruction_timeline.clone(),
@@ -950,24 +950,26 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
                 project.document.layers.clone(),
                 project.document.element_metadata.clone(),
                 project.document.annotations.clone(),
+                project.document.underlays.clone(),
                 project.document.memo.clone(),
                 history.clone(),
             )
             .map_err(|_| ())
         }
-        None => Ok(EditorState::with_all_document_parts_annotations_underlays_and_memo(
-            project.document.crease_pattern.clone(),
-            project.document.paper.clone(),
-            project.document.instruction_timeline.clone(),
-            project.document.geometric_constraints.clone(),
-            project.document.layers.clone(),
-            project.document.element_metadata.clone(),
-            project.document.annotations.clone(),
-            project.document.underlays.clone(),
-            project.document.memo.clone(),
-        )),
+        None => Ok(
+            EditorState::with_all_document_parts_annotations_underlays_and_memo(
+                project.document.crease_pattern.clone(),
+                project.document.paper.clone(),
+                project.document.instruction_timeline.clone(),
+                project.document.geometric_constraints.clone(),
+                project.document.layers.clone(),
+                project.document.element_metadata.clone(),
+                project.document.annotations.clone(),
+                project.document.underlays.clone(),
+                project.document.memo.clone(),
+            ),
+        ),
     }?;
-    editor.restore_underlays(project.document.underlays.clone());
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
     Ok(editor)
 }

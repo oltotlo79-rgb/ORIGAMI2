@@ -32,6 +32,9 @@ impl OutwardIntervalV1 {
     }
 
     pub fn from_rounded(value: f64) -> Result<Self, OutwardIntervalErrorV1> {
+        if value == 0.0 {
+            return Self::new(0.0, 0.0);
+        }
         Self::new(next_down(value), next_up(value))
     }
 

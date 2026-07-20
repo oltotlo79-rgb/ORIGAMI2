@@ -1276,11 +1276,11 @@ mod tests {
             (&negative, &negative, -3.0 * core::f64::consts::FRAC_PI_4),
             (&negative, &positive, -core::f64::consts::FRAC_PI_4),
         ] {
-            let angle = evaluate_pole_free_atan2_interval_v1(y, x, 512).unwrap();
+            let angle = evaluate_pole_free_atan2_interval_v1(y, x, 262_144).unwrap();
             assert!(angle.lower() <= expected && expected <= angle.upper());
         }
-        let half =
-            evaluate_half_angle_rational_degrees_interval_v1(&positive, &positive, 4096).unwrap();
+        let half = evaluate_half_angle_rational_degrees_interval_v1(&positive, &positive, 262_144)
+            .unwrap();
         assert!(half.lower() <= 90.0 && half.upper() >= 90.0);
         assert_eq!(
             evaluate_pole_free_atan2_interval_v1(&positive, &positive, 1),

@@ -13,6 +13,7 @@ use ori_geometry::{
     GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, SegmentIntersection,
     exact_orientation, point_polygon_relation, point_segment_relation, segment_intersection,
 };
+use ori_kinematics::{KinematicsError, MaterialTreeKinematicsModel, TreeKinematicsLimits};
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
 };
@@ -213,6 +214,23 @@ pub struct PreparedStackedFoldGeometryV1 {
     proof: StackedFoldGeometryProofV1,
 }
 
+pub struct PreparedStackedFoldTargetModelV1 {
+    geometry: PreparedStackedFoldGeometryV1,
+    model: MaterialTreeKinematicsModel,
+}
+
+impl PreparedStackedFoldTargetModelV1 {
+    #[must_use]
+    pub const fn geometry(&self) -> &PreparedStackedFoldGeometryV1 {
+        &self.geometry
+    }
+
+    #[must_use]
+    pub const fn model(&self) -> &MaterialTreeKinematicsModel {
+        &self.model
+    }
+}
+
 impl PreparedStackedFoldGeometryV1 {
     #[must_use]
     pub const fn candidate(&self) -> &StackedFoldTopologyCandidateV1 {
@@ -271,6 +289,14 @@ pub enum PrepareStackedFoldGeometryErrorV1 {
     Lineage(#[from] FaceLineageError),
     #[error("target geometry proof failed: {0}")]
     Geometry(#[from] StackedFoldGeometryErrorV1),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum PrepareStackedFoldTargetModelErrorV1 {
+    #[error("proved target topology could not be reconstructed: {0}")]
+    Topology(#[from] FaceLineageError),
+    #[error("proved target topology is not supported by material tree kinematics: {0}")]
+    Kinematics(#[from] KinematicsError),
 }
 
 /// Deterministic count limits for one stacked-fold geometry-delta proof.
@@ -1202,6 +1228,32 @@ pub fn prepare_stacked_fold_geometry_candidate_v1(
         geometry_limits,
     )?;
     Ok(PreparedStackedFoldGeometryV1 { candidate, proof })
+}
+
+/// Reconstructs and admits the proved target as a native material-tree model.
+///
+/// This rejects planar arrangements whose face adjacency cannot be represented
+/// by the current tree-kinematics target class. It does not select a fixed
+/// descendant, assign target hinge angles, solve a pose, or authorize commit.
+pub fn prepare_stacked_fold_target_model_v1(
+    geometry: PreparedStackedFoldGeometryV1,
+    limits: TreeKinematicsLimits,
+) -> Result<PreparedStackedFoldTargetModelV1, PrepareStackedFoldTargetModelErrorV1> {
+    let lineage = geometry.proof.lineage();
+    let topology = simulation_snapshot(
+        lineage.identity_namespace(),
+        lineage.target_revision(),
+        &geometry.candidate.paper,
+        &geometry.candidate.pattern,
+        FaceLineageTopology::Target,
+    )?;
+    let model = MaterialTreeKinematicsModel::prepare(
+        &geometry.candidate.pattern,
+        &geometry.candidate.paper,
+        &topology,
+        limits,
+    )?;
+    Ok(PreparedStackedFoldTargetModelV1 { geometry, model })
 }
 
 fn compare_expected_crease(
@@ -2382,6 +2434,29 @@ mod tests {
         assert_eq!(candidate.pattern.vertices.len(), 6);
         assert_eq!(candidate.pattern.edges.len(), 7);
         assert_eq!(candidate.paper.boundary_vertices.len(), 6);
+    }
+
+    #[test]
+    fn prepared_target_is_admitted_by_native_tree_kinematics() {
+        let fixture = simple_geometry_fixture();
+        let geometry = prepare_stacked_fold_geometry_candidate_v1(
+            fixture.identity,
+            fixture.source_revision,
+            &fixture.source_pattern,
+            &fixture.source_paper,
+            &fixture.source_layer_order,
+            &fixture.expected_creases,
+            StackedFoldTopologyBuildLimitsV1::default(),
+            FaceLineageLimits::default(),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("prepare geometry");
+        let target =
+            prepare_stacked_fold_target_model_v1(geometry, TreeKinematicsLimits::default())
+                .expect("prepare target material tree");
+        assert_eq!(target.model().face_ids().len(), 2);
+        assert_eq!(target.model().hinges().len(), 1);
+        assert_eq!(target.geometry().proof().expected_creases().len(), 1);
     }
 
     #[test]

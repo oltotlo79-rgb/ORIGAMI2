@@ -79,6 +79,8 @@ material map `native_flat_stacked_fold_material_map_v1`は、proposalを同じgu
 
 desktop workerはこの層別segmentから、source edgeと全crease carrierの交点を完全列挙した平面配置を構築する。source vertex IDとsource edgeごとの一つのIDを保存し、交点を共有頂点として全carrierを分割し、外周edge上の交点はpaper boundary cycleにも挿入する。新規vertex/edge IDはproject namespace、source revision、canonical carrier/座標からUUID v5で導出し、segmentの入力順序・方向を変えた再試行でも同一候補を得る。既存IDとの衝突、共線重複、欠損endpoint、duplicate source座標、非有限・ゼロ長・非Mountain/Valley入力、carrier・pair test・頂点・edge上限超過は候補を返さない。生成後は`face_lineage_v1`と`stacked_fold_geometry_v1`を一つのfail-closed APIで連続実行し、候補geometryとそのlineage所有proofを分離不能なread-only packageとして返す。これによりsource別面積保存、source edge完全被覆、期待crease完全被覆、余分なedgeなしを同じtargetへ束縛する。応答にはtarget fingerprintと件数だけを写し、候補pattern、paper、proof本体、ID、mutation authorityはWebViewへ渡さない。
 
+さらに証明済みtarget topologyを再構築し、native `MaterialTreeKinematicsModel`へ有限上限つきでadmitする。treeで表現できないface隣接はこの段階で失敗し、応答にはtarget material face数とhinge数だけを追加する。fixed descendant選択、target hinge angle vector、pose solveはまだ行わない。
+
 proposalが保証しないものは次のとおりである。
 
 - current poseへ到達したcontinuous path

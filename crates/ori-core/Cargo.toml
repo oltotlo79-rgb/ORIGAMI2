@@ -10,6 +10,7 @@ num-bigint.workspace = true
 ori-domain = { path = "../ori-domain" }
 ori-foldability = { path = "../ori-foldability" }
 ori-geometry = { path = "../ori-geometry" }
+ori-kinematics = { path = "../ori-kinematics" }
 ori-topology = { path = "../ori-topology" }
 serde.workspace = true
 serde_json.workspace = true

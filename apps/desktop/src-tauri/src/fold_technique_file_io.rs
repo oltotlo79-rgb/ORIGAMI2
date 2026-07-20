@@ -29,6 +29,7 @@ const OPEN_TITLE_EN: &str = "Open fold technique file";
 const SAVE_TITLE_JA: &str = "折り技法ファイルを別名で保存";
 const SAVE_TITLE_EN: &str = "Save fold technique file as";
 const DEFAULT_FILE_NAME: &str = "fold-techniques.json";
+const FILE_EXTENSION: &str = "json";
 
 const ERROR_BUSY: &str = "fold_technique_busy";
 const ERROR_INVALID_LOCALE: &str = "fold_technique_invalid_locale";
@@ -136,15 +137,11 @@ pub(super) async fn open_fold_technique_file(
     let selected = app
         .dialog()
         .file()
-        .add_filter(locale.filter_label(), &["json"])
+        .add_filter(locale.filter_label(), &[FILE_EXTENSION])
         .set_title(locale.open_title())
         .blocking_pick_file();
     let Some(selected) = selected else {
-        return Ok(OpenFoldTechniqueFileResponse {
-            request_id,
-            canceled: true,
-            document: None,
-        });
+        return Ok(canceled_open_response(request_id));
     };
     let path = selected
         .simplified()
@@ -187,22 +184,18 @@ pub(super) async fn save_fold_technique_file_as(
     let selected = app
         .dialog()
         .file()
-        .add_filter(locale.filter_label(), &["json"])
+        .add_filter(locale.filter_label(), &[FILE_EXTENSION])
         .set_file_name(suggested_name)
         .set_title(locale.save_title())
         .blocking_save_file();
     let Some(selected) = selected else {
-        return Ok(SaveFoldTechniqueFileResponse {
-            request_id,
-            canceled: true,
-            document: None,
-        });
+        return Ok(canceled_save_response(request_id));
     };
     let path = selected
         .simplified()
         .into_path()
         .map_err(|_| ERROR_SAVE_FAILED.to_owned())?;
-    let destination = save_path::normalize_dialog_save_path(path, "json")
+    let destination = save_path::normalize_dialog_save_path(path, FILE_EXTENSION)
         .map_err(|_| ERROR_SAVE_FAILED.to_owned())?;
     let saved_document = canonical_document.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -216,6 +209,22 @@ pub(super) async fn save_fold_technique_file_as(
         canceled: false,
         document: Some(saved_document),
     })
+}
+
+fn canceled_open_response(request_id: u32) -> OpenFoldTechniqueFileResponse {
+    OpenFoldTechniqueFileResponse {
+        request_id,
+        canceled: true,
+        document: None,
+    }
+}
+
+fn canceled_save_response(request_id: u32) -> SaveFoldTechniqueFileResponse {
+    SaveFoldTechniqueFileResponse {
+        request_id,
+        canceled: true,
+        document: None,
+    }
 }
 
 fn prepare_fold_technique_save_json(
@@ -569,6 +578,32 @@ mod tests {
             DialogLocale::parse("en-US").err(),
             Some(ERROR_INVALID_LOCALE.to_owned())
         );
+        assert_eq!(DialogLocale::Ja.filter_label(), FILE_FILTER_LABEL_JA);
+        assert_eq!(DialogLocale::En.filter_label(), FILE_FILTER_LABEL_EN);
+        assert_eq!(DialogLocale::Ja.open_title(), OPEN_TITLE_JA);
+        assert_eq!(DialogLocale::En.open_title(), OPEN_TITLE_EN);
+        assert_eq!(DialogLocale::Ja.save_title(), SAVE_TITLE_JA);
+        assert_eq!(DialogLocale::En.save_title(), SAVE_TITLE_EN);
+        assert_eq!(DEFAULT_FILE_NAME, "fold-techniques.json");
+        assert_eq!(FILE_EXTENSION, "json");
+    }
+
+    #[test]
+    fn cancel_responses_are_pathless_exact_no_ops_bound_to_the_request() {
+        let private_path = r"C:\Users\alice\private-folds.json";
+        let open = serde_json::to_value(canceled_open_response(41)).expect("serialize open cancel");
+        let save = serde_json::to_value(canceled_save_response(42)).expect("serialize save cancel");
+
+        assert_eq!(
+            open,
+            json!({ "request_id": 41, "canceled": true, "document": null })
+        );
+        assert_eq!(
+            save,
+            json!({ "request_id": 42, "canceled": true, "document": null })
+        );
+        assert!(!open.to_string().contains(private_path));
+        assert!(!save.to_string().contains(private_path));
     }
 
     #[test]

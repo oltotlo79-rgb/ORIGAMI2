@@ -2267,7 +2267,7 @@ pub fn revalidate_single_hinge_thickness_boundary_v1(
     Some(capability.observation())
 }
 
-pub const MAX_COMPOSED_THICKNESS_HINGES_V1: usize = 16;
+pub const MAX_COMPOSED_THICKNESS_HINGES_V1: usize = 63;
 
 fn prepare_projected_incident_hinge_boundary_v1(
     bound: BoundMaterialTreePose<'_>,

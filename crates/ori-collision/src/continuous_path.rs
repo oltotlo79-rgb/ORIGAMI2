@@ -40,6 +40,7 @@ pub const STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
 const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 120;
+const MAX_POSITIVE_ENDPOINT_TREE_FACES_V1: usize = 64;
 pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 64;
 const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 2_048;
 const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
@@ -220,6 +221,7 @@ fn positive_tree_max_angle_degrees_v1(hinge_count: usize) -> Option<f64> {
         4 => 45.0,
         3 => 60.0,
         2 => 90.0,
+        16..=63 => 0.1 / hinge_count as f64,
         _ => return None,
     })
 }
@@ -233,18 +235,81 @@ fn positive_tree_resource_premises_v1(
     hinge_count: usize,
     moving_count: usize,
 ) -> bool {
-    let Some(pair_count) = face_count
+    let Some(_pair_count) = face_count
         .checked_mul(face_count.saturating_sub(1))
         .map(|product| product / 2)
     else {
         return false;
     };
     face_count >= 3
+        && face_count <= MAX_POSITIVE_ENDPOINT_TREE_FACES_V1
         && hinge_count >= 2
         && hinge_count.checked_add(1) == Some(face_count)
         && moving_count == hinge_count
-        && positive_endpoint_pair_work_within_limit_v1(pair_count)
         && positive_tree_max_angle_degrees_v1(hinge_count).is_some()
+}
+
+fn positive_endpoint_candidates_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+) -> Option<Vec<(FaceId, FaceId)>> {
+    let expansion = paper_thickness_mm / 2.0;
+    if !expansion.is_finite() || expansion <= 0.0 {
+        return None;
+    }
+    let mut bounds = Vec::with_capacity(model.face_ids().len());
+    for face in model.face_ids() {
+        let transform = pose.face_transform(*face)?;
+        let boundary = model.face_boundary(*face)?;
+        let mut minimum = [f64::INFINITY; 3];
+        let mut maximum = [f64::NEG_INFINITY; 3];
+        for vertex in boundary.vertices() {
+            let world = transform.apply_point(pose.vertex_position(*vertex)?).ok()?;
+            for (axis, value) in [world.x(), world.y(), world.z()].into_iter().enumerate() {
+                minimum[axis] = minimum[axis].min(value - expansion);
+                maximum[axis] = maximum[axis].max(value + expansion);
+            }
+        }
+        bounds.push((*face, minimum, maximum));
+    }
+    bounds.sort_by(|left, right| {
+        left.1[0]
+            .total_cmp(&right.1[0])
+            .then_with(|| left.0.canonical_bytes().cmp(&right.0.canonical_bytes()))
+    });
+    let adjacent = |first: FaceId, second: FaceId| {
+        model.hinges().iter().any(|hinge| {
+            (hinge.left_face() == first && hinge.right_face() == second)
+                || (hinge.left_face() == second && hinge.right_face() == first)
+        })
+    };
+    let mut candidates = Vec::new();
+    for first in 0..bounds.len() {
+        for second in first + 1..bounds.len() {
+            if bounds[second].1[0] > bounds[first].2[0] {
+                break;
+            }
+            if adjacent(bounds[first].0, bounds[second].0)
+                || (1..3).any(|axis| {
+                    bounds[first].2[axis] < bounds[second].1[axis]
+                        || bounds[second].2[axis] < bounds[first].1[axis]
+                })
+            {
+                continue;
+            }
+            if candidates.len() >= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1 {
+                return None;
+            }
+            let mut pair = (bounds[first].0, bounds[second].0);
+            if pair.1.canonical_bytes() < pair.0.canonical_bytes() {
+                pair = (pair.1, pair.0);
+            }
+            candidates.push(pair);
+        }
+    }
+    candidates.sort_by_key(|pair| (pair.0.canonical_bytes(), pair.1.canonical_bytes()));
+    Some(candidates)
 }
 
 pub fn diagnose_collective_hinge_path_v1(
@@ -361,19 +426,28 @@ pub fn diagnose_collective_hinge_path_v1(
             let bound = model
                 .bind_pose(&pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
-            let endpoint_topology = positive_two_hinge_topology
-                .then(|| {
+            let endpoint_candidates = positive_two_hinge_topology
+                .then(|| positive_endpoint_candidates_v1(model, &pose, paper_thickness_mm))
+                .flatten();
+            let endpoint_topology = if endpoint_candidates
+                .as_ref()
+                .is_some_and(|candidates| !candidates.is_empty())
+            {
+                Some(
                     prepare_positive_thickness_tree_endpoint_topology_memo_v1(
                         model,
                         &pose,
                         paper_thickness_mm,
                         limits.static_collision,
                     )
-                })
-                .transpose()
-                .map_err(|_| StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable)?;
+                    .map_err(|_| StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable)?,
+                )
+            } else {
+                None
+            };
             all_positive_thickness_outer_shells &= if positive_two_hinge_topology {
-                prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
+                endpoint_candidates.as_ref().is_some()
+                    && prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
                     .ok()
                     .flatten()
                     .is_some_and(|boundary| {
@@ -385,7 +459,6 @@ pub fn diagnose_collective_hinge_path_v1(
                         .is_some_and(|observations| observations.len() == model.hinges().len())
                             && model.face_ids().iter().enumerate().all(|(index, first)| {
                                 model.face_ids().iter().skip(index + 1).all(|second| {
-                                    positive_endpoint_memo_pair_entries += 1;
                                     let adjacent = model.hinges().iter().any(|hinge| {
                                         (hinge.left_face() == *first
                                             && hinge.right_face() == *second)
@@ -393,31 +466,49 @@ pub fn diagnose_collective_hinge_path_v1(
                                                 && hinge.right_face() == *first)
                                     });
                                     adjacent
-                                        || endpoint_topology.as_ref().is_some_and(|memo| {
-                                            memo.enumerated_pairs()
-                                                == model.face_ids().len()
-                                                    * model.face_ids().len().saturating_sub(1)
-                                                    / 2
-                                                && memo.proves_shared_vertex_pair(*first, *second)
-                                        })
                                         || {
-                                            positive_endpoint_exact_pair_calls += 1;
-                                            prepare_positive_thickness_pair_separation_v1(
-                                                bound,
-                                                paper_thickness_mm,
-                                                *first,
-                                                *second,
-                                                limits.static_collision,
-                                            )
-                                            .is_ok_and(|capability| {
-                                                capability.is_some_and(|capability| {
-                                                    revalidate_positive_thickness_pair_separation_v1(
-                                                        &capability,
+                                            let mut pair = (*first, *second);
+                                            if pair.1.canonical_bytes() < pair.0.canonical_bytes() {
+                                                pair = (pair.1, pair.0);
+                                            }
+                                            if !endpoint_candidates
+                                                .as_ref()
+                                                .is_some_and(|candidates| {
+                                                    candidates.contains(&pair)
+                                                })
+                                            {
+                                                return true;
+                                            }
+                                            positive_endpoint_memo_pair_entries += 1;
+                                            endpoint_topology.as_ref().is_some_and(|memo| {
+                                                memo.enumerated_pairs()
+                                                    == model.face_ids().len()
+                                                        * model
+                                                            .face_ids()
+                                                            .len()
+                                                            .saturating_sub(1)
+                                                        / 2
+                                                    && memo.proves_shared_vertex_pair(*first, *second)
+                                            })
+                                                || {
+                                                    positive_endpoint_exact_pair_calls += 1;
+                                                    prepare_positive_thickness_pair_separation_v1(
                                                         bound,
                                                         paper_thickness_mm,
+                                                        *first,
+                                                        *second,
+                                                        limits.static_collision,
                                                     )
-                                                })
-                                            })
+                                                    .is_ok_and(|capability| {
+                                                        capability.is_some_and(|capability| {
+                                                            revalidate_positive_thickness_pair_separation_v1(
+                                                                &capability,
+                                                                bound,
+                                                                paper_thickness_mm,
+                                                            )
+                                                        })
+                                                    })
+                                                }
                                         }
                                 })
                             })
@@ -4064,7 +4155,7 @@ mod tests {
     }
 
     #[test]
-    fn positive_endpoint_memo_cap_rejects_seventeen_face_tree() {
+    fn sparse_seventeen_face_tree_is_not_rejected_by_total_pair_count() {
         assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 120);
         let model = deep_strip_model(16);
         let (moving, initial) = zero_tree_pose(&model);
@@ -4077,7 +4168,9 @@ mod tests {
             StackedFoldPathDiagnosticLimitsV1::default(),
         )
         .unwrap();
-        assert!(!diagnostic.continuous_clearance_certified());
+        assert!(diagnostic.continuous_clearance_certified());
+        assert_eq!(diagnostic.positive_endpoint_memo_pair_entries(), 0);
+        assert_eq!(diagnostic.positive_endpoint_exact_pair_calls(), 0);
     }
 
     #[test]
@@ -4107,7 +4200,9 @@ mod tests {
         }
         assert!(positive_endpoint_pair_work_within_limit_v1(120));
         assert!(!positive_endpoint_pair_work_within_limit_v1(121));
-        assert!(!positive_tree_resource_premises_v1(17, 16, 16));
+        assert!(positive_tree_resource_premises_v1(17, 16, 16));
+        assert!(positive_tree_resource_premises_v1(64, 63, 63));
+        assert!(!positive_tree_resource_premises_v1(65, 64, 64));
         assert!(!positive_tree_resource_premises_v1(
             usize::MAX,
             usize::MAX - 1,
@@ -4122,7 +4217,41 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(maxima.windows(2).all(|pair| pair[1] <= pair[0]));
         assert!(positive_tree_max_angle_degrees_v1(1).is_none());
-        assert!(positive_tree_max_angle_degrees_v1(16).is_none());
+        assert!(positive_tree_max_angle_degrees_v1(16).is_some());
+        assert!(positive_tree_max_angle_degrees_v1(63).is_some());
+        assert!(positive_tree_max_angle_degrees_v1(64).is_none());
+    }
+
+    #[test]
+    fn sparse_positive_trees_scale_to_sixty_four_faces_with_zero_candidates() {
+        for hinge_count in [16, 31, 63] {
+            let model = deep_strip_model(hinge_count);
+            let (moving, initial) = zero_tree_pose(&model);
+            let requested = positive_tree_max_angle_degrees_v1(hinge_count).unwrap();
+            let diagnostic = diagnose_collective_hinge_path_v1(
+                &model,
+                &initial,
+                &moving,
+                requested,
+                0.001,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            )
+            .unwrap();
+            assert!(diagnostic.continuous_clearance_certified());
+            assert_eq!(diagnostic.positive_endpoint_memo_pair_entries(), 0);
+            assert_eq!(diagnostic.positive_endpoint_exact_pair_calls(), 0);
+        }
+    }
+
+    #[test]
+    fn dense_sweep_candidate_cap_is_fail_closed_and_order_independent() {
+        for reverse_edges in [false, true] {
+            let model = branched_triangle_model(17, reverse_edges);
+            let (_, initial) = zero_tree_pose(&model);
+            assert!(positive_endpoint_candidates_v1(&model, &initial, 0.001).is_none());
+        }
+        assert!(positive_endpoint_pair_work_within_limit_v1(120));
+        assert!(!positive_endpoint_pair_work_within_limit_v1(121));
     }
 
     #[test]

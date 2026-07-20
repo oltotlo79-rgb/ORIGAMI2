@@ -51,6 +51,34 @@ const sbom = JSON.parse(readFileSync(join(directory, `${prefix}.cdx.json`), 'utf
 if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) {
   throw new Error('CycloneDX SBOM contract failed')
 }
+const sbomProperties = sbom.metadata?.properties
+if (process.env.RELEASE_COMMIT !== undefined && !Array.isArray(sbomProperties)) {
+  throw new Error('CycloneDX SBOM properties are missing')
+}
+if (Array.isArray(sbomProperties)) {
+const propertyMap = new Map(sbomProperties.map((property) => [property?.name, property?.value]))
+if (propertyMap.size !== sbomProperties.length) throw new Error('CycloneDX SBOM properties are duplicated')
+const lockDigest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+const expectedSbomProperties = new Map([
+  ['origami2.build.cargo-lock-sha256', lockDigest('Cargo.lock')],
+  ['origami2.build.package-lock-sha256', lockDigest('apps/desktop/package-lock.json')],
+  ['origami2.release.platform', platform],
+  ['origami2.release.source-commit', process.env.RELEASE_COMMIT],
+  ['origami2.release.version', version],
+])
+for (const [name, value] of expectedSbomProperties) {
+  if (typeof value !== 'string' || propertyMap.get(name) !== value) {
+    throw new Error(`CycloneDX SBOM property mismatch: ${name}`)
+  }
+}
+if (
+  sbom.metadata?.component?.type !== 'application'
+  || sbom.metadata?.component?.name !== 'ORIGAMI2'
+  || sbom.metadata?.component?.version !== version
+  || !/^rustc [0-9]+\.[0-9]+\.[0-9]+/u.test(propertyMap.get('origami2.build.rustc-version') ?? '')
+  || !/^v[0-9]+\.[0-9]+\.[0-9]+/u.test(propertyMap.get('origami2.build.node-version') ?? '')
+) throw new Error('CycloneDX SBOM build identity mismatch')
+}
 const updateManifestBytes = readFileSync(join(directory, updateManifest), 'utf8')
 const parsedUpdateManifest = JSON.parse(updateManifestBytes)
 const expectedUpdateManifest = {

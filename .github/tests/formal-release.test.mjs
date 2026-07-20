@@ -528,6 +528,52 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
   }
 })
 
+test('CycloneDX binding records exact locks commit version platform and toolchains', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-sbom-binding-'))
+  try {
+    const path = join(directory, 'sbom.json')
+    const bind = () => execFileSync('node', ['.github/scripts/bind_release_sbom.mjs', path], {
+      cwd: root,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        VERSION: '0.1.0',
+        PLATFORM: 'windows-x64',
+        RELEASE_COMMIT: 'a'.repeat(40),
+        RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
+        NODE_VERSION: 'v24.0.0',
+      },
+    })
+    writeFileSync(path, JSON.stringify({
+      bomFormat: 'CycloneDX',
+      components: [{ 'bom-ref': 'one', purl: 'pkg:cargo/one@1' }],
+    }))
+    bind()
+    const sbom = JSON.parse(readFileSync(path, 'utf8'))
+    assert.deepEqual(sbom.metadata.component, {
+      type: 'application', name: 'ORIGAMI2', version: '0.1.0',
+    })
+    const properties = Object.fromEntries(
+      sbom.metadata.properties.map(({ name, value }) => [name, value]),
+    )
+    assert.equal(properties['origami2.release.source-commit'], 'a'.repeat(40))
+    assert.equal(properties['origami2.release.platform'], 'windows-x64')
+    assert.equal(properties['origami2.build.rustc-version'], 'rustc 1.90.0 (fixture)')
+    assert.equal(
+      properties['origami2.build.cargo-lock-sha256'],
+      createHash('sha256').update(readFileSync(join(root, 'Cargo.lock'))).digest('hex'),
+    )
+
+    writeFileSync(path, JSON.stringify({
+      bomFormat: 'CycloneDX',
+      components: [{ purl: 'duplicate' }, { purl: 'duplicate' }],
+    }))
+    assert.throws(bind, /duplicate CycloneDX purl/u)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
   const directory = mkdtempSync(join(tmpdir(), 'origami2-release-contract-'))
   try {

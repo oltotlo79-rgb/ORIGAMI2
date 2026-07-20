@@ -177,6 +177,17 @@ jobs:
           format: cyclonedx-json
           output-file: target/formal-release/ORIGAMI2-v${{ needs.validate.outputs.version }}-${{ matrix.platform }}.cdx.json
           upload-artifact: false
+      - name: Bind SBOM to source locks, version, commit, and toolchains
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          RUSTC_VERSION="$(rustc --version)" \
+          NODE_VERSION="$(node --version)" \
+            node .github/scripts/bind_release_sbom.mjs \
+              "target/formal-release/ORIGAMI2-v${VERSION}-${PLATFORM}.cdx.json"
       - name: Package platform artifacts
         shell: pwsh
         env:
@@ -187,6 +198,7 @@ jobs:
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
           REQUIRE_SIGNATURE: ${{ needs.validate.outputs.mode != 'dry-run' && 'true' || 'false' }}
         run: node .github/scripts/verify_formal_release.mjs target/formal-release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -280,6 +292,7 @@ jobs:
       - name: Verify the complete merged release set before publication
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: node .github/scripts/verify_merged_release_set.mjs release
       - name: Remove temporary artifact transport files
         if: always()
@@ -414,6 +427,7 @@ jobs:
       - name: Verify the complete immutable asset set
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: node .github/scripts/verify_merged_release_set.mjs release
       - name: Verify build provenance for every published payload
         env:

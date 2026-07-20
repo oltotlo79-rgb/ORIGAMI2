@@ -1611,6 +1611,27 @@ export async function recognizeBeginnerOutlineCandidates(
   })
 }
 
+export function applyBeginnerOutlineCandidate(
+  proposal: BeginnerOutlineCandidatesResponse,
+  candidate: BeginnerOutlineCandidatesResponse['candidates'][number],
+  confirmed: boolean,
+) {
+  if (!confirmed || !proposal.candidates.includes(candidate)) {
+    return Promise.reject(new BeginnerRecognitionError('native_failure'))
+  }
+  return invoke<ProjectSnapshot>('apply_beginner_outline_candidate', {
+    request: {
+      expectedProjectInstanceId: proposal.project_instance_id,
+      expectedProjectId: proposal.project_id,
+      expectedRevision: proposal.revision,
+      underlayId: proposal.underlay_id,
+      assetId: proposal.asset_id,
+      candidate,
+      confirmed: true,
+    },
+  })
+}
+
 export function applyBeginnerGeneratedPlan(
   expectedProjectId: string,
   expectedRevision: number,

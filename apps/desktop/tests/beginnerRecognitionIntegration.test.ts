@@ -67,6 +67,16 @@ test('multiple outline candidates stay strict, stale-safe, and read-only', () =>
   assert.match(app, /requestId === beginnerRecognitionRequestRef\.current/u)
 })
 
+test('an explicitly confirmed outline is revalidated and copied as one history command', () => {
+  assert.match(native, /candidates\.get\(usize::from\(request\.candidate\.id\)\)/u)
+  assert.match(native, /outline_candidate_stale/u)
+  assert.match(native, /UpdateBeginnerDesignProfile/u)
+  assert.match(client, /apply_beginner_outline_candidate/u)
+  assert.match(client, /!confirmed \|\| !proposal\.candidates\.includes\(candidate\)/u)
+  assert.match(app, /Confirm and copy to target/u)
+  assert.match(app, /This does not start generation/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

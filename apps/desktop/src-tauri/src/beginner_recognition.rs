@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::State;
 
-use crate::{AppState, ProjectState, ensure_expected_project, lock_project};
+use crate::{
+    AppState, ProjectSnapshot, ProjectState, ensure_expected_project, execute_command, lock_project,
+};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +131,94 @@ pub(crate) fn recognize_beginner_outline_candidates(
         asset_id: request.asset_id,
         candidates,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApplyBeginnerOutlineCandidateRequest {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    underlay_id: UnderlayId,
+    asset_id: AssetId,
+    candidate: ori_domain::BeginnerOutlineCandidateV1,
+    confirmed: bool,
+}
+
+#[tauri::command]
+pub(crate) fn apply_beginner_outline_candidate(
+    state: State<'_, AppState>,
+    request: ApplyBeginnerOutlineCandidateRequest,
+) -> Result<ProjectSnapshot, String> {
+    if !request.confirmed {
+        return Err("outline_candidate_confirmation_required".to_owned());
+    }
+    let binding = RecognizeBeginnerTargetRequest {
+        expected_project_instance_id: request.expected_project_instance_id,
+        expected_project_id: request.expected_project_id,
+        expected_revision: request.expected_revision,
+        underlay_id: request.underlay_id,
+        asset_id: request.asset_id,
+    };
+    let bytes = {
+        let project = lock_project(&state)?;
+        ensure_recognition_binding(&project, binding)?;
+        project
+            .texture_assets
+            .iter()
+            .find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.clone())
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+    };
+    let (width, height, rgba) = decode_general_image(&bytes)?;
+    let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
+        .map_err(|_| "recognition_resource_limit".to_owned())?;
+    if candidates.get(usize::from(request.candidate.id)) != Some(&request.candidate) {
+        return Err("outline_candidate_stale".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_recognition_binding(&project, binding)?;
+    let live = project
+        .texture_assets
+        .iter()
+        .find(|asset| asset.id == request.asset_id)
+        .ok_or_else(|| "recognition_asset_unavailable".to_owned())?;
+    if <[u8; 32]>::from(Sha256::digest(&live.bytes)) != <[u8; 32]>::from(Sha256::digest(&bytes)) {
+        return Err("recognition_asset_changed".to_owned());
+    }
+    let bounds = request.candidate.bounds;
+    let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_constraints.skeleton_segments =
+        vec![ori_domain::BeginnerSkeletonSegmentV1 {
+            id: 0,
+            start: ori_domain::BeginnerSkeletonPointV1 {
+                x_tenths_mm: i32::try_from(bounds.min_x).map_err(|_| "outline_candidate_stale")?
+                    * 10,
+                y_tenths_mm: i32::try_from((bounds.min_y + bounds.max_y) / 2)
+                    .map_err(|_| "outline_candidate_stale")?
+                    * 10,
+            },
+            end: ori_domain::BeginnerSkeletonPointV1 {
+                x_tenths_mm: i32::try_from(bounds.max_x).map_err(|_| "outline_candidate_stale")?
+                    * 10,
+                y_tenths_mm: i32::try_from((bounds.min_y + bounds.max_y) / 2)
+                    .map_err(|_| "outline_candidate_stale")?
+                    * 10,
+            },
+            thickness_tenths_mm: u16::try_from(
+                (bounds.max_y - bounds.min_y + 1)
+                    .saturating_mul(10)
+                    .min(10_000),
+            )
+            .map_err(|_| "outline_candidate_stale")?,
+        }];
+    execute_command(
+        &mut project,
+        request.expected_project_instance_id,
+        request.expected_project_id,
+        request.expected_revision,
+        ori_core::Command::UpdateBeginnerDesignProfile { profile },
+    )
 }
 
 #[tauri::command]

@@ -134,6 +134,7 @@ import {
   updateBeginnerDesignProfile,
   importBeginnerReferenceModel,
   recognizeBeginnerOutlineCandidates,
+  applyBeginnerOutlineCandidate,
   getBeginnerReferenceModelGeometry,
   updatePaperProperties,
   importFrontPaperTexture,
@@ -3774,6 +3775,18 @@ function App() {
     }).finally(() => {
       if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
     })
+  }
+
+  function copyBeginnerOutlineCandidate(
+    candidate: BeginnerOutlineCandidatesResponse['candidates'][number],
+  ) {
+    const proposal = beginnerOutlineCandidates
+    if (!proposal || !window.confirm(text({
+      ja: 'この輪郭候補を編集可能な目標骨格へコピーしますか？生成は開始しません。',
+      en: 'Copy this outline into the editable target skeleton? This does not start generation.',
+    }))) return
+    void runNativeEdit(() => applyBeginnerOutlineCandidate(proposal, candidate, true))
+      .then(() => setBeginnerOutlineCandidates(null))
   }
 
   function copyBeginnerRecognitionProposal() {
@@ -7956,6 +7969,13 @@ function App() {
                                 ? text({ ja: '十分な連結領域', en: 'solid component' })
                                 : text({ ja: '小さい連結領域', en: 'small component' }),
                             })}
+                            <button
+                              type="button"
+                              onClick={() => copyBeginnerOutlineCandidate(candidate)}
+                              disabled={coreBusy || recoveryBlocking}
+                            >
+                              {text({ ja: '確認して目標へコピー', en: 'Confirm and copy to target' })}
+                            </button>
                           </li>
                         ))}
                       </ol>

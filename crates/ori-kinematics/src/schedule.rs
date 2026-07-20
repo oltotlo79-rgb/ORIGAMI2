@@ -114,6 +114,96 @@ impl ExactBernsteinRangeV1 {
         validate_exact_bits(&coefficients, max_coefficient_bits)?;
         Ok(Self { coefficients })
     }
+
+    fn product(
+        &self,
+        rhs: &Self,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let work = self
+            .coefficients
+            .len()
+            .checked_mul(rhs.coefficients.len())
+            .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+        if work > max_work {
+            return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+        }
+        let n = self.coefficients.len() - 1;
+        let m = rhs.coefficients.len() - 1;
+        let mut coefficients = Vec::with_capacity(n + m + 1);
+        for k in 0..=n + m {
+            let mut value = BigRational::zero();
+            for i in k.saturating_sub(m)..=k.min(n) {
+                let j = k - i;
+                let weight = binomial(n, i)
+                    .checked_mul(binomial(m, j))
+                    .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                value += &self.coefficients[i]
+                    * &rhs.coefficients[j]
+                    * BigRational::new(
+                        BigInt::from(weight),
+                        BigInt::from(binomial(n + m, k)),
+                    );
+            }
+            coefficients.push(value);
+        }
+        validate_exact_bits(&coefficients, max_coefficient_bits)?;
+        Ok(Self { coefficients })
+    }
+
+    fn elevate(
+        &self,
+        target_degree: usize,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let degree = self.coefficients.len() - 1;
+        if target_degree < degree {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let raise = target_degree - degree;
+        let work = self
+            .coefficients
+            .len()
+            .checked_mul(raise + 1)
+            .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+        if work > max_work {
+            return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+        }
+        let mut coefficients = Vec::with_capacity(target_degree + 1);
+        for i in 0..=target_degree {
+            let mut value = BigRational::zero();
+            for j in i.saturating_sub(raise)..=i.min(degree) {
+                let weight = binomial(degree, j)
+                    .checked_mul(binomial(raise, i - j))
+                    .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                value += &self.coefficients[j]
+                    * BigRational::new(
+                        BigInt::from(weight),
+                        BigInt::from(binomial(target_degree, i)),
+                    );
+            }
+            coefficients.push(value);
+        }
+        validate_exact_bits(&coefficients, max_coefficient_bits)?;
+        Ok(Self { coefficients })
+    }
+
+    fn sub(
+        &self,
+        rhs: &Self,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let target = self.coefficients.len().max(rhs.coefficients.len()) - 1;
+        self.elevate(target, max_coefficient_bits, max_work)?
+            .sub_same_degree(
+                &rhs.elevate(target, max_coefficient_bits, max_work)?,
+                max_coefficient_bits,
+                max_work,
+            )
+    }
 }
 
 fn validate_exact_bits(
@@ -901,6 +991,35 @@ mod tests {
         assert_eq!(
             range.sub_same_degree(&derivative, 16, 8),
             Err(CycleSchedulePrepareErrorV1::InvalidInput)
+        );
+        let linear = ExactBernsteinRangeV1 {
+            coefficients: [1_i64, 2]
+                .map(|value| BigRational::from_integer(value.into()))
+                .to_vec(),
+        };
+        let square = linear.product(&linear, 16, 8).unwrap();
+        assert_eq!(
+            square.coefficients,
+            [1_i64, 2, 4]
+                .map(|value| BigRational::from_integer(value.into()))
+                .to_vec()
+        );
+        let elevated = linear.elevate(2, 16, 8).unwrap();
+        assert_eq!(
+            elevated.coefficients,
+            [
+                BigRational::from_integer(1.into()),
+                BigRational::new(3.into(), 2.into()),
+                BigRational::from_integer(2.into()),
+            ]
+        );
+        assert_eq!(
+            elevated.sub(&linear, 16, 16).unwrap().coefficients,
+            vec![BigRational::zero(); 3]
+        );
+        assert_eq!(
+            linear.product(&linear, 16, 1),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
         );
     }
 }

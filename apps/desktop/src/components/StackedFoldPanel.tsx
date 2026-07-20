@@ -118,10 +118,22 @@ export function StackedFoldPanel({
 
   useEffect(() => {
     let current = true
+    if (!selectedLine) {
+      setLiveHinges([])
+      setRequestedHingeAngles({})
+      return () => {
+        current = false
+      }
+    }
     void readLiveHingeRegistryV1({
       expectedProjectInstanceId: snapshot.project_instance_id,
       expectedProjectId: snapshot.project_id,
       expectedRevision: snapshot.revision,
+      first: [selectedLine.start.x, 0, -selectedLine.start.y],
+      second: [selectedLine.end.x, 0, -selectedLine.end.y],
+      fixedSide,
+      rotationDirection,
+      requestedAngleDegrees: Number(angle),
     }).then((registry) => {
       if (!current) return
       setLiveHinges(registry.entries)
@@ -137,7 +149,15 @@ export function StackedFoldPanel({
     return () => {
       current = false
     }
-  }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision])
+  }, [
+    snapshot.project_instance_id,
+    snapshot.project_id,
+    snapshot.revision,
+    selectedLine,
+    fixedSide,
+    rotationDirection,
+    angle,
+  ])
 
   async function preview(event: FormEvent) {
     event.preventDefault()

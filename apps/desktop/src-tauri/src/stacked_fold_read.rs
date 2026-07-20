@@ -109,6 +109,11 @@ pub(super) struct LiveHingeRegistryRequestV1 {
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
+    first: [f64; 3],
+    second: [f64; 3],
+    fixed_side: FixedSideRequest,
+    rotation_direction: RotationDirectionRequest,
+    requested_angle_degrees: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -382,12 +387,13 @@ fn live_hinge_registry(angles: &[ori_kinematics::HingeAngle]) -> Vec<LiveGraphHi
 #[tauri::command]
 pub(super) async fn read_live_hinge_registry_v1(
     app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
     request: LiveHingeRegistryRequestV1,
 ) -> Result<LiveHingeRegistryResponseV1, String> {
     let _worker_permit = app_state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
-    let (capability, fingerprint, entries) = {
+    let (paper, pattern, capability, layer_capability, source_fingerprint) = {
         let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
         if project.instance_id != request.expected_project_instance_id
             || project.project_id != request.expected_project_id
@@ -400,24 +406,110 @@ pub(super) async fn read_live_hinge_registry_v1(
             .capture_capability(&project)
             .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
             .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
-        let entries = live_hinge_registry(capability.pose().hinge_angles());
-        if entries.len() > 64 {
-            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
-        }
         (
+            project.editor.paper().clone(),
+            project.editor.pattern().clone(),
             capability,
+            capture_current_layer_order_capability(&foldability_state, &project)
+                .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+                .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?,
             project.editor.fold_model_fingerprint_v1(),
-            entries,
         )
     };
+    let first = Point3::new(request.first[0], request.first[1], request.first[2])
+        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let second = Point3::new(request.second[0], request.second[1], request.second[2])
+        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let candidate = StackedFoldLinearCandidateV1::new(
+        first,
+        second,
+        request.fixed_side.into(),
+        request.rotation_direction.into(),
+        request.requested_angle_degrees,
+    )
+    .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let binding = StackedFoldReadBindingV1::new(
+        request.expected_project_instance_id,
+        request.expected_project_id,
+        request.expected_revision,
+        capability.generation(),
+        layer_capability.generation(),
+    );
+    let input = FlatEndpointLayerOrderInputV1 {
+        identity_namespace: binding.project_id(),
+        source_revision: binding.source_revision(),
+        paper: &paper,
+        pattern: &pattern,
+        model: capability.model(),
+        pose: capability.pose(),
+        layer_order: layer_capability.snapshot(),
+    };
+    let limits = StackedFoldReadLimitsV1::default();
+    let guard = capture_stacked_fold_read_guard_v1(binding, input, limits)
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+    let proposal = propose_linear_stacked_fold_read_v1(&guard, binding, input, candidate, limits)
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+    let material_map = reverse_map_linear_stacked_fold_material_v1(
+        &proposal,
+        &guard,
+        binding,
+        input,
+        limits,
+        StackedFoldMaterialMapLimitsV1::default(),
+    )
+    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+    let expected_creases = material_map
+        .segments()
+        .iter()
+        .map(|segment| ExpectedStackedFoldCreaseV1 {
+            start: segment.start(),
+            end: segment.end(),
+            kind: segment.assignment(),
+        })
+        .collect::<Vec<_>>();
+    let prepared = prepare_stacked_fold_geometry_candidate_v1(
+        binding.project_id(),
+        binding.source_revision(),
+        &pattern,
+        &paper,
+        layer_capability.snapshot(),
+        &expected_creases,
+        StackedFoldTopologyBuildLimitsV1::default(),
+        FaceLineageLimits::default(),
+        StackedFoldGeometryLimitsV1::default(),
+    )
+    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+    let fingerprint = prepared.proof().lineage().target_fingerprint().to_hex();
+    let audited = prepare_stacked_fold_target_graph_audit_v1(
+        prepared,
+        TreeKinematicsLimits::default(),
+    )
+    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+    let initial = prepare_stacked_fold_initial_graph_pose_v1(
+        audited,
+        capability.model(),
+        capability.pose(),
+    )
+    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+    let entries = live_hinge_registry(initial.pose().hinge_angles().as_slice());
+    if entries.len() > 64 {
+        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+    }
     {
         let project = lock_project(&app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
-        if project.editor.fold_model_fingerprint_v1() != fingerprint
+        if project.editor.fold_model_fingerprint_v1() != source_fingerprint
             || project
                 .applied_pose_authority
                 .revalidate_capability(&project, &capability)
                 .map_err(|_| STALE_MESSAGE.to_owned())?
                 .is_none()
+            || revalidate_current_layer_order_capability(
+                &foldability_state,
+                &project,
+                &layer_capability,
+            )
+            .map_err(|_| STALE_MESSAGE.to_owned())?
+            .is_none()
         {
             return Err(STALE_MESSAGE.to_owned());
         }

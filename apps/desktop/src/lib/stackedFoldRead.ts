@@ -60,6 +60,11 @@ export type LiveHingeRegistryRequestV1 = Readonly<{
   expectedProjectInstanceId: string
   expectedProjectId: string
   expectedRevision: number
+  first: readonly [number, number, number]
+  second: readonly [number, number, number]
+  fixedSide: StackedFoldFixedSide
+  rotationDirection: StackedFoldRotationDirection
+  requestedAngleDegrees: number
 }>
 
 export type LiveHingeRegistryResponseV1 = Readonly<{

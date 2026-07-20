@@ -29,6 +29,11 @@ describe('stacked-fold read boundary', () => {
       expectedProjectInstanceId: projectInstanceId,
       expectedProjectId: projectId,
       expectedRevision: 3,
+      first: [0, 0, 0] as const,
+      second: [1, 0, 0] as const,
+      fixedSide: 'left' as const,
+      rotationDirection: 'positive' as const,
+      requestedAngleDegrees: 90,
     }
     const registry = {
       version: 1,

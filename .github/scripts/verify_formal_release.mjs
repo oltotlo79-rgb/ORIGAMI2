@@ -113,6 +113,26 @@ if (
   propertyMap.get('origami2.dependency.policy-json')
   !== JSON.stringify(buildDependencyPolicy())
 ) throw new Error('CycloneDX SBOM dependency policy binding mismatch')
+const evidenceJson = propertyMap.get('origami2.release.evidence-json')
+let releaseEvidence
+try {
+  releaseEvidence = JSON.parse(evidenceJson)
+} catch {
+  throw new Error('CycloneDX SBOM release evidence JSON is invalid')
+}
+if (
+  evidenceJson !== JSON.stringify(releaseEvidence)
+  || releaseEvidence.schema !== 'origami2.release-evidence.v1'
+  || releaseEvidence.sourceCommit !== process.env.RELEASE_COMMIT
+  || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciRunId ?? '')
+  || !Number.isSafeInteger(releaseEvidence.executedTestCount)
+  || releaseEvidence.executedTestCount < 1
+  || releaseEvidence.executedTestCount > 100000
+  || JSON.stringify(releaseEvidence.executedSuites) !== '["formal-release-contract"]'
+  || (process.env.RELEASE_RUN_ID !== undefined && releaseEvidence.ciRunId !== process.env.RELEASE_RUN_ID)
+  || (process.env.EXECUTED_TEST_COUNT !== undefined
+    && releaseEvidence.executedTestCount !== Number(process.env.EXECUTED_TEST_COUNT))
+) throw new Error('CycloneDX SBOM canonical release evidence mismatch')
 }
 const updateManifestBytes = readFileSync(join(directory, updateManifest), 'utf8')
 const parsedUpdateManifest = JSON.parse(updateManifestBytes)

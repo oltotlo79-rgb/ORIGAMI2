@@ -77,6 +77,7 @@ if (process.env.RELEASE_COMMIT !== undefined) {
       version: properties.get('origami2.release.version'),
       declaredPlatform: properties.get('origami2.release.platform'),
       canonicalIdentity,
+      releaseEvidence: properties.get('origami2.release.evidence-json'),
     }
   })
   for (const identity of identities) {
@@ -95,6 +96,7 @@ if (process.env.RELEASE_COMMIT !== undefined) {
     platform: _platform,
     declaredPlatform: _declared,
     canonicalIdentity,
+    releaseEvidence: _releaseEvidence,
     ...identity
   }) => ({
     ...identity,
@@ -106,6 +108,9 @@ if (process.env.RELEASE_COMMIT !== undefined) {
   })
   if (JSON.stringify(withoutPlatform(identities[0])) !== JSON.stringify(withoutPlatform(identities[1]))) {
     throw new Error('cross-platform build input identity mismatch')
+  }
+  if (identities[0].releaseEvidence !== identities[1].releaseEvidence) {
+    throw new Error('cross-platform release evidence mismatch')
   }
 }
 console.log(`verified merged release set v${version}`)

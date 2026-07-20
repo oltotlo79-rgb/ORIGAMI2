@@ -11,6 +11,8 @@ const rustc = process.env.RUSTC_VERSION
 const node = process.env.NODE_VERSION
 const buildMode = process.env.BUILD_MODE
 const targetTriple = process.env.TARGET_TRIPLE
+const releaseRunId = process.env.RELEASE_RUN_ID
+const executedTestCount = Number(process.env.EXECUTED_TEST_COUNT)
 if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) {
   throw new Error('invalid CycloneDX source SBOM')
 }
@@ -26,6 +28,10 @@ const expectedTarget = platform === 'windows-x64'
   ? 'x86_64-pc-windows-msvc'
   : 'aarch64-apple-darwin'
 if (targetTriple !== expectedTarget) throw new Error('invalid build target triple')
+if (!/^[1-9][0-9]*$/u.test(releaseRunId ?? '')) throw new Error('invalid release CI run ID')
+if (!Number.isSafeInteger(executedTestCount) || executedTestCount < 1 || executedTestCount > 100000) {
+  throw new Error('invalid executed test count')
+}
 
 for (const key of ['bom-ref', 'purl']) {
   const values = sbom.components.map((component) => component?.[key]).filter(Boolean)
@@ -54,6 +60,13 @@ properties['origami2.build.identity-json'] = JSON.stringify({
   targetTriple,
 })
 properties['origami2.dependency.policy-json'] = JSON.stringify(buildDependencyPolicy())
+properties['origami2.release.evidence-json'] = JSON.stringify({
+  schema: 'origami2.release-evidence.v1',
+  sourceCommit: commit,
+  ciRunId: releaseRunId,
+  executedTestCount,
+  executedSuites: ['formal-release-contract'],
+})
 sbom.metadata = {
   ...(sbom.metadata ?? {}),
   component: { type: 'application', name: 'ORIGAMI2', version },

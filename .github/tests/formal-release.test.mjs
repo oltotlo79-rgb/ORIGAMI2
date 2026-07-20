@@ -557,6 +557,8 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
             TARGET_TRIPLE: platform === 'windows-x64'
               ? 'x86_64-pc-windows-msvc'
               : 'aarch64-apple-darwin',
+            RELEASE_RUN_ID: '12345',
+            EXECUTED_TEST_COUNT: '28',
           },
         },
       )
@@ -621,6 +623,8 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         NODE_VERSION: 'v24.0.0',
         BUILD_MODE: 'unsigned-dry-run',
         TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
+        RELEASE_RUN_ID: '12345',
+        EXECUTED_TEST_COUNT: '28',
       },
     })
     writeFileSync(path, JSON.stringify({
@@ -658,6 +662,13 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
       properties['origami2.dependency.policy-json'],
       JSON.stringify(buildDependencyPolicy()),
     )
+    assert.equal(properties['origami2.release.evidence-json'], JSON.stringify({
+      schema: 'origami2.release-evidence.v1',
+      sourceCommit: 'a'.repeat(40),
+      ciRunId: '12345',
+      executedTestCount: 28,
+      executedSuites: ['formal-release-contract'],
+    }))
 
     writeFileSync(path, JSON.stringify({
       bomFormat: 'CycloneDX',

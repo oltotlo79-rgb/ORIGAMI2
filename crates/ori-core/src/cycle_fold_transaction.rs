@@ -141,6 +141,31 @@ mod tests {
     use super::*;
     use crate::{AppliedPoseLimitsV1, create_rectangular_sheet, prepare_applied_pose_v1};
 
+    #[derive(Debug, Clone, PartialEq)]
+    struct EditorObservation {
+        revision: Revision,
+        pattern: CreasePattern,
+        paper: Paper,
+        timeline: InstructionTimeline,
+        layers: ProjectLayerDocumentV1,
+        pose: Option<AppliedPoseV1>,
+        can_undo: bool,
+        can_redo: bool,
+    }
+
+    fn observe(editor: &EditorState) -> EditorObservation {
+        EditorObservation {
+            revision: editor.revision(),
+            pattern: editor.pattern().clone(),
+            paper: editor.paper().clone(),
+            timeline: editor.instruction_timeline().clone(),
+            layers: editor.project_layers().clone(),
+            pose: editor.current_applied_pose().cloned(),
+            can_undo: editor.can_undo(),
+            can_redo: editor.can_redo(),
+        }
+    }
+
     fn editor() -> EditorState {
         create_rectangular_sheet(100.0, 100.0, false)
             .unwrap()
@@ -193,6 +218,9 @@ mod tests {
     fn ready_transaction_is_single_use_and_revision_bound() {
         let project = ProjectId::new();
         let mut editor = editor();
+        editor
+            .set_history_entry_limit(1)
+            .expect("minimum history endpoint");
         let mut token = ready(&editor, project);
         let initial = editor.revision();
         let pattern_before = editor.pattern().clone();
@@ -200,6 +228,10 @@ mod tests {
             apply_ready_cycle_fold_transaction_v1(project, &mut editor, &mut token).unwrap();
         assert!(applied.revision > initial);
         let pattern_after = editor.pattern().clone();
+        let paper_after = editor.paper().clone();
+        let timeline_after = editor.instruction_timeline().clone();
+        let layers_after = editor.project_layers().clone();
+        let pose_after = editor.current_applied_pose().cloned();
         assert_ne!(pattern_after, pattern_before);
         assert!(editor.current_applied_pose().is_some());
         assert!(matches!(
@@ -211,7 +243,14 @@ mod tests {
         assert!(editor.current_applied_pose().is_none());
         editor.redo(editor.revision()).unwrap();
         assert_eq!(editor.pattern(), &pattern_after);
-        assert!(editor.current_applied_pose().is_some());
+        assert_eq!(editor.paper(), &paper_after);
+        assert_eq!(editor.instruction_timeline(), &timeline_after);
+        assert_eq!(editor.project_layers(), &layers_after);
+        assert_eq!(editor.current_applied_pose(), pose_after.as_ref());
+        assert!(
+            !editor.can_redo(),
+            "one apply remains exactly one history entry"
+        );
 
         let mut stale = ready(&editor, project);
         editor
@@ -222,11 +261,13 @@ mod tests {
                 },
             )
             .unwrap();
+        let before_stale_rejection = observe(&editor);
         assert!(matches!(
             apply_ready_cycle_fold_transaction_v1(project, &mut editor, &mut stale),
             Err(CycleFoldTransactionErrorV1::RevisionChanged)
         ));
         assert!(stale.payload.is_some());
+        assert_eq!(observe(&editor), before_stale_rejection);
     }
 
     #[test]
@@ -234,6 +275,7 @@ mod tests {
         let project = ProjectId::new();
         let mut editor = editor();
         let mut wrong_project = ready(&editor, project);
+        let before_wrong_project = observe(&editor);
         assert!(matches!(
             apply_ready_cycle_fold_transaction_v1(
                 ProjectId::new(),
@@ -243,14 +285,43 @@ mod tests {
             Err(CycleFoldTransactionErrorV1::ProjectChanged)
         ));
         assert!(wrong_project.payload.is_some());
+        assert_eq!(observe(&editor), before_wrong_project);
 
         let mut pose_changed = ready(&editor, project);
         let replacement = pose_changed.payload.as_ref().unwrap().applied_pose.clone();
         editor.adopt_current_applied_pose(replacement);
+        let before_pose_rejection = observe(&editor);
         assert!(matches!(
             apply_ready_cycle_fold_transaction_v1(project, &mut editor, &mut pose_changed),
             Err(CycleFoldTransactionErrorV1::PoseChanged)
         ));
         assert!(pose_changed.payload.is_some());
+        assert_eq!(observe(&editor), before_pose_rejection);
+    }
+
+    #[test]
+    fn apply_failure_is_atomic_and_keeps_the_single_use_token_retryable() {
+        let project = ProjectId::new();
+        let mut editor = editor();
+        editor
+            .set_history_entry_limit(1)
+            .expect("minimum history endpoint");
+        let mut token = ready(&editor, project);
+        let payload = token.payload.as_mut().expect("native-only payload");
+        payload.paper.thickness_mm =
+            f64::from_bits(payload.paper.thickness_mm.to_bits().saturating_add(1));
+        let before = observe(&editor);
+
+        assert!(matches!(
+            apply_ready_cycle_fold_transaction_v1(project, &mut editor, &mut token),
+            Err(CycleFoldTransactionErrorV1::ApplyFailed(
+                CommandError::InvalidStackedFoldDocument
+            ))
+        ));
+        assert_eq!(observe(&editor), before);
+        assert!(
+            token.payload.is_some(),
+            "a failed apply must not consume the opaque authority"
+        );
     }
 }

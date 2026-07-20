@@ -1413,6 +1413,14 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
             pair_work: 0,
         };
     }
+    if scheduled_kawasaki_120_120_60_60_premises_v1(geometry, audit, fixed_face, schedule) {
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: 0,
+        };
+    }
     let mut maximum_radius = 0.0_f64;
     for face in geometry.face_ids() {
         let Some(boundary) = geometry.face_boundary_vertices(*face) else {
@@ -1523,6 +1531,68 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         leaf_count: leaves,
         pair_work: work,
     }
+}
+
+// Collision-free branch of the convex 120/120/60/60 bird-foot vertex for
+// 0 <= tan(rho_BC/2) <= 1.  The exact rational schedule fixes the one-DOF
+// mode, the single M crease selects its non-self-intersecting branch, and all
+// material faces are triangles meeting at the one physical vertex.
+fn scheduled_kawasaki_120_120_60_60_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> bool {
+    if geometry.hinges().len() != 4
+        || geometry.face_ids().len() != 4
+        || audit.closure_hinges().len() != 1
+    {
+        return false;
+    }
+    let Some((unit, half)) = schedule.kawasaki_120_120_60_60_half_angle_pairs_v1() else {
+        return false;
+    };
+    let half = half.into_iter().collect::<HashSet<_>>();
+    if unit.len() != 2
+        || geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+            .count()
+            != 1
+        || geometry
+            .hinges()
+            .iter()
+            .find(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+            .is_none_or(|hinge| !half.contains(&hinge.edge()))
+    {
+        return false;
+    }
+    let pivot = geometry.hinges()[0].end();
+    let same = |a: ori_kinematics::Point3, b: ori_kinematics::Point3| {
+        a.x().to_bits() == b.x().to_bits()
+            && a.y().to_bits() == b.y().to_bits()
+            && a.z().to_bits() == b.z().to_bits()
+    };
+    if geometry
+        .hinges()
+        .iter()
+        .any(|hinge| !same(hinge.end(), pivot) || same(hinge.start(), pivot))
+        || geometry.face_ids().iter().any(|face| {
+            geometry
+                .face_boundary_vertices(*face)
+                .is_none_or(|boundary| boundary.len() != 3)
+        })
+    {
+        return false;
+    }
+    [0.0, 0.5, 1.0].into_iter().all(|u| {
+        schedule.evaluate(u).is_some_and(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, 1.0e-9)
+                .is_ok()
+        })
+    })
 }
 
 // Narrow zero-thickness theorem for folding an already flat stack. Exact
@@ -2289,6 +2359,21 @@ mod tests {
             )
             .expect("full-domain physical four-vertex closure");
         assert_eq!(closure.leaves().len(), 1);
+        let initial = schedule.evaluate(0.0).unwrap();
+        let requested = schedule.evaluate(1.0).unwrap();
+        let candidate = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+            schedule, &initial, &requested,
+        )
+        .unwrap();
+        let diagnostic =
+            diagnose_scheduled_cycle_path_v1(&geometry, &audit, fixed, &candidate, &closure, 32);
+        assert!(diagnostic.continuous_certificate_model_id().is_some());
+        assert!(
+            crate::certify_scheduled_cycle_transition_v1(
+                &geometry, &audit, fixed, &candidate, &closure, 32, [0x31; 32], [0x32; 32],
+            )
+            .is_some()
+        );
     }
 
     fn one_hinge_model() -> MaterialTreeKinematicsModel {

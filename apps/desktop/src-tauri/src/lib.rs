@@ -29,6 +29,7 @@ use applied_pose::{
     CurrentStaticCollisionDiagnosticResponse, NativePoseRequest,
     apply_current_native_pose as apply_current_native_pose_authority, commit_project_replacement,
     inspect_current_static_collision as inspect_current_static_collision_authority,
+    restore_persisted_current_pose,
 };
 use crease_export::{
     CreaseExportState, cancel_crease_pattern_export, preview_crease_pattern_export,
@@ -476,6 +477,7 @@ impl ProjectState {
         let editor = restore_archive_editor(&project)
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
         let mut document = project.document;
+        let persisted_pose = document.current_pose.clone();
         if document.thumbnail_svg.is_none() {
             document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
         }
@@ -490,7 +492,7 @@ impl ProjectState {
         saved_document.numeric_expressions.redo_stack.clear();
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
-        Ok(Self {
+        let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
             name: document.name,
@@ -500,7 +502,12 @@ impl ProjectState {
             numeric_expressions: document.numeric_expressions,
             saved_document: Some(saved_document),
             editor,
-        })
+        };
+        if let Some(pose) = persisted_pose.as_ref() {
+            restore_persisted_current_pose(&mut restored, pose)
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+        }
+        Ok(restored)
     }
 
     fn from_recovery_project_archive(project: Ori2ProjectArchive) -> Result<Self, ()> {
@@ -511,6 +518,7 @@ impl ProjectState {
             .unwrap_or_default();
         let editor = restore_archive_editor(&project)?;
         let mut document = project.document;
+        let persisted_pose = document.current_pose.clone();
         if document.thumbnail_svg.is_none() {
             document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
         }
@@ -519,7 +527,7 @@ impl ProjectState {
             history_lengths.0,
             history_lengths.1,
         )?;
-        Ok(Self {
+        let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
             name: document.name,
@@ -529,7 +537,11 @@ impl ProjectState {
             numeric_expressions: document.numeric_expressions,
             saved_document: None,
             editor,
-        })
+        };
+        if let Some(pose) = persisted_pose.as_ref() {
+            restore_persisted_current_pose(&mut restored, pose).map_err(|_| ())?;
+        }
+        Ok(restored)
     }
 
     fn document(&self) -> ProjectDocument {
@@ -544,6 +556,7 @@ impl ProjectState {
             name: self.name.clone(),
             memo: self.editor.project_memo().to_owned(),
             thumbnail_svg: None,
+            current_pose: current_pose_document(&self.editor),
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
@@ -599,6 +612,7 @@ impl ProjectState {
             || saved.project_id != self.project_id
             || saved.name != self.name
             || saved.memo != self.editor.project_memo()
+            || saved.current_pose != current_pose_document(&self.editor)
             || saved.paper != *self.editor.paper()
             || saved.crease_pattern != *self.editor.pattern()
             || saved.instruction_timeline != *self.editor.instruction_timeline()
@@ -771,6 +785,23 @@ impl ProjectState {
         trim_expression_stack(&mut self.numeric_expressions.vertex_undo_stack, limit);
         trim_expression_stack(&mut self.numeric_expressions.vertex_redo_stack, limit);
     }
+}
+
+fn current_pose_document(editor: &EditorState) -> Option<InstructionPose> {
+    let pose = editor.current_applied_pose()?;
+    Some(InstructionPose {
+        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+        source_model_fingerprint: editor.fold_model_fingerprint_v1(),
+        fixed_face: pose.fixed_face(),
+        hinge_angles: pose
+            .hinge_angles()
+            .iter()
+            .map(|hinge| InstructionHingeAngle {
+                edge: hinge.edge(),
+                angle_degrees: hinge.angle_degrees(),
+            })
+            .collect(),
+    })
 }
 
 fn trim_expression_stack<T>(stack: &mut Vec<T>, limit: usize) {

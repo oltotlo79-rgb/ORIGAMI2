@@ -10,10 +10,11 @@ mod svg;
 
 use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, GeometricConstraintDocumentV1,
-    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1, InstructionTimeline,
-    InstructionTimelineValidationError, Paper, ProjectId, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, VertexId, validate_geometric_constraint_document_v1,
-    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
+    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1, InstructionPose,
+    InstructionTimeline, InstructionTimelineValidationError, Paper, ProjectId,
+    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, VertexId,
+    validate_geometric_constraint_document_v1, validate_instruction_timeline,
+    validate_project_layer_document_against_pattern_v1,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -243,6 +244,9 @@ pub struct ProjectDocument {
     /// Deterministic, script-free crease-pattern thumbnail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_svg: Option<String>,
+    /// Independently saved current 3D pose, separate from instruction steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_pose: Option<InstructionPose>,
     #[serde(default)]
     pub paper: Paper,
     pub crease_pattern: CreasePattern,
@@ -276,6 +280,7 @@ impl ProjectDocument {
             name: name.into(),
             memo: String::new(),
             thumbnail_svg: None,
+            current_pose: None,
             paper: Paper::default(),
             crease_pattern,
             instruction_timeline: InstructionTimeline::default(),
@@ -301,6 +306,8 @@ pub enum FormatError {
     InvalidProjectMemo,
     #[error("project thumbnail is invalid")]
     InvalidProjectThumbnail,
+    #[error("project current pose is invalid")]
+    InvalidCurrentPose,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error(".ori2 editor-history JSON is invalid: {0}")]
@@ -486,6 +493,27 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
             .map_err(|_| FormatError::InvalidProjectThumbnail)?;
         if thumbnail.as_bytes() != expected {
             return Err(FormatError::InvalidProjectThumbnail);
+        }
+    }
+    if let Some(pose) = &document.current_pose {
+        if pose.model != ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1
+            || pose.source_model_fingerprint.len() != 64
+            || !pose
+                .source_model_fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || pose.hinge_angles.len() > ori_domain::MAX_INSTRUCTION_HINGES_PER_STEP
+            || pose
+                .hinge_angles
+                .windows(2)
+                .any(|pair| pair[0].edge.canonical_bytes() >= pair[1].edge.canonical_bytes())
+            || pose.hinge_angles.iter().any(|hinge| {
+                !hinge.angle_degrees.is_finite() || !(0.0..=180.0).contains(&hinge.angle_degrees)
+            })
+            || (pose.hinge_angles.is_empty() && pose.fixed_face.is_some())
+            || (!pose.hinge_angles.is_empty() && pose.fixed_face.is_none())
+        {
+            return Err(FormatError::InvalidCurrentPose);
         }
     }
     ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
@@ -890,6 +918,29 @@ mod tests {
         assert!(matches!(
             write_project_json(&document),
             Err(FormatError::InvalidProjectThumbnail)
+        ));
+    }
+
+    #[test]
+    fn independent_current_pose_round_trips_and_rejects_invalid_model_data() {
+        let mut document = sample_document();
+        document.current_pose = Some(InstructionPose {
+            model: ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1,
+            source_model_fingerprint: "a".repeat(64),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        });
+        let encoded = write_project_json(&document).unwrap();
+        assert_eq!(read_project_json(&encoded).unwrap(), document);
+
+        document
+            .current_pose
+            .as_mut()
+            .unwrap()
+            .source_model_fingerprint = "not-a-fingerprint".to_owned();
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidCurrentPose)
         ));
     }
 

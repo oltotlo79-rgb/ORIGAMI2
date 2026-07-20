@@ -32,7 +32,7 @@ use ori_core::{
     APPLIED_POSE_MODEL_ID_V1, AppliedPoseLimitsV1, AppliedPoseV1, TopologyAnalysisInput,
     TopologySnapshot, prepare_applied_pose_v1,
 };
-use ori_domain::{EdgeId, FaceId, ProjectId};
+use ori_domain::{EdgeId, FaceId, InstructionPose, InstructionPoseModel, ProjectId};
 use ori_kinematics::{
     CanonicalHingeAngles, HingeAngle, MATERIAL_TREE_KINEMATICS_MODEL_ID,
     MaterialTreeKinematicsModel, MaterialTreePose, TreeKinematicsLimits,
@@ -346,6 +346,36 @@ pub(crate) async fn apply_current_native_pose(
     drop(project);
     drop(permit);
     Ok(response)
+}
+
+pub(super) fn restore_persisted_current_pose(
+    project: &mut ProjectState,
+    pose: &InstructionPose,
+) -> Result<(), PoseAuthorityError> {
+    if pose.model != InstructionPoseModel::AbsoluteHingeAnglesV1
+        || pose.source_model_fingerprint != project.editor.fold_model_fingerprint_v1()
+    {
+        return Err(PoseAuthorityError::InvalidRequest);
+    }
+    let request = NativePoseRequest {
+        expected_project_instance_id: project.instance_id,
+        expected_project_id: project.project_id,
+        expected_revision: project.editor.revision(),
+        fixed_face_id: pose.fixed_face,
+        complete_hinge_angles: pose
+            .hinge_angles
+            .iter()
+            .map(|hinge| NativePoseHingeAngleRequest {
+                edge_id: hinge.edge,
+                angle_degrees: hinge.angle_degrees,
+            })
+            .collect(),
+    };
+    let authority = project.applied_pose_authority.clone();
+    let captured = authority.capture_request(project, request)?;
+    let prepared = captured.prepare()?;
+    authority.commit_prepared(project, prepared)?;
+    Ok(())
 }
 
 impl CurrentAppliedPoseAuthority {
@@ -1129,6 +1159,34 @@ mod tests {
         let encoded = serde_json::to_value(binding).expect("serialize pose binding");
         assert_eq!(encoded["revision"], 7);
         assert_eq!(encoded["poseGeneration"], u64::MAX.to_string());
+    }
+
+    #[test]
+    fn current_pose_round_trips_as_independent_native_authority() {
+        let mut project = no_hinge_project();
+        adopt_no_hinge_pose(&mut project);
+        let archive = project.project_archive().expect("archive current pose");
+        let persisted = archive
+            .document
+            .current_pose
+            .clone()
+            .expect("persisted current pose");
+
+        let reopened = ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("current-pose.ori2"),
+        )
+        .expect("restore current pose");
+        assert_eq!(reopened.document().current_pose, Some(persisted));
+        assert!(reopened.editor.current_applied_pose().is_some());
+        assert!(
+            reopened
+                .applied_pose_authority
+                .capture_capability(&reopened)
+                .expect("capture restored authority")
+                .is_some()
+        );
+        assert!(!reopened.is_dirty());
     }
 
     #[test]

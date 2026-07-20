@@ -113,6 +113,8 @@ pub enum Command {
         thickness_mm: f64,
         front_color: RgbaColor,
         back_color: RgbaColor,
+        front_texture_asset: Option<ori_domain::AssetId>,
+        back_texture_asset: Option<ori_domain::AssetId>,
         cutting_allowed: bool,
     },
     SetLengthDisplayUnit {
@@ -633,6 +635,8 @@ enum Inverse {
         thickness_mm: f64,
         front_color: RgbaColor,
         back_color: RgbaColor,
+        front_texture_asset: Option<ori_domain::AssetId>,
+        back_texture_asset: Option<ori_domain::AssetId>,
         cutting_allowed: bool,
     },
     RestoreLengthDisplayUnit {
@@ -2019,6 +2023,8 @@ impl EditorState {
                     thickness_mm: self.paper.thickness_mm,
                     front_color: self.paper.front.color,
                     back_color: self.paper.back.color,
+                    front_texture_asset: self.paper.front.texture_asset,
+                    back_texture_asset: self.paper.back.texture_asset,
                     cutting_allowed: previous,
                 })
             }
@@ -2026,6 +2032,8 @@ impl EditorState {
                 thickness_mm,
                 front_color,
                 back_color,
+                front_texture_asset,
+                back_texture_asset,
                 cutting_allowed,
             } => {
                 Self::validate_paper_thickness(thickness_mm)?;
@@ -2034,11 +2042,15 @@ impl EditorState {
                     thickness_mm: self.paper.thickness_mm,
                     front_color: self.paper.front.color,
                     back_color: self.paper.back.color,
+                    front_texture_asset: self.paper.front.texture_asset,
+                    back_texture_asset: self.paper.back.texture_asset,
                     cutting_allowed: self.paper.cutting_allowed,
                 };
                 self.paper.thickness_mm = thickness_mm;
                 self.paper.front.color = front_color;
                 self.paper.back.color = back_color;
+                self.paper.front.texture_asset = front_texture_asset;
+                self.paper.back.texture_asset = back_texture_asset;
                 self.paper.cutting_allowed = cutting_allowed;
                 Ok(inverse)
             }
@@ -4321,11 +4333,15 @@ impl EditorState {
                 thickness_mm,
                 front_color,
                 back_color,
+                front_texture_asset,
+                back_texture_asset,
                 cutting_allowed,
             } => {
                 self.paper.thickness_mm = *thickness_mm;
                 self.paper.front.color = *front_color;
                 self.paper.back.color = *back_color;
+                self.paper.front.texture_asset = *front_texture_asset;
+                self.paper.back.texture_asset = *back_texture_asset;
                 self.paper.cutting_allowed = *cutting_allowed;
             }
             Inverse::RestoreLengthDisplayUnit { unit } => {
@@ -6903,7 +6919,7 @@ mod tests {
     }
 
     #[test]
-    fn paper_properties_are_one_undoable_command_and_preserve_textures() {
+    fn paper_properties_are_one_undoable_command_including_textures() {
         let front_texture = ori_domain::AssetId::new();
         let back_texture = ori_domain::AssetId::new();
         let mut paper = Paper::default();
@@ -6921,6 +6937,8 @@ mod tests {
                     thickness_mm: 0.0,
                     front_color,
                     back_color,
+                    front_texture_asset: None,
+                    back_texture_asset: None,
                     cutting_allowed: true,
                 },
             )
@@ -6933,8 +6951,8 @@ mod tests {
         assert_eq!(editor.paper().thickness_mm, 0.0);
         assert_eq!(editor.paper().front.color, front_color);
         assert_eq!(editor.paper().back.color, back_color);
-        assert_eq!(editor.paper().front.texture_asset, Some(front_texture));
-        assert_eq!(editor.paper().back.texture_asset, Some(back_texture));
+        assert_eq!(editor.paper().front.texture_asset, None);
+        assert_eq!(editor.paper().back.texture_asset, None);
         assert!(editor.paper().cutting_allowed);
 
         editor.undo(1).expect("undo paper properties");
@@ -6943,8 +6961,8 @@ mod tests {
         assert_eq!(editor.paper().thickness_mm, 0.0);
         assert_eq!(editor.paper().front.color, front_color);
         assert_eq!(editor.paper().back.color, back_color);
-        assert_eq!(editor.paper().front.texture_asset, Some(front_texture));
-        assert_eq!(editor.paper().back.texture_asset, Some(back_texture));
+        assert_eq!(editor.paper().front.texture_asset, None);
+        assert_eq!(editor.paper().back.texture_asset, None);
         assert!(editor.paper().cutting_allowed);
     }
 
@@ -12265,6 +12283,8 @@ mod tests {
                         thickness_mm: invalid,
                         front_color: RgbaColor::opaque(1, 2, 3),
                         back_color: RgbaColor::opaque(4, 5, 6),
+                        front_texture_asset: None,
+                        back_texture_asset: None,
                         cutting_allowed: true,
                     },
                 )
@@ -12327,6 +12347,8 @@ mod tests {
                     thickness_mm: 0.5,
                     front_color: RgbaColor::opaque(1, 2, 3),
                     back_color: RgbaColor::opaque(4, 5, 6),
+                    front_texture_asset: None,
+                    back_texture_asset: None,
                     cutting_allowed: false,
                 },
             )
@@ -13900,6 +13922,8 @@ mod tests {
                     thickness_mm: 3.0,
                     front_color: RgbaColor::opaque(1, 2, 3),
                     back_color: RgbaColor::opaque(4, 5, 6),
+                    front_texture_asset: None,
+                    back_texture_asset: None,
                     cutting_allowed: true,
                 },
             )

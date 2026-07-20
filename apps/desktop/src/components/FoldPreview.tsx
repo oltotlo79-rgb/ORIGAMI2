@@ -197,6 +197,8 @@ type FoldPreviewProps = {
   statusMessage?: string
   frontColor?: RgbaColor | null
   backColor?: RgbaColor | null
+  frontTextureAsset?: string | null
+  backTextureAsset?: string | null
   thicknessMm?: number | null
   lengthDisplayUnit?: ResolvedLengthDisplayUnit
   localeStore?: LocaleStore
@@ -411,6 +413,8 @@ export function FoldPreview({
   statusMessage,
   frontColor,
   backColor,
+  frontTextureAsset,
+  backTextureAsset,
   thicknessMm,
   lengthDisplayUnit = MILLIMETRE_LENGTH_DISPLAY_UNIT,
   localeStore: localeStore_,
@@ -982,6 +986,8 @@ export function FoldPreview({
         host,
         front: { hex: frontHex, opacity: frontOpacity },
         back: { hex: backHex, opacity: backOpacity },
+        frontTextureAsset,
+        backTextureAsset,
         devicePixelRatio: window.devicePixelRatio,
       })
       sceneRuntime = createdSceneRuntime
@@ -3796,8 +3802,10 @@ export function FoldPreview({
     collisionThickness,
     frontHex,
     frontOpacity,
+    frontTextureAsset,
     backHex,
     backOpacity,
+    backTextureAsset,
     resolvedFixedFaceId,
     singleFoldMotionContextKey,
     treeCommitAvailable,

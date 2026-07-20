@@ -72,16 +72,47 @@ export function createFoldPreviewFaceGeometry(
 
   const positionAttribute = new Float32BufferAttribute(positions, POSITION_COMPONENTS)
   const normalAttribute = new Float32BufferAttribute(normals, POSITION_COMPONENTS)
+  const uvAttribute = new Float32BufferAttribute(
+    createPlanarUvCoordinates(positions),
+    2,
+  )
   validateFloatAttributes(positionAttribute.array, normalAttribute.array)
 
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', positionAttribute)
   geometry.setAttribute('normal', normalAttribute)
+  geometry.setAttribute('uv', uvAttribute)
   geometry.addGroup(frontStart, frontCount, FOLD_PREVIEW_FRONT_MATERIAL_INDEX)
   geometry.addGroup(backStart, backCount, FOLD_PREVIEW_BACK_MATERIAL_INDEX)
   geometry.addGroup(sideStart, sideCount, FOLD_PREVIEW_SIDE_MATERIAL_INDEX)
   geometry.computeBoundingBox()
   return geometry
+}
+
+function createPlanarUvCoordinates(positions: readonly number[]) {
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minZ = Number.POSITIVE_INFINITY
+  let maxZ = Number.NEGATIVE_INFINITY
+  for (let offset = 0; offset < positions.length; offset += POSITION_COMPONENTS) {
+    minX = Math.min(minX, positions[offset])
+    maxX = Math.max(maxX, positions[offset])
+    minZ = Math.min(minZ, positions[offset + 2])
+    maxZ = Math.max(maxZ, positions[offset + 2])
+  }
+  const width = maxX - minX
+  const height = maxZ - minZ
+  if (!(width > 0) || !(height > 0)) {
+    throw new RangeError('fold preview polygon cannot produce texture coordinates')
+  }
+  const coordinates: number[] = []
+  for (let offset = 0; offset < positions.length; offset += POSITION_COMPONENTS) {
+    coordinates.push(
+      (positions[offset] - minX) / width,
+      (positions[offset + 2] - minZ) / height,
+    )
+  }
+  return coordinates
 }
 
 /**

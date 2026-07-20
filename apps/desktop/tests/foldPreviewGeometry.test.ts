@@ -29,6 +29,12 @@ test('rectangular face becomes a centred prism with three complete material grou
   assertBounds(geometry, [-2, -0.1, -1], [2, 0.1, 1])
   assertFiniteGeometry(geometry)
   assertGroupNormalsAndWinding(geometry)
+  const uv = geometry.getAttribute('uv') as BufferAttribute
+  assert.equal(uv.count, geometry.getAttribute('position').count)
+  for (let index = 0; index < uv.count; index += 1) {
+    assert.ok(uv.getX(index) >= 0 && uv.getX(index) <= 1)
+    assert.ok(uv.getY(index) >= 0 && uv.getY(index) <= 1)
+  }
 
   let disposed = false
   geometry.addEventListener('dispose', () => { disposed = true })

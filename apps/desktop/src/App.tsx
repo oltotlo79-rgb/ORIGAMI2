@@ -179,6 +179,10 @@ import {
 import { useGeometricConstraintPreflight } from './lib/useGeometricConstraintPreflight'
 import type { FoldPreviewHingeAngle } from './lib/foldPreviewKinematics'
 import {
+  builtinPaperPatternAsset,
+  builtinPaperPatternFromAsset,
+} from './lib/paperPatterns'
+import {
   foldPreviewAppliedPoseKey,
   type FoldPreviewAppliedPoseSnapshot,
 } from './lib/foldPreviewAppliedPose'
@@ -2947,6 +2951,8 @@ function App() {
     )
     const frontColor = parseHexColor(String(form.get('front_color') ?? ''))
     const backColor = parseHexColor(String(form.get('back_color') ?? ''))
+    const frontTextureAsset = builtinPaperPatternAsset(form.get('front_pattern'))
+    const backTextureAsset = builtinPaperPatternAsset(form.get('back_pattern'))
     if (thicknessMm === null || thicknessMm < 0) {
       setCoreStatus(appMessage({
         ja: '紙厚には0以上の有限の数値を入力してください',
@@ -2967,6 +2973,8 @@ function App() {
         thicknessMm,
         frontColor: { ...frontColor, alpha: current.paper.front.color.alpha },
         backColor: { ...backColor, alpha: current.paper.back.color.alpha },
+        frontTextureAsset,
+        backTextureAsset,
         cuttingAllowed: form.get('cutting_allowed') === 'on',
       }))
   }
@@ -5044,6 +5052,9 @@ function App() {
               paperBounds={benchmarkRun?.bounds ?? paperBounds}
               paperPolygon={benchmarkRun ? undefined : paperPolygon}
               paperColor={paperFrontColor}
+              paperPattern={builtinPaperPatternFromAsset(
+                nativeSnapshot?.paper.front.texture_asset,
+              )}
               vertices={displayedVertices}
               faces={benchmarkRun ? [] : canvasFaces}
               tool={benchmarkRun ? 'select' : activeTool}
@@ -5231,6 +5242,8 @@ function App() {
               statusMessage={foldPreviewStatus}
               frontColor={nativeSnapshot?.paper.front.color}
               backColor={nativeSnapshot?.paper.back.color}
+              frontTextureAsset={nativeSnapshot?.paper.front.texture_asset}
+              backTextureAsset={nativeSnapshot?.paper.back.texture_asset}
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
               lengthDisplayUnit={lengthDisplayUnit}
             />
@@ -6599,6 +6612,38 @@ function App() {
                     defaultValue={rgbaToHex(nativeSnapshot?.paper.back.color, '#f8f8f5')}
                     disabled={coreBusy || !nativeSnapshot}
                   />
+                </label>
+              </div>
+              <div className="paper-color-fields">
+                <label className="paper-color-field">
+                  <span>{text({ ja: '表の模様', en: 'Front pattern' })}</span>
+                  <select
+                    name="front_pattern"
+                    defaultValue={builtinPaperPatternFromAsset(
+                      nativeSnapshot?.paper.front.texture_asset,
+                    ) ?? 'none'}
+                    disabled={coreBusy || !nativeSnapshot}
+                  >
+                    <option value="none">{text({ ja: 'なし（単色）', en: 'None (solid)' })}</option>
+                    <option value="dots">{text({ ja: 'ドット', en: 'Dots' })}</option>
+                    <option value="grid">{text({ ja: '格子', en: 'Grid' })}</option>
+                    <option value="stripes">{text({ ja: '縞', en: 'Stripes' })}</option>
+                  </select>
+                </label>
+                <label className="paper-color-field">
+                  <span>{text({ ja: '裏の模様', en: 'Back pattern' })}</span>
+                  <select
+                    name="back_pattern"
+                    defaultValue={builtinPaperPatternFromAsset(
+                      nativeSnapshot?.paper.back.texture_asset,
+                    ) ?? 'none'}
+                    disabled={coreBusy || !nativeSnapshot}
+                  >
+                    <option value="none">{text({ ja: 'なし（単色）', en: 'None (solid)' })}</option>
+                    <option value="dots">{text({ ja: 'ドット', en: 'Dots' })}</option>
+                    <option value="grid">{text({ ja: '格子', en: 'Grid' })}</option>
+                    <option value="stripes">{text({ ja: '縞', en: 'Stripes' })}</option>
+                  </select>
                 </label>
               </div>
               <label className="check">

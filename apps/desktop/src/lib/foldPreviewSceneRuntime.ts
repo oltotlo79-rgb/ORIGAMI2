@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { builtinPaperPatternFromAsset } from './paperPatterns.ts'
 
 export type FoldPreviewResolvedColor = Readonly<{
   hex: number
@@ -43,6 +44,8 @@ export function createFoldPreviewSceneRuntime(
     host: HTMLElement
     front: FoldPreviewResolvedColor
     back: FoldPreviewResolvedColor
+    frontTextureAsset?: string | null
+    backTextureAsset?: string | null
     devicePixelRatio: number
   }>,
   dependencies: FoldPreviewSceneRuntimeDependencies = {},
@@ -51,6 +54,7 @@ export function createFoldPreviewSceneRuntime(
   let canvas: HTMLCanvasElement | null = null
   let grid: THREE.GridHelper | null = null
   const ownedMaterials: THREE.Material[] = []
+  const ownedTextures: THREE.Texture[] = []
   let disposed = false
 
   const dispose = () => {
@@ -64,6 +68,9 @@ export function createFoldPreviewSceneRuntime(
     }
     for (const material of ownedMaterials) {
       attemptCleanup(() => material.dispose())
+    }
+    for (const texture of ownedTextures) {
+      attemptCleanup(() => texture.dispose())
     }
     if (renderer) {
       attemptCleanup(() => renderer?.renderLists.dispose())
@@ -118,11 +125,17 @@ export function createFoldPreviewSceneRuntime(
 
     const frontMaterial = ownMaterial(
       ownedMaterials,
-      createPaperMaterial(input.front),
+      createPaperMaterial(
+        input.front,
+        createPaperPatternTexture(input.frontTextureAsset, ownedTextures),
+      ),
     )
     const backMaterial = ownMaterial(
       ownedMaterials,
-      createPaperMaterial(input.back),
+      createPaperMaterial(
+        input.back,
+        createPaperPatternTexture(input.backTextureAsset, ownedTextures),
+      ),
     )
     const sideMaterial = ownMaterial(
       ownedMaterials,
@@ -222,13 +235,67 @@ export function createFoldPreviewSceneRuntime(
   }
 }
 
-function createPaperMaterial(color: FoldPreviewResolvedColor) {
+function createPaperMaterial(
+  color: FoldPreviewResolvedColor,
+  map: THREE.Texture | null,
+) {
   return new THREE.MeshStandardMaterial({
     color: color.hex,
+    map,
     opacity: color.opacity,
     transparent: color.opacity < 1,
     roughness: 0.72,
   })
+}
+
+function createPaperPatternTexture(
+  assetId: string | null | undefined,
+  ownedTextures: THREE.Texture[],
+): THREE.Texture | null {
+  const pattern = builtinPaperPatternFromAsset(assetId)
+  if (!pattern) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const context = canvas.getContext('2d')
+  if (!context) return null
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, 64, 64)
+  context.fillStyle = '#999999'
+  context.strokeStyle = '#999999'
+  context.lineWidth = 2
+  if (pattern === 'dots') {
+    for (let y = 8; y < 64; y += 16) {
+      for (let x = 8; x < 64; x += 16) {
+        context.beginPath()
+        context.arc(x, y, 2.5, 0, Math.PI * 2)
+        context.fill()
+      }
+    }
+  } else if (pattern === 'grid') {
+    context.beginPath()
+    for (let value = 0; value <= 64; value += 16) {
+      context.moveTo(value, 0)
+      context.lineTo(value, 64)
+      context.moveTo(0, value)
+      context.lineTo(64, value)
+    }
+    context.stroke()
+  } else {
+    context.beginPath()
+    for (let offset = -64; offset <= 128; offset += 16) {
+      context.moveTo(offset, 64)
+      context.lineTo(offset + 64, 0)
+    }
+    context.stroke()
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.repeat.set(4, 4)
+  ownedTextures.push(texture)
+  return texture
 }
 
 function mixColors(first: number, second: number) {

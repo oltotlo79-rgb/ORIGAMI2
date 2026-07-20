@@ -183,6 +183,10 @@ enum CommandV1 {
         thickness_mm: f64,
         front_color: RgbaColor,
         back_color: RgbaColor,
+        #[serde(default)]
+        front_texture_asset: Option<ori_domain::AssetId>,
+        #[serde(default)]
+        back_texture_asset: Option<ori_domain::AssetId>,
         cutting_allowed: bool,
     },
     SetLengthDisplayUnit {
@@ -330,6 +334,10 @@ enum InverseV1 {
         thickness_mm: f64,
         front_color: RgbaColor,
         back_color: RgbaColor,
+        #[serde(default)]
+        front_texture_asset: Option<ori_domain::AssetId>,
+        #[serde(default)]
+        back_texture_asset: Option<ori_domain::AssetId>,
         cutting_allowed: bool,
     },
     RestoreLengthDisplayUnit {
@@ -532,11 +540,15 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         } => CommandV1::UpdatePaperProperties {
             thickness_mm: *thickness_mm,
             front_color: *front_color,
             back_color: *back_color,
+            front_texture_asset: *front_texture_asset,
+            back_texture_asset: *back_texture_asset,
             cutting_allowed: *cutting_allowed,
         },
         Command::SetLengthDisplayUnit { unit } => CommandV1::SetLengthDisplayUnit { unit: *unit },
@@ -736,11 +748,15 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         } => Command::UpdatePaperProperties {
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         },
         CommandV1::SetLengthDisplayUnit { unit } => Command::SetLengthDisplayUnit { unit },
@@ -930,11 +946,15 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         } => InverseV1::RestorePaperProperties {
             thickness_mm: *thickness_mm,
             front_color: *front_color,
             back_color: *back_color,
+            front_texture_asset: *front_texture_asset,
+            back_texture_asset: *back_texture_asset,
             cutting_allowed: *cutting_allowed,
         },
         Inverse::RestoreLengthDisplayUnit { unit } => {
@@ -1152,11 +1172,15 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         } => Inverse::RestorePaperProperties {
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         },
         InverseV1::RestoreLengthDisplayUnit { unit } => Inverse::RestoreLengthDisplayUnit { unit },
@@ -2264,6 +2288,8 @@ mod tests {
                 thickness_mm: 0.1,
                 front_color: RgbaColor::opaque(1, 2, 3),
                 back_color: RgbaColor::opaque(4, 5, 6),
+                front_texture_asset: None,
+                back_texture_asset: None,
                 cutting_allowed: true,
             },
             Command::SetLengthDisplayUnit {
@@ -2476,6 +2502,8 @@ mod tests {
                 thickness_mm: 0.1,
                 front_color: RgbaColor::opaque(1, 2, 3),
                 back_color: RgbaColor::opaque(4, 5, 6),
+                front_texture_asset: None,
+                back_texture_asset: None,
                 cutting_allowed: false,
             },
             Inverse::RestoreLengthDisplayUnit {

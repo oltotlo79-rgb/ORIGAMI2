@@ -301,6 +301,8 @@ export type PaperPropertySettings = {
   thicknessMm: number
   frontColor: RgbaColor
   backColor: RgbaColor
+  frontTextureAsset: string | null
+  backTextureAsset: string | null
   cuttingAllowed: boolean
 }
 
@@ -1547,6 +1549,8 @@ export function updatePaperProperties(
     thicknessMm: settings.thicknessMm,
     frontColor: settings.frontColor,
     backColor: settings.backColor,
+    frontTextureAsset: settings.frontTextureAsset,
+    backTextureAsset: settings.backTextureAsset,
     cuttingAllowed: settings.cuttingAllowed,
   })
 }

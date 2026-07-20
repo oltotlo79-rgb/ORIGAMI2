@@ -41,6 +41,7 @@ import {
   type Locale,
   type LocaleStore,
 } from '../lib/i18n.ts'
+import type { BuiltinPaperPattern } from '../lib/paperPatterns.ts'
 
 export type CreaseLine = {
   id: string
@@ -109,6 +110,7 @@ type Props = {
   paperBounds?: PaperBounds
   paperPolygon?: PaperPolygonPoint[]
   paperColor?: string
+  paperPattern?: BuiltinPaperPattern | null
   tool?: string
   selectedVertexId?: string | null
   selectedFaceId?: string | null
@@ -203,6 +205,50 @@ const EMPTY_VALIDATION_VERTEX_HIGHLIGHTS: ReadonlyMap<string, ValidationVertexHi
   new Map()
 const EMPTY_LOCKED_VERTEX_IDS: ReadonlySet<string> = new Set()
 
+function drawPaperPattern(
+  context: CanvasRenderingContext2D,
+  pattern: BuiltinPaperPattern,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+) {
+  context.save()
+  context.globalAlpha = 0.22
+  context.strokeStyle = '#39434d'
+  context.fillStyle = '#39434d'
+  context.lineWidth = 1
+  const spacing = 14
+  if (pattern === 'dots') {
+    for (let y = top + spacing / 2; y < top + height; y += spacing) {
+      for (let x = left + spacing / 2; x < left + width; x += spacing) {
+        context.beginPath()
+        context.arc(x, y, 1.4, 0, Math.PI * 2)
+        context.fill()
+      }
+    }
+  } else if (pattern === 'grid') {
+    context.beginPath()
+    for (let x = left; x <= left + width; x += spacing) {
+      context.moveTo(x, top)
+      context.lineTo(x, top + height)
+    }
+    for (let y = top; y <= top + height; y += spacing) {
+      context.moveTo(left, y)
+      context.lineTo(left + width, y)
+    }
+    context.stroke()
+  } else {
+    context.beginPath()
+    for (let offset = -height; offset < width; offset += spacing) {
+      context.moveTo(left + offset, top + height)
+      context.lineTo(left + offset + height, top)
+    }
+    context.stroke()
+  }
+  context.restore()
+}
+
 export function CreaseCanvas({
   lines,
   vertices = [],
@@ -210,6 +256,7 @@ export function CreaseCanvas({
   paperBounds,
   paperPolygon,
   paperColor = '#fffdf9',
+  paperPattern = null,
   tool = 'select',
   selectedVertexId = null,
   selectedFaceId = null,
@@ -375,6 +422,16 @@ export function CreaseCanvas({
       if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
         context.clip('evenodd')
         shouldDrawGrid = true
+      }
+      if (paperPattern && shouldDrawGrid) {
+        drawPaperPattern(
+          context,
+          paperPattern,
+          transform.left,
+          transform.top,
+          transform.width,
+          transform.height,
+        )
       }
       if (shouldDrawGrid) {
         context.strokeStyle = '#dbe2ea'
@@ -638,6 +695,7 @@ export function CreaseCanvas({
     locale,
     measurementLabel,
     paperColor,
+    paperPattern,
     parallelReference,
     drawablePaperPolygon,
     pendingVertexId,

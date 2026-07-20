@@ -3394,6 +3394,8 @@ fn update_paper_properties(
     thickness_mm: f64,
     front_color: RgbaColor,
     back_color: RgbaColor,
+    front_texture_asset: Option<ori_domain::AssetId>,
+    back_texture_asset: Option<ori_domain::AssetId>,
     cutting_allowed: bool,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
@@ -3406,6 +3408,8 @@ fn update_paper_properties(
             thickness_mm,
             front_color,
             back_color,
+            front_texture_asset,
+            back_texture_asset,
             cutting_allowed,
         },
     )
@@ -9411,6 +9415,8 @@ mod tests {
                 thickness_mm: 0.0,
                 front_color,
                 back_color,
+                front_texture_asset: None,
+                back_texture_asset: None,
                 cutting_allowed: true,
             },
         )
@@ -9503,6 +9509,8 @@ mod tests {
                 thickness_mm: 0.3,
                 front_color: RgbaColor::opaque(1, 2, 3),
                 back_color: RgbaColor::opaque(4, 5, 6),
+                front_texture_asset: None,
+                back_texture_asset: None,
                 cutting_allowed: true,
             },
         )
@@ -9521,6 +9529,8 @@ mod tests {
                 thickness_mm: f64::NAN,
                 front_color: RgbaColor::opaque(1, 2, 3),
                 back_color: RgbaColor::opaque(4, 5, 6),
+                front_texture_asset: None,
+                back_texture_asset: None,
                 cutting_allowed: true,
             },
         )

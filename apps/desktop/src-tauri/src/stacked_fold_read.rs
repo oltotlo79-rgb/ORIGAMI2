@@ -2187,7 +2187,7 @@ mod tests {
     fn assert_two_hinge_projective_schedule_round_trip(
         first: [f64; 3],
         second: [f64; 3],
-        certified_path: bool,
+        certified_path_steps: usize,
     ) {
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
@@ -2203,6 +2203,7 @@ mod tests {
                 &project,
             );
         }
+        let certified_path = certified_path_steps > 0;
         let angle = if certified_path {
             20.0
         } else {
@@ -2279,8 +2280,8 @@ mod tests {
         };
         let certified_path_graph_v1 = certified_path.then(|| CertifiedPathGraphRequestV1 {
             version: 1,
-            states: [0.0, 0.5, 1.0]
-                .into_iter()
+            states: (0..=certified_path_steps)
+                .map(|step| step as f64 / certified_path_steps as f64)
                 .map(|progress| CertifiedPathGraphStateRequestV1 {
                     entries: registry
                         .entries
@@ -2298,18 +2299,14 @@ mod tests {
                         .collect(),
                 })
                 .collect(),
-            transitions: vec![
-                CertifiedPathGraphTransitionRequestV1 {
-                    source_state: 0,
-                    target_state: 1,
-                },
-                CertifiedPathGraphTransitionRequestV1 {
-                    source_state: 1,
-                    target_state: 2,
-                },
-            ],
+            transitions: (0..certified_path_steps)
+                .map(|step| CertifiedPathGraphTransitionRequestV1 {
+                    source_state: step,
+                    target_state: step + 1,
+                })
+                .collect(),
             source_state: 0,
-            target_state: 2,
+            target_state: certified_path_steps,
         });
         let transaction_state =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
@@ -2334,6 +2331,23 @@ mod tests {
             },
         ))
         .expect("genuine ready preview");
+        if certified_path {
+            let graph = response
+                .certified_path_graph
+                .as_ref()
+                .expect("certified path graph preview");
+            assert_eq!(graph.explored_state_count, certified_path_steps);
+            assert_eq!(graph.evaluated_transition_count, certified_path_steps);
+            assert_eq!(graph.edges.len(), certified_path_steps);
+            assert!(graph.edges.iter().all(|edge| {
+                edge.schedule_certificate_sha256.len() == 64
+                    && edge.collision_certificate_sha256.len() == 64
+                    && edge.closure_certificate_sha256.len() == 64
+            }));
+            assert!(!graph.authorizes_project_mutation);
+        } else {
+            assert!(response.certified_path_graph.is_none());
+        }
         assert!(response.transaction_proposal.ready_for_atomic_apply);
         let token = response
             .transaction_proposal
@@ -2355,7 +2369,11 @@ mod tests {
         assert_eq!(project.editor.revision(), applied_revision);
         assert_eq!(
             project.editor.instruction_timeline().steps.len(),
-            if certified_path { 2 } else { 1 }
+            if certified_path {
+                certified_path_steps
+            } else {
+                1
+            }
         );
         let after = project.editor.clone();
         project.editor.undo(applied_revision).unwrap();
@@ -2375,29 +2393,22 @@ mod tests {
 
     #[test]
     fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip(
-            [50.0, 0.0, 0.0],
-            [50.0, 0.0, -100.0],
-            false,
-        );
+        assert_two_hinge_projective_schedule_round_trip([50.0, 0.0, 0.0], [50.0, 0.0, -100.0], 0);
     }
 
     #[test]
     fn genuine_common_axis_cycle_previews_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip(
-            [0.0, 0.0, -50.0],
-            [100.0, 0.0, -50.0],
-            false,
-        );
+        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 0);
     }
 
     #[test]
     fn genuine_common_axis_cycle_certified_path_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip(
-            [0.0, 0.0, -50.0],
-            [100.0, 0.0, -50.0],
-            true,
-        );
+        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 2);
+    }
+
+    #[test]
+    fn genuine_common_axis_cycle_four_edge_certified_path_applies_and_round_trips_history() {
+        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 4);
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! The admitted mesh uses millimetres and a right-handed, Z-up coordinate
 //! system. OBJ and binary STL preserve those axes. GLB stores local positions
 //! in metres and carries a fixed node rotation into glTF's Y-up scene axes.
-//! This module deliberately has no project, current-pose, animation, material,
-//! texture, staging, filesystem, or UI authority.
+//! This module deliberately has no project, current-pose, animation, texture,
+//! staging, filesystem, or UI authority.
 
 use std::fmt::Write as _;
 
@@ -67,6 +67,10 @@ pub struct IndexedTriangleMeshV1 {
     pub triangles: Vec<[u32; 3]>,
     #[serde(default = "opaque_white")]
     pub base_color_rgba: [u8; 4],
+    /// Optional per-vertex sRGB colors. Empty means that the GLB material base
+    /// color applies uniformly. OBJ and STL cannot preserve this channel.
+    #[serde(default)]
+    pub vertex_colors_rgba: Vec<[u8; 4]>,
 }
 
 impl IndexedTriangleMeshV1 {
@@ -85,12 +89,19 @@ impl IndexedTriangleMeshV1 {
             normals,
             triangles,
             base_color_rgba: opaque_white(),
+            vertex_colors_rgba: Vec::new(),
         }
     }
 
     #[must_use]
     pub const fn with_base_color_rgba(mut self, color: [u8; 4]) -> Self {
         self.base_color_rgba = color;
+        self
+    }
+
+    #[must_use]
+    pub fn with_vertex_colors_rgba(mut self, colors: Vec<[u8; 4]>) -> Self {
+        self.vertex_colors_rgba = colors;
         self
     }
 }
@@ -111,6 +122,7 @@ pub struct ValidatedIndexedTriangleMesh {
     normals: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     base_color_rgba: [u8; 4],
+    vertex_colors_rgba: Vec<[u8; 4]>,
 }
 
 impl ValidatedIndexedTriangleMesh {
@@ -142,6 +154,11 @@ impl ValidatedIndexedTriangleMesh {
     #[must_use]
     pub const fn base_color_rgba(&self) -> [u8; 4] {
         self.base_color_rgba
+    }
+
+    #[must_use]
+    pub fn vertex_colors_rgba(&self) -> &[[u8; 4]] {
+        &self.vertex_colors_rgba
     }
 }
 
@@ -244,6 +261,8 @@ pub enum StaticMeshExportError {
     TooManyTriangles { actual: usize, maximum: usize },
     #[error("mesh has {actual} normals; exactly {expected} are required")]
     NormalCountMismatch { actual: usize, expected: usize },
+    #[error("mesh has {actual} vertex colors; either zero or exactly {expected} are required")]
+    VertexColorCountMismatch { actual: usize, expected: usize },
     #[error("mesh vertex {vertex_index} has a non-finite coordinate")]
     NonFinitePosition { vertex_index: usize },
     #[error("mesh vertex {vertex_index} has a non-finite normal")]
@@ -316,6 +335,14 @@ pub fn validate_indexed_triangle_mesh_with_limits(
     if document.normals.len() != document.positions_mm.len() {
         return Err(StaticMeshExportError::NormalCountMismatch {
             actual: document.normals.len(),
+            expected: document.positions_mm.len(),
+        });
+    }
+    if !document.vertex_colors_rgba.is_empty()
+        && document.vertex_colors_rgba.len() != document.positions_mm.len()
+    {
+        return Err(StaticMeshExportError::VertexColorCountMismatch {
+            actual: document.vertex_colors_rgba.len(),
             expected: document.positions_mm.len(),
         });
     }
@@ -445,6 +472,7 @@ pub fn validate_indexed_triangle_mesh_with_limits(
         normals,
         triangles,
         base_color_rgba: document.base_color_rgba,
+        vertex_colors_rgba: document.vertex_colors_rgba.clone(),
     })
 }
 
@@ -1888,6 +1916,34 @@ mod tests {
         );
         let mesh = sample_mesh();
         assert_eq!(mesh.normals[0], [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn vertex_colors_are_optional_but_must_cover_every_vertex() {
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "name": "mesh",
+            "positions_mm": [[0,0,0],[1,0,0],[0,1,0]],
+            "normals": [[0,0,1],[0,0,1],[0,0,1]],
+            "triangles": [[0,1,2]]
+        });
+        let legacy: IndexedTriangleMeshV1 =
+            serde_json::from_value(legacy).expect("legacy mesh without colors");
+        assert!(legacy.vertex_colors_rgba.is_empty());
+
+        let mut document = sample_document();
+        document.vertex_colors_rgba = vec![[255, 0, 0, 255]; 3];
+        assert_eq!(
+            validate_indexed_triangle_mesh(&document),
+            Err(StaticMeshExportError::VertexColorCountMismatch {
+                actual: 3,
+                expected: 4,
+            })
+        );
+
+        document.vertex_colors_rgba.push([0, 0, 255, 255]);
+        let validated = validate_indexed_triangle_mesh(&document).expect("colored mesh");
+        assert_eq!(validated.vertex_colors_rgba(), document.vertex_colors_rgba);
     }
 
     #[test]

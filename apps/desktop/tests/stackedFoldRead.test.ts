@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
+  STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+  STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
   isStackedFoldReadRequest,
   normalizeStackedFoldReadResponse,
 } from '../src/lib/stackedFoldRead.ts'
@@ -29,9 +32,9 @@ describe('stacked-fold read boundary', () => {
 
   it('accepts a read-only response bound to the requested project revision', () => {
     const response = {
-      guardModelId: 'guard-v1',
-      proposalModelId: 'proposal-v1',
-      materialMapModelId: 'material-v1',
+      guardModelId: STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+      proposalModelId: STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
+      materialMapModelId: STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
       binding: {
         projectInstanceId,
         projectId,
@@ -96,9 +99,9 @@ describe('stacked-fold read boundary', () => {
 
   it('fails closed on stale authority, mutation authority, and contradictory layer order', () => {
     const response = {
-      guardModelId: 'guard-v1',
-      proposalModelId: 'proposal-v1',
-      materialMapModelId: 'material-v1',
+      guardModelId: STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+      proposalModelId: STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
+      materialMapModelId: STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
       binding: {
         projectInstanceId,
         projectId,
@@ -163,6 +166,10 @@ describe('stacked-fold read boundary', () => {
         { ...response, binding: { ...response.binding, sourceRevision: 4 } },
         request,
       ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse({ ...response, guardModelId: 'future-guard-v2' }, request),
       null,
     )
     assert.equal(

@@ -5,9 +5,12 @@ import {
   type StackedFoldReadAuthority,
   type StackedFoldReadCoordinatorState,
 } from '../src/lib/stackedFoldReadCoordinator.ts'
-import type {
-  StackedFoldReadRequest,
-  StackedFoldReadResponse,
+import {
+  STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
+  STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+  STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
+  type StackedFoldReadRequest,
+  type StackedFoldReadResponse,
 } from '../src/lib/stackedFoldRead.ts'
 
 const INSTANCE = '018f47a2-4b7a-7cc1-8abc-112233445566'
@@ -26,9 +29,9 @@ const request = (revision = 3): StackedFoldReadRequest => ({
 
 const response = (revision = 3): StackedFoldReadResponse =>
   ({
-    guardModelId: 'guard-v1',
-    proposalModelId: 'proposal-v1',
-    materialMapModelId: 'material-v1',
+    guardModelId: STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
+    proposalModelId: STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
+    materialMapModelId: STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
     binding: {
       projectInstanceId: INSTANCE,
       projectId: PROJECT,

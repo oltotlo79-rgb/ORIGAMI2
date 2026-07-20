@@ -5,6 +5,7 @@ mod fold_technique_file_io;
 mod global_flat_foldability;
 mod history_settings;
 mod instruction_export;
+mod mesh_animation_export;
 mod mesh_export;
 mod numeric_expression;
 mod project_folder_io;
@@ -51,6 +52,9 @@ use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
     InstructionExportState, begin_instruction_export, cancel_instruction_export,
     get_instruction_export_progress, preview_instruction_export, save_instruction_export,
+};
+use mesh_animation_export::{
+    MeshAnimationExportState, cancel_instruction_mesh_animation, preview_instruction_mesh_animation,
 };
 use mesh_export::{
     StaticMeshExportState, cancel_static_mesh_export, preview_static_mesh_export,
@@ -6492,6 +6496,7 @@ pub fn run() {
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
         .manage(StaticMeshExportState::default())
+        .manage(MeshAnimationExportState::default())
         .manage(GlobalFlatFoldabilityState::default())
         .manage(InstructionExportState::default())
         .manage(ExitGuard::default())
@@ -6532,6 +6537,8 @@ pub fn run() {
             preview_static_mesh_export,
             save_static_mesh_export,
             cancel_static_mesh_export,
+            preview_instruction_mesh_animation,
+            cancel_instruction_mesh_animation,
             begin_instruction_export,
             preview_instruction_export,
             get_instruction_export_progress,

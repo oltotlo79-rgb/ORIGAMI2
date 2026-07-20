@@ -3,6 +3,12 @@ import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 export type StackedFoldFixedSide = 'left' | 'right'
 export type StackedFoldRotationDirection = 'positive' | 'negative'
 
+export const STACKED_FOLD_READ_GUARD_MODEL_ID_V1 = 'native_flat_stacked_fold_read_guard_v1'
+export const STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1 =
+  'native_linear_stacked_fold_read_proposal_v1'
+export const STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1 =
+  'native_flat_stacked_fold_material_map_v1'
+
 export type StackedFoldReadRequest = Readonly<{
   expectedProjectInstanceId: string
   expectedProjectId: string
@@ -157,12 +163,9 @@ export function normalizeStackedFoldReadResponse(
         .reduce((sum, field) => sum + Number(endpointCollision[field]), 0)
     : -1
   if (
-    typeof value.guardModelId !== 'string' ||
-    value.guardModelId.length === 0 ||
-    typeof value.proposalModelId !== 'string' ||
-    value.proposalModelId.length === 0 ||
-    typeof value.materialMapModelId !== 'string' ||
-    value.materialMapModelId.length === 0 ||
+    value.guardModelId !== STACKED_FOLD_READ_GUARD_MODEL_ID_V1 ||
+    value.proposalModelId !== STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1 ||
+    value.materialMapModelId !== STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1 ||
     binding.projectInstanceId !== expected.expectedProjectInstanceId ||
     binding.projectId !== expected.expectedProjectId ||
     binding.sourceRevision !== expected.expectedRevision ||

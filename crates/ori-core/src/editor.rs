@@ -1879,7 +1879,7 @@ impl EditorState {
     /// As with the compatibility constructors, loading starts at revision zero
     /// with empty history and does not silently rewrite unchecked data.
     #[must_use]
-    pub const fn with_document_parts_constraints_and_layers(
+    pub fn with_document_parts_constraints_and_layers(
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
@@ -1901,7 +1901,7 @@ impl EditorState {
     }
 
     #[must_use]
-    pub const fn with_all_document_parts(
+    pub fn with_all_document_parts(
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
@@ -1932,6 +1932,7 @@ impl EditorState {
                 foldability_weight: 35,
                 step_count_weight: 15,
                 paper_efficiency_weight: 15,
+                generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
             },
             current_applied_pose: None,
             revision: 0,
@@ -17868,6 +17869,7 @@ mod tests {
             foldability_weight: 20,
             step_count_weight: 10,
             paper_efficiency_weight: 10,
+            generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
         };
         editor
             .execute(

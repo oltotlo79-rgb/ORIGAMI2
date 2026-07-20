@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::{BeginnerGenerationConstraintsV1, validate_beginner_generation_constraints_v1};
+
 pub const BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +21,8 @@ pub struct BeginnerDesignProfileV1 {
     pub foldability_weight: u8,
     pub step_count_weight: u8,
     pub paper_efficiency_weight: u8,
+    #[serde(default)]
+    pub generation_constraints: BeginnerGenerationConstraintsV1,
 }
 
 impl Default for BeginnerDesignProfileV1 {
@@ -30,6 +34,7 @@ impl Default for BeginnerDesignProfileV1 {
             foldability_weight: 35,
             step_count_weight: 15,
             paper_efficiency_weight: 15,
+            generation_constraints: BeginnerGenerationConstraintsV1::default(),
         }
     }
 }
@@ -42,11 +47,12 @@ impl BeginnerDesignProfileV1 {
 }
 
 #[must_use]
-pub const fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) -> bool {
+pub fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) -> bool {
     profile.schema_version == BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1
         && profile.shape_fidelity_weight as u16
             + profile.foldability_weight as u16
             + profile.step_count_weight as u16
             + profile.paper_efficiency_weight as u16
             == 100
+        && validate_beginner_generation_constraints_v1(&profile.generation_constraints)
 }

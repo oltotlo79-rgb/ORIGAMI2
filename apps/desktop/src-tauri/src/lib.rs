@@ -2060,6 +2060,92 @@ fn get_beginner_symmetric_parameter_estimate(
     })
 }
 
+fn temporary_symmetric_profile_for_grid(
+    source: &ori_domain::BeginnerDesignProfileV1,
+    point: ori_domain::BeginnerParameterGridPointV1,
+) -> Result<ori_domain::BeginnerDesignProfileV1, String> {
+    let canonical = ori_domain::beginner_parameter_grid_v1()
+        .get(usize::from(point.id))
+        .copied();
+    if canonical != Some(point) {
+        return Err("beginner_parameter_grid_point_invalid".to_owned());
+    }
+
+    let mut profile = source.clone();
+    profile.generation_constraints.detail_level = point.detail_level;
+    let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
+        .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        point.scale_percent,
+        point.spacing_percent,
+    );
+    Ok(profile)
+}
+
+fn grid_template_plan(
+    namespace: ProjectId,
+    source: &CreasePattern,
+    boundary_vertices: &[VertexId],
+    profile: &ori_domain::BeginnerDesignProfileV1,
+    point: ori_domain::BeginnerParameterGridPointV1,
+) -> Result<Vec<ori_domain::BeginnerGeneratedPlanV1>, ori_domain::BeginnerGeneratorErrorV1> {
+    let temporary = temporary_symmetric_profile_for_grid(profile, point)
+        .map_err(|_| ori_domain::BeginnerGeneratorErrorV1::MissingRequiredParts)?;
+    ori_domain::generate_beginner_plans_v1(
+        namespace,
+        source,
+        boundary_vertices,
+        &temporary.generation_constraints,
+    )
+}
+
+fn configure_symmetric_profile(
+    profile: &mut ori_domain::BeginnerDesignProfileV1,
+    estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
+    scale_percent: u8,
+    spacing_percent: u8,
+) {
+    let insect = profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+    let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
+        id,
+        start: ori_domain::BeginnerSkeletonPointV1 {
+            x_tenths_mm: start_x,
+            y_tenths_mm: start_y,
+        },
+        end: ori_domain::BeginnerSkeletonPointV1 {
+            x_tenths_mm: end_x,
+            y_tenths_mm: end_y,
+        },
+        thickness_tenths_mm: 50,
+    };
+    profile.generation_constraints.skeleton_segments = if insect {
+        vec![skeleton(1, -500, 0, 0, 500), skeleton(2, 500, 0, 0, 500)]
+    } else {
+        vec![
+            skeleton(1, -500, 0, 0, 500),
+            skeleton(2, 500, 0, 0, 500),
+            skeleton(3, 0, -500, 0, 500),
+        ]
+    };
+    profile.generation_constraints.protrusions = vec![ori_domain::BeginnerProtrusionTargetV1 {
+        id: 1,
+        count: estimate.protrusion_count,
+        length_tenths_mm: u32::from(scale_percent) * 10,
+        thickness_tenths_mm: u16::from(spacing_percent) * 2,
+        position_tenths_mm: [0, 0, 0],
+        direction_milli: if insect { [1000, 0, 0] } else { [0, 1000, 0] },
+        symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+        curvature_degrees: 0,
+        joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+        motion_degrees: [0, 0],
+        side: ori_domain::BeginnerProtrusionSideV1::Either,
+        priority: 50,
+    }];
+}
+
 #[tauri::command]
 fn apply_beginner_symmetric_parameters(
     state: State<'_, AppState>,
@@ -2087,43 +2173,7 @@ fn apply_beginner_symmetric_parameters(
     if live != expected_estimate {
         return Err("symmetric_parameter_estimate_stale".to_owned());
     }
-    let insect = profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect);
-    let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
-        id,
-        start: ori_domain::BeginnerSkeletonPointV1 {
-            x_tenths_mm: start_x,
-            y_tenths_mm: start_y,
-        },
-        end: ori_domain::BeginnerSkeletonPointV1 {
-            x_tenths_mm: end_x,
-            y_tenths_mm: end_y,
-        },
-        thickness_tenths_mm: 50,
-    };
-    profile.generation_constraints.skeleton_segments = if insect {
-        vec![skeleton(1, -500, 0, 0, 500), skeleton(2, 500, 0, 0, 500)]
-    } else {
-        vec![
-            skeleton(1, -500, 0, 0, 500),
-            skeleton(2, 500, 0, 0, 500),
-            skeleton(3, 0, -500, 0, 500),
-        ]
-    };
-    profile.generation_constraints.protrusions = vec![ori_domain::BeginnerProtrusionTargetV1 {
-        id: 1,
-        count: live.protrusion_count,
-        length_tenths_mm: u32::from(scale_percent) * 10,
-        thickness_tenths_mm: u16::from(spacing_percent) * 2,
-        position_tenths_mm: [0, 0, 0],
-        direction_milli: if insect { [1000, 0, 0] } else { [0, 1000, 0] },
-        symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
-        curvature_degrees: 0,
-        joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
-        motion_degrees: [0, 0],
-        side: ori_domain::BeginnerProtrusionSideV1::Either,
-        priority: 50,
-    }];
+    configure_symmetric_profile(&mut profile, live, scale_percent, spacing_percent);
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -9644,6 +9694,65 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn grid_profile_is_temporary_canonical_and_does_not_change_free_parameters() {
+        let mut source = ori_domain::BeginnerDesignProfileV1::default();
+        source.generation_constraints.target_category =
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+        source.generation_constraints.target_parts = vec![
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Head,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Torso,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 4,
+            },
+        ];
+        let before = source.clone();
+        let point = ori_domain::beginner_parameter_grid_v1()[26];
+        let temporary = temporary_symmetric_profile_for_grid(&source, point).unwrap();
+
+        assert_eq!(source, before);
+        assert_eq!(
+            temporary.generation_constraints.detail_level,
+            ori_domain::BeginnerDetailLevelV1::Detailed
+        );
+        assert_eq!(temporary.generation_constraints.protrusions.len(), 1);
+        assert_eq!(
+            temporary.generation_constraints.protrusions[0].length_tenths_mm,
+            450
+        );
+        assert_eq!(
+            temporary.generation_constraints.protrusions[0].thickness_tenths_mm,
+            160
+        );
+        let mut forged = point;
+        forged.scale_percent = 44;
+        assert_eq!(
+            temporary_symmetric_profile_for_grid(&source, forged),
+            Err("beginner_parameter_grid_point_invalid".to_owned())
+        );
+
+        let project = initial_project_state();
+        for point in ori_domain::beginner_parameter_grid_v1() {
+            let plans = grid_template_plan(
+                project.project_id,
+                project.editor.pattern(),
+                &project.editor.paper().boundary_vertices,
+                &source,
+                point,
+            )
+            .unwrap();
+            assert!(!plans.is_empty());
+            assert!(plans.len() <= ori_domain::MAX_BEGINNER_GENERATED_CANDIDATES_V1);
+        }
+    }
 
     #[test]
     fn symmetry_transforms_are_exact_at_cardinal_angles() {

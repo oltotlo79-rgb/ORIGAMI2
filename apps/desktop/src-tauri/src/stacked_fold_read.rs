@@ -62,6 +62,9 @@ const STALE_MESSAGE: &str =
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
 const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
+// A certified path is committed as one editor transaction. Keep the request
+// boundary aligned with the editor's bounded multi-step transaction admission.
+const MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1: usize = 31;
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
 const STACKED_FOLD_READ_PROGRESS_EVENT_V1: &str = "stacked-fold-read-progress-v1";
 
@@ -219,7 +222,7 @@ fn validate_certified_path_graph_v1(
         || request.states.is_empty()
         || request.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
         || request.transitions.is_empty()
-        || request.transitions.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+        || request.transitions.len() > MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1
         || request.states.iter().any(|state| {
             state.entries.is_empty() || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
         })
@@ -436,8 +439,7 @@ fn validate_request_resource_shape_v1(
                 graph.states.is_empty()
                     || graph.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
                     || graph.transitions.is_empty()
-                    || graph.transitions.len()
-                        > ori_collision::MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+                    || graph.transitions.len() > MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1
                     || graph.states.iter().any(|state| {
                         state.entries.is_empty()
                             || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
@@ -2412,6 +2414,11 @@ mod tests {
     }
 
     #[test]
+    fn genuine_common_axis_cycle_sixteen_edge_certified_path_applies_and_round_trips_history() {
+        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 16);
+    }
+
+    #[test]
     fn request_schema_is_closed_and_rejects_non_finite_points() {
         let project_instance_id = ProjectId::new();
         let project_id = ProjectId::new();
@@ -2720,6 +2727,22 @@ mod tests {
         };
         assert_eq!(
             validate_certified_path_graph_v1(&over_limit, &live),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
+        let transition_over_limit = CertifiedPathGraphRequestV1 {
+            version: 1,
+            states: vec![state(0.0), state(90.0)],
+            transitions: (0..=MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1)
+                .map(|_| CertifiedPathGraphTransitionRequestV1 {
+                    source_state: 0,
+                    target_state: 1,
+                })
+                .collect(),
+            source_state: 0,
+            target_state: 1,
+        };
+        assert_eq!(
+            validate_certified_path_graph_v1(&transition_over_limit, &live),
             Err(CYCLE_PATH_RESOURCE_MESSAGE)
         );
         let oversized_state = CertifiedPathGraphRequestV1 {

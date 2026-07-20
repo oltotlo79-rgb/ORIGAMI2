@@ -1355,13 +1355,33 @@ pub fn diagnose_scheduled_cycle_path_v1(
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
     interval_count: usize,
 ) -> StackedFoldCyclePathDiagnosticV1 {
+    diagnose_canonical_cycle_schedule_path_v1(
+        geometry,
+        audit,
+        fixed_face,
+        candidate.schedule(),
+        closure,
+        interval_count,
+    )
+}
+
+/// Runs the bounded cycle CCD oracle against a canonical schedule directly.
+/// Schedule families without point evaluation or a finite derivative bound
+/// remain explicitly uncertified; closure evidence alone is never clearance.
+pub fn diagnose_canonical_cycle_schedule_path_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    interval_count: usize,
+) -> StackedFoldCyclePathDiagnosticV1 {
     let failed = || StackedFoldCyclePathDiagnosticV1 {
         certified: false,
         first_closure_failure_angle_degrees: None,
         leaf_count: 0,
         pair_work: 0,
     };
-    let schedule = candidate.schedule();
     if interval_count == 0
         || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
         || closure.leaves().is_empty()

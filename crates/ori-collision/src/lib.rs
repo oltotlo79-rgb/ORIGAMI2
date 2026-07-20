@@ -64,9 +64,9 @@ pub use continuous_path::{
     STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     StackedFoldBoundedPathDiagnosticV1, StackedFoldCyclePathDiagnosticV1,
     StackedFoldPathDiagnosticErrorV1, StackedFoldPathDiagnosticLimitsV1,
-    UniformCycleClosureRootsV1, diagnose_collective_cycle_path_v1,
-    diagnose_collective_hinge_path_v1, diagnose_scheduled_cycle_path_v1,
-    enumerate_uniform_cycle_closure_roots_v1,
+    UniformCycleClosureRootsV1, diagnose_canonical_cycle_schedule_path_v1,
+    diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,
+    diagnose_scheduled_cycle_path_v1, enumerate_uniform_cycle_closure_roots_v1,
 };
 pub use flat_endpoint_layer_order::{
     FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointCellKeyV1, FlatEndpointLayerCellV1,

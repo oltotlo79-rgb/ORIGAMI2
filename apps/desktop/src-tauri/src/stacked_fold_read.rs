@@ -984,7 +984,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                     initial.pose().hinge_angles(),
                 )
                 .map_err(str::to_owned)?;
-                initial
+                let closure = initial
                     .target()
                     .hinge_geometry()
                     .prove_dyadic_schedule_closure_v1(
@@ -1010,9 +1010,21 @@ pub(super) async fn propose_current_stacked_fold_read(
                             CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned()
                         }
                     })?;
-                // Half-angle rational schedules have a closure oracle, but the
-                // current CCD oracle cannot yet publish clearance evidence for
-                // them. Never register closure alone as a certified edge.
+                let collision = ori_collision::diagnose_canonical_cycle_schedule_path_v1(
+                    initial.target().hinge_geometry(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    &schedule,
+                    &closure,
+                    StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
+                );
+                if collision.continuous_certificate_model_id().is_none() {
+                    return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
+                }
+                // This branch is intentionally unreachable for the currently
+                // admitted half-angle family: it has no finite derivative
+                // certificate. Keep the registration boundary fail-closed
+                // until its generated transition can carry both certificates.
                 return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
             }
             let (

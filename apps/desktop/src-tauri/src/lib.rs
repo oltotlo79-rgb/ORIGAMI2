@@ -79,10 +79,10 @@ use ori_core::{
     BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
     DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
     GeometricConstraintUnknownReasonV1, IntersectionEdgeTarget, JunctionVertexIntent,
-    LocalFlatFoldabilityReport, MAX_EDITOR_HISTORY_ENTRIES, PaperValidationIssue,
-    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
-    VertexPositionUpdate, analyze_local_flat_foldability, create_rectangular_sheet,
-    prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
+    LocalFlatFoldabilityReport, MAX_EDITOR_HISTORY_ENTRIES, MirrorAxisV1, MirrorSelectionModeV1,
+    PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput, TopologyIssue,
+    TopologySnapshot, ValidationIssue, VertexPositionUpdate, analyze_local_flat_foldability,
+    create_rectangular_sheet, prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
     solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1, validate_paper,
 };
 use ori_domain::{
@@ -2411,20 +2411,6 @@ fn mirror_edge_left_right(
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum MirrorSelectionModeV1 {
-    Move,
-    Duplicate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MirrorAxisV1 {
-    start: Point2,
-    end: Point2,
-}
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MirrorSelectionRequestV1 {
@@ -2680,20 +2666,18 @@ fn apply_mirror_selection(
         expected_project_id,
         expected_revision,
     )?;
-    let (pattern, project_layers) =
-        build_mirrored_selection(&project, &request).map_err(str::to_owned)?;
-    let paper = project.editor.paper().clone();
-    let timeline = project.editor.instruction_timeline().clone();
     execute_command(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::ApplyStackedFoldDocument {
-            pattern,
-            paper,
-            instruction_timeline: timeline,
-            project_layers,
+        Command::MirrorSelection {
+            vertices: request.vertices,
+            edges: request.edges,
+            axis: request.axis,
+            mode: request.mode,
+            new_vertices: request.new_vertices,
+            new_edges: request.new_edges,
         },
     )
 }

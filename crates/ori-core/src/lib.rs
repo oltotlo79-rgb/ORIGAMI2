@@ -39,7 +39,7 @@ pub use editor::{
     Command, CommandError, CommandResult, EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1,
     EditorHistoryV1, EditorState, ElementMetadataTargetV1, HistoryEntryLimitError,
     IntersectionEdgeTarget, JunctionVertexIntent, MAX_EDITOR_HISTORY_ENTRIES, MAX_REVISION,
-    Revision, VertexPositionUpdate,
+    MirrorAxisV1, MirrorSelectionModeV1, Revision, VertexPositionUpdate,
 };
 pub use fold_model_fingerprint::fold_model_fingerprint_v1;
 pub use ori_foldability::{

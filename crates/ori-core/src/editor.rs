@@ -69,6 +69,20 @@ pub struct VertexPositionUpdate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirrorSelectionModeV1 {
+    Move,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorAxisV1 {
+    pub start: Point2,
+    pub end: Point2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum ElementMetadataTargetV1 {
     Vertex(VertexId),
@@ -255,6 +269,14 @@ pub enum Command {
         edge: EdgeId,
         layer: LayerId,
     },
+    MirrorSelection {
+        vertices: Vec<VertexId>,
+        edges: Vec<EdgeId>,
+        axis: MirrorAxisV1,
+        mode: MirrorSelectionModeV1,
+        new_vertices: Vec<VertexId>,
+        new_edges: Vec<EdgeId>,
+    },
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -290,6 +312,8 @@ pub enum CommandError {
     UnderlayAlreadyExists(UnderlayId),
     #[error("the stacked-fold target document is invalid")]
     InvalidStackedFoldDocument,
+    #[error("the mirror-selection request or resulting geometry is invalid")]
+    InvalidMirrorSelection,
     #[error("expected revision {expected}, but the current revision is {actual}")]
     RevisionConflict {
         expected: Revision,
@@ -677,8 +701,200 @@ fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limi
     stack.push(entry);
 }
 
+fn mirror_selection_target(
+    pattern: &CreasePattern,
+    paper: &Paper,
+    layers: &ProjectLayerDocumentV1,
+    vertices: &[VertexId],
+    edges: &[EdgeId],
+    axis: MirrorAxisV1,
+    mode: MirrorSelectionModeV1,
+    new_vertices: &[VertexId],
+    new_edges: &[EdgeId],
+) -> Result<(CreasePattern, ProjectLayerDocumentV1), CommandError> {
+    let canonical = |ids: &[VertexId]| {
+        ids.windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    };
+    let canonical_edges = edges
+        .windows(2)
+        .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes());
+    let canonical_new_edges = new_edges
+        .windows(2)
+        .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes());
+    let dx = axis.end.x - axis.start.x;
+    let dy = axis.end.y - axis.start.y;
+    let length_squared = dx.mul_add(dx, dy * dy);
+    if vertices.is_empty() && edges.is_empty()
+        || !canonical(vertices)
+        || !canonical_edges
+        || !axis.start.x.is_finite()
+        || !axis.start.y.is_finite()
+        || !axis.end.x.is_finite()
+        || !axis.end.y.is_finite()
+        || !length_squared.is_finite()
+        || length_squared <= 0.0
+        || match mode {
+            MirrorSelectionModeV1::Move => !new_vertices.is_empty() || !new_edges.is_empty(),
+            MirrorSelectionModeV1::Duplicate => {
+                new_vertices.len() != vertices.len()
+                    || new_edges.len() != edges.len()
+                    || !canonical(new_vertices)
+                    || !canonical_new_edges
+            }
+        }
+    {
+        return Err(CommandError::InvalidMirrorSelection);
+    }
+    let selected_vertices = vertices.iter().copied().collect::<HashSet<_>>();
+    let selected_edges = edges.iter().copied().collect::<HashSet<_>>();
+    for id in vertices {
+        if paper.boundary_vertices.contains(id) {
+            return Err(CommandError::InvalidMirrorSelection);
+        }
+        if !pattern.vertices.iter().any(|vertex| vertex.id == *id) {
+            return Err(CommandError::VertexNotFound(*id));
+        }
+    }
+    for id in edges {
+        if !pattern.edges.iter().any(|edge| edge.id == *id) {
+            return Err(CommandError::EdgeNotFound(*id));
+        }
+    }
+    for edge in pattern
+        .edges
+        .iter()
+        .filter(|edge| selected_edges.contains(&edge.id))
+    {
+        if edge.kind == EdgeKind::Boundary
+            || !selected_vertices.contains(&edge.start)
+            || !selected_vertices.contains(&edge.end)
+        {
+            return Err(CommandError::InvalidMirrorSelection);
+        }
+        let layer = layers.layer_for_edge(edge.id);
+        if layers
+            .layers
+            .iter()
+            .any(|item| item.id == layer && item.locked)
+        {
+            return Err(CommandError::LayerLocked(layer));
+        }
+    }
+    if mode == MirrorSelectionModeV1::Move {
+        for edge in pattern.edges.iter().filter(|edge| {
+            selected_vertices.contains(&edge.start) || selected_vertices.contains(&edge.end)
+        }) {
+            let layer = layers.layer_for_edge(edge.id);
+            if layers
+                .layers
+                .iter()
+                .any(|item| item.id == layer && item.locked)
+            {
+                return Err(CommandError::LayerLocked(layer));
+            }
+        }
+    }
+    let reflected = vertices
+        .iter()
+        .map(|id| {
+            let source = pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == *id)
+                .ok_or(CommandError::VertexNotFound(*id))?;
+            let rx = source.position.x - axis.start.x;
+            let ry = source.position.y - axis.start.y;
+            let projection = rx.mul_add(dx, ry * dy) / length_squared;
+            let px = axis.start.x + projection * dx;
+            let py = axis.start.y + projection * dy;
+            let result = Point2::new(
+                px.mul_add(2.0, -source.position.x),
+                py.mul_add(2.0, -source.position.y),
+            );
+            (result.x.is_finite() && result.y.is_finite())
+                .then_some(result)
+                .ok_or(CommandError::InvalidMirrorSelection)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut target = pattern.clone();
+    let mut target_layers = layers.clone();
+    for (source, position) in vertices.iter().zip(&reflected) {
+        if target.vertices.iter().any(|vertex| {
+            (mode == MirrorSelectionModeV1::Duplicate || vertex.id != *source)
+                && vertex.position == *position
+        }) {
+            return Err(CommandError::InvalidMirrorSelection);
+        }
+    }
+    match mode {
+        MirrorSelectionModeV1::Move => {
+            for (id, position) in vertices.iter().zip(reflected) {
+                target
+                    .vertices
+                    .iter_mut()
+                    .find(|vertex| vertex.id == *id)
+                    .ok_or(CommandError::VertexNotFound(*id))?
+                    .position = position;
+            }
+        }
+        MirrorSelectionModeV1::Duplicate => {
+            let map = vertices
+                .iter()
+                .copied()
+                .zip(new_vertices.iter().copied())
+                .collect::<HashMap<_, _>>();
+            for (id, position) in new_vertices.iter().zip(reflected) {
+                if target.vertices.iter().any(|vertex| vertex.id == *id) {
+                    return Err(CommandError::VertexAlreadyExists(*id));
+                }
+                target.vertices.push(Vertex { id: *id, position });
+            }
+            for (source_id, new_id) in edges.iter().zip(new_edges) {
+                if target.edges.iter().any(|edge| edge.id == *new_id) {
+                    return Err(CommandError::EdgeAlreadyExists(*new_id));
+                }
+                let source = pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *source_id)
+                    .ok_or(CommandError::EdgeNotFound(*source_id))?;
+                target.edges.push(Edge {
+                    id: *new_id,
+                    start: *map
+                        .get(&source.start)
+                        .ok_or(CommandError::InvalidMirrorSelection)?,
+                    end: *map
+                        .get(&source.end)
+                        .ok_or(CommandError::InvalidMirrorSelection)?,
+                    kind: source.kind,
+                });
+                let layer = layers.layer_for_edge(source.id);
+                if layer != DEFAULT_PROJECT_LAYER_ID {
+                    target_layers.edge_assignments.push(EdgeLayerAssignmentV1 {
+                        edge: *new_id,
+                        layer,
+                    });
+                }
+            }
+        }
+    }
+    if !validate_crease_pattern(&target).is_valid()
+        || !validate_paper(paper, &target).is_valid()
+        || validate_project_layer_document_against_pattern_v1(&target_layers, &target).is_err()
+        || target == *pattern
+    {
+        return Err(CommandError::InvalidMirrorSelection);
+    }
+    Ok((target, target_layers))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Inverse {
+    RestoreMirrorSelection {
+        pattern: CreasePattern,
+        project_layers: ProjectLayerDocumentV1,
+    },
     RestoreStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -2023,6 +2239,34 @@ impl EditorState {
         self.ensure_project_layers_allow(command)?;
         self.ensure_geometric_constraints_allow(command)?;
         match *command {
+            Command::MirrorSelection {
+                ref vertices,
+                ref edges,
+                axis,
+                mode,
+                ref new_vertices,
+                ref new_edges,
+            } => {
+                let (pattern, project_layers) = mirror_selection_target(
+                    &self.pattern,
+                    &self.paper,
+                    &self.project_layers,
+                    vertices,
+                    edges,
+                    axis,
+                    mode,
+                    new_vertices,
+                    new_edges,
+                )?;
+                for record in &self.geometric_constraints.constraints {
+                    validate_geometric_constraint_record_against_pattern_v1(&pattern, record)
+                        .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
+                }
+                Ok(Inverse::RestoreMirrorSelection {
+                    pattern: std::mem::replace(&mut self.pattern, pattern),
+                    project_layers: std::mem::replace(&mut self.project_layers, project_layers),
+                })
+            }
             Command::ApplyStackedFoldDocument {
                 ref pattern,
                 ref paper,
@@ -3049,6 +3293,7 @@ impl EditorState {
             | Command::RenameLayer { .. }
             | Command::UpdateLayerPresentation { .. }
             | Command::MoveLayer { .. }
+            | Command::MirrorSelection { .. }
             | Command::ApplyStackedFoldDocument { .. } => Ok(()),
         }
     }
@@ -3416,6 +3661,7 @@ impl EditorState {
             | Command::MoveLayer { .. }
             | Command::DeleteLayer { .. }
             | Command::AssignEdgeToLayer { .. }
+            | Command::MirrorSelection { .. }
             | Command::ApplyStackedFoldDocument { .. } => {}
         }
         Ok(targets)
@@ -4814,6 +5060,13 @@ impl EditorState {
 
     fn apply_inverse(&mut self, inverse: &Inverse) -> Result<(), CommandError> {
         match inverse {
+            Inverse::RestoreMirrorSelection {
+                pattern,
+                project_layers,
+            } => {
+                self.pattern.clone_from(pattern);
+                self.project_layers.clone_from(project_layers);
+            }
             Inverse::RestoreStackedFoldDocument {
                 pattern,
                 paper,
@@ -5406,6 +5659,11 @@ impl Command {
             | Self::MoveLayer { .. }
             | Self::DeleteLayer { .. }
             | Self::AssignEdgeToLayer { .. } => return Ok(None),
+            Self::MirrorSelection {
+                new_vertices,
+                new_edges,
+                ..
+            } => (new_vertices.len(), new_edges.len()),
             Self::ApplyStackedFoldDocument { pattern, .. } => {
                 let added_vertices = pattern.vertices.len().saturating_sub(0);
                 let added_edges = pattern.edges.len().saturating_sub(0);
@@ -5439,6 +5697,7 @@ impl Command {
             | Self::ConnectIntersectionCluster { .. }
             | Self::SplitBoundaryEdge { .. }
             | Self::RemoveBoundaryVertex { .. }
+            | Self::MirrorSelection { .. }
             | Self::ApplyStackedFoldDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
             | Self::SetElementMetadata { .. }
@@ -5775,6 +6034,19 @@ impl Command {
                 settings: true,
                 ..Changes::default()
             },
+            Self::MirrorSelection {
+                ref vertices,
+                ref edges,
+                ref new_vertices,
+                ref new_edges,
+                ..
+            } => Changes {
+                vertices: vertices.iter().chain(new_vertices).copied().collect(),
+                edges: edges.iter().chain(new_edges).copied().collect(),
+                settings: true,
+                instructions: false,
+                constraints: false,
+            },
             Self::ApplyStackedFoldDocument { ref pattern, .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: pattern.edges.iter().map(|edge| edge.id).collect(),
@@ -5789,6 +6061,13 @@ impl Command {
 impl Inverse {
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match self {
+            Self::RestoreMirrorSelection { pattern, .. } => Changes {
+                vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
+                edges: pattern.edges.iter().map(|edge| edge.id).collect(),
+                settings: true,
+                instructions: false,
+                constraints: false,
+            },
             Self::RestoreStackedFoldDocument {
                 pattern,
                 instruction_timeline: _,
@@ -17379,5 +17658,151 @@ mod tests {
             assert_eq!(editor.project_layers(), &final_layers);
             assert_eq!(editor.fold_model_fingerprint_v1(), initial_fingerprint);
         }
+    }
+
+    #[test]
+    fn mirror_selection_duplicate_is_atomic_and_undo_redo_exact() {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let mut source_vertices = [VertexId::new(), VertexId::new()];
+        source_vertices.sort_by_key(|id| id.canonical_bytes());
+        let source_edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: source_vertices[0],
+                position: Point2::new(20.0, 30.0),
+            },
+            Vertex {
+                id: source_vertices[1],
+                position: Point2::new(30.0, 40.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: source_edge,
+            start: source_vertices[0],
+            end: source_vertices[1],
+            kind: EdgeKind::Mountain,
+        });
+        let mut editor = EditorState::with_paper(pattern.clone(), paper);
+        let mut new_vertices = [VertexId::new(), VertexId::new()];
+        new_vertices.sort_by_key(|id| id.canonical_bytes());
+        let new_edge = EdgeId::new();
+        let command = Command::MirrorSelection {
+            vertices: source_vertices.to_vec(),
+            edges: vec![source_edge],
+            axis: MirrorAxisV1 {
+                start: Point2::new(50.0, 0.0),
+                end: Point2::new(50.0, 100.0),
+            },
+            mode: MirrorSelectionModeV1::Duplicate,
+            new_vertices: new_vertices.to_vec(),
+            new_edges: vec![new_edge],
+        };
+
+        let result = editor.execute(0, command.clone()).unwrap();
+        assert_eq!(result.revision, 1);
+        assert_eq!(editor.pattern().vertices.len(), pattern.vertices.len() + 2);
+        assert_eq!(editor.pattern().edges.len(), pattern.edges.len() + 1);
+        assert_eq!(
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == new_vertices[0])
+                .unwrap()
+                .position,
+            Point2::new(80.0, 30.0)
+        );
+        editor.undo(1).unwrap();
+        assert_eq!(editor.pattern(), &pattern);
+        editor.redo(2).unwrap();
+        assert_eq!(editor.pattern().vertices.len(), pattern.vertices.len() + 2);
+        assert_eq!(
+            editor.execute(3, command),
+            Err(CommandError::InvalidMirrorSelection)
+        );
+    }
+
+    #[test]
+    fn mirror_selection_rejects_missing_edges_and_locked_incident_layers() {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let mut vertices = [VertexId::new(), VertexId::new(), VertexId::new()];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let selected_edge = EdgeId::new();
+        let incident_edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: vertices[0],
+                position: Point2::new(20.0, 20.0),
+            },
+            Vertex {
+                id: vertices[1],
+                position: Point2::new(30.0, 30.0),
+            },
+            Vertex {
+                id: vertices[2],
+                position: Point2::new(40.0, 20.0),
+            },
+        ]);
+        pattern.edges.extend([
+            Edge {
+                id: selected_edge,
+                start: vertices[0],
+                end: vertices[1],
+                kind: EdgeKind::Valley,
+            },
+            Edge {
+                id: incident_edge,
+                start: vertices[1],
+                end: vertices[2],
+                kind: EdgeKind::Mountain,
+            },
+        ]);
+        let mut editor = EditorState::with_paper(pattern, paper);
+        let mut locked_layer = test_layer("Locked");
+        locked_layer.locked = true;
+        editor.project_layers.layers.push(locked_layer.clone());
+        editor
+            .project_layers
+            .edge_assignments
+            .push(EdgeLayerAssignmentV1 {
+                edge: incident_edge,
+                layer: locked_layer.id,
+            });
+        let axis = MirrorAxisV1 {
+            start: Point2::new(50.0, 0.0),
+            end: Point2::new(50.0, 100.0),
+        };
+        let missing_edge = EdgeId::new();
+
+        assert_eq!(
+            editor.execute(
+                0,
+                Command::MirrorSelection {
+                    vertices: vertices[..2].to_vec(),
+                    edges: vec![missing_edge],
+                    axis,
+                    mode: MirrorSelectionModeV1::Move,
+                    new_vertices: vec![],
+                    new_edges: vec![],
+                },
+            ),
+            Err(CommandError::EdgeNotFound(missing_edge))
+        );
+        assert_eq!(
+            editor.execute(
+                0,
+                Command::MirrorSelection {
+                    vertices: vertices[..2].to_vec(),
+                    edges: vec![selected_edge],
+                    axis,
+                    mode: MirrorSelectionModeV1::Move,
+                    new_vertices: vec![],
+                    new_edges: vec![],
+                },
+            ),
+            Err(CommandError::LayerLocked(locked_layer.id))
+        );
     }
 }

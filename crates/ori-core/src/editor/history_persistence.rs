@@ -309,6 +309,14 @@ enum CommandV1 {
         edge: EdgeId,
         layer: LayerId,
     },
+    MirrorSelection {
+        vertices: Vec<VertexId>,
+        edges: Vec<EdgeId>,
+        axis: MirrorAxisV1,
+        mode: MirrorSelectionModeV1,
+        new_vertices: Vec<VertexId>,
+        new_edges: Vec<EdgeId>,
+    },
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -348,6 +356,10 @@ struct VertexPositionV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InverseV1 {
+    RestoreMirrorSelection {
+        pattern: CreasePattern,
+        project_layers: ProjectLayerDocumentV1,
+    },
     RestoreStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -752,6 +764,21 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             edge: *edge,
             layer: *layer,
         },
+        Command::MirrorSelection {
+            vertices,
+            edges,
+            axis,
+            mode,
+            new_vertices,
+            new_edges,
+        } => CommandV1::MirrorSelection {
+            vertices: vertices.clone(),
+            edges: edges.clone(),
+            axis: *axis,
+            mode: *mode,
+            new_vertices: new_vertices.clone(),
+            new_edges: new_edges.clone(),
+        },
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -960,6 +987,21 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
         },
         CommandV1::DeleteLayer { layer } => Command::DeleteLayer { layer },
         CommandV1::AssignEdgeToLayer { edge, layer } => Command::AssignEdgeToLayer { edge, layer },
+        CommandV1::MirrorSelection {
+            vertices,
+            edges,
+            axis,
+            mode,
+            new_vertices,
+            new_edges,
+        } => Command::MirrorSelection {
+            vertices,
+            edges,
+            axis,
+            mode,
+            new_vertices,
+            new_edges,
+        },
         CommandV1::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -1019,6 +1061,13 @@ fn indexed_layer_assignment_from_wire(
 
 fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1> {
     Ok(match inverse {
+        Inverse::RestoreMirrorSelection {
+            pattern,
+            project_layers,
+        } => InverseV1::RestoreMirrorSelection {
+            pattern: pattern.clone(),
+            project_layers: project_layers.clone(),
+        },
         Inverse::RestoreStackedFoldDocument {
             pattern,
             paper,
@@ -1265,6 +1314,13 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
 
 fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1> {
     Ok(match inverse {
+        InverseV1::RestoreMirrorSelection {
+            pattern,
+            project_layers,
+        } => Inverse::RestoreMirrorSelection {
+            pattern,
+            project_layers,
+        },
         InverseV1::RestoreStackedFoldDocument {
             pattern,
             paper,
@@ -1599,6 +1655,11 @@ fn validate_stacked_fold_document(
 
 fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1> {
     match command {
+        Command::MirrorSelection { axis, .. } => {
+            if !finite_point(axis.start) || !finite_point(axis.end) {
+                return Err(EditorHistoryErrorV1::NonFiniteNumber);
+            }
+        }
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -1739,6 +1800,17 @@ fn validate_vertex_finite(vertex: &Vertex) -> Result<(), EditorHistoryErrorV1> {
 
 fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1> {
     match inverse {
+        Inverse::RestoreMirrorSelection {
+            pattern,
+            project_layers,
+        } => {
+            pattern
+                .vertices
+                .iter()
+                .try_for_each(validate_vertex_finite)?;
+            validate_project_layer_document_against_pattern_v1(project_layers, pattern)
+                .map_err(|_| EditorHistoryErrorV1::InvalidInverse)?;
+        }
         Inverse::RestoreStackedFoldDocument {
             pattern,
             paper,
@@ -1908,6 +1980,7 @@ fn validate_inverse_application(
 ) -> Result<(), EditorHistoryErrorV1> {
     let invalid = || EditorHistoryErrorV1::InvalidInverse;
     match inverse {
+        Inverse::RestoreMirrorSelection { .. } => {}
         Inverse::RestoreStackedFoldDocument { .. } => {}
         Inverse::RestoreProjectMemo { .. } => {}
         Inverse::RestoreElementMetadata { .. } => {}

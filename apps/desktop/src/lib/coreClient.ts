@@ -1094,6 +1094,30 @@ export type AssignedLocalSufficiencyResponseV1 = Readonly<{
   authorizesProjectMutation: false
 }>
 
+export type AssignedLocalSufficiencySummaryResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  foldModelFingerprint: string
+  vertices: readonly (
+    | Readonly<{ status: 'necessary_failed'; vertex: string }>
+    | Readonly<{
+      status: 'sufficient_proven'
+      vertex: string
+      model_id: 'assigned_single_vertex_unique_blb_crimp_v1'
+      reduction_steps: number
+    }>
+    | Readonly<{
+      status: 'indeterminate'
+      vertex: string
+      reason: 'vertex_unavailable' | 'reduction_theorem_not_applicable' | 'resource_limit'
+    }>
+  )[]
+  totalReductionSteps: number
+  authorizesProjectMutation: false
+}>
+
 export type FoldAssignment = 'mountain' | 'valley'
 
 export type TopologyHalfEdge = {
@@ -1484,6 +1508,72 @@ export function normalizeAssignedLocalSufficiencyResponseV1(
         && ['vertex_unavailable', 'necessary_conditions_not_satisfied', 'reduction_theorem_not_applicable', 'resource_limit'].includes(String(result.reason))
     if (!exactTop || !binding || !valid) return null
     return value as AssignedLocalSufficiencyResponseV1
+}
+
+export function summarizeCurrentAssignedLocalSufficiencyV1(request: Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  expectedFoldModelFingerprint: string
+}>): Promise<AssignedLocalSufficiencySummaryResponseV1> {
+  return invoke<unknown>('summarize_current_assigned_local_sufficiency_v1', { request })
+    .then((value) => {
+      const normalized = normalizeAssignedLocalSufficiencySummaryResponseV1(value, request)
+      if (!normalized) throw new Error('invalid local sufficiency summary response')
+      return normalized
+    })
+}
+
+export function normalizeAssignedLocalSufficiencySummaryResponseV1(
+  value: unknown,
+  request: Readonly<{
+    expectedProjectInstanceId: string
+    expectedProjectId: string
+    expectedRevision: number
+    expectedFoldModelFingerprint: string
+  }>,
+): AssignedLocalSufficiencySummaryResponseV1 | null {
+  const record = (candidate: unknown): candidate is Record<string, unknown> =>
+    typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
+  const uuid = (candidate: unknown): candidate is string =>
+    typeof candidate === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate)
+  if (!record(value)
+    || Object.keys(value).sort().join(',') !== [
+      'authorizesProjectMutation', 'foldModelFingerprint', 'projectId',
+      'projectInstanceId', 'revision', 'totalReductionSteps', 'version', 'vertices',
+    ].sort().join(',')
+    || value.version !== 1
+    || value.projectInstanceId !== request.expectedProjectInstanceId
+    || value.projectId !== request.expectedProjectId
+    || value.revision !== request.expectedRevision
+    || value.foldModelFingerprint !== request.expectedFoldModelFingerprint
+    || value.authorizesProjectMutation !== false
+    || !Array.isArray(value.vertices) || value.vertices.length > 4096
+    || !Number.isSafeInteger(value.totalReductionSteps)
+    || Number(value.totalReductionSteps) < 0
+    || Number(value.totalReductionSteps) > 16_384) return null
+  const seen = new Set<string>()
+  let reductions = 0
+  for (const item of value.vertices) {
+    if (!record(item) || !uuid(item.vertex) || seen.has(item.vertex)) return null
+    seen.add(item.vertex)
+    if (item.status === 'necessary_failed') {
+      if (Object.keys(item).sort().join(',') !== 'status,vertex') return null
+    } else if (item.status === 'sufficient_proven') {
+      if (Object.keys(item).sort().join(',') !== 'model_id,reduction_steps,status,vertex'
+        || item.model_id !== 'assigned_single_vertex_unique_blb_crimp_v1'
+        || !Number.isSafeInteger(item.reduction_steps)
+        || Number(item.reduction_steps) < 0) return null
+      reductions += Number(item.reduction_steps)
+    } else if (item.status === 'indeterminate') {
+      if (Object.keys(item).sort().join(',') !== 'reason,status,vertex'
+        || !['vertex_unavailable', 'reduction_theorem_not_applicable', 'resource_limit']
+          .includes(String(item.reason))) return null
+    } else return null
+  }
+  if (reductions !== value.totalReductionSteps) return null
+  return value as AssignedLocalSufficiencySummaryResponseV1
 }
 
 export function analyzeProjectTopology(expectedProjectId: string, expectedRevision: number) {

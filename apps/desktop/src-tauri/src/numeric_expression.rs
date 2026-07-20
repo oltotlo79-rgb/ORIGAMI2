@@ -266,6 +266,22 @@ pub(super) fn evaluate_positive_millimetre_pair(
     .map_err(PositiveMillimetrePairError::Evaluation)
 }
 
+pub(super) fn evaluate_finite_millimetre_pair(
+    x_source: String,
+    y_source: String,
+) -> Result<(f64, f64), PositiveMillimetrePairError> {
+    let permit = NUMERIC_EXPRESSION_WORKER_GATE
+        .try_acquire()
+        .ok_or(PositiveMillimetrePairError::WorkerBusy)?;
+    run_guarded_worker(permit, || {
+        Ok((
+            evaluate_finite_millimetre_expression(x_source)?,
+            evaluate_finite_millimetre_expression(y_source)?,
+        ))
+    })
+    .map_err(PositiveMillimetrePairError::Evaluation)
+}
+
 pub(super) async fn evaluate_positive_millimetre_pair_in_worker(
     width_source: String,
     height_source: String,
@@ -312,6 +328,38 @@ fn evaluate_positive_millimetre_expression(
     adopt_positive_adjacent_interval(response.lower_bound, response.upper_bound).ok_or_else(|| {
         NumericExpressionCommandError::new(NumericExpressionErrorCategory::ResultOutOfRange)
     })
+}
+
+fn evaluate_finite_millimetre_expression(
+    source: String,
+) -> Result<f64, NumericExpressionCommandError> {
+    if source.trim().is_empty() || source.chars().any(char::is_control) {
+        return Err(NumericExpressionCommandError::new(
+            NumericExpressionErrorCategory::InvalidRequest,
+        ));
+    }
+    let response = evaluate_request(NumericExpressionRequest {
+        source,
+        precision_bits: USER_INPUT_PRECISION_BITS,
+    })?;
+    adopt_finite_adjacent_interval(response.lower_bound, response.upper_bound).ok_or_else(|| {
+        NumericExpressionCommandError::new(NumericExpressionErrorCategory::ResultOutOfRange)
+    })
+}
+
+fn adopt_finite_adjacent_interval(lower: f64, upper: f64) -> Option<f64> {
+    if !lower.is_finite() || !upper.is_finite() || lower > upper {
+        return None;
+    }
+    if lower == upper {
+        return Some(normalize_zero(lower));
+    }
+    let adjacent = if lower.is_sign_negative() == upper.is_sign_negative() {
+        lower.to_bits().abs_diff(upper.to_bits()) == 1
+    } else {
+        lower == -0.0 && upper == 0.0
+    };
+    adjacent.then(|| normalize_zero(lower))
 }
 
 fn adopt_positive_adjacent_interval(lower: f64, upper: f64) -> Option<f64> {
@@ -458,6 +506,18 @@ mod tests {
         assert!(adopt_positive_adjacent_interval(1.0, f64::INFINITY).is_none());
         assert!(
             adopt_positive_adjacent_interval(1.0, f64::from_bits(1.0_f64.to_bits() + 2),).is_none()
+        );
+    }
+
+    #[test]
+    fn finite_pair_adoption_preserves_signed_coordinates_and_zero() {
+        assert_eq!(
+            evaluate_finite_millimetre_pair("-sqrt(4)".to_owned(), "1 / 2".to_owned()).unwrap(),
+            (-2.0, 0.5)
+        );
+        assert_eq!(
+            evaluate_finite_millimetre_pair("-0".to_owned(), "0".to_owned()).unwrap(),
+            (0.0, 0.0)
         );
     }
 

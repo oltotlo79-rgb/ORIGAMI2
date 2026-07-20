@@ -1,7 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
-import type { NumericExpressionBinding, ProjectSnapshot } from './coreClient.ts'
+import type {
+  NumericExpressionBinding,
+  ProjectSnapshot,
+  VertexCoordinateExpressionBinding,
+  VertexCoordinateExpressionTransition,
+} from './coreClient.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
 
@@ -1293,6 +1298,9 @@ function parseNumericExpressions(
     'rectangular_paper_creation',
     'undo_stack',
     'redo_stack',
+    'vertex_coordinates',
+    'vertex_undo_stack',
+    'vertex_redo_stack',
   ].includes(key))) return null
   const rectangular = record.rectangular_paper_creation === undefined
     ? undefined
@@ -1300,12 +1308,159 @@ function parseNumericExpressions(
   if (record.rectangular_paper_creation !== undefined && !rectangular) return null
   const undoStack = parseNumericExpressionStack(record.undo_stack)
   const redoStack = parseNumericExpressionStack(record.redo_stack)
-  if (undoStack === null || redoStack === null) return null
+  const vertexCoordinates = parseVertexCoordinateExpressions(record.vertex_coordinates)
+  const vertexUndoStack = parseVertexCoordinateExpressionStack(record.vertex_undo_stack)
+  const vertexRedoStack = parseVertexCoordinateExpressionStack(record.vertex_redo_stack)
+  if (
+    undoStack === null
+    || redoStack === null
+    || vertexCoordinates === null
+    || vertexUndoStack === null
+    || vertexRedoStack === null
+  ) return null
   return {
     ...(rectangular ? { rectangular_paper_creation: rectangular } : {}),
     ...(record.undo_stack === undefined ? {} : { undo_stack: undoStack }),
     ...(record.redo_stack === undefined ? {} : { redo_stack: redoStack }),
+    ...(record.vertex_coordinates === undefined
+      ? {}
+      : { vertex_coordinates: vertexCoordinates }),
+    ...(record.vertex_undo_stack === undefined
+      ? {}
+      : { vertex_undo_stack: vertexUndoStack }),
+    ...(record.vertex_redo_stack === undefined
+      ? {}
+      : { vertex_redo_stack: vertexRedoStack }),
   }
+}
+
+function parseVertexCoordinateExpressions(
+  value: unknown,
+): VertexCoordinateExpressionBinding[] | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 10_000) return null
+  const result: VertexCoordinateExpressionBinding[] = []
+  const ids = new Set<string>()
+  for (const entry of value) {
+    const binding = parseVertexCoordinateExpression(entry)
+    if (!binding || ids.has(binding.vertex)) return null
+    ids.add(binding.vertex)
+    result.push(binding)
+  }
+  return result
+}
+
+function parseVertexCoordinateExpression(
+  value: unknown,
+): VertexCoordinateExpressionBinding | null {
+  const record = snapshotDataRecord(value)
+  if (!record || Object.keys(record).some((key) => ![
+    'schema_version',
+    'vertex',
+    'x_source',
+    'y_source',
+    'adopted_x_mm',
+    'adopted_y_mm',
+    'polar_construction',
+  ].includes(key))) return null
+  const polar = record.polar_construction === undefined
+    ? undefined
+    : parsePolarVertexConstruction(record.polar_construction)
+  if (
+    record.schema_version !== 1
+    || !isCanonicalNonNilUuid(record.vertex)
+    || typeof record.x_source !== 'string'
+    || typeof record.y_source !== 'string'
+    || typeof record.adopted_x_mm !== 'number'
+    || !Number.isFinite(record.adopted_x_mm)
+    || typeof record.adopted_y_mm !== 'number'
+    || !Number.isFinite(record.adopted_y_mm)
+    || (record.polar_construction !== undefined && !polar)
+  ) return null
+  return {
+    schema_version: 1,
+    vertex: record.vertex,
+    x_source: record.x_source,
+    y_source: record.y_source,
+    adopted_x_mm: record.adopted_x_mm,
+    adopted_y_mm: record.adopted_y_mm,
+    ...(polar ? { polar_construction: polar } : {}),
+  }
+}
+
+function parsePolarVertexConstruction(
+  value: unknown,
+): NonNullable<VertexCoordinateExpressionBinding['polar_construction']> | null {
+  const record = exactDataRecord(value, [
+    'schema_version',
+    'start_vertex',
+    'adopted_start_x_mm',
+    'adopted_start_y_mm',
+    'length_source',
+    'angle_degrees_source',
+    'adopted_length_mm',
+    'adopted_angle_degrees',
+  ])
+  if (
+    !record
+    || record.schema_version !== 1
+    || !isCanonicalNonNilUuid(record.start_vertex)
+    || typeof record.adopted_start_x_mm !== 'number'
+    || !Number.isFinite(record.adopted_start_x_mm)
+    || typeof record.adopted_start_y_mm !== 'number'
+    || !Number.isFinite(record.adopted_start_y_mm)
+    || typeof record.length_source !== 'string'
+    || typeof record.angle_degrees_source !== 'string'
+    || typeof record.adopted_length_mm !== 'number'
+    || !Number.isFinite(record.adopted_length_mm)
+    || record.adopted_length_mm <= 0
+    || typeof record.adopted_angle_degrees !== 'number'
+    || !Number.isFinite(record.adopted_angle_degrees)
+    || Math.abs(record.adopted_angle_degrees) > 360_000
+  ) return null
+  return record as unknown as NonNullable<
+    VertexCoordinateExpressionBinding['polar_construction']
+  >
+}
+
+function parseVertexCoordinateExpressionStack(
+  value: unknown,
+): Array<VertexCoordinateExpressionTransition | null> | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 128) return null
+  const result: Array<VertexCoordinateExpressionTransition | null> = []
+  for (const entry of value) {
+    if (entry === null) {
+      result.push(null)
+      continue
+    }
+    const record = exactDataRecord(entry, ['changes'])
+    if (!record || !Array.isArray(record.changes)
+      || record.changes.length === 0 || record.changes.length > 10_000) return null
+    const vertices = new Set<string>()
+    const changes: VertexCoordinateExpressionTransition['changes'] = []
+    for (const value of record.changes) {
+      const change = exactDataRecord(value, ['vertex', 'before', 'after'])
+      if (!change || !isCanonicalNonNilUuid(change.vertex)
+        || vertices.has(change.vertex)) return null
+      const before = change.before === null
+        ? null
+        : parseVertexCoordinateExpression(change.before)
+      const after = change.after === null
+        ? null
+        : parseVertexCoordinateExpression(change.after)
+      if (
+        (change.before !== null && !before)
+        || (change.after !== null && !after)
+        || (before?.vertex !== undefined && before.vertex !== change.vertex)
+        || (after?.vertex !== undefined && after.vertex !== change.vertex)
+      ) return null
+      vertices.add(change.vertex)
+      changes.push({ vertex: change.vertex, before, after })
+    }
+    result.push({ changes })
+  }
+  return result
 }
 
 function parseNumericExpressionBinding(

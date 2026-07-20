@@ -191,3 +191,30 @@ test('existing paper expressions are native-revalidated, undoable, and persisted
   )
   assert.match(recovery, /parseNumericExpressionStack[\s\S]*?value\.length > 128/u)
 })
+
+test('vertex and polar construction expressions retain source, ID, and native authority', () => {
+  assert.match(
+    coreClient,
+    /addVertex\([\s\S]*?xExpression = String\(x\)[\s\S]*?xExpression,[\s\S]*?yExpression/u,
+  )
+  assert.match(
+    app,
+    /millimetreExpressionSource\(xDisplayExpression[\s\S]*?millimetreExpressionSource\(yDisplayExpression/u,
+  )
+  assert.match(
+    nativeLib,
+    /validate_coordinate_expression_pair\(&x_expression,[\s\S]*?adopt_vertex_coordinate_expression/u,
+  )
+  assert.match(
+    formats,
+    /pub struct VertexCoordinateExpressions[\s\S]*?pub vertex: VertexId,[\s\S]*?pub polar_construction:/u,
+  )
+  assert.match(
+    app,
+    /data-vertex-polar-expression[\s\S]*?length_source[\s\S]*?angle_degrees_source/u,
+  )
+  assert.match(
+    nativeLib,
+    /vertex_coordinate_expressions_follow_native_history_and_archive_round_trip/u,
+  )
+})

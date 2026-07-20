@@ -139,6 +139,67 @@ impl RectangularPaperCreationExpressions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VertexCoordinateExpressions {
+    pub schema_version: u32,
+    pub vertex: VertexId,
+    pub x_source: String,
+    pub y_source: String,
+    pub adopted_x_mm: f64,
+    pub adopted_y_mm: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polar_construction: Option<PolarVertexConstructionExpressions>,
+}
+
+impl VertexCoordinateExpressions {
+    #[must_use]
+    pub fn new(
+        vertex: VertexId,
+        x_source: impl Into<String>,
+        y_source: impl Into<String>,
+        adopted_x_mm: f64,
+        adopted_y_mm: f64,
+    ) -> Self {
+        Self {
+            schema_version: PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION,
+            vertex,
+            x_source: x_source.into(),
+            y_source: y_source.into(),
+            adopted_x_mm,
+            adopted_y_mm,
+            polar_construction: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolarVertexConstructionExpressions {
+    pub schema_version: u32,
+    pub start_vertex: VertexId,
+    pub adopted_start_x_mm: f64,
+    pub adopted_start_y_mm: f64,
+    pub length_source: String,
+    pub angle_degrees_source: String,
+    pub adopted_length_mm: f64,
+    pub adopted_angle_degrees: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VertexCoordinateExpressionTransition {
+    pub changes: Vec<VertexCoordinateExpressionChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VertexCoordinateExpressionChange {
+    pub vertex: VertexId,
+    pub before: Option<VertexCoordinateExpressions>,
+    pub after: Option<VertexCoordinateExpressions>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectNumericExpressions {
@@ -148,6 +209,12 @@ pub struct ProjectNumericExpressions {
     pub undo_stack: Vec<Option<RectangularPaperCreationExpressions>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub redo_stack: Vec<Option<RectangularPaperCreationExpressions>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub vertex_coordinates: Vec<VertexCoordinateExpressions>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub vertex_undo_stack: Vec<Option<VertexCoordinateExpressionTransition>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub vertex_redo_stack: Vec<Option<VertexCoordinateExpressionTransition>>,
 }
 
 impl ProjectNumericExpressions {
@@ -156,6 +223,9 @@ impl ProjectNumericExpressions {
         self.rectangular_paper_creation.is_none()
             && self.undo_stack.is_empty()
             && self.redo_stack.is_empty()
+            && self.vertex_coordinates.is_empty()
+            && self.vertex_undo_stack.is_empty()
+            && self.vertex_redo_stack.is_empty()
     }
 }
 
@@ -348,6 +418,7 @@ fn write_project_json_with_size_limit(
     validate_project_envelope(document)?;
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
+    validate_current_vertex_expression_bindings(document)?;
     validate_project_geometric_constraints(document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     let bytes = serde_json::to_vec_pretty(document)?;
@@ -372,6 +443,7 @@ pub fn read_project_json_with_limits(
     validate_project_envelope(&document)?;
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
+    validate_current_vertex_expression_bindings(&document)?;
     validate_project_geometric_constraints(&document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     Ok(document)
@@ -588,6 +660,12 @@ fn validate_numeric_expressions(
     if expressions.undo_stack.len() > 128 || expressions.redo_stack.len() > 128 {
         return Err(FormatError::InvalidNumericExpressions);
     }
+    if expressions.vertex_undo_stack.len() > 128
+        || expressions.vertex_redo_stack.len() > 128
+        || expressions.vertex_coordinates.len() > MAX_CREASE_PATTERN_EXPORT_VERTICES
+    {
+        return Err(FormatError::InvalidNumericExpressions);
+    }
     for rectangular in expressions
         .rectangular_paper_creation
         .iter()
@@ -595,6 +673,66 @@ fn validate_numeric_expressions(
         .chain(expressions.redo_stack.iter().flatten())
     {
         validate_rectangular_paper_expression(rectangular)?;
+    }
+    let mut vertex_ids = std::collections::HashSet::new();
+    for binding in &expressions.vertex_coordinates {
+        if !vertex_ids.insert(binding.vertex) {
+            return Err(FormatError::InvalidNumericExpressions);
+        }
+        validate_vertex_coordinate_expression(binding)?;
+    }
+    for transition in expressions
+        .vertex_undo_stack
+        .iter()
+        .chain(&expressions.vertex_redo_stack)
+        .flatten()
+    {
+        if transition.changes.is_empty() || transition.changes.len() > 10_000 {
+            return Err(FormatError::InvalidNumericExpressions);
+        }
+        let mut changed_vertices = std::collections::HashSet::new();
+        for change in &transition.changes {
+            if !changed_vertices.insert(change.vertex)
+                || change
+                    .before
+                    .as_ref()
+                    .is_some_and(|value| value.vertex != change.vertex)
+                || change
+                    .after
+                    .as_ref()
+                    .is_some_and(|value| value.vertex != change.vertex)
+            {
+                return Err(FormatError::InvalidNumericExpressions);
+            }
+            if let Some(binding) = &change.before {
+                validate_vertex_coordinate_expression(binding)?;
+            }
+            if let Some(binding) = &change.after {
+                validate_vertex_coordinate_expression(binding)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_current_vertex_expression_bindings(
+    document: &ProjectDocument,
+) -> Result<(), FormatError> {
+    for binding in &document.numeric_expressions.vertex_coordinates {
+        let mut matches = document
+            .crease_pattern
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.id == binding.vertex);
+        let Some(vertex) = matches.next() else {
+            return Err(FormatError::InvalidNumericExpressions);
+        };
+        if matches.next().is_some()
+            || vertex.position.x.to_bits() != binding.adopted_x_mm.to_bits()
+            || vertex.position.y.to_bits() != binding.adopted_y_mm.to_bits()
+        {
+            return Err(FormatError::InvalidNumericExpressions);
+        }
     }
     Ok(())
 }
@@ -619,6 +757,33 @@ fn valid_numeric_expression_source(source: &str) -> bool {
     !source.trim().is_empty()
         && source.len() <= MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES
         && !source.chars().any(char::is_control)
+}
+
+fn validate_vertex_coordinate_expression(
+    binding: &VertexCoordinateExpressions,
+) -> Result<(), FormatError> {
+    if binding.schema_version != PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION
+        || !valid_numeric_expression_source(&binding.x_source)
+        || !valid_numeric_expression_source(&binding.y_source)
+        || !binding.adopted_x_mm.is_finite()
+        || !binding.adopted_y_mm.is_finite()
+    {
+        return Err(FormatError::InvalidNumericExpressions);
+    }
+    if let Some(polar) = &binding.polar_construction
+        && (polar.schema_version != PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION
+            || !valid_numeric_expression_source(&polar.length_source)
+            || !valid_numeric_expression_source(&polar.angle_degrees_source)
+            || !polar.adopted_start_x_mm.is_finite()
+            || !polar.adopted_start_y_mm.is_finite()
+            || !polar.adopted_length_mm.is_finite()
+            || polar.adopted_length_mm <= 0.0
+            || !polar.adopted_angle_degrees.is_finite()
+            || polar.adopted_angle_degrees.abs() > 360_000.0)
+    {
+        return Err(FormatError::InvalidNumericExpressions);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1428,6 +1593,17 @@ mod tests {
                 "400 / 3",
                 282.842_712_474_619,
                 133.333_333_333_333_34,
+            ));
+        let vertex = original.crease_pattern.vertices[0].clone();
+        original
+            .numeric_expressions
+            .vertex_coordinates
+            .push(VertexCoordinateExpressions::new(
+                vertex.id,
+                "sqrt(0)",
+                "0 / 3",
+                vertex.position.x,
+                vertex.position.y,
             ));
 
         let bytes = write_project_json(&original).expect("write expressions");

@@ -125,6 +125,9 @@ export type ProjectSnapshot = {
     rectangular_paper_creation?: NumericExpressionBinding
     undo_stack?: Array<NumericExpressionBinding | null>
     redo_stack?: Array<NumericExpressionBinding | null>
+    vertex_coordinates?: Array<VertexCoordinateExpressionBinding>
+    vertex_undo_stack?: Array<VertexCoordinateExpressionTransition | null>
+    vertex_redo_stack?: Array<VertexCoordinateExpressionTransition | null>
   }
   fold_model_fingerprint: string
 }
@@ -135,6 +138,33 @@ export interface NumericExpressionBinding {
       height_source: string
       adopted_width_mm: number
       adopted_height_mm: number
+}
+
+export interface VertexCoordinateExpressionBinding {
+  schema_version: 1
+  vertex: string
+  x_source: string
+  y_source: string
+  adopted_x_mm: number
+  adopted_y_mm: number
+  polar_construction?: {
+    schema_version: 1
+    start_vertex: string
+    adopted_start_x_mm: number
+    adopted_start_y_mm: number
+    length_source: string
+    angle_degrees_source: string
+    adopted_length_mm: number
+    adopted_angle_degrees: number
+  }
+}
+
+export interface VertexCoordinateExpressionTransition {
+  changes: Array<{
+    vertex: string
+    before: VertexCoordinateExpressionBinding | null
+    after: VertexCoordinateExpressionBinding | null
+  }>
 }
 
 export type ProjectLayerMutationErrorCode =
@@ -903,6 +933,8 @@ export function addVertex(
   expectedProjectInstanceId: string,
   x: number,
   y: number,
+  xExpression = String(x),
+  yExpression = String(y),
 ) {
   return invoke<ProjectSnapshot>('add_vertex', {
     expectedProjectInstanceId,
@@ -910,6 +942,8 @@ export function addVertex(
     expectedRevision,
     x,
     y,
+    xExpression,
+    yExpression,
   })
 }
 
@@ -938,6 +972,10 @@ export function addConnectedVertex(
   start: string,
   x: number,
   y: number,
+  lengthExpression: string,
+  angleDegreesExpression: string,
+  lengthMm: number,
+  angleDegrees: number,
   kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
 ) {
   return invoke<ProjectSnapshot>('add_connected_vertex', {
@@ -947,6 +985,10 @@ export function addConnectedVertex(
     start,
     x,
     y,
+    lengthExpression,
+    angleDegreesExpression,
+    lengthMm,
+    angleDegrees,
     kind,
   })
 }
@@ -958,6 +1000,8 @@ export function moveVertex(
   id: string,
   x: number,
   y: number,
+  xExpression = String(x),
+  yExpression = String(y),
 ) {
   return invoke<ProjectSnapshot>('move_vertex', {
     expectedProjectInstanceId,
@@ -966,6 +1010,8 @@ export function moveVertex(
     id,
     x,
     y,
+    xExpression,
+    yExpression,
   })
 }
 

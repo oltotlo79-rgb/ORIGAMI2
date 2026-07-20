@@ -55,8 +55,8 @@ use mesh_export::{
     save_static_mesh_export,
 };
 use numeric_expression::{
-    PositiveMillimetrePairError, evaluate_numeric_expression, evaluate_positive_millimetre_pair,
-    evaluate_positive_millimetre_pair_in_worker,
+    PositiveMillimetrePairError, evaluate_finite_millimetre_pair, evaluate_numeric_expression,
+    evaluate_positive_millimetre_pair, evaluate_positive_millimetre_pair_in_worker,
 };
 use ori_core::{
     BoundaryEdgeRef, Command, ConstraintPreflightV1, DirectConstraintConflictV1, EditorState,
@@ -77,11 +77,13 @@ use ori_domain::{
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
     FoldBoundaryCandidateSource, FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit,
-    FoldPreview, FoldPreviewWarning, Ori2ProjectArchive, ProjectDocument,
-    ProjectNumericExpressions, RectangularPaperCreationExpressions, SvgBoundaryCandidateId,
-    SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern, SvgGroupMapping,
-    SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox,
-    SvgStyleGroupId, SvgWarningKind, read_fold_preview, read_svg_preview,
+    FoldPreview, FoldPreviewWarning, Ori2ProjectArchive, PolarVertexConstructionExpressions,
+    ProjectDocument, ProjectNumericExpressions, RectangularPaperCreationExpressions,
+    SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
+    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
+    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
+    VertexCoordinateExpressionChange, VertexCoordinateExpressionTransition,
+    VertexCoordinateExpressions, read_fold_preview, read_svg_preview,
 };
 use project_folder_io::{ProjectFolderIoState, open_project_folder, save_project_folder_as};
 #[cfg(test)]
@@ -432,6 +434,8 @@ impl ProjectState {
         let mut saved_document = document.clone();
         saved_document.numeric_expressions.undo_stack.clear();
         saved_document.numeric_expressions.redo_stack.clear();
+        saved_document.numeric_expressions.vertex_undo_stack.clear();
+        saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
         let editor = EditorState::with_document_parts_constraints_and_layers(
             document.crease_pattern,
@@ -457,12 +461,25 @@ impl ProjectState {
         project: Ori2ProjectArchive,
         current_path: PathBuf,
     ) -> Result<Self, String> {
+        let history_lengths = project
+            .editor_history
+            .as_ref()
+            .map(|history| (history.undo_len(), history.redo_len()))
+            .unwrap_or_default();
         let editor = restore_archive_editor(&project)
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
-        let document = project.document;
+        let mut document = project.document;
+        normalize_numeric_expression_history(
+            &mut document.numeric_expressions,
+            history_lengths.0,
+            history_lengths.1,
+        )
+        .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
         let mut saved_document = document.clone();
         saved_document.numeric_expressions.undo_stack.clear();
         saved_document.numeric_expressions.redo_stack.clear();
+        saved_document.numeric_expressions.vertex_undo_stack.clear();
+        saved_document.numeric_expressions.vertex_redo_stack.clear();
         Ok(Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -477,8 +494,18 @@ impl ProjectState {
     }
 
     fn from_recovery_project_archive(project: Ori2ProjectArchive) -> Result<Self, ()> {
+        let history_lengths = project
+            .editor_history
+            .as_ref()
+            .map(|history| (history.undo_len(), history.redo_len()))
+            .unwrap_or_default();
         let editor = restore_archive_editor(&project)?;
-        let document = project.document;
+        let mut document = project.document;
+        normalize_numeric_expression_history(
+            &mut document.numeric_expressions,
+            history_lengths.0,
+            history_lengths.1,
+        )?;
         Ok(Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -495,6 +522,7 @@ impl ProjectState {
     fn document(&self) -> ProjectDocument {
         let numeric_expressions = ProjectNumericExpressions {
             rectangular_paper_creation: self.numeric_expressions.rectangular_paper_creation.clone(),
+            vertex_coordinates: self.numeric_expressions.vertex_coordinates.clone(),
             ..ProjectNumericExpressions::default()
         };
         ProjectDocument {
@@ -517,6 +545,28 @@ impl ProjectState {
             .editor
             .export_history_v1(self.project_id)
             .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
+        trim_expression_stack(
+            &mut document.numeric_expressions.undo_stack,
+            history.undo_len(),
+        );
+        trim_expression_stack(
+            &mut document.numeric_expressions.redo_stack,
+            history.redo_len(),
+        );
+        trim_expression_stack(
+            &mut document.numeric_expressions.vertex_undo_stack,
+            history.undo_len(),
+        );
+        trim_expression_stack(
+            &mut document.numeric_expressions.vertex_redo_stack,
+            history.redo_len(),
+        );
+        normalize_numeric_expression_history(
+            &mut document.numeric_expressions,
+            history.undo_len(),
+            history.redo_len(),
+        )
+        .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
         Ok(Ori2ProjectArchive {
             document,
             editor_history: (!history.is_default_empty()).then_some(history),
@@ -535,6 +585,8 @@ impl ProjectState {
             || saved.instruction_timeline != *self.editor.instruction_timeline()
             || saved.numeric_expressions.rectangular_paper_creation
                 != self.numeric_expressions.rectangular_paper_creation
+            || saved.numeric_expressions.vertex_coordinates
+                != self.numeric_expressions.vertex_coordinates
             || saved.geometric_constraints != *self.editor.geometric_constraints()
             || saved.layers != *self.editor.project_layers()
     }
@@ -549,6 +601,12 @@ impl ProjectState {
             self.numeric_expressions.undo_stack.drain(..excess);
         }
         self.numeric_expressions.redo_stack.clear();
+        self.numeric_expressions.vertex_undo_stack.push(None);
+        if self.numeric_expressions.vertex_undo_stack.len() > limit {
+            let excess = self.numeric_expressions.vertex_undo_stack.len() - limit;
+            self.numeric_expressions.vertex_undo_stack.drain(..excess);
+        }
+        self.numeric_expressions.vertex_redo_stack.clear();
     }
 
     fn undo_numeric_expression_edit(&mut self) {
@@ -559,6 +617,21 @@ impl ProjectState {
             .redo_stack
             .push(self.numeric_expressions.rectangular_paper_creation.take());
         self.numeric_expressions.rectangular_paper_creation = previous;
+        let vertex_transition = self.numeric_expressions.vertex_undo_stack.pop().flatten();
+        if let Some(transition) = vertex_transition {
+            for change in &transition.changes {
+                apply_vertex_expression_binding(
+                    &mut self.numeric_expressions.vertex_coordinates,
+                    change.vertex,
+                    change.before.clone(),
+                );
+            }
+            self.numeric_expressions
+                .vertex_redo_stack
+                .push(Some(transition));
+        } else {
+            self.numeric_expressions.vertex_redo_stack.push(None);
+        }
     }
 
     fn redo_numeric_expression_edit(&mut self) {
@@ -569,18 +642,176 @@ impl ProjectState {
             .undo_stack
             .push(self.numeric_expressions.rectangular_paper_creation.take());
         self.numeric_expressions.rectangular_paper_creation = next;
+        let vertex_transition = self.numeric_expressions.vertex_redo_stack.pop().flatten();
+        if let Some(transition) = vertex_transition {
+            for change in &transition.changes {
+                apply_vertex_expression_binding(
+                    &mut self.numeric_expressions.vertex_coordinates,
+                    change.vertex,
+                    change.after.clone(),
+                );
+            }
+            self.numeric_expressions
+                .vertex_undo_stack
+                .push(Some(transition));
+        } else {
+            self.numeric_expressions.vertex_undo_stack.push(None);
+        }
+    }
+
+    fn adopt_vertex_coordinate_expression(&mut self, binding: VertexCoordinateExpressions) {
+        let before = self
+            .numeric_expressions
+            .vertex_coordinates
+            .iter()
+            .find(|current| current.vertex == binding.vertex)
+            .cloned();
+        let vertex = binding.vertex;
+        apply_vertex_expression_binding(
+            &mut self.numeric_expressions.vertex_coordinates,
+            vertex,
+            Some(binding.clone()),
+        );
+        self.record_vertex_expression_change(vertex, before, Some(binding));
+    }
+
+    fn remove_vertex_coordinate_expression(&mut self, vertex: VertexId) {
+        let before = self
+            .numeric_expressions
+            .vertex_coordinates
+            .iter()
+            .find(|current| current.vertex == vertex)
+            .cloned();
+        apply_vertex_expression_binding(
+            &mut self.numeric_expressions.vertex_coordinates,
+            vertex,
+            None,
+        );
+        if before.is_some() {
+            self.record_vertex_expression_change(vertex, before, None);
+        }
+    }
+
+    fn record_vertex_expression_change(
+        &mut self,
+        vertex: VertexId,
+        before: Option<VertexCoordinateExpressions>,
+        after: Option<VertexCoordinateExpressions>,
+    ) {
+        let Some(slot) = self.numeric_expressions.vertex_undo_stack.last_mut() else {
+            return;
+        };
+        let transition = slot.get_or_insert_with(|| VertexCoordinateExpressionTransition {
+            changes: Vec::new(),
+        });
+        if let Some(existing) = transition
+            .changes
+            .iter_mut()
+            .find(|change| change.vertex == vertex)
+        {
+            existing.after = after;
+        } else {
+            transition.changes.push(VertexCoordinateExpressionChange {
+                vertex,
+                before,
+                after,
+            });
+            transition
+                .changes
+                .sort_by_key(|change| change.vertex.canonical_bytes());
+        }
+    }
+
+    fn reconcile_vertex_coordinate_expressions(&mut self) {
+        let stale = self
+            .numeric_expressions
+            .vertex_coordinates
+            .iter()
+            .filter(|binding| {
+                self.editor
+                    .pattern()
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == binding.vertex)
+                    .is_none_or(|vertex| {
+                        vertex.position.x.to_bits() != binding.adopted_x_mm.to_bits()
+                            || vertex.position.y.to_bits() != binding.adopted_y_mm.to_bits()
+                    })
+            })
+            .map(|binding| binding.vertex)
+            .collect::<Vec<_>>();
+        for vertex in stale {
+            self.remove_vertex_coordinate_expression(vertex);
+        }
     }
 
     fn trim_numeric_expression_history(&mut self, limit: usize) {
-        for stack in [
-            &mut self.numeric_expressions.undo_stack,
-            &mut self.numeric_expressions.redo_stack,
-        ] {
-            if stack.len() > limit {
-                let excess = stack.len() - limit;
-                stack.drain(..excess);
-            }
-        }
+        trim_expression_stack(&mut self.numeric_expressions.undo_stack, limit);
+        trim_expression_stack(&mut self.numeric_expressions.redo_stack, limit);
+        trim_expression_stack(&mut self.numeric_expressions.vertex_undo_stack, limit);
+        trim_expression_stack(&mut self.numeric_expressions.vertex_redo_stack, limit);
+    }
+}
+
+fn trim_expression_stack<T>(stack: &mut Vec<T>, limit: usize) {
+    if stack.len() > limit {
+        let excess = stack.len() - limit;
+        stack.drain(..excess);
+    }
+}
+
+fn normalize_numeric_expression_history(
+    expressions: &mut ProjectNumericExpressions,
+    undo_len: usize,
+    redo_len: usize,
+) -> Result<(), ()> {
+    if expressions.rectangular_paper_creation.is_none()
+        && expressions.vertex_coordinates.is_empty()
+        && expressions.undo_stack.is_empty()
+        && expressions.redo_stack.is_empty()
+        && expressions.vertex_undo_stack.is_empty()
+        && expressions.vertex_redo_stack.is_empty()
+    {
+        return Ok(());
+    }
+    if expressions.undo_stack.len() > undo_len
+        || expressions.redo_stack.len() > redo_len
+        || expressions.vertex_undo_stack.len() > undo_len
+        || expressions.vertex_redo_stack.len() > redo_len
+    {
+        return Err(());
+    }
+    prepend_expression_history_defaults(
+        &mut expressions.undo_stack,
+        undo_len,
+        expressions.rectangular_paper_creation.clone(),
+    );
+    prepend_expression_history_defaults(
+        &mut expressions.redo_stack,
+        redo_len,
+        expressions.rectangular_paper_creation.clone(),
+    );
+    prepend_expression_history_defaults(&mut expressions.vertex_undo_stack, undo_len, None);
+    prepend_expression_history_defaults(&mut expressions.vertex_redo_stack, redo_len, None);
+    Ok(())
+}
+
+fn prepend_expression_history_defaults<T: Clone>(stack: &mut Vec<T>, len: usize, value: T) {
+    let missing = len.saturating_sub(stack.len());
+    if missing > 0 {
+        stack.splice(0..0, std::iter::repeat_n(value, missing));
+    }
+}
+
+fn apply_vertex_expression_binding(
+    bindings: &mut Vec<VertexCoordinateExpressions>,
+    vertex: VertexId,
+    value: Option<VertexCoordinateExpressions>,
+) {
+    bindings.retain(|binding| binding.vertex != vertex);
+    if let Some(value) = value {
+        bindings.push(value);
+        bindings.sort_by_key(|binding| binding.vertex.canonical_bytes());
     }
 }
 
@@ -1853,18 +2084,30 @@ fn add_vertex(
     expected_revision: u64,
     x: f64,
     y: f64,
+    x_expression: String,
+    y_expression: String,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    validate_coordinate_expression_pair(&x_expression, &y_expression, x, y)?;
+    let id = VertexId::new();
     execute_command(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::AddVertex {
-            id: VertexId::new(),
+            id,
             position: Point2::new(x, y),
         },
-    )
+    )?;
+    project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
+        id,
+        x_expression,
+        y_expression,
+        x,
+        y,
+    ));
+    Ok(snapshot(&project))
 }
 
 #[tauri::command]
@@ -1876,8 +2119,11 @@ fn move_vertex(
     id: VertexId,
     x: f64,
     y: f64,
+    x_expression: String,
+    y_expression: String,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    validate_coordinate_expression_pair(&x_expression, &y_expression, x, y)?;
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -1887,7 +2133,15 @@ fn move_vertex(
             id,
             position: Point2::new(x, y),
         },
-    )
+    )?;
+    project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
+        id,
+        x_expression,
+        y_expression,
+        x,
+        y,
+    ));
+    Ok(snapshot(&project))
 }
 
 #[tauri::command]
@@ -1905,7 +2159,9 @@ fn remove_vertex(
         expected_project_id,
         expected_revision,
         Command::RemoveVertex { id },
-    )
+    )?;
+    project.remove_vertex_coordinate_expression(id);
+    Ok(snapshot(&project))
 }
 
 #[tauri::command]
@@ -1943,22 +2199,67 @@ fn add_connected_vertex(
     start: VertexId,
     x: f64,
     y: f64,
+    length_expression: String,
+    angle_degrees_expression: String,
+    length_mm: f64,
+    angle_degrees: f64,
     kind: EdgeKind,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    let (evaluated_length_mm, evaluated_angle_degrees) = evaluate_finite_millimetre_pair(
+        length_expression.clone(),
+        angle_degrees_expression.clone(),
+    )
+    .map_err(map_loaded_numeric_expression_error)?;
+    if evaluated_length_mm.to_bits() != length_mm.to_bits()
+        || evaluated_angle_degrees.to_bits() != angle_degrees.to_bits()
+        || length_mm <= 0.0
+        || angle_degrees.abs() > 360_000.0
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    let start_position = project
+        .editor
+        .pattern()
+        .vertices
+        .iter()
+        .find(|vertex| vertex.id == start)
+        .map(|vertex| vertex.position)
+        .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+    let angle_radians = angle_degrees.to_radians();
+    let expected_x = start_position.x + length_mm * angle_radians.cos();
+    let expected_y = start_position.y + length_mm * angle_radians.sin();
+    if expected_x.to_bits() != x.to_bits() || expected_y.to_bits() != y.to_bits() {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    let vertex_id = VertexId::new();
     execute_command(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
         Command::AddConnectedVertex {
-            vertex_id: VertexId::new(),
+            vertex_id,
             position: Point2::new(x, y),
             edge_id: EdgeId::new(),
             start,
             kind,
         },
-    )
+    )?;
+    let mut binding =
+        VertexCoordinateExpressions::new(vertex_id, x.to_string(), y.to_string(), x, y);
+    binding.polar_construction = Some(PolarVertexConstructionExpressions {
+        schema_version: 1,
+        start_vertex: start,
+        adopted_start_x_mm: start_position.x,
+        adopted_start_y_mm: start_position.y,
+        length_source: length_expression,
+        angle_degrees_source: angle_degrees_expression,
+        adopted_length_mm: length_mm,
+        adopted_angle_degrees: angle_degrees,
+    });
+    project.adopt_vertex_coordinate_expression(binding);
+    Ok(snapshot(&project))
 }
 
 #[tauri::command]
@@ -3099,7 +3400,9 @@ fn remove_boundary_vertex(
         expected_project_id,
         expected_revision,
         Command::RemoveBoundaryVertex { vertex },
-    )
+    )?;
+    project.remove_vertex_coordinate_expression(vertex);
+    Ok(snapshot(&project))
 }
 
 fn lock_project(state: &AppState) -> Result<MutexGuard<'_, ProjectState>, String> {
@@ -3426,6 +3729,7 @@ fn execute_command(
             .execute(expected_revision, command)
             .map_err(|error| error.to_string())?;
         project.record_numeric_expression_edit();
+        project.reconcile_vertex_coordinate_expressions();
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -3437,6 +3741,7 @@ fn execute_command(
         .execute(expected_revision, command)
         .map_err(|error| error.to_string())?;
     project.record_numeric_expression_edit();
+    project.reconcile_vertex_coordinate_expressions();
     invalidation.commit();
     Ok(snapshot(project))
 }
@@ -4070,6 +4375,80 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
     {
         validate_loaded_numeric_expression_binding(binding)?;
     }
+    for binding in &document.numeric_expressions.vertex_coordinates {
+        validate_coordinate_expression_pair(
+            &binding.x_source,
+            &binding.y_source,
+            binding.adopted_x_mm,
+            binding.adopted_y_mm,
+        )?;
+        let matching = document
+            .crease_pattern
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.id == binding.vertex)
+            .collect::<Vec<_>>();
+        if matching.len() != 1
+            || matching[0].position.x.to_bits() != binding.adopted_x_mm.to_bits()
+            || matching[0].position.y.to_bits() != binding.adopted_y_mm.to_bits()
+        {
+            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+        }
+        if let Some(polar) = &binding.polar_construction {
+            let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
+                polar.length_source.clone(),
+                polar.angle_degrees_source.clone(),
+            )
+            .map_err(map_loaded_numeric_expression_error)?;
+            let radians = angle_degrees.to_radians();
+            if length_mm.to_bits() != polar.adopted_length_mm.to_bits()
+                || angle_degrees.to_bits() != polar.adopted_angle_degrees.to_bits()
+                || (polar.adopted_start_x_mm + length_mm * radians.cos()).to_bits()
+                    != binding.adopted_x_mm.to_bits()
+                || (polar.adopted_start_y_mm + length_mm * radians.sin()).to_bits()
+                    != binding.adopted_y_mm.to_bits()
+            {
+                return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+            }
+        }
+    }
+    for transition in document
+        .numeric_expressions
+        .vertex_undo_stack
+        .iter()
+        .chain(&document.numeric_expressions.vertex_redo_stack)
+        .flatten()
+    {
+        for binding in transition
+            .changes
+            .iter()
+            .flat_map(|change| change.before.iter().chain(change.after.iter()))
+        {
+            validate_coordinate_expression_pair(
+                &binding.x_source,
+                &binding.y_source,
+                binding.adopted_x_mm,
+                binding.adopted_y_mm,
+            )?;
+            if let Some(polar) = &binding.polar_construction {
+                let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
+                    polar.length_source.clone(),
+                    polar.angle_degrees_source.clone(),
+                )
+                .map_err(map_loaded_numeric_expression_error)?;
+                let radians = angle_degrees.to_radians();
+                if length_mm.to_bits() != polar.adopted_length_mm.to_bits()
+                    || angle_degrees.to_bits() != polar.adopted_angle_degrees.to_bits()
+                    || (polar.adopted_start_x_mm + length_mm * radians.cos()).to_bits()
+                        != binding.adopted_x_mm.to_bits()
+                    || (polar.adopted_start_y_mm + length_mm * radians.sin()).to_bits()
+                        != binding.adopted_y_mm.to_bits()
+                {
+                    return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -4084,6 +4463,20 @@ fn validate_loaded_numeric_expression_binding(
     if width_mm.to_bits() != binding.adopted_width_mm.to_bits()
         || height_mm.to_bits() != binding.adopted_height_mm.to_bits()
     {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_coordinate_expression_pair(
+    x_source: &str,
+    y_source: &str,
+    adopted_x_mm: f64,
+    adopted_y_mm: f64,
+) -> Result<(), String> {
+    let (x_mm, y_mm) = evaluate_finite_millimetre_pair(x_source.to_owned(), y_source.to_owned())
+        .map_err(map_loaded_numeric_expression_error)?;
+    if x_mm.to_bits() != adopted_x_mm.to_bits() || y_mm.to_bits() != adopted_y_mm.to_bits() {
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
     Ok(())
@@ -8527,6 +8920,44 @@ mod tests {
         legacy.numeric_expressions = ProjectNumericExpressions::default();
         validate_loaded_numeric_expression_bindings(&legacy)
             .expect("legacy projects without expressions migrate safely");
+    }
+
+    #[test]
+    fn vertex_coordinate_expressions_follow_native_history_and_archive_round_trip() {
+        let mut project = initial_project_state();
+        let project_id = project.project_id;
+        let vertex = VertexId::new();
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddVertex {
+                id: vertex,
+                position: Point2::new(0.5, -2.0),
+            },
+        )
+        .expect("add expression-backed vertex");
+        project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
+            vertex, "1 / 2", "-sqrt(4)", 0.5, -2.0,
+        ));
+        let binding = project.numeric_expressions.vertex_coordinates[0].clone();
+        assert_eq!(binding.x_source, "1 / 2");
+        assert_eq!(binding.y_source, "-sqrt(4)");
+        validate_loaded_numeric_expression_bindings(
+            &project
+                .project_archive()
+                .expect("serialize expression history")
+                .document,
+        )
+        .expect("re-evaluate every persisted expression");
+
+        execute_undo(&mut project, project_id, 1).expect("undo vertex");
+        assert!(project.numeric_expressions.vertex_coordinates.is_empty());
+        execute_redo(&mut project, project_id, 2).expect("redo vertex");
+        assert_eq!(
+            project.numeric_expressions.vertex_coordinates,
+            vec![binding]
+        );
     }
 
     #[test]

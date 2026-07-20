@@ -1174,6 +1174,14 @@ function App() {
   )
   const selectedVertexLocked = selectedVertexId !== null
     && nativeLayerView.lockedVertexIds.has(selectedVertexId)
+  const selectedVertexExpression = selectedVertex
+    ? nativeSnapshot?.numeric_expressions?.vertex_coordinates?.find(
+        (binding) =>
+          binding.vertex === selectedVertex.id
+          && Object.is(binding.adopted_x_mm, selectedVertex.position.x)
+          && Object.is(binding.adopted_y_mm, selectedVertex.position.y),
+      )
+    : undefined
   useEffect(() => {
     if (
       !nativeLayerView.defaultLayerLocked
@@ -2449,16 +2457,22 @@ function App() {
     const currentUnit = resolveLengthDisplayUnit(current)
     const form = new FormData(event.currentTarget)
     if (form.get('vertex_action') === 'polar_endpoint') {
+      const lengthDisplayExpression = String(
+        form.get('polar_length_display') ?? '',
+      )
+      const angleDegreesExpression = String(
+        form.get('polar_angle_degrees') ?? '',
+      )
       let length: number
       let angleDegrees: number
       try {
         length = await evaluateDisplayLengthExpression(
-          String(form.get('polar_length_display') ?? ''),
+          lengthDisplayExpression,
           currentUnit,
         )
         angleDegrees = (
           await evaluateFiniteNumericExpression(
-            String(form.get('polar_angle_degrees') ?? ''),
+            angleDegreesExpression,
           )
         ).value
       } catch (error) {
@@ -2511,6 +2525,13 @@ function App() {
           selectedVertex.id,
           x,
           y,
+          millimetreExpressionSource(
+            lengthDisplayExpression,
+            currentUnit.millimetresPerUnit,
+          ),
+          angleDegreesExpression,
+          length,
+          angleDegrees,
           edgeKind,
         )
         result.snapshot = snapshot
@@ -2530,15 +2551,17 @@ function App() {
       }))
       return
     }
+    const xDisplayExpression = String(form.get('x_display') ?? '')
+    const yDisplayExpression = String(form.get('y_display') ?? '')
     let x: number | null = null
     let y: number | null = null
     try {
       x = await evaluateDisplayLengthExpression(
-        String(form.get('x_display') ?? ''),
+        xDisplayExpression,
         currentUnit,
       )
       y = await evaluateDisplayLengthExpression(
-        String(form.get('y_display') ?? ''),
+        yDisplayExpression,
         currentUnit,
       )
     } catch (error) {
@@ -2553,7 +2576,16 @@ function App() {
       return
     }
     await runNativeEdit((projectId, revision, projectInstanceId) =>
-      moveVertex(projectId, revision, projectInstanceId, selectedVertex.id, x, y))
+      moveVertex(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedVertex.id,
+        x,
+        y,
+        millimetreExpressionSource(xDisplayExpression, currentUnit.millimetresPerUnit),
+        millimetreExpressionSource(yDisplayExpression, currentUnit.millimetresPerUnit),
+      ))
   }
 
   async function submitDirectVertex(event: FormEvent<HTMLFormElement>) {
@@ -2562,15 +2594,17 @@ function App() {
     if (!current || benchmarkRun || nativeLayerView.defaultLayerLocked) return
     const currentUnit = resolveLengthDisplayUnit(current)
     const form = new FormData(event.currentTarget)
+    const xDisplayExpression = String(form.get('direct_x_display') ?? '')
+    const yDisplayExpression = String(form.get('direct_y_display') ?? '')
     let x: number | null = null
     let y: number | null = null
     try {
       x = await evaluateDisplayLengthExpression(
-        String(form.get('direct_x_display') ?? ''),
+        xDisplayExpression,
         currentUnit,
       )
       y = await evaluateDisplayLengthExpression(
-        String(form.get('direct_y_display') ?? ''),
+        yDisplayExpression,
         currentUnit,
       )
     } catch (error) {
@@ -2600,6 +2634,8 @@ function App() {
         projectInstanceId,
         x,
         y,
+        millimetreExpressionSource(xDisplayExpression, currentUnit.millimetresPerUnit),
+        millimetreExpressionSource(yDisplayExpression, currentUnit.millimetresPerUnit),
       )
       result.snapshot = snapshot
       return snapshot
@@ -5201,7 +5237,7 @@ function App() {
                   </div>
                 </dl>
                 <form
-                  key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}:${lengthDisplayUnit.key}`}
+                  key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}:${lengthDisplayUnit.key}:${selectedVertexExpression?.x_source ?? ''}:${selectedVertexExpression?.y_source ?? ''}`}
                   className="coordinate-form"
                   onSubmit={submitVertexPosition}
                 >
@@ -5212,10 +5248,13 @@ function App() {
                       type="text"
                       inputMode="text"
                       maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue={formatLengthInput(
-                        selectedVertex.position.x,
-                        lengthDisplayUnit,
-                      )}
+                      defaultValue={lengthDisplayUnit.millimetresPerUnit === 1
+                        && selectedVertexExpression
+                        ? selectedVertexExpression.x_source
+                        : formatLengthInput(
+                            selectedVertex.position.x,
+                            lengthDisplayUnit,
+                          )}
                       disabled={coreBusy || selectedVertexLocked}
                       aria-label={formattedText({
                         ja: '頂点のX座標 ({unit})',
@@ -5230,10 +5269,13 @@ function App() {
                       type="text"
                       inputMode="text"
                       maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue={formatLengthInput(
-                        selectedVertex.position.y,
-                        lengthDisplayUnit,
-                      )}
+                      defaultValue={lengthDisplayUnit.millimetresPerUnit === 1
+                        && selectedVertexExpression
+                        ? selectedVertexExpression.y_source
+                        : formatLengthInput(
+                            selectedVertex.position.y,
+                            lengthDisplayUnit,
+                          )}
                       disabled={coreBusy || selectedVertexLocked}
                       aria-label={formattedText({
                         ja: '頂点のY座標 ({unit})',
@@ -5268,6 +5310,19 @@ function App() {
                         : text({ ja: '頂点を削除', en: 'Delete vertex' })}
                     </button>
                   </div>
+                  {selectedVertexExpression?.polar_construction ? (
+                    <p className="muted" data-vertex-polar-expression>
+                      {formattedText({
+                        ja: '作図式: 長さ {length} mm / 角度 {angle}°（評価値 {lengthValue} mm / {angleValue}°）',
+                        en: 'Construction expression: length {length} mm / angle {angle}° (evaluated {lengthValue} mm / {angleValue}°)',
+                      }, {
+                        length: selectedVertexExpression.polar_construction.length_source,
+                        angle: selectedVertexExpression.polar_construction.angle_degrees_source,
+                        lengthValue: selectedVertexExpression.polar_construction.adopted_length_mm,
+                        angleValue: selectedVertexExpression.polar_construction.adopted_angle_degrees,
+                      })}
+                    </p>
+                  ) : null}
                   <fieldset>
                     <legend>
                       {text({ ja: '長さ・角度指定の終点', en: 'Endpoint by length and angle' })}

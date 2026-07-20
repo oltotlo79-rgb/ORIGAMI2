@@ -68,6 +68,16 @@ impl EditorHistoryV1 {
     }
 
     #[must_use]
+    pub fn undo_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    #[must_use]
+    pub fn redo_len(&self) -> usize {
+        self.redo_stack.len()
+    }
+
+    #[must_use]
     pub fn is_default_empty(&self) -> bool {
         self.history_entry_limit == MAX_EDITOR_HISTORY_ENTRIES as u32
             && self.undo_stack.is_empty()

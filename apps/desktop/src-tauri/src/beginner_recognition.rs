@@ -251,6 +251,11 @@ pub(crate) fn recognize_beginner_part_suggestions(
         .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2)
     {
         ori_domain::BeginnerTargetPartKindV1::Antenna
+    } else if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Leg
     } else if target_category == Some(ori_domain::BeginnerTargetCategoryV1::Insect) {
         ori_domain::BeginnerTargetPartKindV1::Wing
     } else {

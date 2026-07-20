@@ -105,6 +105,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricEarBase,
     SymmetricHornBase,
     SymmetricAntennaBase,
+    SymmetricInsectLegPairBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -200,6 +201,7 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
+        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 2 => 2,
         _ => return None,
     };
     let scale_percent = match constraints.detail_level {
@@ -376,6 +378,11 @@ pub fn generate_beginner_plans_v1(
                 (
                     BeginnerGeneratedPlanKindV1::SymmetricAntennaBase,
                     "symmetric_antenna_base",
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Leg) == 2 {
+                (
+                    BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase,
+                    "symmetric_insect_leg_pair_base",
                 )
             } else {
                 return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
@@ -896,6 +903,13 @@ mod tests {
         assert_eq!(
             antenna_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+        );
+        let mut leg_pair = constraints.clone();
+        leg_pair.target_parts[2].kind = BeginnerTargetPartKindV1::Leg;
+        let leg_plans = generate_beginner_plans_v1(namespace, &source, &ids, &leg_pair).unwrap();
+        assert_eq!(
+            leg_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
         );
         constraints.skeleton_segments[1].end.y_tenths_mm = 11;
         assert_eq!(

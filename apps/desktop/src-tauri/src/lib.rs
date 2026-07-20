@@ -2172,6 +2172,8 @@ fn symmetric_plan_kind(
     {
         if has(ori_domain::BeginnerTargetPartKindV1::Antenna) {
             ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+        } else if has(ori_domain::BeginnerTargetPartKindV1::Leg) {
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
         } else {
             ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
         }
@@ -2502,6 +2504,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2604,6 +2607,11 @@ fn apply_beginner_generated_plan(
             "Create the bounded bilateral insect-antenna base creases.",
             "Confirm the saved head, torso, and two-antenna target still match.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase => (
+            "Symmetric insect leg pair base",
+            "Create one bounded bilateral insect-leg pair base.",
+            "This limited family represents exactly two legs, not a complete six-leg insect.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2701,6 +2709,11 @@ fn apply_grid_plan_document(
             "Symmetric antenna grid candidate",
             "Apply the globally proven parameter-grid antenna base.",
             "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase => (
+            "Symmetric insect leg-pair grid candidate",
+            "Apply the globally proven parameter-grid insect leg pair.",
+            "This limited family represents exactly two legs, not a complete six-leg insect.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
@@ -3128,6 +3141,7 @@ fn derive_reference_model_suggestion_v1(
                     | ori_domain::BeginnerTargetPartKindV1::Ear
                     | ori_domain::BeginnerTargetPartKindV1::Horn
                     | ori_domain::BeginnerTargetPartKindV1::Antenna
+                    | ori_domain::BeginnerTargetPartKindV1::Leg
             )
     });
     let suggested_part_kind = requested_pair.filter(|_| bilateral).map(|part| part.kind);

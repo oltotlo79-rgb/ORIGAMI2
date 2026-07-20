@@ -3507,33 +3507,45 @@ fn remove_geometric_constraint(
 #[tauri::command]
 fn undo(
     state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    execute_undo(
+    let snapshot = execute_undo(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    )?;
+    global_flat_foldability::invalidate_current_layer_order_after_history_mutation(
+        &foldability_state,
     )
+    .map_err(|_| "The layer-order authority could not be invalidated.".to_owned())?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
 fn redo(
     state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    execute_redo(
+    let snapshot = execute_redo(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    )?;
+    global_flat_foldability::invalidate_current_layer_order_after_history_mutation(
+        &foldability_state,
     )
+    .map_err(|_| "The layer-order authority could not be invalidated.".to_owned())?;
+    Ok(snapshot)
 }
 
 fn execute_undo(

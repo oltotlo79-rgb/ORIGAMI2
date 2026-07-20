@@ -466,6 +466,14 @@ pub(super) fn lock_revalidated_current_layer_order_for_commit<'a>(
     Ok(Some(CurrentLayerOrderCommitGuard { slot }))
 }
 
+pub(super) fn invalidate_current_layer_order_after_history_mutation(
+    state: &GlobalFlatFoldabilityState,
+) -> Result<(), GlobalFlatFoldabilityCommandError> {
+    let mut slot = lock_foldability_state(state)?;
+    slot.current_layer_order = None;
+    Ok(())
+}
+
 impl CurrentLayerOrderCapability {
     /// Observation-only access for detached native analysis. The exact Arc
     /// identity remains sealed in the capability and is rechecked before a

@@ -426,14 +426,23 @@ pub(super) fn apply_stacked_fold_transaction(
     transaction_state: State<'_, StackedFoldTransactionState>,
     token: ProjectId,
 ) -> Result<u64, String> {
-    let mut transaction_slot = lock_slot(&transaction_state)?;
+    apply_stacked_fold_transaction_inner(&app_state, &foldability_state, &transaction_state, token)
+}
+
+fn apply_stacked_fold_transaction_inner(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    transaction_state: &StackedFoldTransactionState,
+    token: ProjectId,
+) -> Result<u64, String> {
+    let mut transaction_slot = lock_slot(transaction_state)?;
     let pending = transaction_slot
         .pending
         .as_ref()
         .filter(|pending| pending.token() == token)
         .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
     let mut project =
-        lock_project(&app_state).map_err(|_| "The project is unavailable.".to_owned())?;
+        lock_project(app_state).map_err(|_| "The project is unavailable.".to_owned())?;
     let fingerprint = fold_model_fingerprint_v1(project.editor.pattern(), project.editor.paper()).0;
     if !pending.matches_live_binding(
         project.instance_id,
@@ -450,7 +459,7 @@ pub(super) fn apply_stacked_fold_transaction(
             .map_err(|_| "The current pose authority is unavailable.".to_owned())?
             .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
     let layer_guard = lock_revalidated_current_layer_order_for_commit(
-        &foldability_state,
+        foldability_state,
         &project,
         &pending.layer_capability,
     )

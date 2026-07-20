@@ -19,6 +19,23 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   assert.doesNotMatch(workflow, /pull_request:/u)
 })
 
+test('promotion reuses and verifies the complete prerelease asset set', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const promote = workflow.slice(workflow.indexOf('  promote:'))
+  assert.match(promote, /gh release download "\$RELEASE_TAG"/u)
+  assert.match(promote, /find \. -maxdepth 1 -type f/u)
+  assert.match(promote, /SHA256SUMS-windows-x64\.txt/u)
+  assert.match(promote, /SHA256SUMS-macos-arm64\.txt/u)
+  assert.match(promote, /gh attestation verify "\$asset"/u)
+  assert.match(promote, /\.bomFormat == "CycloneDX"/u)
+  assert.match(promote, /isPrerelease.*= true/u)
+  assert.doesNotMatch(promote, /tauri build|tauri bundle|cargo build|npm run build/u)
+  assert.ok(
+    promote.indexOf('gh attestation verify') <
+      promote.indexOf('gh release edit'),
+  )
+})
+
 test('CI and formal release share the strict macOS bundle contract', () => {
   const ciWorkflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const releaseWorkflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')

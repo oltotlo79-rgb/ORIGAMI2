@@ -243,7 +243,60 @@ jobs:
     environment: formal-release
     permissions:
       contents: write
+      attestations: read
     steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+      - name: Download the existing prerelease assets without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir release
+      - name: Verify the complete immutable asset set
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd release
+          mapfile -t actual < <(find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          expected=(
+            "ORIGAMI2-v${RELEASE_VERSION}-macos-arm64-app.tar.gz"
+            "ORIGAMI2-v${RELEASE_VERSION}-macos-arm64.cdx.json"
+            "ORIGAMI2-v${RELEASE_VERSION}-windows-x64-portable.zip"
+            "ORIGAMI2-v${RELEASE_VERSION}-windows-x64-setup.exe"
+            "ORIGAMI2-v${RELEASE_VERSION}-windows-x64.cdx.json"
+            "SHA256SUMS-macos-arm64.txt"
+            "SHA256SUMS-windows-x64.txt"
+          )
+          test "${actual[*]}" = "${expected[*]}"
+          sha256sum --check --strict SHA256SUMS-windows-x64.txt
+          sha256sum --check --strict SHA256SUMS-macos-arm64.txt
+          for sbom in \
+            "ORIGAMI2-v${RELEASE_VERSION}-windows-x64.cdx.json" \
+            "ORIGAMI2-v${RELEASE_VERSION}-macos-arm64.cdx.json"
+          do
+            jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' \
+              "$sbom" >/dev/null
+          done
+      - name: Verify build provenance for every published payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          for asset in \
+            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64-setup.exe" \
+            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64-portable.zip" \
+            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64.cdx.json" \
+            "release/ORIGAMI2-v${RELEASE_VERSION}-macos-arm64-app.tar.gz" \
+            "release/ORIGAMI2-v${RELEASE_VERSION}-macos-arm64.cdx.json"
+          do
+            gh attestation verify "$asset" --repo "$GH_REPO"
+          done
       - name: Promote the existing prerelease without replacing assets
         env:
           GH_TOKEN: ${{ github.token }}

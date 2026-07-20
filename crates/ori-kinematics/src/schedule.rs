@@ -619,6 +619,11 @@ impl PreparedHalfAngleRationalEntryV1 {
             .into_iter()
             .map(to_exact)
             .collect::<Result<Vec<_>, _>>()?;
+        let denominator_power_coefficients = input
+            .denominator_power_coefficients
+            .into_iter()
+            .map(to_exact)
+            .collect::<Result<Vec<_>, _>>()?;
         let numerator_certificate = prepare_exact_pole_free_bernstein_certificate(
             affine_reparameterize_power(
                 &numerator_power_coefficients,
@@ -641,11 +646,6 @@ impl PreparedHalfAngleRationalEntryV1 {
             limits.max_coefficient_bits,
             limits.max_work,
         )?;
-        let denominator_power_coefficients = input
-            .denominator_power_coefficients
-            .into_iter()
-            .map(to_exact)
-            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             edge: input.edge,
             u_domain,
@@ -1280,7 +1280,7 @@ mod tests {
             assert!(angle.lower() <= expected && expected <= angle.upper());
         }
         let half =
-            evaluate_half_angle_rational_degrees_interval_v1(&positive, &positive, 512).unwrap();
+            evaluate_half_angle_rational_degrees_interval_v1(&positive, &positive, 4096).unwrap();
         assert!(half.lower() <= 90.0 && half.upper() >= 90.0);
         assert_eq!(
             evaluate_pole_free_atan2_interval_v1(&positive, &positive, 1),
@@ -1407,7 +1407,7 @@ mod tests {
                 u_domain: [
                     RationalCoefficientV1 {
                         numerator: -1,
-                        denominator: 2,
+                        denominator: 4,
                     },
                     RationalCoefficientV1 {
                         numerator: 1,

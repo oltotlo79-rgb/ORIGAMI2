@@ -82,6 +82,9 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Verify lockfile content before tests and release build
+        run: node .github/scripts/dependency_policy.mjs
+
       - name: Test frontend
         working-directory: apps/desktop
         run: npm test

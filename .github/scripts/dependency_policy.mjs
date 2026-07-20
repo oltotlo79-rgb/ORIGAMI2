@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const cargoLockPath = resolve(repositoryRoot, 'Cargo.lock')
 const packageLockPath = resolve(repositoryRoot, 'apps', 'desktop', 'package-lock.json')
+const packageManifestPath = resolve(repositoryRoot, 'apps', 'desktop', 'package.json')
 
 const npmLicenseAllowlist = new Set([
   '0BSD', 'Apache-2.0', 'Apache-2.0 OR MIT', 'BSD-2-Clause', 'BSD-3-Clause',
@@ -32,8 +33,19 @@ export function buildDependencyPolicy() {
   }
 
   const packageLock = JSON.parse(readFileSync(packageLockPath, 'utf8'))
+  const packageManifest = JSON.parse(readFileSync(packageManifestPath, 'utf8'))
   if (packageLock.lockfileVersion !== 3 || packageLock.requires !== true) {
     throw new Error('npm lockfile policy requires lockfileVersion 3')
+  }
+  const lockedRoot = packageLock.packages?.['']
+  const canonicalRoot = (value) => JSON.stringify({
+    name: value?.name,
+    version: value?.version,
+    dependencies: value?.dependencies ?? {},
+    devDependencies: value?.devDependencies ?? {},
+  })
+  if (canonicalRoot(lockedRoot) !== canonicalRoot(packageManifest)) {
+    throw new Error('npm package manifest and lockfile root are out of sync')
   }
   const npmPackages = Object.entries(packageLock.packages ?? {}).filter(([path]) => path !== '')
   if (npmPackages.length < 1 || npmPackages.length > 10000) {

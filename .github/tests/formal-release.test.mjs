@@ -213,6 +213,7 @@ test('formal builds cannot resolve undeclared npm or Cargo inputs', () => {
   assert.match(workflow, /npm ci[\s\S]*cargo metadata --locked --no-deps --format-version 1/u)
   assert.equal(workflow.match(/npx --no-install tauri/gu)?.length ?? 0, 2)
   assert.doesNotMatch(workflow, /npx tauri|npm install/u)
+  assert.ok(workflow.indexOf('dependency_policy.mjs') < workflow.indexOf('Build Windows portable executable'))
 })
 
 test('all direct and nested action runtimes match the audited Node.js 24 inventory', () => {
@@ -1126,9 +1127,12 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.deepEqual(policy.npmLicenses, [...policy.npmLicenses].sort())
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   assert.ok(
-    workflow.indexOf('Verify locked dependency integrity and license policy')
-      < workflow.indexOf('Bind SBOM to source locks, version, commit, and toolchains'),
+    workflow.indexOf('Verify lockfile content before release build')
+      < workflow.indexOf('Build Windows portable executable'),
   )
+  const policySource = readFileSync(join(root, '.github/scripts/dependency_policy.mjs'), 'utf8')
+  assert.match(policySource, /npm package manifest and lockfile root are out of sync/u)
+  assert.match(policySource, /canonicalRoot\(lockedRoot\) !== canonicalRoot\(packageManifest\)/u)
 })
 
 test('dependency policy is independent of the caller working directory', () => {

@@ -14193,7 +14193,10 @@ mod tests {
 
     #[test]
     fn stacked_fold_document_is_one_atomic_history_entry() {
-        let (mut editor, source_pattern, source_paper) = rectangular_editor();
+        let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
+        let (source_pattern, mut source_paper) = sheet.into_parts();
+        source_paper.thickness_mm = 0.0;
+        let mut editor = EditorState::with_paper(source_pattern.clone(), source_paper.clone());
         let mut target_pattern = source_pattern.clone();
         let hinge = EdgeId::new();
         target_pattern.edges.push(Edge {

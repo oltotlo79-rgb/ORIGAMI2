@@ -3001,7 +3001,8 @@ mod tests {
     #[test]
     fn stacked_fold_document_history_round_trips_and_rejects_malformed_target() {
         let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
-        let (source_pattern, paper) = sheet.into_parts();
+        let (source_pattern, mut paper) = sheet.into_parts();
+        paper.thickness_mm = 0.0;
         let mut target_pattern = source_pattern.clone();
         let hinge = EdgeId::new();
         target_pattern.edges.push(Edge {

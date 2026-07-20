@@ -45,6 +45,23 @@ impl IntervalRigidTransformV1 {
     pub const fn translation(&self) -> [OutwardIntervalV1; 3] {
         self.translation
     }
+
+    #[must_use]
+    pub fn universally_matches_within(self, rhs: Self, tolerance: f64) -> bool {
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return false;
+        }
+        self.rotation
+            .entries
+            .iter()
+            .flatten()
+            .zip(rhs.rotation.entries.iter().flatten())
+            .chain(self.translation.iter().zip(rhs.translation.iter()))
+            .all(|(left, right)| {
+                next_down(left.lower - right.upper) >= -tolerance
+                    && next_up(left.upper - right.lower) <= tolerance
+            })
+    }
     pub fn about_axis(
         axis: [f64; 3],
         point: [f64; 3],

@@ -38,7 +38,7 @@ pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
 pub const STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
-const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 78;
+const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 91;
 pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 64;
 const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 2_048;
 const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
@@ -255,14 +255,15 @@ pub fn diagnose_collective_hinge_path_v1(
             &mut interval_metrics,
         );
     let positive_two_hinge_topology = positive_thickness
-        && (3..=13).contains(&model.face_ids().len())
-        && (2..=12).contains(&model.hinges().len())
+        && (3..=14).contains(&model.face_ids().len())
+        && (2..=13).contains(&model.hinges().len())
         && model.hinges().len() + 1 == model.face_ids().len()
         && moving.len() == model.hinges().len()
         && model.face_ids().len() * model.face_ids().len().saturating_sub(1) / 2
             <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
         && requested_angle_degrees
             <= match model.hinges().len() {
+                13 => 3.0,
                 12 => 4.0,
                 11 => 5.0,
                 10 => 6.0,
@@ -453,6 +454,7 @@ pub fn diagnose_collective_hinge_path_v1(
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
             && requested_angle_degrees
                 <= match model.hinges().len() {
+                    13 => 3.0,
                     12 => 4.0,
                     11 => 5.0,
                     10 => 6.0,
@@ -2145,6 +2147,74 @@ mod tests {
         .expect("twelve-hinge triangular tree")
     }
 
+    fn thirteen_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        let points = [
+            (0., 0.),
+            (4., 0.),
+            (7., 1.),
+            (9., 3.),
+            (11., 6.),
+            (12., 9.),
+            (12., 12.),
+            (11., 15.),
+            (9., 18.),
+            (7., 20.),
+            (4., 21.),
+            (2., 20.),
+            (1., 18.),
+            (0., 15.),
+            (-1., 11.),
+            (-1., 6.),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(i, &(x, y))| Vertex {
+                id: fixed_id("8a10", i as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|v| v.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|i| Edge {
+                id: fixed_id("9a10", i as u64 + 1),
+                start: boundary[i],
+                end: boundary[(i + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for (offset, end) in (2..=14).enumerate() {
+            edges.push(Edge {
+                id: fixed_id("9a10", 20 + offset as u64),
+                start: boundary[0],
+                end: boundary[end],
+                kind: if offset % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("ba10", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("fourteen triangles"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("thirteen-hinge triangular tree")
+    }
+
     fn zero_tree_pose(
         model: &MaterialTreeKinematicsModel,
     ) -> (Vec<EdgeId>, ori_kinematics::MaterialTreePose) {
@@ -3552,9 +3622,66 @@ mod tests {
     }
 
     #[test]
-    fn positive_endpoint_memo_cap_rejects_fourteen_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 78);
-        let model = deep_strip_model(13);
+    fn fourteen_triangle_positive_thickness_bounds() {
+        let model = thirteen_hinge_triangle_model();
+        let (moving, initial) = zero_tree_pose(&model);
+        let accepted = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            3.0,
+            0.001,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(accepted.continuous_clearance_certified());
+        let over = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            3.000_000_1,
+            0.001,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(!over.continuous_clearance_certified());
+    }
+
+    #[test]
+    fn fourteen_triangle_boundary_rejects_aba_and_thickness_drift() {
+        let model = thirteen_hinge_triangle_model();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 3.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let aba = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let bound = model.bind_pose(&pose).unwrap();
+        let capability = prepare_tree_hinge_thickness_boundaries_v1(bound, 0.001)
+            .unwrap()
+            .expect("fourteen-face boundary");
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(
+                &capability,
+                model.bind_pose(&aba).unwrap(),
+                0.001,
+            )
+            .is_none()
+        );
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(&capability, bound, 0.001_000_000_1,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn positive_endpoint_memo_cap_rejects_fifteen_face_tree() {
+        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 91);
+        let model = deep_strip_model(14);
         let (moving, initial) = zero_tree_pose(&model);
         let diagnostic = diagnose_collective_hinge_path_v1(
             &model,

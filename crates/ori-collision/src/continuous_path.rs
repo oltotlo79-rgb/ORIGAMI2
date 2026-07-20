@@ -321,6 +321,7 @@ pub fn diagnose_collective_hinge_path_v1(
         if snapshot.has_prominent_blocking_hold()
             && !(zero_thickness && analytic_single_hinge_topology)
             && !(zero_thickness && analytic_collinear_tree_topology)
+            && !(zero_thickness && interval_two_hinge_chain_topology)
             && !narrow_shared_hinge_classified
         {
             first_sampled_blocking_angle_degrees.get_or_insert(angle);

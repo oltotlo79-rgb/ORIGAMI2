@@ -330,7 +330,7 @@ jobs:
           do
             archive="$RUNNER_TEMP/$name.zip"
             archive_headers="$RUNNER_TEMP/$name.headers"
-            curl --fail --silent --show-error --location --proto '=https' \
+            final_url="$(curl --fail --silent --show-error --location --proto '=https' \
               --proto-redir '=https' --tlsv1.2 --max-redirs 1 \
               --max-filesize 2147483648 \
               --header "Authorization: Bearer $GH_TOKEN" \
@@ -338,8 +338,12 @@ jobs:
               --header 'X-GitHub-Api-Version: 2022-11-28' \
               --dump-header "$archive_headers" \
               --output "$archive" \
-              "https://api.github.com/repos/$GH_REPO/actions/artifacts/$artifact_id/zip"
+              --write-out '%{url_effective}' \
+              "https://api.github.com/repos/$GH_REPO/actions/artifacts/$artifact_id/zip")"
+            [[ "$final_url" =~ ^https://[A-Za-z0-9.-]+\.blob\.core\.windows\.net/[^[:space:]]+$ ]]
             grep -Eiq '^content-type: (application/zip|application/octet-stream)(;|\r?$)' "$archive_headers"
+            content_length="$(awk 'BEGIN { IGNORECASE=1 } /^content-length:/ { gsub("\r", "", $2); value=$2 } END { print value }' "$archive_headers")"
+            test "$content_length" -eq "$(stat -c '%s' "$archive")"
             actual_digest="$(sha256sum "$archive" | cut -d' ' -f1)"
             test "$actual_digest" = "$expected_digest"
           done < <(node .github/scripts/verify_workflow_artifact_metadata.mjs "$metadata")
@@ -353,6 +357,9 @@ jobs:
             test "$archive_bytes" -gt 0
             test "$archive_bytes" -le 2147483648
             unzip -tqq "$archive"
+            entries="$RUNNER_TEMP/$(basename "$archive").entries"
+            unzip -Z1 "$archive" > "$entries"
+            test "$(wc -l < "$entries")" -eq "$(LC_ALL=C sort -u "$entries" | wc -l)"
             entry_count=0
             while IFS= read -r entry
             do
@@ -362,7 +369,7 @@ jobs:
               case "$entry" in
                 */*|*\\*|.*|*[!A-Za-z0-9._-]*) exit 1 ;;
               esac
-            done < <(unzip -Z1 "$archive")
+            done < "$entries"
             test "$entry_count" -ge 4
             expanded_bytes="$(unzip -l "$archive" | awk 'END { print $1 }')"
             test "$expanded_bytes" -le 3221225472

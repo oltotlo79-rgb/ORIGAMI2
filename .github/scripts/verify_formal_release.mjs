@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { validateReleaseArchiveEntries } from './release_archive_contract.mjs'
 
 const directory = resolve(process.argv[2])
 const platform = process.env.RELEASE_PLATFORM
@@ -53,6 +54,16 @@ if (process.env.REQUIRE_SIGNATURE === 'true') {
   if (platform === 'windows-x64') {
     const extracted = mkdtempSync(join(tmpdir(), 'origami2-portable-signature-'))
     try {
+      const entryOutput = execFileSync('pwsh', [
+        '-NoProfile',
+        '-Command',
+        'Add-Type -AssemblyName System.IO.Compression.FileSystem; $archive = [IO.Compression.ZipFile]::OpenRead($args[0]); try { $archive.Entries.FullName } finally { $archive.Dispose() }',
+        join(directory, `${prefix}-portable.zip`),
+      ], { encoding: 'utf8' })
+      validateReleaseArchiveEntries(
+        platform,
+        entryOutput.split(/\r?\n/u).filter(Boolean),
+      )
       execFileSync('pwsh', [
         '-NoProfile',
         '-Command',
@@ -78,6 +89,15 @@ if (process.env.REQUIRE_SIGNATURE === 'true') {
   } else {
     const extracted = mkdtempSync(join(tmpdir(), 'origami2-macos-signature-'))
     try {
+      const entryOutput = execFileSync(
+        'tar',
+        ['-tzf', join(directory, `${prefix}-app.tar.gz`)],
+        { encoding: 'utf8' },
+      )
+      validateReleaseArchiveEntries(
+        platform,
+        entryOutput.split(/\r?\n/u).filter(Boolean),
+      )
       execFileSync('tar', [
         '-xzf',
         join(directory, `${prefix}-app.tar.gz`),

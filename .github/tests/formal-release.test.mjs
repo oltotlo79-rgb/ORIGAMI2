@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { validateReleaseArchiveEntries } from '../scripts/release_archive_contract.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
 
@@ -195,5 +196,57 @@ test('local artifact verifier requires explicit signature policy and verifies pa
       },
     ),
     /REQUIRE_SIGNATURE must be exactly true or false/u,
+  )
+})
+
+test('release archive contract rejects traversal absolute and foreign-root entries', () => {
+  assert.equal(
+    validateReleaseArchiveEntries('windows-x64', [
+      'origami2-desktop.exe',
+      'fonts/NotoSansJP-Variable.ttf',
+    ]),
+    true,
+  )
+  assert.equal(
+    validateReleaseArchiveEntries('macos-arm64', [
+      'ORIGAMI2.app/',
+      'ORIGAMI2.app/Contents/MacOS/origami2-desktop',
+    ]),
+    true,
+  )
+  for (const entries of [
+    ['origami2-desktop.exe', '../outside'],
+    ['origami2-desktop.exe', '/absolute'],
+    ['origami2-desktop.exe', 'C:/absolute'],
+    ['origami2-desktop.exe', 'fonts\\outside'],
+    ['origami2-desktop.exe', 'fonts/./outside'],
+    ['origami2-desktop.exe', 'fonts//outside'],
+  ]) {
+    assert.throws(
+      () => validateReleaseArchiveEntries('windows-x64', entries),
+      /unsafe path|traversal path/u,
+    )
+  }
+  assert.throws(
+    () => validateReleaseArchiveEntries('windows-x64', ['fonts/font.ttf']),
+    /executable contract/u,
+  )
+  assert.throws(
+    () => validateReleaseArchiveEntries(
+      'windows-x64',
+      ['origami2-desktop.exe', 'unexpected/file'],
+    ),
+    /unexpected root/u,
+  )
+  assert.throws(
+    () => validateReleaseArchiveEntries(
+      'windows-x64',
+      ['origami2-desktop.exe', 'origami2-desktop.exe'],
+    ),
+    /duplicate entries/u,
+  )
+  assert.throws(
+    () => validateReleaseArchiveEntries('macos-arm64', ['Other.app/file']),
+    /unexpected root/u,
   )
 })

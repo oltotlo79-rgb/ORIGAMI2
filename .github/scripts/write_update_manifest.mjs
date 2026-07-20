@@ -5,11 +5,15 @@ import { basename, join, resolve } from 'node:path'
 const directory = resolve(process.argv[2])
 const platform = process.env.PLATFORM
 const version = process.env.VERSION
+const signaturePolicy = process.env.SIGNATURE_POLICY
 if (!['windows-x64', 'macos-arm64'].includes(platform)) {
   throw new Error('unsupported update manifest platform')
 }
 if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? '')) {
   throw new Error('invalid update manifest version')
+}
+if (!['platform-signed', 'unsigned-dry-run'].includes(signaturePolicy)) {
+  throw new Error('invalid update manifest signature policy')
 }
 const prefix = `ORIGAMI2-v${version}-${platform}`
 const names = platform === 'windows-x64'
@@ -23,6 +27,7 @@ const manifest = {
   schema: 'origami2.update-manifest.v1',
   version,
   platform,
+  signaturePolicy,
   assets,
 }
 writeFileSync(

@@ -16,6 +16,11 @@ if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? ''))
 if (!['true', 'false'].includes(process.env.REQUIRE_SIGNATURE)) {
   throw new Error('REQUIRE_SIGNATURE must be exactly true or false')
 }
+if (
+  process.env.RELEASE_MODE !== undefined
+  && process.env.RELEASE_MODE !== 'dry-run'
+  && process.env.REQUIRE_SIGNATURE !== 'true'
+) throw new Error('publishable release mode requires platform signatures')
 const prefix = `ORIGAMI2-v${version}-${platform}`
 const payloads = platform === 'windows-x64'
   ? [`${prefix}-setup.exe`, `${prefix}-portable.zip`, `${prefix}.cdx.json`]
@@ -85,6 +90,9 @@ const expectedUpdateManifest = {
   schema: 'origami2.update-manifest.v1',
   version,
   platform,
+  signaturePolicy: process.env.REQUIRE_SIGNATURE === 'true'
+    ? 'platform-signed'
+    : 'unsigned-dry-run',
   assets: [...payloads].sort().map((name) => ({
     name,
     sha256: checksums.get(name),

@@ -193,12 +193,14 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.validate.outputs.version }}
+          SIGNATURE_POLICY: ${{ needs.validate.outputs.mode != 'dry-run' && 'platform-signed' || 'unsigned-dry-run' }}
         run: ./.github/scripts/package_formal_release.ps1
       - name: Verify local release artifact contract
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_MODE: ${{ needs.validate.outputs.mode }}
           REQUIRE_SIGNATURE: ${{ needs.validate.outputs.mode != 'dry-run' && 'true' || 'false' }}
         run: node .github/scripts/verify_formal_release.mjs target/formal-release
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

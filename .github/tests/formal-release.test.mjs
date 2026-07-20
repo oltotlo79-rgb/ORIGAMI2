@@ -451,6 +451,7 @@ test('update manifest generator emits canonical version and digest bindings', ()
           ...process.env,
           PLATFORM: 'macos-arm64',
           VERSION: '0.1.0',
+          SIGNATURE_POLICY: 'unsigned-dry-run',
         },
       },
     )
@@ -461,6 +462,7 @@ test('update manifest generator emits canonical version and digest bindings', ()
       schema: 'origami2.update-manifest.v1',
       version: '0.1.0',
       platform: 'macos-arm64',
+      signaturePolicy: 'unsigned-dry-run',
       assets: Object.entries(payloads).sort(([left], [right]) =>
         left.localeCompare(right)).map(([name, value]) => ({
         name,
@@ -498,7 +500,15 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
       execFileSync(
         'node',
         ['.github/scripts/write_update_manifest.mjs', directory],
-        { cwd: root, env: { ...process.env, PLATFORM: platform, VERSION: version } },
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            PLATFORM: platform,
+            VERSION: version,
+            SIGNATURE_POLICY: 'unsigned-dry-run',
+          },
+        },
       )
       const names = [
         ...Object.keys(payloads),
@@ -587,6 +597,7 @@ test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
       schema: 'origami2.update-manifest.v1',
       version: '0.1.0',
       platform: 'windows-x64',
+      signaturePolicy: 'unsigned-dry-run',
       assets: Object.entries(payloads).sort(([left], [right]) =>
         left.localeCompare(right)).map(([name, value]) => ({
         name,
@@ -657,6 +668,7 @@ test('local artifact verifier rejects non-canonical checksum manifests', () => {
       schema: 'origami2.update-manifest.v1',
       version: '0.1.0',
       platform: 'windows-x64',
+      signaturePolicy: 'unsigned-dry-run',
       assets: Object.entries(payloads).sort(([left], [right]) =>
         left.localeCompare(right)).map(([name, value]) => ({
         name,
@@ -745,6 +757,24 @@ test('local artifact verifier requires explicit signature policy and verifies pa
       },
     ),
     /REQUIRE_SIGNATURE must be exactly true or false/u,
+  )
+  assert.throws(
+    () => execFileSync(
+      'node',
+      ['.github/scripts/verify_formal_release.mjs', root],
+      {
+        cwd: root,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          RELEASE_PLATFORM: 'windows-x64',
+          RELEASE_VERSION: '0.1.0',
+          RELEASE_MODE: 'stable',
+          REQUIRE_SIGNATURE: 'false',
+        },
+      },
+    ),
+    /publishable release mode requires platform signatures/u,
   )
 })
 

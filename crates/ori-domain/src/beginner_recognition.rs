@@ -125,21 +125,23 @@ pub fn analyze_outline_candidates_rgba_v1(
     Ok(components
         .into_iter()
         .enumerate()
-        .map(|(id, (area_pixels, min_x, min_y, max_x, max_y))| BeginnerOutlineCandidateV1 {
-            id: id as u8,
-            bounds: BeginnerRecognitionBoundsV1 {
-                min_x,
-                min_y,
-                max_x,
-                max_y,
+        .map(
+            |(id, (area_pixels, min_x, min_y, max_x, max_y))| BeginnerOutlineCandidateV1 {
+                id: id as u8,
+                bounds: BeginnerRecognitionBoundsV1 {
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                },
+                area_pixels,
+                confidence_reason: if area_pixels >= 16 {
+                    BeginnerOutlineConfidenceReasonV1::SolidComponent
+                } else {
+                    BeginnerOutlineConfidenceReasonV1::SmallComponent
+                },
             },
-            area_pixels,
-            confidence_reason: if area_pixels >= 16 {
-                BeginnerOutlineConfidenceReasonV1::SolidComponent
-            } else {
-                BeginnerOutlineConfidenceReasonV1::SmallComponent
-            },
-        })
+        )
         .collect())
 }
 

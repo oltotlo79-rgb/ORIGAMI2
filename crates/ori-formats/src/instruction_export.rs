@@ -715,6 +715,12 @@ mod tests {
     fn complete_canonical_plan_has_a_cross_platform_golden_digest() {
         let fixture = fixture();
         let timeline = timeline(&fixture, "山折りして角を合わせます。\n".repeat(45));
+        assert!(timeline.steps.iter().all(|step| {
+            step.visual.camera.is_none()
+                && step.visual.arrows.is_empty()
+                && step.visual.focus_points.is_empty()
+                && step.visual.hand_guides.is_empty()
+        }));
         let (plan, font) = build_canonical_instruction_plan(
             "鶴の試作",
             FINGERPRINT,
@@ -730,7 +736,7 @@ mod tests {
         assert_eq!(plan.warnings, INSTRUCTION_EXPORT_WARNINGS);
         assert_eq!(
             canonical_plan_digest(&plan),
-            "80cce57056c9d8f685ccab6c012d869f5d6558b0450e6729f65f9d03b76236d3"
+            "947271e7bd379bbd89e7e4b23755fb92c4bd899c62ee10468131fbb414dd42f1"
         );
     }
 

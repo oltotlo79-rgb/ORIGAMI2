@@ -3855,8 +3855,9 @@ function App() {
       ja: '調整した対称パラメータを保存しますか？生成は開始しません。',
       en: 'Save the adjusted symmetric parameters? This does not start generation.',
     }))) return
-    void runNativeEdit(() => applyBeginnerSymmetricParameters(
-      estimate, beginnerSymmetricScale, beginnerSymmetricSpacing,
+    void runNativeEdit((projectId, revision, projectInstanceId) => applyBeginnerSymmetricParameters(
+      projectId, revision, projectInstanceId, estimate.estimate,
+      beginnerSymmetricScale, beginnerSymmetricSpacing,
     )).then(() => setBeginnerSymmetricEstimate(null))
   }
 

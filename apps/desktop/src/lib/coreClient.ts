@@ -1488,11 +1488,12 @@ export async function getBeginnerSymmetricParameterEstimate(
 }
 
 export function applyBeginnerSymmetricParameters(
-  response: BeginnerSymmetricParameterEstimateResponse, scalePercent: number, spacingPercent: number,
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+  expectedEstimate: BeginnerSymmetricParameterEstimateResponse['estimate'],
+  scalePercent: number, spacingPercent: number,
 ) {
   return invoke<ProjectSnapshot>('apply_beginner_symmetric_parameters', {
-    expectedProjectInstanceId: response.project_instance_id, expectedProjectId: response.project_id,
-    expectedRevision: response.revision, expectedEstimate: response.estimate,
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, expectedEstimate,
     scalePercent, spacingPercent, confirmed: true,
   })
 }

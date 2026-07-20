@@ -36,7 +36,7 @@ pub(crate) fn recognize_beginner_silhouette(
             .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
     };
     let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
-    let (width, height, rgba) = decode_marker_png(&bytes)?;
+    let (width, height, rgba) = decode_general_png(&bytes)?;
     let proposal = analyze_silhouette_png_rgba_v1(
         request.underlay_id,
         request.asset_id,
@@ -182,9 +182,60 @@ fn decode_marker_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     Ok((frame.width, frame.height, output))
 }
 
+fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| "recognition_requires_valid_png".to_owned())?;
+    let info = reader.info();
+    let pixels = usize::try_from(info.width)
+        .ok()
+        .and_then(|width| usize::try_from(info.height).ok()?.checked_mul(width))
+        .ok_or_else(|| "recognition_resource_limit".to_owned())?;
+    if info.width > ori_domain::MAX_BEGINNER_RECOGNITION_DIMENSION_V1
+        || info.height > ori_domain::MAX_BEGINNER_RECOGNITION_DIMENSION_V1
+        || pixels > ori_domain::MAX_BEGINNER_RECOGNITION_PIXELS_V1
+    {
+        return Err("recognition_resource_limit".to_owned());
+    }
+    let mut decoded = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .ok_or_else(|| "recognition_resource_limit".to_owned())?
+    ];
+    let frame = reader
+        .next_frame(&mut decoded)
+        .map_err(|_| "recognition_requires_valid_png".to_owned())?;
+    decoded.truncate(frame.buffer_size());
+    let mut rgba = Vec::with_capacity(
+        pixels
+            .checked_mul(4)
+            .ok_or_else(|| "recognition_resource_limit".to_owned())?,
+    );
+    match frame.color_type {
+        png::ColorType::Rgba => rgba.extend_from_slice(&decoded),
+        png::ColorType::Rgb => decoded.chunks_exact(3).for_each(|pixel| {
+            rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+        }),
+        png::ColorType::Grayscale => decoded
+            .iter()
+            .for_each(|value| rgba.extend_from_slice(&[*value, *value, *value, 255])),
+        png::ColorType::GrayscaleAlpha => decoded.chunks_exact(2).for_each(|pixel| {
+            rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+        }),
+        png::ColorType::Indexed => return Err("recognition_requires_valid_png".to_owned()),
+    }
+    if rgba.len() != pixels * 4 {
+        return Err("recognition_resource_limit".to_owned());
+    }
+    Ok((frame.width, frame.height, rgba))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::decode_marker_png;
+    use super::{decode_general_png, decode_marker_png};
 
     fn encode(color: png::ColorType, pixels: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -214,5 +265,19 @@ mod tests {
         let index = corrupt.len() / 2;
         corrupt[index] ^= 0xff;
         assert!(decode_marker_png(&corrupt).is_err());
+    }
+
+    #[test]
+    fn general_silhouette_decoder_deterministically_expands_rgb_and_grayscale() {
+        assert_eq!(
+            decode_general_png(&encode(png::ColorType::Rgb, &[10, 20, 30, 40, 50, 60]))
+                .expect("RGB"),
+            (2, 1, vec![10, 20, 30, 255, 40, 50, 60, 255])
+        );
+        assert_eq!(
+            decode_general_png(&encode(png::ColorType::Grayscale, &[12, 34]))
+                .expect("grayscale"),
+            (2, 1, vec![12, 12, 12, 255, 34, 34, 34, 255])
+        );
     }
 }

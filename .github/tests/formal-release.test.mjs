@@ -60,6 +60,24 @@ test('CI always runs release contracts with read-only short-lived evidence', () 
   }
 })
 
+test('CI retains bounded browser accessibility evidence only on failure', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const smoke = readFileSync(
+    join(root, 'apps/desktop/scripts/accessibility-browser-smoke.mjs'),
+    'utf8',
+  )
+  assert.match(workflow, /id: accessibility-browser/u)
+  assert.match(
+    workflow,
+    /if: failure\(\) && steps\.accessibility-browser\.outcome == 'failure'/u,
+  )
+  assert.match(workflow, /name: accessibility-browser-failure/u)
+  assert.match(workflow, /if-no-files-found: error[\s\S]*retention-days: 7/u)
+  assert.match(smoke, /origami2\.accessibility-failure\.v1/u)
+  assert.match(smoke, /serverOutput\.slice\(-16_000\)/u)
+  assert.match(smoke, /fullPage: true/u)
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

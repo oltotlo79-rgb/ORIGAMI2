@@ -1,6 +1,8 @@
 import AxeBuilder from '@axe-core/playwright'
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 
 const host = '127.0.0.1'
 const port = 4173
@@ -15,11 +17,12 @@ server.stdout.on('data', (chunk) => { serverOutput += chunk })
 server.stderr.on('data', (chunk) => { serverOutput += chunk })
 
 let browser
+let page
 try {
   await waitForServer(origin)
   browser = await chromium.launch({ headless: true })
   const context = await browser.newContext()
-  const page = await context.newPage()
+  page = await context.newPage()
   const consoleErrors = []
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text())
@@ -96,6 +99,31 @@ try {
     `browser accessibility smoke passed: ${passedRules} axe rule/theme checks, `
       + '2D/3D/statusbar/modal focus and inert contracts',
   )
+} catch (error) {
+  const artifactDirectory = process.env.ORIGAMI2_A11Y_ARTIFACT_DIRECTORY
+  if (artifactDirectory) {
+    const output = resolve(artifactDirectory)
+    await mkdir(output, { recursive: true })
+    const message = error instanceof Error ? error.stack ?? error.message : String(error)
+    await writeFile(
+      join(output, 'accessibility-failure.json'),
+      `${JSON.stringify({
+        schema: 'origami2.accessibility-failure.v1',
+        message,
+        serverOutput: serverOutput.slice(-16_000),
+      }, null, 2)}\n`,
+      'utf8',
+    )
+    try {
+      await page?.screenshot({
+        path: join(output, 'accessibility-failure.png'),
+        fullPage: true,
+      })
+    } catch {
+      // The JSON diagnostic remains available when the page cannot render.
+    }
+  }
+  throw error
 } finally {
   await browser?.close()
   server.kill('SIGTERM')

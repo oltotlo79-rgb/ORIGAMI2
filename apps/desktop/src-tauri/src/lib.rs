@@ -1548,6 +1548,86 @@ fn evaluate_beginner_candidates(
 }
 
 #[tauri::command]
+fn apply_beginner_generated_plan(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_profile: ori_domain::BeginnerDesignProfileV1,
+    selected_kind: ori_domain::BeginnerGeneratedPlanKindV1,
+) -> Result<ProjectSnapshot, String> {
+    if selected_kind != ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold {
+        return Err("only the validated diagonal plan can currently be applied".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    if project.editor.beginner_design_profile() != &expected_profile {
+        return Err("the beginner design profile changed before apply".to_owned());
+    }
+    let plans = ori_domain::generate_beginner_plans_v1(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &expected_profile.generation_constraints,
+    )
+    .map_err(|_| "the generated plan is no longer applicable".to_owned())?;
+    let plan = plans
+        .into_iter()
+        .find(|plan| plan.kind == selected_kind)
+        .ok_or_else(|| "the generated plan is no longer available".to_owned())?;
+    let mut pattern = project.editor.pattern().clone();
+    for vertex in plan.crease_pattern.vertices {
+        if !pattern
+            .vertices
+            .iter()
+            .any(|current| current.id == vertex.id)
+        {
+            pattern.vertices.push(vertex);
+        }
+    }
+    for edge in plan.crease_pattern.edges {
+        if pattern.edges.iter().any(|current| current.id == edge.id) {
+            return Err("the generated plan was already applied".to_owned());
+        }
+        pattern.edges.push(edge);
+    }
+    let mut instruction_timeline = project.editor.instruction_timeline().clone();
+    instruction_timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: "Diagonal fold".to_owned(),
+        description: "Fold the rectangular sheet on the generated diagonal.".to_owned(),
+        caution: "Review the crease direction before folding.".to_owned(),
+        duration_ms: 2_000,
+        visual: InstructionVisual::default(),
+        pose: InstructionPose {
+            model: InstructionPoseModel::DeclarativeOnlyV1,
+            source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        },
+    });
+    let paper = project.editor.paper().clone();
+    let project_layers = project.editor.project_layers().clone();
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+        },
+    )
+}
+
+#[tauri::command]
 fn update_project_memo(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -7994,6 +8074,7 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             evaluate_beginner_candidates,
+            apply_beginner_generated_plan,
             update_project_memo,
             update_beginner_design_profile,
             get_history_entry_limit,

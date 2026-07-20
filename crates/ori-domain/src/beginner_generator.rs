@@ -120,8 +120,22 @@ pub fn generate_beginner_plans_v1(
         .take(MAX_BEGINNER_GENERATED_CANDIDATES_V1)
         .map(|(plan_kind, start, end, instruction)| {
             let prefix = format!("beginner-plan-{plan_kind:?}");
-            let start_id = VertexId::derive_v5(namespace, format!("{prefix}-start").as_bytes());
-            let end_id = VertexId::derive_v5(namespace, format!("{prefix}-end").as_bytes());
+            let start_id = source
+                .vertices
+                .iter()
+                .find(|vertex| vertex.position == start)
+                .map_or_else(
+                    || VertexId::derive_v5(namespace, format!("{prefix}-start").as_bytes()),
+                    |vertex| vertex.id,
+                );
+            let end_id = source
+                .vertices
+                .iter()
+                .find(|vertex| vertex.position == end)
+                .map_or_else(
+                    || VertexId::derive_v5(namespace, format!("{prefix}-end").as_bytes()),
+                    |vertex| vertex.id,
+                );
             BeginnerGeneratedPlanV1 {
                 schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
                 kind: plan_kind,

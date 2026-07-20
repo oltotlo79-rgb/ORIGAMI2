@@ -477,7 +477,6 @@ pub fn prepare_pole_free_bernstein_certificate_v1(
     {
         return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
     }
-    let degree = power_coefficients.len() - 1;
     let power = power_coefficients
         .iter()
         .map(|value| {
@@ -494,6 +493,23 @@ pub fn prepare_pole_free_bernstein_certificate_v1(
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    prepare_exact_pole_free_bernstein_certificate(power, max_degree, max_coefficient_bits, max_work)
+}
+
+fn prepare_exact_pole_free_bernstein_certificate(
+    power: Vec<BigRational>,
+    max_degree: usize,
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<PoleFreeBernsteinCertificateV1, CycleSchedulePrepareErrorV1> {
+    if power.is_empty()
+        || power.len() > max_degree.saturating_add(1)
+        || power.len().saturating_mul(power.len()) > max_work
+    {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    validate_exact_bits(&power, max_coefficient_bits)?;
+    let degree = power.len() - 1;
     let mut coefficients = Vec::with_capacity(degree + 1);
     for i in 0..=degree {
         let mut value = BigRational::zero();
@@ -524,6 +540,30 @@ pub fn prepare_pole_free_bernstein_certificate_v1(
         positive,
         coefficients: exact_range.coefficients,
     })
+}
+
+fn affine_reparameterize_power(
+    power: &[BigRational],
+    domain: &[BigRational; 2],
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<Vec<BigRational>, CycleSchedulePrepareErrorV1> {
+    if power.len().saturating_mul(power.len()) > max_work {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    let a = &domain[0];
+    let width = &domain[1] - a;
+    let mut result = vec![BigRational::zero(); power.len()];
+    for (degree, coefficient) in power.iter().enumerate() {
+        for (k, output) in result.iter_mut().enumerate().take(degree + 1) {
+            *output += coefficient
+                * BigInt::from(binomial(degree, k))
+                * a.pow((degree - k) as i32)
+                * width.pow(k as i32);
+        }
+    }
+    validate_exact_bits(&result, max_coefficient_bits)?;
+    Ok(result)
 }
 
 fn binomial(n: usize, k: usize) -> u128 {
@@ -574,23 +614,33 @@ impl PreparedHalfAngleRationalEntryV1 {
         if u_domain[0] >= u_domain[1] {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        let numerator_certificate = prepare_pole_free_bernstein_certificate_v1(
-            &input.numerator_power_coefficients,
-            limits.max_degree,
-            limits.max_coefficient_bits,
-            limits.max_work,
-        )?;
-        let denominator_certificate = prepare_pole_free_bernstein_certificate_v1(
-            &input.denominator_power_coefficients,
-            limits.max_degree,
-            limits.max_coefficient_bits,
-            limits.max_work,
-        )?;
         let numerator_power_coefficients = input
             .numerator_power_coefficients
             .into_iter()
             .map(to_exact)
             .collect::<Result<Vec<_>, _>>()?;
+        let numerator_certificate = prepare_exact_pole_free_bernstein_certificate(
+            affine_reparameterize_power(
+                &numerator_power_coefficients,
+                &u_domain,
+                limits.max_coefficient_bits,
+                limits.max_work,
+            )?,
+            limits.max_degree,
+            limits.max_coefficient_bits,
+            limits.max_work,
+        )?;
+        let denominator_certificate = prepare_exact_pole_free_bernstein_certificate(
+            affine_reparameterize_power(
+                &denominator_power_coefficients,
+                &u_domain,
+                limits.max_coefficient_bits,
+                limits.max_work,
+            )?,
+            limits.max_degree,
+            limits.max_coefficient_bits,
+            limits.max_work,
+        )?;
         let denominator_power_coefficients = input
             .denominator_power_coefficients
             .into_iter()

@@ -109,6 +109,10 @@ pub struct Fold3dAppliedPoseProposalV1 {
     frame_index: usize,
     face_transforms: Vec<[[f64; 4]; 3]>,
     hinge_angles_degrees: Vec<(usize, f64)>,
+    rest_vertices: Vec<[f64; 3]>,
+    edges: Vec<[usize; 2]>,
+    faces: Vec<Vec<usize>>,
+    assignments: Vec<String>,
 }
 
 impl Fold3dAppliedPoseProposalV1 {
@@ -127,6 +131,22 @@ impl Fold3dAppliedPoseProposalV1 {
     #[must_use]
     pub fn hinge_angles_degrees(&self) -> &[(usize, f64)] {
         &self.hinge_angles_degrees
+    }
+    #[must_use]
+    pub fn rest_vertices(&self) -> &[[f64; 3]] {
+        &self.rest_vertices
+    }
+    #[must_use]
+    pub fn edges(&self) -> &[[usize; 2]] {
+        &self.edges
+    }
+    #[must_use]
+    pub fn faces(&self) -> &[Vec<usize>] {
+        &self.faces
+    }
+    #[must_use]
+    pub fn assignments(&self) -> &[String] {
+        &self.assignments
     }
     #[must_use]
     pub const fn authorizes_project_mutation(&self) -> bool {
@@ -557,6 +577,10 @@ fn prepare_pose(
         frame_index,
         face_transforms: transforms,
         hinge_angles_degrees: hinges,
+        rest_vertices: rest.to_vec(),
+        edges: topology.edges.clone(),
+        faces: topology.faces.clone(),
+        assignments: topology.assignments.clone(),
     })
 }
 

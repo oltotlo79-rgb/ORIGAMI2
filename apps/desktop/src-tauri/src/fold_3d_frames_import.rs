@@ -7,13 +7,19 @@ use std::{
 };
 
 use base64::Engine;
-use ori_domain::ProjectId;
+use ori_domain::{EdgeId, EdgeKind, ProjectId, VertexId};
 use ori_formats::{Fold3dFramesPreviewV1, FoldImportLimits, read_fold_3d_frames_preview_v1};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
-use super::{AppState, lock_project};
+use super::{
+    AppState,
+    applied_pose::{
+        ApplyCurrentNativePoseResponse, NativePoseHingeAngleRequest, NativePoseRequest,
+    },
+    lock_project,
+};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const STALE: &str = "the FOLD 3D frame preview is stale";
@@ -33,6 +39,13 @@ struct Pending {
     project_id: ProjectId,
     revision: u64,
     preview: Fold3dFramesPreviewV1,
+    prepared: Option<PreparedPose>,
+}
+
+struct PreparedPose {
+    frame_index: usize,
+    source_fingerprint: String,
+    hinges: Vec<(EdgeId, f64)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,11 +156,149 @@ pub(super) async fn preview_fold_3d_frames(
         project_id,
         revision,
         preview,
+        prepared: None,
     });
     Ok(Fold3dFramesPickerResponse {
         canceled: false,
         preview: Some(metadata),
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PrepareFold3dPoseResponse {
+    token: ProjectId,
+    frame_index: usize,
+    hinge_count: usize,
+    source_fingerprint: String,
+    authorizes_project_geometry_mutation: bool,
+    requires_explicit_apply: bool,
+}
+
+#[tauri::command]
+pub(super) fn prepare_fold_3d_applied_pose(
+    app_state: State<'_, AppState>,
+    state: State<'_, Fold3dFramesImportState>,
+    request: SelectFold3dFrameRequest,
+) -> Result<PrepareFold3dPoseResponse, String> {
+    let mut slot = lock(&state)?;
+    let pending = slot.pending.as_mut().ok_or_else(|| STALE.to_owned())?;
+    let project = lock_project(&app_state)?;
+    if pending.token != request.token
+        || pending.instance_id != request.expected_project_instance_id
+        || pending.project_id != request.expected_project_id
+        || pending.revision != request.expected_revision
+        || project.instance_id != pending.instance_id
+        || project.project_id != pending.project_id
+        || project.editor.revision() != pending.revision
+    {
+        return Err(STALE.to_owned());
+    }
+    let proposal = pending
+        .preview
+        .prepare_applied_pose_proposal(request.frame_index)
+        .map_err(|_| "FOLD frame is not a rigid tree pose".to_owned())?;
+    let pattern = project.editor.pattern();
+    if proposal.rest_vertices().len() != pattern.vertices.len()
+        || proposal.edges().len() != pattern.edges.len()
+    {
+        return Err("FOLD topology does not match the current project".to_owned());
+    }
+    let mut vertex_map = Vec::<VertexId>::new();
+    for point in proposal.rest_vertices() {
+        let matches = pattern
+            .vertices
+            .iter()
+            .filter(|vertex| {
+                vertex.position.x.to_bits() == point[0].to_bits()
+                    && vertex.position.y.to_bits() == point[1].to_bits()
+                    && point[2].to_bits() == 0.0_f64.to_bits()
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err("FOLD vertex identity is ambiguous".to_owned());
+        }
+        vertex_map.push(matches[0].id);
+    }
+    let mut hinges = Vec::new();
+    for &(edge_index, angle) in proposal.hinge_angles_degrees() {
+        let endpoints = proposal.edges()[edge_index];
+        let assignment = proposal.assignments()[edge_index].as_str();
+        let candidates = pattern
+            .edges
+            .iter()
+            .filter(|edge| {
+                ((edge.start == vertex_map[endpoints[0]] && edge.end == vertex_map[endpoints[1]])
+                    || (edge.end == vertex_map[endpoints[0]]
+                        && edge.start == vertex_map[endpoints[1]]))
+                    && matches!(
+                        (assignment, edge.kind),
+                        ("M", EdgeKind::Mountain) | ("V", EdgeKind::Valley)
+                    )
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return Err("FOLD hinge identity does not match".to_owned());
+        }
+        hinges.push((candidates[0].id, angle.abs()));
+    }
+    let source_fingerprint = project.editor.fold_model_fingerprint_v1();
+    pending.prepared = Some(PreparedPose {
+        frame_index: request.frame_index,
+        source_fingerprint: source_fingerprint.clone(),
+        hinges,
+    });
+    Ok(PrepareFold3dPoseResponse {
+        token: pending.token,
+        frame_index: request.frame_index,
+        hinge_count: pending.prepared.as_ref().unwrap().hinges.len(),
+        source_fingerprint,
+        authorizes_project_geometry_mutation: false,
+        requires_explicit_apply: true,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn apply_fold_3d_applied_pose(
+    app_state: State<'_, AppState>,
+    state: State<'_, Fold3dFramesImportState>,
+    request: SelectFold3dFrameRequest,
+) -> Result<ApplyCurrentNativePoseResponse, String> {
+    let native_request = {
+        let slot = lock(&state)?;
+        let pending = slot.pending.as_ref().ok_or_else(|| STALE.to_owned())?;
+        let prepared = pending
+            .prepared
+            .as_ref()
+            .filter(|value| value.frame_index == request.frame_index)
+            .ok_or_else(|| STALE.to_owned())?;
+        let project = lock_project(&app_state)?;
+        if pending.token != request.token
+            || project.instance_id != pending.instance_id
+            || project.project_id != pending.project_id
+            || project.editor.revision() != pending.revision
+            || project.editor.fold_model_fingerprint_v1() != prepared.source_fingerprint
+        {
+            return Err(STALE.to_owned());
+        }
+        NativePoseRequest {
+            expected_project_instance_id: pending.instance_id,
+            expected_project_id: pending.project_id,
+            expected_revision: pending.revision,
+            fixed_face_id: None,
+            complete_hinge_angles: prepared
+                .hinges
+                .iter()
+                .map(|(edge_id, angle_degrees)| NativePoseHingeAngleRequest {
+                    edge_id: *edge_id,
+                    angle_degrees: *angle_degrees,
+                })
+                .collect(),
+        }
+    };
+    super::applied_pose::apply_current_native_pose(&app_state, native_request)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -350,6 +501,7 @@ mod tests {
             project_id: ProjectId::new(),
             revision: 4,
             preview: preview(),
+            prepared: None,
         }
     }
 

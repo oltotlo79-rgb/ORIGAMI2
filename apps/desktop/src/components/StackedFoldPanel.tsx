@@ -34,8 +34,9 @@ type Props = Readonly<{
 type View =
   | Readonly<{ kind: 'idle' }>
   | Readonly<{ kind: 'reading' }>
-  | Readonly<{ kind: 'ready'; response: StackedFoldReadResponse }>
+  | Readonly<{ kind: 'ready'; response: StackedFoldReadResponse; applyFailed: boolean }>
   | Readonly<{ kind: 'failed'; reason: 'analysis' | 'invalid' | 'apply' | 'stale' }>
+  | Readonly<{ kind: 'refresh_failed' }>
 
 export function StackedFoldPanel({
   locale,
@@ -114,7 +115,7 @@ export function StackedFoldPanel({
     })
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken
-      setView({ kind: 'ready', response: result.response })
+      setView({ kind: 'ready', response: result.response, applyFailed: false })
     } else if (result.status === 'failed') {
       setView({ kind: 'failed', reason: result.reason === 'invalid_response' ? 'invalid' : 'analysis' })
     } else if (result.reason === 'stale_authority') {
@@ -134,15 +135,31 @@ export function StackedFoldPanel({
     const token = view.response.transactionProposal.transactionToken
     if (!token || token !== tokenRef.current) return
     setApplying(true)
+    let committed = false
     try {
       await applyStackedFoldTransaction(token)
+      committed = true
       tokenRef.current = null
       const next = await refreshSnapshot()
       onApplied(next)
       setView({ kind: 'idle' })
       setConfirmed(false)
     } catch {
-      setView({ kind: 'failed', reason: 'apply' })
+      setView(committed
+        ? { kind: 'refresh_failed' }
+        : { kind: 'ready', response: view.response, applyFailed: true })
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  async function retryRefresh() {
+    setApplying(true)
+    try {
+      onApplied(await refreshSnapshot())
+      setView({ kind: 'idle' })
+    } catch {
+      setView({ kind: 'refresh_failed' })
     } finally {
       setApplying(false)
     }
@@ -196,6 +213,14 @@ export function StackedFoldPanel({
               : t('この入力ではnative証明を完成できませんでした。', 'A native proof could not be completed for this input.')}
         </p>
       )}
+      {view.kind === 'refresh_failed' && (
+        <div role="alert">
+          <p>{t('折り重ねは適用済みですが、最新表示を取得できませんでした。', 'The stacked fold was applied, but the refreshed project could not be loaded.')}</p>
+          <button type="button" disabled={applying} onClick={() => void retryRefresh()}>
+            {t('最新表示を再取得', 'Retry refresh')}
+          </button>
+        </div>
+      )}
       {view.kind === 'ready' && (
         <div className="stacked-fold-proof" data-ready={ready}>
           <dl>
@@ -207,6 +232,9 @@ export function StackedFoldPanel({
             <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
           </dl>
           {failureText.map((failure) => <p role="status" key={failure}>{failure}</p>)}
+          {view.applyFailed && (
+            <p role="alert">{t('適用できませんでした。同じ証明済みpreviewで再試行できます。', 'Apply failed. You can retry with the same certified preview.')}</p>
+          )}
           <label>
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying} />
             {t('証明済みの変更内容を確認しました。', 'I reviewed the certified changes.')}

@@ -192,4 +192,58 @@ describe('StackedFoldPanel', () => {
     await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))
     expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
   })
+
+  it('retains a certified token for retry after a pre-commit apply failure', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockResolvedValue(ready)
+    transport.apply.mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce(4)
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })}
+        onApplied={onApplied}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await screen.findByRole('button', { name: 'Apply stacked fold' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply stacked fold' }))
+    expect(await screen.findByText('Apply failed. You can retry with the same certified preview.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply stacked fold' }))
+    await waitFor(() => expect(transport.apply).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce())
+  })
+
+  it('separates a committed apply from refresh failure and retries only refresh', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockResolvedValue(ready)
+    transport.apply.mockResolvedValue(4)
+    const refresh = vi.fn()
+      .mockRejectedValueOnce(new Error('refresh'))
+      .mockResolvedValueOnce({ ...snapshot, revision: 4 })
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={refresh}
+        onApplied={onApplied}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await screen.findByRole('button', { name: 'Apply stacked fold' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply stacked fold' }))
+    expect(await screen.findByText('The stacked fold was applied, but the refreshed project could not be loaded.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry refresh' }))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce())
+    expect(transport.apply).toHaveBeenCalledTimes(1)
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
 })

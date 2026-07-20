@@ -1335,6 +1335,15 @@ struct ValidationSnapshot {
     local_flat_foldability: LocalFlatFoldabilityReport,
 }
 
+#[derive(Debug, Serialize)]
+struct BeginnerCandidateResponse {
+    schema_version: u32,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    candidates: Vec<ori_domain::BeginnerCandidateScoreV1>,
+}
+
 struct ValidationAnalysisInput {
     project_instance_id: ProjectId,
     project_id: ProjectId,
@@ -1465,6 +1474,43 @@ fn benchmark_edge_id(index: usize) -> String {
 fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, String> {
     let project = lock_project(&state)?;
     Ok(snapshot(&project))
+}
+
+#[tauri::command]
+fn evaluate_beginner_candidates(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<BeginnerCandidateResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let pattern = project.editor.pattern();
+    let crease_count = pattern
+        .edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .count();
+    let candidates = ori_domain::score_beginner_candidates_v1(
+        ori_domain::BeginnerCandidateInputV1 {
+            vertex_count: pattern.vertices.len(),
+            edge_count: pattern.edges.len(),
+            crease_count,
+        },
+        project.editor.beginner_design_profile(),
+    );
+    Ok(BeginnerCandidateResponse {
+        schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        candidates,
+    })
 }
 
 #[tauri::command]
@@ -7913,6 +7959,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_benchmark_pattern,
             project_snapshot,
+            evaluate_beginner_candidates,
             update_project_memo,
             update_beginner_design_profile,
             get_history_entry_limit,

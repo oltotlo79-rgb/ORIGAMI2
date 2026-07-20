@@ -106,6 +106,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricHornBase,
     SymmetricAntennaBase,
     SymmetricInsectLegPairBase,
+    SymmetricSixLegBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -424,45 +425,74 @@ pub fn generate_beginner_plans_v1(
             )
         }
         BeginnerTargetCategoryV1::Insect => {
-            let (plan_kind, instruction) = if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
-                (
-                    BeginnerGeneratedPlanKindV1::SymmetricWingBase,
-                    "symmetric_wing_base",
-                )
-            } else if part_count(BeginnerTargetPartKindV1::Antenna) == 2 {
-                (
-                    BeginnerGeneratedPlanKindV1::SymmetricAntennaBase,
-                    "symmetric_antenna_base",
-                )
-            } else if part_count(BeginnerTargetPartKindV1::Leg) == 2 {
-                (
-                    BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase,
-                    "symmetric_insect_leg_pair_base",
+            if part_count(BeginnerTargetPartKindV1::Leg) == 6 {
+                let bindings = insect_three_pair_bindings_v1(constraints)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let mut endpoints = Vec::with_capacity(12);
+                for binding in bindings {
+                    let mut isolated = constraints.clone();
+                    isolated
+                        .protrusions
+                        .retain(|target| target.id == binding.protrusion_id);
+                    endpoints.extend(
+                        parameterized_symmetric_endpoints(&isolated, 2, false)
+                            .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?,
+                    );
+                }
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::SymmetricSixLegBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "symmetric_six_leg_base",
+                    constraints,
                 )
             } else {
-                return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
-            };
-            if constraints.skeleton_segments.len() < 2
-                || !has_bilateral_skeleton(constraints)
-                || !has_bilateral_protrusion_count(constraints, 2)
-            {
-                return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
+                let (plan_kind, instruction) = if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
+                    (
+                        BeginnerGeneratedPlanKindV1::SymmetricWingBase,
+                        "symmetric_wing_base",
+                    )
+                } else if part_count(BeginnerTargetPartKindV1::Antenna) == 2 {
+                    (
+                        BeginnerGeneratedPlanKindV1::SymmetricAntennaBase,
+                        "symmetric_antenna_base",
+                    )
+                } else if part_count(BeginnerTargetPartKindV1::Leg) == 2 {
+                    (
+                        BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase,
+                        "symmetric_insect_leg_pair_base",
+                    )
+                } else {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
+                };
+                if constraints.skeleton_segments.len() < 2
+                    || !has_bilateral_skeleton(constraints)
+                    || !has_bilateral_protrusion_count(constraints, 2)
+                {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
+                }
+                let endpoints = parameterized_symmetric_endpoints(constraints, 2, false)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                symmetric_template(
+                    namespace,
+                    source,
+                    plan_kind,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    instruction,
+                    constraints,
+                )
             }
-            let endpoints = parameterized_symmetric_endpoints(constraints, 2, false)
-                .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
-            symmetric_template(
-                namespace,
-                source,
-                plan_kind,
-                kind,
-                min_x,
-                max_x,
-                min_y,
-                max_y,
-                &endpoints,
-                instruction,
-                constraints,
-            )
         }
     };
     let animal_variants = [
@@ -971,7 +1001,7 @@ mod tests {
             kind: BeginnerTargetPartKindV1::Leg,
             count: 6,
         };
-        complete_legs.protrusions = [1_i32, 5, 9]
+        complete_legs.protrusions = [3_i32, 5, 7]
             .into_iter()
             .enumerate()
             .map(|(index, center_y)| {
@@ -986,7 +1016,7 @@ mod tests {
                 BeginnerBilateralPairBindingV1 {
                     pair_index: 0,
                     protrusion_id: 1,
-                    center_y_tenths_mm: 1
+                    center_y_tenths_mm: 3
                 },
                 BeginnerBilateralPairBindingV1 {
                     pair_index: 1,
@@ -996,10 +1026,18 @@ mod tests {
                 BeginnerBilateralPairBindingV1 {
                     pair_index: 2,
                     protrusion_id: 3,
-                    center_y_tenths_mm: 9
+                    center_y_tenths_mm: 7
                 },
             ])
         );
+        let complete_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &complete_legs).unwrap();
+        assert_eq!(
+            complete_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
+        );
+        assert_eq!(complete_plans[0].crease_pattern.vertices.len(), 13);
+        assert_eq!(complete_plans[0].crease_pattern.edges.len(), 12);
         complete_legs.protrusions[2].position_tenths_mm[1] = 5;
         assert_eq!(insect_three_pair_bindings_v1(&complete_legs), None);
         constraints.skeleton_segments[1].end.y_tenths_mm = 11;

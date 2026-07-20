@@ -7,7 +7,7 @@ use std::{
 };
 
 use base64::Engine;
-use ori_domain::{EdgeId, EdgeKind, ProjectId, VertexId};
+use ori_domain::{EdgeId, EdgeKind, FaceId, ProjectId, VertexId};
 use ori_formats::{Fold3dFramesPreviewV1, FoldImportLimits, read_fold_3d_frames_preview_v1};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -46,6 +46,7 @@ struct PreparedPose {
     frame_index: usize,
     source_fingerprint: String,
     hinges: Vec<(EdgeId, f64)>,
+    fixed_face: FaceId,
 }
 
 #[derive(Debug, Serialize)]
@@ -243,10 +244,19 @@ pub(super) fn prepare_fold_3d_applied_pose(
         hinges.push((candidates[0].id, angle.abs()));
     }
     let source_fingerprint = project.editor.fold_model_fingerprint_v1();
+    let fixed_face = project
+        .editor
+        .topology_analysis_input(project.project_id)
+        .analyze()
+        .simulation_snapshot()
+        .and_then(|snapshot| snapshot.faces.first())
+        .map(|face| face.id)
+        .ok_or_else(|| "current project topology is not simulation-ready".to_owned())?;
     pending.prepared = Some(PreparedPose {
         frame_index: request.frame_index,
         source_fingerprint: source_fingerprint.clone(),
         hinges,
+        fixed_face,
     });
     Ok(PrepareFold3dPoseResponse {
         token: pending.token,
@@ -285,7 +295,7 @@ pub(super) async fn apply_fold_3d_applied_pose(
             expected_project_instance_id: pending.instance_id,
             expected_project_id: pending.project_id,
             expected_revision: pending.revision,
-            fixed_face_id: None,
+            fixed_face_id: Some(prepared.fixed_face),
             complete_hinge_angles: prepared
                 .hinges
                 .iter()

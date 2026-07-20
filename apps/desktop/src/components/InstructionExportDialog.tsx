@@ -89,8 +89,8 @@ const INSTRUCTION_EXPORT_COPY = {
       'Generate instructions from the current edit revision. Exporting does not change the project save state or history.',
     format: 'Export format',
     optionDetails: {
-      pdf: 'Combine fixed-isometric diagrams and hand/regrip guide labels into a multi-page PDF',
-      svg_zip: 'Package one vector SVG page with fold directions, focus points, and hand positions into a ZIP',
+      pdf: 'Combine fixed-isometric diagrams with authored camera and hand/regrip guide details into a multi-page PDF',
+      svg_zip: 'Package one vector SVG page with camera, fold directions, focus points, and hand positions into a ZIP',
     },
     rebuild: 'Rebuild from the current edits',
     retry: 'Retry the same format',

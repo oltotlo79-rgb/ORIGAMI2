@@ -605,6 +605,29 @@ fn add_direction_and_focus_summary(
     font: &InstructionFont<'_>,
     glyphs: &mut GlyphBudget,
 ) -> Result<f64, InstructionExportError> {
+    if let Some(camera) = &step.visual.camera {
+        cursor = add_wrapped_header(
+            page,
+            &format!(
+                "Authored camera: position ({:.2}, {:.2}, {:.2}) / target ({:.2}, {:.2}, {:.2}) / up ({:.2}, {:.2}, {:.2})",
+                camera.position.x,
+                camera.position.y,
+                camera.position.z,
+                camera.target.x,
+                camera.target.y,
+                camera.target.z,
+                camera.up.x,
+                camera.up.y,
+                camera.up.z,
+            ),
+            8.0,
+            11.0,
+            cursor,
+            PageColor::MUTED,
+            font,
+            glyphs,
+        )?;
+    }
     if !step.visual.arrows.is_empty() {
         let arrows = step
             .visual
@@ -1081,9 +1104,9 @@ fn format_duration(duration_ms: u32) -> String {
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        InstructionArrow, InstructionFocusPoint, InstructionHandGuide, InstructionHandGuideKind,
-        InstructionPoint3, InstructionPose, InstructionPoseModel, InstructionStep,
-        InstructionStepId, InstructionTimeline,
+        InstructionArrow, InstructionCamera, InstructionFocusPoint, InstructionHandGuide,
+        InstructionHandGuideKind, InstructionPoint3, InstructionPose, InstructionPoseModel,
+        InstructionStep, InstructionStepId, InstructionTimeline,
     };
 
     use super::*;
@@ -1184,6 +1207,23 @@ mod tests {
                 radius: 0.5,
                 label: "corner".to_owned(),
             });
+        timeline.steps[0].visual.camera = Some(InstructionCamera {
+            position: InstructionPoint3 {
+                x: 4.0,
+                y: 3.0,
+                z: 5.0,
+            },
+            target: InstructionPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            up: InstructionPoint3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        });
         let diagram = InstructionDiagramPlan {
             bounds: DiagramBounds {
                 min_x: 0.0,
@@ -1223,6 +1263,7 @@ mod tests {
         assert!(text.contains("Hand guides: regrip: right hand"));
         assert!(text.contains("Fold directions: fold up:"));
         assert!(text.contains("Focus points: corner:"));
+        assert!(text.contains("Authored camera: position"));
         assert!(layout.pages.iter().all(|page| page.lines.is_empty()));
     }
 

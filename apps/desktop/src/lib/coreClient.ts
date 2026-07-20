@@ -48,6 +48,12 @@ import {
   type LayerContentKindV1,
   type ProjectLayerDocumentV1,
 } from './projectLayers.ts'
+import {
+  isStackedFoldReadRequest,
+  normalizeStackedFoldReadResponse,
+  type StackedFoldReadRequest,
+  type StackedFoldReadResponse,
+} from './stackedFoldRead.ts'
 
 export type {
   EdgeLayerAssignmentV1,
@@ -603,6 +609,19 @@ export function analyzeProjectTopology(expectedProjectId: string, expectedRevisi
   return invoke<ProjectTopologyResponse>('analyze_project_topology', {
     expectedProjectId,
     expectedRevision,
+  })
+}
+
+export function proposeCurrentStackedFoldRead(
+  request: StackedFoldReadRequest,
+): Promise<StackedFoldReadResponse> {
+  if (!isStackedFoldReadRequest(request)) {
+    return Promise.reject(new Error('invalid stacked-fold request'))
+  }
+  return invoke<unknown>('propose_current_stacked_fold_read', { request }).then((value) => {
+    const response = normalizeStackedFoldReadResponse(value, request)
+    if (!response) throw new Error('invalid stacked-fold response')
+    return response
   })
 }
 

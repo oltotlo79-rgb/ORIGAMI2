@@ -1666,13 +1666,15 @@ mod tests {
     }
 
     #[test]
-    fn genuine_single_hinge_half_angle_schedule_has_closure_and_bounded_ccd() {
+    fn genuine_two_hinge_tree_half_angle_schedule_has_closure_and_bounded_ccd() {
         let points = [
             (0.0, 0.0),
-            (50.0, 0.0),
+            (33.0, 0.0),
+            (66.0, 0.0),
             (100.0, 0.0),
             (100.0, 100.0),
-            (50.0, 100.0),
+            (66.0, 100.0),
+            (33.0, 100.0),
             (0.0, 100.0),
         ];
         let vertices = points
@@ -1692,13 +1694,17 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        let hinge = fixed_id("7f00", 20);
-        edges.push(Edge {
-            id: hinge,
-            start: boundary[1],
-            end: boundary[4],
-            kind: EdgeKind::Mountain,
-        });
+        let hinges = [fixed_id("7f00", 20), fixed_id("7f00", 21)];
+        edges.extend(hinges.iter().enumerate().map(|(index, hinge)| Edge {
+            id: *hinge,
+            start: boundary[index + 1],
+            end: boundary[6 - index],
+            kind: if index == 0 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
         let pattern = CreasePattern { vertices, edges };
         let paper = Paper {
             boundary_vertices: boundary,
@@ -1711,7 +1717,7 @@ mod tests {
             pattern: &pattern,
         })
         .snapshot
-        .expect("two material faces");
+        .expect("three material faces");
         let geometry = MaterialHingeGraphGeometry::prepare(
             &pattern,
             &paper,
@@ -1726,33 +1732,36 @@ mod tests {
             &geometry,
             &audit,
             fixed,
-            vec![ori_kinematics::HalfAngleRationalEntryInputV1 {
-                edge: hinge,
-                u_domain: [
-                    ori_kinematics::RationalCoefficientV1 {
-                        numerator: 0,
+            hinges
+                .into_iter()
+                .map(|hinge| ori_kinematics::HalfAngleRationalEntryInputV1 {
+                    edge: hinge,
+                    u_domain: [
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                        numerator: 10,
                         denominator: 1,
-                    },
-                    ori_kinematics::RationalCoefficientV1 {
-                        numerator: 1,
-                        denominator: 1,
-                    },
-                ],
-                numerator_power_coefficients: vec![
-                    ori_kinematics::RationalCoefficientV1 {
-                        numerator: 1,
-                        denominator: 1,
-                    },
-                    ori_kinematics::RationalCoefficientV1 {
-                        numerator: 1,
-                        denominator: 1,
-                    },
-                ],
-                denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
-                    numerator: 1,
-                    denominator: 1,
-                }],
-            }],
+                    }],
+                })
+                .collect(),
             ori_kinematics::CycleScheduleLimitsV1::default(),
         )
         .unwrap();
@@ -1775,7 +1784,7 @@ mod tests {
                     schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
                 },
             )
-            .expect("single hinge closure");
+            .expect("two hinge tree closure");
         let diagnostic =
             diagnose_scheduled_cycle_path_v1(&geometry, &audit, fixed, &candidate, &closure, 8);
         assert_eq!(

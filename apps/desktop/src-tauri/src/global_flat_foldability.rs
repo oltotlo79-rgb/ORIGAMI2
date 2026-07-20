@@ -2213,7 +2213,7 @@ fn duration_millis(duration: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::{
         cell::Cell,
         path::PathBuf,
@@ -2251,7 +2251,10 @@ mod tests {
         source
     }
 
-    fn install_possible_layer_order(state: &GlobalFlatFoldabilityState, project: &ProjectState) {
+    pub(super) fn install_possible_layer_order(
+        state: &GlobalFlatFoldabilityState,
+        project: &ProjectState,
+    ) {
         let source = source_for(project, GlobalFlatFoldabilityJobId::new());
         {
             let mut slot = lock_foldability_state(state).expect("lock authority slot");

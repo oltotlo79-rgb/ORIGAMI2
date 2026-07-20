@@ -1121,7 +1121,7 @@ pub(super) struct CurrentAppliedPoseAuthoritySnapshot {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use ori_core::{Command, create_rectangular_sheet};
     use ori_domain::{CreasePattern, Paper, Point2, VertexId};
     use serde_json::json;
@@ -1183,7 +1183,7 @@ mod tests {
         ProjectState::new_with_paper(CreasePattern::empty(), Paper::default())
     }
 
-    fn request_for(project: &ProjectState) -> NativePoseRequest {
+    pub(super) fn request_for(project: &ProjectState) -> NativePoseRequest {
         NativePoseRequest {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn current_pose_round_trips_as_independent_native_authority() {
         let mut project = no_hinge_project();
-        adopt_no_hinge_pose(&mut project);
+        install_current_pose_authority(&mut project);
         let archive = project.project_archive().expect("archive current pose");
         let persisted = archive
             .document
@@ -1237,7 +1237,7 @@ mod tests {
     #[test]
     fn busy_process_worker_rejects_apply_without_touching_project_or_pose_authority() {
         let mut project = no_hinge_project();
-        let (authority, current_capability) = adopt_no_hinge_pose(&mut project);
+        let (authority, current_capability) = install_current_pose_authority(&mut project);
         let request = request_for(&project);
         let document_before = project.document();
         let revision_before = project.editor.revision();
@@ -1336,7 +1336,7 @@ mod tests {
         assert!(state.try_acquire_native_pose_worker().is_some());
     }
 
-    fn adopt_no_hinge_pose(
+    pub(super) fn install_current_pose_authority(
         project: &mut ProjectState,
     ) -> (CurrentAppliedPoseAuthority, CurrentAppliedPoseCapability) {
         let authority = project.applied_pose_authority.clone();
@@ -1678,7 +1678,7 @@ mod tests {
     #[test]
     fn semantic_clone_failure_precedes_slot_lock_and_preserves_every_live_state() {
         let mut project = no_hinge_project();
-        let (authority, current_capability) = adopt_no_hinge_pose(&mut project);
+        let (authority, current_capability) = install_current_pose_authority(&mut project);
         let prepared = authority
             .capture_request(&project, request_for(&project))
             .expect("capture replacement pose")
@@ -1732,7 +1732,7 @@ mod tests {
     #[test]
     fn same_angle_resolve_is_a_new_pose_and_invalidates_the_old_capability() {
         let mut project = no_hinge_project();
-        let (authority, first_capability) = adopt_no_hinge_pose(&mut project);
+        let (authority, first_capability) = install_current_pose_authority(&mut project);
         let first_pose = Arc::clone(&first_capability.certificate.claims.pose);
 
         let second_prepared = authority
@@ -1766,7 +1766,7 @@ mod tests {
     fn capability_and_prepared_pose_cannot_cross_authority_slots() {
         let mut first_project = no_hinge_project();
         let second_project = no_hinge_project();
-        let (first_authority, capability) = adopt_no_hinge_pose(&mut first_project);
+        let (first_authority, capability) = install_current_pose_authority(&mut first_project);
         let prepared = first_authority
             .capture_request(&first_project, request_for(&first_project))
             .expect("capture")
@@ -1843,7 +1843,7 @@ mod tests {
     #[test]
     fn dropped_invalidation_is_unchanged_and_committed_invalidation_is_monotonic() {
         let mut project = no_hinge_project();
-        let (authority, capability) = adopt_no_hinge_pose(&mut project);
+        let (authority, capability) = install_current_pose_authority(&mut project);
         let before = authority.test_snapshot().expect("snapshot");
 
         drop(authority.begin_invalidation().expect("preflight"));
@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn replacement_invalidates_old_slot_and_carries_monotonic_generation() {
         let mut current = no_hinge_project();
-        let (old_authority, old_capability) = adopt_no_hinge_pose(&mut current);
+        let (old_authority, old_capability) = install_current_pose_authority(&mut current);
         let replacement = no_hinge_project();
 
         commit_project_replacement(&mut current, replacement).expect("replace");
@@ -1911,7 +1911,7 @@ mod tests {
     #[test]
     fn guarded_closure_revalidates_under_project_then_pose_lock() {
         let mut project = no_hinge_project();
-        let (_, capability) = adopt_no_hinge_pose(&mut project);
+        let (_, capability) = install_current_pose_authority(&mut project);
         let app_state = AppState::new(project);
 
         let generation = with_revalidated_current_applied_pose_capability(
@@ -1926,7 +1926,7 @@ mod tests {
     #[test]
     fn editor_command_funnel_invalidates_only_after_a_successful_revision_change() {
         let mut project = no_hinge_project();
-        let (authority, old_capability) = adopt_no_hinge_pose(&mut project);
+        let (authority, old_capability) = install_current_pose_authority(&mut project);
         let vertex = VertexId::new();
         let project_id = project.project_id;
 
@@ -1955,7 +1955,7 @@ mod tests {
                 .is_none()
         );
 
-        let (_, current_capability) = adopt_no_hinge_pose(&mut project);
+        let (_, current_capability) = install_current_pose_authority(&mut project);
         let state_before = authority.test_snapshot().expect("snapshot");
         let revision_before = project.editor.revision();
         let document_before = project.document();
@@ -1999,7 +1999,7 @@ mod tests {
             }
         );
 
-        adopt_no_hinge_pose(&mut project);
+        install_current_pose_authority(&mut project);
         execute_command(
             &mut project,
             project_id,
@@ -2010,7 +2010,7 @@ mod tests {
             },
         )
         .expect("create history");
-        adopt_no_hinge_pose(&mut project);
+        install_current_pose_authority(&mut project);
         execute_undo(&mut project, project_id, 1).expect("entry-moving undo");
         assert_eq!(
             authority.test_snapshot().expect("snapshot"),
@@ -2021,7 +2021,7 @@ mod tests {
             }
         );
 
-        adopt_no_hinge_pose(&mut project);
+        install_current_pose_authority(&mut project);
         execute_redo(&mut project, project_id, 2).expect("entry-moving redo");
         assert_eq!(
             authority.test_snapshot().expect("snapshot"),

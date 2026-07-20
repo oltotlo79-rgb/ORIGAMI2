@@ -13,6 +13,8 @@ const frontend = source('../src/lib/numericExpressionNative.ts')
 const coreClient = source('../src/lib/coreClient.ts')
 const app = source('../src/App.tsx')
 const numericCore = source('../../../crates/ori-numeric/src/lib.rs')
+const formats = source('../../../crates/ori-formats/src/lib.rs')
+const recovery = source('../src/lib/recoveryClient.ts')
 
 test('numeric expression command is registered across the native and frontend boundary', () => {
   assert.match(nativeLib, /mod numeric_expression;/u)
@@ -164,4 +166,28 @@ test('frontend IPC ceilings stay pinned to the native public hard ceilings', () 
     frontend,
     /MAX_NUMERIC_EXPRESSION_OPERATIONS = 20_000/u,
   )
+})
+
+test('existing paper expressions are native-revalidated, undoable, and persisted', () => {
+  assert.match(
+    coreClient,
+    /resize_rectangular_paper[\s\S]*?widthExpression,[\s\S]*?heightExpression,[\s\S]*?widthMm,[\s\S]*?heightMm/u,
+  )
+  assert.match(
+    nativeLib,
+    /fn resize_rectangular_paper\([\s\S]*?width_expression: String,[\s\S]*?height_expression: String,[\s\S]*?evaluate_positive_millimetre_pair\([\s\S]*?to_bits\(\) != width_mm\.to_bits\(\)/u,
+  )
+  assert.match(
+    nativeLib,
+    /record_numeric_expression_edit[\s\S]*?undo_numeric_expression_edit[\s\S]*?redo_numeric_expression_edit/u,
+  )
+  assert.match(
+    formats,
+    /pub undo_stack: Vec<Option<RectangularPaperCreationExpressions>>,[\s\S]*?pub redo_stack:/u,
+  )
+  assert.match(
+    nativeLib,
+    /project_archive[\s\S]*?document\.numeric_expressions = self\.numeric_expressions\.clone\(\)/u,
+  )
+  assert.match(recovery, /parseNumericExpressionStack[\s\S]*?value\.length > 128/u)
 })

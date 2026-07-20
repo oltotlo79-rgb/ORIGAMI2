@@ -2673,18 +2673,24 @@ function App() {
     const currentUnit = resolveLengthDisplayUnit(current)
     const referenceAxis = ratioReferenceAxis(currentUnit)
     const form = new FormData(event.currentTarget)
+    const widthExpression = referenceAxis === 'width'
+      ? finiteNumberExpressionSource(currentSize.width)
+      : String(form.get('width_display') ?? '')
+    const heightExpression = referenceAxis === 'height'
+      ? finiteNumberExpressionSource(currentSize.height)
+      : String(form.get('height_display') ?? '')
     let widthMm: number | null = currentSize.width
     let heightMm: number | null = currentSize.height
     try {
       if (referenceAxis !== 'width') {
         widthMm = await evaluateDisplayLengthExpression(
-          String(form.get('width_display') ?? ''),
+          widthExpression,
           currentUnit,
         )
       }
       if (referenceAxis !== 'height') {
         heightMm = await evaluateDisplayLengthExpression(
-          String(form.get('height_display') ?? ''),
+          heightExpression,
           currentUnit,
         )
       }
@@ -2706,9 +2712,23 @@ function App() {
       }))
       return
     }
+    const widthMillimetreExpression = referenceAxis === 'width'
+      ? widthExpression
+      : millimetreExpressionSource(widthExpression, currentUnit.millimetresPerUnit)
+    const heightMillimetreExpression = referenceAxis === 'height'
+      ? heightExpression
+      : millimetreExpressionSource(heightExpression, currentUnit.millimetresPerUnit)
 
     void runNativeEdit((projectId, revision, projectInstanceId) =>
-      resizeRectangularPaper(projectId, revision, projectInstanceId, widthMm, heightMm))
+      resizeRectangularPaper(
+        projectId,
+        revision,
+        projectInstanceId,
+        widthMillimetreExpression,
+        heightMillimetreExpression,
+        widthMm,
+        heightMm,
+      ))
   }
 
   function changeLengthDisplayUnit(
@@ -7279,6 +7299,16 @@ async function evaluateDisplayLengthExpression(
     throw new Error('display length expression overflow')
   }
   return millimetres === 0 ? 0 : millimetres
+}
+
+function millimetreExpressionSource(source: string, millimetresPerUnit: number) {
+  if (millimetresPerUnit === 1) return source
+  return `(${source}) * ${finiteNumberExpressionSource(millimetresPerUnit)}`
+}
+
+function finiteNumberExpressionSource(value: number) {
+  if (!Number.isFinite(value)) throw new Error('non-finite expression source')
+  return String(value === 0 ? 0 : value)
 }
 
 function editExpressionErrorMessage(error: unknown) {

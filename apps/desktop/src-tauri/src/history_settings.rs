@@ -77,6 +77,7 @@ fn set_history_entry_limit_in_state(
         .editor
         .set_history_entry_limit(request.history_entry_limit)
         .map_err(|_| HISTORY_SETTINGS_UNAVAILABLE)?;
+    project.trim_numeric_expression_history(request.history_entry_limit);
     Ok(response(&project))
 }
 

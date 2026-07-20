@@ -144,12 +144,18 @@ impl RectangularPaperCreationExpressions {
 pub struct ProjectNumericExpressions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rectangular_paper_creation: Option<RectangularPaperCreationExpressions>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub undo_stack: Vec<Option<RectangularPaperCreationExpressions>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub redo_stack: Vec<Option<RectangularPaperCreationExpressions>>,
 }
 
 impl ProjectNumericExpressions {
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.rectangular_paper_creation.is_none()
+            && self.undo_stack.is_empty()
+            && self.redo_stack.is_empty()
     }
 }
 
@@ -579,9 +585,23 @@ fn validate_project_geometric_constraints(document: &ProjectDocument) -> Result<
 fn validate_numeric_expressions(
     expressions: &ProjectNumericExpressions,
 ) -> Result<(), FormatError> {
-    let Some(rectangular) = &expressions.rectangular_paper_creation else {
-        return Ok(());
-    };
+    if expressions.undo_stack.len() > 128 || expressions.redo_stack.len() > 128 {
+        return Err(FormatError::InvalidNumericExpressions);
+    }
+    for rectangular in expressions
+        .rectangular_paper_creation
+        .iter()
+        .chain(expressions.undo_stack.iter().flatten())
+        .chain(expressions.redo_stack.iter().flatten())
+    {
+        validate_rectangular_paper_expression(rectangular)?;
+    }
+    Ok(())
+}
+
+fn validate_rectangular_paper_expression(
+    rectangular: &RectangularPaperCreationExpressions,
+) -> Result<(), FormatError> {
     if rectangular.schema_version != PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION
         || !valid_numeric_expression_source(&rectangular.width_source)
         || !valid_numeric_expression_source(&rectangular.height_source)

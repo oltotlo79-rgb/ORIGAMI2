@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
-import type { ProjectSnapshot } from './coreClient.ts'
+import type { NumericExpressionBinding, ProjectSnapshot } from './coreClient.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
 
@@ -1288,9 +1288,30 @@ function parseNumericExpressions(
 ): NonNullable<ProjectSnapshot['numeric_expressions']> | null {
   const record = snapshotDataRecord(value)
   if (!record) return null
-  if (hasExactKeys(record, [])) return {}
-  if (!hasExactKeys(record, ['rectangular_paper_creation'])) return null
-  const rectangular = exactDataRecord(record.rectangular_paper_creation, [
+  const keys = Object.keys(record)
+  if (keys.some((key) => ![
+    'rectangular_paper_creation',
+    'undo_stack',
+    'redo_stack',
+  ].includes(key))) return null
+  const rectangular = record.rectangular_paper_creation === undefined
+    ? undefined
+    : parseNumericExpressionBinding(record.rectangular_paper_creation)
+  if (record.rectangular_paper_creation !== undefined && !rectangular) return null
+  const undoStack = parseNumericExpressionStack(record.undo_stack)
+  const redoStack = parseNumericExpressionStack(record.redo_stack)
+  if (undoStack === null || redoStack === null) return null
+  return {
+    ...(rectangular ? { rectangular_paper_creation: rectangular } : {}),
+    ...(record.undo_stack === undefined ? {} : { undo_stack: undoStack }),
+    ...(record.redo_stack === undefined ? {} : { redo_stack: redoStack }),
+  }
+}
+
+function parseNumericExpressionBinding(
+  value: unknown,
+): NumericExpressionBinding | null {
+  const rectangular = exactDataRecord(value, [
     'schema_version',
     'width_source',
     'height_source',
@@ -1306,14 +1327,30 @@ function parseNumericExpressions(
     || !isPositiveFiniteNumber(rectangular.adopted_height_mm)
   ) return null
   return {
-    rectangular_paper_creation: {
-      schema_version: 1,
-      width_source: rectangular.width_source,
-      height_source: rectangular.height_source,
-      adopted_width_mm: rectangular.adopted_width_mm,
-      adopted_height_mm: rectangular.adopted_height_mm,
-    },
+    schema_version: 1,
+    width_source: rectangular.width_source,
+    height_source: rectangular.height_source,
+    adopted_width_mm: rectangular.adopted_width_mm,
+    adopted_height_mm: rectangular.adopted_height_mm,
   }
+}
+
+function parseNumericExpressionStack(
+  value: unknown,
+): Array<NumericExpressionBinding | null> | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 128) return null
+  const parsed: Array<NumericExpressionBinding | null> = []
+  for (const entry of value) {
+    if (entry === null) {
+      parsed.push(null)
+      continue
+    }
+    const binding = parseNumericExpressionBinding(entry)
+    if (!binding) return null
+    parsed.push(binding)
+  }
+  return parsed
 }
 
 function snapshotDataRecord(

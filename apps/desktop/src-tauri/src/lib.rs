@@ -429,7 +429,9 @@ impl ProjectState {
 
     #[cfg(test)]
     fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
-        let saved_document = document.clone();
+        let mut saved_document = document.clone();
+        saved_document.numeric_expressions.undo_stack.clear();
+        saved_document.numeric_expressions.redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
         let editor = EditorState::with_document_parts_constraints_and_layers(
             document.crease_pattern,
@@ -458,7 +460,9 @@ impl ProjectState {
         let editor = restore_archive_editor(&project)
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
         let document = project.document;
-        let saved_document = document.clone();
+        let mut saved_document = document.clone();
+        saved_document.numeric_expressions.undo_stack.clear();
+        saved_document.numeric_expressions.redo_stack.clear();
         Ok(Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -489,6 +493,10 @@ impl ProjectState {
     }
 
     fn document(&self) -> ProjectDocument {
+        let numeric_expressions = ProjectNumericExpressions {
+            rectangular_paper_creation: self.numeric_expressions.rectangular_paper_creation.clone(),
+            ..ProjectNumericExpressions::default()
+        };
         ProjectDocument {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: self.project_id,
@@ -496,14 +504,15 @@ impl ProjectState {
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
-            numeric_expressions: self.numeric_expressions.clone(),
+            numeric_expressions,
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
         }
     }
 
     fn project_archive(&self) -> Result<Ori2ProjectArchive, String> {
-        let document = self.document();
+        let mut document = self.document();
+        document.numeric_expressions = self.numeric_expressions.clone();
         let history = self
             .editor
             .export_history_v1(self.project_id)
@@ -524,9 +533,54 @@ impl ProjectState {
             || saved.paper != *self.editor.paper()
             || saved.crease_pattern != *self.editor.pattern()
             || saved.instruction_timeline != *self.editor.instruction_timeline()
-            || saved.numeric_expressions != self.numeric_expressions
+            || saved.numeric_expressions.rectangular_paper_creation
+                != self.numeric_expressions.rectangular_paper_creation
             || saved.geometric_constraints != *self.editor.geometric_constraints()
             || saved.layers != *self.editor.project_layers()
+    }
+
+    fn record_numeric_expression_edit(&mut self) {
+        self.numeric_expressions
+            .undo_stack
+            .push(self.numeric_expressions.rectangular_paper_creation.clone());
+        let limit = self.editor.history_entry_limit();
+        if self.numeric_expressions.undo_stack.len() > limit {
+            let excess = self.numeric_expressions.undo_stack.len() - limit;
+            self.numeric_expressions.undo_stack.drain(..excess);
+        }
+        self.numeric_expressions.redo_stack.clear();
+    }
+
+    fn undo_numeric_expression_edit(&mut self) {
+        let Some(previous) = self.numeric_expressions.undo_stack.pop() else {
+            return;
+        };
+        self.numeric_expressions
+            .redo_stack
+            .push(self.numeric_expressions.rectangular_paper_creation.take());
+        self.numeric_expressions.rectangular_paper_creation = previous;
+    }
+
+    fn redo_numeric_expression_edit(&mut self) {
+        let Some(next) = self.numeric_expressions.redo_stack.pop() else {
+            return;
+        };
+        self.numeric_expressions
+            .undo_stack
+            .push(self.numeric_expressions.rectangular_paper_creation.take());
+        self.numeric_expressions.rectangular_paper_creation = next;
+    }
+
+    fn trim_numeric_expression_history(&mut self, limit: usize) {
+        for stack in [
+            &mut self.numeric_expressions.undo_stack,
+            &mut self.numeric_expressions.redo_stack,
+        ] {
+            if stack.len() > limit {
+                let excess = stack.len() - limit;
+                stack.drain(..excess);
+            }
+        }
     }
 }
 
@@ -2282,6 +2336,7 @@ fn execute_undo(
             .editor
             .undo(expected_revision)
             .map_err(|error| error.to_string())?;
+        project.undo_numeric_expression_edit();
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -2292,6 +2347,7 @@ fn execute_undo(
         .editor
         .undo(expected_revision)
         .map_err(|error| error.to_string())?;
+    project.undo_numeric_expression_edit();
     invalidation.commit();
     Ok(snapshot(project))
 }
@@ -2311,6 +2367,7 @@ fn execute_redo(
             .editor
             .redo(expected_revision)
             .map_err(|error| error.to_string())?;
+        project.redo_numeric_expression_edit();
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -2321,6 +2378,7 @@ fn execute_redo(
         .editor
         .redo(expected_revision)
         .map_err(|error| error.to_string())?;
+    project.redo_numeric_expression_edit();
     invalidation.commit();
     Ok(snapshot(project))
 }
@@ -2733,10 +2791,20 @@ fn resize_rectangular_paper(
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
+    width_expression: String,
+    height_expression: String,
     width_mm: f64,
     height_mm: f64,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    let (evaluated_width_mm, evaluated_height_mm) =
+        evaluate_positive_millimetre_pair(width_expression.clone(), height_expression.clone())
+            .map_err(map_loaded_numeric_expression_error)?;
+    if evaluated_width_mm.to_bits() != width_mm.to_bits()
+        || evaluated_height_mm.to_bits() != height_mm.to_bits()
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -2746,7 +2814,15 @@ fn resize_rectangular_paper(
             width_mm,
             height_mm,
         },
-    )
+    )?;
+    project.numeric_expressions.rectangular_paper_creation =
+        Some(RectangularPaperCreationExpressions::new(
+            width_expression,
+            height_expression,
+            width_mm,
+            height_mm,
+        ));
+    Ok(snapshot(&project))
 }
 
 #[tauri::command]
@@ -3349,6 +3425,7 @@ fn execute_command(
             .editor
             .execute(expected_revision, command)
             .map_err(|error| error.to_string())?;
+        project.record_numeric_expression_edit();
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -3359,6 +3436,7 @@ fn execute_command(
         .editor
         .execute(expected_revision, command)
         .map_err(|error| error.to_string())?;
+    project.record_numeric_expression_edit();
     invalidation.commit();
     Ok(snapshot(project))
 }
@@ -3968,7 +4046,7 @@ fn save_project_to_destination(
     let path = destination.into_path();
     project.current_path = Some(path);
     project.saved_revision = Some(project.editor.revision());
-    project.saved_document = Some(archive.document);
+    project.saved_document = Some(project.document());
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),
@@ -3983,9 +4061,21 @@ fn load_project_file(path: PathBuf) -> Result<LoadedProjectFile, String> {
 }
 
 fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Result<(), String> {
-    let Some(binding) = &document.numeric_expressions.rectangular_paper_creation else {
-        return Ok(());
-    };
+    for binding in document
+        .numeric_expressions
+        .rectangular_paper_creation
+        .iter()
+        .chain(document.numeric_expressions.undo_stack.iter().flatten())
+        .chain(document.numeric_expressions.redo_stack.iter().flatten())
+    {
+        validate_loaded_numeric_expression_binding(binding)?;
+    }
+    Ok(())
+}
+
+fn validate_loaded_numeric_expression_binding(
+    binding: &RectangularPaperCreationExpressions,
+) -> Result<(), String> {
     let (width_mm, height_mm) = evaluate_positive_millimetre_pair(
         binding.width_source.clone(),
         binding.height_source.clone(),
@@ -8461,11 +8551,17 @@ mod tests {
         )
         .expect("resize paper");
         assert!(resized.is_dirty);
-        assert_eq!(project.numeric_expressions, saved_expressions);
+        assert_eq!(
+            project.numeric_expressions.rectangular_paper_creation,
+            saved_expressions.rectangular_paper_creation
+        );
 
         project.editor.undo(1).expect("undo resize");
         assert_eq!(project.document(), saved_document);
-        assert_eq!(project.numeric_expressions, saved_expressions);
+        assert_eq!(
+            project.numeric_expressions.rectangular_paper_creation,
+            saved_expressions.rectangular_paper_creation
+        );
         assert!(!project.is_dirty());
 
         project
@@ -9873,7 +9969,6 @@ mod tests {
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let document = project.document();
-
         project = ProjectState::from_document(document, PathBuf::from("same-project.ori2"));
         assert_eq!(project.project_id, expected_project_id);
         assert_eq!(project.editor.revision(), expected_revision);
@@ -10579,6 +10674,10 @@ mod tests {
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let document = project.document();
+        let persisted_document = project
+            .project_archive()
+            .expect("serializable project")
+            .document;
         let can_undo = project.editor.can_undo();
         let can_redo = project.editor.can_redo();
 
@@ -10602,7 +10701,10 @@ mod tests {
         assert_eq!(project.editor.revision(), expected_revision);
         assert_eq!(project.editor.can_undo(), can_undo);
         assert_eq!(project.editor.can_redo(), can_redo);
-        assert_eq!(load_document_from_path(&expected_path).unwrap(), document);
+        assert_eq!(
+            load_document_from_path(&expected_path).unwrap(),
+            persisted_document
+        );
         assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 1);
     }
 
@@ -10741,9 +10843,15 @@ mod tests {
 
         save_project_to_path(&mut project, path.clone()).expect("replace existing file");
         let first_bytes = fs::read(&path).expect("read first native save");
-        let first_document = project.document();
+        let first_persisted_document = project
+            .project_archive()
+            .expect("serializable project")
+            .document;
         assert_ne!(first_bytes, b"pre-existing invalid project");
-        assert_eq!(load_document_from_path(&path).unwrap(), first_document);
+        assert_eq!(
+            load_document_from_path(&path).unwrap(),
+            first_persisted_document
+        );
         assert!(project.editor.can_redo());
 
         let revision_before_redo = project.editor.revision();
@@ -10752,7 +10860,10 @@ mod tests {
             .redo(revision_before_redo)
             .expect("restore the saved redo command");
         assert!(project.is_dirty());
-        let second_document = project.document();
+        let second_persisted_document = project
+            .project_archive()
+            .expect("serializable edited project")
+            .document;
         let revision_before_save = project.editor.revision();
         let can_undo = project.editor.can_undo();
         let can_redo = project.editor.can_redo();
@@ -10760,7 +10871,10 @@ mod tests {
         save_project_to_path(&mut project, path.clone()).expect("overwrite with edited project");
         let second_bytes = fs::read(&path).expect("read overwritten native save");
         assert_ne!(second_bytes, first_bytes);
-        assert_eq!(load_document_from_path(&path).unwrap(), second_document);
+        assert_eq!(
+            load_document_from_path(&path).unwrap(),
+            second_persisted_document
+        );
         assert_eq!(project.editor.revision(), revision_before_save);
         assert_eq!(project.editor.can_undo(), can_undo);
         assert_eq!(project.editor.can_redo(), can_redo);
@@ -11317,14 +11431,20 @@ mod tests {
         let path = directory.join("confirmed.ori2");
         fs::write(&path, b"OS-confirmed old bytes").unwrap();
         let mut project = unsaved_project_with_redo_history("Confirmed overwrite");
-        let expected_document = project.document();
+        let expected_persisted_document = project
+            .project_archive()
+            .expect("serializable project")
+            .document;
         let destination =
             ensure_ori2_extension(path.clone()).expect("accept a dialog-confirmed extension");
 
         save_project_to_destination(&mut project, destination)
             .expect("replace the dialog-confirmed destination");
 
-        assert_eq!(load_document_from_path(&path).unwrap(), expected_document);
+        assert_eq!(
+            load_document_from_path(&path).unwrap(),
+            expected_persisted_document
+        );
         assert_eq!(project.current_path.as_deref(), Some(path.as_path()));
     }
 

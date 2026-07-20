@@ -46,7 +46,7 @@ test('converted editing crosses the native boundary only as millimetres', () => 
   )
   assert.match(
     app,
-    /evaluateDisplayLengthExpression\([\s\S]*?'width_display'[\s\S]*?resizeRectangularPaper\([\s\S]*?widthMm, heightMm/u,
+    /widthExpression[\s\S]*?'width_display'[\s\S]*?evaluateDisplayLengthExpression\([\s\S]*?widthExpression[\s\S]*?millimetreExpressionSource\([\s\S]*?resizeRectangularPaper\([\s\S]*?widthMillimetreExpression,[\s\S]*?heightMillimetreExpression,[\s\S]*?widthMm,[\s\S]*?heightMm/u,
   )
   assert.doesNotMatch(app, /resizeRectangularPaper\([\s\S]{0,160}width_display/u)
 })

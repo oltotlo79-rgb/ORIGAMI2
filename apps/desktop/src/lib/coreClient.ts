@@ -122,15 +122,19 @@ export type ProjectSnapshot = {
   geometric_constraints?: GeometricConstraintDocument
   project_layers: ProjectLayerDocumentV1
   numeric_expressions?: {
-    rectangular_paper_creation?: {
+    rectangular_paper_creation?: NumericExpressionBinding
+    undo_stack?: Array<NumericExpressionBinding | null>
+    redo_stack?: Array<NumericExpressionBinding | null>
+  }
+  fold_model_fingerprint: string
+}
+
+export interface NumericExpressionBinding {
       schema_version: 1
       width_source: string
       height_source: string
       adopted_width_mm: number
       adopted_height_mm: number
-    }
-  }
-  fold_model_fingerprint: string
 }
 
 export type ProjectLayerMutationErrorCode =
@@ -1381,6 +1385,8 @@ export function resizeRectangularPaper(
   expectedProjectId: string,
   expectedRevision: number,
   expectedProjectInstanceId: string,
+  widthExpression: string,
+  heightExpression: string,
   widthMm: number,
   heightMm: number,
 ) {
@@ -1388,6 +1394,8 @@ export function resizeRectangularPaper(
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
+    widthExpression,
+    heightExpression,
     widthMm,
     heightMm,
   })

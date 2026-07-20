@@ -70,6 +70,116 @@ pub enum AssignedLocalSufficiencyReasonV1 {
     NecessaryConditionsNotSatisfied,
     ReductionTheoremNotApplicable,
     ResourceLimit,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedLocalSufficiencyBatchV1 {
+    pub vertices: Vec<AssignedLocalSufficiencyV1>,
+    pub total_reduction_steps: usize,
+}
+
+pub fn prove_all_assigned_local_sufficiency_v1(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    limits: AssignedLocalSufficiencyLimitsV1,
+    max_total_reductions: usize,
+    checkpoint: &mut impl FnMut() -> CooperativeAnalysisCheckpoint,
+) -> AssignedLocalSufficiencyBatchV1 {
+    let report = analyze_local_flat_foldability(paper, pattern);
+    let positions = pattern
+        .vertices
+        .iter()
+        .map(|item| (item.id, item.position))
+        .collect::<HashMap<_, _>>();
+    let embedding = if pattern.vertices.len() <= limits.max_vertices {
+        build_admitted_embedding_with_checkpoint(paper, pattern, checkpoint).ok()
+    } else {
+        None
+    };
+    let mut total_reduction_steps = 0usize;
+    let mut cancelled = false;
+    let mut vertices = Vec::with_capacity(report.vertices.len());
+    for local in &report.vertices {
+        if !cancelled && checkpoint() == CooperativeAnalysisCheckpoint::Cancelled {
+            cancelled = true;
+        }
+        let vertex = local.vertex;
+        if cancelled {
+            vertices.push(AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::Cancelled,
+            });
+            continue;
+        }
+        if pattern.vertices.len() > limits.max_vertices {
+            vertices.push(AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+            });
+            continue;
+        }
+        if local.verdict != LocalVertexFoldabilityVerdict::Satisfied {
+            vertices.push(AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::NecessaryConditionsNotSatisfied,
+            });
+            continue;
+        }
+        if local.fold_degree == 2
+            && (local.mountain_count == 2 || local.valley_count == 2)
+            && local.kawasaki == LocalFoldabilityConditionStatus::Satisfied
+        {
+            vertices.push(AssignedLocalSufficiencyV1::Proven {
+                model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
+                vertex,
+                reduction_steps: 0,
+                reductions: Vec::new(),
+            });
+            continue;
+        }
+        let remaining = max_total_reductions.saturating_sub(total_reduction_steps);
+        if remaining == 0 {
+            vertices.push(AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+            });
+            continue;
+        }
+        let reductions = embedding.as_ref().and_then(|embedding| {
+            prove_unique_bll_crimp_sequence_with_context(
+                embedding,
+                &positions,
+                vertex,
+                remaining.min(limits.max_reductions),
+                checkpoint,
+            )
+        });
+        if checkpoint() == CooperativeAnalysisCheckpoint::Cancelled {
+            cancelled = true;
+            vertices.push(AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::Cancelled,
+            });
+        } else if let Some(reductions) = reductions {
+            total_reduction_steps += reductions.len();
+            vertices.push(AssignedLocalSufficiencyV1::Proven {
+                model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
+                vertex,
+                reduction_steps: reductions.len(),
+                reductions,
+            });
+        } else {
+            vertices.push(AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::ReductionTheoremNotApplicable,
+            });
+        }
+    }
+    AssignedLocalSufficiencyBatchV1 {
+        vertices,
+        total_reduction_steps,
+    }
 }
 
 /// Proves only the exact degree-two terminal case of assigned single-vertex
@@ -147,6 +257,22 @@ fn prove_unique_bll_crimp_sequence(
         .iter()
         .map(|item| (item.id, item.position))
         .collect::<HashMap<_, _>>();
+    prove_unique_bll_crimp_sequence_with_context(
+        &embedding,
+        &positions,
+        vertex,
+        max_reductions,
+        &mut checkpoint,
+    )
+}
+
+fn prove_unique_bll_crimp_sequence_with_context(
+    embedding: &DcelEmbedding,
+    positions: &HashMap<VertexId, Point2>,
+    vertex: VertexId,
+    max_reductions: usize,
+    checkpoint: &mut impl FnMut() -> CooperativeAnalysisCheckpoint,
+) -> Option<Vec<AssignedCrimpReductionV1>> {
     let rotation = embedding
         .rotations
         .iter()
@@ -183,6 +309,9 @@ fn prove_unique_bll_crimp_sequence(
         .collect::<Vec<_>>();
     let mut reductions = Vec::new();
     while creases.len() > 2 {
+        if checkpoint() == CooperativeAnalysisCheckpoint::Cancelled {
+            return None;
+        }
         if reductions.len() >= max_reductions {
             return None;
         }
@@ -1366,6 +1495,71 @@ mod tests {
                 reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
             }
         );
+    }
+
+    #[test]
+    fn assigned_sufficiency_batch_is_canonical_bounded_and_cancellable() {
+        let fixture = octagonal_sheet(
+            &[0, 2, 4, 6],
+            &[
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+            ],
+        );
+        let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+        let bounded = prove_all_assigned_local_sufficiency_v1(
+            &fixture.paper,
+            &fixture.pattern,
+            AssignedLocalSufficiencyLimitsV1::default(),
+            0,
+            &mut checkpoint,
+        );
+        assert!(bounded.vertices.iter().any(|result| matches!(
+            result,
+            AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+            } if *vertex == fixture.center
+        )));
+        assert_eq!(bounded.total_reduction_steps, 0);
+        let ids = bounded
+            .vertices
+            .iter()
+            .map(|result| match result {
+                AssignedLocalSufficiencyV1::Proven { vertex, .. }
+                | AssignedLocalSufficiencyV1::Indeterminate { vertex, .. } => *vertex,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            ids.windows(2)
+                .all(|pair| format!("{:?}", pair[0]) < format!("{:?}", pair[1]))
+        );
+
+        let mut calls = 0usize;
+        let mut cancel = || {
+            calls += 1;
+            if calls > 1 {
+                CooperativeAnalysisCheckpoint::Cancelled
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        };
+        let cancelled = prove_all_assigned_local_sufficiency_v1(
+            &fixture.paper,
+            &fixture.pattern,
+            AssignedLocalSufficiencyLimitsV1::default(),
+            128,
+            &mut cancel,
+        );
+        assert!(cancelled.vertices.iter().all(|result| matches!(
+            result,
+            AssignedLocalSufficiencyV1::Indeterminate {
+                reason: AssignedLocalSufficiencyReasonV1::Cancelled,
+                ..
+            }
+        )));
     }
 
     #[test]

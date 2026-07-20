@@ -583,6 +583,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'symmetric_wing_base'
     | 'symmetric_bird_base'
     | 'symmetric_fish_base'
+    | 'symmetric_ear_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold'
@@ -691,7 +692,7 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
@@ -702,7 +703,7 @@ function normalizeBeginnerCandidateResponse(
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -1526,7 +1527,7 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   surface_area_milli: number
   protrusion: NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
   method: 'bounded_bbox_area_normal_v1'
-  suggested_part_kind: 'wing' | 'fin' | null
+  suggested_part_kind: 'wing' | 'fin' | 'ear' | null
 }>
 
 export async function suggestBeginnerReferenceModelFeatures(
@@ -1546,7 +1547,7 @@ export async function suggestBeginnerReferenceModelFeatures(
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
     || suggestion.method !== 'bounded_bbox_area_normal_v1'
-    || ![null, 'wing', 'fin'].includes(suggestion.suggested_part_kind as null | string)
+    || ![null, 'wing', 'fin', 'ear'].includes(suggestion.suggested_part_kind as null | string)
     || !isBoundedIntegerTuple(suggestion.bbox_min_tenths_mm, 3, 2_147_483_648)
     || !isBoundedIntegerTuple(suggestion.bbox_max_tenths_mm, 3, 2_147_483_647)
     || !isBoundedIntegerTuple(suggestion.dominant_normal_milli, 3, 1000)
@@ -2041,6 +2042,7 @@ export function applyBeginnerGeneratedPlan(
     'symmetric_wing_base',
     'symmetric_bird_base',
     'symmetric_fish_base',
+    'symmetric_ear_base',
   ].includes(selectedKind) || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
     return Promise.reject(new Error('unsupported generated plan'))
   }

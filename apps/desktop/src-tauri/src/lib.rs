@@ -2175,6 +2175,8 @@ fn symmetric_plan_kind(
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
     } else if has(ori_domain::BeginnerTargetPartKindV1::Fin) {
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
+    } else if has(ori_domain::BeginnerTargetPartKindV1::Ear) {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
     } else {
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
     }
@@ -2491,6 +2493,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2578,6 +2581,11 @@ fn apply_beginner_generated_plan(
             "Create the bounded bilateral fish-fin base creases.",
             "Confirm the saved head, torso, and two-fin target still match.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase => (
+            "Symmetric ear base",
+            "Create the bounded bilateral long-ear base creases.",
+            "Confirm the saved head, torso, and two-ear target still match.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2659,6 +2667,11 @@ fn apply_grid_plan_document(
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish grid candidate",
             "Apply the globally proven parameter-grid fish base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase => (
+            "Symmetric ear grid candidate",
+            "Apply the globally proven parameter-grid long-ear base.",
             "The canonical grid tuple and proof were revalidated immediately before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
@@ -3084,6 +3097,7 @@ fn derive_reference_model_suggestion_v1(
                 part.kind,
                 ori_domain::BeginnerTargetPartKindV1::Wing
                     | ori_domain::BeginnerTargetPartKindV1::Fin
+                    | ori_domain::BeginnerTargetPartKindV1::Ear
             )
     });
     let suggested_part_kind = requested_pair.filter(|_| bilateral).map(|part| part.kind);

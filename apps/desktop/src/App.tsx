@@ -4134,7 +4134,7 @@ function App() {
   }
 
   function confirmAndApplyBeginnerPlan(
-    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base',
+    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base',
     expectedCandidateEdgeId: string,
   ) {
     const current = latestSnapshotRef.current
@@ -7966,6 +7966,8 @@ function App() {
                                         ? text({ ja: '左右対称の鳥の翼ベースを作ります。', en: 'Create the bilateral bird-wing base.' })
                                         : code === 'symmetric_fish_base'
                                           ? text({ ja: '左右対称の魚のひれベースを作ります。', en: 'Create the bilateral fish-fin base.' })
+                                          : code === 'symmetric_ear_base'
+                                            ? text({ ja: '左右対称の長い耳のベースを作ります。', en: 'Create the bilateral long-ear base.' })
                                           : code === 'book_fold_vertical'
                                     ? text({ ja: '縦の中心線で二つ折りします。', en: 'Fold in half on the vertical center line.' })
                                     : code === 'book_fold_horizontal'
@@ -10255,11 +10257,12 @@ function isBeginnerSymmetricTemplate(
     | 'symmetric_wing_base'
     | 'symmetric_bird_base'
     | 'symmetric_fish_base'
+    | 'symmetric_ear_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold',
-): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' {
-  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base'].includes(kind)
+): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' {
+  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base'].includes(kind)
 }
 
 function sameRecoveryCandidate(

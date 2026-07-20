@@ -102,6 +102,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricWingBase,
     SymmetricBirdBase,
     SymmetricFishBase,
+    SymmetricEarBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -193,6 +194,7 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         _ => return None,
     };
@@ -319,6 +321,13 @@ pub fn generate_beginner_plans_v1(
                         false,
                         BeginnerGeneratedPlanKindV1::SymmetricFishBase,
                         "symmetric_fish_base",
+                    )
+                } else if part_count(BeginnerTargetPartKindV1::Ear) == 2 {
+                    (
+                        2,
+                        false,
+                        BeginnerGeneratedPlanKindV1::SymmetricEarBase,
+                        "symmetric_ear_base",
                     )
                 } else {
                     return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
@@ -759,6 +768,10 @@ mod tests {
             (
                 BeginnerTargetPartKindV1::Fin,
                 BeginnerGeneratedPlanKindV1::SymmetricFishBase,
+            ),
+            (
+                BeginnerTargetPartKindV1::Ear,
+                BeginnerGeneratedPlanKindV1::SymmetricEarBase,
             ),
         ] {
             let mut family = constraints.clone();

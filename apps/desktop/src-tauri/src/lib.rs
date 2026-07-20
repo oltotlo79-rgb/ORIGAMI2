@@ -75,13 +75,14 @@ use numeric_expression::{
     evaluate_positive_millimetre_pair, evaluate_positive_millimetre_pair_in_worker,
 };
 use ori_core::{
-    BoundaryEdgeRef, Command, ConstraintPreflightV1, DirectConstraintConflictV1, EditorState,
-    EditorTopology, GeometricConstraintLimitsV1, GeometricConstraintUnknownReasonV1,
-    IntersectionEdgeTarget, JunctionVertexIntent, LocalFlatFoldabilityReport,
-    MAX_EDITOR_HISTORY_ENTRIES, PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput,
-    TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
-    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
-    segment_midpoint_polygon_relation, validate_paper,
+    BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
+    DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
+    GeometricConstraintUnknownReasonV1, IntersectionEdgeTarget, JunctionVertexIntent,
+    LocalFlatFoldabilityReport, MAX_EDITOR_HISTORY_ENTRIES, PaperValidationIssue,
+    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
+    VertexPositionUpdate, analyze_local_flat_foldability, create_rectangular_sheet,
+    prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
+    solve_geometric_constraints_v1, validate_paper,
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
@@ -232,6 +233,7 @@ struct AppState(
     Mutex<ProjectState>,
     NativePoseWorkerGate,
     GeometricConstraintWorkerGate,
+    Mutex<Option<GeometricConstraintSolveStage>>,
 );
 
 impl AppState {
@@ -240,6 +242,7 @@ impl AppState {
             Mutex::new(project),
             NativePoseWorkerGate::default(),
             GeometricConstraintWorkerGate::default(),
+            Mutex::new(None),
         )
     }
 
@@ -260,6 +263,33 @@ impl AppState {
     fn geometric_constraint_worker_is_busy(&self) -> bool {
         self.2.is_busy()
     }
+}
+
+#[derive(Clone)]
+struct GeometricConstraintSolveStage {
+    token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    positions: Vec<(VertexId, Point2)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeometricConstraintSolveVertex {
+    vertex_id: VertexId,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeometricConstraintSolvePreviewResponse {
+    token: ProjectId,
+    revision: u64,
+    iterations: usize,
+    maximum_residual: f64,
+    changed_vertices: Vec<GeometricConstraintSolveVertex>,
 }
 
 /// One process-wide heavy native pose worker per managed [`AppState`].
@@ -2565,6 +2595,109 @@ fn move_vertices(
         ));
     }
     Ok(snapshot(&project))
+}
+
+#[tauri::command]
+fn preview_geometric_constraint_solve(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    driving_vertex: VertexId,
+    x_mm: f64,
+    y_mm: f64,
+) -> Result<GeometricConstraintSolvePreviewResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    if project.editor.revision() != expected_revision {
+        return Err("project revision is stale".to_owned());
+    }
+    let solved = solve_geometric_constraints_v1(
+        project.editor.pattern(),
+        project.editor.geometric_constraints(),
+        driving_vertex,
+        Point2::new(x_mm, y_mm),
+        ConstraintSolveLimitsV1::default(),
+    )
+    .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
+    let token = ProjectId::new();
+    let response = GeometricConstraintSolvePreviewResponse {
+        token,
+        revision: expected_revision,
+        iterations: solved.iterations,
+        maximum_residual: solved.maximum_residual,
+        changed_vertices: solved
+            .positions
+            .iter()
+            .map(|(vertex_id, point)| GeometricConstraintSolveVertex {
+                vertex_id: *vertex_id,
+                x: point.x,
+                y: point.y,
+            })
+            .collect(),
+    };
+    let mut slot = state
+        .3
+        .lock()
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())?;
+    *slot = Some(GeometricConstraintSolveStage {
+        token,
+        project_instance_id: expected_project_instance_id,
+        project_id: expected_project_id,
+        revision: expected_revision,
+        positions: solved.positions,
+    });
+    Ok(response)
+}
+
+#[tauri::command]
+fn apply_geometric_constraint_solve(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    token: ProjectId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    let staged = state
+        .3
+        .lock()
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "geometric constraint preview is missing".to_owned())?;
+    if staged.token != token
+        || staged.project_instance_id != expected_project_instance_id
+        || staged.project_id != expected_project_id
+        || staged.revision != expected_revision
+        || project.editor.revision() != expected_revision
+    {
+        return Err("geometric constraint preview is stale".to_owned());
+    }
+    let result = execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::MoveVertices {
+            updates: staged
+                .positions
+                .iter()
+                .map(|(vertex, position)| VertexPositionUpdate {
+                    vertex: *vertex,
+                    position: *position,
+                })
+                .collect(),
+        },
+    )?;
+    let mut slot = state
+        .3
+        .lock()
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())?;
+    if slot.as_ref().is_some_and(|current| current.token == token) {
+        *slot = None;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -6819,6 +6952,8 @@ pub fn run() {
             mirror_edge_left_right,
             rotate_edge_about_point,
             move_vertices,
+            preview_geometric_constraint_solve,
+            apply_geometric_constraint_solve,
             remove_vertex,
             add_edge,
             add_connected_vertex,

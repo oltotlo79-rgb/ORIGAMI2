@@ -1946,6 +1946,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
                 | (9, 8)
                 | (10, 9)
                 | (11, 10)
+                | (12, 11)
         )
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
@@ -3853,6 +3854,85 @@ mod tests {
             prepare_stacked_fold_target_graph_audit_v1(prepare_geometry(), limited),
             Err(PrepareStackedFoldTargetGraphAuditErrorV1::ResourceLimit)
         ));
+    }
+
+    #[test]
+    fn split_existing_fold_cycle_has_a_nonzero_requested_closure() {
+        let identity = ProjectId::new();
+        let source_revision = 52;
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (flat_pattern, flat_paper) = sheet.into_parts();
+        let corners = flat_paper
+            .boundary_vertices
+            .iter()
+            .map(|id| vertex_position(&flat_pattern, *id))
+            .collect::<Vec<_>>();
+        let existing = [ExpectedStackedFoldCreaseV1 {
+            start: corners[0],
+            end: corners[2],
+            kind: EdgeKind::Mountain,
+        }];
+        let source = build_stacked_fold_topology_v1(
+            identity,
+            source_revision - 1,
+            &flat_pattern,
+            &flat_paper,
+            &existing,
+            StackedFoldTopologyBuildLimitsV1::default(),
+        )
+        .expect("build source diagonal");
+        let source_pattern = source.pattern;
+        let source_paper = source.paper;
+        let source_layer_order =
+            proven_layer_order(identity, source_revision, &source_pattern, &source_paper);
+        let expected = [ExpectedStackedFoldCreaseV1 {
+            start: corners[1],
+            end: corners[3],
+            kind: EdgeKind::Valley,
+        }];
+        let geometry = prepare_stacked_fold_geometry_candidate_v1(
+            identity,
+            source_revision,
+            &source_pattern,
+            &source_paper,
+            &source_layer_order,
+            &expected,
+            StackedFoldTopologyBuildLimitsV1::default(),
+            FaceLineageLimits::default(),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("prepare split-cycle geometry");
+        let target =
+            prepare_stacked_fold_target_graph_audit_v1(geometry, TreeKinematicsLimits::default())
+                .expect("audit split cycle");
+        assert!(target.requires_closure_certificate());
+        let source_topology = simulation_snapshot(
+            identity,
+            source_revision,
+            &source_paper,
+            &source_pattern,
+            FaceLineageTopology::Source,
+        )
+        .expect("source topology");
+        let source_model = MaterialTreeKinematicsModel::prepare(
+            &source_pattern,
+            &source_paper,
+            &source_topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("source model");
+        let source_edge = source_model.hinges()[0].edge();
+        let source_angles =
+            CanonicalHingeAngles::new(vec![HingeAngle::new(source_edge, 180.0).unwrap()]).unwrap();
+        let source_pose = source_model
+            .solve(Some(source_model.face_ids()[0]), &source_angles)
+            .expect("fold source");
+        let initial =
+            prepare_stacked_fold_initial_graph_pose_v1(target, &source_model, &source_pose)
+                .expect("lift folded source");
+        let requested = prepare_stacked_fold_requested_graph_pose_v1(initial, 90.0)
+            .expect("nonzero split-cycle closure");
+        assert_eq!(requested.requested_angle_degrees(), 90.0);
     }
 
     #[test]

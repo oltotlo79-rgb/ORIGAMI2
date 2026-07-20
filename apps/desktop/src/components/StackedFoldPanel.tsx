@@ -33,6 +33,8 @@ type Props = Readonly<{
   refreshSnapshot(): Promise<ProjectSnapshot>
 }>
 
+const MAX_CYCLE_SCHEDULE_JSON_BYTES = 65_536
+
 type View =
   | Readonly<{ kind: 'idle' }>
   | Readonly<{ kind: 'reading' }>
@@ -113,6 +115,10 @@ export function StackedFoldPanel({
     const requestedAngleDegrees = Number(angle)
     let cycleScheduleV1: CycleScheduleRequestV1 | undefined
     if (cycleScheduleText.trim()) {
+      if (new TextEncoder().encode(cycleScheduleText).byteLength > MAX_CYCLE_SCHEDULE_JSON_BYTES) {
+        setView({ kind: 'failed', reason: 'invalid' })
+        return
+      }
       try {
         cycleScheduleV1 = JSON.parse(cycleScheduleText) as CycleScheduleRequestV1
       } catch {
@@ -222,6 +228,7 @@ export function StackedFoldPanel({
             value={cycleScheduleText}
             onChange={(event) => setCycleScheduleText(event.target.value)}
             rows={4}
+            maxLength={MAX_CYCLE_SCHEDULE_JSON_BYTES}
             spellCheck={false}
             placeholder={t(
               'version 1 の半角有理スケジュール。未入力の閉路は安全のため適用できません。',

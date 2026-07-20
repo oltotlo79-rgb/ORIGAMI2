@@ -2060,7 +2060,11 @@ mod tests {
     #[test]
     fn five_triangle_positive_thickness_tree_gets_bounded_certificate() {
         let model = four_hinge_triangle_model();
-        let moving = model.hinges().iter().map(|hinge| hinge.edge()).collect::<Vec<_>>();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
         let initial_angles = CanonicalHingeAngles::new(
             moving
                 .iter()

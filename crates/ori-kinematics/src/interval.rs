@@ -213,7 +213,8 @@ fn taylor_sin(mut x: f64) -> (f64, f64) {
         sum += term;
     }
     let remainder = term.abs() * square / (26.0 * 27.0);
-    (next_down(sum - remainder), next_up(sum + remainder))
+    let error = remainder + taylor_roundoff_bound();
+    (next_down(sum - error), next_up(sum + error))
 }
 
 fn taylor_cos(x: f64) -> (f64, f64) {
@@ -230,12 +231,20 @@ fn taylor_cos(x: f64) -> (f64, f64) {
         sum += term;
     }
     let remainder = term.abs() * square / (25.0 * 26.0);
-    let (lower, upper) = (next_down(sum - remainder), next_up(sum + remainder));
+    let error = remainder + taylor_roundoff_bound();
+    let (lower, upper) = (next_down(sum - error), next_up(sum + error));
     if negate {
         (-upper, -lower)
     } else {
         (lower, upper)
     }
+}
+
+fn taylor_roundoff_bound() -> f64 {
+    // Each kernel performs fewer than 64 rounded binary64 operations.  The
+    // absolute sum of all terms is below exp(pi/2) < 5.
+    let gamma = 64.0 * f64::EPSILON / (1.0 - 64.0 * f64::EPSILON);
+    next_up(5.0 * gamma)
 }
 
 fn binary(
@@ -362,5 +371,26 @@ mod tests {
         );
         let rational_quarter = BigRational::new(1.into(), 4.into());
         assert_eq!(rational_quarter, exact(0.25));
+    }
+
+    #[test]
+    fn sin_cos_kernel_is_exact_at_cardinals_and_encloses_nearby_values() {
+        for (degrees, expected_sin, expected_cos) in
+            [(0.0, 0.0, 1.0), (90.0, 1.0, 0.0), (180.0, 0.0, -1.0)]
+        {
+            let point = OutwardIntervalV1::new(degrees, degrees).unwrap();
+            let (sin, cos) = sin_cos_degrees_interval_v1(point, 96).unwrap();
+            assert_eq!((sin.lower(), sin.upper()), (expected_sin, expected_sin));
+            assert_eq!((cos.lower(), cos.upper()), (expected_cos, expected_cos));
+        }
+        let near = OutwardIntervalV1::new(89.999, 90.001).unwrap();
+        let (sin, cos) = sin_cos_degrees_interval_v1(near, 96).unwrap();
+        assert!(sin.lower() <= (89.999_f64.to_radians()).sin());
+        assert_eq!(sin.upper(), 1.0);
+        assert!(cos.lower() < 0.0 && cos.upper() > 0.0);
+        assert_eq!(
+            sin_cos_degrees_interval_v1(near, 95),
+            Err(OutwardIntervalErrorV1::ResourceLimit)
+        );
     }
 }

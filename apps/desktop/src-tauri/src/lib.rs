@@ -2101,6 +2101,111 @@ fn grid_template_plan(
     )
 }
 
+#[derive(Debug, Serialize)]
+struct BeginnerGridCandidateResponse {
+    point: ori_domain::BeginnerParameterGridPointV1,
+    primary_score: u16,
+    plan: ori_domain::BeginnerGeneratedPlanV1,
+    assessment: BeginnerGeneratedPlanAssessment,
+}
+
+#[derive(Debug, Serialize)]
+struct BeginnerGridEvaluationResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    grid_hash: ori_domain::BeginnerParameterGridHashV1,
+    evaluated_grid_points: u8,
+    candidates: Vec<BeginnerGridCandidateResponse>,
+}
+
+#[tauri::command]
+fn evaluate_beginner_parameter_grid(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<BeginnerGridEvaluationResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let profile = project.editor.beginner_design_profile();
+    if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
+        return Err("missing_target_asset".to_owned());
+    }
+    let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
+        .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+    let grid = ori_domain::beginner_parameter_grid_v1();
+    let expected_kind = if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+    } else {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
+    };
+    let mut primary = Vec::with_capacity(grid.len());
+    for point in grid.iter().copied() {
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            profile,
+            point,
+        )
+        .map_err(|_| "grid_template_generation_failed".to_owned())?
+        .into_iter()
+        .find(|plan| plan.kind == expected_kind)
+        .ok_or_else(|| "grid_template_generation_failed".to_owned())?;
+        let deviation = u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
+            + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5;
+        let detail_penalty = if point.detail_level == profile.generation_constraints.detail_level {
+            0
+        } else {
+            10
+        };
+        primary.push((
+            1000_u16.saturating_sub(deviation + detail_penalty),
+            point,
+            plan,
+        ));
+    }
+    primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));
+    primary.truncate(3);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
+    let reference = live_reference_model_suggestion_v1(&project).ok();
+    let candidates = primary
+        .into_iter()
+        .map(|(primary_score, point, plan)| {
+            let assessment = assess_beginner_generated_plan_with_deadline(
+                project.editor.paper(),
+                project.editor.pattern(),
+                &plan,
+                reference.as_ref(),
+                deadline,
+            );
+            BeginnerGridCandidateResponse {
+                point,
+                primary_score,
+                plan,
+                assessment,
+            }
+        })
+        .collect();
+    Ok(BeginnerGridEvaluationResponse {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        grid_hash: ori_domain::beginner_parameter_grid_hash_v1(&grid),
+        evaluated_grid_points: ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 as u8,
+        candidates,
+    })
+}
+
 fn configure_symmetric_profile(
     profile: &mut ori_domain::BeginnerDesignProfileV1,
     estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
@@ -9395,6 +9500,7 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             evaluate_beginner_candidates,
+            evaluate_beginner_parameter_grid,
             get_beginner_symmetric_parameter_estimate,
             apply_beginner_symmetric_parameters,
             recognize_beginner_target,

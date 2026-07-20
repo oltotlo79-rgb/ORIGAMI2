@@ -254,8 +254,8 @@ pub fn diagnose_collective_hinge_path_v1(
             &mut interval_metrics,
         );
     let positive_two_hinge_topology = positive_thickness
-        && (3..=5).contains(&model.face_ids().len())
-        && (2..=4).contains(&model.hinges().len())
+        && (3..=6).contains(&model.face_ids().len())
+        && (2..=5).contains(&model.hinges().len())
         && model.hinges().len() + 1 == model.face_ids().len()
         && moving.len() == model.hinges().len()
         && initial_pose.hinge_angles().iter().all(|angle| {
@@ -431,6 +431,7 @@ pub fn diagnose_collective_hinge_path_v1(
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
             && requested_angle_degrees
                 <= match model.hinges().len() {
+                    5 => 30.0,
                     4 => 45.0,
                     3 => 60.0,
                     _ => 90.0,
@@ -744,6 +745,99 @@ pub struct StackedFoldCyclePathDiagnosticV1 {
     first_closure_failure_angle_degrees: Option<f64>,
     leaf_count: usize,
     pair_work: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UniformCycleClosureRootsV1 {
+    Roots(Vec<f64>),
+    ProvenInfeasible { examined_leaves: usize },
+    Indeterminate { examined_leaves: usize },
+}
+
+pub fn enumerate_uniform_cycle_closure_roots_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    requested_angle_degrees: f64,
+    max_leaves: usize,
+) -> UniformCycleClosureRootsV1 {
+    if !requested_angle_degrees.is_finite()
+        || requested_angle_degrees <= 0.0
+        || max_leaves == 0
+        || max_leaves > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+        || audit.closure_hinges().is_empty()
+    {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    }
+    let residual = |angle: f64| -> Option<f64> {
+        let values = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| HingeAngle::new(hinge.edge(), angle))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let angles = CanonicalHingeAngles::new(values).ok()?;
+        geometry
+            .measure_spanning_closure(audit, fixed_face, &angles)
+            .ok()
+            .map(|value| value.maximum_error())
+    };
+    let mut scale = 1.0_f64;
+    for face in geometry.face_ids() {
+        let Some(boundary) = geometry.face_boundary_vertices(*face) else {
+            return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+        };
+        for vertex in boundary {
+            let Some(point) = geometry.vertex_position(*vertex) else {
+                return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+            };
+            scale = scale
+                .max(point.x().abs())
+                .max(point.y().abs())
+                .max(point.z().abs());
+        }
+    }
+    let lipschitz = (geometry.hinges().len() as f64 * 2.0 + 1.0) * scale.max(1.0);
+    let mut pending = vec![(0.0, requested_angle_degrees, 0_usize)];
+    let mut roots = Vec::new();
+    let mut leaves = 1_usize;
+    let mut unresolved = false;
+    while let Some((lower, upper, depth)) = pending.pop() {
+        let midpoint = (lower + upper) / 2.0;
+        let Some(value) = residual(midpoint) else {
+            return UniformCycleClosureRootsV1::Indeterminate {
+                examined_leaves: leaves,
+            };
+        };
+        if midpoint > 0.0 && value.to_bits() == 0.0_f64.to_bits() {
+            roots.push(midpoint);
+            continue;
+        }
+        let enclosure = lipschitz * (upper - lower) * std::f64::consts::PI / 360.0;
+        if value > enclosure {
+            continue;
+        }
+        if leaves >= max_leaves || depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1 {
+            unresolved = true;
+            continue;
+        }
+        leaves += 1;
+        pending.push((midpoint, upper, depth + 1));
+        pending.push((lower, midpoint, depth + 1));
+    }
+    roots.sort_by(f64::total_cmp);
+    roots.dedup_by(|a, b| a.to_bits() == b.to_bits());
+    if !roots.is_empty() {
+        UniformCycleClosureRootsV1::Roots(roots)
+    } else if unresolved {
+        UniformCycleClosureRootsV1::Indeterminate {
+            examined_leaves: leaves,
+        }
+    } else {
+        UniformCycleClosureRootsV1::ProvenInfeasible {
+            examined_leaves: leaves,
+        }
+    }
 }
 
 impl StackedFoldCyclePathDiagnosticV1 {
@@ -1313,6 +1407,66 @@ mod tests {
             TreeKinematicsLimits::default(),
         )
         .expect("four-hinge triangular tree")
+    }
+
+    fn five_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        let points = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (520.0, 90.0),
+            (680.0, 280.0),
+            (650.0, 500.0),
+            (450.0, 680.0),
+            (180.0, 700.0),
+            (0.0, 340.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("8700", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("9700", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for (offset, end) in [2, 3, 4, 5, 6].into_iter().enumerate() {
+            edges.push(Edge {
+                id: fixed_id("9700", 10 + offset as u64),
+                start: boundary[0],
+                end: boundary[end],
+                kind: if offset % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b700", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("six triangles"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("five-hinge triangular tree")
     }
 
     fn two_hinge_strip_model() -> MaterialTreeKinematicsModel {
@@ -2093,6 +2247,50 @@ mod tests {
             &initial,
             &moving,
             45.000_000_1,
+            0.1,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .expect("bounded hold");
+        assert!(!beyond_bound.continuous_clearance_certified());
+        assert_eq!(beyond_bound.safe_stop_angle_degrees(), 0.0);
+    }
+
+    #[test]
+    fn six_triangle_positive_thickness_tree_gets_bounded_certificate() {
+        let model = five_hinge_triangle_model();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let initial_angles = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let initial = model
+            .solve(Some(model.face_ids()[0]), &initial_angles)
+            .expect("initial tree pose");
+        for requested in [10.0, 20.0, 30.0] {
+            let diagnostic = diagnose_collective_hinge_path_v1(
+                &model,
+                &initial,
+                &moving,
+                requested,
+                0.1,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            )
+            .expect("bounded positive-thickness diagnosis");
+            assert!(diagnostic.continuous_clearance_certified(), "{requested}");
+            assert_eq!(diagnostic.safe_stop_angle_degrees(), requested);
+        }
+        let beyond_bound = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            30.000_000_1,
             0.1,
             StackedFoldPathDiagnosticLimitsV1::default(),
         )

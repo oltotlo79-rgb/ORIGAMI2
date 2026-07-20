@@ -19,6 +19,7 @@ use crate::{
     prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
     prepare_tree_hinge_thickness_boundaries_v1, revalidate_positive_thickness_pair_separation_v1,
     revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
+    static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
 
 pub const STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1: &str =
@@ -332,9 +333,9 @@ pub fn diagnose_collective_hinge_path_v1(
             let bound = model
                 .bind_pose(&pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
-            let endpoint_static = positive_two_hinge_topology
+            let endpoint_topology = positive_two_hinge_topology
                 .then(|| {
-                    diagnose_static_collision_geometry(
+                    prepare_positive_thickness_tree_endpoint_topology_memo_v1(
                         model,
                         &pose,
                         paper_thickness_mm,
@@ -364,17 +365,12 @@ pub fn diagnose_collective_hinge_path_v1(
                                                 && hinge.right_face() == *first)
                                     });
                                     adjacent
-                                        || endpoint_static.as_ref().is_some_and(|snapshot| {
-                                            snapshot.pairs().iter().any(|pair| {
-                                                ((pair.first_face() == *first
-                                                    && pair.second_face() == *second)
-                                                    || (pair.first_face() == *second
-                                                        && pair.second_face() == *first))
-                                                    && pair.topology()
-                                                        == crate::TopologyRelation::SharedVertex
-                                                    && pair.disposition()
-                                                        == crate::StaticCollisionPairDisposition::Allowed
-                                            })
+                                        || endpoint_topology.as_ref().is_some_and(|memo| {
+                                            memo.enumerated_pairs()
+                                                == model.face_ids().len()
+                                                    * model.face_ids().len().saturating_sub(1)
+                                                    / 2
+                                                && memo.proves_shared_vertex_pair(*first, *second)
                                         })
                                         || {
                                             positive_endpoint_exact_pair_calls += 1;

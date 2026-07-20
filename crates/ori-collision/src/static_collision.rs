@@ -417,6 +417,62 @@ pub fn revalidate_positive_thickness_pair_separation_v1(
         && std::ptr::eq(capability.bound.pose(), bound.pose())
 }
 
+/// One-pose authenticated topology memo for the bounded positive-thickness
+/// tree endpoint theorem. This deliberately records only exact shared-vertex
+/// pairs; adjacent hinges and genuinely disjoint pairs are discharged by
+/// their separate solid capabilities.
+pub(crate) struct PositiveThicknessTreeEndpointTopologyMemoV1 {
+    shared_vertex_pairs: Vec<[FaceId; 2]>,
+    enumerated_pairs: usize,
+}
+
+impl PositiveThicknessTreeEndpointTopologyMemoV1 {
+    pub(crate) fn proves_shared_vertex_pair(&self, first: FaceId, second: FaceId) -> bool {
+        self.shared_vertex_pairs.iter().any(|pair| {
+            (pair[0] == first && pair[1] == second) || (pair[0] == second && pair[1] == first)
+        })
+    }
+
+    pub(crate) const fn enumerated_pairs(&self) -> usize {
+        self.enumerated_pairs
+    }
+}
+
+pub(crate) fn prepare_positive_thickness_tree_endpoint_topology_memo_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+) -> Result<PositiveThicknessTreeEndpointTopologyMemoV1, StaticCollisionError> {
+    if !paper_thickness_mm.is_finite() || paper_thickness_mm <= 0.0 {
+        return Err(StaticCollisionError::InvalidPaperThickness);
+    }
+    let validated = validate_static_collision_input(model, pose, paper_thickness_mm, limits)?;
+    let expected = validated.expected_unordered_face_pairs;
+    let analysis =
+        prepare_authenticated_zero_thickness_pose(pose, zero_thickness_geometry_limits(limits))
+            .map_err(|error| map_zero_thickness_error(error, expected))?;
+    let (scan, pairs) = scan_authenticated_zero_thickness_pairs(&analysis, pose, expected)?;
+    validate_zero_thickness_diagnostic_scan(&scan, &analysis, expected)?;
+    if pairs.len() != expected {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    let shared_vertex_pairs = pairs
+        .into_iter()
+        .filter_map(|pair| {
+            (pair.topology == TopologyRelation::SharedVertex
+                && pair.evidence == IntersectionEvidenceV2::SharedFeatureContact
+                && pair.decision == TopologyContactDecision::AllowedSharedVertexContact
+                && !pair.proves_zero_thickness_penetration)
+                .then_some([pair.first_face, pair.second_face])
+        })
+        .collect();
+    Ok(PositiveThicknessTreeEndpointTopologyMemoV1 {
+        shared_vertex_pairs,
+        enumerated_pairs: expected,
+    })
+}
+
 impl StaticCollisionDiagnosticSnapshot {
     #[must_use]
     pub const fn face_count(&self) -> usize {

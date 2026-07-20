@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { buildDependencyPolicy } from './dependency_policy.mjs'
 
 const path = process.argv[2]
 const sbom = JSON.parse(readFileSync(path, 'utf8'))
@@ -52,6 +53,7 @@ properties['origami2.build.identity-json'] = JSON.stringify({
   buildMode,
   targetTriple,
 })
+properties['origami2.dependency.policy-json'] = JSON.stringify(buildDependencyPolicy())
 sbom.metadata = {
   ...(sbom.metadata ?? {}),
   component: { type: 'application', name: 'ORIGAMI2', version },

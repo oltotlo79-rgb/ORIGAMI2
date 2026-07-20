@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { validateReleaseArchiveEntries } from '../scripts/release_archive_contract.mjs'
+import { buildDependencyPolicy } from '../scripts/dependency_policy.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
 
@@ -653,6 +654,10 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
       buildMode: 'unsigned-dry-run',
       targetTriple: 'x86_64-pc-windows-msvc',
     }))
+    assert.equal(
+      properties['origami2.dependency.policy-json'],
+      JSON.stringify(buildDependencyPolicy()),
+    )
 
     writeFileSync(path, JSON.stringify({
       bomFormat: 'CycloneDX',
@@ -662,6 +667,24 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('credential-free dependency policy bounds lock integrity and npm licenses', () => {
+  const policy = buildDependencyPolicy()
+  assert.equal(policy.schema, 'origami2.dependency-policy.v1')
+  assert.equal(policy.result, 'pass')
+  assert.equal(policy.cargoSources, 'registry-checksum-required;git-forbidden')
+  assert.equal(policy.npmIntegrity, 'sha512-required')
+  assert.ok(policy.cargoRegistryPackages > 0 && policy.cargoRegistryPackages <= 10000)
+  assert.ok(policy.npmPackages > 0 && policy.npmPackages <= 10000)
+  assert.match(policy.cargoLockSha256, /^[0-9a-f]{64}$/u)
+  assert.match(policy.packageLockSha256, /^[0-9a-f]{64}$/u)
+  assert.deepEqual(policy.npmLicenses, [...policy.npmLicenses].sort())
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  assert.ok(
+    workflow.indexOf('Verify locked dependency integrity and license policy')
+      < workflow.indexOf('Bind SBOM to source locks, version, commit, and toolchains'),
+  )
 })
 
 test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {

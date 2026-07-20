@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { validateReleaseArchiveEntries } from './release_archive_contract.mjs'
+import { buildDependencyPolicy } from './dependency_policy.mjs'
 
 const directory = resolve(process.argv[2])
 const platform = process.env.RELEASE_PLATFORM
@@ -108,6 +109,10 @@ try {
 if (buildIdentityJson !== JSON.stringify(expectedBuildIdentity)) {
   throw new Error('CycloneDX SBOM canonical build input identity mismatch')
 }
+if (
+  propertyMap.get('origami2.dependency.policy-json')
+  !== JSON.stringify(buildDependencyPolicy())
+) throw new Error('CycloneDX SBOM dependency policy binding mismatch')
 }
 const updateManifestBytes = readFileSync(join(directory, updateManifest), 'utf8')
 const parsedUpdateManifest = JSON.parse(updateManifestBytes)

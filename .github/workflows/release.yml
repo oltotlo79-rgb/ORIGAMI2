@@ -217,6 +217,8 @@ jobs:
           format: cyclonedx-json
           output-file: target/formal-release/ORIGAMI2-v${{ needs.validate.outputs.version }}-${{ matrix.platform }}.cdx.json
           upload-artifact: false
+      - name: Verify locked dependency integrity and license policy
+        run: node .github/scripts/dependency_policy.mjs
       - name: Bind SBOM to source locks, version, commit, and toolchains
         shell: bash
         env:

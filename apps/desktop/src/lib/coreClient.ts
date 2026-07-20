@@ -1010,6 +1010,31 @@ export type ValidationSnapshot = {
   local_flat_foldability: LocalFlatFoldabilityReport
 }
 
+export type AssignedLocalSufficiencyResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  result:
+    | Readonly<{
+      status: 'proven'
+      model_id: 'assigned_single_vertex_unique_blb_crimp_v1'
+      vertex: string
+      reduction_steps: number
+      reductions: readonly Readonly<{ first_crease: string; second_crease: string }>[]
+    }>
+    | Readonly<{
+      status: 'indeterminate'
+      vertex: string
+      reason:
+        | 'vertex_unavailable'
+        | 'necessary_conditions_not_satisfied'
+        | 'reduction_theorem_not_applicable'
+        | 'resource_limit'
+    }>
+  authorizesProjectMutation: false
+}>
+
 export type FoldAssignment = 'mountain' | 'valley'
 
 export type TopologyHalfEdge = {
@@ -1340,6 +1365,50 @@ export function applyBeginnerGeneratedPlan(
 
 export function validateProject() {
   return invoke<ValidationSnapshot>('validate_project')
+}
+
+export function proveCurrentAssignedLocalSufficiencyV1(
+  request: Readonly<{
+    expectedProjectInstanceId: string
+    expectedProjectId: string
+    expectedRevision: number
+    vertex: string
+  }>,
+): Promise<AssignedLocalSufficiencyResponseV1> {
+  return invoke<unknown>('prove_current_assigned_local_sufficiency_v1', { request }).then((value) => {
+    if (!isRecord(value) || !isRecord(value.result)) throw new Error('invalid local sufficiency response')
+    const result = value.result
+    const uuid = (candidate: unknown) =>
+      typeof candidate === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate)
+    const exactTop = Object.keys(value).sort().join(',') ===
+      ['authorizesProjectMutation', 'projectId', 'projectInstanceId', 'result', 'revision', 'version'].sort().join(',')
+    const binding = value.version === 1
+      && value.projectInstanceId === request.expectedProjectInstanceId
+      && value.projectId === request.expectedProjectId
+      && value.revision === request.expectedRevision
+      && value.authorizesProjectMutation === false
+    const valid = result.status === 'proven'
+      ? Object.keys(result).sort().join(',') === ['model_id', 'reduction_steps', 'reductions', 'status', 'vertex'].sort().join(',')
+        && result.model_id === 'assigned_single_vertex_unique_blb_crimp_v1'
+        && result.vertex === request.vertex
+        && Number.isSafeInteger(result.reduction_steps)
+        && Number(result.reduction_steps) >= 0
+        && Array.isArray(result.reductions)
+        && result.reductions.length === result.reduction_steps
+        && result.reductions.length <= 128
+        && result.reductions.every((step) =>
+          isRecord(step)
+          && Object.keys(step).sort().join(',') === 'first_crease,second_crease'
+          && uuid(step.first_crease)
+          && uuid(step.second_crease)
+          && step.first_crease !== step.second_crease)
+      : result.status === 'indeterminate'
+        && Object.keys(result).sort().join(',') === 'reason,status,vertex'
+        && result.vertex === request.vertex
+        && ['vertex_unavailable', 'necessary_conditions_not_satisfied', 'reduction_theorem_not_applicable', 'resource_limit'].includes(String(result.reason))
+    if (!exactTop || !binding || !valid) throw new Error('invalid local sufficiency response')
+    return value as AssignedLocalSufficiencyResponseV1
+  })
 }
 
 export function analyzeProjectTopology(expectedProjectId: string, expectedRevision: number) {

@@ -1337,6 +1337,26 @@ struct ValidationSnapshot {
     local_flat_foldability: LocalFlatFoldabilityReport,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AssignedLocalSufficiencyRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    vertex: VertexId,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssignedLocalSufficiencyResponseV1 {
+    version: u32,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    result: ori_topology::AssignedLocalSufficiencyV1,
+    authorizes_project_mutation: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct BeginnerCandidateResponse {
     schema_version: u32,
@@ -1787,6 +1807,60 @@ async fn new_project(
 #[tauri::command]
 async fn validate_project(state: State<'_, AppState>) -> Result<ValidationSnapshot, String> {
     validate_project_with_worker(&state, |input| Ok(analyze_validation_input(input))).await
+}
+
+#[tauri::command]
+async fn prove_current_assigned_local_sufficiency_v1(
+    state: State<'_, AppState>,
+    request: AssignedLocalSufficiencyRequestV1,
+) -> Result<AssignedLocalSufficiencyResponseV1, String> {
+    let permit = state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| "Another native pose analysis is already running.".to_owned())?;
+    let (paper, pattern, source_fingerprint) = {
+        let project = lock_project(&state)?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+        {
+            return Err("The project changed while local sufficiency was analyzed.".to_owned());
+        }
+        (
+            project.editor.paper().clone(),
+            project.editor.pattern().clone(),
+            project.editor.fold_model_fingerprint_v1(),
+        )
+    };
+    let vertex = request.vertex;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        ori_topology::prove_assigned_local_sufficiency_v1(
+            &paper,
+            &pattern,
+            vertex,
+            ori_topology::AssignedLocalSufficiencyLimitsV1::default(),
+        )
+    })
+    .await
+    .map_err(|_| "Local sufficiency analysis failed.".to_owned())?;
+    {
+        let project = lock_project(&state)?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+            || project.editor.fold_model_fingerprint_v1() != source_fingerprint
+        {
+            return Err("The project changed while local sufficiency was analyzed.".to_owned());
+        }
+    }
+    Ok(AssignedLocalSufficiencyResponseV1 {
+        version: 1,
+        project_instance_id: request.expected_project_instance_id,
+        project_id: request.expected_project_id,
+        revision: request.expected_revision,
+        result,
+        authorizes_project_mutation: false,
+    })
 }
 
 #[tauri::command]
@@ -8180,6 +8254,7 @@ pub fn run() {
             cancel_window_close_prepare,
             new_project,
             validate_project,
+            prove_current_assigned_local_sufficiency_v1,
             apply_current_native_pose,
             inspect_current_static_collision,
             analyze_geometric_constraints,

@@ -97,6 +97,19 @@ const run = (command, args, cwd = workspace) =>
     stdio: 'inherit',
   })
 
+const retry = async (label, attempts, operation) => {
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation(attempt)
+    } catch (error) {
+      lastError = error
+      console.error(`${label}: attempt ${attempt}/${attempts} failed: ${error.message}`)
+    }
+  }
+  throw new Error(`${label}: failed after ${attempts} attempts`, { cause: lastError })
+}
+
 let server
 let browser
 try {
@@ -104,7 +117,8 @@ try {
   run('git', ['init', '--quiet', viewer])
   run('git', ['remote', 'add', 'origin',
     'https://github.com/KhronosGroup/glTF-Sample-Viewer-Release.git'], viewer)
-  run('git', ['fetch', '--quiet', '--depth=1', 'origin', VIEWER_REVISION], viewer)
+  await retry('Sample Viewer fetch', 3, () =>
+    run('git', ['fetch', '--quiet', '--depth=1', 'origin', VIEWER_REVISION], viewer))
   run('git', ['checkout', '--quiet', 'FETCH_HEAD'], viewer)
   if (!process.env.ORIGAMI2_GLTF_RUNTIME_ARTIFACTS) {
     run('cargo', ['run', '--quiet', '--locked', '--release', '-p', 'ori-formats',
@@ -143,45 +157,54 @@ try {
     args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'],
   })
   for (const file of ['static.glb', 'textured.glb', 'animated.glb']) {
-    const page = await browser.newPage({ viewport: { width: 1024, height: 768 } })
-    const runtimeErrors = []
-    page.on('console', (message) => {
-      if (message.type() === 'error'
-        && !message.text().startsWith('Failed to load resource:')) {
-        runtimeErrors.push(`console: ${message.text()}`)
+    await retry(`${file} Sample Viewer runtime`, 3, async () => {
+      const page = await browser.newPage({ viewport: { width: 1024, height: 768 } })
+      try {
+        const runtimeErrors = []
+        page.on('console', (message) => {
+          if (message.type() === 'error'
+            && !message.text().startsWith('Failed to load resource:')) {
+            runtimeErrors.push(`console: ${message.text()}`)
+          }
+        })
+        page.on('pageerror', (error) => runtimeErrors.push(`page: ${error.message}`))
+        page.on('response', (response) => {
+          if (response.status() >= 400) {
+            runtimeErrors.push(`http ${response.status()}: ${response.url()}`)
+          }
+        })
+        const asset = `http://127.0.0.1:${port}/artifacts/${file}`
+        await page.goto(
+          `http://127.0.0.1:${port}/?model=${encodeURIComponent(asset)}&noUI`,
+          { waitUntil: 'domcontentloaded', timeout: 30_000 },
+        )
+        const canvas = page.locator('canvas')
+        await canvas.waitFor({ state: 'visible', timeout: 30_000 })
+        await page.waitForFunction(() => {
+          const canvas = document.querySelector('canvas')
+          const gl = canvas?.getContext('webgl2') ?? canvas?.getContext('webgl')
+          return Boolean(gl && canvas.width > 0 && canvas.height > 0)
+        }, undefined, { timeout: 30_000 })
+        await page.waitForTimeout(3_000)
+        if (runtimeErrors.length !== 0) {
+          throw new Error(`${file}: runtime errors:\n${runtimeErrors.join('\n')}`)
+        }
+        const bounds = await canvas.boundingBox()
+        if (!bounds) throw new Error(`${file}: rendered canvas has no bounds`)
+        const cdp = await page.context().newCDPSession(page)
+        const firstFrame = Buffer.from((await cdp.send('Page.captureScreenshot', {
+          format: 'png',
+          captureBeyondViewport: false,
+          clip: { ...bounds, scale: 1 },
+        })).data, 'base64')
+        if (firstFrame.length < 2_000) {
+          throw new Error(`${file}: rendered canvas is unexpectedly empty`)
+        }
+        console.log(`${file}: Sample Viewer WebGL runtime visible, errors 0`)
+      } finally {
+        await page.close()
       }
     })
-    page.on('pageerror', (error) => runtimeErrors.push(`page: ${error.message}`))
-    page.on('response', (response) => {
-      if (response.status() >= 400) {
-        runtimeErrors.push(`http ${response.status()}: ${response.url()}`)
-      }
-    })
-    const asset = `http://127.0.0.1:${port}/artifacts/${file}`
-    await page.goto(
-      `http://127.0.0.1:${port}/?model=${encodeURIComponent(asset)}&noUI`,
-      { waitUntil: 'networkidle' },
-    )
-    const canvas = page.locator('canvas')
-    await canvas.waitFor({ state: 'visible', timeout: 30_000 })
-    await page.waitForTimeout(3_000)
-    if (runtimeErrors.length !== 0) {
-      throw new Error(`${file}: runtime errors:\n${runtimeErrors.join('\n')}`)
-    }
-    const bounds = await canvas.boundingBox()
-    if (!bounds) throw new Error(`${file}: rendered canvas has no bounds`)
-    const cdp = await page.context().newCDPSession(page)
-    const capture = async () => Buffer.from((await cdp.send('Page.captureScreenshot', {
-      format: 'png',
-      captureBeyondViewport: false,
-      clip: { ...bounds, scale: 1 },
-    })).data, 'base64')
-    const firstFrame = await capture()
-    if (firstFrame.length < 2_000) {
-      throw new Error(`${file}: rendered canvas is unexpectedly empty`)
-    }
-    console.log(`${file}: Sample Viewer WebGL runtime visible, errors 0`)
-    await page.close()
   }
   await browser.close()
   browser = undefined

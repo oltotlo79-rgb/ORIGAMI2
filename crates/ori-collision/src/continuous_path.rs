@@ -35,8 +35,8 @@ pub const STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &s
 pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_tree_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
-pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 32;
-const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 512;
+pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 64;
+const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 2_048;
 const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
 const MAX_STACKED_FOLD_INTERVAL_DEPTH_V1: usize = 7;
 const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize =
@@ -535,6 +535,59 @@ fn two_hinge_interval_clearance_premises(
                 || (hinge.left_face() == second && hinge.right_face() == first)
         })
     };
+    // Build one path-wide conservative candidate set. A face at ancestry
+    // depth d moves by at most d*r*theta, so pairs omitted by this rest-order
+    // sweep remain strictly x-separated throughout every adaptive leaf.
+    let full_width_radians = requested_angle_degrees * std::f64::consts::PI / 180.0;
+    let mut path_bounds = Vec::with_capacity(face_count);
+    for face in model.face_ids() {
+        let expansion =
+            *depth.get(face).unwrap_or(&usize::MAX) as f64 * maximum_radius * full_width_radians;
+        if !expansion.is_finite() {
+            return false;
+        }
+        let Some(transform) = initial_pose.face_transform(*face) else {
+            return false;
+        };
+        let Some(boundary) = model.face_boundary(*face) else {
+            return false;
+        };
+        let mut minimum_x = f64::INFINITY;
+        let mut maximum_x = f64::NEG_INFINITY;
+        for vertex in boundary.vertices() {
+            let Some(point) = initial_pose.vertex_position(*vertex) else {
+                return false;
+            };
+            let Ok(world) = transform.apply_point(point) else {
+                return false;
+            };
+            minimum_x = minimum_x.min(world.x() - expansion);
+            maximum_x = maximum_x.max(world.x() + expansion);
+        }
+        path_bounds.push((*face, minimum_x, maximum_x));
+    }
+    path_bounds.sort_by(|left, right| {
+        left.1
+            .total_cmp(&right.1)
+            .then_with(|| left.0.canonical_bytes().cmp(&right.0.canonical_bytes()))
+    });
+    let mut canonical_candidates = Vec::new();
+    for first in 0..path_bounds.len() {
+        for second in first + 1..path_bounds.len() {
+            if path_bounds[second].1 > path_bounds[first].2 {
+                break;
+            }
+            let pair = (path_bounds[first].0, path_bounds[second].0);
+            if !adjacent(pair.0, pair.1) {
+                if canonical_candidates.len() >= MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1 {
+                    return false;
+                }
+                canonical_candidates.push(pair);
+            }
+        }
+    }
+    canonical_candidates
+        .sort_by_key(|(first, second)| (first.canonical_bytes(), second.canonical_bytes()));
     let mut pair_work = 0_usize;
     let mut evaluate = |lower: f64, upper: f64| -> Option<(bool, f64)> {
         let midpoint = (lower + upper) / 2.0;
@@ -561,41 +614,22 @@ fn two_hinge_interval_clearance_premises(
             }
             bounds.push((*face, minimum, maximum));
         }
-        // Sweep-and-prune is complete because every omitted pair has a strict
-        // gap on axis 0 between its already interval-expanded boxes.
-        bounds.sort_by(|left, right| {
-            left.1[0]
-                .total_cmp(&right.1[0])
-                .then_with(|| left.0.canonical_bytes().cmp(&right.0.canonical_bytes()))
-        });
+        let bounds = bounds
+            .into_iter()
+            .map(|(face, minimum, maximum)| (face, (minimum, maximum)))
+            .collect::<HashMap<_, _>>();
         let mut strict_margin = f64::INFINITY;
-        let mut candidate_count = 0_usize;
-        for first in 0..bounds.len() {
-            for second in first + 1..bounds.len() {
-                let x_gap = bounds[second].1[0] - bounds[first].2[0];
-                if x_gap > 0.0 {
-                    strict_margin = strict_margin.min(x_gap);
-                    break;
-                }
-                if adjacent(bounds[first].0, bounds[second].0) {
-                    continue;
-                }
-                candidate_count = candidate_count.checked_add(1)?;
-                if candidate_count > MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1 {
-                    return None;
-                }
-                pair_work = pair_work.checked_add(1)?;
-                if pair_work > MAX_STACKED_FOLD_INTERVAL_WORK_V1 {
-                    return None;
-                }
-                let pair_margin = (0..3)
-                    .map(|axis| {
-                        (bounds[second].1[axis] - bounds[first].2[axis])
-                            .max(bounds[first].1[axis] - bounds[second].2[axis])
-                    })
-                    .max_by(f64::total_cmp)?;
-                strict_margin = strict_margin.min(pair_margin);
+        for (first, second) in &canonical_candidates {
+            let first = bounds.get(first)?;
+            let second = bounds.get(second)?;
+            pair_work = pair_work.checked_add(1)?;
+            if pair_work > MAX_STACKED_FOLD_INTERVAL_WORK_V1 {
+                return None;
             }
+            let pair_margin = (0..3)
+                .map(|axis| (second.0[axis] - first.1[axis]).max(first.0[axis] - second.1[axis]))
+                .max_by(f64::total_cmp)?;
+            strict_margin = strict_margin.min(pair_margin);
         }
         Some((strict_margin > 0.0, strict_margin))
     };
@@ -1204,6 +1238,44 @@ mod tests {
     }
 
     #[test]
+    fn canonical_sweep_matches_bruteforce_for_single_nonadjacent_pair() {
+        for (model, expected) in [
+            (three_hinge_strip_model(false), true),
+            (three_hinge_strip_model(true), false),
+        ] {
+            let angles = CanonicalHingeAngles::new(
+                model
+                    .hinges()
+                    .iter()
+                    .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                    .collect(),
+            )
+            .unwrap();
+            let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+            let moving = model
+                .hinges()
+                .iter()
+                .map(|hinge| hinge.edge())
+                .collect::<HashSet<_>>();
+            let mut metrics = (0, 0);
+            // For this four-face chain the exhaustive oracle has exactly the
+            // three non-adjacent pairs; the established fixtures fix their
+            // expected conjunction.
+            assert_eq!(
+                two_hinge_interval_clearance_premises(
+                    &model,
+                    &pose,
+                    &moving,
+                    if expected { 0.1 } else { 10.0 },
+                    8,
+                    &mut metrics,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn separated_three_hinge_tree_gets_bounded_interval_certificate() {
         let model = three_hinge_strip_model(false);
         let fixed = model
@@ -1395,6 +1467,65 @@ mod tests {
     #[test]
     fn thirty_two_hinge_dense_tree_exceeds_candidate_cap() {
         let model = deep_strip_model(32);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<HashSet<_>>();
+        let mut metrics = (0, 0);
+        assert!(!two_hinge_interval_clearance_premises(
+            &model,
+            &pose,
+            &moving,
+            180.0,
+            1,
+            &mut metrics,
+        ));
+        assert_eq!(metrics, (0, 0));
+    }
+
+    #[test]
+    fn forty_eight_hinge_sparse_tree_uses_one_canonical_candidate_scan() {
+        let model = deep_strip_model(48);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<HashSet<_>>();
+        let mut metrics = (0, 0);
+        assert!(two_hinge_interval_clearance_premises(
+            &model,
+            &pose,
+            &moving,
+            0.0001,
+            1,
+            &mut metrics,
+        ));
+        assert_eq!(metrics.0, 1);
+        assert!(metrics.1 <= MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1);
+    }
+
+    #[test]
+    fn sixty_four_hinge_dense_tree_fails_candidate_cap() {
+        let model = deep_strip_model(64);
         let angles = CanonicalHingeAngles::new(
             model
                 .hinges()

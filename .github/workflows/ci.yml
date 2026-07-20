@@ -28,6 +28,8 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm test
+      - name: Test formal release workflow and local artifact contract
+        run: node --test ../../.github/tests/formal-release.test.mjs
       - name: Validate generated static, textured, and animated GLB
         run: npm run test:gltf-validator
       - name: Install headless Chromium for Khronos Sample Viewer

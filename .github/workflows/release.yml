@@ -1,0 +1,239 @@
+name: Cross-platform signed release
+
+on:
+  push:
+    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Build only, publish prerelease, publish stable, or promote an existing prerelease"
+        required: true
+        type: choice
+        default: dry-run
+        options: [dry-run, prerelease, stable, promote]
+      tag:
+        description: "Existing signed tag (required except for dry-run)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-release-${{ inputs.tag || github.ref_name || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.contract.outputs.mode }}
+      tag: ${{ steps.contract.outputs.tag }}
+      version: ${{ steps.contract.outputs.version }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.tag || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Import the trusted release-tag verification key
+        if: (github.event_name == 'push') || (inputs.mode != 'dry-run')
+        env:
+          RELEASE_SIGNING_PUBLIC_KEY: ${{ secrets.RELEASE_SIGNING_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SIGNING_PUBLIC_KEY"
+          printf '%s' "$RELEASE_SIGNING_PUBLIC_KEY" | gpg --batch --import
+      - id: contract
+        env:
+          REQUESTED_MODE: ${{ github.event_name == 'push' && 'prerelease' || inputs.mode }}
+          REQUESTED_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: node .github/scripts/validate_formal_release.mjs
+
+  build:
+    if: needs.validate.outputs.mode != 'promote'
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: macos-14
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ needs.validate.outputs.tag || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - working-directory: apps/desktop
+        run: npm ci
+      - name: Build Windows portable executable
+        if: matrix.platform == 'windows-x64'
+        working-directory: apps/desktop
+        run: npx tauri build --ci --no-sign --no-bundle
+      - name: Sign Windows portable executable
+        if: matrix.platform == 'windows-x64' && needs.validate.outputs.mode != 'dry-run'
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) {
+            throw 'Windows signing credentials are required for publication.'
+          }
+          $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+          $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
+          & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+            /f $certificate /p $env:CERTIFICATE_PASSWORD $file
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
+          & signtool verify /pa /all $file
+          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+      - name: Bundle Windows installer around the tested executable
+        if: matrix.platform == 'windows-x64'
+        working-directory: apps/desktop
+        run: npx tauri bundle --ci --no-sign --bundles nsis
+      - name: Sign Windows installer
+        if: matrix.platform == 'windows-x64' && needs.validate.outputs.mode != 'dry-run'
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) {
+            throw 'Windows signing credentials are required for publication.'
+          }
+          $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
+          & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+            /f $certificate /p $env:CERTIFICATE_PASSWORD $file
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
+          & signtool verify /pa /all $file
+          if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+      - name: Build macOS application
+        if: matrix.platform == 'macos-arm64'
+        working-directory: apps/desktop
+        run: npm run bundle:macos:ci
+      - name: Sign macOS application
+        if: matrix.platform == 'macos-arm64' && needs.validate.outputs.mode != 'dry-run'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE_BASE64"
+          test -n "$CERTIFICATE_PASSWORD"
+          test -n "$SIGNING_IDENTITY"
+          keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
+          certificate="$RUNNER_TEMP/apple-signing.p12"
+          echo "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p temporary "$keychain"
+          security unlock-keychain -p temporary "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
+          codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
+            target/release/bundle/macos/ORIGAMI2.app
+          codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/ORIGAMI2.app
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: target/formal-release/ORIGAMI2-v${{ needs.validate.outputs.version }}-${{ matrix.platform }}.cdx.json
+          upload-artifact: false
+      - name: Package platform artifacts
+        shell: pwsh
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: ./.github/scripts/package_formal_release.ps1
+      - name: Verify local release artifact contract
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          REQUIRE_SIGNATURE: ${{ needs.validate.outputs.mode != 'dry-run' && 'true' || 'false' }}
+        run: node .github/scripts/verify_formal_release.mjs target/formal-release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: formal-release-${{ matrix.platform }}
+          path: target/formal-release
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    if: needs.validate.outputs.mode == 'prerelease' || needs.validate.outputs.mode == 'stable'
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    environment: formal-release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: formal-release-*
+          path: release
+          merge-multiple: true
+      - name: Verify checksums before publication
+        run: |
+          cd release
+          sha256sum --check --strict SHA256SUMS-windows-x64.txt
+          sha256sum --check --strict SHA256SUMS-macos-arm64.txt
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            release/*.exe
+            release/*.zip
+            release/*.tar.gz
+            release/*.cdx.json
+      - name: Publish immutable tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_MODE: ${{ needs.validate.outputs.mode }}
+        run: |
+          set -euo pipefail
+          ! gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1
+          prerelease=()
+          [ "$RELEASE_MODE" = stable ] || prerelease=(--prerelease)
+          gh release create "$RELEASE_TAG" release/* \
+            --repo "$GH_REPO" --verify-tag --generate-notes \
+            --title "ORIGAMI2 $RELEASE_TAG" "${prerelease[@]}"
+
+  promote:
+    if: needs.validate.outputs.mode == 'promote'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: formal-release
+    permissions:
+      contents: write
+    steps:
+      - name: Promote the existing prerelease without replacing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json isPrerelease --jq .isPrerelease)" = true
+          gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --prerelease=false --latest

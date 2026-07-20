@@ -119,7 +119,13 @@ describe('App locale integration', () => {
     expect(screen.getByRole('button', { name: '元に戻す' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'やり直す' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '開く' })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: '展開フォルダーを開く',
+    })).toBeTruthy()
     expect(screen.getByRole('button', { name: '保存' })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: '展開フォルダー保存',
+    }).getAttribute('title')).toContain('既存フォルダーは上書きしません')
     expect(screen.getByText('ブラウザ試作モード')).toBeTruthy()
     expect(screen.getByText(/^ツール: 選択$/u)).toBeTruthy()
     expect(screen.getByRole('complementary', {
@@ -142,7 +148,13 @@ describe('App locale integration', () => {
     expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Redo' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Open expanded folder',
+    })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Save expanded folder',
+    }).getAttribute('title')).toContain('never overwritten')
     expect(screen.getByText('Browser prototype mode')).toBeTruthy()
     expect(screen.getByText(/^Tool: Select$/u)).toBeTruthy()
     expect(screen.getByRole('complementary', {

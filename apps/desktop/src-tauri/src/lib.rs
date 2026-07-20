@@ -7,6 +7,7 @@ mod history_settings;
 mod instruction_export;
 mod mesh_export;
 mod numeric_expression;
+mod project_folder_io;
 mod project_persistence;
 #[allow(dead_code)]
 mod recovery;
@@ -82,6 +83,7 @@ use ori_formats::{
     SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox,
     SvgStyleGroupId, SvgWarningKind, read_fold_preview, read_svg_preview,
 };
+use project_folder_io::{ProjectFolderIoState, open_project_folder, save_project_folder_as};
 #[cfg(test)]
 use project_persistence::{
     PROJECT_FILE_INVALID_MESSAGE, PROJECT_FILE_OPEN_FAILED_MESSAGE, PROJECT_FILE_TOO_LARGE_MESSAGE,
@@ -5328,6 +5330,7 @@ pub fn run() {
         })
         .manage(FoldImportState::default())
         .manage(FoldTechniqueFileIoState::default())
+        .manage(ProjectFolderIoState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
         .manage(StaticMeshExportState::default())
@@ -5359,6 +5362,8 @@ pub fn run() {
             open_project,
             save_project,
             save_project_as,
+            open_project_folder,
+            save_project_folder_as,
             open_fold_technique_file,
             save_fold_technique_file_as,
             preview_crease_pattern_export,

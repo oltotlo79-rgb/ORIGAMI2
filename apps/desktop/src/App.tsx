@@ -102,6 +102,12 @@ import {
   validateProject,
 } from './lib/coreClient'
 import {
+  isNativeProjectFolderAvailable,
+  openProjectFolder,
+  projectFolderClientErrorMessage,
+  saveProjectFolderAs,
+} from './lib/projectFolderClient'
+import {
   creasePatternExportFormatLabel,
   type CreasePatternExportFormat,
   type CreasePatternExportPreview,
@@ -568,6 +574,8 @@ function App() {
     | 'open'
     | 'save'
     | 'save_as'
+    | 'folder_open'
+    | 'folder_save'
     | 'fold_import'
     | 'svg_import'
     | 'crease_export'
@@ -2707,6 +2715,65 @@ function App() {
     }
   }
 
+  async function runProjectFolderOperation(
+    operation: 'folder_open' | 'folder_save',
+  ) {
+    const current = latestSnapshotRef.current
+    if (
+      !current
+      || coreOperationRef.current
+      || recoveryBlockingRef.current
+    ) return
+    if (
+      operation === 'folder_open'
+      && current.is_dirty
+      && !window.confirm(appConfirmationText(locale, 'openProject'))
+    ) return
+
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation(operation)
+    setCancelInteractionToken((token) => token + 1)
+    try {
+      const response = operation === 'folder_open'
+        ? await openProjectFolder(locale)
+        : await saveProjectFolderAs(locale)
+      if (response.canceled) {
+        setCoreStatus(appMessage({
+          ja: '展開フォルダー操作をキャンセルしました',
+          en: 'Expanded-folder operation cancelled',
+        }))
+        return
+      }
+      applySnapshot(response.project, operation === 'folder_open')
+      if (operation === 'folder_open') {
+        setValidation(null)
+        setSelectedLineId(null)
+        setSelectedVertexId(null)
+        setPendingEdgeStart(null)
+        setParallelReferenceEdgeId(null)
+      }
+      setCoreStatus(operation === 'folder_open'
+        ? appMessage({
+            ja: '展開フォルダーから「{name}」を開きました',
+            en: 'Opened “{name}” from an expanded folder',
+          }, { name: response.project.name })
+        : appMessage({
+            ja: '「{name}」を新しい展開フォルダーへ保存しました',
+            en: 'Saved “{name}” to a new expanded folder',
+          }, { name: response.project.name }))
+    } catch (error) {
+      setCoreStatus(appMessage({
+        ja: projectFolderClientErrorMessage(error, 'ja'),
+        en: projectFolderClientErrorMessage(error, 'en'),
+      }))
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   function openNewFoldTechniqueEditor() {
     if (
       foldTechniqueBusy
@@ -3984,6 +4051,23 @@ function App() {
               : text({ ja: '開く', en: 'Open' })}
           </button>
           <button
+            type="button"
+            disabled={
+              coreBusy
+              || !nativeSnapshot
+              || !isNativeProjectFolderAvailable()
+            }
+            title={text({
+              ja: 'manifestとハッシュを検証して、展開済みプロジェクトフォルダーを開きます',
+              en: 'Open an expanded project folder after validating its manifest and hashes',
+            })}
+            onClick={() => void runProjectFolderOperation('folder_open')}
+          >
+            {fileOperation === 'folder_open'
+              ? text({ ja: 'フォルダー確認中…', en: 'Checking folder…' })
+              : text({ ja: '展開フォルダーを開く', en: 'Open expanded folder' })}
+          </button>
+          <button
             ref={foldImportButtonRef}
             type="button"
             disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
@@ -4071,6 +4155,23 @@ function App() {
             {fileOperation === 'save_as'
               ? text({ ja: '保存中…', en: 'Saving…' })
               : text({ ja: '別名保存', en: 'Save as' })}
+          </button>
+          <button
+            type="button"
+            disabled={
+              coreBusy
+              || !nativeSnapshot
+              || !isNativeProjectFolderAvailable()
+            }
+            title={text({
+              ja: '選択した親フォルダー内へ新しい展開フォルダーを作成します。既存フォルダーは上書きしません',
+              en: 'Create a new expanded folder inside the selected parent. Existing folders are never overwritten',
+            })}
+            onClick={() => void runProjectFolderOperation('folder_save')}
+          >
+            {fileOperation === 'folder_save'
+              ? text({ ja: '展開保存中…', en: 'Saving folder…' })
+              : text({ ja: '展開フォルダー保存', en: 'Save expanded folder' })}
           </button>
           <button
             type="button"

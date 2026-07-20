@@ -621,6 +621,81 @@ export function parseRestoredRecoverySnapshot(
   }
 }
 
+/**
+ * Strictly admits the pathless project snapshot returned by expanded-folder
+ * I/O. Unlike recovery restore, this accepts any valid revision/dirty state,
+ * but it never accepts a native filesystem path.
+ */
+export function parsePathlessProjectSnapshot(
+  value: unknown,
+): ProjectSnapshot | null {
+  try {
+    const record = exactDataRecord(value, PROJECT_SNAPSHOT_KEYS)
+    if (
+      !record
+      || !isCanonicalNonNilUuid(record.project_instance_id)
+      || !isCanonicalNonNilUuid(record.project_id)
+      || typeof record.name !== 'string'
+      || record.current_path !== null
+      || !isNonNegativeSafeInteger(record.revision)
+      || !isNullableRevision(record.saved_revision)
+      || typeof record.is_dirty !== 'boolean'
+      || typeof record.can_undo !== 'boolean'
+      || typeof record.can_redo !== 'boolean'
+      || typeof record.cutting_allowed !== 'boolean'
+      || typeof record.fold_model_fingerprint !== 'string'
+      || !FINGERPRINT_PATTERN.test(record.fold_model_fingerprint)
+    ) return null
+
+    const paper = parsePaper(record.paper)
+    const creasePattern = parseCreasePattern(record.crease_pattern)
+    const instructionTimeline = parseInstructionTimeline(
+      record.instruction_timeline,
+    )
+    const numericExpressions = parseNumericExpressions(
+      record.numeric_expressions,
+    )
+    const geometricConstraints = normalizeGeometricConstraintDocument(
+      record.geometric_constraints,
+    )
+    const projectLayers = normalizeProjectLayerDocument(
+      record.project_layers,
+      creasePattern?.edges ?? [],
+    )
+    if (
+      !paper
+      || !creasePattern
+      || !instructionTimeline
+      || !numericExpressions
+      || !geometricConstraints
+      || !projectLayers
+      || paper.cutting_allowed !== record.cutting_allowed
+    ) return null
+
+    return Object.freeze({
+      project_instance_id: record.project_instance_id,
+      project_id: record.project_id,
+      name: record.name,
+      current_path: null,
+      revision: record.revision,
+      saved_revision: record.saved_revision,
+      is_dirty: record.is_dirty,
+      paper,
+      crease_pattern: creasePattern,
+      instruction_timeline: instructionTimeline,
+      numeric_expressions: numericExpressions,
+      geometric_constraints: geometricConstraints,
+      project_layers: projectLayers,
+      fold_model_fingerprint: record.fold_model_fingerprint,
+      can_undo: record.can_undo,
+      can_redo: record.can_redo,
+      cutting_allowed: record.cutting_allowed,
+    })
+  } catch {
+    return null
+  }
+}
+
 function parseDiscardedResponse(
   value: unknown,
 ): RecoveryDiscardedResponse | null {

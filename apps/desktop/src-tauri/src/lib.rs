@@ -2135,6 +2135,13 @@ struct BeginnerGridCandidateResponse {
     primary_score: u16,
     plan: ori_domain::BeginnerGeneratedPlanV1,
     assessment: BeginnerGeneratedPlanAssessment,
+    local_proof_scope: &'static str,
+    global_proof_scope: &'static str,
+    complexity_score: u8,
+    scale_deviation_penalty: u16,
+    spacing_deviation_penalty: u16,
+    detail_mismatch_penalty: u16,
+    outcome_reason: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -2235,6 +2242,12 @@ fn evaluate_beginner_parameter_grid(
                 work.terminal.store(2, Ordering::Release);
                 return Err("grid_evaluation_cancelled".to_owned());
             }
+            let detail_penalty =
+                if point.detail_level == profile.generation_constraints.detail_level {
+                    0
+                } else {
+                    10
+                };
             let assessment = assess_beginner_generated_plan_with_deadline(
                 project.editor.paper(),
                 project.editor.pattern(),
@@ -2242,12 +2255,35 @@ fn evaluate_beginner_parameter_grid(
                 reference.as_ref(),
                 deadline,
             );
+            let global_proof_scope = assessment.proof_scope;
+            let outcome_reason = assessment.reason;
+            let complexity_score = u8::try_from(
+                plan.crease_pattern.edges.len().saturating_mul(10)
+                    + match point.detail_level {
+                        ori_domain::BeginnerDetailLevelV1::Simple => 10,
+                        ori_domain::BeginnerDetailLevelV1::Standard => 20,
+                        ori_domain::BeginnerDetailLevelV1::Detailed => 30,
+                    },
+            )
+            .unwrap_or(100)
+            .min(100);
             work.global_checked.fetch_add(1, Ordering::Release);
             Ok(BeginnerGridCandidateResponse {
                 point,
                 primary_score,
                 plan,
                 assessment,
+                local_proof_scope: "necessary",
+                global_proof_scope,
+                complexity_score,
+                scale_deviation_penalty: u16::from(
+                    point.scale_percent.abs_diff(estimate.scale_percent),
+                ) * 10,
+                spacing_deviation_penalty: u16::from(
+                    point.spacing_percent.abs_diff(estimate.spacing_percent),
+                ) * 5,
+                detail_mismatch_penalty: detail_penalty,
+                outcome_reason,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

@@ -1617,6 +1617,13 @@ export type BeginnerGridEvaluationResponse = Readonly<{
     primary_score: number
     plan: BeginnerGeneratedPlanV1
     assessment: BeginnerGeneratedPlanAssessmentV1
+    local_proof_scope: 'necessary'
+    global_proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
+    complexity_score: number
+    scale_deviation_penalty: number
+    spacing_deviation_penalty: number
+    detail_mismatch_penalty: number
+    outcome_reason: BeginnerGeneratedPlanAssessmentV1['reason']
   }>>
 }>
 
@@ -1642,7 +1649,9 @@ export async function evaluateBeginnerParameterGrid(
     throw new Error('invalid beginner parameter grid response')
   }
   const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(
-    value, ['point', 'primary_score', 'plan', 'assessment'] as const,
+    value, ['point', 'primary_score', 'plan', 'assessment', 'local_proof_scope',
+      'global_proof_scope', 'complexity_score', 'scale_deviation_penalty',
+      'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason'] as const,
   ))
   if (rawCandidates.some((candidate) => candidate === null)) {
     throw new Error('invalid beginner parameter grid response')
@@ -1677,12 +1686,28 @@ export async function evaluateBeginnerParameterGrid(
       || !['simple', 'standard', 'detailed'].includes(String(point.detail_level))
       || !Number.isInteger(candidate.primary_score) || Number(candidate.primary_score) < 0
       || Number(candidate.primary_score) > 1000
-      || (index > 0 && Number(admitted[index - 1].primary_score) < Number(candidate.primary_score))) {
+      || candidate.local_proof_scope !== 'necessary'
+      || candidate.global_proof_scope !== normalizedPlans.plan_assessments[index].proof_scope
+      || candidate.outcome_reason !== normalizedPlans.plan_assessments[index].reason
+      || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
+      || ![candidate.scale_deviation_penalty, candidate.spacing_deviation_penalty, candidate.detail_mismatch_penalty]
+        .every((penalty) => Number.isInteger(penalty) && Number(penalty) >= 0 && Number(penalty) <= 1000)
+      || Number(candidate.primary_score) !== 1000 - Number(candidate.scale_deviation_penalty)
+        - Number(candidate.spacing_deviation_penalty) - Number(candidate.detail_mismatch_penalty)
+      || (index > 0 && (Number(admitted[index - 1].primary_score) < Number(candidate.primary_score)
+        || (Number(admitted[index - 1].primary_score) === Number(candidate.primary_score)
+          && Number((exactCoreDataRecord(admitted[index - 1].point, ['id', 'scale_percent', 'spacing_percent', 'detail_level'] as const))?.id) >= Number(point.id))))) {
       throw new Error('invalid beginner parameter grid response')
     }
     return Object.freeze({ point: Object.freeze(point) as BeginnerParameterGridPointV1,
       primary_score: Number(candidate.primary_score), plan: normalizedPlans.generated_plans[index],
-      assessment: normalizedPlans.plan_assessments[index] })
+      assessment: normalizedPlans.plan_assessments[index], local_proof_scope: 'necessary' as const,
+      global_proof_scope: candidate.global_proof_scope as BeginnerGeneratedPlanAssessmentV1['proof_scope'],
+      complexity_score: Number(candidate.complexity_score),
+      scale_deviation_penalty: Number(candidate.scale_deviation_penalty),
+      spacing_deviation_penalty: Number(candidate.spacing_deviation_penalty),
+      detail_mismatch_penalty: Number(candidate.detail_mismatch_penalty),
+      outcome_reason: candidate.outcome_reason as BeginnerGeneratedPlanAssessmentV1['reason'] })
   })
   if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {
     throw new Error('invalid beginner parameter grid response')

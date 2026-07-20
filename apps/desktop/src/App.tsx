@@ -7810,7 +7810,22 @@ function App() {
                           en: 'Scale {scale}% · spacing {spacing}% · detail {detail}',
                         }, { scale: candidate.point.scale_percent, spacing: candidate.point.spacing_percent,
                           detail: candidate.point.detail_level })}</span>
-                        <span className="muted">{candidate.assessment.reason}</span>
+                        <span className="muted">{formattedText({
+                          ja: '局所 {local}・大域 {global}・複雑度 {complexity}/100',
+                          en: 'Local {local} · global {global} · complexity {complexity}/100',
+                        }, { local: candidate.local_proof_scope, global: candidate.global_proof_scope,
+                          complexity: candidate.complexity_score })}</span>
+                        <span className="muted">{formattedText({
+                          ja: '減点: 尺度 {scale}・間隔 {spacing}・詳細度 {detail}',
+                          en: 'Penalties: scale {scale} · spacing {spacing} · detail {detail}',
+                        }, { scale: candidate.scale_deviation_penalty,
+                          spacing: candidate.spacing_deviation_penalty,
+                          detail: candidate.detail_mismatch_penalty })}</span>
+                        <span className="muted">{formattedText({
+                          ja: '判定理由 {reason}・形状差 {shape}',
+                          en: 'Outcome {reason} · shape difference {shape}',
+                        }, { reason: candidate.outcome_reason,
+                          shape: candidate.assessment.shape_difference_reason ?? 'none' })}</span>
                         {candidate.assessment.proof_scope === 'sufficient'
                           && candidate.assessment.reason === 'global_flat_foldability_proven'
                           && candidate.assessment.apply_allowed && (

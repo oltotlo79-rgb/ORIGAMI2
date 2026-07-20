@@ -70,6 +70,17 @@ test('AUT-002 composes a bounded explicit target from supported parts', () => {
   assert.match(app, /候補に使用した目標部品/u)
 })
 
+test('AUT-003 stores and previews bounded stick skeleton bars with explicit dimensions', () => {
+  assert.match(generation, /MAX_BEGINNER_SKELETON_SEGMENTS_V1: usize = 64/u)
+  assert.match(generation, /pub thickness_tenths_mm: u16/u)
+  assert.match(client, /record\.skeleton_segments\.length > 64/u)
+  assert.match(client, /Math\.abs\(Number\(coordinate\)\) > 100_000/u)
+  assert.match(app, /name="skeleton_length_mm"/u)
+  assert.match(app, /name="skeleton_thickness_mm"/u)
+  assert.match(app, /Stick skeleton preview/u)
+  assert.match(app, /Only bars with explicit length and thickness are used for generation/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

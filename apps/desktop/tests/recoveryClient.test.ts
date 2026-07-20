@@ -1090,6 +1090,7 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
         detail_level: 'standard',
         target_category: null,
         target_parts: [],
+        skeleton_segments: [],
         allowed_techniques: ['valley_fold', 'mountain_fold'],
       },
     },

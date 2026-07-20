@@ -677,12 +677,17 @@ function App() {
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
   const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
+  const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
+    useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
   const beginnerCandidateRequestRef = useRef(0)
   useEffect(() => {
     setBeginnerCandidates(null)
     setBeginnerPartTotal(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
         .reduce((sum, part) => sum + part.count, 0) ?? 0,
+    )
+    setBeginnerSkeletonSegments(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.skeleton_segments ?? [],
     )
   }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
@@ -3471,6 +3476,7 @@ function App() {
       detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
       target_category: targetCategory as 'animal' | 'insect',
       target_parts: targetParts,
+      skeleton_segments: beginnerSkeletonSegments,
       allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
     }
     if (
@@ -3524,6 +3530,41 @@ function App() {
         projectInstanceId,
         profile,
       ))
+  }
+
+  function addBeginnerSkeletonSegment(form: HTMLFormElement) {
+    if (beginnerSkeletonSegments.length >= 64) return
+    const data = new FormData(form)
+    const startX = Number(data.get('skeleton_start_x_mm'))
+    const startY = Number(data.get('skeleton_start_y_mm'))
+    const length = Number(data.get('skeleton_length_mm'))
+    const angle = Number(data.get('skeleton_angle_degrees'))
+    const thickness = Number(data.get('skeleton_thickness_mm'))
+    if (![startX, startY, length, angle, thickness].every(Number.isFinite)
+      || Math.abs(startX) > 10_000 || Math.abs(startY) > 10_000
+      || length < 0.1 || length > 10_000
+      || angle < -360 || angle > 360
+      || thickness < 0.1 || thickness > 1_000) return
+    const radians = angle * Math.PI / 180
+    const start = {
+      x_tenths_mm: Math.round(startX * 10),
+      y_tenths_mm: Math.round(startY * 10),
+    }
+    const end = {
+      x_tenths_mm: Math.round((startX + length * Math.cos(radians)) * 10),
+      y_tenths_mm: Math.round((startY + length * Math.sin(radians)) * 10),
+    }
+    if (Math.abs(end.x_tenths_mm) > 100_000 || Math.abs(end.y_tenths_mm) > 100_000
+      || (start.x_tenths_mm === end.x_tenths_mm && start.y_tenths_mm === end.y_tenths_mm)) return
+    const used = new Set(beginnerSkeletonSegments.map((segment) => segment.id))
+    let id = 0
+    while (used.has(id) && id < 65_535) id += 1
+    setBeginnerSkeletonSegments((segments) => [...segments, {
+      id,
+      start,
+      end,
+      thickness_tenths_mm: Math.round(thickness * 10),
+    }])
   }
 
   function requestBeginnerCandidates(requestedCandidateCount: number) {
@@ -7253,6 +7294,22 @@ function App() {
                                 return `${text(label)} × ${part.count}`
                               }).join(' · ')}
                             </p>
+                            {plan.skeleton_segments.length > 0 && (
+                              <svg viewBox="-110 -110 220 220" role="img"
+                                aria-label={text({ ja: '候補に使用した棒状骨格', en: 'Stick skeleton used by this candidate' })}>
+                                {plan.skeleton_segments.map((segment) => (
+                                  <line
+                                    key={segment.id}
+                                    x1={segment.start.x_tenths_mm / 10}
+                                    y1={segment.start.y_tenths_mm / 10}
+                                    x2={segment.end.x_tenths_mm / 10}
+                                    y2={segment.end.y_tenths_mm / 10}
+                                    stroke="currentColor"
+                                    strokeWidth={Math.max(0.5, segment.thickness_tenths_mm / 10)}
+                                  />
+                                ))}
+                              </svg>
+                            )}
                             <p className="muted">
                               {text({
                                 ja: 'これは読取専用の候補です。確認・適用操作を行うまでプロジェクト権限にはなりません。',
@@ -7316,6 +7373,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
                   nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
                 ].join(':')}
                 onSubmit={submitBeginnerDesignProfile}
@@ -7422,6 +7480,73 @@ function App() {
                   {text({
                     ja: '頭と胴体は各1個必須です。各部品は最大8個、合計32個までです。入力した部品だけを生成条件に使います。',
                     en: 'One head and one torso are required. Each part is limited to 8 and the total to 32. Only entered parts are used for generation.',
+                  })}
+                </p>
+                <fieldset aria-describedby="beginner-skeleton-help">
+                  <legend>{text({ ja: '棒状骨格', en: 'Stick skeleton' })}</legend>
+                  <label className="field">
+                    <span>{text({ ja: '始点X (mm)', en: 'Start X (mm)' })}</span>
+                    <input name="skeleton_start_x_mm" type="number" min={-10000} max={10000} step={0.1} defaultValue={0} />
+                  </label>
+                  <label className="field">
+                    <span>{text({ ja: '始点Y (mm)', en: 'Start Y (mm)' })}</span>
+                    <input name="skeleton_start_y_mm" type="number" min={-10000} max={10000} step={0.1} defaultValue={0} />
+                  </label>
+                  <label className="field">
+                    <span>{text({ ja: '長さ (mm)', en: 'Length (mm)' })}</span>
+                    <input name="skeleton_length_mm" type="number" min={0.1} max={10000} step={0.1} defaultValue={10} required />
+                  </label>
+                  <label className="field">
+                    <span>{text({ ja: '角度 (度)', en: 'Angle (degrees)' })}</span>
+                    <input name="skeleton_angle_degrees" type="number" min={-360} max={360} step={0.1} defaultValue={0} required />
+                  </label>
+                  <label className="field">
+                    <span>{text({ ja: '太さ (mm)', en: 'Thickness (mm)' })}</span>
+                    <input name="skeleton_thickness_mm" type="number" min={0.1} max={1000} step={0.1} defaultValue={1} required />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={beginnerSkeletonSegments.length >= 64 || coreBusy || recoveryBlocking}
+                    onClick={(event) => {
+                      if (event.currentTarget.form) addBeginnerSkeletonSegment(event.currentTarget.form)
+                    }}
+                  >
+                    {text({ ja: '骨格の棒を追加', en: 'Add skeleton bar' })}
+                  </button>
+                  <svg viewBox="-110 -110 220 220" role="img"
+                    aria-label={text({ ja: '棒状骨格プレビュー', en: 'Stick skeleton preview' })}>
+                    {beginnerSkeletonSegments.map((segment) => (
+                      <line
+                        key={segment.id}
+                        x1={segment.start.x_tenths_mm / 10}
+                        y1={segment.start.y_tenths_mm / 10}
+                        x2={segment.end.x_tenths_mm / 10}
+                        y2={segment.end.y_tenths_mm / 10}
+                        stroke="currentColor"
+                        strokeWidth={Math.max(0.5, segment.thickness_tenths_mm / 10)}
+                      />
+                    ))}
+                  </svg>
+                  <ul aria-label={text({ ja: '骨格の棒一覧', en: 'Skeleton bar list' })}>
+                    {beginnerSkeletonSegments.map((segment) => (
+                      <li key={segment.id}>
+                        #{segment.id}: {formattedText({
+                          ja: '太さ {thickness} mm',
+                          en: 'thickness {thickness} mm',
+                        }, { thickness: segment.thickness_tenths_mm / 10 })}
+                        <button type="button" onClick={() => setBeginnerSkeletonSegments(
+                          (segments) => segments.filter((item) => item.id !== segment.id),
+                        )}>
+                          {text({ ja: '削除', en: 'Remove' })}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </fieldset>
+                <p id="beginner-skeleton-help" className="muted">
+                  {text({
+                    ja: '0.1 mm単位で最大64本です。長さと太さを明示した棒だけを生成条件に使います。',
+                    en: 'Up to 64 bars are stored at 0.1 mm precision. Only bars with explicit length and thickness are used for generation.',
                   })}
                 </p>
                 <label className="field">

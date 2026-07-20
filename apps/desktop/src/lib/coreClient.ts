@@ -172,6 +172,12 @@ export type BeginnerGenerationConstraintsV1 = {
     kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'tail'
     count: number
   }>
+  skeleton_segments: Array<{
+    id: number
+    start: { x_tenths_mm: number; y_tenths_mm: number }
+    end: { x_tenths_mm: number; y_tenths_mm: number }
+    thickness_tenths_mm: number
+  }>
   allowed_techniques: Array<
     | 'valley_fold'
     | 'mountain_fold'
@@ -204,6 +210,7 @@ function normalizeBeginnerGenerationConstraints(
     'detail_level',
     'target_category',
     'target_parts',
+    'skeleton_segments',
     'allowed_techniques',
   ] as const)
   if (
@@ -222,6 +229,8 @@ function normalizeBeginnerGenerationConstraints(
       && record.target_category !== 'insect')
     || !Array.isArray(record.target_parts)
     || record.target_parts.length > 7
+    || !Array.isArray(record.skeleton_segments)
+    || record.skeleton_segments.length > 64
     || !Array.isArray(record.allowed_techniques)
     || record.allowed_techniques.length < 1
     || record.allowed_techniques.length > 8
@@ -247,12 +256,40 @@ function normalizeBeginnerGenerationConstraints(
   if (targetParts.some((part) => part === null)
     || partTotal > 32
     || (targetParts.length > 0 && record.target_category === null)) return null
+  const segmentIds = new Set<number>()
+  const skeletonSegments = record.skeleton_segments.map((segment) => {
+    const item = exactCoreDataRecord(segment, ['id', 'start', 'end', 'thickness_tenths_mm'] as const)
+    const start = item && exactCoreDataRecord(item.start, ['x_tenths_mm', 'y_tenths_mm'] as const)
+    const end = item && exactCoreDataRecord(item.end, ['x_tenths_mm', 'y_tenths_mm'] as const)
+    const coordinates = start && end
+      ? [start.x_tenths_mm, start.y_tenths_mm, end.x_tenths_mm, end.y_tenths_mm]
+      : []
+    if (!item || !start || !end
+      || !Number.isInteger(item.id) || Number(item.id) < 0 || Number(item.id) > 65535
+      || segmentIds.has(Number(item.id))
+      || coordinates.some((coordinate) =>
+        !Number.isInteger(coordinate) || Math.abs(Number(coordinate)) > 100_000)
+      || (start.x_tenths_mm === end.x_tenths_mm && start.y_tenths_mm === end.y_tenths_mm)
+      || !Number.isInteger(item.thickness_tenths_mm)
+      || Number(item.thickness_tenths_mm) < 1
+      || Number(item.thickness_tenths_mm) > 10_000
+    ) return null
+    segmentIds.add(Number(item.id))
+    return {
+      id: Number(item.id),
+      start: { x_tenths_mm: Number(start.x_tenths_mm), y_tenths_mm: Number(start.y_tenths_mm) },
+      end: { x_tenths_mm: Number(end.x_tenths_mm), y_tenths_mm: Number(end.y_tenths_mm) },
+      thickness_tenths_mm: Number(item.thickness_tenths_mm),
+    }
+  })
+  if (skeletonSegments.some((segment) => segment === null)) return null
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
     detail_level: record.detail_level,
     target_category: record.target_category,
     target_parts: targetParts,
+    skeleton_segments: skeletonSegments,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
 }
@@ -296,6 +333,7 @@ export type BeginnerGeneratedPlanV1 = {
   }
   instruction_codes: string[]
   target_parts: BeginnerGenerationConstraintsV1['target_parts']
+  skeleton_segments: BeginnerGenerationConstraintsV1['skeleton_segments']
 }
 
 function normalizeBeginnerCandidateResponse(
@@ -380,6 +418,7 @@ function normalizeBeginnerCandidateResponse(
   const generatedPlans = response.generated_plans.map((plan) => {
     const record = exactCoreDataRecord(plan, [
       'schema_version', 'kind', 'crease_pattern', 'instruction_codes', 'target_parts',
+      'skeleton_segments',
     ] as const)
     const pattern = record && exactCoreDataRecord(record.crease_pattern, ['vertices', 'edges'] as const)
     if (
@@ -396,15 +435,16 @@ function normalizeBeginnerCandidateResponse(
       || !record.instruction_codes.every((code) =>
         ['book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
-    const targetParts = normalizeBeginnerGenerationConstraints({
+    const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
       maximum_steps: 1,
       detail_level: 'simple',
       target_category: 'animal',
       target_parts: record.target_parts,
+      skeleton_segments: record.skeleton_segments,
       allowed_techniques: ['valley_fold'],
-    })?.target_parts
-    if (!targetParts) return null
+    })
+    if (!normalizedPlanInputs) return null
     const vertices = pattern.vertices.map((vertex) => {
       const item = exactCoreDataRecord(vertex, ['id', 'position'] as const)
       const position = item && exactCoreDataRecord(item.position, ['x', 'y'] as const)
@@ -421,7 +461,8 @@ function normalizeBeginnerCandidateResponse(
       kind: record.kind,
       crease_pattern: { vertices, edges: [edge] },
       instruction_codes: record.instruction_codes.slice(),
-      target_parts: targetParts,
+      target_parts: normalizedPlanInputs.target_parts,
+      skeleton_segments: normalizedPlanInputs.skeleton_segments,
     } as BeginnerGeneratedPlanV1
   })
   if (generatedPlans.some((plan) => plan === null)

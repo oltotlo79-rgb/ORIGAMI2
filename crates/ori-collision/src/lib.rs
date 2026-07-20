@@ -22,6 +22,7 @@
 #[allow(dead_code)]
 mod cayley;
 mod cell_order_transport;
+mod continuous_path;
 mod flat_endpoint_layer_order;
 mod stacked_fold_read;
 mod static_collision;
@@ -32,6 +33,11 @@ pub use cell_order_transport::{
     CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,
     NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
     prove_single_face_cell_order_transport_v1, revalidate_single_face_cell_order_transport_v1,
+};
+pub use continuous_path::{
+    MAX_STACKED_FOLD_PATH_SAMPLES_V1, STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+    StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1,
+    StackedFoldPathDiagnosticLimitsV1, diagnose_collective_hinge_path_v1,
 };
 pub use flat_endpoint_layer_order::{
     FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointCellKeyV1, FlatEndpointLayerCellV1,

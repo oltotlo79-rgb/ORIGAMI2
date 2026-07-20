@@ -6,10 +6,11 @@
 
 use ori_collision::{
     FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
-    StackedFoldMaterialMapLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
-    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
-    capture_stacked_fold_read_guard_v1, diagnose_static_collision_geometry,
-    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
+    StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
+    StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
+    StaticCollisionLimits, capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
+    diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
+    reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
     ExpectedStackedFoldCreaseV1, FaceLineageLimits, StackedFoldGeometryLimitsV1,
@@ -175,6 +176,19 @@ struct StackedFoldEndpointCollisionDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct StackedFoldContinuousPathDto {
+    model_id: &'static str,
+    sampled_pose_count: usize,
+    sampled_nonblocking_pose_count: usize,
+    first_sampled_blocking_angle_degrees: Option<f64>,
+    requested_angle_degrees: f64,
+    continuous_clearance_certified: bool,
+    safe_stop_angle_degrees: f64,
+    authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StackedFoldFlatEndpointLayerOrderDto {
     applicable: bool,
     certified: bool,
@@ -195,6 +209,7 @@ pub(super) struct StackedFoldReadResponse {
     material_segments: Vec<StackedFoldMaterialSegmentDto>,
     topology_proof: StackedFoldTopologyProofDto,
     endpoint_collision: StackedFoldEndpointCollisionDto,
+    continuous_path: StackedFoldContinuousPathDto,
     flat_endpoint_layer_order: StackedFoldFlatEndpointLayerOrderDto,
     work: StackedFoldReadWorkDto,
     authorizes_project_mutation: bool,
@@ -309,6 +324,23 @@ pub(super) async fn propose_current_stacked_fold_read(
             prepared_target,
             pose_capability.model(),
             pose_capability.pose(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let moving_hinges = prepared_initial_pose
+            .target()
+            .geometry()
+            .proof()
+            .expected_creases()
+            .iter()
+            .flat_map(|subdivision| subdivision.target_edges().iter().copied())
+            .collect::<Vec<_>>();
+        let continuous_path = diagnose_collective_hinge_path_v1(
+            prepared_initial_pose.target().model(),
+            prepared_initial_pose.pose(),
+            &moving_hinges,
+            candidate.requested_angle_degrees(),
+            paper.thickness_mm,
+            StackedFoldPathDiagnosticLimitsV1::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let prepared_requested_pose = prepare_stacked_fold_requested_pose_v1(
@@ -456,6 +488,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             topology_proof,
             work,
             endpoint_collision,
+            continuous_path,
             flat_endpoint_layer_order,
         ))
     })
@@ -472,6 +505,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         topology_proof,
         work,
         endpoint_collision,
+        continuous_path,
         flat_endpoint_layer_order,
     ) = analysis;
 
@@ -519,6 +553,17 @@ pub(super) async fn propose_current_stacked_fold_read(
             penetrating_pair_count: endpoint_collision.penetrating_pairs(),
             indeterminate_pair_count: endpoint_collision.indeterminate_pairs(),
             has_blocking_hold: endpoint_collision.has_prominent_blocking_hold(),
+        },
+        continuous_path: StackedFoldContinuousPathDto {
+            model_id: continuous_path.model_id(),
+            sampled_pose_count: continuous_path.sampled_pose_count(),
+            sampled_nonblocking_pose_count: continuous_path.sampled_nonblocking_pose_count(),
+            first_sampled_blocking_angle_degrees: continuous_path
+                .first_sampled_blocking_angle_degrees(),
+            requested_angle_degrees: continuous_path.requested_angle_degrees(),
+            continuous_clearance_certified: continuous_path.continuous_clearance_certified(),
+            safe_stop_angle_degrees: continuous_path.safe_stop_angle_degrees(),
+            authorizes_project_mutation: continuous_path.authorizes_project_mutation(),
         },
         flat_endpoint_layer_order,
         work: StackedFoldReadWorkDto {

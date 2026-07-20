@@ -447,6 +447,7 @@ struct ProjectState {
     applied_pose_authority: CurrentAppliedPoseAuthority,
     numeric_expressions: ProjectNumericExpressions,
     texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
+    reference_model_assets: Vec<ori_formats::ProjectReferenceModelAssetV1>,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
 }
@@ -468,6 +469,7 @@ impl ProjectState {
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
+            reference_model_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
         };
@@ -489,6 +491,7 @@ impl ProjectState {
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
+            reference_model_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
         }
@@ -505,6 +508,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
         let texture_assets = document.texture_assets;
+        let reference_model_assets = document.reference_model_assets;
         let mut editor = EditorState::with_all_document_parts_annotations_underlays_and_memo(
             document.crease_pattern,
             document.paper,
@@ -528,6 +532,7 @@ impl ProjectState {
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions,
             texture_assets,
+            reference_model_assets,
             saved_document: Some(saved_document),
             editor,
         }
@@ -561,6 +566,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let texture_assets = document.texture_assets.clone();
+        let reference_model_assets = document.reference_model_assets.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -570,6 +576,7 @@ impl ProjectState {
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
             texture_assets,
+            reference_model_assets,
             saved_document: Some(saved_document),
             editor,
         };
@@ -598,6 +605,7 @@ impl ProjectState {
             history_lengths.1,
         )?;
         let texture_assets = document.texture_assets.clone();
+        let reference_model_assets = document.reference_model_assets.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -607,6 +615,7 @@ impl ProjectState {
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
             texture_assets,
+            reference_model_assets,
             saved_document: None,
             editor,
         };
@@ -640,6 +649,7 @@ impl ProjectState {
             element_metadata: self.editor.element_metadata().clone(),
             beginner_design_profile: self.editor.beginner_design_profile().clone(),
             texture_assets: self.texture_assets.clone(),
+            reference_model_assets: self.reference_model_assets.clone(),
         };
         document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
         document
@@ -701,6 +711,7 @@ impl ProjectState {
             || saved.element_metadata != *self.editor.element_metadata()
             || saved.beginner_design_profile != *self.editor.beginner_design_profile()
             || saved.texture_assets != self.texture_assets
+            || saved.reference_model_assets != self.reference_model_assets
     }
 
     fn record_numeric_expression_edit(&mut self) {
@@ -1761,27 +1772,32 @@ fn target_asset_reference_is_live(
     project: &ProjectState,
     reference: Option<ori_domain::BeginnerTargetAssetReferenceV1>,
 ) -> bool {
-    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
-        underlay_id,
-        asset_id,
-    }) = reference
-    else {
-        return true;
-    };
-    project
-        .editor
-        .underlays()
-        .underlays
-        .iter()
-        .any(|underlay| underlay.id == underlay_id && underlay.asset == asset_id)
-        && project.texture_assets.iter().any(|asset| {
-            asset.id == asset_id
-                && asset.bytes.len() <= MAX_PROJECT_TEXTURE_ASSET_BYTES
-                && matches!(
-                    asset.media_type,
-                    ProjectTextureMediaTypeV1::Png | ProjectTextureMediaTypeV1::Jpeg
-                )
-        })
+    match reference {
+        None => true,
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+            underlay_id,
+            asset_id,
+        }) => {
+            project
+                .editor
+                .underlays()
+                .underlays
+                .iter()
+                .any(|underlay| underlay.id == underlay_id && underlay.asset == asset_id)
+                && project.texture_assets.iter().any(|asset| {
+                    asset.id == asset_id
+                        && asset.bytes.len() <= MAX_PROJECT_TEXTURE_ASSET_BYTES
+                        && matches!(
+                            asset.media_type,
+                            ProjectTextureMediaTypeV1::Png | ProjectTextureMediaTypeV1::Jpeg
+                        )
+                })
+        }
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) => project
+            .reference_model_assets
+            .iter()
+            .any(|asset| asset.id == asset_id),
+    }
 }
 
 #[tauri::command]
@@ -1841,6 +1857,107 @@ fn update_beginner_design_profile(
         expected_revision,
         Command::UpdateBeginnerDesignProfile { profile },
     )
+}
+
+#[tauri::command]
+fn import_beginner_reference_model(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<ProjectSnapshot, String> {
+    {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+    }
+    let selected = app
+        .dialog()
+        .file()
+        .set_title("3D参照モデル / 3D reference model")
+        .add_filter("GLB 2.0", &["glb"])
+        .blocking_pick_file();
+    let Some(selected) = selected else {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+        return Ok(snapshot(&project));
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| "ローカルGLBを選択してください / Select a local GLB".to_owned())?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|_| "GLBを読み込めません / Could not read GLB".to_owned())?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > ori_formats::MAX_REFERENCE_GLB_BYTES_V1 as u64
+    {
+        return Err("GLBは16 MiB以下である必要があります / GLB must be no larger than 16 MiB"
+            .to_owned());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)
+        .and_then(|file| {
+            file.take((ori_formats::MAX_REFERENCE_GLB_BYTES_V1 + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "GLBを読み込めません / Could not read GLB".to_owned())?;
+    ori_formats::validate_reference_glb_v1(&bytes).map_err(|_| {
+        "安全なGLB 2.0参照モデルではありません / Not a supported passive GLB 2.0 reference"
+            .to_owned()
+    })?;
+
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let retained_total = project
+        .reference_model_assets
+        .iter()
+        .fold(bytes.len(), |total, asset| {
+            total.saturating_add(asset.bytes.len())
+        });
+    if retained_total > ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSET_TOTAL_BYTES
+        || project.reference_model_assets.len()
+            >= ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSETS
+    {
+        return Err(
+            "参照モデルのプロジェクト上限を超えます / Project reference-model limit exceeded"
+                .to_owned(),
+        );
+    }
+    let asset_id = AssetId::new();
+    project
+        .reference_model_assets
+        .push(ori_formats::ProjectReferenceModelAssetV1 { id: asset_id, bytes });
+    let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_constraints.target_asset =
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });
+    let result = execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile { profile },
+    );
+    if result.is_err() {
+        project
+            .reference_model_assets
+            .retain(|asset| asset.id != asset_id);
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8439,6 +8556,7 @@ pub fn run() {
             apply_beginner_generated_plan,
             update_project_memo,
             update_beginner_design_profile,
+            import_beginner_reference_model,
             get_history_entry_limit,
             set_history_entry_limit,
             get_recovery_candidate,

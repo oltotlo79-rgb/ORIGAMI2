@@ -138,6 +138,8 @@ pub enum BeginnerTargetAssetReferenceV1 {
         underlay_id: UnderlayId,
         asset_id: AssetId,
     },
+    /// A passive visual reference. This grants no recognition or generation authority.
+    ReferenceModel { asset_id: AssetId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

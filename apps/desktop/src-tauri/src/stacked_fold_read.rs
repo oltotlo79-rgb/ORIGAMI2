@@ -675,7 +675,14 @@ mod tests {
         );
 
         let other = Point3::new(2.0, 2.0, 3.0).unwrap();
-        for angle in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -90.0, 180.1] {
+        for angle in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -90.0,
+            180.1,
+        ] {
             assert!(
                 StackedFoldLinearCandidateV1::new(
                     point,

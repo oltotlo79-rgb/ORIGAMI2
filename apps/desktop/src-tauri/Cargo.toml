@@ -29,6 +29,7 @@ serde_json.workspace = true
 sha2 = "0.10.9"
 base64 = "0.22"
 png = "0.18"
+jpeg-decoder = { version = "0.3.2", default-features = false }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

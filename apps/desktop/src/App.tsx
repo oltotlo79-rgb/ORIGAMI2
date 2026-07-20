@@ -7885,12 +7885,12 @@ function App() {
                   >
                     {beginnerRecognitionBusy
                       ? text({ ja: '認識中…', en: 'Recognizing…' })
-                      : text({ ja: '一般PNGから輪郭を認識', en: 'Recognize outline from PNG' })}
+                      : text({ ja: '一般画像から輪郭を認識', en: 'Recognize outline from image' })}
                   </button>
                   <p id="beginner-recognition-help" className="muted">
                     {text({
                       ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',
-                      en: 'RGB, grayscale, palette, and RGBA PNG input produces a read-only proposal. It grants no automatic design authority; copying remains unsaved until you save.',
+                      en: 'Bounded PNG or JPEG input produces a read-only outline proposal. It grants no automatic design authority; copying remains unsaved until you save.',
                     })}
                   </p>
                   {beginnerRecognitionProposal && (

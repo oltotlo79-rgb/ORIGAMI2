@@ -90,7 +90,7 @@ const INSTRUCTION_EXPORT_COPY = {
     format: 'Export format',
     optionDetails: {
       pdf: 'Combine fixed-isometric diagrams and hand/regrip guide labels into a multi-page PDF',
-      svg_zip: 'Package one vector SVG image per instruction page into a ZIP',
+      svg_zip: 'Package one vector SVG page with fold directions, focus points, and hand positions into a ZIP',
     },
     rebuild: 'Rebuild from the current edits',
     retry: 'Retry the same format',

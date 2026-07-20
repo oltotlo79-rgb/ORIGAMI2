@@ -485,6 +485,7 @@ fn first_step_page(
         )?;
         cursor += 20.0;
         cursor = add_hand_guide_summary(&mut page, step, cursor, font, glyphs)?;
+        cursor = add_direction_and_focus_summary(&mut page, step, cursor, font, glyphs)?;
         return Ok((page, cursor));
     }
 
@@ -524,6 +525,7 @@ fn first_step_page(
     )?;
     cursor += 20.0;
     cursor = add_hand_guide_summary(&mut page, step, cursor, font, glyphs)?;
+    cursor = add_direction_and_focus_summary(&mut page, step, cursor, font, glyphs)?;
     Ok((page, cursor))
 }
 
@@ -551,7 +553,16 @@ fn add_hand_guide_summary(
             if guide.label.is_empty() {
                 kind.to_owned()
             } else {
-                format!("{kind}: {}", guide.label)
+                format!(
+                    "{kind}: {} @ ({:.2}, {:.2}, {:.2}) -> ({:.2}, {:.2}, {:.2})",
+                    guide.label,
+                    guide.position.x,
+                    guide.position.y,
+                    guide.position.z,
+                    guide.direction.x,
+                    guide.direction.y,
+                    guide.direction.z,
+                )
             }
         })
         .collect::<Vec<_>>()
@@ -566,6 +577,70 @@ fn add_hand_guide_summary(
         font,
         glyphs,
     )
+}
+
+fn add_direction_and_focus_summary(
+    page: &mut InstructionPage,
+    step: &ori_domain::InstructionStep,
+    mut cursor: f64,
+    font: &InstructionFont<'_>,
+    glyphs: &mut GlyphBudget,
+) -> Result<f64, InstructionExportError> {
+    if !step.visual.arrows.is_empty() {
+        let arrows = step
+            .visual
+            .arrows
+            .iter()
+            .map(|arrow| {
+                format!(
+                    "{}: ({:.2}, {:.2}, {:.2}) -> ({:.2}, {:.2}, {:.2})",
+                    arrow.label,
+                    arrow.start.x,
+                    arrow.start.y,
+                    arrow.start.z,
+                    arrow.end.x,
+                    arrow.end.y,
+                    arrow.end.z,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" / ");
+        cursor = add_wrapped_header(
+            page,
+            &format!("Fold directions: {arrows}"),
+            8.0,
+            11.0,
+            cursor,
+            PageColor::MUTED,
+            font,
+            glyphs,
+        )?;
+    }
+    if !step.visual.focus_points.is_empty() {
+        let points = step
+            .visual
+            .focus_points
+            .iter()
+            .map(|focus| {
+                format!(
+                    "{}: ({:.2}, {:.2}, {:.2}), r={:.2}",
+                    focus.label, focus.position.x, focus.position.y, focus.position.z, focus.radius,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" / ");
+        cursor = add_wrapped_header(
+            page,
+            &format!("Focus points: {points}"),
+            8.0,
+            11.0,
+            cursor,
+            PageColor::MUTED,
+            font,
+            glyphs,
+        )?;
+    }
+    Ok(cursor)
 }
 
 fn draw_declarative_placeholder(
@@ -987,8 +1062,9 @@ fn format_duration(duration_ms: u32) -> String {
 #[cfg(test)]
 mod tests {
     use ori_domain::{
-        InstructionHandGuide, InstructionHandGuideKind, InstructionPoint3, InstructionPose,
-        InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
+        InstructionArrow, InstructionFocusPoint, InstructionHandGuide, InstructionHandGuideKind,
+        InstructionPoint3, InstructionPose, InstructionPoseModel, InstructionStep,
+        InstructionStepId, InstructionTimeline,
     };
 
     use super::*;
@@ -1064,6 +1140,31 @@ mod tests {
                 },
                 label: "right hand".to_owned(),
             });
+        timeline.steps[0].visual.arrows.push(InstructionArrow {
+            start: InstructionPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: InstructionPoint3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            label: "fold up".to_owned(),
+        });
+        timeline.steps[0]
+            .visual
+            .focus_points
+            .push(InstructionFocusPoint {
+                position: InstructionPoint3 {
+                    x: 2.0,
+                    y: 3.0,
+                    z: 4.0,
+                },
+                radius: 0.5,
+                label: "corner".to_owned(),
+            });
         let diagram = InstructionDiagramPlan {
             bounds: DiagramBounds {
                 min_x: 0.0,
@@ -1101,6 +1202,8 @@ mod tests {
         assert!(text.contains("自動実行せず層を確認してください。"));
         assert!(text.contains("説明専用・3D姿勢なし"));
         assert!(text.contains("Hand guides: regrip: right hand"));
+        assert!(text.contains("Fold directions: fold up:"));
+        assert!(text.contains("Focus points: corner:"));
         assert!(layout.pages.iter().all(|page| page.lines.is_empty()));
     }
 

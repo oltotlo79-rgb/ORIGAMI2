@@ -41,6 +41,7 @@ struct BeginnerGridWork {
     cancelled: AtomicBool,
     enumerated: AtomicU64,
     global_checked: AtomicU64,
+    terminal: AtomicU64,
 }
 
 static BEGINNER_GRID_WORK: OnceLock<Mutex<HashMap<ProjectId, Arc<BeginnerGridWork>>>> =
@@ -53,8 +54,12 @@ fn beginner_grid_work() -> &'static Mutex<HashMap<ProjectId, Arc<BeginnerGridWor
 struct BeginnerGridWorkRegistration(ProjectId);
 impl Drop for BeginnerGridWorkRegistration {
     fn drop(&mut self) {
-        if let Ok(mut registry) = beginner_grid_work().lock() {
-            registry.remove(&self.0);
+        if let Ok(registry) = beginner_grid_work().lock() {
+            if let Some(work) = registry.get(&self.0) {
+                let _ = work
+                    .terminal
+                    .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+            }
         }
     }
 }
@@ -2170,6 +2175,7 @@ fn evaluate_beginner_parameter_grid(
         let mut registry = beginner_grid_work()
             .lock()
             .map_err(|_| "grid_work_unavailable")?;
+        registry.retain(|_, existing| existing.terminal.load(Ordering::Acquire) == 0);
         if registry
             .insert(request_generation_id, Arc::clone(&work))
             .is_some()
@@ -2189,6 +2195,7 @@ fn evaluate_beginner_parameter_grid(
     let mut primary = Vec::with_capacity(grid.len());
     for point in grid.iter().copied() {
         if work.cancelled.load(Ordering::Acquire) {
+            work.terminal.store(2, Ordering::Release);
             return Err("grid_evaluation_cancelled".to_owned());
         }
         let plan = grid_template_plan(
@@ -2225,6 +2232,7 @@ fn evaluate_beginner_parameter_grid(
         .into_iter()
         .map(|(primary_score, point, plan)| {
             if work.cancelled.load(Ordering::Acquire) {
+                work.terminal.store(2, Ordering::Release);
                 return Err("grid_evaluation_cancelled".to_owned());
             }
             let assessment = assess_beginner_generated_plan_with_deadline(
@@ -2243,6 +2251,7 @@ fn evaluate_beginner_parameter_grid(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    work.terminal.store(1, Ordering::Release);
     Ok(BeginnerGridEvaluationResponse {
         request_generation_id,
         project_instance_id: project.instance_id,
@@ -2260,6 +2269,7 @@ struct BeginnerGridProgressResponse {
     request_generation_id: ProjectId,
     enumerated_grid_points: u8,
     global_checked_candidates: u8,
+    terminal_state: &'static str,
 }
 
 #[tauri::command]
@@ -2272,10 +2282,17 @@ fn get_beginner_parameter_grid_progress(
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "grid_generation_not_running".to_owned())?;
+    let terminal_state = match work.terminal.load(Ordering::Acquire) {
+        0 => "running",
+        1 => "completed",
+        2 => "cancelled",
+        _ => "failed",
+    };
     Ok(BeginnerGridProgressResponse {
         request_generation_id,
         enumerated_grid_points: work.enumerated.load(Ordering::Acquire).min(27) as u8,
         global_checked_candidates: work.global_checked.load(Ordering::Acquire).min(3) as u8,
+        terminal_state,
     })
 }
 
@@ -2288,6 +2305,9 @@ fn cancel_beginner_parameter_grid(request_generation_id: ProjectId) -> Result<()
         .get(&request_generation_id)
         .ok_or_else(|| "grid_generation_not_running".to_owned())?;
     work.cancelled.store(true, Ordering::Release);
+    let _ = work
+        .terminal
+        .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
     Ok(())
 }
 
@@ -2576,6 +2596,7 @@ fn apply_beginner_parameter_grid_candidate(
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
+    request_generation_id: ProjectId,
     expected_profile: ori_domain::BeginnerDesignProfileV1,
     expected_grid_hash: ori_domain::BeginnerParameterGridHashV1,
     selected_point: ori_domain::BeginnerParameterGridPointV1,
@@ -2584,6 +2605,17 @@ fn apply_beginner_parameter_grid_candidate(
 ) -> Result<ProjectSnapshot, String> {
     if !confirmed {
         return Err("grid_candidate_confirmation_required".to_owned());
+    }
+    {
+        let registry = beginner_grid_work()
+            .lock()
+            .map_err(|_| "grid_work_unavailable")?;
+        let work = registry
+            .get(&request_generation_id)
+            .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
+        if work.terminal.load(Ordering::Acquire) != 1 {
+            return Err("grid_candidate_generation_stale".to_owned());
+        }
     }
     let grid = ori_domain::beginner_parameter_grid_v1();
     if ori_domain::beginner_parameter_grid_hash_v1(&grid) != expected_grid_hash
@@ -10053,9 +10085,26 @@ mod tests {
         assert_eq!(progress.enumerated_grid_points, 27);
         assert_eq!(progress.global_checked_candidates, 3);
         cancel_beginner_parameter_grid(generation).unwrap();
+        cancel_beginner_parameter_grid(generation).unwrap();
         assert!(work.cancelled.load(Ordering::Acquire));
-        beginner_grid_work().lock().unwrap().remove(&generation);
-        assert!(get_beginner_parameter_grid_progress(generation).is_err());
+        assert_eq!(
+            get_beginner_parameter_grid_progress(generation)
+                .unwrap()
+                .terminal_state,
+            "cancelled"
+        );
+        for _ in 0..10 {
+            let replacement = ProjectId::new();
+            let replacement_work = Arc::new(BeginnerGridWork::default());
+            let mut registry = beginner_grid_work().lock().unwrap();
+            for existing in registry.values() {
+                existing.terminal.store(2, Ordering::Release);
+            }
+            registry.retain(|_, existing| existing.terminal.load(Ordering::Acquire) == 0);
+            registry.insert(replacement, replacement_work);
+        }
+        assert_eq!(beginner_grid_work().lock().unwrap().len(), 1);
+        beginner_grid_work().lock().unwrap().clear();
     }
 
     #[test]

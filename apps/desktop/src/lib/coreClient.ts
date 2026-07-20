@@ -1695,15 +1695,17 @@ export async function evaluateBeginnerParameterGrid(
 
 export async function getBeginnerParameterGridProgress(requestGenerationId: string) {
   const value = await invoke<unknown>('get_beginner_parameter_grid_progress', { requestGenerationId })
-  const record = exactCoreDataRecord(value, ['request_generation_id', 'enumerated_grid_points', 'global_checked_candidates'] as const)
+  const record = exactCoreDataRecord(value, ['request_generation_id', 'enumerated_grid_points', 'global_checked_candidates', 'terminal_state'] as const)
   if (!record || record.request_generation_id !== requestGenerationId
     || !Number.isInteger(record.enumerated_grid_points) || Number(record.enumerated_grid_points) < 0 || Number(record.enumerated_grid_points) > 27
-    || !Number.isInteger(record.global_checked_candidates) || Number(record.global_checked_candidates) < 0 || Number(record.global_checked_candidates) > 3) {
+    || !Number.isInteger(record.global_checked_candidates) || Number(record.global_checked_candidates) < 0 || Number(record.global_checked_candidates) > 3
+    || !['running', 'completed', 'cancelled', 'failed'].includes(String(record.terminal_state))) {
     throw new Error('invalid beginner grid progress')
   }
   return Object.freeze({ request_generation_id: requestGenerationId,
     enumerated_grid_points: Number(record.enumerated_grid_points),
-    global_checked_candidates: Number(record.global_checked_candidates) })
+    global_checked_candidates: Number(record.global_checked_candidates),
+    terminal_state: record.terminal_state as 'running' | 'completed' | 'cancelled' | 'failed' })
 }
 
 export function cancelBeginnerParameterGrid(requestGenerationId: string) {
@@ -1726,6 +1728,7 @@ export function applyBeginnerParameterGridCandidate(
   }
   return invoke<ProjectSnapshot>('apply_beginner_parameter_grid_candidate', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
+    requestGenerationId: grid.request_generation_id,
     expectedProfile,
     expectedGridHash: grid.grid_hash,
     selectedPoint: candidate.point,

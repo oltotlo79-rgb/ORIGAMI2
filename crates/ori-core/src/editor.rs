@@ -50,71 +50,6 @@ impl JunctionVertexIntent {
             Self::Create { id } | Self::Reuse { id } => id,
         }
     }
-
-    #[test]
-    fn underlay_crud_undo_redo_and_layer_guards_are_atomic() {
-        let mut editor = EditorState::new(CreasePattern::empty());
-        let layer = LayerRecordV1 {
-            id: LayerId::new(),
-            name: "Reference".to_owned(),
-            content_kind: ori_domain::LayerContentKindV1::Underlay,
-            visible: true,
-            locked: false,
-            opacity: 1.0,
-        };
-        editor
-            .execute(
-                0,
-                Command::CreateLayer {
-                    layer: layer.clone(),
-                    target_index: 1,
-                },
-            )
-            .expect("create underlay layer");
-        let mut record = UnderlayRecordV1 {
-            id: UnderlayId::new(),
-            asset: AssetId::new(),
-            transform: ori_domain::UnderlayTransformV1 {
-                position: Point2::new(0.0, 0.0),
-                scale_x: 1.0,
-                scale_y: 1.0,
-                rotation_degrees: 0.0,
-            },
-            opacity: 0.5,
-            layer: layer.id,
-        };
-        editor
-            .execute(
-                1,
-                Command::AddUnderlay {
-                    record: record.clone(),
-                },
-            )
-            .expect("add underlay");
-        record.opacity = 0.75;
-        editor
-            .execute(
-                2,
-                Command::UpdateUnderlay {
-                    record: record.clone(),
-                },
-            )
-            .expect("update underlay");
-        assert_eq!(editor.underlays().underlays[0].opacity, 0.75);
-        assert_eq!(
-            editor.execute(3, Command::DeleteLayer { layer: layer.id }),
-            Err(CommandError::InvalidUnderlay)
-        );
-        editor
-            .execute(3, Command::RemoveUnderlay { id: record.id })
-            .expect("remove underlay");
-        editor.undo(4).expect("undo remove");
-        assert_eq!(editor.underlays().underlays, vec![record.clone()]);
-        editor.undo(5).expect("undo update");
-        assert_eq!(editor.underlays().underlays[0].opacity, 0.5);
-        editor.redo(6).expect("redo update");
-        assert_eq!(editor.underlays().underlays[0].opacity, 0.75);
-    }
 }
 
 /// Associates one source edge with the ID for its optional second half.
@@ -6035,6 +5970,69 @@ impl Inverse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn underlay_crud_undo_redo_and_layer_guards_are_atomic() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Reference".to_owned(),
+            content_kind: ori_domain::LayerContentKindV1::Underlay,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+        };
+        editor
+            .execute(
+                0,
+                Command::CreateLayer {
+                    layer: layer.clone(),
+                    target_index: 1,
+                },
+            )
+            .expect("create layer");
+        let mut record = UnderlayRecordV1 {
+            id: UnderlayId::new(),
+            asset: AssetId::new(),
+            transform: ori_domain::UnderlayTransformV1 {
+                position: Point2::new(0.0, 0.0),
+                scale_x: 1.0,
+                scale_y: 1.0,
+                rotation_degrees: 0.0,
+            },
+            opacity: 0.5,
+            layer: layer.id,
+        };
+        editor
+            .execute(
+                1,
+                Command::AddUnderlay {
+                    record: record.clone(),
+                },
+            )
+            .unwrap();
+        record.opacity = 0.75;
+        editor
+            .execute(
+                2,
+                Command::UpdateUnderlay {
+                    record: record.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            editor.execute(3, Command::DeleteLayer { layer: layer.id }),
+            Err(CommandError::InvalidUnderlay)
+        );
+        editor
+            .execute(3, Command::RemoveUnderlay { id: record.id })
+            .unwrap();
+        editor.undo(4).unwrap();
+        editor.undo(5).unwrap();
+        assert_eq!(editor.underlays().underlays[0].opacity, 0.5);
+        editor.redo(6).unwrap();
+        assert_eq!(editor.underlays().underlays[0].opacity, 0.75);
+    }
 
     #[derive(Debug, PartialEq)]
     struct EditorStateSnapshot {

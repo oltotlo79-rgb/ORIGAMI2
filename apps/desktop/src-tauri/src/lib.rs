@@ -2099,6 +2099,7 @@ fn temporary_symmetric_profile_for_grid(
         return Err("beginner_parameter_grid_point_invalid".to_owned());
     }
 
+    let three_pairs = ori_domain::insect_three_pair_bindings_v1(&source.generation_constraints);
     let mut profile = source.clone();
     profile.generation_constraints.detail_level = point.detail_level;
     let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
@@ -2109,6 +2110,36 @@ fn temporary_symmetric_profile_for_grid(
         point.scale_percent,
         point.spacing_percent,
     );
+    if let Some(bindings) = three_pairs {
+        profile.generation_constraints.protrusions = bindings
+            .into_iter()
+            .filter_map(|binding| {
+                source
+                    .generation_constraints
+                    .protrusions
+                    .iter()
+                    .find(|target| target.id == binding.protrusion_id)
+                    .cloned()
+            })
+            .map(|mut target| {
+                target.length_tenths_mm = target
+                    .length_tenths_mm
+                    .saturating_mul(u32::from(point.scale_percent))
+                    .checked_div(27)
+                    .unwrap_or(1)
+                    .clamp(1, 1_000_000);
+                target.thickness_tenths_mm = u16::try_from(
+                    u32::from(target.thickness_tenths_mm)
+                        .saturating_mul(u32::from(point.spacing_percent))
+                        .checked_div(50)
+                        .unwrap_or(1)
+                        .clamp(1, 10_000),
+                )
+                .unwrap_or(10_000);
+                target
+            })
+            .collect();
+    }
     if matches!(
         source.generation_constraints.target_asset,
         Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. })
@@ -2170,7 +2201,14 @@ fn symmetric_plan_kind(
     if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
     {
-        if has(ori_domain::BeginnerTargetPartKindV1::Antenna) {
+        if profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6)
+        {
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
+        } else if has(ori_domain::BeginnerTargetPartKindV1::Antenna) {
             ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
         } else if has(ori_domain::BeginnerTargetPartKindV1::Leg) {
             ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
@@ -2505,6 +2543,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2612,6 +2651,11 @@ fn apply_beginner_generated_plan(
             "Create one bounded bilateral insect-leg pair base.",
             "This limited family represents exactly two legs, not a complete six-leg insect.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase => (
+            "Symmetric complete six-leg base",
+            "Create three individually bound bilateral insect-leg pairs.",
+            "All three pair positions and the global proof were revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2714,6 +2758,11 @@ fn apply_grid_plan_document(
             "Symmetric insect leg-pair grid candidate",
             "Apply the globally proven parameter-grid insect leg pair.",
             "This limited family represents exactly two legs, not a complete six-leg insect.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase => (
+            "Symmetric complete six-leg grid candidate",
+            "Apply the globally proven three-pair parameter-grid insect base.",
+            "All three pair positions and the global proof were revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };

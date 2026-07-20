@@ -587,6 +587,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'symmetric_horn_base'
     | 'symmetric_antenna_base'
     | 'symmetric_insect_leg_pair_base'
+    | 'symmetric_six_leg_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold'
@@ -695,18 +696,18 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
-      || pattern.vertices.length > 5
+      || pattern.vertices.length > (record.kind === 'symmetric_six_leg_base' ? 13 : 5)
       || !Array.isArray(pattern.edges)
       || pattern.edges.length < 1
-      || pattern.edges.length > 4
+      || pattern.edges.length > (record.kind === 'symmetric_six_leg_base' ? 12 : 4)
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -1772,9 +1773,9 @@ export function applyBeginnerParameterGridCandidate(
 
 export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
   project_instance_id: string; project_id: string; revision: number
-  estimate: Readonly<{ protrusion_count: 2 | 4; scale_percent: number; spacing_percent: number }>
+  estimate: Readonly<{ protrusion_count: 2 | 4 | 6; scale_percent: number; spacing_percent: number }>
   candidates: ReadonlyArray<Readonly<{ id: number; scale_percent: number; spacing_percent: number
-    approximation_score: number; complexity_score: number; required_protrusion_count: 2 | 4 }>>
+    approximation_score: number; complexity_score: number; required_protrusion_count: 2 | 4 | 6 }>>
 }>
 
 export async function getBeginnerSymmetricParameterEstimate(
@@ -1786,7 +1787,7 @@ export async function getBeginnerSymmetricParameterEstimate(
   const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'estimate', 'candidates'] as const)
   const estimate = exactCoreDataRecord(record?.estimate, ['protrusion_count', 'scale_percent', 'spacing_percent'] as const)
   if (!record || record.project_instance_id !== projectInstanceId || record.project_id !== projectId
-    || record.revision !== revision || !estimate || ![2, 4].includes(Number(estimate.protrusion_count))
+    || record.revision !== revision || !estimate || ![2, 4, 6].includes(Number(estimate.protrusion_count))
     || !Number.isInteger(estimate.scale_percent) || Number(estimate.scale_percent) < 10 || Number(estimate.scale_percent) > 45
     || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80
     || !Array.isArray(record.candidates) || record.candidates.length !== 3) {
@@ -1794,7 +1795,7 @@ export async function getBeginnerSymmetricParameterEstimate(
   }
   const candidates = record.candidates.map((value, index) => {
     const item = exactCoreDataRecord(value, ['id', 'scale_percent', 'spacing_percent', 'approximation_score', 'complexity_score', 'required_protrusion_count'] as const)
-    if (!item || item.id !== index || ![2, 4].includes(Number(item.required_protrusion_count))
+    if (!item || item.id !== index || ![2, 4, 6].includes(Number(item.required_protrusion_count))
       || !Number.isInteger(item.scale_percent) || Number(item.scale_percent) < 10 || Number(item.scale_percent) > 45
       || !Number.isInteger(item.spacing_percent) || Number(item.spacing_percent) < 20 || Number(item.spacing_percent) > 80
       || !Number.isInteger(item.approximation_score) || Number(item.approximation_score) < 0 || Number(item.approximation_score) > 100
@@ -2049,6 +2050,7 @@ export function applyBeginnerGeneratedPlan(
     'symmetric_horn_base',
     'symmetric_antenna_base',
     'symmetric_insect_leg_pair_base',
+    'symmetric_six_leg_base',
   ].includes(selectedKind) || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
     return Promise.reject(new Error('unsupported generated plan'))
   }

@@ -102,7 +102,22 @@ export function buildDependencyPolicy() {
     if (!npmLicenseAllowlist.has(pkg.license)) {
       throw new Error(`npm dependency license is not allowed: ${path}`)
     }
-    if (pkg.resolved !== undefined && !/^https:\/\/registry\.npmjs\.org\//u.test(pkg.resolved)) {
+    let resolved
+    try {
+      resolved = new URL(pkg.resolved)
+    } catch {
+      throw new Error(`npm dependency source is missing or invalid: ${path}`)
+    }
+    if (
+      resolved.protocol !== 'https:'
+      || resolved.hostname !== 'registry.npmjs.org'
+      || resolved.port !== ''
+      || resolved.username !== ''
+      || resolved.password !== ''
+      || resolved.search !== ''
+      || resolved.hash !== ''
+      || !resolved.pathname.endsWith('.tgz')
+    ) {
       throw new Error(`npm dependency source is not allowed: ${path}`)
     }
   }
@@ -110,6 +125,8 @@ export function buildDependencyPolicy() {
     package: path.replace(/^node_modules\//u, ''),
     version: pkg.version,
     license: pkg.license,
+    resolved: pkg.resolved,
+    integrity: pkg.integrity,
   })).sort((left, right) => left.package.localeCompare(right.package))
   if (thirdPartyNotices.some((notice) => (
     !notice.package || typeof notice.version !== 'string' || !notice.version

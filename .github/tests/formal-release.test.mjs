@@ -1177,7 +1177,11 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
     [...policy.thirdPartyNotices.map(({ package: name }) => name)].sort(),
   )
   assert.ok(policy.thirdPartyNotices.every((notice) => (
-    notice.package && notice.version && policy.npmLicenses.includes(notice.license)
+    notice.package
+    && notice.version
+    && policy.npmLicenses.includes(notice.license)
+    && notice.resolved.startsWith('https://registry.npmjs.org/')
+    && /^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(notice.integrity)
   )))
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   assert.ok(
@@ -1189,6 +1193,8 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.match(policySource, /canonicalRoot\(lockedRoot\) !== canonicalRoot\(packageManifest\)/u)
   assert.match(policySource, /Cargo source provenance mismatch/u)
   assert.match(policySource, /Cargo source provenance is not allowed/u)
+  assert.match(policySource, /npm dependency source is missing or invalid/u)
+  assert.match(policySource, /resolved\.hostname !== 'registry\.npmjs\.org'/u)
 })
 
 test('dependency policy is independent of the caller working directory', () => {

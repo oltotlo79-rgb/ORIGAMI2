@@ -240,6 +240,7 @@ export type BeginnerCandidateResponseV1 = {
   project_instance_id: string
   project_id: string
   revision: number
+  requested_candidate_count: number
   bulge_treatment: 'target_shape_approximation'
   elasticity_model: 'not_computed'
   generation_status: 'ready' | 'resource_limit' | 'unsupported_paper' | 'unsupported_techniques'
@@ -262,12 +263,14 @@ function normalizeBeginnerCandidateResponse(
   expectedProjectInstanceId: string,
   expectedProjectId: string,
   expectedRevision: number,
+  requestedCandidateCount: number,
 ): BeginnerCandidateResponseV1 | null {
   const response = exactCoreDataRecord(value, [
     'schema_version',
     'project_instance_id',
     'project_id',
     'revision',
+    'requested_candidate_count',
     'bulge_treatment',
     'elasticity_model',
     'generation_status',
@@ -280,6 +283,7 @@ function normalizeBeginnerCandidateResponse(
     || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId
     || response.revision !== expectedRevision
+    || response.requested_candidate_count !== requestedCandidateCount
     || response.bulge_treatment !== 'target_shape_approximation'
     || response.elasticity_model !== 'not_computed'
     || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques']
@@ -289,6 +293,7 @@ function normalizeBeginnerCandidateResponse(
     || !Array.isArray(response.candidates)
     || response.candidates.length < 1
     || response.candidates.length > 3
+    || response.candidates.length !== requestedCandidateCount
   ) return null
   const candidates = response.candidates.map((candidate, index) => {
     const record = exactCoreDataRecord(candidate, [
@@ -380,11 +385,12 @@ function normalizeBeginnerCandidateResponse(
     project_instance_id: expectedProjectInstanceId,
     project_id: expectedProjectId,
     revision: expectedRevision,
+    requested_candidate_count: requestedCandidateCount,
     bulge_treatment: 'target_shape_approximation',
     elasticity_model: 'not_computed',
-    generation_status: response.generation_status,
-    generated_plans: generatedPlans,
-    candidates: Object.freeze(admitted.slice()),
+    generation_status: response.generation_status as BeginnerCandidateResponseV1['generation_status'],
+    generated_plans: generatedPlans as BeginnerGeneratedPlanV1[],
+    candidates: admitted.slice(),
   }) as BeginnerCandidateResponseV1
 }
 
@@ -957,17 +963,24 @@ export function evaluateBeginnerCandidates(
   expectedProjectId: string,
   expectedRevision: number,
   expectedProjectInstanceId: string,
+  requestedCandidateCount: number,
 ) {
+  if (!Number.isInteger(requestedCandidateCount)
+    || requestedCandidateCount < 1 || requestedCandidateCount > 3) {
+    return Promise.reject(new Error('invalid requested candidate count'))
+  }
   return invoke<unknown>('evaluate_beginner_candidates', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
+    requestedCandidateCount,
   }).then((value) => {
     const response = normalizeBeginnerCandidateResponse(
       value,
       expectedProjectInstanceId,
       expectedProjectId,
       expectedRevision,
+      requestedCandidateCount,
     )
     if (!response) throw new Error('invalid beginner candidate response')
     return response

@@ -50,3 +50,14 @@ test('AUT-101 exposes bounded generated crease patterns and instructions as read
   assert.match(app, /cancelBeginnerCandidates/)
   assert.match(app, /beginnerCandidateRequestRef\.current !== requestId/)
 })
+
+test('AUT-106 presents one recommendation first and adds bounded candidates on demand', () => {
+  assert.match(native, /requested_candidate_count: u8/)
+  assert.match(native, /candidates\.truncate\(usize::from\(requested_candidate_count\)\)/)
+  assert.match(client, /response\.candidates\.length !== requestedCandidateCount/)
+  assert.match(client, /requestedCandidateCount > 3/)
+  assert.match(app, /requestBeginnerCandidates\(1\)/)
+  assert.match(app, /requested_candidate_count \+ 1/)
+  assert.match(app, /Generate and compare another candidate/)
+  assert.match(app, /追加候補を生成して比較/)
+})

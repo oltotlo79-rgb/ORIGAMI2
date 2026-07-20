@@ -1341,6 +1341,7 @@ struct BeginnerCandidateResponse {
     project_instance_id: ProjectId,
     project_id: ProjectId,
     revision: u64,
+    requested_candidate_count: u8,
     bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1,
     elasticity_model: ori_domain::BeginnerElasticityModelV1,
     candidates: Vec<ori_domain::BeginnerCandidateScoreV1>,
@@ -1486,7 +1487,11 @@ fn evaluate_beginner_candidates(
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
+    requested_candidate_count: u8,
 ) -> Result<BeginnerCandidateResponse, String> {
+    if !(1..=ori_domain::MAX_BEGINNER_CANDIDATES_V1 as u8).contains(&requested_candidate_count) {
+        return Err("requested candidate count must be between 1 and 3".to_owned());
+    }
     let project = lock_project(&state)?;
     ensure_expected_project(
         &project,
@@ -1500,7 +1505,7 @@ fn evaluate_beginner_candidates(
         .iter()
         .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
         .count();
-    let candidates = ori_domain::score_beginner_candidates_v1(
+    let mut candidates = ori_domain::score_beginner_candidates_v1(
         ori_domain::BeginnerCandidateInputV1 {
             vertex_count: pattern.vertices.len(),
             edge_count: pattern.edges.len(),
@@ -1508,7 +1513,8 @@ fn evaluate_beginner_candidates(
         },
         project.editor.beginner_design_profile(),
     );
-    let (generation_status, generated_plans) = match ori_domain::generate_beginner_plans_v1(
+    candidates.truncate(usize::from(requested_candidate_count));
+    let (generation_status, mut generated_plans) = match ori_domain::generate_beginner_plans_v1(
         project.project_id,
         pattern,
         &project.editor.paper().boundary_vertices,
@@ -1526,11 +1532,13 @@ fn evaluate_beginner_candidates(
             ("unsupported_techniques", Vec::new())
         }
     };
+    generated_plans.truncate(usize::from(requested_candidate_count));
     Ok(BeginnerCandidateResponse {
         schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         revision: project.editor.revision(),
+        requested_candidate_count,
         bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
         elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
         candidates,

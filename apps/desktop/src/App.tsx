@@ -3508,7 +3508,7 @@ function App() {
       ))
   }
 
-  function requestBeginnerCandidates() {
+  function requestBeginnerCandidates(requestedCandidateCount: number) {
     if (beginnerCandidateBusy) return
     const current = latestSnapshotRef.current
     if (!current) return
@@ -3519,6 +3519,7 @@ function App() {
       current.project_id,
       current.revision,
       current.project_instance_id,
+      requestedCandidateCount,
     ).then((response) => {
       if (beginnerCandidateRequestRef.current !== requestId
         || latestSnapshotRef.current !== current) return
@@ -7106,7 +7107,7 @@ function App() {
                 </p>
                 <button
                   type="button"
-                  onClick={requestBeginnerCandidates}
+                  onClick={() => requestBeginnerCandidates(1)}
                   disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
                   aria-describedby="beginner-candidate-description"
                 >
@@ -7147,6 +7148,18 @@ function App() {
                       </li>
                     ))}
                   </ol>
+                  {beginnerCandidates.requested_candidate_count < 3 && (
+                    <button
+                      type="button"
+                      onClick={() => requestBeginnerCandidates(
+                        beginnerCandidates.requested_candidate_count + 1,
+                      )}
+                      disabled={beginnerCandidateBusy}
+                      aria-label={text({ ja: '追加候補を1件生成', en: 'Generate one additional candidate' })}
+                    >
+                      {text({ ja: '追加候補を生成して比較', en: 'Generate and compare another candidate' })}
+                    </button>
+                  )}
                   {beginnerCandidates.generation_status === 'ready' ? (
                     <div aria-label={text({ ja: '生成された展開図と手順の候補', en: 'Generated crease-pattern and instruction candidates' })}>
                       {beginnerCandidates.generated_plans.map((plan, index) => {

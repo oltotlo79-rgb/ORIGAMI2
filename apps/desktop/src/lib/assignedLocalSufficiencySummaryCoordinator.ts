@@ -44,7 +44,9 @@ export function createAssignedLocalSufficiencySummaryCoordinator(options: Readon
     try { options.onState(next) } catch { /* observational */ }
   }
   const stopTimer = () => {
-    if (timer !== null) clearTimer(timer)
+    if (timer !== null) {
+      try { clearTimer(timer) } catch { /* best-effort cleanup */ }
+    }
     timer = null
   }
   const isCurrent = (value: number) => !disposed && generation === value
@@ -55,7 +57,13 @@ export function createAssignedLocalSufficiencySummaryCoordinator(options: Readon
     void cancelNative().catch(() => undefined)
     generation += 1
     const ownGeneration = generation
-    const startedAt = now()
+    let startedAt: number
+    try {
+      startedAt = now()
+    } catch {
+      publish({ status: 'failed', generation, reason: 'native_failure' })
+      return true
+    }
     const attempt = (retryCount: number) => {
       if (!isCurrent(ownGeneration)) return
       publish({ status: retryCount === 0 ? 'running' : 'retrying', generation, retryCount })
@@ -70,14 +78,26 @@ export function createAssignedLocalSufficiencySummaryCoordinator(options: Readon
         if (!isCurrent(ownGeneration)) return
         const busy = error instanceof AssignedLocalSufficiencySummaryError
           && error.reason === 'busy'
-        if (busy
-          && retryCount < ASSIGNED_LOCAL_SUMMARY_MAX_RETRIES
-          && now() - startedAt < ASSIGNED_LOCAL_SUMMARY_MAX_RETRY_MS) {
-          timer = setTimer(() => {
-            timer = null
-            attempt(retryCount + 1)
-          }, ASSIGNED_LOCAL_SUMMARY_RETRY_DELAY_MS)
-          return
+        let withinRetryWindow = false
+        if (busy && retryCount < ASSIGNED_LOCAL_SUMMARY_MAX_RETRIES) {
+          try {
+            withinRetryWindow = now() - startedAt < ASSIGNED_LOCAL_SUMMARY_MAX_RETRY_MS
+          } catch {
+            publish({ status: 'failed', generation, reason: 'native_failure' })
+            return
+          }
+        }
+        if (withinRetryWindow) {
+          try {
+            timer = setTimer(() => {
+              timer = null
+              attempt(retryCount + 1)
+            }, ASSIGNED_LOCAL_SUMMARY_RETRY_DELAY_MS)
+            return
+          } catch {
+            publish({ status: 'failed', generation, reason: 'native_failure' })
+            return
+          }
         }
         publish({
           status: 'failed',

@@ -106,6 +106,37 @@ test('a late old completion cannot publish across an instance generation replace
   assert.equal(coordinator.getState().generation, 2)
 })
 
+test('scheduler and clock failures are contained as closed native failures', async () => {
+  const coordinator = createAssignedLocalSufficiencySummaryCoordinator({
+    analyze: async () => { throw new AssignedLocalSufficiencySummaryError('busy') },
+    cancel: async () => undefined,
+    setTimer() { throw new Error('scheduler unavailable') },
+    clearTimer() { throw new Error('cleanup unavailable') },
+    onState() {},
+  })
+  assert.equal(coordinator.start(context), true)
+  await settle()
+  assert.deepEqual(coordinator.getState(), {
+    status: 'failed',
+    generation: 1,
+    reason: 'native_failure',
+  })
+  assert.doesNotThrow(() => coordinator.dispose())
+
+  const brokenClock = createAssignedLocalSufficiencySummaryCoordinator({
+    analyze: async () => response,
+    cancel: async () => undefined,
+    now() { throw new Error('clock unavailable') },
+    onState() {},
+  })
+  assert.equal(brokenClock.start(context), true)
+  assert.deepEqual(brokenClock.getState(), {
+    status: 'failed',
+    generation: 1,
+    reason: 'native_failure',
+  })
+})
+
 function settle() {
   return new Promise<void>((resolve) => setImmediate(resolve))
 }

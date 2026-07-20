@@ -461,6 +461,13 @@ fn validate_request_resource_shape_v1(
     Ok(())
 }
 
+fn requires_graph_schedule_boundary_v1(
+    topology_requires_closure: bool,
+    has_explicit_cycle_schedule: bool,
+) -> bool {
+    topology_requires_closure || has_explicit_cycle_schedule
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum StackedFoldReadSupportDto {
@@ -962,7 +969,10 @@ pub(super) async fn propose_current_stacked_fold_read(
             TreeKinematicsLimits::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        if audited_target.requires_closure_certificate() {
+        if requires_graph_schedule_boundary_v1(
+            audited_target.requires_closure_certificate(),
+            request.cycle_schedule_v1.is_some(),
+        ) {
             let initial = prepare_stacked_fold_initial_graph_pose_v1(
                 audited_target,
                 pose_capability.model(),
@@ -2409,6 +2419,13 @@ mod tests {
             STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
             before + 1
         );
+    }
+
+    #[test]
+    fn explicit_half_angle_schedule_uses_graph_proof_boundary_for_tree_topology() {
+        assert!(requires_graph_schedule_boundary_v1(false, true));
+        assert!(requires_graph_schedule_boundary_v1(true, false));
+        assert!(!requires_graph_schedule_boundary_v1(false, false));
     }
 
     #[test]

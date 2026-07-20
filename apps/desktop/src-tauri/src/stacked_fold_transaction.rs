@@ -106,6 +106,9 @@ impl PendingStackedFoldRequestedPose {
                         .iter()
                         .zip(certified_edges)
                         .all(|(expected, edge)| {
+                            if !certified_edge_target_matches_schedule(edge) {
+                                return false;
+                            }
                             ori_collision::certify_scheduled_cycle_transition_v1(
                                 requested.initial().target().hinge_geometry(),
                                 requested.initial().target().audit(),
@@ -183,6 +186,28 @@ impl PendingStackedFoldRequestedPose {
             _ => vec![self.pose_components().3],
         }
     }
+}
+
+fn bit_exact_canonical_angles_match(
+    expected: &ori_kinematics::CanonicalHingeAngles,
+    actual: &[(ori_domain::EdgeId, f64)],
+) -> bool {
+    expected.as_slice().len() == actual.len()
+        && expected
+            .as_slice()
+            .iter()
+            .zip(actual)
+            .all(|(expected, actual)| {
+                expected.edge() == actual.0
+                    && expected.angle_degrees().to_bits() == actual.1.to_bits()
+            })
+}
+
+fn certified_edge_target_matches_schedule(edge: &PendingCertifiedPathEdgeV1) -> bool {
+    edge.generated
+        .schedule()
+        .evaluate(1.0)
+        .is_some_and(|expected| bit_exact_canonical_angles_match(&expected, &edge.target_angles))
 }
 
 pub(super) struct PendingStackedFoldPremises {
@@ -591,5 +616,30 @@ mod tests {
             expected,
             (instance, project, 7, [0x5a; 32], 11, 14)
         ));
+    }
+
+    #[test]
+    fn certified_timeline_targets_require_bit_exact_canonical_schedule_endpoints() {
+        let mut edges = [ori_domain::EdgeId::new(), ori_domain::EdgeId::new()];
+        edges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
+        let expected = ori_kinematics::CanonicalHingeAngles::new(vec![
+            ori_kinematics::HingeAngle::new(edges[0], 45.0).unwrap(),
+            ori_kinematics::HingeAngle::new(edges[1], 90.0).unwrap(),
+        ])
+        .unwrap();
+        let exact = vec![(edges[0], 45.0), (edges[1], 90.0)];
+        assert!(bit_exact_canonical_angles_match(&expected, &exact));
+
+        let mut reordered = exact.clone();
+        reordered.reverse();
+        assert!(!bit_exact_canonical_angles_match(&expected, &reordered));
+        assert!(!bit_exact_canonical_angles_match(
+            &expected,
+            &[
+                (edges[0], 45.0),
+                (edges[1], f64::from_bits(90.0_f64.to_bits() + 1))
+            ],
+        ));
+        assert!(!bit_exact_canonical_angles_match(&expected, &exact[..1],));
     }
 }

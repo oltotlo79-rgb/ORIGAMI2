@@ -55,6 +55,12 @@ test('publication verifies current-run artifact archive digests before extractio
   assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/artifacts/u)
   assert.match(workflow, /actions\/artifacts\/\$artifact_id\/zip/u)
   assert.match(workflow, /actual_digest.*expected_digest/u)
+  assert.match(workflow, /--max-redirs 0 --max-filesize 1048576/u)
+  assert.match(workflow, /! grep -Eiq '\^link:.*rel="next"'/u)
+  assert.match(workflow, /--proto-redir '=https'/u)
+  assert.match(workflow, /--max-filesize 2147483648/u)
+  assert.match(workflow, /content-type: \(application\/zip\|application\/octet-stream\)/u)
+  assert.match(workflow, /name: Remove temporary artifact transport files[\s\S]*if: always\(\)/u)
   assert.ok(
     workflow.indexOf('Verify immutable workflow artifact archive digests') <
       workflow.indexOf('Extract only the digest-verified artifact archives'),

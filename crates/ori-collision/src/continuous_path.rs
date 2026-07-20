@@ -2160,6 +2160,130 @@ mod tests {
         assert_eq!(path.continuous_certificate_model_id(), None);
     }
 
+    #[test]
+    fn kawasaki_120_60_vertex_rejects_unsigned_naive_half_angle_ratio() {
+        let points = [
+            (100.0, 0.0),
+            (-50.0, 86.602_540_378_443_86),
+            (-100.0, 0.0),
+            (-50.0, -86.602_540_378_443_86),
+            (0.0, 0.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("ae00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..4]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let center = vertices[4].id;
+        let hinges = (0..4)
+            .map(|index| fixed_id("af00", index as u64 + 10))
+            .collect::<Vec<_>>();
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: fixed_id("af00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend((0..4).map(|index| Edge {
+            id: hinges[index],
+            start: boundary[index],
+            end: center,
+            kind: if index % 2 == 0 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("aa00", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("physical four-vertex topology");
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let fixed = audit.faces()[0];
+        let schedule = ori_kinematics::CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            hinges
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, edge)| ori_kinematics::HalfAngleRationalEntryInputV1 {
+                        edge: *edge,
+                        u_domain: [
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            },
+                        ],
+                        numerator_power_coefficients: vec![
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: if index % 2 == 0 { 1 } else { 2 },
+                                denominator: 1,
+                            },
+                        ],
+                        denominator_power_coefficients: vec![
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            },
+                        ],
+                    },
+                )
+                .collect(),
+            ori_kinematics::CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let initial = schedule.evaluate(0.0).unwrap();
+        assert!(
+            geometry
+                .solve_closed(&audit, fixed, &initial, 1.0e-8)
+                .is_ok()
+        );
+        for u in [0.5, 1.0] {
+            let angles = schedule.evaluate(u).unwrap();
+            assert!(
+                geometry
+                    .solve_closed(&audit, fixed, &angles, 1.0e-8)
+                    .is_err()
+            );
+        }
+    }
+
     fn one_hinge_model() -> MaterialTreeKinematicsModel {
         let points = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
         let vertices = points

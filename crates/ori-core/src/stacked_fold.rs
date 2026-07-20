@@ -1948,6 +1948,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
                 | (11, 10)
                 | (12, 11)
                 | (13, 12)
+                | (14, 13)
         )
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
@@ -2562,6 +2563,57 @@ pub fn prepare_stacked_fold_requested_graph_pose_v1(
         initial,
         pose,
         requested_angle_degrees,
+    })
+}
+
+/// Prepares a non-uniform cyclic endpoint only when its complete canonical
+/// angle vector is authenticated by the exact schedule whose full domain
+/// already carries a dyadic interval-closure certificate.
+pub fn prepare_stacked_fold_requested_scheduled_graph_pose_v1(
+    initial: PreparedStackedFoldInitialGraphPoseV1,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    interval_closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    requested_angles: CanonicalHingeAngles,
+    display_angle_degrees: f64,
+) -> Result<PreparedStackedFoldRequestedGraphPoseV1, PrepareStackedFoldRequestedPoseErrorV1> {
+    if !display_angle_degrees.is_finite()
+        || !(0.0..=180.0).contains(&display_angle_degrees)
+        || interval_closure.leaves().is_empty()
+        || interval_closure.fixed_face() != initial.pose.fixed_face()
+        || !schedule.matches_binding(
+            &initial.target.hinge_geometry,
+            &initial.target.audit,
+            initial.pose.fixed_face(),
+        )
+        || schedule.certificate_binding_fingerprint_v1()
+            != interval_closure.schedule_binding_fingerprint_v1()
+    {
+        return Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle);
+    }
+    let hinges = initial.target.hinge_geometry.hinges();
+    if hinges.len() != requested_angles.as_slice().len()
+        || hinges
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<HashSet<_>>()
+            != requested_angles
+                .as_slice()
+                .iter()
+                .map(|angle| angle.edge())
+                .collect()
+    {
+        return Err(PrepareStackedFoldRequestedPoseErrorV1::ExpectedCreaseHingeMissing);
+    }
+    let pose = initial.target.hinge_geometry.solve_closed(
+        &initial.target.audit,
+        initial.pose.fixed_face(),
+        &requested_angles,
+        STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+    )?;
+    Ok(PreparedStackedFoldRequestedGraphPoseV1 {
+        initial,
+        pose,
+        requested_angle_degrees: display_angle_degrees,
     })
 }
 

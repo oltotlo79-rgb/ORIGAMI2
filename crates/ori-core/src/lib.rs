@@ -117,6 +117,7 @@ pub use stacked_fold::{
     prepare_stacked_fold_initial_pose_v1, prepare_stacked_fold_non_flat_layer_order_v1,
     prepare_stacked_fold_non_flat_layer_order_with_thickness_v1,
     prepare_stacked_fold_requested_graph_pose_v1, prepare_stacked_fold_requested_pose_v1,
+    prepare_stacked_fold_requested_scheduled_graph_pose_v1,
     prepare_stacked_fold_target_graph_audit_v1, prepare_stacked_fold_target_model_v1,
 };
 pub use topology::{EditorTopology, TopologyAnalysisInput};

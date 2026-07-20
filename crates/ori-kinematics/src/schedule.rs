@@ -997,7 +997,7 @@ impl CanonicalCycleScheduleV1 {
         limits: CycleScheduleLimitsV1,
     ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
         if self.half_angle_entries.is_empty()
-            || depth > limits.max_degree as u32
+            || depth >= 64
             || self.half_angle_entries.len() > limits.max_hinges
         {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);

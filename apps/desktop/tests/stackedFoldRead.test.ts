@@ -35,6 +35,7 @@ describe('stacked-fold read boundary', () => {
         uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
         numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
         denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: 90,
       }],
     } as const
     assert.equal(isStackedFoldReadRequest({ ...request, cycleScheduleV1: schedule }), true)

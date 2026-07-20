@@ -158,6 +158,7 @@ describe('StackedFoldPanel', () => {
         uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
         numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
         denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: 90,
       }],
     }
     fireEvent.change(screen.getByLabelText('Cycle schedule (JSON, cyclic patterns only)'), {

@@ -116,6 +116,7 @@ struct CycleScheduleEntryRequestV1 {
     u_domain: [RationalCoefficientRequestV1; 2],
     numerator_power_coefficients: Vec<RationalCoefficientRequestV1>,
     denominator_power_coefficients: Vec<RationalCoefficientRequestV1>,
+    requested_angle_degrees: f64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -431,11 +432,6 @@ pub(super) async fn propose_current_stacked_fold_read(
                 .iter()
                 .flat_map(|subdivision| subdivision.target_edges().iter().copied())
                 .collect::<Vec<_>>();
-            let closed_endpoint = prepare_stacked_fold_requested_graph_pose_v1(
-                initial,
-                candidate.requested_angle_degrees(),
-            )
-            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
             let schedule_entries = schedule_request
                 .entries
                 .iter()
@@ -465,42 +461,43 @@ pub(super) async fn propose_current_stacked_fold_read(
                 .collect();
             let cycle_limits = CycleScheduleLimitsV1::default();
             let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
-                closed_endpoint.initial().target().hinge_geometry(),
-                closed_endpoint.initial().target().audit(),
-                closed_endpoint.pose().fixed_face(),
+                initial.target().hinge_geometry(),
+                initial.target().audit(),
+                initial.pose().fixed_face(),
                 schedule_entries,
                 cycle_limits,
             )
             .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            let schedule_box = schedule
-                .evaluate_angle_box(cycle_limits.max_work)
+            let initial_box = schedule
+                .evaluate_angle_box_dyadic(32, 0, cycle_limits)
                 .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            if schedule_box.iter().zip(
-                closed_endpoint
-                    .initial()
+            let requested_box = schedule
+                .evaluate_angle_box_dyadic(32, (1u64 << 32) - 1, cycle_limits)
+                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            if initial_box.iter().zip(requested_box.iter()).zip(
+                initial
                     .pose()
                     .hinge_angles()
                     .as_slice()
                     .iter()
-                    .zip(closed_endpoint.pose().hinge_angles().as_slice()),
+                    .zip(schedule_request.entries.iter()),
             )
-            .any(|((edge, interval), (initial_angle, requested_angle))| {
-                *edge != initial_angle.edge()
-                    || *edge != requested_angle.edge()
-                    || initial_angle.angle_degrees() < interval.lower()
-                    || initial_angle.angle_degrees() > interval.upper()
-                    || requested_angle.angle_degrees() < interval.lower()
-                    || requested_angle.angle_degrees() > interval.upper()
+            .any(|(((initial_edge, initial_interval), (requested_edge, requested_interval)), (initial_angle, requested_entry))| {
+                *initial_edge != initial_angle.edge()
+                    || *requested_edge != requested_entry.edge
+                    || initial_angle.angle_degrees() < initial_interval.lower()
+                    || initial_angle.angle_degrees() > initial_interval.upper()
+                    || requested_entry.requested_angle_degrees < requested_interval.lower()
+                    || requested_entry.requested_angle_degrees > requested_interval.upper()
             }) {
                 return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
-            let interval_closure = closed_endpoint
-                .initial()
+            let interval_closure = initial
                 .target()
                 .hinge_geometry()
                 .prove_dyadic_schedule_closure_v1(
-                    closed_endpoint.initial().target().audit(),
-                    closed_endpoint.pose().fixed_face(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
                     &schedule,
                     ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
                     DyadicIntervalClosureLimitsV1 {
@@ -511,6 +508,28 @@ pub(super) async fn propose_current_stacked_fold_read(
                     },
                 )
                 .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let requested_angles = ori_kinematics::CanonicalHingeAngles::new(
+                schedule_request
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        ori_kinematics::HingeAngle::new(
+                            entry.edge,
+                            entry.requested_angle_degrees,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+            )
+            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let closed_endpoint = ori_core::prepare_stacked_fold_requested_scheduled_graph_pose_v1(
+                initial,
+                &schedule,
+                &interval_closure,
+                requested_angles,
+                candidate.requested_angle_degrees(),
+            )
+            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
             match enumerate_uniform_cycle_closure_roots_v1(
                 closed_endpoint.initial().target().hinge_geometry(),
                 closed_endpoint.initial().target().audit(),

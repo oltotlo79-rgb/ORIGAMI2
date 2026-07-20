@@ -37,6 +37,7 @@ export type CycleScheduleRequestV1 = Readonly<{
     uDomain: readonly [RationalCoefficientRequestV1, RationalCoefficientRequestV1]
     numeratorPowerCoefficients: readonly RationalCoefficientRequestV1[]
     denominatorPowerCoefficients: readonly RationalCoefficientRequestV1[]
+    requestedAngleDegrees: number
   }>[]
 }>
 
@@ -208,6 +209,7 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
             'uDomain',
             'numeratorPowerCoefficients',
             'denominatorPowerCoefficients',
+            'requestedAngleDegrees',
           ]) &&
           isCanonicalNonNilUuid(entry.edge) &&
           Array.isArray(entry.uDomain) &&
@@ -220,7 +222,11 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
           Array.isArray(entry.denominatorPowerCoefficients) &&
           entry.denominatorPowerCoefficients.length > 0 &&
           entry.denominatorPowerCoefficients.length <= 9 &&
-          entry.denominatorPowerCoefficients.every(rational),
+          entry.denominatorPowerCoefficients.every(rational) &&
+          typeof entry.requestedAngleDegrees === 'number' &&
+          Number.isFinite(entry.requestedAngleDegrees) &&
+          entry.requestedAngleDegrees >= 0 &&
+          entry.requestedAngleDegrees <= 180,
       ))
   return (
     isCanonicalNonNilUuid(value.expectedProjectInstanceId) &&

@@ -433,12 +433,6 @@ pub(super) async fn propose_current_stacked_fold_read(
             if continuous.continuous_certificate_model_id().is_none() {
                 return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
-            let layer_order = prepare_stacked_fold_graph_non_flat_layer_order_v1(
-                &closed_endpoint,
-                layer_capability.snapshot(),
-                DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
-            )
-            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let geometry_proof = closed_endpoint.initial().target().geometry().proof();
             let topology = closed_endpoint
                 .initial()
@@ -446,6 +440,67 @@ pub(super) async fn propose_current_stacked_fold_read(
                 .geometry()
                 .candidate();
             let lineage = geometry_proof.lineage();
+            let (layer_proof, layer_material_face_count, layer_overlap_cell_count) =
+                if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
+                    let report = analyze_faces(FaceExtractionInput {
+                        identity_namespace: binding.project_id(),
+                        source_revision: lineage.target_revision(),
+                        paper: &topology.paper,
+                        pattern: &topology.pattern,
+                    });
+                    if report
+                        .issues
+                        .iter()
+                        .any(|issue| issue.severity != TopologyIssueSeverity::Warning)
+                    {
+                        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+                    }
+                    let target_topology = report
+                        .snapshot
+                        .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                    let local =
+                        analyze_local_flat_foldability(&topology.paper, &topology.pattern);
+                    let global = analyze_global_flat_foldability(
+                        GlobalFlatFoldabilityInput::current_with_geometry(
+                            binding.project_id(),
+                            &topology.paper,
+                            &topology.pattern,
+                            &target_topology,
+                            &local,
+                        ),
+                        GlobalFlatFoldabilityLimits::default(),
+                    )
+                    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                    let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } = global.outcome
+                    else {
+                        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+                    };
+                    let material_count = layer_order.material_faces.len();
+                    let overlap_count = layer_order.overlap_cells.len();
+                    (
+                        super::stacked_fold_transaction::PendingStackedFoldLayerProof::CertifiedFlat(
+                            *layer_order,
+                        ),
+                        material_count,
+                        overlap_count,
+                    )
+                } else {
+                    let layer_order = prepare_stacked_fold_graph_non_flat_layer_order_v1(
+                        &closed_endpoint,
+                        layer_capability.snapshot(),
+                        DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                    )
+                    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                    let material_count = layer_order.material_faces().len();
+                    let overlap_count = layer_order.overlap_cell_count();
+                    (
+                        super::stacked_fold_transaction::PendingStackedFoldLayerProof::NonFlat(
+                            layer_order,
+                        ),
+                        material_count,
+                        overlap_count,
+                    )
+                };
             let face_count = closed_endpoint
                 .initial()
                 .target()
@@ -530,8 +585,6 @@ pub(super) async fn propose_current_stacked_fold_read(
                 failure_classes: Vec::new(),
                 authorizes_project_mutation: false,
             };
-            let layer_material_face_count = layer_order.material_faces().len();
-            let layer_overlap_cell_count = layer_order.overlap_cell_count();
             let native_transaction = Some(NativeStackedFoldPremises::Graph(
                 super::stacked_fold_transaction::PendingStackedFoldGraphPremises {
                     expected_instance_id: binding.project_instance_id(),
@@ -542,7 +595,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                     expected_layer_generation: binding.layer_order_generation(),
                     requested: closed_endpoint,
                     continuous,
-                    layer_order,
+                    layer_order: layer_proof,
                 },
             ));
             let crossed_cells = proposal

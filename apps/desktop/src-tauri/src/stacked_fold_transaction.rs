@@ -9,6 +9,7 @@ use ori_domain::{
     InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
     InstructionStepId, InstructionVisual, MIN_INSTRUCTION_DURATION_MS, ProjectId,
 };
+use ori_foldability::LayerOrderSnapshot;
 use ori_foldability::fold_model_fingerprint_v1;
 use tauri::State;
 
@@ -32,7 +33,7 @@ struct StackedFoldTransactionSlot {
     active_generation: Option<ProjectId>,
     pending: Option<PendingStackedFoldTransaction>,
     last_cancelled: Option<ProjectId>,
-    applied_layer_order: Option<StackedFoldNonFlatLayerOrderV1>,
+    applied_layer_order: Option<PendingStackedFoldLayerProof>,
 }
 
 /// Native-only preview premises. None of the proof-bearing values is
@@ -46,7 +47,7 @@ pub(super) struct PendingStackedFoldTransaction {
     expected_pose_generation: u64,
     expected_layer_generation: u64,
     requested: PendingStackedFoldRequestedPose,
-    layer_order: StackedFoldNonFlatLayerOrderV1,
+    layer_order: PendingStackedFoldLayerProof,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
 }
@@ -148,7 +149,22 @@ pub(super) struct PendingStackedFoldGraphPremises {
     pub expected_layer_generation: u64,
     pub requested: PreparedStackedFoldRequestedGraphPoseV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
-    pub layer_order: StackedFoldNonFlatLayerOrderV1,
+    pub layer_order: PendingStackedFoldLayerProof,
+}
+
+#[derive(Clone)]
+pub(super) enum PendingStackedFoldLayerProof {
+    NonFlat(StackedFoldNonFlatLayerOrderV1),
+    CertifiedFlat(LayerOrderSnapshot),
+}
+
+impl PendingStackedFoldLayerProof {
+    fn target_revision(&self) -> u64 {
+        match self {
+            Self::NonFlat(value) => value.target_revision(),
+            Self::CertifiedFlat(value) => value.provenance.source.source_revision,
+        }
+    }
 }
 
 impl PendingStackedFoldTransaction {
@@ -226,7 +242,7 @@ pub(super) fn install_pending_stacked_fold(
             requested: premises.requested,
             continuous: premises.continuous,
         },
-        layer_order: premises.layer_order,
+        layer_order: PendingStackedFoldLayerProof::NonFlat(premises.layer_order),
         pose_capability,
         layer_capability,
     };
@@ -399,7 +415,18 @@ pub(super) fn apply_stacked_fold_transaction(
             applied_pose,
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
-    layer_guard.invalidate_after_project_mutation();
+    match &applied_layer_order {
+        PendingStackedFoldLayerProof::NonFlat(_) => {
+            layer_guard.invalidate_after_project_mutation();
+        }
+        PendingStackedFoldLayerProof::CertifiedFlat(snapshot) => {
+            layer_guard
+                .install_certified_target_after_project_mutation(&project, snapshot.clone())
+                .map_err(|_| {
+                    "The certified target layer order could not be installed atomically.".to_owned()
+                })?;
+        }
+    }
     drop(_pose_guard);
     drop(project);
     transaction_slot.pending = None;

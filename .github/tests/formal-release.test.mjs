@@ -179,7 +179,18 @@ test('release build toolchains are exact versions rather than moving channels', 
     assert.match(workflow, /toolchain: 1\.90\.0/u, name)
     assert.match(workflow, /node-version: 24\.11\.1/u, name)
     assert.doesNotMatch(workflow, /toolchain: stable|node-version: 24\s*$/mu, name)
+    assert.doesNotMatch(workflow, /Swatinem\/rust-cache|cache:\s*npm|cache-dependency-path:/u, name)
   }
+})
+
+test('legacy Windows release audit dependencies are hash pinned and cache free', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release-windows.yml'), 'utf8')
+  const requirements = readFileSync(join(root, '.github/release-audit-requirements.txt'), 'utf8')
+  assert.match(workflow, /python-version: "3\.12\.12"/u)
+  assert.match(workflow, /--require-hashes --no-deps -r \.github\/release-audit-requirements\.txt/u)
+  assert.match(workflow, /ref: \$\{\{ needs\.validate-test-build\.outputs\.commit_sha \}\}/u)
+  assert.equal(requirements.match(/--hash=sha256:[0-9a-f]{64}/gu)?.length ?? 0, 2)
+  assert.doesNotMatch(workflow, /Swatinem\/rust-cache|cache:\s*npm/u)
 })
 
 test('all direct and nested action runtimes match the audited Node.js 24 inventory', () => {

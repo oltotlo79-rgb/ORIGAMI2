@@ -73,15 +73,10 @@ jobs:
           toolchain: 1.90.0
           components: rustfmt, clippy
 
-      - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.11.1
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Install locked frontend dependencies
         working-directory: apps/desktop
@@ -116,7 +111,7 @@ jobs:
       - name: Set up Python for independent instruction export audit
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.12"
 
       - name: Generate instruction PDF and SVG ZIP with outbound network blocked
         shell: pwsh
@@ -130,7 +125,8 @@ jobs:
           ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY: ${{ runner.temp }}/instruction-export-audit
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --only-binary=:all: pypdf==6.12.2 PyMuPDF==1.27.2.3
+          python -m pip install --disable-pip-version-check --only-binary=:all: \
+            --require-hashes --no-deps -r .github/release-audit-requirements.txt
           python scripts/audit_instruction_exports.py "$ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY"
 
       - name: Upload failed instruction export audit fixtures
@@ -225,7 +221,7 @@ jobs:
       - name: Re-check the release tag without persisted credentials
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          ref: refs/tags/${{ needs.validate-test-build.outputs.release_tag }}
+          ref: ${{ needs.validate-test-build.outputs.commit_sha }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false

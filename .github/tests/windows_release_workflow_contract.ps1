@@ -116,8 +116,12 @@ Assert-Contains $workflow 'run_instruction_export_offline_test.ps1' (
 Assert-Contains $workflow 'audit_instruction_exports.py' (
     'Formal release must independently parse generated instruction exports.'
 )
-Assert-Contains $workflow 'pypdf==6.12.2 PyMuPDF==1.27.2.3' (
-    'Formal release must pin the same external instruction parsers as normal CI.'
+Assert-Contains $workflow '--require-hashes --no-deps -r .github/release-audit-requirements.txt' (
+    'Formal release must install only hash-pinned external instruction parsers.'
+)
+Assert-Contains $workflow 'python-version: "3.12.12"' 'Release Python must be patch-version pinned.'
+Assert-Contains $workflow 'ref: ${{ needs.validate-test-build.outputs.commit_sha }}' (
+    'Publication checkout must use the already validated immutable commit.'
 )
 Assert-Contains $workflow 'ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY' (
     'Formal release must use the bounded instruction export audit directory.'

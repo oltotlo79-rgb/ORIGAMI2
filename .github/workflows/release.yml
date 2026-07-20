@@ -103,12 +103,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: 1.90.0
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.11.1
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
       - working-directory: apps/desktop
         run: npm ci
       - name: Build Windows portable executable

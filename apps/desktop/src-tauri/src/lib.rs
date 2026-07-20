@@ -2969,6 +2969,7 @@ struct BeginnerReferenceModelSuggestionV1 {
     surface_area_milli: u64,
     protrusion: ori_domain::BeginnerProtrusionTargetV1,
     method: String,
+    suggested_part_kind: Option<ori_domain::BeginnerTargetPartKindV1>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2983,6 +2984,7 @@ fn derive_reference_model_suggestion_v1(
     asset_id: AssetId,
     geometry: &ori_formats::ReferenceGlbGeometryV1,
     category: Option<ori_domain::BeginnerTargetCategoryV1>,
+    target_parts: &[ori_domain::BeginnerTargetPartRecordV1],
 ) -> Result<BeginnerReferenceModelSuggestionV1, String> {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
@@ -3039,6 +3041,24 @@ fn derive_reference_model_suggestion_v1(
         bbox_max_tenths_mm[1].saturating_sub(bbox_min_tenths_mm[1]),
         bbox_max_tenths_mm[2].saturating_sub(bbox_min_tenths_mm[2]),
     ];
+    let quantized = geometry
+        .positions
+        .iter()
+        .map(|position| position.map(|value| (f64::from(value) * 10_000.0).round() as i64))
+        .collect::<HashSet<_>>();
+    let axis_twice = i64::from(bbox_min_tenths_mm[0]) + i64::from(bbox_max_tenths_mm[0]);
+    let bilateral = quantized.iter().all(|point| {
+        quantized.contains(&[axis_twice.saturating_sub(point[0]), point[1], point[2]])
+    });
+    let requested_pair = target_parts.iter().find(|part| {
+        part.count == 2
+            && matches!(
+                part.kind,
+                ori_domain::BeginnerTargetPartKindV1::Wing
+                    | ori_domain::BeginnerTargetPartKindV1::Fin
+            )
+    });
+    let suggested_part_kind = requested_pair.filter(|_| bilateral).map(|part| part.kind);
     let major_axis = (0..3).max_by_key(|axis| extents[*axis]).unwrap_or(0);
     let mut direction_milli = [0_i16; 3];
     direction_milli[major_axis] = 1000;
@@ -3061,10 +3081,14 @@ fn derive_reference_model_suggestion_v1(
         surface_area_milli: (surface_area * 1_000.0).round().clamp(0.0, u64::MAX as f64) as u64,
         protrusion: ori_domain::BeginnerProtrusionTargetV1 {
             id: 1,
-            count: match category {
-                Some(ori_domain::BeginnerTargetCategoryV1::Animal) => 4,
-                Some(ori_domain::BeginnerTargetCategoryV1::Insect) => 2,
-                None => 1,
+            count: if suggested_part_kind.is_some() {
+                2
+            } else {
+                match category {
+                    Some(ori_domain::BeginnerTargetCategoryV1::Animal) => 4,
+                    Some(ori_domain::BeginnerTargetCategoryV1::Insect) => 2,
+                    None => 1,
+                }
             },
             length_tenths_mm,
             thickness_tenths_mm,
@@ -3080,6 +3104,7 @@ fn derive_reference_model_suggestion_v1(
             priority: 50,
         },
         method: "bounded_bbox_area_normal_v1".to_owned(),
+        suggested_part_kind,
     })
 }
 
@@ -3103,6 +3128,7 @@ fn live_reference_model_suggestion_v1(
         asset_id,
         &geometry,
         profile.generation_constraints.target_category,
+        &profile.generation_constraints.target_parts,
     )
 }
 
@@ -3183,6 +3209,7 @@ fn suggest_beginner_reference_model_features(
         asset_id,
         &geometry,
         profile.generation_constraints.target_category,
+        &profile.generation_constraints.target_parts,
     )?;
     Ok(BeginnerReferenceModelSuggestionResponseV1 {
         project_instance_id: project.instance_id,
@@ -3228,6 +3255,7 @@ fn apply_beginner_reference_model_features(
         asset_id,
         &geometry,
         profile.generation_constraints.target_category,
+        &profile.generation_constraints.target_parts,
     )?;
     if live != expected_suggestion {
         return Err("reference_model_suggestion_stale".to_owned());

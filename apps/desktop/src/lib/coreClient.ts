@@ -1526,6 +1526,7 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   surface_area_milli: number
   protrusion: NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
   method: 'bounded_bbox_area_normal_v1'
+  suggested_part_kind: 'wing' | 'fin' | null
 }>
 
 export async function suggestBeginnerReferenceModelFeatures(
@@ -1539,12 +1540,13 @@ export async function suggestBeginnerReferenceModelFeatures(
   ] as const)
   const suggestion = exactCoreDataRecord(response?.suggestion, [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
-    'surface_area_milli', 'protrusion', 'method',
+    'surface_area_milli', 'protrusion', 'method', 'suggested_part_kind',
   ] as const)
   if (!response || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
     || suggestion.method !== 'bounded_bbox_area_normal_v1'
+    || ![null, 'wing', 'fin'].includes(suggestion.suggested_part_kind as null | string)
     || !isBoundedIntegerTuple(suggestion.bbox_min_tenths_mm, 3, 2_147_483_648)
     || !isBoundedIntegerTuple(suggestion.bbox_max_tenths_mm, 3, 2_147_483_647)
     || !isBoundedIntegerTuple(suggestion.dominant_normal_milli, 3, 1000)

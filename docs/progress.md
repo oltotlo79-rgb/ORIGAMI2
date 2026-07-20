@@ -26,6 +26,7 @@
 
 ## 完了
 
+- IO-008のFOLD 1.2 3D複数frame内部previewを追加した。既存2D importerと分離し、最大256の`file_frames`、file/frame `vertices_coords`のfinite 3要素、`frame_parent`範囲・自己参照・cycle、`frame_inherit`解決、byte・vertex上限、spec 1.2以下、signed zeroをstrictに検証する。preview metadataと選択結果はsource SHA-256・frame index・解決済み3D座標へ一体化する。FOLD座標だけではnative hinge/model identityを証明できないためproject・applied pose・timeline authorityはfalse固定で、利用者UIも未接続である。`ori-formats` 272件が成功し、完成率は変更していない
 - IO-008の正厚GLBへ表裏textureを接続した。extrusionの全triangleをFrontCap・BackCap・SideWallへ1対1で完全分類し、3 primitive・3 materialへ分離する。表裏は独立UVと認証済みPNG/JPEG、sideはtexture/TEXCOORDなしで表裏RGBA平均を使う。片側textureだけは意味を推測せず拒否し、無textureの既存経路を維持する。独立`gltf` readerとdesktop E2Eで3 primitive/material、2 image、表裏TEXCOORD、side非textureを確認した。「入出力・互換性」を91%、全体を46.74%（表示46.7%）へ更新した
 - SIM-010の非180度endpoint層順を平行offset面と同一support planeへ拡張した。target polygonをcanonical dominant-axis共通2D frameへ投影し、bounded convex clippingとexact orientationで実overlap cellを生成する。平行offsetはplane separationからbottom-to-topを証明し、同一support planeはlineageでsourceへ戻して認証済みface-pair orderが一意な場合だけ継承する。同一source descendant、順序欠損、非convex、丸めが必要な交点、near曖昧、正厚、endpointのpenetrating/indeterminateはfail-closedにする。`ori-core` 273件とdesktop全target checkが成功した。read-onlyでmutation authorityは付与せず、完成率は変更していない
 

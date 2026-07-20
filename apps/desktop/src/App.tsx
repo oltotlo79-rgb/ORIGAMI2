@@ -13,12 +13,14 @@ import {
 import {
   CreaseCanvas,
   type CreaseCanvasFace,
+  type CreaseCanvasAnnotation,
   type CreaseCanvasRenderMetrics,
   type CreaseLine,
   type PaperBounds,
   type PaperPolygonPoint,
 } from './components/CreaseCanvas'
 import { CreaseExportDialog } from './components/CreaseExportDialog'
+import { AnnotationPanel } from './components/AnnotationPanel'
 import { CreationDimensionExpressionSummary } from './components/CreationDimensionExpressionSummary'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
@@ -49,6 +51,7 @@ import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import {
   addEdge,
+  addAnnotation,
   addGeometricConstraint,
   addEdgeOrientationConstraint,
   addConnectedVertex,
@@ -95,6 +98,7 @@ import {
   previewStaticMeshExport,
   previewSvgImport,
   redo,
+  removeAnnotation,
   renameProjectLayer,
   removeBoundaryVertex,
   removeEdge,
@@ -112,6 +116,7 @@ import {
   splitBoundaryEdge,
   splitEdge,
   undo,
+  updateAnnotation,
   updateProjectLayerPresentation,
   updateProjectMemo,
   updatePaperProperties,
@@ -1353,6 +1358,40 @@ function App() {
     }
     return Object.freeze(faces)
   }, [nativeSnapshot, topologyResponse])
+  const canvasAnnotations = useMemo<readonly CreaseCanvasAnnotation[]>(() => {
+    if (!nativeSnapshot?.annotations) return []
+    const vertices = new Map(
+      nativeSnapshot.crease_pattern.vertices.map((vertex) => [
+        vertex.id,
+        vertex.position,
+      ]),
+    )
+    const layers = new Map(
+      nativeSnapshot.project_layers.layers.map((layer) => [layer.id, layer]),
+    )
+    return nativeSnapshot.annotations.annotations.flatMap((annotation) => {
+      const layer = layers.get(annotation.layer)
+      if (!layer || layer.content_kind !== 'annotation' || !layer.visible) return []
+      const anchor = annotation.anchor.kind === 'absolute'
+        ? annotation.anchor.position
+        : vertices.get(annotation.anchor.vertex)
+      if (!anchor) return []
+      const offset = annotation.anchor.kind === 'vertex'
+        ? annotation.anchor.offset
+        : { x: 0, y: 0 }
+      return [{
+        id: annotation.id,
+        text: annotation.text,
+        x: anchor.x + offset.x,
+        y: anchor.y + offset.y,
+        color: rgbaToCss(annotation.style.color),
+        opacity: layer.opacity,
+        fontSizeMm: annotation.style.font_size_mm,
+        bold: annotation.style.bold,
+        italic: annotation.style.italic,
+      }]
+    })
+  }, [nativeSnapshot])
   const selectedFace = selectedFaceId
     ? canvasFaces.find((face) => face.id === selectedFaceId)
     : undefined
@@ -5378,6 +5417,7 @@ function App() {
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
               compassCircles={benchmarkRun ? [] : compassCircles}
+              annotations={benchmarkRun ? [] : canvasAnnotations}
               validationVertexHighlights={canvasLocalFlatFoldabilityHighlights}
               lockedVertexIds={
                 benchmarkRun ? undefined : nativeLayerView.lockedVertexIds
@@ -6618,6 +6658,27 @@ function App() {
               onMove={moveLayerFromPanel}
               onDelete={deleteLayerFromPanel}
               onAssignSelectedEdge={assignSelectedEdgeToLayer}
+            />
+          )}
+          {nativeSnapshot && !benchmarkRun && (
+            <AnnotationPanel
+              locale={locale}
+              annotations={nativeSnapshot.annotations?.annotations ?? []}
+              layers={nativeSnapshot.project_layers.layers}
+              vertices={nativeVertices}
+              disabled={coreBusy || recoveryBlocking}
+              onAdd={(record) => void runNativeEdit(
+                (projectId, revision, projectInstanceId) =>
+                  addAnnotation(projectId, revision, projectInstanceId, record),
+              )}
+              onUpdate={(record) => void runNativeEdit(
+                (projectId, revision, projectInstanceId) =>
+                  updateAnnotation(projectId, revision, projectInstanceId, record),
+              )}
+              onRemove={(id) => void runNativeEdit(
+                (projectId, revision, projectInstanceId) =>
+                  removeAnnotation(projectId, revision, projectInstanceId, id),
+              )}
             />
           )}
           {nativeSnapshot && !benchmarkRun && (

@@ -103,6 +103,18 @@ export type CompassConstructionCircle = Readonly<{
   radius: number
 }>
 
+export type CreaseCanvasAnnotation = Readonly<{
+  id: string
+  text: string
+  x: number
+  y: number
+  color: string
+  opacity: number
+  fontSizeMm: number
+  bold: boolean
+  italic: boolean
+}>
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
@@ -121,6 +133,7 @@ type Props = {
   parallelReference?: ParallelSnapReference | null
   angleConfig?: AngleSnapConfig
   compassCircles?: readonly CompassConstructionCircle[]
+  annotations?: readonly CreaseCanvasAnnotation[]
   validationVertexHighlights?: ReadonlyMap<string, ValidationVertexHighlight>
   lockedVertexIds?: ReadonlySet<string>
   ariaDescribedBy?: string
@@ -267,6 +280,7 @@ export function CreaseCanvas({
   parallelReference = null,
   angleConfig,
   compassCircles = [],
+  annotations = [],
   validationVertexHighlights = EMPTY_VALIDATION_VERTEX_HIGHLIGHTS,
   lockedVertexIds = EMPTY_LOCKED_VERTEX_IDS,
   ariaDescribedBy,
@@ -594,6 +608,20 @@ export function CreaseCanvas({
         context.stroke()
       }
 
+      for (const annotation of annotations) {
+        const point = mapPaperPoint(transform, annotation.x, annotation.y)
+        if (!point || !annotation.text) continue
+        context.save()
+        context.globalAlpha = Math.max(0, Math.min(1, annotation.opacity))
+        context.fillStyle = annotation.color
+        context.textBaseline = 'alphabetic'
+        context.font = `${annotation.italic ? 'italic ' : ''}${annotation.bold ? '700 ' : ''}${Math.max(8, annotation.fontSizeMm * transform.scale)}px sans-serif`
+        for (const [index, line] of annotation.text.split(/\r?\n/u).entries()) {
+          context.fillText(line, point.x, point.y + index * Math.max(10, annotation.fontSizeMm * transform.scale * 1.2))
+        }
+        context.restore()
+      }
+
       if (tool === 'measure' && selectedLineId) {
         const selectedLine = lines.find((line) => line.id === selectedLineId)
         if (selectedLine) {
@@ -687,6 +715,7 @@ export function CreaseCanvas({
   }, [
     canvasSize.height,
     canvasSize.width,
+    annotations,
     compassCircles,
     dragPreview,
     faces,

@@ -888,6 +888,7 @@ mod tests {
                 position: Point2::new(index as f64, 0.0),
             })
             .collect();
+        let started = std::time::Instant::now();
         assert!(matches!(
             solve_geometric_constraints_v1(
                 &large,
@@ -898,6 +899,203 @@ mod tests {
             ),
             Err(ConstraintSolveErrorV1::WorkLimitExceeded)
         ));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "10,000-element admission must remain bounded"
+        );
+    }
+
+    #[test]
+    fn every_v1_constraint_kind_has_a_dedicated_converged_fixture() {
+        let center = VertexId::new();
+        let x = VertexId::new();
+        let y = VertexId::new();
+        let diagonal = VertexId::new();
+        let negative_y = VertexId::new();
+        let mirror_first = VertexId::new();
+        let mirror_second = VertexId::new();
+        let line_point = VertexId::new();
+        let vertices = [
+            (center, 0.0, 0.0),
+            (x, 1.0, 0.0),
+            (y, 0.0, 1.0),
+            (diagonal, 1.0, 1.0),
+            (negative_y, 0.0, -1.0),
+            (mirror_first, 1.0, 1.0),
+            (mirror_second, 1.0, -1.0),
+            (line_point, 0.5, 0.5),
+        ];
+        let edge_x = EdgeId::new();
+        let edge_y = EdgeId::new();
+        let edge_diagonal = EdgeId::new();
+        let edge_parallel = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vertices
+                .into_iter()
+                .map(|(id, x, y)| Vertex {
+                    id,
+                    position: Point2::new(x, y),
+                })
+                .collect(),
+            edges: vec![
+                Edge {
+                    id: edge_x,
+                    start: center,
+                    end: x,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: edge_y,
+                    start: center,
+                    end: y,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: edge_diagonal,
+                    start: center,
+                    end: diagonal,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: edge_parallel,
+                    start: negative_y,
+                    end: mirror_second,
+                    kind: EdgeKind::Auxiliary,
+                },
+            ],
+        };
+        let fixtures = vec![
+            (
+                center,
+                GeometricConstraintKindV1::FixedLength {
+                    edge: edge_x,
+                    length_mm: 1.0,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::FixedAngle {
+                    vertex: center,
+                    first_edge: edge_x,
+                    second_edge: edge_y,
+                    angle_degrees: 90.0,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::Horizontal { edge: edge_x },
+            ),
+            (center, GeometricConstraintKindV1::Vertical { edge: edge_y }),
+            (
+                center,
+                GeometricConstraintKindV1::EqualLength {
+                    first_edge: edge_x,
+                    second_edge: edge_y,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: edge_x,
+                    second_edge: edge_parallel,
+                },
+            ),
+            (
+                line_point,
+                GeometricConstraintKindV1::PointOnLine {
+                    vertex: line_point,
+                    line_edge: edge_diagonal,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: mirror_first,
+                    second_vertex: mirror_second,
+                    axis_edge: edge_x,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::RotationalSymmetry {
+                    center_vertex: center,
+                    source_vertex: x,
+                    target_vertex: y,
+                    angle_degrees: 90.0,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex: center,
+                    first_edge: edge_x,
+                    second_edge: edge_y,
+                    bisector_edge: edge_diagonal,
+                },
+            ),
+            (
+                center,
+                GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: edge_x,
+                    denominator_edge: edge_y,
+                    ratio: 1.0,
+                },
+            ),
+        ];
+        for (fixture_index, (driving, constraint)) in fixtures.iter().cloned().enumerate() {
+            let document = GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints: vec![GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint,
+                }],
+            };
+            let position = pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == driving)
+                .unwrap()
+                .position;
+            let preview = solve_geometric_constraints_v1(
+                &pattern,
+                &document,
+                driving,
+                position,
+                ConstraintSolveLimitsV1::default(),
+            )
+            .unwrap_or_else(|error| panic!("fixture {fixture_index} must converge: {error:?}"));
+            assert!(preview.maximum_residual <= 1e-7);
+        }
+        let mut combined = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: fixtures
+                .into_iter()
+                .map(|(_, constraint)| GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint,
+                })
+                .collect(),
+        };
+        let forward = solve_geometric_constraints_v1(
+            &pattern,
+            &combined,
+            center,
+            Point2::new(0.0, 0.0),
+            ConstraintSolveLimitsV1::default(),
+        )
+        .expect("combined forward order");
+        combined.constraints.reverse();
+        let reverse = solve_geometric_constraints_v1(
+            &pattern,
+            &combined,
+            center,
+            Point2::new(0.0, 0.0),
+            ConstraintSolveLimitsV1::default(),
+        )
+        .expect("combined reverse order");
+        assert_eq!(forward.positions, reverse.positions);
+        assert!(forward.maximum_residual <= 1e-7);
+        assert!(reverse.maximum_residual <= 1e-7);
     }
 
     fn driving_placeholder() -> VertexId {

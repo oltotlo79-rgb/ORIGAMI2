@@ -132,6 +132,10 @@ try {
   throw new Error('CycloneDX SBOM release evidence JSON is invalid')
 }
 if (
+  JSON.stringify(releaseEvidence.rustsecWarningReview)
+  !== JSON.stringify(buildDependencyPolicy().vulnerabilityAssessment.rustsecReviewReport)
+) throw new Error('CycloneDX SBOM RustSec review evidence mismatch')
+if (
   evidenceJson !== JSON.stringify(releaseEvidence)
   || releaseEvidence.schema !== 'origami2.release-evidence.v1'
   || releaseEvidence.sourceCommit !== process.env.RELEASE_COMMIT

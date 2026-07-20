@@ -43,7 +43,8 @@ jobs:
           audit_report="$RUNNER_TEMP/rustsec-audit.json"
           cargo audit --db "$database" --no-fetch --json > "$audit_report"
           allowed_warnings_file="$RUNNER_TEMP/rustsec-allowed-warnings.txt"
-          node .github/scripts/verify_rustsec_warning_ledger.mjs "$audit_report" > "$allowed_warnings_file"
+          review_report="$RUNNER_TEMP/rustsec-warning-review.json"
+          node .github/scripts/verify_rustsec_warning_ledger.mjs "$audit_report" "$review_report" > "$allowed_warnings_file"
           mapfile -t allowed_warnings < "$allowed_warnings_file"
           ignore_args=()
           for advisory in "${allowed_warnings[@]}"; do
@@ -52,6 +53,13 @@ jobs:
           done
           test "${#ignore_args[@]}" -eq 36
           cargo audit --db "$database" --no-fetch --deny warnings "${ignore_args[@]}"
+      - name: Retain RustSec exception review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rustsec-warning-review
+          path: ${{ runner.temp }}/rustsec-warning-review.json
+          if-no-files-found: error
+          retention-days: 7
 
   frontend:
     runs-on: ubuntu-latest

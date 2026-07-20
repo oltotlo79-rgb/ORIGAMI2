@@ -21,6 +21,17 @@ const cargoLicenseAllowlist = new Set([
 
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
+export function buildRustsecReviewReport() {
+  const ledger = JSON.parse(readFileSync(rustsecWarningPath, 'utf8'))
+  return {
+    schema: 'origami2.rustsec-warning-review.v1',
+    databaseCommit: ledger.databaseCommit,
+    ledgerSha256: digest(rustsecWarningPath),
+    exceptions: ledger.entries,
+    result: 'pass',
+  }
+}
+
 export function buildDependencyPolicy() {
   const rustsecWarningLedger = JSON.parse(readFileSync(rustsecWarningPath, 'utf8'))
   const rustsecAllowedWarnings = rustsecWarningLedger.entries?.map(({ id }) => id) ?? []
@@ -167,6 +178,7 @@ export function buildDependencyPolicy() {
       cargo: 'cargo-audit-0.22.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
       rustsecAllowedWarnings,
       rustsecWarningLedger,
+      rustsecReviewReport: buildRustsecReviewReport(),
       scope: 'package-lock.json;Cargo.lock',
     },
     result: 'pass',

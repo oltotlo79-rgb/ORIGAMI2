@@ -211,7 +211,8 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
   assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/u)
   assert.match(workflow, /checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0/u)
   assert.match(workflow, /cargo audit --db "\$database" --no-fetch --deny warnings/u)
-  assert.match(workflow, /verify_rustsec_warning_ledger\.mjs "\$audit_report" > "\$allowed_warnings_file"/u)
+  assert.match(workflow, /verify_rustsec_warning_ledger\.mjs "\$audit_report" "\$review_report" > "\$allowed_warnings_file"/u)
+  assert.match(workflow, /name: rustsec-warning-review[\s\S]*retention-days: 7/u)
   assert.match(workflow, /cargo audit --db "\$database" --no-fetch --json/u)
   assert.doesNotMatch(workflow, /npx (?!--no-install)/u)
   for (const command of workflow.matchAll(/cargo test[^\r\n]*/gu)) {
@@ -1128,6 +1129,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         checkSuiteId: '24680',
         checks: [{ name: 'test', conclusion: 'success' }],
       },
+      rustsecWarningReview: buildDependencyPolicy().vulnerabilityAssessment.rustsecReviewReport,
     }))
     const rootBoundBytes = readFileSync(path, 'utf8')
     execFileSync('node', [join(root, '.github/scripts/bind_release_sbom.mjs'), path], {
@@ -1185,6 +1187,7 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
       join(root, '.github/rustsec-warning-ledger.json'),
       'utf8',
     )),
+    rustsecReviewReport: policy.vulnerabilityAssessment.rustsecReviewReport,
     scope: 'package-lock.json;Cargo.lock',
   })
   assert.ok(policy.cargoRegistryPackages > 0 && policy.cargoRegistryPackages <= 10000)

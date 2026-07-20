@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { buildRustsecReviewReport } from './dependency_policy.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
 const ledger = JSON.parse(readFileSync(resolve(root, '.github/rustsec-warning-ledger.json'), 'utf8'))
@@ -41,5 +42,10 @@ if (process.argv[2]) {
     }
     for (const field of ['package', 'version', 'kind', 'title', 'url']) if (actual?.[field] !== entry[field]) fail(`advisory content changed: ${entry.id}.${field}`)
   }
+}
+if (process.argv[3]) {
+  if (process.argv[3].startsWith('-') || process.argv[3].length > 4096) fail('invalid report path')
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(process.argv[3], `${JSON.stringify(buildRustsecReviewReport(), null, 2)}\n`, 'utf8')
 }
 process.stdout.write(`${ids.join('\n')}\n`)

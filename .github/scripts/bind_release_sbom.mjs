@@ -82,6 +82,7 @@ properties['origami2.build.identity-json'] = JSON.stringify({
   targetTriple,
 })
 properties['origami2.dependency.policy-json'] = JSON.stringify(buildDependencyPolicy())
+const dependencyPolicy = buildDependencyPolicy()
 properties['origami2.release.evidence-json'] = JSON.stringify({
   schema: 'origami2.release-evidence.v1',
   sourceCommit: commit,
@@ -89,6 +90,7 @@ properties['origami2.release.evidence-json'] = JSON.stringify({
   executedTestCount,
   executedSuites: ['formal-release-contract'],
   ciChecks,
+  rustsecWarningReview: dependencyPolicy.vulnerabilityAssessment.rustsecReviewReport,
 })
 sbom.metadata = {
   ...(sbom.metadata ?? {}),

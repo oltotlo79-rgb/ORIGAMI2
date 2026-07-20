@@ -37,6 +37,29 @@ test('formal manifest remains an attested manual-review artifact, not an updater
   assert.match(runtimeContract, /runtimeUpdaterAvailable: false/u)
 })
 
+test('CI always runs release contracts with read-only short-lived evidence', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const checkoutCount = workflow.match(/actions\/checkout@/gu)?.length ?? 0
+  const nonPersistentCount = workflow.match(/persist-credentials: false/gu)?.length ?? 0
+  assert.equal(checkoutCount, 5)
+  assert.equal(nonPersistentCount, checkoutCount)
+  assert.equal(workflow.match(/timeout-minutes:/gu)?.length ?? 0, 5)
+  assert.match(workflow, /cancel-in-progress: true/u)
+  assert.match(workflow, /permissions:\s*\n\s+contents: read/u)
+  assert.match(workflow, /npm test/u)
+  assert.match(
+    workflow,
+    /node --test \.\.\/\.\.\/\.github\/tests\/formal-release\.test\.mjs/u,
+  )
+  const uploadBlocks = workflow.match(
+    /uses: actions\/upload-artifact@[\s\S]*?(?=\n\s{6}- |\n\s{2}[a-z-]+:|\s*$)/gu,
+  ) ?? []
+  assert.ok(uploadBlocks.length >= 6)
+  for (const block of uploadBlocks) {
+    assert.match(block, /retention-days: 7/u)
+  }
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

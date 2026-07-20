@@ -1,10 +1,14 @@
+import { useState } from 'react'
 import type {
   GeometricConstraintDocument,
   GeometricConstraintKind,
   GeometricConstraintPreflightResult,
 } from '../lib/coreClient'
 import { isCanonicalNonNilUuid } from '../lib/canonicalUuid.ts'
-import { createGeometricConstraintPresentation } from '../lib/geometricConstraints'
+import {
+  createGeometricConstraintPresentation,
+  normalizeGeometricConstraintKind,
+} from '../lib/geometricConstraints'
 import {
   formatLocalizedText,
   localeStore,
@@ -25,6 +29,7 @@ type GeometricConstraintPanelProps = {
   selectedEdgeId: string | null
   disabled: boolean
   onAddOrientation: (orientation: 'horizontal' | 'vertical') => void
+  onAddConstraint: (constraint: GeometricConstraintKind) => void
   onRemove: (constraintId: string) => void
   onSelectEdge: (edgeId: string) => void
   onRetryAnalysis: () => void
@@ -39,12 +44,15 @@ export function GeometricConstraintPanel({
   selectedEdgeId,
   disabled,
   onAddOrientation,
+  onAddConstraint,
   onRemove,
   onSelectEdge,
   onRetryAnalysis,
   localeStore: localeStore_ = localeStore,
 }: GeometricConstraintPanelProps) {
   const locale = useLocale(localeStore_)
+  const [constraintJson, setConstraintJson] = useState('')
+  const [constraintJsonInvalid, setConstraintJsonInvalid] = useState(false)
   return (
     <section className="geometric-constraints" aria-labelledby="geometric-constraints-title">
       <div className="geometric-constraints-heading">
@@ -92,6 +100,69 @@ export function GeometricConstraintPanel({
           )}
         </p>
       )}
+      <fieldset disabled={disabled}>
+        <legend>
+          {localized(locale, '全11種の制約を追加', 'Add any of the 11 constraint kinds')}
+        </legend>
+        <label className="field">
+          {localized(locale, '制約JSON', 'Constraint JSON')}
+          <textarea
+            value={constraintJson}
+            rows={6}
+            maxLength={2_048}
+            aria-invalid={constraintJsonInvalid}
+            placeholder={selectedEdgeId
+              ? JSON.stringify({
+                  kind: 'fixed_length',
+                  edge: selectedEdgeId,
+                  length_mm: 100,
+                })
+              : '{"kind":"equal_length","first_edge":"UUID","second_edge":"UUID"}'}
+            onChange={(event) => {
+              setConstraintJson(event.currentTarget.value)
+              setConstraintJsonInvalid(false)
+            }}
+          />
+        </label>
+        <div className="property-actions">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              let parsed: unknown
+              try {
+                parsed = JSON.parse(constraintJson)
+              } catch {
+                setConstraintJsonInvalid(true)
+                return
+              }
+              const constraint = normalizeGeometricConstraintKind(parsed)
+              if (!constraint) {
+                setConstraintJsonInvalid(true)
+                return
+              }
+              onAddConstraint(constraint)
+              setConstraintJson('')
+              setConstraintJsonInvalid(false)
+            }}
+          >
+            {localized(locale, '制約を追加', 'Add constraint')}
+          </button>
+        </div>
+        <p className={constraintJsonInvalid ? 'status-invalid' : 'muted'}>
+          {constraintJsonInvalid
+            ? localized(
+                locale,
+                '制約JSONの種別、ID、値、またはfieldが不正です。',
+                'The constraint kind, IDs, values, or fields are invalid.',
+              )
+            : localized(
+                locale,
+                'fixed_length / fixed_angle / horizontal / vertical / equal_length / parallel / point_on_line / mirror_symmetry / rotational_symmetry / angle_bisector / length_ratio を厳格JSONで指定します。',
+                'Use strict JSON for fixed_length, fixed_angle, horizontal, vertical, equal_length, parallel, point_on_line, mirror_symmetry, rotational_symmetry, angle_bisector, or length_ratio.',
+              )}
+        </p>
+      </fieldset>
 
       <ConstraintPreflightStatus
         preflight={preflight}

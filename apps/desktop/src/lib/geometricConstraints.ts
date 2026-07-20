@@ -207,6 +207,16 @@ export function normalizeGeometricConstraintDocument(
   }
 }
 
+export function normalizeGeometricConstraintKind(
+  value: unknown,
+): GeometricConstraintKindV1 | null {
+  try {
+    return parseConstraint(value)
+  } catch {
+    return null
+  }
+}
+
 /**
  * Accepts a preflight response only for the exact project snapshot requested
  * by the caller. No raw native diagnostic or geometry is retained.

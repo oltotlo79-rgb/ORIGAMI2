@@ -466,6 +466,7 @@ function panel(overrides: Partial<{
   selectedEdgeId: string | null
   disabled: boolean
   onAddOrientation: (orientation: 'horizontal' | 'vertical') => void
+  onAddConstraint: (constraint: GeometricConstraintDocument['constraints'][number]['constraint']) => void
   onRemove: (id: string) => void
   onSelectEdge: (id: string) => void
   onRetryAnalysis: () => void
@@ -480,6 +481,7 @@ function panel(overrides: Partial<{
       selectedEdgeId={overrides.selectedEdgeId ?? null}
       disabled={overrides.disabled ?? false}
       onAddOrientation={overrides.onAddOrientation ?? (() => undefined)}
+      onAddConstraint={overrides.onAddConstraint ?? (() => undefined)}
       onRemove={overrides.onRemove ?? (() => undefined)}
       onSelectEdge={overrides.onSelectEdge ?? (() => undefined)}
       onRetryAnalysis={overrides.onRetryAnalysis ?? (() => undefined)}

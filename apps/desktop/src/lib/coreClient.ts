@@ -1460,6 +1460,20 @@ export function addEdgeOrientationConstraint(
   })
 }
 
+export function addGeometricConstraint(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  constraint: GeometricConstraintKind,
+) {
+  return invoke<ProjectSnapshot>('add_geometric_constraint', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    constraint,
+  })
+}
+
 export function removeGeometricConstraint(
   expectedProjectId: string,
   expectedRevision: number,

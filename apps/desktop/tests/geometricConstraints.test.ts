@@ -8,6 +8,7 @@ import {
   MAX_GEOMETRIC_CONSTRAINT_RECORDS,
   MAX_GEOMETRIC_CONSTRAINT_REFERENCES,
   normalizeGeometricConstraintDocument,
+  normalizeGeometricConstraintKind,
   normalizeGeometricConstraintPreflightResponse,
 } from '../src/lib/geometricConstraints.ts'
 
@@ -35,6 +36,16 @@ const BINDING = {
   project_id: PROJECT_ID,
   revision: 7,
 }
+
+test('admits every strict constraint kind for the generic creation path', () => {
+  for (const constraint of ALL_KINDS) {
+    assert.deepEqual(normalizeGeometricConstraintKind(constraint), constraint)
+  }
+  assert.equal(normalizeGeometricConstraintKind({
+    ...ALL_KINDS[0],
+    future: true,
+  }), null)
+})
 
 const ALL_KINDS = [
   {

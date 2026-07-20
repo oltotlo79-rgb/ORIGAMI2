@@ -46,6 +46,7 @@ import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import {
   addEdge,
+  addGeometricConstraint,
   addEdgeOrientationConstraint,
   addConnectedVertex,
   addInstructionStep,
@@ -103,6 +104,7 @@ import {
   updateProjectLayerPresentation,
   updatePaperProperties,
   type ProjectSnapshot,
+  type GeometricConstraintKind,
   type ProjectTopologyResponse,
   type InstructionVisual,
   type RgbaColor,
@@ -2100,6 +2102,16 @@ function App() {
         revision,
         projectInstanceId,
         constraintId,
+      ))
+  }, [runNativeEdit])
+
+  const addConstraint = useCallback((constraint: GeometricConstraintKind) => {
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      addGeometricConstraint(
+        projectId,
+        revision,
+        projectInstanceId,
+        constraint,
       ))
   }, [runNativeEdit])
 
@@ -6203,6 +6215,7 @@ function App() {
               selectedEdgeId={selectedLine?.id ?? null}
               disabled={coreBusy || geometricConstraintDocumentInvalid}
               onAddOrientation={addSelectedEdgeOrientationConstraint}
+              onAddConstraint={addConstraint}
               onRemove={removeConstraint}
               onSelectEdge={(edgeId) => {
                 if (!nativeLines.some((line) => line.id === edgeId)) return

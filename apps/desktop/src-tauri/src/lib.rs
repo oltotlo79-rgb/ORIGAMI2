@@ -2877,6 +2877,35 @@ fn add_edge_orientation_constraint(
 }
 
 #[tauri::command]
+fn add_geometric_constraint(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    constraint: GeometricConstraintKindV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddGeometricConstraint {
+            record: GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint,
+            },
+        },
+    )
+}
+
+#[tauri::command]
 fn remove_geometric_constraint(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -6415,6 +6444,7 @@ pub fn run() {
             delete_project_layer,
             assign_edge_to_project_layer,
             add_edge_orientation_constraint,
+            add_geometric_constraint,
             remove_geometric_constraint,
             undo,
             redo,

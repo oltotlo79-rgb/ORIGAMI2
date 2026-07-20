@@ -7,6 +7,7 @@ import {
 
 const projectInstanceId = '018f47a2-4b7a-7cc1-8abc-112233445566'
 const projectId = '018f47a2-4b7a-7cc1-8abc-665544332211'
+const faceId = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
 const request = {
   expectedProjectInstanceId: projectInstanceId,
   expectedProjectId: projectId,
@@ -39,12 +40,48 @@ describe('stacked-fold read boundary', () => {
         layerOrderGeneration: 8,
       },
       support: 'bit_exact_flat_endpoint_tree',
-      crossedCells: [],
-      targetFaces: [],
-      materialSegments: [],
-      topologyProof: { targetFingerprintSha256: 'a'.repeat(64) },
-      endpointCollision: { hasBlockingHold: false },
-      work: { scannedCells: 1 },
+      crossedCells: [{ cellKeySha256: 'c'.repeat(64), bottomToTopFaces: [faceId] }],
+      targetFaces: [faceId],
+      materialSegments: [
+        {
+          faceId,
+          start: [0, 0],
+          end: [10, 0],
+          fixedSide: 'left',
+          assignment: 'mountain',
+        },
+      ],
+      topologyProof: {
+        targetFingerprintSha256: 'a'.repeat(64),
+        targetVertexCount: 5,
+        targetEdgeCount: 5,
+        targetBoundaryVertexCount: 4,
+        lineageRecordCount: 1,
+        sourceEdgeSubdivisionCount: 4,
+        expectedCreaseSubdivisionCount: 1,
+        targetMaterialFaceCount: 2,
+        targetHingeCount: 1,
+      },
+      endpointCollision: {
+        expectedPairCount: 1,
+        separatedPairCount: 0,
+        touchingPairCount: 0,
+        allowedPairCount: 1,
+        penetratingPairCount: 0,
+        indeterminatePairCount: 0,
+        hasBlockingHold: false,
+      },
+      work: {
+        scannedCells: 1,
+        totalBoundaryVertices: 4,
+        totalLayerRecords: 1,
+        orientationTests: 1,
+        exactArithmeticOperations: 1,
+        maximumExactIntegerBits: 64,
+        totalExactIntegerBits: 64,
+        retainedCells: 1,
+        retainedTargetFaces: 1,
+      },
       authorizesProjectMutation: false,
       authorizesApplyStackedFold: false,
       flatEndpointLayerOrder: {
@@ -70,12 +107,48 @@ describe('stacked-fold read boundary', () => {
         layerOrderGeneration: 9,
       },
       support: 'no_hinge_single_face',
-      crossedCells: [],
-      targetFaces: [],
-      materialSegments: [],
-      topologyProof: { targetFingerprintSha256: 'b'.repeat(64) },
-      endpointCollision: { hasBlockingHold: false },
-      work: { scannedCells: 0 },
+      crossedCells: [{ cellKeySha256: 'd'.repeat(64), bottomToTopFaces: [faceId] }],
+      targetFaces: [faceId],
+      materialSegments: [
+        {
+          faceId,
+          start: [0, 0],
+          end: [10, 0],
+          fixedSide: 'left',
+          assignment: 'mountain',
+        },
+      ],
+      topologyProof: {
+        targetFingerprintSha256: 'b'.repeat(64),
+        targetVertexCount: 5,
+        targetEdgeCount: 5,
+        targetBoundaryVertexCount: 4,
+        lineageRecordCount: 1,
+        sourceEdgeSubdivisionCount: 4,
+        expectedCreaseSubdivisionCount: 1,
+        targetMaterialFaceCount: 2,
+        targetHingeCount: 1,
+      },
+      endpointCollision: {
+        expectedPairCount: 1,
+        separatedPairCount: 0,
+        touchingPairCount: 0,
+        allowedPairCount: 1,
+        penetratingPairCount: 0,
+        indeterminatePairCount: 0,
+        hasBlockingHold: false,
+      },
+      work: {
+        scannedCells: 1,
+        totalBoundaryVertices: 4,
+        totalLayerRecords: 1,
+        orientationTests: 1,
+        exactArithmeticOperations: 1,
+        maximumExactIntegerBits: 64,
+        totalExactIntegerBits: 64,
+        retainedCells: 1,
+        retainedTargetFaces: 1,
+      },
       authorizesProjectMutation: false,
       authorizesApplyStackedFold: false,
       flatEndpointLayerOrder: {
@@ -110,6 +183,45 @@ describe('stacked-fold read boundary', () => {
             overlapCellCount: 1,
           },
         },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          crossedCells: [{ ...response.crossedCells[0], cellKeySha256: 'not-a-hash' }],
+        },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          materialSegments: [
+            { ...response.materialSegments[0], end: response.materialSegments[0].start },
+          ],
+        },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          endpointCollision: { ...response.endpointCollision, penetratingPairCount: 1 },
+        },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        { ...response, work: { ...response.work, retainedTargetFaces: 2 } },
         request,
       ),
       null,

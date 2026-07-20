@@ -26,12 +26,49 @@ export type StackedFoldReadResponse = Readonly<{
     layerOrderGeneration: number
   }>
   support: 'no_hinge_single_face' | 'bit_exact_flat_endpoint_tree'
-  crossedCells: readonly unknown[]
+  crossedCells: readonly Readonly<{
+    cellKeySha256: string
+    bottomToTopFaces: readonly string[]
+  }>[]
   targetFaces: readonly string[]
-  materialSegments: readonly unknown[]
-  topologyProof: Readonly<{ targetFingerprintSha256: string }>
-  endpointCollision: Readonly<{ hasBlockingHold: boolean }>
-  work: Readonly<{ scannedCells: number }>
+  materialSegments: readonly Readonly<{
+    faceId: string
+    start: readonly [number, number]
+    end: readonly [number, number]
+    fixedSide: StackedFoldFixedSide
+    assignment: 'mountain' | 'valley'
+  }>[]
+  topologyProof: Readonly<{
+    targetFingerprintSha256: string
+    targetVertexCount: number
+    targetEdgeCount: number
+    targetBoundaryVertexCount: number
+    lineageRecordCount: number
+    sourceEdgeSubdivisionCount: number
+    expectedCreaseSubdivisionCount: number
+    targetMaterialFaceCount: number
+    targetHingeCount: number
+  }>
+  endpointCollision: Readonly<{
+    expectedPairCount: number
+    separatedPairCount: number
+    touchingPairCount: number
+    allowedPairCount: number
+    penetratingPairCount: number
+    indeterminatePairCount: number
+    hasBlockingHold: boolean
+  }>
+  work: Readonly<{
+    scannedCells: number
+    totalBoundaryVertices: number
+    totalLayerRecords: number
+    orientationTests: number
+    exactArithmeticOperations: number
+    maximumExactIntegerBits: number
+    totalExactIntegerBits: number
+    retainedCells: number
+    retainedTargetFaces: number
+  }>
   authorizesProjectMutation: false
   authorizesApplyStackedFold: false
   flatEndpointLayerOrder: Readonly<{
@@ -55,6 +92,14 @@ const isFinitePoint = (value: unknown): value is [number, number, number] =>
 
 const isLowerSha256 = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value)
+
+const isFinitePoint2 = (value: unknown): value is [number, number] =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  value.every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate))
+
+const allCounts = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
+  fields.every((field) => isCount(value[field]))
 
 export function isStackedFoldReadRequest(value: unknown): value is StackedFoldReadRequest {
   if (!isRecord(value)) return false
@@ -93,7 +138,24 @@ export function normalizeStackedFoldReadResponse(
   )
     return null
   const binding = value.binding
+  const topologyProof = value.topologyProof
+  const endpointCollision = value.endpointCollision
+  const work = value.work
   const layerOrder = value.flatEndpointLayerOrder
+  const endpointCountFields = [
+    'expectedPairCount',
+    'separatedPairCount',
+    'touchingPairCount',
+    'allowedPairCount',
+    'penetratingPairCount',
+    'indeterminatePairCount',
+  ] as const
+  const endpointCountsValid = allCounts(endpointCollision, endpointCountFields)
+  const endpointPairSum = endpointCountsValid
+    ? endpointCountFields
+        .slice(1)
+        .reduce((sum, field) => sum + Number(endpointCollision[field]), 0)
+    : -1
   if (
     typeof value.guardModelId !== 'string' ||
     value.guardModelId.length === 0 ||
@@ -109,12 +171,58 @@ export function normalizeStackedFoldReadResponse(
     (value.support !== 'no_hinge_single_face' &&
       value.support !== 'bit_exact_flat_endpoint_tree') ||
     !Array.isArray(value.crossedCells) ||
+    !value.crossedCells.every(
+      (cell) =>
+        isRecord(cell) &&
+        isLowerSha256(cell.cellKeySha256) &&
+        Array.isArray(cell.bottomToTopFaces) &&
+        cell.bottomToTopFaces.length > 0 &&
+        cell.bottomToTopFaces.every(isCanonicalNonNilUuid),
+    ) ||
     !Array.isArray(value.targetFaces) ||
+    value.targetFaces.length === 0 ||
     !value.targetFaces.every(isCanonicalNonNilUuid) ||
     !Array.isArray(value.materialSegments) ||
-    !isLowerSha256(value.topologyProof.targetFingerprintSha256) ||
-    typeof value.endpointCollision.hasBlockingHold !== 'boolean' ||
-    !isCount(value.work.scannedCells) ||
+    value.materialSegments.length !== value.targetFaces.length ||
+    !value.materialSegments.every(
+      (segment) =>
+        isRecord(segment) &&
+        isCanonicalNonNilUuid(segment.faceId) &&
+        isFinitePoint2(segment.start) &&
+        isFinitePoint2(segment.end) &&
+        (segment.start[0] !== segment.end[0] || segment.start[1] !== segment.end[1]) &&
+        (segment.fixedSide === 'left' || segment.fixedSide === 'right') &&
+        (segment.assignment === 'mountain' || segment.assignment === 'valley'),
+    ) ||
+    !isLowerSha256(topologyProof.targetFingerprintSha256) ||
+    !allCounts(topologyProof, [
+      'targetVertexCount',
+      'targetEdgeCount',
+      'targetBoundaryVertexCount',
+      'lineageRecordCount',
+      'sourceEdgeSubdivisionCount',
+      'expectedCreaseSubdivisionCount',
+      'targetMaterialFaceCount',
+      'targetHingeCount',
+    ]) ||
+    !endpointCountsValid ||
+    endpointPairSum !== endpointCollision.expectedPairCount ||
+    endpointCollision.hasBlockingHold !==
+      (Number(endpointCollision.penetratingPairCount) > 0 ||
+        Number(endpointCollision.indeterminatePairCount) > 0) ||
+    !allCounts(work, [
+      'scannedCells',
+      'totalBoundaryVertices',
+      'totalLayerRecords',
+      'orientationTests',
+      'exactArithmeticOperations',
+      'maximumExactIntegerBits',
+      'totalExactIntegerBits',
+      'retainedCells',
+      'retainedTargetFaces',
+    ]) ||
+    work.retainedCells !== value.crossedCells.length ||
+    work.retainedTargetFaces !== value.targetFaces.length ||
     value.authorizesProjectMutation !== false ||
     value.authorizesApplyStackedFold !== false ||
     typeof layerOrder.applicable !== 'boolean' ||

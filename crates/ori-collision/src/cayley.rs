@@ -3944,6 +3944,11 @@ pub(crate) use containment::{
     ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
     scan_bound_pose_for_proven_transversal_penetration,
 };
+pub use positive_thickness::{
+    NativeSingleHingeThicknessBoundaryV1, SingleHingeThicknessBoundaryErrorV1,
+    SingleHingeThicknessBoundaryObservationV1, prepare_single_hinge_thickness_boundary_v1,
+    revalidate_single_hinge_thickness_boundary_v1,
+};
 pub(crate) use positive_thickness::{
     SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
     ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1, diagnose_bound_shared_hinge_solid_v1,

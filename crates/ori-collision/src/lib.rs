@@ -28,6 +28,12 @@ mod stacked_fold_read;
 mod static_collision;
 mod zero_thickness;
 
+pub use cayley::{
+    NativeSingleHingeThicknessBoundaryV1, SingleHingeThicknessBoundaryErrorV1,
+    SingleHingeThicknessBoundaryObservationV1, prepare_single_hinge_thickness_boundary_v1,
+    revalidate_single_hinge_thickness_boundary_v1,
+};
+
 pub use cell_order_transport::{
     CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CellOrderTransportErrorV1, CellOrderTransportLimitsV1,
     CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,

@@ -36,8 +36,8 @@ use std::cmp::Ordering;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
-use ori_domain::{FaceId, VertexId};
-use ori_kinematics::BoundMaterialTreePose;
+use ori_domain::{EdgeId, FaceId, VertexId};
+use ori_kinematics::{BoundMaterialTreePose, Point3};
 use ori_topology::FoldAssignment;
 
 use super::{
@@ -1997,6 +1997,155 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
     }))
 }
 
+/// Opaque, issuer-bound positive-thickness boundary rails for the strictly
+/// two-triangle/one-hinge class admitted by the exact corridor classifier.
+///
+/// The four rails are observations in native material millimetres. They are
+/// not a collision clearance or a printable-solid certificate.
+#[derive(Debug)]
+pub struct NativeSingleHingeThicknessBoundaryV1<'a> {
+    bound: BoundMaterialTreePose<'a>,
+    paper_thickness_bits: u64,
+    hinge: EdgeId,
+    left_face: FaceId,
+    right_face: FaceId,
+    left_front: [[f64; 3]; 2],
+    left_back: [[f64; 3]; 2],
+    right_front: [[f64; 3]; 2],
+    right_back: [[f64; 3]; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SingleHingeThicknessBoundaryObservationV1 {
+    pub hinge: EdgeId,
+    pub left_face: FaceId,
+    pub right_face: FaceId,
+    pub left_front: [[f64; 3]; 2],
+    pub left_back: [[f64; 3]; 2],
+    pub right_front: [[f64; 3]; 2],
+    pub right_back: [[f64; 3]; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleHingeThicknessBoundaryErrorV1 {
+    ResourceLimitExceeded,
+    InconsistentPose,
+}
+
+impl<'a> NativeSingleHingeThicknessBoundaryV1<'a> {
+    #[must_use]
+    pub const fn observation(&self) -> SingleHingeThicknessBoundaryObservationV1 {
+        SingleHingeThicknessBoundaryObservationV1 {
+            hinge: self.hinge,
+            left_face: self.left_face,
+            right_face: self.right_face,
+            left_front: self.left_front,
+            left_back: self.left_back,
+            right_front: self.right_front,
+            right_back: self.right_back,
+        }
+    }
+}
+
+pub fn prepare_single_hinge_thickness_boundary_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> Result<Option<NativeSingleHingeThicknessBoundaryV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
+    let diagnostic = diagnose_bound_shared_hinge_solid_v1(bound, paper_thickness_mm).map_err(
+        |error| match error {
+            SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded => {
+                SingleHingeThicknessBoundaryErrorV1::ResourceLimitExceeded
+            }
+            SharedHingeSolidDiagnosticErrorV1::InconsistentPose => {
+                SingleHingeThicknessBoundaryErrorV1::InconsistentPose
+            }
+        },
+    )?;
+    if diagnostic.is_none_or(|summary| {
+        summary.disposition != SharedHingeSolidDiagnosticDispositionV1::Allowed
+    }) {
+        return Ok(None);
+    }
+    let model = bound.model();
+    let pose = bound.pose();
+    let hinge = &model.hinges()[0];
+    let left_transform = pose
+        .face_transform(hinge.left_face())
+        .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let right_transform = pose
+        .face_transform(hinge.right_face())
+        .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let endpoints = [hinge.start(), hinge.end()];
+    let left_world = endpoints.map(|point| {
+        left_transform
+            .apply_point(point)
+            .map(point3_array)
+            .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)
+    });
+    let right_world = endpoints.map(|point| {
+        right_transform
+            .apply_point(point)
+            .map(point3_array)
+            .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)
+    });
+    let left_world = [left_world[0]?, left_world[1]?];
+    let right_world = [right_world[0]?, right_world[1]?];
+    if left_world
+        .iter()
+        .zip(right_world)
+        .any(|(left, right)| left.map(f64::to_bits) != right.map(f64::to_bits))
+    {
+        return Err(SingleHingeThicknessBoundaryErrorV1::InconsistentPose);
+    }
+    let local_y = Point3::new(0.0, 1.0, 0.0)
+        .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let left_normal = point3_array(
+        left_transform
+            .apply_vector(local_y)
+            .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?,
+    );
+    let right_normal = point3_array(
+        right_transform
+            .apply_vector(local_y)
+            .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?,
+    );
+    let half = paper_thickness_mm / 2.0;
+    let offset = |points: [[f64; 3]; 2], normal: [f64; 3], sign: f64| {
+        points.map(|point| {
+            std::array::from_fn(|axis| {
+                let value = point[axis] + sign * half * normal[axis];
+                if value == 0.0 { 0.0 } else { value }
+            })
+        })
+    };
+    Ok(Some(NativeSingleHingeThicknessBoundaryV1 {
+        bound,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        hinge: hinge.edge(),
+        left_face: hinge.left_face(),
+        right_face: hinge.right_face(),
+        left_front: offset(left_world, left_normal, 1.0),
+        left_back: offset(left_world, left_normal, -1.0),
+        right_front: offset(right_world, right_normal, 1.0),
+        right_back: offset(right_world, right_normal, -1.0),
+    }))
+}
+
+pub fn revalidate_single_hinge_thickness_boundary_v1(
+    capability: &NativeSingleHingeThicknessBoundaryV1<'_>,
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> Option<SingleHingeThicknessBoundaryObservationV1> {
+    if !positive_finite_binary64(paper_thickness_mm)
+        || capability.paper_thickness_bits != paper_thickness_mm.to_bits()
+        || !std::ptr::eq(capability.bound.model(), bound.model())
+        || !std::ptr::eq(capability.bound.pose(), bound.pose())
+    {
+        return None;
+    }
+    Some(capability.observation())
+}
+
 #[cfg(test)]
 mod tests {
     use ori_domain::{
@@ -2296,6 +2445,90 @@ mod tests {
         angle_degrees: f64,
     ) -> MaterialTreePose {
         triangular_pose_with_root(model, angle_degrees, model.face_ids()[0])
+    }
+
+    #[test]
+    fn public_thickness_boundary_is_issuer_pose_and_thickness_bound() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let model = two_triangle_model_with_options(EdgeKind::Mountain, false, square, 9_001);
+        let admitted_angle = [10.0, 30.0, 45.0, 60.0, 120.0, 150.0, 179.0]
+            .into_iter()
+            .find(|angle| {
+                let candidate = triangular_pose(&model, *angle);
+                prepare_single_hinge_thickness_boundary_v1(
+                    model.bind_pose(&candidate).unwrap(),
+                    0.1,
+                )
+                .unwrap()
+                .is_some()
+            })
+            .expect("one admitted boundary angle");
+        let pose = triangular_pose(&model, admitted_angle);
+        let bound = model.bind_pose(&pose).unwrap();
+        let capability = prepare_single_hinge_thickness_boundary_v1(bound, 0.1)
+            .expect("bounded analysis")
+            .expect("admitted boundary");
+        let observation = capability.observation();
+        assert_eq!(observation.hinge, model.hinges()[0].edge());
+        assert!(
+            observation
+                .left_front
+                .iter()
+                .flatten()
+                .chain(observation.right_back.iter().flatten())
+                .all(|value| value.is_finite())
+        );
+        assert_eq!(
+            revalidate_single_hinge_thickness_boundary_v1(&capability, bound, 0.1),
+            Some(observation)
+        );
+        assert!(revalidate_single_hinge_thickness_boundary_v1(&capability, bound, 0.2).is_none());
+
+        let same_angle_aba = triangular_pose(&model, admitted_angle);
+        let aba_bound = model.bind_pose(&same_angle_aba).unwrap();
+        assert!(
+            revalidate_single_hinge_thickness_boundary_v1(&capability, aba_bound, 0.1).is_none()
+        );
+        let foreign = two_triangle_model_with_options(EdgeKind::Mountain, false, square, 9_002);
+        let foreign_pose = triangular_pose(&foreign, admitted_angle);
+        assert!(
+            revalidate_single_hinge_thickness_boundary_v1(
+                &capability,
+                foreign.bind_pose(&foreign_pose).unwrap(),
+                0.1,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn public_thickness_boundary_holds_exact_angle_boundaries_closed() {
+        let square = [(0.0, 0.0), (400.0, 0.0), (400.0, 400.0), (0.0, 400.0)];
+        let model = two_triangle_model_with_options(EdgeKind::Valley, false, square, 9_003);
+        for angle in [90.0, 180.0] {
+            let pose = triangular_pose(&model, angle);
+            let result =
+                prepare_single_hinge_thickness_boundary_v1(model.bind_pose(&pose).unwrap(), 0.1)
+                    .expect("bounded boundary hold");
+            assert!(result.is_none(), "{angle}");
+        }
+        let planar = triangular_pose(&model, 0.0);
+        assert!(
+            prepare_single_hinge_thickness_boundary_v1(model.bind_pose(&planar).unwrap(), 0.1,)
+                .expect("planar boundary")
+                .is_some()
+        );
+        let pose = triangular_pose(&model, 0.0);
+        for thickness in [0.0, -0.0, -0.1, f64::INFINITY, f64::NAN] {
+            assert!(
+                prepare_single_hinge_thickness_boundary_v1(
+                    model.bind_pose(&pose).unwrap(),
+                    thickness,
+                )
+                .expect("invalid input remains bounded")
+                .is_none()
+            );
+        }
     }
 
     fn triangular_pose_with_root(

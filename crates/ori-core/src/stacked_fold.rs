@@ -3858,7 +3858,7 @@ mod tests {
     }
 
     #[test]
-    fn split_existing_fold_cycle_rejects_nonclosing_nonzero_request() {
+    fn split_existing_fold_cycle_accepts_roundoff_bounded_flat_request() {
         let identity = ProjectId::new();
         let source_revision = 52;
         let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
@@ -3931,12 +3931,17 @@ mod tests {
         let initial =
             prepare_stacked_fold_initial_graph_pose_v1(target, &source_model, &source_pose)
                 .expect("lift folded source");
-        assert!(matches!(
-            prepare_stacked_fold_requested_graph_pose_v1(initial, 90.0),
-            Err(PrepareStackedFoldRequestedPoseErrorV1::Kinematics(
-                KinematicsError::UnsupportedTopology
-            ))
-        ));
+        let requested = prepare_stacked_fold_requested_graph_pose_v1(initial, 180.0)
+            .expect("roundoff-bounded flat cycle endpoint");
+        assert_eq!(requested.requested_angle_degrees(), 180.0);
+        assert_eq!(
+            requested
+                .pose()
+                .closure_certificate()
+                .checked_hinges()
+                .len(),
+            4
+        );
     }
 
     #[test]

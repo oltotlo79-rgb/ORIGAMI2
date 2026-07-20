@@ -1750,6 +1750,9 @@ mod tests {
             id: LayerId::new(),
             name: "Details".to_owned(),
             content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         document.layers.layers.push(layer);
 
@@ -2428,6 +2431,9 @@ mod tests {
             id: LayerId::new(),
             name: "Details".to_owned(),
             content_kind: LayerContentKindV1::CreasePattern,
+            visible: false,
+            locked: true,
+            opacity: 0.35,
         };
         document.layers.layers.push(layer.clone());
         document
@@ -2450,12 +2456,60 @@ mod tests {
     }
 
     #[test]
+    fn ori2_accepts_legacy_layer_records_without_presentation_fields() {
+        let mut document = sample_document();
+        let legacy_layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Legacy details".to_owned(),
+            content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+        };
+        document.layers.layers.push(legacy_layer.clone());
+
+        let bytes = write_project_ori2(&document).expect("write legacy-shaped layer archive");
+        let entries = archive_entries(&bytes);
+        let project_bytes = &entries
+            .iter()
+            .find(|(path, _)| path == ORI2_PROJECT_PATH)
+            .expect("project JSON entry")
+            .1;
+        let project: serde_json::Value =
+            serde_json::from_slice(project_bytes).expect("project JSON");
+        let legacy_layer_id = serde_json::to_value(legacy_layer.id).expect("serialized layer ID");
+        let serialized_layer = project["layers"]["layers"]
+            .as_array()
+            .expect("layer records")
+            .iter()
+            .find(|value| value["id"] == legacy_layer_id)
+            .expect("legacy layer record");
+        assert!(serialized_layer.get("visible").is_none());
+        assert!(serialized_layer.get("locked").is_none());
+        assert!(serialized_layer.get("opacity").is_none());
+
+        let restored = read_project_ori2(&bytes).expect("read legacy layer archive");
+        let restored_layer = restored
+            .layers
+            .layers
+            .iter()
+            .find(|record| record.id == legacy_layer.id)
+            .expect("restored legacy layer");
+        assert!(restored_layer.visible);
+        assert!(!restored_layer.locked);
+        assert_eq!(restored_layer.opacity, 1.0);
+    }
+
+    #[test]
     fn layered_project_without_required_manifest_feature_is_rejected() {
         let mut document = sample_document();
         document.layers.layers.push(LayerRecordV1 {
             id: LayerId::new(),
             name: "Notes".to_owned(),
             content_kind: LayerContentKindV1::Annotation,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         });
         let bytes = write_project_ori2(&document).expect("write layered project");
         let mut entries = archive_entries(&bytes);
@@ -2486,6 +2540,9 @@ mod tests {
             id: LayerId::new(),
             name: "Details".to_owned(),
             content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         let mut editor = EditorState::with_document_parts_constraints_and_layers(
             document.crease_pattern.clone(),
@@ -2512,6 +2569,17 @@ mod tests {
                 },
             )
             .expect("assign edge");
+        editor
+            .execute(
+                2,
+                Command::UpdateLayerPresentation {
+                    layer: layer.id,
+                    visible: false,
+                    locked: true,
+                    opacity: 0.35,
+                },
+            )
+            .expect("persist layer presentation");
         document.layers = editor.project_layers().clone();
         let archive = Ori2ProjectArchive {
             editor_history: Some(
@@ -2542,12 +2610,31 @@ mod tests {
         )
         .expect("restore operational layer history");
         assert_eq!(reopened.project_layers().layer_for_edge(edge), layer.id);
-        reopened.undo(0).expect("undo reopened assignment");
+        assert_eq!(
+            reopened
+                .project_layers()
+                .layers
+                .iter()
+                .find(|record| record.id == layer.id)
+                .map(|record| (record.visible, record.locked, record.opacity)),
+            Some((false, true, 0.35))
+        );
+        reopened.undo(0).expect("undo reopened presentation");
+        assert_eq!(
+            reopened
+                .project_layers()
+                .layers
+                .iter()
+                .find(|record| record.id == layer.id)
+                .map(|record| (record.visible, record.locked, record.opacity)),
+            Some((true, false, 1.0))
+        );
+        reopened.undo(1).expect("undo reopened assignment");
         assert_eq!(
             reopened.project_layers().layer_for_edge(edge),
             ori_domain::DEFAULT_PROJECT_LAYER_ID
         );
-        reopened.undo(1).expect("undo reopened layer creation");
+        reopened.undo(2).expect("undo reopened layer creation");
         assert_eq!(
             reopened.project_layers(),
             &ori_domain::ProjectLayerDocumentV1::default()

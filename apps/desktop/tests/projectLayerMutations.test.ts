@@ -10,6 +10,7 @@ import {
   normalizeProjectLayerMutationSnapshot,
   ProjectLayerMutationError,
   renameProjectLayer,
+  updateProjectLayerPresentation,
 } from '../src/lib/coreClient.ts'
 import { DEFAULT_PROJECT_LAYER_ID } from '../src/lib/projectLayers.ts'
 
@@ -37,6 +38,32 @@ test('strictly admits and detaches one exact layer mutation snapshot', () => {
 
   source.project_layers.layers[1]!.name = 'changed after admission'
   assert.equal(admitted.project_layers.layers[1]?.name, 'Details')
+})
+
+test('admits native mutation snapshots with independently omitted presentation defaults', () => {
+  const source = validSnapshot()
+  source.project_layers.layers[1] = {
+    id: LAYER_ID,
+    name: 'Details',
+    content_kind: 'crease_pattern',
+    locked: true,
+  } as typeof source.project_layers.layers[number]
+
+  const admitted = admitProjectLayerMutationSnapshot(
+    source,
+    validBaseSnapshot(),
+    INSTANCE_ID,
+    PROJECT_ID,
+    7,
+  )
+  assert.deepEqual(admitted.project_layers.layers[1], {
+    id: LAYER_ID,
+    name: 'Details',
+    content_kind: 'crease_pattern',
+    visible: true,
+    locked: true,
+    opacity: 1,
+  })
 })
 
 test('rejects malformed and hostile native layer mutation snapshots', () => {
@@ -162,7 +189,7 @@ test('never adopts unverified nested response objects', () => {
   assert.notEqual(admitted.project_layers, base.project_layers)
 })
 
-test('all five wrappers reject unsafe requests before native invocation', async () => {
+test('all six wrappers reject unsafe requests before native invocation', async () => {
   const base = validBaseSnapshot()
   const invalidRequests = [
     () => createProjectLayer(
@@ -196,6 +223,16 @@ test('all five wrappers reject unsafe requests before native invocation', async 
       base,
       LAYER_ID.toUpperCase(),
       'Details',
+    ),
+    () => updateProjectLayerPresentation(
+      PROJECT_ID,
+      7,
+      INSTANCE_ID,
+      base,
+      LAYER_ID,
+      true,
+      false,
+      Number.NaN,
     ),
     () => moveProjectLayer(
       PROJECT_ID,
@@ -259,11 +296,17 @@ function validSnapshot() {
           id: DEFAULT_PROJECT_LAYER_ID,
           name: 'Crease Pattern',
           content_kind: 'crease_pattern' as const,
+          visible: true,
+          locked: false,
+          opacity: 1,
         },
         {
           id: LAYER_ID,
           name: 'Details',
           content_kind: 'crease_pattern' as const,
+          visible: true,
+          locked: false,
+          opacity: 1,
         },
       ],
       edge_assignments: [{

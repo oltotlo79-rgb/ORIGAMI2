@@ -51,6 +51,10 @@ export type CreaseLine = {
   x2: number
   y2: number
   kind: CreaseLineKind
+  layerId?: string
+  layerOrder?: number
+  opacity?: number
+  locked?: boolean
 }
 
 export type PaperBounds = {
@@ -100,6 +104,7 @@ type Props = {
   parallelReference?: ParallelSnapReference | null
   angleConfig?: AngleSnapConfig
   validationVertexHighlights?: ReadonlyMap<string, ValidationVertexHighlight>
+  lockedVertexIds?: ReadonlySet<string>
   ariaDescribedBy?: string
   onSelectLine: (id: string | null) => void
   onPlaceVertex?: (placement: VertexPlacement) => void
@@ -179,6 +184,7 @@ const MAX_GRID_LINES_PER_AXIS = 100
 const RENDER_METRICS_SAMPLE_FRAME_COUNT = 30
 const EMPTY_VALIDATION_VERTEX_HIGHLIGHTS: ReadonlyMap<string, ValidationVertexHighlight> =
   new Map()
+const EMPTY_LOCKED_VERTEX_IDS: ReadonlySet<string> = new Set()
 
 export function CreaseCanvas({
   lines,
@@ -195,6 +201,7 @@ export function CreaseCanvas({
   parallelReference = null,
   angleConfig,
   validationVertexHighlights = EMPTY_VALIDATION_VERTEX_HIGHLIGHTS,
+  lockedVertexIds = EMPTY_LOCKED_VERTEX_IDS,
   ariaDescribedBy,
   onSelectLine,
   onPlaceVertex,
@@ -400,11 +407,13 @@ export function CreaseCanvas({
         }
         if (pathCount > 0) {
           const presentation = CREASE_LINE_PRESENTATIONS[batch.kind]
+          context.globalAlpha = batch.opacity
           context.strokeStyle = presentation.color
           context.lineWidth = batch.selected ? 4 : presentation.lineWidth
           context.lineCap = presentation.lineCap
           context.setLineDash(presentation.canvasDash.slice())
           context.stroke()
+          context.globalAlpha = 1
         }
       }
       context.setLineDash([])
@@ -824,6 +833,7 @@ export function CreaseCanvas({
 
     const vertex = firstVertexById.get(closestVertex.id)
     if (!vertex) return
+    if (lockedVertexIds.has(vertex.id)) return
 
     event.preventDefault()
     onSelectVertex(vertex.id)

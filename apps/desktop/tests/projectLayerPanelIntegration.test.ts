@@ -9,6 +9,7 @@ const panel = source('../src/components/ProjectLayerPanel.tsx')
 const layerMutations = [
   ['createProjectLayer', 'create_project_layer'],
   ['renameProjectLayer', 'rename_project_layer'],
+  ['updateProjectLayerPresentation', 'update_project_layer_presentation'],
   ['moveProjectLayer', 'move_project_layer'],
   ['deleteProjectLayer', 'delete_project_layer'],
   ['assignEdgeToProjectLayer', 'assign_edge_to_project_layer'],
@@ -29,7 +30,7 @@ test('App admits layer documents before rendering a fail-closed panel', () => {
   )
   assert.match(
     app,
-    /<ProjectLayerPanel[\s\S]*?document=\{nativeSnapshot\.project_layers\}[\s\S]*?documentInvalid=\{projectLayerDocumentInvalid\}[\s\S]*?onCreate=\{createLayerFromPanel\}[\s\S]*?onRename=\{renameLayerFromPanel\}[\s\S]*?onMove=\{moveLayerFromPanel\}[\s\S]*?onDelete=\{deleteLayerFromPanel\}[\s\S]*?onAssignSelectedEdge=\{assignSelectedEdgeToLayer\}/u,
+    /<ProjectLayerPanel[\s\S]*?document=\{nativeSnapshot\.project_layers\}[\s\S]*?documentInvalid=\{projectLayerDocumentInvalid\}[\s\S]*?onCreate=\{createLayerFromPanel\}[\s\S]*?onRename=\{renameLayerFromPanel\}[\s\S]*?onUpdatePresentation=\{updateLayerPresentationFromPanel\}[\s\S]*?onMove=\{moveLayerFromPanel\}[\s\S]*?onDelete=\{deleteLayerFromPanel\}[\s\S]*?onAssignSelectedEdge=\{assignSelectedEdgeToLayer\}/u,
   )
 })
 

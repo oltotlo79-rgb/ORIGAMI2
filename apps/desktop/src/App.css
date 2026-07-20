@@ -1371,7 +1371,8 @@ html[data-theme='dark'] .svg-import-loss-badge {
 }
 .project-layer-create input,
 .project-layer-create select,
-.project-layer-rename input {
+.project-layer-rename input,
+.project-layer-presentation input[type='number'] {
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
@@ -1384,6 +1385,7 @@ html[data-theme='dark'] .svg-import-loss-badge {
 }
 .project-layer-create button,
 .project-layer-rename button,
+.project-layer-presentation button,
 .project-layer-row-actions button {
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1396,6 +1398,7 @@ html[data-theme='dark'] .svg-import-loss-badge {
 .project-layer-create button { justify-self: end; }
 .project-layer-create :disabled,
 .project-layer-rename :disabled,
+.project-layer-presentation :disabled,
 .project-layer-row-actions :disabled {
   cursor: not-allowed;
   opacity: .5;
@@ -1429,6 +1432,8 @@ html[data-theme='dark'] .svg-import-loss-badge {
 }
 .project-layer-kind,
 .project-layer-default,
+.project-layer-hidden,
+.project-layer-locked,
 .project-layer-assignment-count {
   border-radius: 999px;
   padding: 1px 5px;
@@ -1441,10 +1446,44 @@ html[data-theme='dark'] .svg-import-loss-badge {
   color: #195e8a;
   font-weight: 700;
 }
+.project-layer-hidden {
+  background: rgb(90 100 110 / 14%);
+  color: var(--muted);
+  font-weight: 700;
+}
+.project-layer-locked {
+  background: rgb(178 74 74 / 13%);
+  color: #983f3f;
+  font-weight: 700;
+}
 .project-layer-rename {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 5px;
+}
+.project-layer-presentation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  font-size: 10px;
+}
+.project-layer-presentation > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.project-layer-presentation input[type='checkbox'] {
+  margin: 0;
+}
+.project-layer-presentation .project-layer-opacity {
+  min-width: 0;
+}
+.project-layer-presentation input[type='number'] {
+  width: 58px;
+}
+.project-layer-presentation button {
+  margin-inline-start: auto;
 }
 .project-layer-row-actions {
   display: flex;
@@ -2130,6 +2169,10 @@ html[data-theme='dark'] .project-layer-status.is-error {
 html[data-theme='dark'] .project-layer-default {
   background: #174b5d;
   color: #d1f3ff;
+}
+html[data-theme='dark'] .project-layer-locked {
+  background: #4a2929;
+  color: #ffb7b7;
 }
 html[data-theme='dark'] .project-layer-row-actions button[aria-pressed='true'] {
   border-color: #78bb94;

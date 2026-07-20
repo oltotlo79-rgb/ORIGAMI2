@@ -32,7 +32,7 @@ test('snapshot replacement, validation errors, and benchmark mode cannot retain 
   const applySnapshot = sourceSection(
     appSource,
     'const applySnapshot = useCallback',
-    'const nativeLines = useMemo',
+    'const nativeLayerView = useMemo',
   )
   assert.match(applySnapshot, /setValidation\(null\)/u)
   assert.match(

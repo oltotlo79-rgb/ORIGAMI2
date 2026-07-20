@@ -1646,6 +1646,9 @@ mod tests {
             id: LayerId::new(),
             name: "Details".to_owned(),
             content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         document.layers.layers.push(layer.clone());
         document

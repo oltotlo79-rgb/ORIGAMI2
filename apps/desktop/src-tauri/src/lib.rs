@@ -1936,6 +1936,9 @@ fn create_project_layer_in_project(
                 id: LayerId::new(),
                 name,
                 content_kind,
+                visible: true,
+                locked: false,
+                opacity: 1.0,
             },
             target_index,
         },
@@ -1976,6 +1979,54 @@ fn rename_project_layer_in_project(
         expected_project_id,
         expected_revision,
         Command::RenameLayer { layer, name },
+    )
+}
+
+#[tauri::command]
+fn update_project_layer_presentation(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+    visible: bool,
+    locked: bool,
+    opacity: f64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    update_project_layer_presentation_in_project(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        layer,
+        visible,
+        locked,
+        opacity,
+    )
+}
+
+fn update_project_layer_presentation_in_project(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    layer: LayerId,
+    visible: bool,
+    locked: bool,
+    opacity: f64,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateLayerPresentation {
+            layer,
+            visible,
+            locked,
+            opacity,
+        },
     )
 }
 
@@ -5326,6 +5377,7 @@ pub fn run() {
             remove_edge,
             create_project_layer,
             rename_project_layer,
+            update_project_layer_presentation,
             move_project_layer,
             delete_project_layer,
             assign_edge_to_project_layer,
@@ -5963,6 +6015,9 @@ mod tests {
             id: ori_domain::LayerId::new(),
             name: "Details".to_owned(),
             content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
 
         let created = execute_command(
@@ -5992,6 +6047,23 @@ mod tests {
         assert_eq!(assigned.project_layers.layer_for_edge(edge), layer.id);
         assert_eq!(project.document().layers, assigned.project_layers);
         assert!(project.is_dirty());
+
+        let presented = execute_command(
+            &mut project,
+            project_id,
+            2,
+            Command::UpdateLayerPresentation {
+                layer: layer.id,
+                visible: false,
+                locked: true,
+                opacity: 0.25,
+            },
+        )
+        .expect("update layer presentation through native project bridge");
+        assert_eq!(project.document().layers, presented.project_layers);
+        assert!(!presented.project_layers.layers[1].visible);
+        assert!(presented.project_layers.layers[1].locked);
+        assert_eq!(presented.project_layers.layers[1].opacity, 0.25);
 
         let document = project.document();
         let loaded_without_history =
@@ -6024,7 +6096,14 @@ mod tests {
         assert_eq!(snapshot(&reopened).project_layers, document.layers);
         assert!(!reopened.is_dirty());
 
-        reopened.editor.undo(0).expect("undo reopened assignment");
+        reopened
+            .editor
+            .undo(0)
+            .expect("undo reopened layer presentation");
+        assert!(reopened.editor.project_layers().layers[1].visible);
+        assert!(!reopened.editor.project_layers().layers[1].locked);
+        assert_eq!(reopened.editor.project_layers().layers[1].opacity, 1.0);
+        reopened.editor.undo(1).expect("undo reopened assignment");
         assert_eq!(
             reopened.editor.project_layers().layer_for_edge(edge),
             ori_domain::DEFAULT_PROJECT_LAYER_ID
@@ -6032,7 +6111,7 @@ mod tests {
         assert!(reopened.is_dirty());
         reopened
             .editor
-            .undo(1)
+            .undo(2)
             .expect("undo reopened layer creation");
         assert_eq!(
             reopened.editor.project_layers(),
@@ -6040,9 +6119,13 @@ mod tests {
         );
         reopened
             .editor
-            .redo(2)
+            .redo(3)
             .expect("redo reopened layer creation");
-        reopened.editor.redo(3).expect("redo reopened assignment");
+        reopened.editor.redo(4).expect("redo reopened assignment");
+        reopened
+            .editor
+            .redo(5)
+            .expect("redo reopened layer presentation");
         assert_eq!(reopened.document(), document);
         assert!(!reopened.is_dirty());
     }
@@ -6107,11 +6190,45 @@ mod tests {
         .expect("rename project layer");
         assert_eq!(renamed.project_layers.layers[1].name, "Primary folds");
 
-        let moved = move_project_layer_in_project(
+        let presented = update_project_layer_presentation_in_project(
             &mut project,
             project_instance_id,
             project_id,
             3,
+            crease_layer,
+            false,
+            true,
+            0.4,
+        )
+        .expect("update project layer presentation");
+        let presented_layer = presented
+            .project_layers
+            .layers
+            .iter()
+            .find(|layer| layer.id == crease_layer)
+            .expect("presented layer");
+        assert!(!presented_layer.visible);
+        assert!(presented_layer.locked);
+        assert_eq!(presented_layer.opacity, 0.4);
+
+        let unlocked = update_project_layer_presentation_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            4,
+            crease_layer,
+            true,
+            false,
+            0.4,
+        )
+        .expect("unlock project layer");
+        assert!(!unlocked.project_layers.layers[1].locked);
+
+        let moved = move_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            5,
             annotation_layer,
             0,
         )
@@ -6122,7 +6239,7 @@ mod tests {
             &mut project,
             project_instance_id,
             project_id,
-            4,
+            6,
             edge,
             crease_layer,
         )
@@ -6133,7 +6250,7 @@ mod tests {
             &mut project,
             project_instance_id,
             project_id,
-            5,
+            7,
             crease_layer,
         )
         .expect("delete project layer");
@@ -6154,12 +6271,12 @@ mod tests {
                 &mut project,
                 project_instance_id,
                 project_id,
-                6,
+                8,
                 ori_domain::DEFAULT_PROJECT_LAYER_ID,
             )
             .is_err()
         );
-        assert_eq!(project.editor.revision(), 6);
+        assert_eq!(project.editor.revision(), 8);
         assert_eq!(project.editor.project_layers(), &deleted.project_layers);
     }
 

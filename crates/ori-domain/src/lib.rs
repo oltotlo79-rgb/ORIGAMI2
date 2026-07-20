@@ -16,9 +16,10 @@ pub use constraints::{
 pub use layers::{
     DEFAULT_PROJECT_LAYER_ID, DEFAULT_PROJECT_LAYER_NAME, EdgeLayerAssignmentV1,
     LayerContentKindV1, LayerRecordV1, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_LAYER_NAME_CHARS,
-    MAX_PROJECT_LAYER_INDEX_EDGES, MAX_PROJECT_LAYERS, PROJECT_LAYER_SCHEMA_VERSION_V1,
-    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1,
-    validate_project_layer_document_against_pattern_v1, validate_project_layer_document_v1,
+    MAX_PROJECT_LAYER_INDEX_EDGES, MAX_PROJECT_LAYER_OPACITY, MAX_PROJECT_LAYERS,
+    MIN_PROJECT_LAYER_OPACITY, PROJECT_LAYER_SCHEMA_VERSION_V1, ProjectLayerDocumentV1,
+    ProjectLayerDocumentValidationErrorV1, validate_project_layer_document_against_pattern_v1,
+    validate_project_layer_document_v1,
 };
 
 macro_rules! entity_id {

@@ -6,6 +6,8 @@ import { createCanvasLineDrawBatches } from '../src/lib/canvasBatching.ts'
 type TestLine = {
   id: string
   kind: 'mountain' | 'valley' | 'auxiliary' | 'boundary' | 'cut'
+  opacity?: number
+  layerOrder?: number
 }
 
 test('canvas line batching collapses ten thousand alternating strokes by style', () => {
@@ -59,4 +61,70 @@ test('selected canvas strokes are separated and emitted after ordinary strokes',
 
 test('canvas line batching handles an empty pattern', () => {
   assert.deepEqual(createCanvasLineDrawBatches([], null), [])
+})
+
+test('canvas line batches preserve layer order and opacity before selected highlights', () => {
+  const lines: TestLine[] = [
+    {
+      id: 'back',
+      kind: 'mountain',
+      layerOrder: 2,
+      opacity: 0.25,
+    },
+    {
+      id: 'selected',
+      kind: 'valley',
+      layerOrder: 0,
+      opacity: 0.5,
+    },
+    {
+      id: 'front',
+      kind: 'cut',
+      layerOrder: 0,
+      opacity: 0.75,
+    },
+    {
+      id: 'middle',
+      kind: 'auxiliary',
+      layerOrder: 1,
+      opacity: 0.4,
+    },
+  ]
+
+  const batches = createCanvasLineDrawBatches(lines, 'selected')
+
+  assert.deepEqual(
+    batches.map(({ layerOrder, opacity, selected, lines: batchLines }) => ({
+      layerOrder,
+      opacity,
+      selected,
+      ids: batchLines.map(({ id }) => id),
+    })),
+    [
+      {
+        layerOrder: 0,
+        opacity: 0.75,
+        selected: false,
+        ids: ['front'],
+      },
+      {
+        layerOrder: 1,
+        opacity: 0.4,
+        selected: false,
+        ids: ['middle'],
+      },
+      {
+        layerOrder: 2,
+        opacity: 0.25,
+        selected: false,
+        ids: ['back'],
+      },
+      {
+        layerOrder: 0,
+        opacity: 0.5,
+        selected: true,
+        ids: ['selected'],
+      },
+    ],
+  )
 })

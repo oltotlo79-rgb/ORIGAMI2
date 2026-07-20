@@ -12,6 +12,8 @@ export type CanvasLineKind = (typeof CANVAS_LINE_KINDS)[number]
 export type CanvasLineDrawBatch<Line> = Readonly<{
   kind: CanvasLineKind
   selected: boolean
+  opacity: number
+  layerOrder: number
   lines: readonly Line[]
 }>
 
@@ -25,22 +27,44 @@ export type CanvasLineDrawBatch<Line> = Readonly<{
 export function createCanvasLineDrawBatches<Line extends {
   id: string
   kind: CanvasLineKind
+  opacity?: number
+  layerOrder?: number
 }>(
   lines: readonly Line[],
   selectedLineId: string | null,
 ): CanvasLineDrawBatch<Line>[] {
-  const ordinary = createEmptyBuckets<Line>()
-  const selected = createEmptyBuckets<Line>()
+  const ordinary = new Map<string, StyleGroup<Line>>()
+  const selected = new Map<string, StyleGroup<Line>>()
 
   for (const line of lines) {
-    const buckets = line.id === selectedLineId ? selected : ordinary
-    buckets.get(line.kind)?.push(line)
+    const groups = line.id === selectedLineId ? selected : ordinary
+    const layerOrder = normalizeLayerOrder(line.layerOrder)
+    const opacity = normalizeOpacity(line.opacity)
+    const key = `${layerOrder}:${opacity}`
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        layerOrder,
+        opacity,
+        sequence: groups.size,
+        buckets: createEmptyBuckets<Line>(),
+      }
+      groups.set(key, group)
+    }
+    group.buckets.get(line.kind)?.push(line)
   }
 
   const batches: CanvasLineDrawBatch<Line>[] = []
-  appendNonEmptyBatches(batches, ordinary, false)
-  appendNonEmptyBatches(batches, selected, true)
+  appendStyleGroups(batches, ordinary, false)
+  appendStyleGroups(batches, selected, true)
   return batches
+}
+
+type StyleGroup<Line> = {
+  layerOrder: number
+  opacity: number
+  sequence: number
+  buckets: Map<CanvasLineKind, Line[]>
 }
 
 function createEmptyBuckets<Line>() {
@@ -49,13 +73,37 @@ function createEmptyBuckets<Line>() {
   )
 }
 
-function appendNonEmptyBatches<Line>(
+function appendStyleGroups<Line>(
   target: CanvasLineDrawBatch<Line>[],
-  buckets: ReadonlyMap<CanvasLineKind, Line[]>,
+  groups: ReadonlyMap<string, StyleGroup<Line>>,
   selected: boolean,
 ) {
-  for (const kind of CANVAS_LINE_KINDS) {
-    const lines = buckets.get(kind)
-    if (lines?.length) target.push({ kind, selected, lines })
+  const orderedGroups = [...groups.values()].sort((first, second) =>
+    first.layerOrder - second.layerOrder || first.sequence - second.sequence)
+  for (const group of orderedGroups) {
+    for (const kind of CANVAS_LINE_KINDS) {
+      const lines = group.buckets.get(kind)
+      if (lines?.length) {
+        target.push({
+          kind,
+          selected,
+          opacity: group.opacity,
+          layerOrder: group.layerOrder,
+          lines,
+        })
+      }
+    }
   }
+}
+
+function normalizeLayerOrder(value: number | undefined) {
+  return Number.isSafeInteger(value) && (value ?? -1) >= 0
+    ? value as number
+    : 0
+}
+
+function normalizeOpacity(value: number | undefined) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, Object.is(value, -0) ? 0 : value))
+    : 1
 }

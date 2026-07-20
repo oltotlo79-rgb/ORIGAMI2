@@ -5,6 +5,8 @@ export const MAX_PROJECT_LAYERS = 256
 export const MAX_LAYER_EDGE_ASSIGNMENTS = 100_000
 export const MAX_PROJECT_LAYER_INDEX_EDGES = 100_000
 export const MAX_LAYER_NAME_CHARS = 120
+export const MIN_PROJECT_LAYER_OPACITY = 0
+export const MAX_PROJECT_LAYER_OPACITY = 1
 export const DEFAULT_PROJECT_LAYER_ID =
   '00000000-0000-4000-8000-000000000001' as const
 export const DEFAULT_PROJECT_LAYER_NAME = 'Crease Pattern' as const
@@ -18,6 +20,9 @@ export type LayerRecordV1 = Readonly<{
   id: string
   name: string
   content_kind: LayerContentKindV1
+  visible: boolean
+  locked: boolean
+  opacity: number
 }>
 
 export type EdgeLayerAssignmentV1 = Readonly<{
@@ -39,6 +44,9 @@ export const DEFAULT_PROJECT_LAYER_DOCUMENT_V1: ProjectLayerDocumentV1 =
         id: DEFAULT_PROJECT_LAYER_ID,
         name: DEFAULT_PROJECT_LAYER_NAME,
         content_kind: 'crease_pattern' as const,
+        visible: true,
+        locked: false,
+        opacity: 1,
       }),
     ]),
     edge_assignments: Object.freeze([]),
@@ -81,17 +89,42 @@ export function normalizeProjectLayerDocument(
     const layers: LayerRecordV1[] = []
     const layerKinds = new Map<string, LayerContentKindV1>()
     for (const rawLayer of layerSource) {
-      const layer = exactDataRecord(rawLayer, [
+      const layer = snapshotDataRecord(rawLayer)
+      const legacyKeys = [
         'id',
         'name',
         'content_kind',
-      ])
+      ] as const
+      const currentKeys = [
+        ...legacyKeys,
+        'visible',
+        'locked',
+        'opacity',
+      ] as const
+      const admittedKeys = layer && hasRequiredAndOnlyKeys(
+        layer,
+        legacyKeys,
+        currentKeys,
+      )
+      const visible = layer && Object.hasOwn(layer, 'visible')
+        ? layer.visible
+        : true
+      const locked = layer && Object.hasOwn(layer, 'locked')
+        ? layer.locked
+        : false
+      const opacity = layer && Object.hasOwn(layer, 'opacity')
+        ? layer.opacity
+        : 1
       if (
         !layer
+        || !admittedKeys
         || !isCanonicalNonNilUuid(layer.id)
         || typeof layer.name !== 'string'
         || !isProjectLayerName(layer.name)
         || !isProjectLayerContentKind(layer.content_kind)
+        || typeof visible !== 'boolean'
+        || typeof locked !== 'boolean'
+        || !isProjectLayerOpacity(opacity)
         || layerKinds.has(layer.id)
         || (
           layer.id === DEFAULT_PROJECT_LAYER_ID
@@ -103,6 +136,9 @@ export function normalizeProjectLayerDocument(
         id: layer.id,
         name: layer.name,
         content_kind: layer.content_kind,
+        visible,
+        locked,
+        opacity,
       }))
     }
     if (!layerKinds.has(DEFAULT_PROJECT_LAYER_ID)) return null
@@ -174,6 +210,14 @@ export function isProjectLayerName(value: unknown): value is string {
   return [...value].length <= MAX_LAYER_NAME_CHARS
 }
 
+export function isProjectLayerOpacity(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && !Object.is(value, -0)
+    && value >= MIN_PROJECT_LAYER_OPACITY
+    && value <= MAX_PROJECT_LAYER_OPACITY
+}
+
 function snapshotDataRecord(
   value: unknown,
 ): Record<string, unknown> | null {
@@ -214,6 +258,16 @@ function hasExactKeys(
   const actual = Object.keys(record)
   return actual.length === expected.length
     && expected.every((key) => Object.hasOwn(record, key))
+}
+
+function hasRequiredAndOnlyKeys(
+  record: Readonly<Record<string, unknown>>,
+  required: readonly string[],
+  allowed: readonly string[],
+): boolean {
+  const actual = Object.keys(record)
+  return required.every((key) => Object.hasOwn(record, key))
+    && actual.every((key) => allowed.includes(key))
 }
 
 function snapshotExactArray(

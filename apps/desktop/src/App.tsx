@@ -91,6 +91,7 @@ import {
   splitBoundaryEdge,
   splitEdge,
   undo,
+  updateProjectLayerPresentation,
   updatePaperProperties,
   type ProjectSnapshot,
   type ProjectTopologyResponse,
@@ -131,6 +132,10 @@ import {
   normalizeProjectLayerDocument,
   type LayerContentKindV1,
 } from './lib/projectLayers'
+import {
+  createProjectLayerCanvasView,
+  placementTouchesLockedLayer,
+} from './lib/projectLayerCanvasView'
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
 import {
@@ -942,43 +947,25 @@ function App() {
   const retryRecoveryStartup = useCallback(() => {
     return checkRecoveryStartup(true)
   }, [checkRecoveryStartup])
-  const nativeLines = useMemo<CreaseLine[]>(() => {
-    if (!nativeSnapshot) return []
-    const positions = new Map(
-      nativeSnapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
-    )
-    return nativeSnapshot.crease_pattern.edges.flatMap((edge) => {
-      const start = positions.get(edge.start)
-      const end = positions.get(edge.end)
-      if (
-        !start ||
-        !end ||
-        (edge.kind !== 'mountain' &&
-          edge.kind !== 'valley' &&
-          edge.kind !== 'auxiliary' &&
-          edge.kind !== 'boundary' &&
-          edge.kind !== 'cut')
-      ) return []
-      return [{
-        id: edge.id,
-        startVertexId: edge.start,
-        endVertexId: edge.end,
-        x1: start.x,
-        y1: start.y,
-        x2: end.x,
-        y2: end.y,
-        kind: edge.kind,
-      }]
-    })
-  }, [nativeSnapshot])
-  const nativeVertices = useMemo(
-    () => nativeSnapshot?.crease_pattern.vertices.map((vertex) => ({
-      id: vertex.id,
-      x: vertex.position.x,
-      y: vertex.position.y,
-    })) ?? [],
+  const nativeLayerView = useMemo(
+    () => createProjectLayerCanvasView(
+      nativeSnapshot?.project_layers,
+      nativeSnapshot?.crease_pattern,
+    ),
     [nativeSnapshot],
   )
+  const nativeLines = nativeLayerView.lines
+  const nativeVertices = nativeLayerView.vertices
+  useEffect(() => {
+    const visibleLineIds = new Set(nativeLines.map(({ id }) => id))
+    const visibleVertexIds = new Set(nativeVertices.map(({ id }) => id))
+    setSelectedLineId((current) =>
+      current === null || visibleLineIds.has(current) ? current : null)
+    setSelectedVertexId((current) =>
+      current === null || visibleVertexIds.has(current) ? current : null)
+    setPendingEdgeStart((current) =>
+      current === null || visibleVertexIds.has(current) ? current : null)
+  }, [nativeLines, nativeVertices])
   const displayedLines = benchmarkRun?.lines ?? nativeLines
   const displayedVertices = benchmarkRun?.vertices ?? nativeVertices
   const firstDisplayedLineById = useMemo(() => {
@@ -1010,11 +997,25 @@ function App() {
     : 'custom'
   const selectedLineMeasurement = selectedLine ? measureCreaseLine(selectedLine) : null
   const selectedVertex = useMemo(
-    () => nativeSnapshot?.crease_pattern.vertices.find(
-      (vertex) => vertex.id === selectedVertexId,
-    ),
-    [nativeSnapshot, selectedVertexId],
+    () => nativeLayerView.vertices.some(({ id }) => id === selectedVertexId)
+      ? nativeSnapshot?.crease_pattern.vertices.find(
+          (vertex) => vertex.id === selectedVertexId,
+        )
+      : undefined,
+    [nativeLayerView.vertices, nativeSnapshot, selectedVertexId],
   )
+  const selectedVertexLocked = selectedVertexId !== null
+    && nativeLayerView.lockedVertexIds.has(selectedVertexId)
+  useEffect(() => {
+    if (
+      !nativeLayerView.defaultLayerLocked
+      || activeTool === 'select'
+      || activeTool === 'measure'
+    ) return
+    setActiveTool('select')
+    setPendingEdgeStart(null)
+    setCancelInteractionToken((token) => token + 1)
+  }, [activeTool, nativeLayerView.defaultLayerLocked])
   const localFlatFoldabilityPresentation = useMemo(() => {
     if (
       !validation
@@ -1722,6 +1723,27 @@ function App() {
     name,
   )), [runProjectLayerEdit])
 
+  const updateLayerPresentationFromPanel = useCallback((
+    layerId: string,
+    visible: boolean,
+    locked: boolean,
+    opacity: number,
+  ) => runProjectLayerEdit((
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+  ) => updateProjectLayerPresentation(
+    projectId,
+    revision,
+    projectInstanceId,
+    baseSnapshot,
+    layerId,
+    visible,
+    locked,
+    opacity,
+  )), [runProjectLayerEdit])
+
   const moveLayerFromPanel = useCallback((
     layerId: string,
     targetIndex: number,
@@ -1757,7 +1779,9 @@ function App() {
   const assignSelectedEdgeToLayer = useCallback((
     layerId: string,
   ) => {
-    if (!selectedLine || benchmarkRun) return Promise.resolve(false)
+    if (!selectedLine || selectedLine.locked || benchmarkRun) {
+      return Promise.resolve(false)
+    }
     return runProjectLayerEdit((
       projectId,
       revision,
@@ -1829,6 +1853,13 @@ function App() {
       }))
       return
     }
+    if (selectedLine?.locked || selectedVertexLocked) {
+      setCoreStatus(appMessage({
+        ja: 'ロック中のレイヤーに属する図形は編集できません。レイヤーの編集ロックを解除してください。',
+        en: 'This geometry belongs to a locked layer. Unlock the layer before editing it.',
+      }))
+      return
+    }
     if (selectedLine) {
       if (selectedLine.kind === 'boundary') {
         setCoreStatus(appMessage({
@@ -1875,12 +1906,18 @@ function App() {
     runNativeEdit,
     selectedLine,
     selectedVertex,
+    selectedVertexLocked,
     selectedVertexIsBoundary,
   ])
 
   async function splitSelectedBoundaryEdge() {
     const current = latestSnapshotRef.current
-    if (!current || selectedLine?.kind !== 'boundary' || coreOperationRef.current) return
+    if (
+      !current
+      || selectedLine?.kind !== 'boundary'
+      || selectedLine.locked
+      || coreOperationRef.current
+    ) return
     const previousVertexIds = new Set(
       current.crease_pattern.vertices.map((vertex) => vertex.id),
     )
@@ -1921,7 +1958,17 @@ function App() {
 
   async function placeCanvasVertex(placement: VertexPlacement) {
     const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
+    if (
+      !current
+      || coreOperationRef.current
+    ) return
+    if (placementTouchesLockedLayer(placement, nativeLayerView)) {
+      setCoreStatus(appMessage({
+        ja: 'ロック中のレイヤーにある折り線または頂点は編集できません。',
+        en: 'Creases and vertices on a locked layer cannot be edited.',
+      }))
+      return
+    }
     const previousVertexIds = new Set(
       current.crease_pattern.vertices.map((vertex) => vertex.id),
     )
@@ -2140,6 +2187,13 @@ function App() {
   }, [coreBusy, deleteSelection, keyboardShortcuts, modalOpen, nativeSnapshot, newProjectOpen, recoveryBlocking, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
+    if (nativeLayerView.defaultLayerLocked) {
+      setCoreStatus(appMessage({
+        ja: '既定レイヤーがロックされているため、新しい線を追加できません。',
+        en: 'The default layer is locked, so a new line cannot be added.',
+      }))
+      return
+    }
     if (
       activeTool !== 'mountain'
       && activeTool !== 'valley'
@@ -2179,7 +2233,7 @@ function App() {
   function submitVertexPosition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
-    if (!current || !selectedVertex) return
+    if (!current || !selectedVertex || selectedVertexLocked) return
     const currentVertices = current.crease_pattern.vertices.filter(
       (vertex) => vertex.id === selectedVertex.id,
     )
@@ -3788,7 +3842,15 @@ function App() {
             <button
               type="button"
               key={id}
-              disabled={coreBusy || (id === 'cut' && !nativeSnapshot?.cutting_allowed)}
+              disabled={
+                coreBusy
+                || (id === 'cut' && !nativeSnapshot?.cutting_allowed)
+                || (
+                  id !== 'select'
+                  && id !== 'measure'
+                  && nativeLayerView.defaultLayerLocked
+                )
+              }
               className={activeTool === id ? 'active' : ''}
               onClick={() => {
                 setActiveTool(id)
@@ -3845,6 +3907,9 @@ function App() {
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
               validationVertexHighlights={canvasLocalFlatFoldabilityHighlights}
+              lockedVertexIds={
+                benchmarkRun ? undefined : nativeLayerView.lockedVertexIds
+              }
               ariaDescribedBy={localFlatFoldabilitySummaryId}
               cancelInteractionToken={cancelInteractionToken}
               disabled={coreBusy || benchmarkLoading}
@@ -3881,6 +3946,7 @@ function App() {
               onMoveVertex={benchmarkRun
                 ? undefined
                 : (vertexId, x, y) => {
+                    if (nativeLayerView.lockedVertexIds.has(vertexId)) return
                     void runNativeEdit((projectId, revision, projectInstanceId) =>
                       moveVertex(projectId, revision, projectInstanceId, vertexId, x, y))
                   }}
@@ -3902,6 +3968,7 @@ function App() {
               onSelectHinge={benchmarkRun || foldPreviewHingeIds.size === 0
                 ? undefined
                 : (edgeId) => {
+                    if (!nativeLines.some(({ id }) => id === edgeId)) return
                     setSelectedLineId(edgeId)
                     if (edgeId) setSelectedVertexId(null)
                   }}
@@ -4210,7 +4277,7 @@ function App() {
                     {selectedLine.kind === 'boundary' ? (
                       <button
                         type="button"
-                        disabled={coreBusy}
+                        disabled={coreBusy || selectedLine.locked}
                         onClick={() => void splitSelectedBoundaryEdge()}
                       >
                         {text({
@@ -4222,13 +4289,21 @@ function App() {
                       <button
                         type="button"
                         className="danger"
-                        disabled={coreBusy}
+                        disabled={coreBusy || selectedLine.locked}
                         onClick={() => void deleteSelection()}
                       >
                         {text({ ja: '線を削除', en: 'Delete line' })}
                       </button>
                     )}
                   </div>
+                )}
+                {selectedLine.locked && (
+                  <p className="muted">
+                    {text({
+                      ja: 'この線のレイヤーは編集ロック中です。選択・計測・参照はできますが、図形は変更できません。',
+                      en: 'This line layer is locked. Selection, measurement, and references remain available, but geometry cannot be changed.',
+                    })}
+                  </p>
                 )}
                 {selectedLine.kind === 'boundary' && (
                   <p className="muted">
@@ -4278,7 +4353,7 @@ function App() {
                     {`X (${lengthDisplayUnitLabelText})`}
                     <LengthValueInput
                       name="x_display"
-                      disabled={coreBusy}
+                      disabled={coreBusy || selectedVertexLocked}
                       initialMillimetres={selectedVertex.position.x}
                       unit={lengthDisplayUnit}
                       ariaLabel={formattedText({
@@ -4291,7 +4366,7 @@ function App() {
                     {`Y (${lengthDisplayUnitLabelText})`}
                     <LengthValueInput
                       name="y_display"
-                      disabled={coreBusy}
+                      disabled={coreBusy || selectedVertexLocked}
                       initialMillimetres={selectedVertex.position.y}
                       unit={lengthDisplayUnit}
                       ariaLabel={formattedText({
@@ -4301,7 +4376,10 @@ function App() {
                     />
                   </label>
                   <div className="property-actions">
-                    <button type="submit" disabled={coreBusy}>
+                    <button
+                      type="submit"
+                      disabled={coreBusy || selectedVertexLocked}
+                    >
                       {text({ ja: '座標を更新', en: 'Update coordinates' })}
                     </button>
                     <button
@@ -4309,6 +4387,7 @@ function App() {
                       className="danger"
                       disabled={
                         coreBusy ||
+                        selectedVertexLocked ||
                         (selectedVertexIsBoundary && paperBoundaryVertexCount <= 3)
                       }
                       onClick={() => void deleteSelection()}
@@ -4321,6 +4400,14 @@ function App() {
                         : text({ ja: '頂点を削除', en: 'Delete vertex' })}
                     </button>
                   </div>
+                  {selectedVertexLocked && (
+                    <p className="muted">
+                      {text({
+                        ja: 'この頂点にはロック中のレイヤーの線が接続されているため、移動・削除できません。',
+                        en: 'This vertex is connected to a line on a locked layer and cannot be moved or deleted.',
+                      })}
+                    </p>
+                  )}
                   <p className="muted">
                     {selectedVertexIsBoundary
                       ? formattedText({
@@ -4356,6 +4443,7 @@ function App() {
               documentInvalid={projectLayerDocumentInvalid}
               onCreate={createLayerFromPanel}
               onRename={renameLayerFromPanel}
+              onUpdatePresentation={updateLayerPresentationFromPanel}
               onMove={moveLayerFromPanel}
               onDelete={deleteLayerFromPanel}
               onAssignSelectedEdge={assignSelectedEdgeToLayer}
@@ -4407,7 +4495,7 @@ function App() {
                       const edgeId = issue.edges.find((id) =>
                         nativeLines.some((line) => line.id === id))
                       const vertexId = issue.vertices.find((id) =>
-                        nativeSnapshot?.crease_pattern.vertices.some((vertex) => vertex.id === id))
+                        nativeVertices.some((vertex) => vertex.id === id))
                       const label = validationIssueLabel(issue.code, locale)
                       return (
                         <li key={`${issue.code}:${index}`}>
@@ -4627,6 +4715,9 @@ function App() {
                                   reason: reasonLabel,
                                 })}
                                 onClick={() => {
+                                  if (!nativeVertices.some(
+                                    ({ id }) => id === item.vertexId,
+                                  )) return
                                   setSelectedVertexId(item.vertexId)
                                   setSelectedLineId(null)
                                 }}

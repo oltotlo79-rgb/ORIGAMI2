@@ -222,6 +222,12 @@ enum CommandV1 {
         layer: LayerId,
         name: String,
     },
+    UpdateLayerPresentation {
+        layer: LayerId,
+        visible: bool,
+        locked: bool,
+        opacity: f64,
+    },
     MoveLayer {
         layer: LayerId,
         target_index: u32,
@@ -562,6 +568,17 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             layer: *layer,
             name: name.clone(),
         },
+        Command::UpdateLayerPresentation {
+            layer,
+            visible,
+            locked,
+            opacity,
+        } => CommandV1::UpdateLayerPresentation {
+            layer: *layer,
+            visible: *visible,
+            locked: *locked,
+            opacity: *opacity,
+        },
         Command::MoveLayer {
             layer,
             target_index,
@@ -700,6 +717,17 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             target_index: index_from_wire(target_index)?,
         },
         CommandV1::RenameLayer { layer, name } => Command::RenameLayer { layer, name },
+        CommandV1::UpdateLayerPresentation {
+            layer,
+            visible,
+            locked,
+            opacity,
+        } => Command::UpdateLayerPresentation {
+            layer,
+            visible,
+            locked,
+            opacity,
+        },
         CommandV1::MoveLayer {
             layer,
             target_index,
@@ -1286,6 +1314,17 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         Command::AddInstructionStep { step } => validate_instruction_step_finite(step)?,
         Command::ReplaceInstructionStepPose { pose, .. } => {
             validate_instruction_pose_finite(pose)?;
+        }
+        Command::UpdateLayerPresentation { opacity, .. } => {
+            if !opacity.is_finite() {
+                return Err(EditorHistoryErrorV1::NonFiniteNumber);
+            }
+            if opacity.to_bits() == (-0.0_f64).to_bits()
+                || !(ori_domain::MIN_PROJECT_LAYER_OPACITY..=ori_domain::MAX_PROJECT_LAYER_OPACITY)
+                    .contains(opacity)
+            {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
         }
         Command::RemoveVertex { .. }
         | Command::AddEdge { .. }
@@ -1989,6 +2028,9 @@ mod tests {
             id: layer,
             name: "Details".to_owned(),
             content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         vec![
             Command::AddVertex {
@@ -2096,6 +2138,12 @@ mod tests {
                 layer,
                 name: "Renamed".to_owned(),
             },
+            Command::UpdateLayerPresentation {
+                layer,
+                visible: false,
+                locked: true,
+                opacity: 0.35,
+            },
             Command::MoveLayer {
                 layer,
                 target_index: 0,
@@ -2142,6 +2190,7 @@ mod tests {
             "move_instruction_step",
             "create_layer",
             "rename_layer",
+            "update_layer_presentation",
             "move_layer",
             "delete_layer",
             "assign_edge_to_layer",
@@ -2318,6 +2367,9 @@ mod tests {
                     id: layer,
                     name: "Deleted".to_owned(),
                     content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+                    visible: true,
+                    locked: false,
+                    opacity: 1.0,
                 },
                 assignments: vec![(1, assignment(edge))],
             },
@@ -2665,6 +2717,9 @@ mod tests {
             id: LayerId::new(),
             name: "Details".to_owned(),
             content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         let mut editor = EditorState::new(pattern.clone());
         editor
@@ -2754,6 +2809,9 @@ mod tests {
             id: LayerId::new(),
             name: "Temporary".to_owned(),
             content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         let mut editor = EditorState::new(pattern.clone());
         editor
@@ -2830,6 +2888,9 @@ mod tests {
             id: LayerId::new(),
             name: "Inherited".to_owned(),
             content_kind: ori_domain::LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         };
         let mut layers = ProjectLayerDocumentV1::default();
         layers.layers.push(layer.clone());
@@ -2912,6 +2973,63 @@ mod tests {
             restore(&editor, history),
             Err(EditorHistoryErrorV1::NonFiniteNumber)
         ));
+    }
+
+    #[test]
+    fn layer_presentation_wire_rejects_every_noncanonical_opacity_before_replay() {
+        for (opacity, expected) in [
+            (f64::NAN, EditorHistoryErrorV1::NonFiniteNumber),
+            (f64::INFINITY, EditorHistoryErrorV1::NonFiniteNumber),
+            (-0.0, EditorHistoryErrorV1::InvalidCommand),
+            (-0.1, EditorHistoryErrorV1::InvalidCommand),
+            (1.1, EditorHistoryErrorV1::InvalidCommand),
+        ] {
+            for corrupt_inverse in [false, true] {
+                let mut entry = HistoryEntryV1 {
+                    forward: CommandV1::UpdateLayerPresentation {
+                        layer: DEFAULT_PROJECT_LAYER_ID,
+                        visible: false,
+                        locked: true,
+                        opacity: 0.5,
+                    },
+                    inverse: InverseV1::Command {
+                        command: CommandV1::UpdateLayerPresentation {
+                            layer: DEFAULT_PROJECT_LAYER_ID,
+                            visible: true,
+                            locked: false,
+                            opacity: 1.0,
+                        },
+                    },
+                };
+                if corrupt_inverse {
+                    let InverseV1::Command {
+                        command:
+                            CommandV1::UpdateLayerPresentation {
+                                opacity: inverse_opacity,
+                                ..
+                            },
+                    } = &mut entry.inverse
+                    else {
+                        unreachable!("fixture inverse is a layer-presentation command");
+                    };
+                    *inverse_opacity = opacity;
+                } else {
+                    let CommandV1::UpdateLayerPresentation {
+                        opacity: forward_opacity,
+                        ..
+                    } = &mut entry.forward
+                    else {
+                        unreachable!("fixture forward is a layer-presentation command");
+                    };
+                    *forward_opacity = opacity;
+                }
+
+                assert_eq!(
+                    entry_from_wire(entry).expect_err("reject opacity"),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]

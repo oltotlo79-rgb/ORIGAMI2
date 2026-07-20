@@ -42,6 +42,7 @@ import { isExpectedNativeEditSnapshot } from './projectSnapshotBinding.ts'
 import {
   isProjectLayerContentKind,
   isProjectLayerName,
+  isProjectLayerOpacity,
   MAX_PROJECT_LAYERS,
   normalizeProjectLayerDocument,
   type LayerContentKindV1,
@@ -979,6 +980,56 @@ export function renameProjectLayer(
     expectedRevision,
     layer,
     name,
+  }).then(
+    (value) => admitProjectLayerMutationSnapshot(
+      value,
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    ),
+    () => {
+      throw new ProjectLayerMutationError('native_unavailable')
+    },
+  )
+}
+
+export function updateProjectLayerPresentation(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  baseSnapshot: ProjectSnapshot,
+  layer: string,
+  visible: boolean,
+  locked: boolean,
+  opacity: number,
+) {
+  if (
+    !isProjectLayerMutationBinding(
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isProjectLayerMutationBaseSnapshot(
+      baseSnapshot,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    || !isCanonicalNonNilUuid(layer)
+    || typeof visible !== 'boolean'
+    || typeof locked !== 'boolean'
+    || !isProjectLayerOpacity(opacity)
+  ) return rejectProjectLayerMutation('invalid_request')
+
+  return invoke<unknown>('update_project_layer_presentation', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    layer,
+    visible,
+    locked,
+    opacity,
   }).then(
     (value) => admitProjectLayerMutationSnapshot(
       value,

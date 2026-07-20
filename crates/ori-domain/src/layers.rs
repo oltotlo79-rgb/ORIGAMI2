@@ -1,4 +1,4 @@
-//! Strict, versioned project-layer metadata for LIN-004.
+//! Strict, versioned project-layer metadata for LIN-004 and LIN-005.
 //!
 //! Existing crease-pattern edges deliberately remain unchanged. An absent
 //! assignment means the edge belongs to the reserved default layer; only
@@ -21,6 +21,10 @@ pub const MAX_LAYER_EDGE_ASSIGNMENTS: usize = 100_000;
 pub const MAX_PROJECT_LAYER_INDEX_EDGES: usize = 100_000;
 /// Maximum number of Unicode scalar values in a layer name.
 pub const MAX_LAYER_NAME_CHARS: usize = 120;
+/// Minimum persisted layer opacity.
+pub const MIN_PROJECT_LAYER_OPACITY: f64 = 0.0;
+/// Maximum persisted layer opacity.
+pub const MAX_PROJECT_LAYER_OPACITY: f64 = 1.0;
 /// Stable, language-neutral persisted name used before the author renames it.
 pub const DEFAULT_PROJECT_LAYER_NAME: &str = "Crease Pattern";
 /// Reserved project-local ID used for every implicit edge assignment.
@@ -47,12 +51,24 @@ pub enum LayerContentKindV1 {
 }
 
 /// One entry in user-controlled back-to-front layer order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerRecordV1 {
     pub id: LayerId,
     pub name: String,
     pub content_kind: LayerContentKindV1,
+    /// Whether objects assigned to this layer are rendered in the 2D editor.
+    #[serde(default = "default_layer_visible", skip_serializing_if = "is_true")]
+    pub visible: bool,
+    /// Whether edits affecting objects assigned to this layer are rejected.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub locked: bool,
+    /// 2D editor alpha in the inclusive range `0.0..=1.0`.
+    #[serde(
+        default = "default_layer_opacity",
+        skip_serializing_if = "is_default_layer_opacity"
+    )]
+    pub opacity: f64,
 }
 
 impl LayerRecordV1 {
@@ -63,8 +79,31 @@ impl LayerRecordV1 {
             id: DEFAULT_PROJECT_LAYER_ID,
             name: DEFAULT_PROJECT_LAYER_NAME.to_owned(),
             content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         }
     }
+}
+
+const fn default_layer_visible() -> bool {
+    true
+}
+
+const fn default_layer_opacity() -> f64 {
+    1.0
+}
+
+const fn is_true(value: &bool) -> bool {
+    *value
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_default_layer_opacity(value: &f64) -> bool {
+    value.to_bits() == 1.0_f64.to_bits()
 }
 
 /// An explicit non-default edge assignment.
@@ -79,7 +118,7 @@ pub struct EdgeLayerAssignmentV1 {
 }
 
 /// Ordered layer metadata persisted in `project.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectLayerDocumentV1 {
     pub schema_version: u32,
@@ -164,6 +203,15 @@ pub enum ProjectLayerDocumentValidationErrorV1 {
         maximum: usize,
     },
     LayerNameContainsControlCharacter {
+        layer: LayerId,
+    },
+    LayerOpacityNotFinite {
+        layer: LayerId,
+    },
+    LayerOpacityNegativeZero {
+        layer: LayerId,
+    },
+    LayerOpacityOutOfRange {
         layer: LayerId,
     },
     NilAssignmentEdgeId {
@@ -256,6 +304,17 @@ impl fmt::Display for ProjectLayerDocumentValidationErrorV1 {
             Self::LayerNameContainsControlCharacter { layer } => write!(
                 formatter,
                 "project layer {layer:?} name contains a control character"
+            ),
+            Self::LayerOpacityNotFinite { layer } => {
+                write!(formatter, "project layer {layer:?} opacity must be finite")
+            }
+            Self::LayerOpacityNegativeZero { layer } => write!(
+                formatter,
+                "project layer {layer:?} opacity must not use negative zero"
+            ),
+            Self::LayerOpacityOutOfRange { layer } => write!(
+                formatter,
+                "project layer {layer:?} opacity must be between 0 and 1"
             ),
             Self::NilAssignmentEdgeId { assignment_index } => write!(
                 formatter,
@@ -379,6 +438,21 @@ pub fn validate_project_layer_document_v1(
                 ProjectLayerDocumentValidationErrorV1::LayerNameContainsControlCharacter {
                     layer: layer.id,
                 },
+            );
+        }
+        if !layer.opacity.is_finite() {
+            return Err(
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityNotFinite { layer: layer.id },
+            );
+        }
+        if layer.opacity.to_bits() == (-0.0_f64).to_bits() {
+            return Err(
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityNegativeZero { layer: layer.id },
+            );
+        }
+        if !(MIN_PROJECT_LAYER_OPACITY..=MAX_PROJECT_LAYER_OPACITY).contains(&layer.opacity) {
+            return Err(
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityOutOfRange { layer: layer.id },
             );
         }
         layer_index.push((canonical, layer.content_kind));
@@ -545,6 +619,9 @@ mod tests {
             id: LayerId::new(),
             name: name.to_owned(),
             content_kind,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
         }
     }
 
@@ -603,6 +680,72 @@ mod tests {
             decoded.layer_for_edge(EdgeId::new()),
             DEFAULT_PROJECT_LAYER_ID
         );
+    }
+
+    #[test]
+    fn legacy_layer_records_migrate_to_visible_unlocked_and_fully_opaque() {
+        let decoded: ProjectLayerDocumentV1 = serde_json::from_value(json!({
+            "schema_version": 1,
+            "layers": [{
+                "id": "00000000-0000-4000-8000-000000000001",
+                "name": "Crease Pattern",
+                "content_kind": "crease_pattern"
+            }],
+            "edge_assignments": []
+        }))
+        .expect("legacy LIN-004 layer record remains readable");
+
+        assert_eq!(decoded, ProjectLayerDocumentV1::default());
+        assert!(decoded.layers[0].visible);
+        assert!(!decoded.layers[0].locked);
+        assert_eq!(decoded.layers[0].opacity, 1.0);
+    }
+
+    #[test]
+    fn validation_rejects_every_noncanonical_layer_opacity() {
+        for (opacity, expected) in [
+            (
+                f64::NAN,
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityNotFinite {
+                    layer: DEFAULT_PROJECT_LAYER_ID,
+                },
+            ),
+            (
+                f64::INFINITY,
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityNotFinite {
+                    layer: DEFAULT_PROJECT_LAYER_ID,
+                },
+            ),
+            (
+                -0.0,
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityNegativeZero {
+                    layer: DEFAULT_PROJECT_LAYER_ID,
+                },
+            ),
+            (
+                -0.01,
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityOutOfRange {
+                    layer: DEFAULT_PROJECT_LAYER_ID,
+                },
+            ),
+            (
+                1.01,
+                ProjectLayerDocumentValidationErrorV1::LayerOpacityOutOfRange {
+                    layer: DEFAULT_PROJECT_LAYER_ID,
+                },
+            ),
+        ] {
+            let mut document = ProjectLayerDocumentV1::default();
+            document.layers[0].opacity = opacity;
+            assert_eq!(validate_project_layer_document_v1(&document), Err(expected));
+        }
+
+        for opacity in [0.0, 0.25, 1.0] {
+            let mut document = ProjectLayerDocumentV1::default();
+            document.layers[0].opacity = opacity;
+            validate_project_layer_document_v1(&document)
+                .expect("inclusive canonical opacity is valid");
+        }
     }
 
     #[test]

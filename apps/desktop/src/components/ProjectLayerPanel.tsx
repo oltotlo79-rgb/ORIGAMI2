@@ -34,6 +34,12 @@ type ProjectLayerPanelProps = {
     contentKind: LayerContentKindV1,
   ): Promise<boolean>
   onRename(layerId: string, name: string): Promise<boolean>
+  onUpdatePresentation(
+    layerId: string,
+    visible: boolean,
+    locked: boolean,
+    opacity: number,
+  ): Promise<boolean>
   onMove(layerId: string, targetIndex: number): Promise<boolean>
   onDelete(layerId: string): Promise<boolean>
   onAssignSelectedEdge(layerId: string): Promise<boolean>
@@ -50,6 +56,7 @@ export function ProjectLayerPanel({
   documentInvalid = false,
   onCreate,
   onRename,
+  onUpdatePresentation,
   onMove,
   onDelete,
   onAssignSelectedEdge,
@@ -84,6 +91,10 @@ export function ProjectLayerPanel({
     : document.edge_assignments.find(
       (assignment) => assignment.edge === selectedEdgeId,
     )?.layer ?? DEFAULT_PROJECT_LAYER_ID
+  const selectedEdgeLayerLocked = selectedEdgeLayerId === null
+    ? false
+    : document.layers.find(({ id }) => id === selectedEdgeLayerId)?.locked
+      ?? true
   const assignmentCounts = new Map<string, number>()
   for (const assignment of document.edge_assignments) {
     assignmentCounts.set(
@@ -153,6 +164,30 @@ export function ProjectLayerPanel({
     const name = String(values.get('project_layer_rename') ?? '').trim()
     if (name === previousName || name === displayedPreviousName) return
     void runMutation(() => onRename(layerId, name))
+  }
+
+  function submitPresentation(
+    event: FormEvent<HTMLFormElement>,
+    layerId: string,
+  ) {
+    event.preventDefault()
+    if (controlsDisabled) return
+    const values = new FormData(event.currentTarget)
+    const opacityPercent = Number(values.get('project_layer_opacity'))
+    if (
+      !Number.isSafeInteger(opacityPercent)
+      || opacityPercent < 0
+      || opacityPercent > 100
+    ) {
+      setOperationState('error')
+      return
+    }
+    void runMutation(() => onUpdatePresentation(
+      layerId,
+      values.has('project_layer_visible'),
+      values.has('project_layer_locked'),
+      opacityPercent / 100,
+    ))
   }
 
   function confirmDelete(
@@ -276,6 +311,8 @@ export function ProjectLayerPanel({
               key={layer.id}
               aria-labelledby={nameId}
               data-layer-content-kind={layer.content_kind}
+              data-layer-visible={layer.visible}
+              data-layer-locked={layer.locked}
             >
               <div className="project-layer-summary">
                 <strong id={nameId}>{displayName}</strong>
@@ -285,6 +322,16 @@ export function ProjectLayerPanel({
                 {isDefault && (
                   <span className="project-layer-default">
                     {text(TEXT.defaultBadge)}
+                  </span>
+                )}
+                {!layer.visible && (
+                  <span className="project-layer-hidden">
+                    {text(TEXT.hiddenBadge)}
+                  </span>
+                )}
+                {layer.locked && (
+                  <span className="project-layer-locked">
+                    {text(TEXT.lockedBadge)}
                   </span>
                 )}
                 {layer.content_kind === 'crease_pattern' && (
@@ -326,6 +373,59 @@ export function ProjectLayerPanel({
                 </button>
               </form>
 
+              <form
+                key={`${layer.id}:${layer.visible}:${layer.locked}:${layer.opacity}`}
+                className="project-layer-presentation"
+                role="group"
+                aria-label={formatLocalizedText(
+                  locale,
+                  TEXT.presentationLabel,
+                  { name: displayName },
+                )}
+                onSubmit={(event) => submitPresentation(event, layer.id)}
+              >
+                <label>
+                  <input
+                    name="project_layer_visible"
+                    type="checkbox"
+                    defaultChecked={layer.visible}
+                    disabled={controlsDisabled}
+                  />
+                  <span>{text(TEXT.visibleLabel)}</span>
+                </label>
+                <label>
+                  <input
+                    name="project_layer_locked"
+                    type="checkbox"
+                    defaultChecked={layer.locked}
+                    disabled={controlsDisabled}
+                  />
+                  <span>{text(TEXT.lockedLabel)}</span>
+                </label>
+                <label className="project-layer-opacity">
+                  <span>{text(TEXT.opacityLabel)}</span>
+                  <input
+                    name="project_layer_opacity"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    required
+                    defaultValue={Math.round(layer.opacity * 100)}
+                    disabled={controlsDisabled}
+                    aria-label={formatLocalizedText(
+                      locale,
+                      TEXT.opacityInputLabel,
+                      { name: displayName },
+                    )}
+                  />
+                  <span aria-hidden="true">%</span>
+                </label>
+                <button type="submit" disabled={controlsDisabled}>
+                  {text(TEXT.presentationAction)}
+                </button>
+              </form>
+
               <div className="project-layer-row-actions">
                 <button
                   type="button"
@@ -361,6 +461,8 @@ export function ProjectLayerPanel({
                       controlsDisabled
                       || selectedEdgeId === null
                       || selectedEdgeAssigned
+                      || selectedEdgeLayerLocked
+                      || layer.locked
                     }
                     aria-pressed={selectedEdgeAssigned}
                     aria-label={formatLocalizedText(
@@ -386,7 +488,7 @@ export function ProjectLayerPanel({
                 <button
                   type="button"
                   className="danger"
-                  disabled={controlsDisabled || isDefault}
+                  disabled={controlsDisabled || isDefault || layer.locked}
                   aria-label={formatLocalizedText(
                     locale,
                     isDefault ? TEXT.defaultDeleteLabel : TEXT.deleteLabel,
@@ -479,6 +581,8 @@ const TEXT = {
   layerList: localized('プロジェクトのレイヤー一覧', 'Project layer list'),
   defaultLayerName: localized('折り線パターン', 'Crease Pattern'),
   defaultBadge: localized('既定', 'Default'),
+  hiddenBadge: localized('非表示', 'Hidden'),
+  lockedBadge: localized('ロック中', 'Locked'),
   assignmentCount: localized(
     '明示割当 {count}本',
     '{count} explicitly assigned lines',
@@ -488,6 +592,18 @@ const TEXT = {
     'New layer name for {name}',
   ),
   renameAction: localized('名前を保存', 'Save name'),
+  presentationLabel: localized(
+    '{name}の表示と編集設定',
+    'Display and editing settings for {name}',
+  ),
+  visibleLabel: localized('表示', 'Visible'),
+  lockedLabel: localized('編集をロック', 'Lock editing'),
+  opacityLabel: localized('不透明度', 'Opacity'),
+  opacityInputLabel: localized(
+    '{name}の不透明度（パーセント）',
+    'Opacity for {name} (percent)',
+  ),
+  presentationAction: localized('表示設定を適用', 'Apply display settings'),
   moveUp: localized('↑ 上へ', '↑ Up'),
   moveDown: localized('↓ 下へ', '↓ Down'),
   moveUpLabel: localized(

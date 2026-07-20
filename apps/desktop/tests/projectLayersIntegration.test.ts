@@ -54,6 +54,7 @@ test('core history and formats bind the versioned layer document without silent 
   for (const command of [
     'CreateLayer',
     'RenameLayer',
+    'UpdateLayerPresentation',
     'MoveLayer',
     'DeleteLayer',
     'AssignEdgeToLayer',

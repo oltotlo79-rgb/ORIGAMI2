@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from '@testing-library/react'
 
 import { ProjectLayerPanel } from '../src/components/ProjectLayerPanel'
@@ -29,6 +30,7 @@ describe('ProjectLayerPanel', () => {
   it('creates, renames, reorders, deletes, and assigns through bounded callbacks', async () => {
     const onCreate = vi.fn(async () => true)
     const onRename = vi.fn(async () => true)
+    const onUpdatePresentation = vi.fn(async () => true)
     const onMove = vi.fn(async () => true)
     const onDelete = vi.fn(async () => true)
     const onAssignSelectedEdge = vi.fn(async () => true)
@@ -37,6 +39,7 @@ describe('ProjectLayerPanel', () => {
       selectedEdgeId: EDGE_ID,
       onCreate,
       onRename,
+      onUpdatePresentation,
       onMove,
       onDelete,
       onAssignSelectedEdge,
@@ -63,6 +66,32 @@ describe('ProjectLayerPanel', () => {
       })[1]!)
     })
     expect(onRename).toHaveBeenCalledWith(CREASE_LAYER_ID, 'Main folds')
+
+    const presentation = screen.getByRole('group', {
+      name: 'Detailsの表示と編集設定',
+    })
+    fireEvent.click(within(presentation).getByRole('checkbox', {
+      name: '表示',
+    }))
+    fireEvent.click(within(presentation).getByRole('checkbox', {
+      name: '編集をロック',
+    }))
+    fireEvent.change(within(presentation).getByRole('spinbutton', {
+      name: 'Detailsの不透明度（パーセント）',
+    }), {
+      target: { value: '35' },
+    })
+    await act(async () => {
+      fireEvent.click(within(presentation).getByRole('button', {
+        name: '表示設定を適用',
+      }))
+    })
+    expect(onUpdatePresentation).toHaveBeenCalledWith(
+      CREASE_LAYER_ID,
+      false,
+      true,
+      0.35,
+    )
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', {
@@ -116,6 +145,53 @@ describe('ProjectLayerPanel', () => {
     expect(screen.getByRole('list', {
       name: 'プロジェクトのレイヤー一覧',
     }).children).toHaveLength(4)
+  })
+
+  it('blocks locked-layer mutations while keeping its unlock control available', async () => {
+    const onUpdatePresentation = vi.fn(async () => true)
+    const lockedDocument: ProjectLayerDocumentV1 = {
+      ...layerDocument(),
+      layers: layerDocument().layers.map((layer) =>
+        layer.id === CREASE_LAYER_ID
+          ? { ...layer, locked: true }
+          : layer),
+    }
+    renderPanel({
+      document: lockedDocument,
+      selectedEdgeId: EDGE_ID,
+      localeStore: localeFixture('en'),
+      onUpdatePresentation,
+    })
+
+    expect((screen.getByRole('button', {
+      name: 'Assign the selected line to Crease Pattern',
+    }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', {
+      name: 'Delete Details',
+    }) as HTMLButtonElement).disabled).toBe(true)
+
+    const settings = screen.getByRole('group', {
+      name: 'Display and editing settings for Details',
+    })
+    const lock = within(settings).getByRole('checkbox', {
+      name: 'Lock editing',
+    })
+    const apply = within(settings).getByRole('button', {
+      name: 'Apply display settings',
+    })
+    expect((lock as HTMLInputElement).checked).toBe(true)
+    expect((apply as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(lock)
+    await act(async () => {
+      fireEvent.click(apply)
+    })
+    expect(onUpdatePresentation).toHaveBeenCalledWith(
+      CREASE_LAYER_ID,
+      true,
+      false,
+      1,
+    )
   })
 
   it('single-flights operations and discards a result after the binding changes', async () => {
@@ -269,6 +345,8 @@ function panel(overrides: Partial<{
   documentInvalid: boolean
   onCreate: Parameters<typeof ProjectLayerPanel>[0]['onCreate']
   onRename: Parameters<typeof ProjectLayerPanel>[0]['onRename']
+  onUpdatePresentation:
+    Parameters<typeof ProjectLayerPanel>[0]['onUpdatePresentation']
   onMove: Parameters<typeof ProjectLayerPanel>[0]['onMove']
   onDelete: Parameters<typeof ProjectLayerPanel>[0]['onDelete']
   onAssignSelectedEdge:
@@ -284,6 +362,9 @@ function panel(overrides: Partial<{
       documentInvalid={overrides.documentInvalid ?? false}
       onCreate={overrides.onCreate ?? (async () => true)}
       onRename={overrides.onRename ?? (async () => true)}
+      onUpdatePresentation={
+        overrides.onUpdatePresentation ?? (async () => true)
+      }
       onMove={overrides.onMove ?? (async () => true)}
       onDelete={overrides.onDelete ?? (async () => true)}
       onAssignSelectedEdge={
@@ -302,21 +383,33 @@ function layerDocument(): ProjectLayerDocumentV1 {
         id: DEFAULT_PROJECT_LAYER_ID,
         name: 'Crease Pattern',
         content_kind: 'crease_pattern',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
       {
         id: CREASE_LAYER_ID,
         name: 'Details',
         content_kind: 'crease_pattern',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
       {
         id: ANNOTATION_LAYER_ID,
         name: 'Notes',
         content_kind: 'annotation',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
       {
         id: UNDERLAY_LAYER_ID,
         name: 'Reference',
         content_kind: 'underlay',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
     ],
     edge_assignments: [{

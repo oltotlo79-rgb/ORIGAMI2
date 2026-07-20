@@ -31,10 +31,12 @@ const CANVAS_RECT = {
 } as DOMRect
 
 let paintedText: string[] = []
+let paintedStrokeAlphas: number[] = []
 
 beforeEach(() => {
   paintedText = []
-  const context = createCanvasContext(paintedText)
+  paintedStrokeAlphas = []
+  const context = createCanvasContext(paintedText, paintedStrokeAlphas)
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
     .mockReturnValue(context)
   vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect')
@@ -173,6 +175,28 @@ describe('CreaseCanvas localization', () => {
       'Editing is currently unavailable',
     )
   })
+
+  it('applies each admitted layer opacity to its crease stroke', async () => {
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      lines: [{
+        id: 'translucent',
+        startVertexId: 'a',
+        endVertexId: 'b',
+        x1: 0,
+        y1: 0,
+        x2: 400,
+        y2: 400,
+        kind: 'mountain',
+        layerOrder: 2,
+        opacity: 0.35,
+      }],
+    })
+
+    await waitFor(() => {
+      expect(paintedStrokeAlphas).toContain(0.35)
+    })
+  })
 })
 
 function renderCanvas(
@@ -204,8 +228,11 @@ class MockResizeObserver {
   disconnect() {}
 }
 
-function createCanvasContext(text: string[]): CanvasRenderingContext2D {
-  return {
+function createCanvasContext(
+  text: string[],
+  strokeAlphas: number[],
+): CanvasRenderingContext2D {
+  const context = {
     arc: vi.fn(),
     beginPath: vi.fn(),
     clearRect: vi.fn(),
@@ -225,7 +252,11 @@ function createCanvasContext(text: string[]): CanvasRenderingContext2D {
     save: vi.fn(),
     setLineDash: vi.fn(),
     setTransform: vi.fn(),
-    stroke: vi.fn(),
+    stroke: vi.fn(() => {
+      strokeAlphas.push(context.globalAlpha)
+    }),
     strokeRect: vi.fn(),
+    globalAlpha: 1,
   } as unknown as CanvasRenderingContext2D
+  return context
 }

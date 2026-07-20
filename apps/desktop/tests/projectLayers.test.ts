@@ -35,6 +35,94 @@ test('normalizes, detaches, freezes, and JSON-round-trips the exact V1 document'
   assert.equal(normalized?.layers[1].name, 'Details')
 })
 
+test('admits every native serde presentation subset with independent defaults', () => {
+  const legacy = {
+    id: DEFAULT_PROJECT_LAYER_ID,
+    name: 'Crease Pattern',
+    content_kind: 'crease_pattern',
+  } as const
+  const cases = [
+    {
+      record: legacy,
+      expected: { visible: true, locked: false, opacity: 1 },
+    },
+    {
+      record: { ...legacy, visible: false },
+      expected: { visible: false, locked: false, opacity: 1 },
+    },
+    {
+      record: { ...legacy, locked: true },
+      expected: { visible: true, locked: true, opacity: 1 },
+    },
+    {
+      record: { ...legacy, opacity: 0.35 },
+      expected: { visible: true, locked: false, opacity: 0.35 },
+    },
+    {
+      record: { ...legacy, visible: false, locked: true },
+      expected: { visible: false, locked: true, opacity: 1 },
+    },
+    {
+      record: { ...legacy, visible: false, opacity: 0.35 },
+      expected: { visible: false, locked: false, opacity: 0.35 },
+    },
+    {
+      record: { ...legacy, locked: true, opacity: 0.35 },
+      expected: { visible: true, locked: true, opacity: 0.35 },
+    },
+    {
+      record: {
+        ...legacy,
+        visible: false,
+        locked: true,
+        opacity: 0.35,
+      },
+      expected: { visible: false, locked: true, opacity: 0.35 },
+    },
+  ] as const
+
+  for (const { record, expected } of cases) {
+    const normalized = normalizeProjectLayerDocument({
+      schema_version: 1,
+      layers: [record],
+      edge_assignments: [],
+    }, [])
+    assert.ok(normalized)
+    assert.deepEqual(
+      {
+        visible: normalized.layers[0]?.visible,
+        locked: normalized.layers[0]?.locked,
+        opacity: normalized.layers[0]?.opacity,
+      },
+      expected,
+    )
+  }
+})
+
+test('rejects malformed optional presentation fields and unknown layer keys', () => {
+  const legacy = {
+    id: DEFAULT_PROJECT_LAYER_ID,
+    name: 'Crease Pattern',
+    content_kind: 'crease_pattern',
+  }
+  for (const record of [
+    { ...legacy, visible: 'false' },
+    { ...legacy, locked: 1 },
+    { ...legacy, opacity: Number.NaN },
+    { ...legacy, opacity: Number.POSITIVE_INFINITY },
+    { ...legacy, opacity: -0 },
+    { ...legacy, opacity: -0.01 },
+    { ...legacy, opacity: 1.01 },
+    { ...legacy, future_presentation: true },
+  ]) {
+    assert.equal(normalizeProjectLayerDocument({
+      schema_version: 1,
+      layers: [record],
+      edge_assignments: [],
+    }, []), null)
+  }
+})
+
 test('rejects every identity, name, kind, assignment, and canonical-order drift', () => {
   const base = validDocument()
   const invalid = [
@@ -186,16 +274,25 @@ function validDocument() {
         id: DEFAULT_PROJECT_LAYER_ID,
         name: 'Crease Pattern',
         content_kind: 'crease_pattern',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
       {
         id: CREASE_LAYER_ID,
         name: 'Details',
         content_kind: 'crease_pattern',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
       {
         id: ANNOTATION_LAYER_ID,
         name: 'Notes',
         content_kind: 'annotation',
+        visible: true,
+        locked: false,
+        opacity: 1,
       },
     ],
     edge_assignments: [

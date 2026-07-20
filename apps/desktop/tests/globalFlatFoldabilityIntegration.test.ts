@@ -44,7 +44,7 @@ test('snapshot changes invalidate before publishing and replacements are explici
   const applySnapshot = section(
     appSource,
     'const applySnapshot = useCallback',
-    'const nativeLines = useMemo',
+    'const nativeLayerView = useMemo',
   )
   assert.match(
     applySnapshot,

@@ -1603,7 +1603,7 @@ mod tests {
                 &initial,
                 &requested,
                 MultiHingePathCandidateLimitsV1 {
-                    max_work: 1,
+                    max_work: edges.len() * 2 - 1,
                     ..MultiHingePathCandidateLimitsV1::default()
                 },
             ),

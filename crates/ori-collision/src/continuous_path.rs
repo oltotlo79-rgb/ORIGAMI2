@@ -5,9 +5,9 @@
 //! a fail-closed hold, but it never certifies the open intervals between
 //! samples or authorizes mutation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use ori_domain::EdgeId;
+use ori_domain::{EdgeId, FaceId};
 use ori_kinematics::{
     CanonicalHingeAngles, HingeAngle, MaterialTreeKinematicsModel, MaterialTreePose,
 };
@@ -32,7 +32,12 @@ pub const STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL
     "stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1";
 pub const STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
+    "stacked_fold_tree_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
+pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 8;
+const MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1: usize = 36;
+const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize = 64 * 36;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldPathDiagnosticLimitsV1 {
@@ -60,6 +65,7 @@ pub struct StackedFoldBoundedPathDiagnosticV1 {
     analytic_collinear_tree_clearance: bool,
     analytic_positive_two_hinge_clearance: bool,
     interval_two_hinge_chain_clearance: bool,
+    interval_tree_hinge_count: usize,
     positive_thickness_outer_shell: bool,
 }
 
@@ -112,7 +118,13 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     #[must_use]
     pub const fn continuous_certificate_model_id(&self) -> Option<&'static str> {
         if self.interval_two_hinge_chain_clearance {
-            Some(STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            Some(
+                if self.sampled_pose_count > 0 && self.interval_tree_hinge_count() > 2 {
+                    STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+                } else {
+                    STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+                },
+            )
         } else if self.analytic_positive_two_hinge_clearance {
             Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
         } else if self.analytic_collinear_tree_clearance {
@@ -126,6 +138,13 @@ impl StackedFoldBoundedPathDiagnosticV1 {
         } else {
             None
         }
+    }
+
+    const fn interval_tree_hinge_count(&self) -> usize {
+        // A certified tree has one more face than hinges. The diagnostic does
+        // not otherwise expose topology, so this value is stored explicitly
+        // below in the next field.
+        self.interval_tree_hinge_count
     }
 
     #[must_use]
@@ -372,6 +391,11 @@ pub fn diagnose_collective_hinge_path_v1(
         interval_two_hinge_chain_clearance: interval_two_hinge_chain_topology
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
+        interval_tree_hinge_count: if interval_two_hinge_chain_topology {
+            moving.len()
+        } else {
+            0
+        },
         positive_thickness_outer_shell: positive_thickness && all_positive_thickness_outer_shells,
     })
 }
@@ -383,10 +407,22 @@ fn two_hinge_interval_clearance_premises(
     requested_angle_degrees: f64,
     interval_count: usize,
 ) -> bool {
-    if model.face_ids().len() != 3
-        || model.hinges().len() != 2
-        || moving.len() != 2
+    let hinge_count = model.hinges().len();
+    let face_count = model.face_ids().len();
+    let Some(pair_count) = face_count
+        .checked_mul(face_count.saturating_sub(1))
+        .map(|n| n / 2)
+    else {
+        return false;
+    };
+    if !(2..=MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1).contains(&hinge_count)
+        || face_count != hinge_count + 1
+        || moving.len() != hinge_count
         || interval_count == 0
+        || pair_count > MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1
+        || interval_count
+            .checked_mul(pair_count)
+            .is_none_or(|work| work > MAX_STACKED_FOLD_INTERVAL_WORK_V1)
         || initial_pose.fixed_face().is_none()
         || !initial_pose.hinge_angles().iter().all(|angle| {
             moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
@@ -397,12 +433,43 @@ fn two_hinge_interval_clearance_premises(
     let Some(first_line) = world_hinge_line(initial_pose, &model.hinges()[0]) else {
         return false;
     };
-    let Some(second_line) = world_hinge_line(initial_pose, &model.hinges()[1]) else {
+    if model.hinges()[1..].iter().all(|hinge| {
+        world_hinge_line(initial_pose, hinge).is_some_and(|line| {
+            exact_collinear_line(first_line.0, first_line.2, line.0, line.2)
+                && exact_collinear_line(first_line.0, first_line.2, line.1, line.2)
+        })
+    }) {
+        return false;
+    }
+
+    let Some(root) = initial_pose.fixed_face() else {
         return false;
     };
-    if exact_collinear_line(first_line.0, first_line.2, second_line.0, second_line.2)
-        && exact_collinear_line(first_line.0, first_line.2, second_line.1, second_line.2)
-    {
+    let mut depth = HashMap::<FaceId, usize>::new();
+    depth.insert(root, 0);
+    let mut queue = VecDeque::from([root]);
+    while let Some(face) = queue.pop_front() {
+        let parent_depth = depth[&face];
+        for hinge in model.hinges() {
+            let next = if hinge.left_face() == face {
+                Some(hinge.right_face())
+            } else if hinge.right_face() == face {
+                Some(hinge.left_face())
+            } else {
+                None
+            };
+            if let Some(next) = next {
+                if let std::collections::hash_map::Entry::Vacant(entry) = depth.entry(next) {
+                    let Some(next_depth) = parent_depth.checked_add(1) else {
+                        return false;
+                    };
+                    entry.insert(next_depth);
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    if depth.len() != face_count {
         return false;
     }
 
@@ -451,20 +518,18 @@ fn two_hinge_interval_clearance_premises(
         let upper = requested_angle_degrees * (interval + 1) as f64 / interval_count as f64;
         let midpoint = (lower + upper) / 2.0;
         let half_width_radians = (upper - lower) * std::f64::consts::PI / 360.0;
-        // A two-hinge chain composes at most two rotations. For either
-        // rotation, every affected point stays within `maximum_radius` of its
-        // material hinge axis because ancestors move the point and axis by the
-        // same rigid transform. The sum of both angular Lipschitz bounds is a
-        // conservative component expansion for the entire interval.
-        let expansion = 2.0 * maximum_radius * half_width_radians;
-        if !expansion.is_finite() {
-            return false;
-        }
         let Some(pose) = solve_collective_pose(model, initial_pose, moving, midpoint) else {
             return false;
         };
         let mut bounds = Vec::new();
         for face in model.face_ids() {
+            let Some(face_depth) = depth.get(face) else {
+                return false;
+            };
+            let expansion = *face_depth as f64 * maximum_radius * half_width_radians;
+            if !expansion.is_finite() {
+                return false;
+            }
             let Some(transform) = pose.face_transform(*face) else {
                 return false;
             };
@@ -844,6 +909,65 @@ mod tests {
         .unwrap()
     }
 
+    fn three_hinge_strip_model(narrow_gap: bool) -> MaterialTreeKinematicsModel {
+        let middle = if narrow_gap { 2.01 } else { 3.0 };
+        let points = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (middle, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (middle, 4.0),
+            (2.0, 4.0),
+            (1.0, 4.0),
+            (0.0, 4.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("8300", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("9300", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend([(1, 8), (2, 7), (3, 6)].into_iter().enumerate().map(
+            |(index, (start, end))| Edge {
+                id: fixed_id("9300", 20 + index as u64),
+                start: boundary[start],
+                end: boundary[end],
+                kind: EdgeKind::Mountain,
+            },
+        ));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b300", if narrow_gap { 2 } else { 1 }),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.unwrap(),
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn limits_fail_closed_before_geometry_access() {
         assert_eq!(MAX_STACKED_FOLD_PATH_SAMPLES_V1, 64);
@@ -861,6 +985,7 @@ mod tests {
                 analytic_collinear_tree_clearance: false,
                 analytic_positive_two_hinge_clearance: false,
                 interval_two_hinge_chain_clearance: false,
+                interval_tree_hinge_count: 0,
                 positive_thickness_outer_shell: false,
             }
             .safe_stop_angle_degrees()
@@ -940,6 +1065,82 @@ mod tests {
             Some(STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
         );
         assert_eq!(result.safe_stop_angle_degrees(), 10.0);
+    }
+
+    #[test]
+    fn separated_three_hinge_tree_gets_bounded_interval_certificate() {
+        let model = three_hinge_strip_model(false);
+        let fixed = model
+            .face_ids()
+            .iter()
+            .copied()
+            .find(|face| {
+                model
+                    .hinges()
+                    .iter()
+                    .filter(|hinge| hinge.left_face() == *face || hinge.right_face() == *face)
+                    .count()
+                    == 2
+            })
+            .unwrap();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(fixed), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let result = diagnose_collective_hinge_path_v1(
+            &model,
+            &pose,
+            &moving,
+            5.0,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(result.continuous_clearance_certified());
+        assert_eq!(
+            result.continuous_certificate_model_id(),
+            Some(STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        );
+    }
+
+    #[test]
+    fn near_collision_three_hinge_tree_fails_closed() {
+        let model = three_hinge_strip_model(true);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let result = diagnose_collective_hinge_path_v1(
+            &model,
+            &pose,
+            &moving,
+            10.0,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(!result.continuous_clearance_certified());
+        assert_eq!(result.safe_stop_angle_degrees(), 0.0);
     }
 
     #[test]

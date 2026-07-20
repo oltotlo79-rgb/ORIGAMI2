@@ -33,6 +33,7 @@ import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LanguageControl } from './components/LanguageControl'
 import { LengthUnitControl } from './components/LengthUnitControl'
+import { MeshAnimationExportDialog } from './components/MeshAnimationExportDialog'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
 import { ProjectLayerPanel } from './components/ProjectLayerPanel'
 import { RecoveryAutosaveStatusBanner } from './components/RecoveryAutosaveStatusBanner'
@@ -61,6 +62,7 @@ import {
   cancelCreasePatternExport,
   cancelFoldImport,
   cancelInstructionExport,
+  cancelInstructionMeshAnimation,
   cancelStaticMeshExport,
   cancelSvgImport,
   connectEdgeIntersection,
@@ -83,6 +85,7 @@ import {
   previewCreasePatternExport,
   previewFoldImport,
   previewInstructionExport,
+  previewInstructionMeshAnimation,
   previewStaticMeshExport,
   previewSvgImport,
   redo,
@@ -96,6 +99,7 @@ import {
   saveProjectAs,
   saveCreasePatternExport,
   saveInstructionExport,
+  saveInstructionMeshAnimation,
   saveStaticMeshExport,
   setLengthDisplayUnit,
   setElementMetadata,
@@ -141,6 +145,7 @@ import {
   type StaticMeshExportFormat,
   type StaticMeshExportPreview,
 } from './lib/staticMeshExport'
+import type { MeshAnimationPreviewResponse } from './lib/meshAnimationExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
   SvgImportPreview,
@@ -634,6 +639,7 @@ function App() {
     | 'crease_export'
     | 'mesh_export'
     | 'instruction_export'
+    | 'mesh_animation_export'
     | null
   >(null)
   const [coreBusy, setCoreBusy] = useState(false)
@@ -692,6 +698,13 @@ function App() {
   const [instructionExportErrorState, setInstructionExportError] =
     useState<AppMessage | null>(null)
   const [instructionExportNoticeMessage, setInstructionExportNotice] =
+    useState<AppMessage | null>(null)
+  const [meshAnimationExportOpen, setMeshAnimationExportOpen] = useState(false)
+  const [meshAnimationExportPreview, setMeshAnimationExportPreview] =
+    useState<MeshAnimationPreviewResponse | null>(null)
+  const [meshAnimationExportError, setMeshAnimationExportError] =
+    useState<AppMessage | null>(null)
+  const [meshAnimationExportNotice, setMeshAnimationExportNotice] =
     useState<AppMessage | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
@@ -768,6 +781,8 @@ function App() {
   const meshExportButtonRef = useRef<HTMLButtonElement>(null)
   const meshExportRequestIdRef = useRef(0)
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
+  const meshAnimationExportButtonRef = useRef<HTMLButtonElement>(null)
+  const meshAnimationExportRequestIdRef = useRef(0)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
   recoveryStartupRef.current = recoveryStartup
@@ -887,6 +902,7 @@ function App() {
     || creaseExportOpen
     || meshExportOpen
     || instructionExportOpen
+    || meshAnimationExportOpen
     || recoveryBlocking
   const closeDiagnosticsDialog = useCallback(() => {
     setDiagnosticsDialogOpen(false)
@@ -4520,6 +4536,144 @@ function App() {
     }
   }
 
+  async function prepareMeshAnimationExport() {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current) return
+    const requestId = ++meshAnimationExportRequestIdRef.current
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('mesh_animation_export')
+    setMeshAnimationExportPreview(null)
+    setMeshAnimationExportError(null)
+    setMeshAnimationExportNotice(null)
+    try {
+      const preview = await previewInstructionMeshAnimation({
+        expectedProjectInstanceId: current.project_instance_id,
+        expectedProjectId: current.project_id,
+        expectedRevision: current.revision,
+      })
+      if (requestId !== meshAnimationExportRequestIdRef.current) {
+        await cancelInstructionMeshAnimation(preview.exportId).catch(() => undefined)
+        return
+      }
+      const latest = latestSnapshotRef.current
+      if (
+        !latest
+        || latest.project_instance_id !== preview.projectInstanceId
+        || latest.project_id !== preview.projectId
+        || latest.revision !== preview.revision
+      ) {
+        await cancelInstructionMeshAnimation(preview.exportId).catch(() => undefined)
+        throw new Error('stale animation preview')
+      }
+      setMeshAnimationExportPreview(preview)
+    } catch {
+      if (requestId !== meshAnimationExportRequestIdRef.current) return
+      const error = appMessage({
+        ja: '現在の手順からアニメーションを作成できませんでした。手順を確認して再試行してください。',
+        en: 'Could not build an animation from the current instructions. Review them and retry.',
+      })
+      setMeshAnimationExportError(error)
+      setCoreStatus(error)
+    } finally {
+      if (requestId === meshAnimationExportRequestIdRef.current) {
+        setFileOperation(null)
+        coreOperationRef.current = false
+        setCoreBusy(false)
+      }
+    }
+  }
+
+  function beginMeshAnimationExport() {
+    if (!latestSnapshotRef.current || coreOperationRef.current) return
+    setMeshAnimationExportOpen(true)
+    void prepareMeshAnimationExport()
+  }
+
+  async function closeMeshAnimationExport() {
+    if (coreOperationRef.current) return
+    const preview = meshAnimationExportPreview
+    meshAnimationExportRequestIdRef.current += 1
+    if (preview) {
+      coreOperationRef.current = true
+      setCoreBusy(true)
+      try {
+        await cancelInstructionMeshAnimation(preview.exportId)
+      } catch {
+        setMeshAnimationExportError(appMessage({
+          ja: 'アニメーション書き出しを安全に破棄できませんでした。',
+          en: 'Could not safely discard the animation export.',
+        }))
+        coreOperationRef.current = false
+        setCoreBusy(false)
+        return
+      }
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+    setMeshAnimationExportOpen(false)
+    setMeshAnimationExportPreview(null)
+    setMeshAnimationExportError(null)
+    setMeshAnimationExportNotice(null)
+    requestAnimationFrame(() => meshAnimationExportButtonRef.current?.focus())
+  }
+
+  async function saveCurrentMeshAnimationExport() {
+    const preview = meshAnimationExportPreview
+    const current = latestSnapshotRef.current
+    if (!preview || !current || coreOperationRef.current) return
+    if (
+      current.project_instance_id !== preview.projectInstanceId
+      || current.project_id !== preview.projectId
+      || current.revision !== preview.revision
+    ) {
+      setMeshAnimationExportError(appMessage({
+        ja: 'プロジェクトが変更されました。現在の手順から再作成してください。',
+        en: 'The project changed. Rebuild from the current instructions.',
+      }))
+      return
+    }
+    coreOperationRef.current = true
+    setCoreBusy(true)
+    setFileOperation('mesh_animation_export')
+    setMeshAnimationExportError(null)
+    setMeshAnimationExportNotice(null)
+    try {
+      const response = await saveInstructionMeshAnimation({
+        exportId: preview.exportId,
+        expectedProjectInstanceId: preview.projectInstanceId,
+        expectedProjectId: preview.projectId,
+        expectedRevision: preview.revision,
+        expectedSourceFingerprint: preview.sourceFingerprint,
+      })
+      if (response.canceled) {
+        setMeshAnimationExportNotice(appMessage({
+          ja: '保存先の選択をキャンセルしました。同じ生成データで再試行できます。',
+          en: 'Save location selection was cancelled. You can retry with the same generated data.',
+        }))
+        return
+      }
+      setMeshAnimationExportOpen(false)
+      setMeshAnimationExportPreview(null)
+      setCoreStatus(appMessage({
+        ja: '{fileName} を保存しました',
+        en: 'Exported {fileName}',
+      }, { fileName: preview.suggestedFileName }))
+      requestAnimationFrame(() => meshAnimationExportButtonRef.current?.focus())
+    } catch {
+      const error = appMessage({
+        ja: '手順が変更されたか、ファイルを保存できませんでした。再作成してから再試行してください。',
+        en: 'The instructions changed or the file could not be saved. Rebuild and retry.',
+      })
+      setMeshAnimationExportError(error)
+      setCoreStatus(error)
+    } finally {
+      setFileOperation(null)
+      coreOperationRef.current = false
+      setCoreBusy(false)
+    }
+  }
+
   async function pollInstructionExportProgress(exportId: string, requestId: number) {
     while (
       requestId === instructionExportRequestIdRef.current
@@ -7297,10 +7451,12 @@ function App() {
         fileOperationActive={fileOperation !== null}
         exportAvailable={Boolean(foldPreviewModel)}
         exportButtonRef={instructionExportButtonRef}
+        animationExportButtonRef={meshAnimationExportButtonRef}
         inert={modalOpen}
         runNativeEdit={runNativeEdit}
         applyStepPose={applyInstructionStepPose}
         onExport={beginInstructionExport}
+        onAnimationExport={beginMeshAnimationExport}
       />
 
       {(recoveryStartup.kind === 'checking'
@@ -7586,6 +7742,18 @@ function App() {
             void saveCurrentInstructionExport(warningsAcknowledged)
           }}
           onCancel={() => void closeInstructionExportDialog()}
+        />
+      )}
+
+      {meshAnimationExportOpen && (
+        <MeshAnimationExportDialog
+          preview={meshAnimationExportPreview}
+          busy={coreBusy}
+          error={appMessageText(locale, meshAnimationExportError)}
+          notice={appMessageText(locale, meshAnimationExportNotice)}
+          onRetry={() => void prepareMeshAnimationExport()}
+          onSave={() => void saveCurrentMeshAnimationExport()}
+          onCancel={() => void closeMeshAnimationExport()}
         />
       )}
 

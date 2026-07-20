@@ -71,6 +71,7 @@ type InstructionTimelinePanelProps = {
   fileOperationActive: boolean
   exportAvailable: boolean
   exportButtonRef: RefObject<HTMLButtonElement | null>
+  animationExportButtonRef: RefObject<HTMLButtonElement | null>
   inert?: boolean
   runNativeEdit(
     action: (
@@ -81,6 +82,7 @@ type InstructionTimelinePanelProps = {
   ): Promise<boolean>
   applyStepPose(step: InstructionStepPresentation): boolean
   onExport(): void
+  onAnimationExport(): void
 }
 
 export function InstructionTimelinePanel({
@@ -93,10 +95,12 @@ export function InstructionTimelinePanel({
   fileOperationActive,
   exportAvailable,
   exportButtonRef,
+  animationExportButtonRef,
   inert,
   runNativeEdit,
   applyStepPose,
   onExport,
+  onAnimationExport,
 }: InstructionTimelinePanelProps) {
   const locale = useLocale()
   const presentation = useMemo(
@@ -735,6 +739,22 @@ export function InstructionTimelinePanel({
           onClick={onExport}
         >
           {selectLocalizedText(locale, TEXT.exportAction)}
+        </button>
+        <button
+          ref={animationExportButtonRef}
+          type="button"
+          className="instruction-export-button"
+          disabled={
+            coreBusy
+            || benchmarkActive
+            || fileOperationActive
+            || !exportAvailable
+            || steps.length === 0
+            || steps.some((step) => step.stale)
+          }
+          onClick={onAnimationExport}
+        >
+          {locale === 'ja' ? 'GLBアニメーション' : 'GLB animation'}
         </button>
       </div>
       <div className="instruction-timeline-body">

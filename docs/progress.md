@@ -6,7 +6,7 @@
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.89%に対し、正厚STL/GLBのbounded manifold reportで「入出力・互換性」を94%から95%へ更新し、さらに証明済みの狭い対象でSIM-010をread・preview・原子的apply・Undo/Redoまで利用者UIへ接続したため「3D折り・紙厚・衝突」を56%から59%へ更新した。差分は0.56ポイント（5% × 1ポイント + 17% × 3ポイント）で、47.45%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、一般多面・多hinge unionと印刷可能性保証、GitHub Releases正式配布、SIM-010の一般姿勢・正厚・多hinge経路、専用層順3D viewer、一般経路探索は未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、47.45%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値47.45%に対し、認証済みtree hinge packageを複数hingeの正厚外殻unionへ接続し、「入出力・互換性」を95%から96%へ更新した。差分は0.05ポイント（5% × 1ポイント）で、47.50%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、一般曲面・非三角面union、完全な印刷可能性保証、GitHub Releases正式配布、SIM-010の一般姿勢・正厚・多hinge経路、専用層順3D viewer、一般経路探索は未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、47.50%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,13 +19,15 @@
 | 3D折り・紙厚・衝突 | 17% | 59% | 10.03% | 木構造多ヒンジの姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、証明済み単一hinge厚さ0の折り重ねをpreview・原子的apply・Undo/Redoまで接続。正厚三角柱の完全分類、一般native連続停止、専用層順3D表示、一般姿勢・正厚・多hinge折り重ね、一般経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 95% | 4.75% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。PBR・表裏texture、限定watertight union、独立reader、animation、FOLD 3D複数frame previewとnative pose適用、正厚manifold reportも実装。一般多面union、GUI 3Dアプリ実機受入と完全な印刷可能性保証を残す |
+| 入出力・互換性 | 5% | 96% | 4.80% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ書き出せる。PBR・表裏texture、認証済みtreeの複数hinge watertight union、独立readerとKhronos公式validator、animation、FOLD 3D複数frame preview/native pose適用、正厚manifold reportも実装。一般曲面union、GUI 3Dアプリ実機受入と完全な印刷可能性保証を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **47.45%** | — |
+| **合計** | **100%** | — | **47.50%** | — |
 
 ## 完了
 
+- IO-008の正厚外殻unionを認証済みtreeの複数hingeへ拡張した。full exact treeから指定hingeのindex・incident triangular faces・material endpoint identityをissuer/poseへ束縛し、最大16 hingeのpackageを作る。rail interiorは非交差、共有endpointは同一material VertexIdとbit-exact座標の場合だけ許容し、consumerはjunctionを含む外殻をwatertight incidence・finite nonzero volume・保守的self-intersectionへ通す。3面2hingeの独立STL/GLB reader E2Eが成功した。「入出力・互換性」を96%、全体を47.50%（表示47.5%）へ更新した
+- IO-008の生成GLBをKhronos公式`gltf-validator`固定versionでCI受入する。production APIからstatic・textured・animated GLBを毎回生成し、embedded resources込みerror/warning/info 0を要求する。導入時に検出したanimation morph POSITION accessorのmin/max欠落も修正した。外部GUI実機確認の代替とは扱わず別残件に保つ
 - SIM-010を証明済みの狭い利用者経路へ接続した。canvas選択線、固定側、回転方向、角度をauthenticated read coordinatorへ渡し、終端collision、continuous path、target layer order、topology差分、failureを日英表示する。readyなopaque transaction tokenと明示確認が揃う場合だけtoken-only Applyを実行し、nativeは全live bindingをcommit直前に再認証してpattern・paper・layers・timeline 1 step・applied poseを1件のversioned atomic historyへ適用する。失敗時は完全無変更、成功後はsnapshot更新し既存Undo/Redoで一括復元する。read/coordinator 8件、DOM 3件、native 7件、core atomic/history、build、lintが成功した。一般姿勢・正厚・多hingeは未対応なのでSIM-010を部分実装へ、「3D折り・紙厚・衝突」を59%、全体を47.45%（表示47.5%）へ更新した
 - IO-008の正厚STL/GLBへbounded printability reportを接続した。edge incidence・向き・重複・縮退、scale-aware volume、connected components、最大100万pairの保守AABB交差をnative検証し、全条件を証明した限定meshだけ`manifold_verified`とする。OBJ・厚さ0はnot applicable、一般union・budget超過はfail-closedとし、UIではmanifold検証であって実機造形性の保証ではないことを日英固定語彙で明示する。native 2件、strict client 7件、DOM 4件、build・lintが成功した。「入出力・互換性」を95%へ更新した
 - IO-008のFOLD 3D frameをcurrent native poseへ再認証して適用する利用者経路を接続した。canonical topologyとplanar/3D座標からface rigid transform、共有edge像、M/V signed hinge角、connected treeを再構成し、current projectのvertex bits・edge identity/kind・fixed face・fingerprintへ完全一致する場合だけnative preview slotへ保持する。日英UIはgeometry/revisionを変えずcurrent 3D poseだけ置換することを明示確認し、token/frame/fingerprint/revisionを再検証して適用後snapshotを更新する。formats 274件、native 3件、parser、DOM 231件、build、lintが成功した

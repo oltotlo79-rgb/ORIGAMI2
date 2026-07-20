@@ -372,6 +372,7 @@ pub enum InstructionHandGuideKind {
     Pinch,
     Hold,
     Push,
+    Regrip,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

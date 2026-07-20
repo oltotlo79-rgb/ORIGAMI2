@@ -805,14 +805,14 @@ export function parseInstructionVisual(value: unknown): InstructionVisual | null
     if (
       !isRecord(guide)
       || !hasExactKeys(guide, ['kind', 'position', 'direction', 'label'])
-      || !['pinch', 'hold', 'push'].includes(String(guide.kind))
+      || !['pinch', 'hold', 'push', 'regrip'].includes(String(guide.kind))
       || !isPoint3(guide.position)
       || !isPoint3(guide.direction)
       || samePoint3(guide.direction, { x: 0, y: 0, z: 0 })
       || !validMarkerLabel(guide.label)
     ) return null
     return Object.freeze({
-      kind: guide.kind as 'pinch' | 'hold' | 'push',
+      kind: guide.kind as 'pinch' | 'hold' | 'push' | 'regrip',
       position: guide.position,
       direction: guide.direction,
       label: guide.label,

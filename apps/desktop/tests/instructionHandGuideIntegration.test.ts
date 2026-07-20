@@ -12,7 +12,7 @@ const panelSource = readFileSync(
 )
 
 test('instruction hand guides are authored and rendered as a touch point plus direction', () => {
-  assert.match(panelSource, /hand_guides.*pinch\/hold\/push/u)
+  assert.match(panelSource, /hand_guides.*pinch\/hold\/push\/regrip/u)
   assert.match(previewSource, /for \(const guide of visual\.hand_guides\)/u)
   assert.match(previewSource, /new THREE\.TorusGeometry/u)
   assert.match(previewSource, /new THREE\.ArrowHelper/u)

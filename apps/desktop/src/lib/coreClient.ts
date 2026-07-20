@@ -886,7 +886,7 @@ export type InstructionVisual = {
     label: string
   }[]
   hand_guides: readonly {
-    kind: 'pinch' | 'hold' | 'push'
+    kind: 'pinch' | 'hold' | 'push' | 'regrip'
     position: InstructionPoint3
     direction: InstructionPoint3
     label: string
@@ -1491,6 +1491,15 @@ export function proposeCurrentStackedFoldRead(
     if (error === 'stacked_fold_cycle_path_uncertified') {
       throw new StackedFoldReadNativeError('cycle_path_uncertified')
     }
+    if (error === 'stacked_fold_cycle_path_unsupported') {
+      throw new StackedFoldReadNativeError('cycle_path_unsupported')
+    }
+    if (error === 'stacked_fold_cycle_path_resource_limit') {
+      throw new StackedFoldReadNativeError('cycle_path_resource_limit')
+    }
+    if (error === 'stacked_fold_cycle_path_collision') {
+      throw new StackedFoldReadNativeError('cycle_path_collision')
+    }
     throw new StackedFoldReadNativeError('native_failure')
   })
 }
@@ -1509,6 +1518,9 @@ export class StackedFoldReadNativeError extends Error {
   readonly reason:
     | 'cycle_nonclosing'
     | 'cycle_path_uncertified'
+    | 'cycle_path_unsupported'
+    | 'cycle_path_resource_limit'
+    | 'cycle_path_collision'
     | 'native_failure'
 
   constructor(reason: StackedFoldReadNativeError['reason']) {

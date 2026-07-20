@@ -89,6 +89,17 @@ test('validates authored cameras, arrows, focus points, and hand guides', () => 
   assert.equal(presentation.kind, 'ready')
   if (presentation.kind !== 'ready') return
   assert.deepEqual(presentation.steps[0]?.visual, authored.visual)
+  const regrip = {
+    ...authored,
+    visual: {
+      ...authored.visual,
+      hand_guides: [{ ...authored.visual.hand_guides[0]!, kind: 'regrip' as const }],
+    },
+  }
+  assert.equal(createInstructionTimelinePresentation(
+    { steps: [regrip] },
+    CURRENT_FINGERPRINT,
+  ).kind, 'ready')
 
   for (const visual of [
     { ...authored.visual, camera: { ...authored.visual.camera!, target: { x: 4, y: 3, z: 5 } } },

@@ -1083,7 +1083,9 @@ export function FoldPreview({
             ? 0x8e44ad
             : guide.kind === 'hold'
               ? 0x00796b
-              : 0xc2410c
+              : guide.kind === 'push'
+                ? 0xc2410c
+                : 0x1565c0
           const touch = new THREE.Mesh(
             new THREE.TorusGeometry(0.09, 0.018, 8, 20),
             new THREE.MeshBasicMaterial({ color, depthTest: false }),

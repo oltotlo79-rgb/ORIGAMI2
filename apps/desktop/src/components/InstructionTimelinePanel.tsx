@@ -1069,8 +1069,8 @@ const TEXT = Object.freeze({
   saveMetadata: localized('説明を保存', 'Save details'),
   visualLabel: localized('カメラ・矢印・注目箇所・手指ガイド（JSON）', 'Camera, arrows, focus points, and hand guides (JSON)'),
   visualHelp: localized(
-    'camera、arrows、focus_pointsに加え、hand_guidesへpinch/hold/pushとposition/direction/labelを指定します。',
-    'Set camera, arrows, focus_points, and hand_guides with pinch/hold/push plus position/direction/label.',
+    'camera、arrows、focus_pointsに加え、hand_guidesへpinch/hold/push/regripとposition/direction/labelを指定します。',
+    'Set camera, arrows, focus_points, and hand_guides with pinch/hold/push/regrip plus position/direction/label.',
   ),
   showIn3d: localized('3Dに表示', 'Show in 3D'),
   updateCurrentPose: localized(

@@ -357,6 +357,12 @@ export function StackedFoldPanel({
   }
 
   const ready = view.kind === 'ready' && view.response.transactionProposal.readyForAtomicApply
+  const certificateModelText = view.kind === 'ready'
+    ? describeCertificateModel(
+        view.response.continuousPath.continuousCertificateModelId,
+        locale,
+      )
+    : ''
   const failureText = view.kind === 'ready'
     ? view.response.transactionProposal.failureClasses.map((failure) =>
         failure === 'continuous_path_uncertified'
@@ -560,7 +566,7 @@ export function StackedFoldPanel({
             <div><dt>{t('終端衝突', 'Endpoint collision')}</dt><dd>{view.response.endpointCollision.hasBlockingHold ? t('停止', 'Blocked') : t('なし', 'Clear')}</dd></div>
             <div><dt>{t('連続経路', 'Continuous path')}</dt><dd>{view.response.continuousPath.continuousClearanceCertified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('最初の停止確認角', 'First proven blocking sample')}</dt><dd>{view.response.continuousPath.firstSampledBlockingAngleDegrees === null ? t('なし', 'None') : `${view.response.continuousPath.firstSampledBlockingAngleDegrees}°`}</dd></div>
-            <div><dt>{t('経路証明model', 'Path certificate model')}</dt><dd>{view.response.continuousPath.continuousCertificateModelId ?? t('なし', 'None')}</dd></div>
+            <div><dt>{t('経路証明モデル', 'Path certificate model')}</dt><dd>{certificateModelText}</dd></div>
             <div><dt>{t('区間leaf数', 'Interval leaves')}</dt><dd>{view.response.continuousPath.intervalLeafCount}</dd></div>
             <div><dt>{t('区間pair work', 'Interval pair work')}</dt><dd>{view.response.continuousPath.intervalPairWork}</dd></div>
             <div><dt>{t('正厚候補', 'Positive-thickness candidates')}</dt><dd>{view.response.continuousPath.positiveEndpointCandidateCount} / {view.response.continuousPath.positiveEndpointCandidateLimit}</dd></div>
@@ -587,9 +593,9 @@ export function StackedFoldPanel({
                   <li key={`${edge.sourceFingerprintSha256}:${edge.targetFingerprintSha256}`}>
                     <strong>{t(`遷移 ${index + 1}`, `Transition ${index + 1}`)}</strong>
                     <dl>
-                      <div><dt>schedule</dt><dd>{edge.scheduleCertificateSha256}</dd></div>
-                      <div><dt>collision</dt><dd>{edge.collisionCertificateSha256}</dd></div>
-                      <div><dt>closure</dt><dd>{edge.closureCertificateSha256}</dd></div>
+                      <div><dt>{t('スケジュール証明', 'Schedule certificate')}</dt><dd>{edge.scheduleCertificateSha256}</dd></div>
+                      <div><dt>{t('衝突証明', 'Collision certificate')}</dt><dd>{edge.collisionCertificateSha256}</dd></div>
+                      <div><dt>{t('閉路証明', 'Closure certificate')}</dt><dd>{edge.closureCertificateSha256}</dd></div>
                     </dl>
                     {edge.hinges.map((hinge) => (
                       <button
@@ -680,7 +686,7 @@ export function LayerOrderViewer({
       {cells.map((cell, index) => <button type="button" role="listitem"
         aria-pressed={cell.cellKeySha256 === active.cellKeySha256}
         key={cell.cellKeySha256} onClick={() => onSelectCell(cell.cellKeySha256)}>
-        {t('cell', 'Cell')} {index + 1}
+        {t('セル', 'Cell')} {index + 1}
       </button>)}
     </div>
     <svg viewBox="0 0 240 180" role="img"
@@ -694,7 +700,10 @@ export function LayerOrderViewer({
           tabIndex={0} onClick={() => onSelectFace(face)}
           onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
           onFocus={() => onHoverFace(face)} onBlur={() => onHoverFace(null)}>
-          <title>{`${index === 0 ? 'back / bottom' : index === active.bottomToTopFaces.length - 1 ? 'front / top' : 'middle'}: ${face}`}</title>
+          <title>{t(
+            `${index === 0 ? '裏面・最下層' : index === active.bottomToTopFaces.length - 1 ? '表面・最上層' : '中間層'}、面 ${index + 1}`,
+            `${index === 0 ? 'Back, bottom' : index === active.bottomToTopFaces.length - 1 ? 'Front, top' : 'Middle layer'}, face ${index + 1}`,
+          )}</title>
         </polygon>
       })}
     </svg>
@@ -711,4 +720,23 @@ export function LayerOrderViewer({
       </li>)}
     </ol>
   </section>
+}
+
+function describeCertificateModel(
+  modelId: string | null,
+  locale: Locale,
+): string {
+  if (modelId === null) {
+    return selectLocalizedText(locale, { ja: 'なし', en: 'None' })
+  }
+  if (modelId.includes('positive_thickness')) {
+    return selectLocalizedText(locale, {
+      ja: '正厚の連続経路証明',
+      en: 'Positive-thickness continuous-path certificate',
+    })
+  }
+  return selectLocalizedText(locale, {
+    ja: '厚さゼロの連続経路証明',
+    en: 'Zero-thickness continuous-path certificate',
+  })
 }

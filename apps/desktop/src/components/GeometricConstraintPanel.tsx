@@ -193,7 +193,7 @@ export function GeometricConstraintPanel({
         <label className="field">
           X (mm)
           <input
-            aria-label="Solver X"
+            aria-label={localized(locale, '制約ソルバー X座標', 'Constraint solver X coordinate')}
             inputMode="decimal"
             value={solveX}
             placeholder={selectedVertexPosition?.x.toString() ?? ''}
@@ -206,7 +206,7 @@ export function GeometricConstraintPanel({
         <label className="field">
           Y (mm)
           <input
-            aria-label="Solver Y"
+            aria-label={localized(locale, '制約ソルバー Y座標', 'Constraint solver Y coordinate')}
             inputMode="decimal"
             value={solveY}
             placeholder={selectedVertexPosition?.y.toString() ?? ''}

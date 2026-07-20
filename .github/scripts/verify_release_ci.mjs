@@ -175,6 +175,30 @@ if (!Number.isSafeInteger(artifacts.total_count) || artifacts.total_count < 1 ||
 }
 const reviewArtifacts = artifacts.artifacts.filter(({ name }) => name === 'rustsec-warning-review')
 if (reviewArtifacts.length !== 1) throw new Error('RustSec review artifact set is incomplete or ambiguous')
+const expectedArtifactNames = [
+  `ORIGAMI2-macos-app-${run.id}`,
+  `ORIGAMI2-windows-nsis-${run.id}`,
+  'rustsec-warning-review',
+  'sample-viewer-runtime-log',
+]
+const admittedArtifactNames = artifacts.artifacts.map((candidate) => {
+  const candidateCreatedAt = Date.parse(candidate.created_at)
+  const candidateExpiresAt = Date.parse(candidate.expires_at)
+  if (
+    typeof candidate.name !== 'string'
+    || !Number.isSafeInteger(candidate.id) || candidate.id < 1
+    || candidate.expired !== false
+    || !/^sha256:[0-9a-f]{64}$/u.test(candidate.digest ?? '')
+    || !Number.isSafeInteger(candidate.size_in_bytes) || candidate.size_in_bytes < 1 || candidate.size_in_bytes > 2_147_483_648
+    || candidate.workflow_run?.id !== run.id || candidate.workflow_run?.head_sha !== commit
+    || !Number.isFinite(candidateCreatedAt) || !Number.isFinite(candidateExpiresAt)
+    || candidateCreatedAt > Date.now() + 300_000 || candidateExpiresAt <= Date.now()
+    || candidateExpiresAt - candidateCreatedAt < 6 * 86_400_000
+    || candidateExpiresAt - candidateCreatedAt > 8 * 86_400_000
+  ) throw new Error('CI artifact identity or retention is invalid')
+  return candidate.name
+}).sort()
+if (admittedArtifactNames.join('\n') !== expectedArtifactNames.join('\n')) throw new Error('CI artifact names are incomplete, duplicated, or unexpected')
 const artifact = reviewArtifacts[0]
 const createdAt = Date.parse(artifact.created_at)
 const expiresAt = Date.parse(artifact.expires_at)

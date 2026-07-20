@@ -1345,10 +1345,23 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       created_at: createdAt, expires_at: expiresAt,
       workflow_run: { id: 42, head_sha: commit },
     }
-    writeFileSync(artifactsPath, JSON.stringify({
-      total_count: 1,
-      artifacts: [artifactRecord],
+    const otherArtifacts = [
+      { id: 8, name: 'ORIGAMI2-macos-app-42' },
+      { id: 9, name: 'ORIGAMI2-windows-nsis-42' },
+      { id: 10, name: 'sample-viewer-runtime-log' },
+    ].map((entry) => ({
+      ...entry, expired: false, size_in_bytes: 1, digest: `sha256:${'a'.repeat(64)}`,
+      created_at: createdAt, expires_at: expiresAt,
+      workflow_run: { id: 42, head_sha: commit },
     }))
+    const writeArtifacts = (review = artifactRecord, additional = []) => writeFileSync(
+      artifactsPath,
+      JSON.stringify({
+        total_count: 1 + otherArtifacts.length + additional.length,
+        artifacts: [review, ...otherArtifacts, ...additional],
+      }),
+    )
+    writeArtifacts()
     assert.deepEqual(JSON.parse(verify()), {
       schema: 'origami2.ci-check-evidence.v1',
       sourceCommit: commit,
@@ -1373,24 +1386,31 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
     surplusDeclared.writeUInt16LE(2, surplusDeclared.length - 12)
     const surplusDigest = createHash('sha256').update(surplusDeclared).digest('hex')
     writeFileSync(artifactArchivePath, surplusDeclared)
-    writeFileSync(artifactsPath, JSON.stringify({ total_count: 1, artifacts: [{
+    writeArtifacts({
       ...artifactRecord, size_in_bytes: surplusDeclared.length, digest: `sha256:${surplusDigest}`,
-    }] }))
+    })
     assert.throws(verify, /ZIP entry set/u)
     const staleArchive = singleEntryZip('rustsec-warning-review.json', Buffer.from('{}\n'))
     const staleDigest = createHash('sha256').update(staleArchive).digest('hex')
     writeFileSync(artifactArchivePath, staleArchive)
-    writeFileSync(artifactsPath, JSON.stringify({ total_count: 1, artifacts: [{
+    writeArtifacts({
       ...artifactRecord, size_in_bytes: staleArchive.length, digest: `sha256:${staleDigest}`,
-    }] }))
+    })
     assert.throws(verify, /non-canonical or stale/u)
     writeFileSync(artifactArchivePath, artifactBytes)
-    writeFileSync(artifactsPath, JSON.stringify({
-      total_count: 1,
-      artifacts: [{ ...artifactRecord, expired: true }],
-    }))
+    writeArtifacts({ ...artifactRecord, expired: true })
     assert.throws(verify, /identity or retention/u)
-    writeFileSync(artifactsPath, JSON.stringify({ total_count: 1, artifacts: [artifactRecord] }))
+    writeArtifacts(artifactRecord, [{
+      ...otherArtifacts[0], id: 11, name: 'unknown-artifact',
+    }])
+    assert.throws(verify, /incomplete, duplicated, or unexpected/u)
+    writeArtifacts(artifactRecord, [{ ...otherArtifacts[0], id: 11 }])
+    assert.throws(verify, /incomplete, duplicated, or unexpected/u)
+    otherArtifacts[0].expired = true
+    writeArtifacts()
+    assert.throws(verify, /identity or retention/u)
+    otherArtifacts[0].expired = false
+    writeArtifacts()
     writeFileSync(checksPath, JSON.stringify({
       total_count: requiredChecks.length - 1,
       check_runs: requiredChecks.slice(1).map((name) => check(name)),

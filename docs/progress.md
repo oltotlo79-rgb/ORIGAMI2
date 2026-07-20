@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約46.7%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約46.8%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.69%に対し、正厚GLBでも表cap・裏cap・side wallを別primitive・materialへ完全分類し、表裏textureをlosslessに埋め込む利用者経路を接続したため、「入出力・互換性」を90%から91%へ更新した。差分は0.05ポイント（全体比率5% × 1ポイント）で、46.74%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、面間union・印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、一般姿勢のnative連続経路停止、専用の層順3D viewer、SIM-010の原子的折り重ね、一般経路探索、FOLDの3D・複数frameも未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.74%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.74%に対し、binary64 exact一致する共面隣接faceをweldし内部wallを除いたwatertight solidへ統合する利用者経路を接続したため、「入出力・互換性」を91%から92%へ更新した。差分は0.05ポイント（全体比率5% × 1ポイント）で、46.79%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、非共面・hingeを含む一般面間union、印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、一般姿勢のnative連続経路停止、専用の層順3D viewer、SIM-010の原子的折り重ね、一般経路探索、FOLD 3D複数frameの利用者経路も未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.79%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,13 +19,14 @@
 | 3D折り・紙厚・衝突 | 17% | 56% | 9.52% | 木構造多ヒンジの姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、切断後pieceの同一sheet origin、境界間Cut、closed loop、open/branched seam、穴付き静的3D表示を接続。正厚三角柱の完全分類、native連続停止、専用層順3D表示、折り重ね、一般経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 91% | 4.55% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色・texture、面別closed solid、独立reader 3種の自動受入、instruction timeline animation、project PNG/JPEG表裏texture利用者経路も実装。FOLDの3D・複数frame、面間union、GUI 3Dアプリでの実機受入を残す |
+| 入出力・互換性 | 5% | 92% | 4.60% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色・texture、共面隣接faceのwatertight union、独立reader 3種の自動受入、instruction timeline animation、project PNG/JPEG表裏texture利用者経路も実装。FOLD 3D複数frameの利用者経路、一般面間union、GUI 3Dアプリ実機受入を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **46.74%** | — |
+| **合計** | **100%** | — | **46.79%** | — |
 
 ## 完了
 
+- IO-008の正厚meshで狭域face unionを接続した。position・normal・UVがbinary64 exact一致する共面隣接faceだけをweldし、共有edgeをtriangle incidence 2として内部wall生成から除外する。extrusion後は全幾何edgeのincidenceがexactly 2であるwatertight性を検証し、重複coincident triangleはfail-closed、非共面・normal違いは従来どおり面別solidへ保つ。隣接2面のside 8・total 12、manifold、独立STL、正厚GLB E2E、frontend buildとUI回帰が成功した。「入出力・互換性」を92%、全体を46.79%（表示46.8%）へ更新した
 - IO-008のFOLD 1.2 3D複数frame内部previewを追加した。既存2D importerと分離し、最大256の`file_frames`、file/frame `vertices_coords`のfinite 3要素、`frame_parent`範囲・自己参照・cycle、`frame_inherit`解決、byte・vertex上限、spec 1.2以下、signed zeroをstrictに検証する。preview metadataと選択結果はsource SHA-256・frame index・解決済み3D座標へ一体化する。FOLD座標だけではnative hinge/model identityを証明できないためproject・applied pose・timeline authorityはfalse固定で、利用者UIも未接続である。`ori-formats` 272件が成功し、完成率は変更していない
 - IO-008の正厚GLBへ表裏textureを接続した。extrusionの全triangleをFrontCap・BackCap・SideWallへ1対1で完全分類し、3 primitive・3 materialへ分離する。表裏は独立UVと認証済みPNG/JPEG、sideはtexture/TEXCOORDなしで表裏RGBA平均を使う。片側textureだけは意味を推測せず拒否し、無textureの既存経路を維持する。独立`gltf` readerとdesktop E2Eで3 primitive/material、2 image、表裏TEXCOORD、side非textureを確認した。「入出力・互換性」を91%、全体を46.74%（表示46.7%）へ更新した
 - SIM-010の非180度endpoint層順を平行offset面と同一support planeへ拡張した。target polygonをcanonical dominant-axis共通2D frameへ投影し、bounded convex clippingとexact orientationで実overlap cellを生成する。平行offsetはplane separationからbottom-to-topを証明し、同一support planeはlineageでsourceへ戻して認証済みface-pair orderが一意な場合だけ継承する。同一source descendant、順序欠損、非convex、丸めが必要な交点、near曖昧、正厚、endpointのpenetrating/indeterminateはfail-closedにする。`ori-core` 273件とdesktop全target checkが成功した。read-onlyでmutation authorityは付与せず、完成率は変更していない

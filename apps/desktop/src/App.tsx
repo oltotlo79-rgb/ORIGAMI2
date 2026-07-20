@@ -22,6 +22,7 @@ import { CreaseExportDialog } from './components/CreaseExportDialog'
 import { CreationDimensionExpressionSummary } from './components/CreationDimensionExpressionSummary'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
+import { Fold3dFramesLauncher } from './components/Fold3dFramesLauncher'
 import { FoldPreview } from './components/FoldPreview'
 import { FoldTechniqueEditorDialog } from './components/FoldTechniqueEditorDialog'
 import { FoldTechniqueTimelinePreviewDialog } from './components/FoldTechniqueTimelinePreviewDialog'
@@ -5123,6 +5124,9 @@ function App() {
               ? text({ ja: '解析中…', en: 'Analyzing…' })
               : text({ ja: 'SVG取込', en: 'Import SVG' })}
           </button>
+          <Fold3dFramesLauncher
+            disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
+          />
           <button
             ref={creaseExportButtonRef}
             type="button"

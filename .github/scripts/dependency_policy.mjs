@@ -62,6 +62,14 @@ export function buildDependencyPolicy() {
       throw new Error(`npm dependency source is not allowed: ${path}`)
     }
   }
+  const thirdPartyNotices = npmPackages.map(([path, pkg]) => ({
+    package: path.replace(/^node_modules\//u, ''),
+    version: pkg.version,
+    license: pkg.license,
+  })).sort((left, right) => left.package.localeCompare(right.package))
+  if (thirdPartyNotices.some((notice) => (
+    !notice.package || typeof notice.version !== 'string' || !notice.version
+  ))) throw new Error('npm third-party notice inventory is incomplete')
 
   return {
     schema: 'origami2.dependency-policy.v1',
@@ -73,6 +81,12 @@ export function buildDependencyPolicy() {
     npmPackages: npmPackages.length,
     npmIntegrity: 'sha512-required',
     npmLicenses: [...new Set(npmPackages.map(([, pkg]) => pkg.license))].sort(),
+    licenseDatabase: {
+      schema: 'origami2.lockfile-license-db.v1',
+      source: 'apps/desktop/package-lock.json',
+      sha256: digest(packageLockPath),
+    },
+    thirdPartyNotices,
     cargoSources: 'registry-checksum-required;git-forbidden',
     vulnerabilityAssessment: {
       status: 'ci-gated',

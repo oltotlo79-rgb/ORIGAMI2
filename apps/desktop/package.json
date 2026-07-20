@@ -12,6 +12,7 @@
     "test:snap": "node --test \"tests/*.test.ts\"",
     "test:gltf-validator": "node scripts/validate-generated-glb.mjs",
     "test:gltf-sample-viewer": "node scripts/sample-viewer-runtime-e2e.mjs",
+    "test:a11y-browser": "node scripts/accessibility-browser-smoke.mjs",
     "test:blender": "node scripts/run-blender-acceptance.mjs",
     "test:prusaslicer": "node scripts/run-prusaslicer-acceptance.mjs",
     "preview": "vite preview",
@@ -27,6 +28,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",

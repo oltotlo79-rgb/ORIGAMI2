@@ -82,6 +82,35 @@ test('all workflow actions are immutable SHA-pinned with bounded release jobs', 
   assert.doesNotMatch(build, /contents: write|id-token: write|attestations: write/u)
 })
 
+test('all direct and nested action runtimes match the audited Node.js 24 inventory', () => {
+  const workflowNames = ['ci.yml', 'release.yml', 'release-windows.yml']
+  const used = new Set()
+  for (const name of workflowNames) {
+    const workflow = readFileSync(join(root, '.github/workflows', name), 'utf8')
+    for (const match of workflow.matchAll(/uses:\s*([^\s@]+@[0-9a-f]{40})/gu)) {
+      used.add(match[1])
+    }
+  }
+  const contract = JSON.parse(readFileSync(
+    join(root, '.github/action-runtime-contract.json'),
+    'utf8',
+  ))
+  assert.equal(contract.schema, 'origami2.github-action-runtime-contract.v1')
+  assert.deepEqual([...used].sort(), Object.keys(contract.direct).sort())
+  for (const [reference, runtime] of [
+    ...Object.entries(contract.direct),
+    ...Object.entries(contract.nested),
+  ]) {
+    assert.match(reference, /@[0-9a-f]{40}$/u)
+    assert.ok(runtime === 'node24' || runtime === 'composite')
+    assert.notEqual(runtime, 'node20')
+  }
+  assert.equal(
+    contract.nested['actions/attest@daf44fb950173508f38bd2406030372c1d1162b1'],
+    'node24',
+  )
+})
+
 test('publication verifies current-run artifact archive digests before extraction', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const verifier = join(root, '.github/scripts/verify_workflow_artifact_metadata.mjs')

@@ -78,6 +78,22 @@ impl FaceId {
     }
 }
 
+impl VertexId {
+    /// Derives a stable vertex ID from a project namespace and canonical name.
+    #[must_use]
+    pub fn derive_v5(namespace: ProjectId, name: &[u8]) -> Self {
+        Self(Uuid::new_v5(&namespace.0, name))
+    }
+}
+
+impl EdgeId {
+    /// Derives a stable edge ID from a project namespace and canonical name.
+    #[must_use]
+    pub fn derive_v5(namespace: ProjectId, name: &[u8]) -> Self {
+        Self(Uuid::new_v5(&namespace.0, name))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point2 {
     pub x: f64,

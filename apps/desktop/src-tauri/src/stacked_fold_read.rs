@@ -257,6 +257,8 @@ pub(super) async fn propose_current_stacked_fold_read(
             })
             .collect::<Vec<_>>();
         let topology = build_stacked_fold_topology_v1(
+            binding.project_id(),
+            binding.source_revision(),
             &pattern,
             &paper,
             &expected_creases,

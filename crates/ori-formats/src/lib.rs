@@ -123,6 +123,8 @@ pub const MAX_PROJECT_JSON_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_PROJECT_TEXTURE_ASSETS: usize = 64;
 pub const MAX_PROJECT_TEXTURE_ASSET_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_PROJECT_REFERENCE_MODEL_ASSETS: usize = 8;
+pub const MAX_PROJECT_REFERENCE_MODEL_ASSET_TOTAL_BYTES: usize = 24 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProjectTextureMediaTypeV1 {
@@ -137,6 +139,13 @@ pub enum ProjectTextureMediaTypeV1 {
 pub struct ProjectTextureAssetV1 {
     pub id: AssetId,
     pub media_type: ProjectTextureMediaTypeV1,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectReferenceModelAssetV1 {
+    pub id: AssetId,
     pub bytes: Vec<u8>,
 }
 
@@ -326,6 +335,9 @@ pub struct ProjectDocument {
     /// Bounded project-local texture payloads authenticated by `AssetId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texture_assets: Vec<ProjectTextureAssetV1>,
+    /// Passive GLB 2.0 assets used only as visual design references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_model_assets: Vec<ProjectReferenceModelAssetV1>,
 }
 
 impl ProjectDocument {
@@ -349,6 +361,7 @@ impl ProjectDocument {
             element_metadata: ori_domain::ElementMetadataDocumentV1::default(),
             beginner_design_profile: ori_domain::BeginnerDesignProfileV1::default(),
             texture_assets: Vec::new(),
+            reference_model_assets: Vec::new(),
         }
     }
 }
@@ -365,6 +378,8 @@ pub enum FormatError {
     InvalidElementMetadata,
     #[error("project texture asset registry is invalid")]
     InvalidTextureAssets,
+    #[error("project reference-model asset registry is invalid")]
+    InvalidReferenceModelAssets,
     #[error("project memo is invalid")]
     InvalidProjectMemo,
     #[error("project thumbnail is invalid")]
@@ -632,6 +647,7 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
     ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
         .map_err(|_| FormatError::InvalidElementMetadata)?;
     validate_texture_assets(document)?;
+    validate_reference_model_assets(document)?;
     if document.format_version != CURRENT_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion {
             found: document.format_version,
@@ -688,6 +704,30 @@ fn validate_texture_assets(document: &ProjectDocument) -> Result<(), FormatError
     // entry may restore a former paper texture on undo/redo.
     if total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES || !referenced.is_subset(&ids) {
         return Err(FormatError::InvalidTextureAssets);
+    }
+    Ok(())
+}
+
+fn validate_reference_model_assets(document: &ProjectDocument) -> Result<(), FormatError> {
+    if document.reference_model_assets.len() > MAX_PROJECT_REFERENCE_MODEL_ASSETS {
+        return Err(FormatError::InvalidReferenceModelAssets);
+    }
+    let mut ids = BTreeSet::new();
+    let mut total = 0usize;
+    for asset in &document.reference_model_assets {
+        total = total
+            .checked_add(asset.bytes.len())
+            .ok_or(FormatError::InvalidReferenceModelAssets)?;
+        if asset.id.canonical_bytes() == [0; 16]
+            || !ids.insert(asset.id.canonical_bytes())
+            || validate_reference_glb_v1(&asset.bytes).is_err()
+        {
+            return Err(FormatError::InvalidReferenceModelAssets);
+        }
+    }
+    // Bounded unreferenced assets remain available to undo/redo snapshots.
+    if total > MAX_PROJECT_REFERENCE_MODEL_ASSET_TOTAL_BYTES {
+        return Err(FormatError::InvalidReferenceModelAssets);
     }
     Ok(())
 }
@@ -2156,6 +2196,44 @@ mod tests {
         document.texture_assets.pop();
         document.paper.front.texture_asset = None;
         assert!(write_project_json(&document).is_ok());
+    }
+
+    #[test]
+    fn reference_model_registry_round_trips_and_rejects_duplicates() {
+        let mut json = br#"{"asset":{"version":"2.0"}}"#.to_vec();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let length = 20 + json.len();
+        let mut glb = Vec::with_capacity(length);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        glb.extend_from_slice(&(length as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4e4f_534a_u32.to_le_bytes());
+        glb.extend_from_slice(&json);
+
+        let mut document = sample_document();
+        document
+            .reference_model_assets
+            .push(ProjectReferenceModelAssetV1 {
+                id: AssetId::new(),
+                bytes: glb,
+            });
+        let bytes = write_project_json(&document).expect("write reference-model asset");
+        let restored = read_project_json(&bytes).expect("read reference-model asset");
+        assert_eq!(
+            restored.reference_model_assets,
+            document.reference_model_assets
+        );
+
+        document
+            .reference_model_assets
+            .push(document.reference_model_assets[0].clone());
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidReferenceModelAssets)
+        ));
     }
 
     #[test]

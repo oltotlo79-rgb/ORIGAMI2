@@ -5,7 +5,10 @@
 //! "necessary conditions satisfied", never as proof that the whole crease
 //! pattern is flat-foldable.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 use num_bigint::{BigInt, Sign};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
@@ -22,16 +25,20 @@ use crate::{
 /// product. Maekawa counting remains available above this bound.
 pub const MAX_EXACT_FOLD_DEGREE: usize = 256;
 pub const ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1: &str =
-    "assigned_single_vertex_degree_two_base_v1";
+    "assigned_single_vertex_unique_bll_crimp_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssignedLocalSufficiencyLimitsV1 {
     pub max_vertices: usize,
+    pub max_reductions: usize,
 }
 
 impl Default for AssignedLocalSufficiencyLimitsV1 {
     fn default() -> Self {
-        Self { max_vertices: 4096 }
+        Self {
+            max_vertices: 4096,
+            max_reductions: 128,
+        }
     }
 }
 
@@ -104,12 +111,153 @@ pub fn prove_assigned_local_sufficiency_v1(
             reduction_steps: 0,
             reductions: Vec::new(),
         }
+    } else if limits.max_reductions == 0 {
+        AssignedLocalSufficiencyV1::Indeterminate {
+            vertex,
+            reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+        }
+    } else if let Some(reductions) =
+        prove_unique_bll_crimp_sequence(paper, pattern, vertex, limits.max_reductions)
+    {
+        AssignedLocalSufficiencyV1::Proven {
+            model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
+            vertex,
+            reduction_steps: reductions.len(),
+            reductions,
+        }
     } else {
         AssignedLocalSufficiencyV1::Indeterminate {
             vertex,
             reason: AssignedLocalSufficiencyReasonV1::ReductionTheoremNotApplicable,
         }
     }
+}
+
+fn prove_unique_bll_crimp_sequence(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    vertex: VertexId,
+    max_reductions: usize,
+) -> Option<Vec<AssignedCrimpReductionV1>> {
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    let embedding =
+        build_admitted_embedding_with_checkpoint(paper, pattern, &mut checkpoint).ok()?;
+    let positions = pattern
+        .vertices
+        .iter()
+        .map(|item| (item.id, item.position))
+        .collect::<HashMap<_, _>>();
+    let rotation = embedding
+        .rotations
+        .iter()
+        .find(|item| item.vertex == vertex)?;
+    let fold = rotation
+        .outgoing
+        .iter()
+        .map(|index| embedding.half_edges.get(index.0))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .collect::<Vec<_>>();
+    if fold.len() < 4 || !fold.len().is_multiple_of(2) {
+        return None;
+    }
+    let origin = *positions.get(&vertex)?;
+    let rays = fold
+        .iter()
+        .map(|edge| ExactComplex::from_ray(origin, *positions.get(&edge.destination)?))
+        .collect::<Option<Vec<_>>>()?;
+    let mut sectors = (0..rays.len())
+        .map(|index| {
+            Some(
+                rays[index]
+                    .clone()
+                    .conjugate()
+                    .multiply(rays[(index + 1) % rays.len()].clone()),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut creases = fold
+        .iter()
+        .map(|edge| (edge.edge, edge.kind))
+        .collect::<Vec<_>>();
+    let mut reductions = Vec::new();
+    while creases.len() > 2 {
+        if reductions.len() >= max_reductions {
+            return None;
+        }
+        let candidates = (0..sectors.len())
+            .filter(|&index| {
+                let previous = (index + sectors.len() - 1) % sectors.len();
+                let next = (index + 1) % sectors.len();
+                exact_angle_cmp(&sectors[index], &sectors[previous]) == Some(Ordering::Less)
+                    && exact_angle_cmp(&sectors[index], &sectors[next]) == Some(Ordering::Less)
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            return None;
+        }
+        let index = candidates[0];
+        let next_crease = (index + 1) % creases.len();
+        if creases[index].1 == creases[next_crease].1 {
+            return None;
+        }
+        reductions.push(AssignedCrimpReductionV1 {
+            first_crease: creases[index].0,
+            second_crease: creases[next_crease].0,
+        });
+        let previous_sector = (index + sectors.len() - 1) % sectors.len();
+        let next_sector = (index + 1) % sectors.len();
+        let merged = sectors[previous_sector]
+            .clone()
+            .multiply(sectors[index].clone().conjugate())
+            .multiply(sectors[next_sector].clone());
+        if merged.imag.sign() != Sign::Plus {
+            return None;
+        }
+        let remaining = creases.len() - 2;
+        creases = (0..remaining)
+            .map(|offset| creases[(index + 2 + offset) % (remaining + 2)])
+            .collect();
+        let old_len = sectors.len();
+        let mut next_sectors = (0..remaining.saturating_sub(1))
+            .map(|offset| sectors[(index + 2 + offset) % old_len].clone())
+            .collect::<Vec<_>>();
+        next_sectors.push(merged);
+        sectors = next_sectors;
+    }
+    (creases.len() == 2
+        && creases[0].1 == creases[1].1
+        && exact_angle_cmp(&sectors[0], &sectors[1]) == Some(Ordering::Equal))
+    .then_some(reductions)
+}
+
+fn exact_angle_cmp(first: &ExactComplex, second: &ExactComplex) -> Option<Ordering> {
+    if first.imag.sign() != Sign::Plus || second.imag.sign() != Sign::Plus {
+        return None;
+    }
+    let first_sign = first.real.sign();
+    let second_sign = second.real.sign();
+    let rank = |sign| match sign {
+        Sign::Plus => 0,
+        Sign::NoSign => 1,
+        Sign::Minus => 2,
+    };
+    if rank(first_sign) != rank(second_sign) {
+        return Some(rank(first_sign).cmp(&rank(second_sign)));
+    }
+    if first_sign == Sign::NoSign {
+        return Some(Ordering::Equal);
+    }
+    let first_norm = &first.real * &first.real + &first.imag * &first.imag;
+    let second_norm = &second.real * &second.real + &second.imag * &second.imag;
+    let comparison =
+        (&first.real * &first.real * second_norm).cmp(&(&second.real * &second.real * first_norm));
+    Some(if first_sign == Sign::Plus {
+        comparison.reverse()
+    } else {
+        comparison
+    })
 }
 
 /// Mathematical model covered by this first local validator.
@@ -490,6 +638,13 @@ impl ExactComplex {
         let real = &self.real * &other.real - &self.imag * &other.imag;
         let imag = self.real * other.imag + self.imag * other.real;
         Self { real, imag }.power_of_two_primitive()
+    }
+
+    fn conjugate(self) -> Self {
+        Self {
+            real: self.real,
+            imag: -self.imag,
+        }
     }
 
     fn power_of_two_primitive(mut self) -> Self {
@@ -1201,10 +1356,109 @@ mod tests {
                 &terminal.paper,
                 &terminal.pattern,
                 terminal.center,
-                AssignedLocalSufficiencyLimitsV1 { max_vertices: 0 },
+                AssignedLocalSufficiencyLimitsV1 {
+                    max_vertices: 0,
+                    ..AssignedLocalSufficiencyLimitsV1::default()
+                },
             ),
             AssignedLocalSufficiencyV1::Indeterminate {
                 vertex: terminal.center,
+                reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+            }
+        );
+    }
+
+    #[test]
+    fn unique_exact_bll_crimp_emits_a_canonical_witness() {
+        let boundary_positions = [
+            (-10.0, -10.0),
+            (-5.0, -10.0),
+            (10.0, -10.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (-10.0, 10.0),
+        ];
+        let mut vertices = boundary_positions
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| vertex(0x600 + index as u64, x, y))
+            .collect::<Vec<_>>();
+        let center = vertex(0x700, 0.0, 0.0);
+        let center_id = center.id;
+        let mut edges = (0..vertices.len())
+            .map(|index| {
+                edge(
+                    0x800 + index as u64,
+                    &vertices[index],
+                    &vertices[(index + 1) % vertices.len()],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (offset, (endpoint, kind)) in [
+            (3, EdgeKind::Mountain),
+            (4, EdgeKind::Valley),
+            (6, EdgeKind::Mountain),
+            (1, EdgeKind::Mountain),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            edges.push(edge(
+                0x900 + offset as u64,
+                &center,
+                &vertices[endpoint],
+                kind,
+            ));
+        }
+        let paper = Paper {
+            boundary_vertices: vertices.iter().map(|item| item.id).collect(),
+            ..Paper::default()
+        };
+        vertices.push(center);
+        let pattern = CreasePattern { vertices, edges };
+        let result = prove_assigned_local_sufficiency_v1(
+            &paper,
+            &pattern,
+            center_id,
+            AssignedLocalSufficiencyLimitsV1::default(),
+        );
+        assert!(
+            matches!(
+                &result,
+                AssignedLocalSufficiencyV1::Proven {
+                    reduction_steps: 1,
+                    ..
+                }
+            ),
+            "{result:?}"
+        );
+        let mut permuted = pattern.clone();
+        permuted.vertices.reverse();
+        permuted.edges.reverse();
+        assert_eq!(
+            prove_assigned_local_sufficiency_v1(
+                &paper,
+                &permuted,
+                center_id,
+                AssignedLocalSufficiencyLimitsV1::default(),
+            ),
+            result
+        );
+        assert_eq!(
+            prove_assigned_local_sufficiency_v1(
+                &paper,
+                &pattern,
+                center_id,
+                AssignedLocalSufficiencyLimitsV1 {
+                    max_reductions: 0,
+                    ..AssignedLocalSufficiencyLimitsV1::default()
+                },
+            ),
+            AssignedLocalSufficiencyV1::Indeterminate {
+                vertex: center_id,
                 reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
             }
         );

@@ -5,6 +5,7 @@ import {
   LOCAL_SUFFICIENCY_CERTIFICATE_MODEL,
   PROOF_SCOPE_DIAGNOSTICS_SCHEMA,
   PROOF_SCOPE_VISIBLE_VERTEX_LIMIT,
+  parseProofScopeDiagnosticsJson,
 } from '../src/lib/proofScopePresentation.ts'
 import { GLOBAL_FLAT_FOLDABILITY_MODEL_ID } from '../src/lib/globalFlatFoldability.ts'
 import type { AssignedLocalSufficiencySummaryResponseV1 } from '../src/lib/coreClient.ts'
@@ -57,6 +58,10 @@ test('global and local proof scopes remain separate and deterministic', () => {
   }, local)
   assert.equal(possible.diagnostics.schema, PROOF_SCOPE_DIAGNOSTICS_SCHEMA)
   assert.equal(possible.diagnostics.global.status, 'possible')
+  assert.equal(possible.diagnostics.global.layerOrderModel, 'facewise_layer_order_v1')
+  assert.equal(possible.diagnostics.global.layerCount, 3)
+  assert.equal(possible.diagnostics.global.maximumPly, 2)
+  assert.equal(possible.diagnostics.global.reason, null)
   assert.equal(possible.diagnostics.local.necessaryFailed, 1)
   assert.equal(possible.diagnostics.local.sufficientProven, 1)
   assert.equal(possible.diagnostics.local.indeterminate, 1)
@@ -104,10 +109,9 @@ test('possible impossible and unknown never derive from local sufficiency', () =
     }, 'unknown'],
   ] as const
   for (const [job, expected] of jobs) {
-    assert.equal(
-      createProofScopePresentation(job, local).diagnostics.global.status,
-      expected,
-    )
+    const global = createProofScopePresentation(job, local).diagnostics.global
+    assert.equal(global.status, expected)
+    if (expected === 'unknown') assert.equal(global.reason, 'proof_not_completed')
   }
   assert.equal(
     createProofScopePresentation(null, {
@@ -131,4 +135,24 @@ test('hostile global input fails closed and visible related vertices are bounded
   assert.equal(presentation.selectableVertices.length, PROOF_SCOPE_VISIBLE_VERTEX_LIMIT)
   assert.equal(presentation.hiddenVertexCount, 5)
   assert.doesNotMatch(presentation.diagnosticsJson, /alice|private|vertex-/u)
+})
+
+test('diagnostics export accepts only canonical bounded strict schema', () => {
+  const json = createProofScopePresentation(null, local).diagnosticsJson
+  assert.equal(parseProofScopeDiagnosticsJson(json), json)
+  const parsed = JSON.parse(json)
+  assert.equal(parseProofScopeDiagnosticsJson(JSON.stringify({
+    ...parsed,
+    projectId: 'private',
+  }, null, 2)), null)
+  assert.equal(parseProofScopeDiagnosticsJson(JSON.stringify({
+    ...parsed,
+    global: { ...parsed.global, faceCount: 2_049 },
+  }, null, 2)), null)
+  assert.equal(parseProofScopeDiagnosticsJson(JSON.stringify({
+    ...parsed,
+    global: { ...parsed.global, reason: 'C:\\private\\project.ori' },
+  }, null, 2)), null)
+  assert.equal(parseProofScopeDiagnosticsJson(`${json}\n`), null)
+  assert.equal(parseProofScopeDiagnosticsJson('x'.repeat(8_193)), null)
 })

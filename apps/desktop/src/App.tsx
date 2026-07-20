@@ -156,6 +156,7 @@ import {
   type AssignedLocalSufficiencySummaryResponseV1,
 } from './lib/coreClient'
 import { createAssignedLocalSufficiencySummaryCoordinator } from './lib/assignedLocalSufficiencySummaryCoordinator'
+import { createProofScopePresentation } from './lib/proofScopePresentation'
 import {
   isNativeProjectFolderAvailable,
   openProjectFolder,
@@ -3853,7 +3854,10 @@ function App() {
     setBeginnerCandidates(null)
   }
 
-  function confirmAndApplyBeginnerPlan(kind: 'diagonal_fold', expectedCandidateEdgeId: string) {
+  function confirmAndApplyBeginnerPlan(
+    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base',
+    expectedCandidateEdgeId: string,
+  ) {
     const current = latestSnapshotRef.current
     if (!current) return
     const confirmed = window.confirm(text({
@@ -7500,11 +7504,19 @@ function App() {
                   {beginnerCandidates.generation_status === 'ready' ? (
                     <div aria-label={text({ ja: '生成された展開図と手順の候補', en: 'Generated crease-pattern and instruction candidates' })}>
                       {beginnerCandidates.generated_plans.map((plan, index) => {
-                        const [start, end] = plan.crease_pattern.vertices
-                        const minX = Math.min(start.position.x, end.position.x)
-                        const minY = Math.min(start.position.y, end.position.y)
-                        const width = Math.max(Math.abs(end.position.x - start.position.x), 1)
-                        const height = Math.max(Math.abs(end.position.y - start.position.y), 1)
+                        const vertexById = new Map(
+                          plan.crease_pattern.vertices.map((vertex) => [vertex.id, vertex]),
+                        )
+                        const xValues = plan.crease_pattern.vertices.map((vertex) => vertex.position.x)
+                        const yValues = plan.crease_pattern.vertices.map((vertex) => vertex.position.y)
+                        const minX = Math.min(...xValues)
+                        const minY = Math.min(...yValues)
+                        const width = Math.max(Math.max(...xValues) - minX, 1)
+                        const height = Math.max(Math.max(...yValues) - minY, 1)
+                        const applicableKind = (
+                          plan.kind === 'diagonal_fold'
+                          || isBeginnerSymmetricTemplate(plan.kind)
+                        ) ? plan.kind : null
                         return (
                           <article key={plan.kind}>
                             <h4>
@@ -7517,20 +7529,31 @@ function App() {
                               role="img"
                               aria-label={text({ ja: '候補の展開図プレビュー', en: 'Candidate crease-pattern preview' })}
                             >
-                              <line
-                                x1={start.position.x}
-                                y1={start.position.y}
-                                x2={end.position.x}
-                                y2={end.position.y}
-                                stroke="currentColor"
-                                strokeWidth={Math.max(width, height) / 50}
-                                strokeDasharray={plan.crease_pattern.edges[0].kind === 'mountain' ? '4 2' : undefined}
-                              />
+                              {plan.crease_pattern.edges.map((edge) => {
+                                const start = vertexById.get(edge.start)!
+                                const end = vertexById.get(edge.end)!
+                                return (
+                                  <line
+                                    key={edge.id}
+                                    x1={start.position.x}
+                                    y1={start.position.y}
+                                    x2={end.position.x}
+                                    y2={end.position.y}
+                                    stroke="currentColor"
+                                    strokeWidth={Math.max(width, height) / 50}
+                                    strokeDasharray={edge.kind === 'mountain' ? '4 2' : undefined}
+                                  />
+                                )
+                              })}
                             </svg>
                             <ol aria-label={text({ ja: '候補の折り手順', en: 'Candidate folding instructions' })}>
                               {plan.instruction_codes.map((code) => (
                                 <li key={code}>
-                                  {code === 'book_fold_vertical'
+                                  {code === 'symmetric_four_leg_base'
+                                    ? text({ ja: '対称4本脚の基本線を中央から作成します。', en: 'Create the symmetric four-leg base from the shared center.' })
+                                    : code === 'symmetric_wing_base'
+                                      ? text({ ja: '左右対称の翼の基本線を中央から作成します。', en: 'Create the bilateral wing base from the shared center.' })
+                                      : code === 'book_fold_vertical'
                                     ? text({ ja: '縦の中心線で二つ折りします。', en: 'Fold in half on the vertical center line.' })
                                     : code === 'book_fold_horizontal'
                                       ? text({ ja: '横の中心線で二つ折りします。', en: 'Fold in half on the horizontal center line.' })
@@ -7582,17 +7605,17 @@ function App() {
                                 en: 'This is a read-only candidate. It does not become project authority without a separate review and apply action.',
                               })}
                             </p>
-                            {plan.kind === 'diagonal_fold' && (
+                            {applicableKind && (
                               <button
                                 type="button"
                                 onClick={() => confirmAndApplyBeginnerPlan(
-                                  'diagonal_fold',
+                                  applicableKind,
                                   plan.crease_pattern.edges[0].id,
                                 )}
                                 disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
                                 aria-label={text({
                                   ja: '対角折り候補を確認して適用',
-                                  en: 'Review and apply the diagonal-fold candidate',
+                                  en: 'Review and apply this bounded generated candidate',
                                 })}
                               >
                                 {text({ ja: 'この候補を確認して適用', en: 'Review and apply this candidate' })}
@@ -7608,7 +7631,17 @@ function App() {
                         ? text({ ja: '先に動物または昆虫の目標カテゴリを保存してください。', en: 'Save an animal or insect target category first.' })
                         : beginnerCandidates.generation_status === 'missing_required_parts'
                           ? text({ ja: '頭1個と胴体1個を目標部品として保存してください。', en: 'Save one head and one torso as required target parts.' })
-                          : beginnerCandidates.generation_status === 'missing_target_asset'
+                          : beginnerCandidates.generation_status === 'unsupported_animal_template'
+                            ? text({
+                              ja: '動物テンプレートには頭1・胴体1・脚4・棒状骨格・左右対称の4突起目標が必要です。',
+                              en: 'The animal template requires one head, one torso, four legs, a saved stick skeleton, and a bilateral four-part protrusion target.',
+                            })
+                            : beginnerCandidates.generation_status === 'unsupported_insect_template'
+                              ? text({
+                                ja: '昆虫テンプレートには頭1・胴体1・翼2・棒状骨格・左右対称の2突起目標が必要です。',
+                                en: 'The insect template requires one head, one torso, two wings, a saved stick skeleton, and a bilateral two-part protrusion target.',
+                              })
+                              : beginnerCandidates.generation_status === 'missing_target_asset'
                             ? text({ ja: '参照画像が削除または変更されています。別の配置画像を選択してください。', en: 'The reference image was removed or changed. Select another underlay image.' })
                         : beginnerCandidates.generation_status === 'unsupported_techniques'
                         ? text({ ja: '谷折りまたは山折りを許可してください。', en: 'Allow valley or mountain folds to generate plans.' })
@@ -8601,6 +8634,9 @@ function App() {
           )}
           <GlobalFlatFoldabilityPanel
             job={globalFlatFoldabilityJob}
+            localSummary={assignedLocalSummary}
+            selectedVertexId={selectedVertexId}
+            onSelectVertex={setSelectedVertexId}
             timeLimitSeconds={globalFlatFoldabilityTimeLimit}
             authority={nativeSnapshot ? {
               projectInstanceId: nativeSnapshot.project_instance_id,
@@ -9554,6 +9590,10 @@ function App() {
       <DiagnosticsDialog
         open={diagnosticsDialogOpen}
         onClose={closeDiagnosticsDialog}
+        proofScopeDiagnosticsJson={createProofScopePresentation(
+          globalFlatFoldabilityJob,
+          assignedLocalSummary,
+        ).diagnosticsJson}
       />
 
       <footer className="statusbar" inert={modalOpen}>
@@ -9618,6 +9658,17 @@ function App() {
       </footer>
     </main>
   )
+}
+
+function isBeginnerSymmetricTemplate(
+  kind:
+    | 'symmetric_four_leg_base'
+    | 'symmetric_wing_base'
+    | 'vertical_book_fold'
+    | 'horizontal_book_fold'
+    | 'diagonal_fold',
+): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' {
+  return kind === 'symmetric_four_leg_base' || kind === 'symmetric_wing_base'
 }
 
 function sameRecoveryCandidate(

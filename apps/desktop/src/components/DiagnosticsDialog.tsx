@@ -2,6 +2,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -12,6 +13,7 @@ import {
   type DiagnosticsSharePreview,
 } from '../lib/diagnosticsShare.ts'
 import { useLocale } from '../lib/i18n.ts'
+import { parseProofScopeDiagnosticsJson } from '../lib/proofScopePresentation.ts'
 
 type DiagnosticsNotice =
   | 'selected'
@@ -33,6 +35,7 @@ type DiagnosticsDialogState =
 type DiagnosticsDialogProps = Readonly<{
   open: boolean
   onClose: () => void
+  proofScopeDiagnosticsJson?: string | null
 }>
 
 const FOCUSABLE_SELECTOR = [
@@ -59,6 +62,9 @@ const DIAGNOSTICS_COPY = {
       '診断情報を準備できませんでした。アプリを再起動して、もう一度お試しください。',
     retry: '再試行',
     jsonLabel: '共有前に確認する診断JSON',
+    proofScopeLabel: '証明範囲JSON（手動コピー専用）',
+    proofScopeDisclosure: '全体判定certificateと局所summaryのmodel・version・件数・理由だけを含みます。座標、作品ID、UUID、時刻は含みません。',
+    selectProofScope: '証明範囲JSONをすべて選択',
     selectAll: '内容をすべて選択',
     saving: '保存中…',
     save: 'JSONファイルとして保存…',
@@ -84,6 +90,9 @@ const DIAGNOSTICS_COPY = {
       'Diagnostics could not be prepared. Restart the app and try again.',
     retry: 'Retry',
     jsonLabel: 'Diagnostics JSON to review before sharing',
+    proofScopeLabel: 'Proof coverage JSON (manual copy only)',
+    proofScopeDisclosure: 'Contains only certificate models, versions, counts, and allowlisted reasons. It excludes coordinates, project IDs, UUIDs, and timestamps.',
+    selectProofScope: 'Select all proof coverage JSON',
     selectAll: 'Select all contents',
     saving: 'Saving…',
     save: 'Save as JSON file…',
@@ -100,6 +109,7 @@ const DIAGNOSTICS_COPY = {
 export function DiagnosticsDialog({
   open,
   onClose,
+  proofScopeDiagnosticsJson = null,
 }: DiagnosticsDialogProps) {
   const locale = useLocale()
   const copy = DIAGNOSTICS_COPY[locale]
@@ -111,6 +121,11 @@ export function DiagnosticsDialog({
   const dialogRef = useRef<HTMLElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const jsonRef = useRef<HTMLTextAreaElement>(null)
+  const proofScopeJsonRef = useRef<HTMLTextAreaElement>(null)
+  const safeProofScopeJson = useMemo(
+    () => parseProofScopeDiagnosticsJson(proofScopeDiagnosticsJson),
+    [proofScopeDiagnosticsJson],
+  )
   const savingRef = useRef(false)
   const saving = state.kind === 'ready' && state.saving
   savingRef.current = saving
@@ -195,6 +210,13 @@ export function DiagnosticsDialog({
       ...state,
       notice: 'selected',
     })
+  }
+
+  const selectProofScope = () => {
+    if (state.kind !== 'ready' || safeProofScopeJson === null) return
+    proofScopeJsonRef.current?.focus()
+    proofScopeJsonRef.current?.select()
+    setState({ ...state, notice: 'selected' })
   }
 
   const savePreview = async () => {
@@ -305,6 +327,30 @@ export function DiagnosticsDialog({
                   spellCheck={false}
                 />
               </label>
+              {safeProofScopeJson !== null && (
+                <section className="diagnostics-proof-scope">
+                  <p>{copy.proofScopeDisclosure}</p>
+                  <label className="diagnostics-json-label">
+                    <span>{copy.proofScopeLabel}</span>
+                    <textarea
+                      ref={proofScopeJsonRef}
+                      className="diagnostics-json"
+                      readOnly
+                      value={safeProofScopeJson}
+                      aria-label={copy.proofScopeLabel}
+                      wrap="off"
+                      spellCheck={false}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={state.saving}
+                    onClick={selectProofScope}
+                  >
+                    {copy.selectProofScope}
+                  </button>
+                </section>
+              )}
               <p
                 className={state.notice === 'save_failed'
                   ? 'dialog-error'

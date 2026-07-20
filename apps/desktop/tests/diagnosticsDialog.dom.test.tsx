@@ -14,6 +14,7 @@ import {
   saveDiagnosticsSharePreview,
 } from '../src/lib/diagnosticsShare.ts'
 import { localeStore } from '../src/lib/i18n.ts'
+import { createProofScopePresentation } from '../src/lib/proofScopePresentation.ts'
 
 vi.mock('../src/lib/diagnosticsShare.ts', () => ({
   prepareDiagnosticsSharePreview: vi.fn(),
@@ -87,6 +88,37 @@ afterEach(() => {
 })
 
 describe('DiagnosticsDialog localization', () => {
+  it('offers strict proof coverage JSON through manual selection only', async () => {
+    localeStore.initialize()
+    act(() => {
+      localeStore.setLocale('en')
+    })
+    const proofScopeJson = createProofScopePresentation(null, null).diagnosticsJson
+    render(
+      <DiagnosticsDialog
+        open
+        onClose={vi.fn()}
+        proofScopeDiagnosticsJson={proofScopeJson}
+      />,
+    )
+    const proof = await screen.findByLabelText(
+      'Proof coverage JSON (manual copy only)',
+    ) as HTMLTextAreaElement
+    expect(proof.readOnly).toBe(true)
+    expect(proof.value).toBe(proofScopeJson)
+    expect(document.body.textContent).toContain(
+      'It excludes coordinates, project IDs, UUIDs, and timestamps.',
+    )
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Select all proof coverage JSON',
+    }))
+    expect(document.activeElement).toBe(proof)
+    expect(screen.getByRole('status').textContent).toContain(
+      'All contents are selected.',
+    )
+    expect(vi.mocked(saveDiagnosticsSharePreview)).not.toHaveBeenCalled()
+  })
+
   it('keeps Japanese as the default and translates ready-state controls live', async () => {
     render(<DiagnosticsDialog open onClose={vi.fn()} />)
 

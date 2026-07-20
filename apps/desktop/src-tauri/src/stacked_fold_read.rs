@@ -610,4 +610,83 @@ mod tests {
         assert!(encoded.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert!(!encoded.bytes().any(|byte| byte.is_ascii_uppercase()));
     }
+
+    #[test]
+    fn request_schema_rejects_missing_malformed_and_open_enum_values() {
+        let valid = serde_json::json!({
+            "expectedProjectInstanceId": ProjectId::new(),
+            "expectedProjectId": ProjectId::new(),
+            "expectedRevision": 7,
+            "first": [10.0, 0.0, 0.0],
+            "second": [10.0, 0.0, -20.0],
+            "fixedSide": "left",
+            "rotationDirection": "positive",
+            "requestedAngleDegrees": 90.0
+        });
+
+        for field in [
+            "expectedProjectInstanceId",
+            "expectedProjectId",
+            "expectedRevision",
+            "first",
+            "second",
+            "fixedSide",
+            "rotationDirection",
+            "requestedAngleDegrees",
+        ] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<StackedFoldReadRequest>(missing).is_err(),
+                "missing field {field} must be rejected"
+            );
+        }
+
+        for malformed in [
+            ("first", serde_json::json!([10.0, 0.0])),
+            ("second", serde_json::json!([10.0, 0.0, -20.0, 1.0])),
+            ("fixedSide", serde_json::json!("center")),
+            ("fixedSide", serde_json::json!("Left")),
+            ("rotationDirection", serde_json::json!("clockwise")),
+            ("rotationDirection", serde_json::json!("Positive")),
+        ] {
+            let mut request = valid.clone();
+            request[malformed.0] = malformed.1;
+            assert!(
+                serde_json::from_value::<StackedFoldReadRequest>(request).is_err(),
+                "malformed field {} must be rejected",
+                malformed.0
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_validation_rejects_degenerate_line_and_invalid_angles() {
+        let point = Point3::new(1.0, 2.0, 3.0).unwrap();
+        assert!(
+            StackedFoldLinearCandidateV1::new(
+                point,
+                point,
+                StackedFoldFixedSideV1::Left,
+                StackedFoldRotationDirectionV1::Positive,
+                90.0,
+            )
+            .is_err()
+        );
+
+        let other = Point3::new(2.0, 2.0, 3.0).unwrap();
+        for angle in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -90.0, 180.1] {
+            assert!(
+                StackedFoldLinearCandidateV1::new(
+                    point,
+                    other,
+                    StackedFoldFixedSideV1::Right,
+                    StackedFoldRotationDirectionV1::Negative,
+                    angle,
+                )
+                .is_err(),
+                "invalid angle {angle:?} must be rejected"
+            );
+        }
+    }
 }

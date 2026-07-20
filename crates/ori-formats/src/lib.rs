@@ -8,6 +8,7 @@ mod mesh_animation_export;
 mod mesh_export;
 mod ori2;
 mod project_folder;
+mod reference_glb;
 mod svg;
 
 use std::collections::BTreeSet;
@@ -101,6 +102,9 @@ pub use project_folder::{
     ProjectFolderLimits, ProjectFolderManifestEntryV1, ProjectFolderManifestV1,
     read_project_folder_v1, read_project_folder_v1_with_limits, write_project_folder_v1,
     write_project_folder_v1_with_limits,
+};
+pub use reference_glb::{
+    MAX_REFERENCE_GLB_BYTES_V1, ReferenceGlbErrorV1, validate_reference_glb_v1,
 };
 pub use svg::{
     SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,

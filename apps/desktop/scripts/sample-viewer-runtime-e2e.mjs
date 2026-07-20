@@ -161,6 +161,17 @@ try {
       const page = await browser.newPage({ viewport: { width: 1024, height: 768 } })
       try {
         const runtimeErrors = []
+        await page.addInitScript(() => {
+          window.__origamiSampleViewerWebglReady = false
+          const originalGetContext = HTMLCanvasElement.prototype.getContext
+          HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+            const context = Reflect.apply(originalGetContext, this, [type, ...args])
+            if (context && (type === 'webgl' || type === 'webgl2')) {
+              window.__origamiSampleViewerWebglReady = true
+            }
+            return context
+          }
+        })
         page.on('console', (message) => {
           if (message.type() === 'error'
             && !message.text().startsWith('Failed to load resource:')) {
@@ -182,8 +193,12 @@ try {
         await canvas.waitFor({ state: 'visible', timeout: 30_000 })
         await page.waitForFunction(() => {
           const canvas = document.querySelector('canvas')
-          const gl = canvas?.getContext('webgl2') ?? canvas?.getContext('webgl')
-          return Boolean(gl && canvas.width > 0 && canvas.height > 0)
+          return Boolean(
+            window.__origamiSampleViewerWebglReady
+            && canvas
+            && canvas.width > 0
+            && canvas.height > 0,
+          )
         }, undefined, { timeout: 30_000 })
         await page.waitForTimeout(3_000)
         if (runtimeErrors.length !== 0) {

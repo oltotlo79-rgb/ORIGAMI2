@@ -56,9 +56,13 @@ import {
 } from './stackedFoldRead.ts'
 import {
   isMeshAnimationPreviewRequest,
+  isMeshAnimationSaveRequest,
   normalizeMeshAnimationPreviewResponse,
+  normalizeMeshAnimationSaveResponse,
   type MeshAnimationPreviewRequest,
   type MeshAnimationPreviewResponse,
+  type MeshAnimationSaveRequest,
+  type MeshAnimationSaveResponse,
 } from './meshAnimationExport.ts'
 
 export type {
@@ -649,6 +653,19 @@ export function cancelInstructionMeshAnimation(exportId: string): Promise<void> 
     return Promise.reject(new Error('invalid mesh-animation export id'))
   }
   return invoke<void>('cancel_instruction_mesh_animation', { exportId })
+}
+
+export function saveInstructionMeshAnimation(
+  request: MeshAnimationSaveRequest,
+): Promise<MeshAnimationSaveResponse> {
+  if (!isMeshAnimationSaveRequest(request)) {
+    return Promise.reject(new Error('invalid mesh-animation save request'))
+  }
+  return invoke<unknown>('save_instruction_mesh_animation', { request }).then((value) => {
+    const response = normalizeMeshAnimationSaveResponse(value)
+    if (!response) throw new Error('invalid mesh-animation save response')
+    return response
+  })
 }
 
 export function analyzeGeometricConstraints(

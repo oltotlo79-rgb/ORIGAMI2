@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   isMeshAnimationPreviewRequest,
+  isMeshAnimationSaveRequest,
   normalizeMeshAnimationPreviewResponse,
+  normalizeMeshAnimationSaveResponse,
 } from '../src/lib/meshAnimationExport.ts'
 
 const projectInstanceId = '018f47a2-4b7a-7cc1-8abc-112233445566'
@@ -34,6 +36,7 @@ test('mesh animation preview response admits only bounded native GLB metadata', 
     byteCount: 4096,
     mediaType: 'model/gltf-binary',
     fileExtension: 'glb',
+    suggestedFileName: 'model-animation.glb',
   }
   assert.deepEqual(normalizeMeshAnimationPreviewResponse(response, request), response)
   assert.equal(normalizeMeshAnimationPreviewResponse({ ...response, revision: 10 }, request), null)
@@ -50,4 +53,20 @@ test('mesh animation preview response admits only bounded native GLB metadata', 
     normalizeMeshAnimationPreviewResponse({ ...response, mediaType: 'application/octet-stream' }, request),
     null,
   )
+})
+
+test('mesh animation save transport is closed and response-only', () => {
+  const save = {
+    exportId,
+    expectedProjectInstanceId: projectInstanceId,
+    expectedProjectId: projectId,
+    expectedRevision: 9,
+    expectedSourceFingerprint: 'a'.repeat(64),
+  }
+  assert.equal(isMeshAnimationSaveRequest(save), true)
+  assert.equal(isMeshAnimationSaveRequest({ ...save, futurePath: 'C:\\unsafe.glb' }), false)
+  assert.equal(isMeshAnimationSaveRequest({ ...save, expectedSourceFingerprint: 'A'.repeat(64) }), false)
+  assert.deepEqual(normalizeMeshAnimationSaveResponse({ canceled: false }), { canceled: false })
+  assert.deepEqual(normalizeMeshAnimationSaveResponse({ canceled: true }), { canceled: true })
+  assert.equal(normalizeMeshAnimationSaveResponse({ canceled: false, path: 'secret' }), null)
 })

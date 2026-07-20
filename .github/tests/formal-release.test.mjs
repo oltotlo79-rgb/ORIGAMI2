@@ -12,8 +12,33 @@ const root = resolve(import.meta.dirname, '..', '..')
 const ciArtifactFixture = {
   artifactId: '7', name: 'rustsec-warning-review', digest: `sha256:${'c'.repeat(64)}`,
   archiveSha256: 'c'.repeat(64), size: 128,
+  reportSha256: 'd'.repeat(64),
   createdAt: '2026-07-20T00:00:00.000Z', expiresAt: '2026-07-27T00:00:00.000Z',
   workflowRunId: '67890', runAttempt: 1, checkSuiteId: '24680',
+}
+function fixtureCrc32(bytes) {
+  let crc = 0xffffffff
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+function singleEntryZip(name, bytes) {
+  const filename = Buffer.from(name)
+  const crc = fixtureCrc32(bytes)
+  const local = Buffer.alloc(30 + filename.length)
+  local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4)
+  local.writeUInt32LE(crc, 14); local.writeUInt32LE(bytes.length, 18); local.writeUInt32LE(bytes.length, 22)
+  local.writeUInt16LE(filename.length, 26); filename.copy(local, 30)
+  const central = Buffer.alloc(46 + filename.length)
+  central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6)
+  central.writeUInt32LE(crc, 16); central.writeUInt32LE(bytes.length, 20); central.writeUInt32LE(bytes.length, 24)
+  central.writeUInt16LE(filename.length, 28); filename.copy(central, 46)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10)
+  end.writeUInt32LE(central.length, 12); end.writeUInt32LE(local.length + bytes.length, 16)
+  return Buffer.concat([local, bytes, central, end])
 }
 
 test('PowerShell and bash release helpers anchor repository paths to their script', () => {
@@ -732,6 +757,7 @@ test('CI attempt and suite evidence is transitively bound to every release integ
   assert.match(artifactVerifier, /runAttempt: releaseEvidence\.ciChecks\.runAttempt/u)
   assert.match(artifactVerifier, /checkSuiteId: releaseEvidence\.ciChecks\.checkSuiteId/u)
   assert.match(artifactVerifier, /rustsecReviewArtifact/u)
+  assert.match(artifactVerifier, /reportSha256/u)
   assert.match(artifactVerifier, /CycloneDX SBOM canonical release evidence mismatch/u)
   assert.match(manifestWriter, /`\$\{prefix\}\.cdx\.json`/u)
   assert.match(provenanceVerifier, /\.cdx\.json"/u)
@@ -1259,7 +1285,13 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
     const artifactsPath = join(directory, 'artifacts.json')
     const artifactArchivePath = join(directory, 'artifact.zip')
     const commit = 'b'.repeat(40)
-    const artifactBytes = Buffer.from('rustsec-review-fixture')
+    const reportBytes = Buffer.from(`${JSON.stringify(
+      buildDependencyPolicy().vulnerabilityAssessment.rustsecReviewReport,
+      null,
+      2,
+    )}\n`)
+    const reportDigest = createHash('sha256').update(reportBytes).digest('hex')
+    const artifactBytes = singleEntryZip('rustsec-warning-review.json', reportBytes)
     const artifactDigest = createHash('sha256').update(artifactBytes).digest('hex')
     writeFileSync(artifactArchivePath, artifactBytes)
     const successfulRun = (id = 42) => ({
@@ -1328,12 +1360,30 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       rustsecReviewArtifact: {
         artifactId: '7', name: 'rustsec-warning-review',
         digest: `sha256:${artifactDigest}`, archiveSha256: artifactDigest,
+        reportSha256: reportDigest,
         size: artifactBytes.length, createdAt, expiresAt,
         workflowRunId: '42', runAttempt: 1, checkSuiteId: '84',
       },
     })
     writeFileSync(artifactArchivePath, Buffer.from('tampered'))
     assert.throws(verify, /artifact digest mismatch/u)
+    writeFileSync(artifactArchivePath, artifactBytes)
+    const surplusDeclared = Buffer.from(artifactBytes)
+    surplusDeclared.writeUInt16LE(2, surplusDeclared.length - 14)
+    surplusDeclared.writeUInt16LE(2, surplusDeclared.length - 12)
+    const surplusDigest = createHash('sha256').update(surplusDeclared).digest('hex')
+    writeFileSync(artifactArchivePath, surplusDeclared)
+    writeFileSync(artifactsPath, JSON.stringify({ total_count: 1, artifacts: [{
+      ...artifactRecord, size_in_bytes: surplusDeclared.length, digest: `sha256:${surplusDigest}`,
+    }] }))
+    assert.throws(verify, /ZIP entry set/u)
+    const staleArchive = singleEntryZip('rustsec-warning-review.json', Buffer.from('{}\n'))
+    const staleDigest = createHash('sha256').update(staleArchive).digest('hex')
+    writeFileSync(artifactArchivePath, staleArchive)
+    writeFileSync(artifactsPath, JSON.stringify({ total_count: 1, artifacts: [{
+      ...artifactRecord, size_in_bytes: staleArchive.length, digest: `sha256:${staleDigest}`,
+    }] }))
+    assert.throws(verify, /non-canonical or stale/u)
     writeFileSync(artifactArchivePath, artifactBytes)
     writeFileSync(artifactsPath, JSON.stringify({
       total_count: 1,

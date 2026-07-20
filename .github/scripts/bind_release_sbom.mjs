@@ -60,6 +60,7 @@ if (
   || reviewArtifact?.name !== 'rustsec-warning-review'
   || !/^sha256:[0-9a-f]{64}$/u.test(reviewArtifact?.digest ?? '')
   || reviewArtifact.digest !== `sha256:${reviewArtifact.archiveSha256}`
+  || !/^[0-9a-f]{64}$/u.test(reviewArtifact.reportSha256 ?? '')
   || !Number.isSafeInteger(reviewArtifact.size) || reviewArtifact.size < 1 || reviewArtifact.size > 16_777_216
   || reviewArtifact.workflowRunId !== ciChecks.workflowRunId
   || reviewArtifact.runAttempt !== ciChecks.runAttempt

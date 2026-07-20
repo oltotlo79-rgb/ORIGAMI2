@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { inflateRawSync } from 'node:zlib'
+import { buildRustsecReviewReport } from './dependency_policy.mjs'
 
 const commit = process.env.RELEASE_COMMIT
 if (!/^[0-9a-f]{40}$/u.test(commit ?? '')) throw new Error('invalid release commit for CI evidence')
@@ -42,6 +44,56 @@ async function loadArtifactBytes(path, url) {
   const bytes = Buffer.from(await response.arrayBuffer())
   if (bytes.length < 1 || bytes.length > 16_777_216) throw new Error('GitHub CI artifact size is outside bounds')
   return bytes
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function readCanonicalReviewReport(archive) {
+  const eocd = archive.length - 22
+  if (eocd < 0 || archive.readUInt32LE(eocd) !== 0x06054b50 || archive.readUInt16LE(eocd + 20) !== 0) throw new Error('RustSec review ZIP end record is invalid')
+  const entries = archive.readUInt16LE(eocd + 10)
+  const centralSize = archive.readUInt32LE(eocd + 12)
+  const centralOffset = archive.readUInt32LE(eocd + 16)
+  if (archive.readUInt16LE(eocd + 4) !== 0 || archive.readUInt16LE(eocd + 6) !== 0 || archive.readUInt16LE(eocd + 8) !== entries || entries !== 1 || centralOffset + centralSize !== eocd) throw new Error('RustSec review ZIP entry set is invalid')
+  if (centralSize < 46 || archive.readUInt32LE(centralOffset) !== 0x02014b50) throw new Error('RustSec review ZIP central directory is invalid')
+  const flags = archive.readUInt16LE(centralOffset + 8)
+  const method = archive.readUInt16LE(centralOffset + 10)
+  const checksum = archive.readUInt32LE(centralOffset + 16)
+  const compressedSize = archive.readUInt32LE(centralOffset + 20)
+  const uncompressedSize = archive.readUInt32LE(centralOffset + 24)
+  const nameLength = archive.readUInt16LE(centralOffset + 28)
+  const extraLength = archive.readUInt16LE(centralOffset + 30)
+  const commentLength = archive.readUInt16LE(centralOffset + 32)
+  const localOffset = archive.readUInt32LE(centralOffset + 42)
+  const name = archive.subarray(centralOffset + 46, centralOffset + 46 + nameLength).toString('utf8')
+  if (name !== 'rustsec-warning-review.json' || commentLength !== 0 || centralSize !== 46 + nameLength + extraLength || (flags & ~0x0808) !== 0 || ![0, 8].includes(method) || uncompressedSize < 1 || uncompressedSize > 4_194_304) throw new Error('RustSec review ZIP entry is unsafe')
+  if (localOffset + 30 > centralOffset || archive.readUInt32LE(localOffset) !== 0x04034b50) throw new Error('RustSec review ZIP local header is invalid')
+  const localNameLength = archive.readUInt16LE(localOffset + 26)
+  const localExtraLength = archive.readUInt16LE(localOffset + 28)
+  const localName = archive.subarray(localOffset + 30, localOffset + 30 + localNameLength).toString('utf8')
+  const dataOffset = localOffset + 30 + localNameLength + localExtraLength
+  const dataEnd = dataOffset + compressedSize
+  const descriptorSize = centralOffset - dataEnd
+  if (
+    archive.readUInt16LE(localOffset + 6) !== flags
+    || archive.readUInt16LE(localOffset + 8) !== method
+    || localName !== name || dataEnd > centralOffset
+    || ((flags & 0x0008) === 0 && descriptorSize !== 0)
+    || ((flags & 0x0008) !== 0 && ![12, 16].includes(descriptorSize))
+  ) throw new Error('RustSec review ZIP local entry is unsafe')
+  const compressed = archive.subarray(dataOffset, dataOffset + compressedSize)
+  const report = method === 0 ? compressed : inflateRawSync(compressed, { maxOutputLength: 4_194_304 })
+  if (report.length !== uncompressedSize || crc32(report) !== checksum) throw new Error('RustSec review ZIP report integrity mismatch')
+  const expected = Buffer.from(`${JSON.stringify(buildRustsecReviewReport(), null, 2)}\n`)
+  if (!report.equals(expected)) throw new Error('RustSec review report is non-canonical or stale')
+  return report
 }
 
 const repo = process.env.GH_REPO
@@ -144,6 +196,8 @@ const artifactBytes = await loadArtifactBytes(
 )
 const archiveSha256 = createHash('sha256').update(artifactBytes).digest('hex')
 if (artifactBytes.length !== artifact.size_in_bytes || `sha256:${archiveSha256}` !== artifact.digest) throw new Error('RustSec review artifact digest mismatch')
+const reportBytes = readCanonicalReviewReport(artifactBytes)
+const reportSha256 = createHash('sha256').update(reportBytes).digest('hex')
 
 process.stdout.write(`${JSON.stringify({
   schema: 'origami2.ci-check-evidence.v1',
@@ -158,6 +212,7 @@ process.stdout.write(`${JSON.stringify({
     name: artifact.name,
     digest: artifact.digest,
     archiveSha256,
+    reportSha256,
     size: artifact.size_in_bytes,
     createdAt: artifact.created_at,
     expiresAt: artifact.expires_at,

@@ -154,6 +154,7 @@ if (
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.name !== 'rustsec-warning-review'
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.digest
     !== `sha256:${releaseEvidence.ciChecks?.rustsecReviewArtifact?.archiveSha256}`
+  || !/^[0-9a-f]{64}$/u.test(releaseEvidence.ciChecks?.rustsecReviewArtifact?.reportSha256 ?? '')
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.workflowRunId
     !== releaseEvidence.ciChecks?.workflowRunId
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.runAttempt

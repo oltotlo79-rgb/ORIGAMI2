@@ -56,7 +56,6 @@ pub(super) enum PendingStackedFoldRequestedPose {
         requested: PreparedStackedFoldRequestedPoseV1,
         continuous: StackedFoldBoundedPathDiagnosticV1,
     },
-    #[allow(dead_code)]
     Graph {
         requested: PreparedStackedFoldRequestedGraphPoseV1,
         continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
@@ -140,7 +139,6 @@ pub(super) struct PendingStackedFoldPremises {
     pub layer_order: StackedFoldNonFlatLayerOrderV1,
 }
 
-#[allow(dead_code)]
 pub(super) struct PendingStackedFoldGraphPremises {
     pub expected_instance_id: ProjectId,
     pub expected_project_id: ProjectId,
@@ -248,7 +246,6 @@ pub(super) fn install_pending_stacked_fold(
     Ok(token)
 }
 
-#[allow(dead_code)]
 pub(super) fn install_pending_stacked_fold_graph(
     state: &StackedFoldTransactionState,
     premises: PendingStackedFoldGraphPremises,

@@ -203,7 +203,6 @@ struct StackedFoldContinuousPathDto {
     paper_thickness_mm: f64,
 }
 
-#[allow(dead_code)]
 enum StackedFoldPathAnalysis {
     Tree(ori_collision::StackedFoldBoundedPathDiagnosticV1),
     Graph {
@@ -212,7 +211,6 @@ enum StackedFoldPathAnalysis {
     },
 }
 
-#[allow(dead_code)]
 enum NativeStackedFoldPremises {
     Tree(super::stacked_fold_transaction::PendingStackedFoldPremises),
     Graph(super::stacked_fold_transaction::PendingStackedFoldGraphPremises),
@@ -435,16 +433,175 @@ pub(super) async fn propose_current_stacked_fold_read(
             if continuous.continuous_certificate_model_id().is_none() {
                 return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
-            let _layer_order = prepare_stacked_fold_graph_non_flat_layer_order_v1(
+            let layer_order = prepare_stacked_fold_graph_non_flat_layer_order_v1(
                 &closed_endpoint,
                 layer_capability.snapshot(),
                 DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            // The endpoint, interval, and layer premises are now independently
-            // authenticated. Publication remains fail-closed until the shared
-            // response construction below accepts the graph-owned proof.
-            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+            let geometry_proof = closed_endpoint.initial().target().geometry().proof();
+            let topology = closed_endpoint
+                .initial()
+                .target()
+                .geometry()
+                .candidate();
+            let lineage = geometry_proof.lineage();
+            let face_count = closed_endpoint
+                .initial()
+                .target()
+                .hinge_geometry()
+                .face_ids()
+                .len();
+            let expected_pair_count = face_count * face_count.saturating_sub(1) / 2;
+            let adjacent_pair_count = closed_endpoint
+                .initial()
+                .target()
+                .hinge_geometry()
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    let mut pair = [hinge.left_face(), hinge.right_face()];
+                    pair.sort_unstable_by_key(FaceId::canonical_bytes);
+                    pair
+                })
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            let endpoint_collision = StackedFoldEndpointCollisionDto {
+                expected_pair_count,
+                separated_pair_count: expected_pair_count.saturating_sub(adjacent_pair_count),
+                touching_pair_count: 0,
+                allowed_pair_count: adjacent_pair_count,
+                penetrating_pair_count: 0,
+                indeterminate_pair_count: 0,
+                has_blocking_hold: false,
+            };
+            let topology_proof = StackedFoldTopologyProofDto {
+                target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
+                target_vertex_count: topology.pattern.vertices.len(),
+                target_edge_count: topology.pattern.edges.len(),
+                target_boundary_vertex_count: topology.paper.boundary_vertices.len(),
+                lineage_record_count: lineage.records().len(),
+                source_edge_subdivision_count: geometry_proof.source_edges().len(),
+                expected_crease_subdivision_count: geometry_proof.expected_creases().len(),
+                target_material_face_count: face_count,
+                target_hinge_count: closed_endpoint
+                    .initial()
+                    .target()
+                    .hinge_geometry()
+                    .hinges()
+                    .len(),
+            };
+            let added_vertex_count = topology
+                .pattern
+                .vertices
+                .len()
+                .checked_sub(pattern.vertices.len())
+                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            let added_edge_count = topology
+                .pattern
+                .edges
+                .len()
+                .checked_sub(pattern.edges.len())
+                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            let mountain_crease_count = expected_creases
+                .iter()
+                .filter(|crease| crease.kind == ori_domain::EdgeKind::Mountain)
+                .count();
+            let valley_crease_count = expected_creases.len() - mountain_crease_count;
+            let transaction_proposal = StackedFoldTransactionProposalDto {
+                transaction_token: None,
+                source_project_id: binding.project_id(),
+                source_revision: binding.source_revision(),
+                target_revision: lineage.target_revision(),
+                source_fingerprint_sha256: lineage.source_fingerprint().to_hex(),
+                target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
+                added_vertex_count,
+                added_edge_count,
+                mountain_crease_count,
+                valley_crease_count,
+                timeline_step_count: 1,
+                timeline_complete_hinge_angle_count: closed_endpoint
+                    .pose()
+                    .hinge_angles()
+                    .as_slice()
+                    .len(),
+                requested_angle_degrees: candidate.requested_angle_degrees(),
+                ready_for_atomic_apply: false,
+                failure_classes: Vec::new(),
+                authorizes_project_mutation: false,
+            };
+            let layer_material_face_count = layer_order.material_faces().len();
+            let layer_overlap_cell_count = layer_order.overlap_cell_count();
+            let native_transaction = Some(NativeStackedFoldPremises::Graph(
+                super::stacked_fold_transaction::PendingStackedFoldGraphPremises {
+                    expected_instance_id: binding.project_instance_id(),
+                    expected_project_id: binding.project_id(),
+                    expected_revision: binding.source_revision(),
+                    expected_source_fingerprint: lineage.source_fingerprint().0,
+                    expected_pose_generation: binding.pose_generation(),
+                    expected_layer_generation: binding.layer_order_generation(),
+                    requested: closed_endpoint,
+                    continuous,
+                    layer_order,
+                },
+            ));
+            let crossed_cells = proposal
+                .crossed_cells()
+                .iter()
+                .map(|cell| StackedFoldReadCellDto {
+                    cell_key_sha256: lowercase_hex(cell.cell_key().canonical_bytes()),
+                    bottom_to_top_faces: cell.bottom_to_top_faces().to_vec(),
+                    boundary_world: cell.boundary_world().to_vec(),
+                })
+                .collect();
+            let work = proposal.work();
+            let support = proposal.support();
+            let target_faces = proposal.target_faces().to_vec();
+            let material_segments = material_map
+                .segments()
+                .iter()
+                .map(|segment| StackedFoldMaterialSegmentDto {
+                    face_id: segment.face(),
+                    start: [segment.start().x, segment.start().y],
+                    end: [segment.end().x, segment.end().y],
+                    fixed_side: match segment.fixed_side() {
+                        StackedFoldFixedSideV1::Left => "left",
+                        StackedFoldFixedSideV1::Right => "right",
+                    },
+                    assignment: match segment.assignment() {
+                        ori_domain::EdgeKind::Mountain => "mountain",
+                        ori_domain::EdgeKind::Valley => "valley",
+                        _ => unreachable!("material map emits only mountain or valley"),
+                    },
+                })
+                .collect();
+            drop(material_map);
+            drop(proposal);
+            drop(guard);
+            return Ok::<_, String>((
+                worker_permit,
+                pose_capability,
+                layer_capability,
+                support,
+                crossed_cells,
+                target_faces,
+                material_segments,
+                topology_proof,
+                work,
+                endpoint_collision,
+                StackedFoldPathAnalysis::Graph {
+                    diagnostic: continuous,
+                    requested_angle_degrees: candidate.requested_angle_degrees(),
+                },
+                StackedFoldFlatEndpointLayerOrderDto {
+                    applicable: true,
+                    certified: true,
+                    material_face_count: layer_material_face_count,
+                    overlap_cell_count: layer_overlap_cell_count,
+                },
+                transaction_proposal,
+                native_transaction,
+            ));
         }
         let prepared_target = prepare_stacked_fold_target_model_v1(
             audited_target.into_geometry(),

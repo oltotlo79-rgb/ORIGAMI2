@@ -858,6 +858,23 @@ pub(super) async fn propose_current_stacked_fold_read(
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
+    propose_current_stacked_fold_read_inner(
+        Some(&app),
+        &app_state,
+        &foldability_state,
+        &transaction_state,
+        request,
+    )
+    .await
+}
+
+async fn propose_current_stacked_fold_read_inner(
+    app: Option<&AppHandle>,
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
+    request: StackedFoldReadRequest,
+) -> Result<StackedFoldReadResponse, String> {
     validate_request_resource_shape_v1(&request).map_err(str::to_owned)?;
     let worker_permit = app_state
         .try_acquire_native_pose_worker()
@@ -918,6 +935,7 @@ pub(super) async fn propose_current_stacked_fold_read(
     )
     .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
     let paper_thickness_mm = paper.thickness_mm;
+    let progress_app = app.cloned();
     let analysis = tauri::async_runtime::spawn_blocking(move || {
         let input = FlatEndpointLayerOrderInputV1 {
             identity_namespace: binding.project_id(),
@@ -1062,7 +1080,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                         .collect::<std::collections::BTreeMap<_, _>>();
                     let mut resource_exhausted = false;
                     let mut oracle_edges = std::collections::BTreeMap::new();
-                    let progress_app = app.clone();
+                    let progress_app = progress_app.clone();
                     let progress_request_id = progress_request_id.clone();
                     let searched =
                         ori_collision::search_certified_pose_graph_with_progress_v1(
@@ -1076,7 +1094,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                         },
                         |progress| {
                             if let Some(request_id) = progress_request_id.as_ref() {
-                                let _ = progress_app.emit(
+                                if let Some(progress_app) = progress_app.as_ref() { let _ = progress_app.emit(
                                     STACKED_FOLD_READ_PROGRESS_EVENT_V1,
                                     StackedFoldReadProgressDtoV1 {
                                         version: 1,
@@ -1088,7 +1106,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                                         transition_limit: progress.transition_limit,
                                         authorizes_project_mutation: false,
                                     },
-                                );
+                                ); }
                             }
                         },
                         |edge| {

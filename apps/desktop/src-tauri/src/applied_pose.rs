@@ -252,6 +252,26 @@ pub(super) struct CurrentAppliedPoseCapability {
     claims: CurrentAppliedPoseClaims,
 }
 
+impl CurrentAppliedPoseCapability {
+    /// Observation-only access for detached native analysis. The caller must
+    /// revalidate this capability against the live project before publishing
+    /// any result.
+    #[must_use]
+    pub(super) fn model(&self) -> &MaterialTreeKinematicsModel {
+        self.claims.model.as_ref()
+    }
+
+    #[must_use]
+    pub(super) fn pose(&self) -> &MaterialTreePose {
+        self.claims.pose.as_ref()
+    }
+
+    #[must_use]
+    pub(super) const fn generation(&self) -> u64 {
+        self.claims.generation
+    }
+}
+
 /// Read-only access to the sealed native material pose.
 pub(super) struct CurrentAppliedPoseView<'a> {
     certificate: &'a CurrentAppliedPoseCertificate,

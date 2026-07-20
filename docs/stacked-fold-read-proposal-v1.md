@@ -25,11 +25,13 @@ guardは次を一つのopaque sealへ結合する。
 - exact current `LayerOrderSnapshot` object
 - 再検証済みflat endpoint layer-order anchor
 
-IDとgenerationは値が一致するだけではmutation authorityにならない。desktopが将来このguardを使用する場合は、`project -> pose slot -> layer-order slot`の固定lock順でprivate current capabilityを取得し、上記値とobject identityをcapture時および利用直前に再照合する。
+IDとgenerationは値が一致するだけではmutation authorityにならない。desktop bridgeはproject lock下でposeとlayer-orderのprivate current capabilityを取得し、lock外のblocking workerでguardとproposalを構築した後、応答直前にproject、pose slot、layer-order slotへ再照合する。編集、同角度pose再発行、同内容layer-order再解析、cancel、reopenのいずれでも古い結果を返さない。
 
 guardのcloneは同じseal identityを保つ。同じproject、同じ角度、同じ層順序の値からguardを再captureしても新しいsealになり、古いproposalは新しいguardへ再結合できない。poseの同角度再solve、layer-orderの同内容再解析、project reopen、generation変更も同様に拒否する。
 
 guardとproposalはSerialize不可とし、getterが返すID、候補線、cell key、face列、work countからopaque sealを復元できない。
+
+desktopの`propose_current_stacked_fold_read`は、strictなproject/revisionと一直線候補を受け、model ID、generation binding、SHA-256 cell key、完全なbottom-to-top face列、target face和集合、有限work countだけをbounded DTOへ写す。応答は`authorizesProjectMutation=false`と`authorizesApplyStackedFold=false`を固定し、opaque guard、proposal、model、pose、layer snapshotをWebViewへ渡さない。このcommandはUIへ未接続であり、単独ではSIM-010の利用者経路を構成しない。
 
 ## 3. 成功対象
 

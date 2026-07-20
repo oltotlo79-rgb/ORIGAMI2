@@ -12,6 +12,7 @@ mod project_persistence;
 #[allow(dead_code)]
 mod recovery;
 mod save_path;
+mod stacked_fold_read;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -109,6 +110,7 @@ use recovery::{
     get_recovery_candidate, prepare_window_close, restore_recovery, start_recovery_autosave_timer,
 };
 use serde::{Deserialize, Serialize};
+use stacked_fold_read::propose_current_stacked_fold_read;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -6516,6 +6518,7 @@ pub fn run() {
             get_global_flat_foldability_progress,
             get_global_flat_foldability_result,
             cancel_global_flat_foldability,
+            propose_current_stacked_fold_read,
             open_project,
             save_project,
             save_project_as,

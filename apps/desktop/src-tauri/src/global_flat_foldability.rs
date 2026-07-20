@@ -292,6 +292,21 @@ pub(super) struct CurrentLayerOrderCapability {
     claims: CurrentLayerOrderClaims,
 }
 
+impl CurrentLayerOrderCapability {
+    /// Observation-only access for detached native analysis. The exact Arc
+    /// identity remains sealed in the capability and is rechecked before a
+    /// result can be published.
+    #[must_use]
+    pub(super) fn snapshot(&self) -> &LayerOrderSnapshot {
+        self.certificate.snapshot.as_ref()
+    }
+
+    #[must_use]
+    pub(super) const fn generation(&self) -> u64 {
+        self.claims.generation
+    }
+}
+
 struct GlobalFlatFoldabilityBinding {
     project_instance_id: ProjectId,
     project_id: ProjectId,

@@ -176,6 +176,12 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
       foldability_weight: 35,
       step_count_weight: 15,
       paper_efficiency_weight: 15,
+      generation_constraints: {
+        schema_version: 1,
+        maximum_steps: 60,
+        detail_level: 'standard',
+        allowed_techniques: ['valley_fold', 'mountain_fold'],
+      },
     },
     project_layers: {
       schema_version: 1,

@@ -160,6 +160,68 @@ export type BeginnerDesignProfileV1 = {
   foldability_weight: number
   step_count_weight: number
   paper_efficiency_weight: number
+  generation_constraints: BeginnerGenerationConstraintsV1
+}
+
+export type BeginnerGenerationConstraintsV1 = {
+  schema_version: 1
+  maximum_steps: number
+  detail_level: 'simple' | 'standard' | 'detailed'
+  allowed_techniques: Array<
+    | 'valley_fold'
+    | 'mountain_fold'
+    | 'inside_reverse_fold'
+    | 'outside_reverse_fold'
+    | 'squash_fold'
+    | 'petal_fold'
+    | 'sink_fold'
+    | 'crimp_fold'
+  >
+}
+
+const BEGINNER_TECHNIQUES = [
+  'valley_fold',
+  'mountain_fold',
+  'inside_reverse_fold',
+  'outside_reverse_fold',
+  'squash_fold',
+  'petal_fold',
+  'sink_fold',
+  'crimp_fold',
+] as const
+
+function normalizeBeginnerGenerationConstraints(
+  value: unknown,
+): BeginnerGenerationConstraintsV1 | null {
+  const record = exactCoreDataRecord(value, [
+    'schema_version',
+    'maximum_steps',
+    'detail_level',
+    'allowed_techniques',
+  ] as const)
+  if (
+    !record
+    || record.schema_version !== 1
+    || !Number.isInteger(record.maximum_steps)
+    || Number(record.maximum_steps) < 1
+    || Number(record.maximum_steps) > 500
+    || (
+      record.detail_level !== 'simple'
+      && record.detail_level !== 'standard'
+      && record.detail_level !== 'detailed'
+    )
+    || !Array.isArray(record.allowed_techniques)
+    || record.allowed_techniques.length < 1
+    || record.allowed_techniques.length > 8
+    || record.allowed_techniques.some((technique) => !BEGINNER_TECHNIQUES.includes(technique))
+    || new Set(record.allowed_techniques).size !== record.allowed_techniques.length
+  ) return null
+  return Object.freeze({
+    schema_version: 1,
+    maximum_steps: Number(record.maximum_steps),
+    detail_level: record.detail_level,
+    allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
+  }) as BeginnerGenerationConstraintsV1
 }
 
 export type BeginnerCandidateScoreV1 = {
@@ -269,6 +331,7 @@ export function normalizeBeginnerDesignProfile(
     'foldability_weight',
     'step_count_weight',
     'paper_efficiency_weight',
+    'generation_constraints',
   ] as const)
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
@@ -286,6 +349,8 @@ export function normalizeBeginnerDesignProfile(
       !Number.isInteger(weight) || Number(weight) < 0 || Number(weight) > 100)
     || weights.reduce((sum, weight) => sum + weight, 0) !== 100
   ) return null
+  const generationConstraints = normalizeBeginnerGenerationConstraints(record.generation_constraints)
+  if (!generationConstraints) return null
   return Object.freeze({
     schema_version: 1,
     preset: record.preset,
@@ -293,6 +358,7 @@ export function normalizeBeginnerDesignProfile(
     foldability_weight: weights[1],
     step_count_weight: weights[2],
     paper_efficiency_weight: weights[3],
+    generation_constraints: generationConstraints,
   }) as BeginnerDesignProfileV1
 }
 
@@ -307,6 +373,7 @@ function sameBeginnerDesignProfile(
     && profile.foldability_weight === expected.foldability_weight
     && profile.step_count_weight === expected.step_count_weight
     && profile.paper_efficiency_weight === expected.paper_efficiency_weight
+    && JSON.stringify(profile.generation_constraints) === JSON.stringify(expected.generation_constraints)
 }
 
 export type AnnotationAnchorV1 =

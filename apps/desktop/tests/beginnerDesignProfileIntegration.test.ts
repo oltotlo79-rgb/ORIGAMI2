@@ -6,6 +6,7 @@ const app = source('../src/App.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_design.rs')
+const generation = source('../../../crates/ori-domain/src/beginner_generation.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 
@@ -34,6 +35,19 @@ test('the versioned profile is project-saved and recovery-visible', () => {
   assert.match(native, /beginner_design_profile: self\.editor\.beginner_design_profile\(\)\.clone\(\)/u)
   assert.match(native, /saved\.beginner_design_profile != \*self\.editor\.beginner_design_profile\(\)/u)
   assert.match(app, /aria-describedby="beginner-design-weights"/u)
+})
+
+test('AUT-105 generation constraints share the profile history and strict project boundary', () => {
+  assert.match(generation, /pub maximum_steps: u16/u)
+  assert.match(generation, /pub detail_level: BeginnerDetailLevelV1/u)
+  assert.match(generation, /pub allowed_techniques: Vec<BeginnerFoldTechniqueV1>/u)
+  assert.match(client, /'maximum_steps',/u)
+  assert.match(client, /record\.allowed_techniques\.length > 8/u)
+  assert.match(app, /name="maximum_steps"/u)
+  assert.match(app, /name="detail_level"/u)
+  assert.match(app, /name="allowed_techniques"/u)
+  assert.match(app, /利用可能な折り技法/u)
+  assert.match(app, /Allowed fold techniques/u)
 })
 
 function source(relativePath: string) {

@@ -3444,7 +3444,28 @@ function App() {
 
   function submitBeginnerDesignProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const preset = String(new FormData(event.currentTarget).get('design_preset'))
+    const current = latestSnapshotRef.current
+    if (!current) return
+    const data = new FormData(event.currentTarget)
+    const preset = String(data.get('design_preset'))
+    const maximumSteps = Number(data.get('maximum_steps'))
+    const detailLevel = String(data.get('detail_level'))
+    const allowedTechniques = data.getAll('allowed_techniques').map(String)
+    const generationConstraints = {
+      schema_version: 1 as const,
+      maximum_steps: maximumSteps,
+      detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
+      allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
+    }
+    if (
+      !Number.isInteger(maximumSteps)
+      || maximumSteps < 1
+      || maximumSteps > 500
+      || !['simple', 'standard', 'detailed'].includes(detailLevel)
+      || allowedTechniques.length < 1
+      || allowedTechniques.length > 8
+      || new Set(allowedTechniques).size !== allowedTechniques.length
+    ) return
     const profile: BeginnerDesignProfileV1 | null = preset === 'shape_priority'
       ? {
           schema_version: 1,
@@ -3453,6 +3474,7 @@ function App() {
           foldability_weight: 20,
           step_count_weight: 10,
           paper_efficiency_weight: 10,
+          generation_constraints: generationConstraints,
         }
       : preset === 'foldability_priority'
         ? {
@@ -3462,6 +3484,7 @@ function App() {
             foldability_weight: 60,
             step_count_weight: 10,
             paper_efficiency_weight: 10,
+            generation_constraints: generationConstraints,
           }
         : preset === 'balanced'
           ? {
@@ -3471,6 +3494,7 @@ function App() {
               foldability_weight: 35,
               step_count_weight: 15,
               paper_efficiency_weight: 15,
+              generation_constraints: generationConstraints,
             }
           : null
     if (!profile) return
@@ -7116,7 +7140,13 @@ function App() {
                 })}
               </p>
               <form
-                key={`${nativeSnapshot.project_instance_id}:${nativeSnapshot.beginner_design_profile.preset}`}
+                key={[
+                  nativeSnapshot.project_instance_id,
+                  nativeSnapshot.beginner_design_profile.preset,
+                  nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps,
+                  nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
+                  nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
+                ].join(':')}
                 onSubmit={submitBeginnerDesignProfile}
               >
                 <label className="field">
@@ -7147,6 +7177,57 @@ function App() {
                     foldability: nativeSnapshot.beginner_design_profile.foldability_weight,
                     steps: nativeSnapshot.beginner_design_profile.step_count_weight,
                     paper: nativeSnapshot.beginner_design_profile.paper_efficiency_weight,
+                  })}
+                </p>
+                <label className="field">
+                  <span>{text({ ja: '最大工程数', en: 'Maximum steps' })}</span>
+                  <input
+                    name="maximum_steps"
+                    type="number"
+                    min={1}
+                    max={500}
+                    required
+                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps}
+                    disabled={coreBusy || recoveryBlocking}
+                  />
+                </label>
+                <label className="field">
+                  <span>{text({ ja: '部位の細かさ', en: 'Part detail' })}</span>
+                  <select
+                    name="detail_level"
+                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.detail_level}
+                    disabled={coreBusy || recoveryBlocking}
+                  >
+                    <option value="simple">{text({ ja: '簡潔', en: 'Simple' })}</option>
+                    <option value="standard">{text({ ja: '標準', en: 'Standard' })}</option>
+                    <option value="detailed">{text({ ja: '詳細', en: 'Detailed' })}</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>{text({ ja: '利用可能な折り技法', en: 'Allowed fold techniques' })}</span>
+                  <select
+                    name="allowed_techniques"
+                    multiple
+                    size={8}
+                    required
+                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques}
+                    disabled={coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-technique-help"
+                  >
+                    <option value="valley_fold">{text({ ja: '谷折り', en: 'Valley fold' })}</option>
+                    <option value="mountain_fold">{text({ ja: '山折り', en: 'Mountain fold' })}</option>
+                    <option value="inside_reverse_fold">{text({ ja: '中割り折り', en: 'Inside reverse fold' })}</option>
+                    <option value="outside_reverse_fold">{text({ ja: 'かぶせ折り', en: 'Outside reverse fold' })}</option>
+                    <option value="squash_fold">{text({ ja: 'つぶし折り', en: 'Squash fold' })}</option>
+                    <option value="petal_fold">{text({ ja: '花弁折り', en: 'Petal fold' })}</option>
+                    <option value="sink_fold">{text({ ja: '沈め折り', en: 'Sink fold' })}</option>
+                    <option value="crimp_fold">{text({ ja: '段折り', en: 'Crimp fold' })}</option>
+                  </select>
+                </label>
+                <p id="beginner-technique-help" className="muted">
+                  {text({
+                    ja: 'CtrlキーまたはCommandキーを押しながら複数選択できます。少なくとも1つ選択してください。',
+                    en: 'Hold Ctrl or Command to select multiple techniques. Select at least one.',
                   })}
                 </p>
                 <button type="submit" disabled={coreBusy || recoveryBlocking}>

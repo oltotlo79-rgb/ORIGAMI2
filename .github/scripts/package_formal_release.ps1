@@ -21,7 +21,9 @@ if ($env:PLATFORM -eq 'windows-x64') {
     throw "Unsupported platform '$env:PLATFORM'."
 }
 
-$assets = Get-ChildItem $output -File | Where-Object Name -NotLike 'SHA256SUMS-*'
+$assets = Get-ChildItem $output -File |
+    Where-Object Name -NotLike 'SHA256SUMS-*' |
+    Sort-Object -Property Name
 $lines = foreach ($asset in $assets) {
     $digest = (Get-FileHash $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     "$digest  $($asset.Name)"

@@ -69,7 +69,10 @@ test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
       writeFileSync(join(directory, name), value)
       checksums.push(`${createHash('sha256').update(value).digest('hex')}  ${name}`)
     }
-    writeFileSync(join(directory, 'SHA256SUMS-windows-x64.txt'), `${checksums.join('\n')}\n`)
+    writeFileSync(
+      join(directory, 'SHA256SUMS-windows-x64.txt'),
+      `${checksums.sort((left, right) => left.slice(66).localeCompare(right.slice(66))).join('\n')}\n`,
+    )
     execFileSync('node', ['.github/scripts/verify_formal_release.mjs', directory], {
       cwd: root,
       env: {
@@ -82,4 +85,68 @@ test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('local artifact verifier rejects non-canonical checksum manifests', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-release-contract-'))
+  try {
+    const prefix = 'ORIGAMI2-v0.1.0-windows-x64'
+    const payloads = {
+      [`${prefix}-setup.exe`]: 'installer',
+      [`${prefix}-portable.zip`]: 'portable',
+      [`${prefix}.cdx.json`]: JSON.stringify({ bomFormat: 'CycloneDX', components: [] }),
+    }
+    for (const [name, value] of Object.entries(payloads)) {
+      writeFileSync(join(directory, name), value)
+    }
+    const entries = Object.entries(payloads).map(([name, value]) =>
+      `${createHash('sha256').update(value).digest('hex')}  ${name}`,
+    )
+    const manifest = join(directory, 'SHA256SUMS-windows-x64.txt')
+    const verify = () => execFileSync(
+      'node',
+      ['.github/scripts/verify_formal_release.mjs', directory],
+      {
+        cwd: root,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          RELEASE_PLATFORM: 'windows-x64',
+          RELEASE_VERSION: '0.1.0',
+          REQUIRE_SIGNATURE: 'false',
+        },
+      },
+    )
+
+    writeFileSync(manifest, `${entries.reverse().join('\n')}\n`)
+    assert.throws(verify, /non-canonical/u)
+
+    writeFileSync(manifest, `${entries.slice(0, 2).sort().join('\n')}\n`)
+    assert.throws(verify, /incomplete/u)
+
+    writeFileSync(manifest, `${[...entries, entries[0]].sort().join('\n')}\n`)
+    assert.throws(verify, /non-canonical/u)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('local artifact verifier rejects unbounded platform and version input', () => {
+  const verify = (platform, version) => () => execFileSync(
+    'node',
+    ['.github/scripts/verify_formal_release.mjs', root],
+    {
+      cwd: root,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        RELEASE_PLATFORM: platform,
+        RELEASE_VERSION: version,
+        REQUIRE_SIGNATURE: 'false',
+      },
+    },
+  )
+  assert.throws(verify('linux-x64', '0.1.0'), /unsupported release platform/u)
+  assert.throws(verify('windows-x64', '../0.1.0'), /invalid release version/u)
+  assert.throws(verify('macos-arm64', '01.0.0'), /invalid release version/u)
 })

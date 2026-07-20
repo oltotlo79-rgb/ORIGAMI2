@@ -5,6 +5,12 @@ import { basename, join, resolve } from 'node:path'
 const directory = resolve(process.argv[2])
 const platform = process.env.RELEASE_PLATFORM
 const version = process.env.RELEASE_VERSION
+if (!['windows-x64', 'macos-arm64'].includes(platform)) {
+  throw new Error(`unsupported release platform: ${platform ?? '(missing)'}`)
+}
+if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? '')) {
+  throw new Error(`invalid release version: ${version ?? '(missing)'}`)
+}
 const prefix = `ORIGAMI2-v${version}-${platform}`
 const payloads = platform === 'windows-x64'
   ? [`${prefix}-setup.exe`, `${prefix}-portable.zip`, `${prefix}.cdx.json`]
@@ -16,12 +22,19 @@ if (actual.join('\n') !== expected.join('\n')) {
   throw new Error(`artifact set mismatch:\n${actual.join('\n')}`)
 }
 const lines = readFileSync(join(directory, checksum), 'utf8').trim().split(/\r?\n/u)
-const checksums = new Map(lines.map((line) => {
+const entries = lines.map((line) => {
   const match = /^([0-9a-f]{64})  ([^/\\]+)$/u.exec(line)
   if (!match) throw new Error(`invalid checksum line: ${line}`)
   return [match[2], match[1]]
-}))
-if (checksums.size !== payloads.length) throw new Error('checksum manifest is incomplete')
+})
+const manifestNames = entries.map(([name]) => name)
+if (
+  manifestNames.length !== payloads.length
+  || manifestNames.join('\n') !== [...payloads].sort().join('\n')
+) {
+  throw new Error('checksum manifest is incomplete or non-canonical')
+}
+const checksums = new Map(entries)
 for (const name of payloads) {
   if (statSync(join(directory, name)).size === 0) throw new Error(`${name} is empty`)
   const digest = createHash('sha256').update(readFileSync(join(directory, name))).digest('hex')

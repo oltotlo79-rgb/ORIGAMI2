@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約51.5%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約51.9%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値51.12%に対し、限定正厚SIM-010を5 triangular faces・4 hingesへ拡張し、「3D折り・紙厚・衝突」を80%から82%へ更新した。差分は0.34ポイント（17% × 2ポイント）で、51.46%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、一般曲面・非三角面union、完全な印刷可能性保証、GitHub Releases正式配布、SIM-010の一般姿勢・6face以上の正厚・cycle mutation・dense/証明困難な経路、一般経路探索は未完了である。入力値自体が概数なので、51.46%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値51.46%に対し、限定正厚SIM-010を6 triangular faces・5 hingesへ拡張して「3D折り・紙厚・衝突」を82%から84%へ、Khronos公式Sample ViewerのWebGL runtime受入で「入出力・互換性」を97%から98%へ更新した。差分は0.39ポイント（17% × 2ポイント + 5% × 1ポイント）で、51.85%を小数第1位へ丸めて表示している。Blender・slicer実機受入、一般曲面・非三角面union、完全な印刷可能性保証、GitHub Releases正式配布、SIM-010の一般姿勢・7face以上の正厚・cycle mutation・dense/証明困難な経路、一般経路探索は未完了である。入力値自体が概数なので、51.85%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -16,16 +16,18 @@
 | プロジェクト・保存・履歴 | 8% | 78% | 6.24% | 原子的編集、差分Undo/Redo、`.ori2`保存、project単位の表示単位・memo・安全なthumbnail、独立した現在3D姿勢、1〜128件の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄に加え、認証済みUndo/Redo両stackと履歴上限の通常保存・復旧を実装 |
 | 2D展開図エディター | 15% | 57% | 8.55% | 基本編集、9種スナップ、白黒識別可能な5線種、layer文書・edge assignment・管理UIに加え、表示・lock・透明度を描画・選択・snap・交差・全編集guard・履歴・保存へ接続。注釈・下絵object、面編集、数式作図、対称編集を残す |
 | 数式・幾何制約 | 9% | 22% | 1.98% | 新規用紙の数式入力に加え、11種制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因・判定保留表示を接続。残る9種の作成UI、式駆動更新、拘束solverを残す |
-| 3D折り・紙厚・衝突 | 17% | 82% | 13.94% | 木構造多ヒンジ姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、折り重ねを厚さ0単一hinge・同軸multi-hinge・adaptive sparse非同軸2〜64hinge、限定正厚1〜4hingeでpreview・原子的apply・Undo/Redoへ接続。候補/current層順3D viewerも実装。一般正厚・cycle mutation・dense/証明困難な経路を残す |
+| 3D折り・紙厚・衝突 | 17% | 84% | 14.28% | 木構造多ヒンジ姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、折り重ねを厚さ0単一hinge・同軸multi-hinge・adaptive sparse非同軸2〜64hinge、限定正厚1〜5hingeでpreview・原子的apply・Undo/Redoへ接続。候補/current層順3D viewerも実装。一般正厚・cycle mutation・dense/証明困難な経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 97% | 4.85% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ書き出せる。PBR・表裏texture、認証済みtreeの複数hinge watertight union、独立readerとKhronos公式validator、animation、FOLD 3D複数frame preview/native pose適用/timeline一括追加、正厚manifold reportも実装。一般曲面union、GUI 3Dアプリ実機受入と完全な印刷可能性保証を残す |
+| 入出力・互換性 | 5% | 98% | 4.90% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ書き出せる。PBR・表裏texture、複数hinge watertight union、独立reader・Khronos validator・公式Sample Viewer WebGL runtime、animation、FOLD 3D複数frame、正厚manifold reportも実装。一般曲面union、Blender/slicer実機受入と完全な印刷可能性保証を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **51.46%** | — |
+| **合計** | **100%** | — | **51.85%** | — |
 
 ## 完了
 
+- SIM-010の限定正厚treeを6 triangular faces・5 hingesへ拡張した。全15 face pairをhinge outer-shell、shared junction、nonadjacent separationで完全被覆し、positive layer orderを(6 faces, 5 hinges)へ限定admitする。strict octagon-fan fixtureは10/20/30度でcertificate・safe-stop requestedを発行し、30度超をfail-closedにした。runtime testとdesktop warning-zero checkが成功した。「3D折り・紙厚・衝突」を84%へ更新した
+- IO-008のGLBをKhronos公式Sample Viewer固定revisionでruntime受入した。static・textured・animatedを独立headless Chromium/SwiftShader WebGLへロードし、可視描画、console/page/HTTP error 0、animationのCDP合成画面frame差分をCI gateで要求する。Playwright exact pin、viewer commit、submodule、lock、既知Release icon allowlistを固定し、validator全severity 0・npm audit脆弱性0も維持する。Blender/slicerの代替とは扱わない。「入出力・互換性」を98%、全体を51.85%（表示51.9%）へ更新した
 - SIM-010の限定正厚treeを5 triangular faces・4 hingesへ拡張した。全10 face pairをhinge outer-shell、shared junction、nonadjacent separationで完全被覆し、positive layer orderを(5 faces, 4 hinges)へ限定admitする。runtime fixtureは10/30/45度でcertificate・safe-stop requestedを発行し、45度超をfail-closedにした。既存atomic positive transaction経路へ接続し、runtime test、desktop warning-zero checkが成功した。「3D折り・紙厚・衝突」を82%、全体を51.46%（表示51.5%）へ更新した
 - SIM-010の限定正厚treeを4 triangular faces・3 hingesへ拡張した。全hingeのcanonical projection/outer-shell observation、shared-vertex junction、全nonadjacent prism pair separationを同一pose・厚さへ完全被覆し、positive layer orderを(4 faces, 3 hinges)へ限定admitする。strict hexagon-fan fixtureの10/30/60度でcertificate・safe-stop requestedを発行し、60度超はfail-closedにした。既存positive transaction/atomic Apply/UndoRedo経路を共用する。runtime certificate testとdesktop checkが成功した。「3D折り・紙厚・衝突」を80%、全体を51.12%（表示51.1%）へ更新した
 - SIM-010の厚さ0adaptive interval theoremを33〜64 hingesへ拡張した。path-wide conservative expansionでcanonical candidate setを一度だけsweep生成し、各leafは固定candidate arrayだけを走査する。candidate 2048、work 262144相当の有限上限で、48-hinge sparse success、64-hinge dense拒否、小規模brute-force一致、入力順決定性を回帰した。さらに限定正厚を3 triangular faces・2 hingesへ拡張し、canonical shared world axis、2 local outer-shell observations、shared-vertex junction、nonadjacent prism separationを完全被覆して10/30/45/60度でcertificate・safe-stop・positive layer order・transaction readyを発行する。desktop check、continuous tests、frontend回帰が成功した。「3D折り・紙厚・衝突」を78%、全体を50.78%（表示50.8%）へ更新した

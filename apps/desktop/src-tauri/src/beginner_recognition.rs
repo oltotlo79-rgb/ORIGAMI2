@@ -388,7 +388,13 @@ pub(crate) fn apply_beginner_part_assignments(
         .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Antenna)
         .map(|assignment| assignment.candidate_id)
         .collect::<Vec<_>>();
-    let mut counts = [0_u8; 7];
+    let ear_candidate_ids = request
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Ear)
+        .map(|assignment| assignment.candidate_id)
+        .collect::<Vec<_>>();
+    let mut counts = [0_u8; 8];
     for assignment in &request.assignments {
         let index = match assignment.kind {
             ori_domain::BeginnerTargetPartKindV1::Torso => 0,
@@ -398,6 +404,7 @@ pub(crate) fn apply_beginner_part_assignments(
             ori_domain::BeginnerTargetPartKindV1::Tail => 4,
             ori_domain::BeginnerTargetPartKindV1::Horn => 5,
             ori_domain::BeginnerTargetPartKindV1::Antenna => 6,
+            ori_domain::BeginnerTargetPartKindV1::Ear => 7,
             _ => return Err("part_assignment_invalid".to_owned()),
         };
         counts[index] += 1;
@@ -410,6 +417,7 @@ pub(crate) fn apply_beginner_part_assignments(
         ori_domain::BeginnerTargetPartKindV1::Tail,
         ori_domain::BeginnerTargetPartKindV1::Horn,
         ori_domain::BeginnerTargetPartKindV1::Antenna,
+        ori_domain::BeginnerTargetPartKindV1::Ear,
     ]
     .into_iter()
     .zip(counts)
@@ -587,6 +595,42 @@ pub(crate) fn apply_beginner_part_assignments(
             side: ori_domain::BeginnerProtrusionSideV1::Either,
             priority: 50,
         }];
+        if ear_candidate_ids.len() == 2 {
+            let mut ears = ear_candidate_ids
+                .iter()
+                .filter_map(|id| candidates.iter().find(|candidate| candidate.id == *id))
+                .collect::<Vec<_>>();
+            ears.sort_by_key(|candidate| candidate.bounds.min_x);
+            let left_center = i64::from(ears[0].bounds.min_x) + i64::from(ears[0].bounds.max_x);
+            let right_center = i64::from(ears[1].bounds.min_x) + i64::from(ears[1].bounds.max_x);
+            let left_y = i64::from(ears[0].bounds.min_y) + i64::from(ears[0].bounds.max_y);
+            let right_y = i64::from(ears[1].bounds.min_y) + i64::from(ears[1].bounds.max_y);
+            if ears.len() != 2
+                || (left_center + right_center - axis_twice * 2).abs() > 2
+                || (left_y - right_y).abs() > 2
+            {
+                return Err("part_assignment_tail_ear_binding_invalid".to_owned());
+            }
+            let mut ear_target = profile.generation_constraints.protrusions[0].clone();
+            ear_target.id = 2;
+            ear_target.count = 2;
+            ear_target.length_tenths_mm = u32::try_from(
+                (right_center - left_center)
+                    .unsigned_abs()
+                    .saturating_mul(5)
+                    .max(1),
+            )
+            .map_err(|_| "part_assignment_tail_ear_binding_invalid")?;
+            ear_target.position_tenths_mm[1] =
+                i32::try_from((left_y + right_y).saturating_mul(5) / 2)
+                    .map_err(|_| "part_assignment_tail_ear_binding_invalid")?;
+            ear_target.direction_milli = [1000, 0, 0];
+            ear_target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+            profile.generation_constraints.protrusions.push(ear_target);
+            if ori_domain::animal_tail_ear_bindings_v1(&profile.generation_constraints).is_none() {
+                return Err("part_assignment_tail_ear_binding_invalid".to_owned());
+            }
+        }
     }
     if leg_candidate_ids.len() == 6
         && profile.generation_constraints.target_category

@@ -110,6 +110,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     CenterAxisTailBase,
     CenterAxisHornBase,
     CenterAxisAntennaBase,
+    CompositeTailEarBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -152,6 +153,50 @@ pub struct BeginnerBilateralPairBindingV1 {
     pub pair_index: u8,
     pub protrusion_id: u16,
     pub center_y_tenths_mm: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerTailEarBindingV1 {
+    pub tail_protrusion_id: u16,
+    pub ear_pair_protrusion_id: u16,
+}
+
+#[must_use]
+pub fn animal_tail_ear_bindings_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerTailEarBindingV1> {
+    let count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    if constraints.target_category != Some(BeginnerTargetCategoryV1::Animal)
+        || count(BeginnerTargetPartKindV1::Tail) != 1
+        || count(BeginnerTargetPartKindV1::Ear) != 2
+    {
+        return None;
+    }
+    let tail = constraints
+        .protrusions
+        .iter()
+        .filter(|target| target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None)
+        .collect::<Vec<_>>();
+    let ears = constraints
+        .protrusions
+        .iter()
+        .filter(|target| {
+            target.count == 2 && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+        })
+        .collect::<Vec<_>>();
+    (tail.len() == 1 && ears.len() == 1 && tail[0].id != ears[0].id).then_some(
+        BeginnerTailEarBindingV1 {
+            tail_protrusion_id: tail[0].id,
+            ear_pair_protrusion_id: ears[0].id,
+        },
+    )
 }
 
 #[must_use]
@@ -258,6 +303,12 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal
+            if count(BeginnerTargetPartKindV1::Tail) == 1
+                && count(BeginnerTargetPartKindV1::Ear) == 2 =>
+        {
+            3
+        }
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
@@ -369,7 +420,35 @@ pub fn generate_beginner_plans_v1(
     };
     let template = match target_category {
         BeginnerTargetCategoryV1::Animal => {
-            if part_count(BeginnerTargetPartKindV1::Horn) == 1 {
+            if part_count(BeginnerTargetPartKindV1::Tail) == 1
+                && part_count(BeginnerTargetPartKindV1::Ear) == 2
+            {
+                let bindings = animal_tail_ear_bindings_v1(constraints)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                let tail = parameterized_center_axis_endpoint(constraints, false)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                let mut isolated = constraints.clone();
+                isolated
+                    .protrusions
+                    .retain(|target| target.id == bindings.ear_pair_protrusion_id);
+                let ears = parameterized_symmetric_endpoints(&isolated, 2, false)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                let mut endpoints = vec![tail];
+                endpoints.extend(ears);
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CompositeTailEarBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "composite_tail_ear_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Horn) == 1 {
                 let endpoint = parameterized_center_axis_endpoint(constraints, true)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 symmetric_template(
@@ -1066,6 +1145,27 @@ mod tests {
         );
         assert_eq!(tail_plans[0].crease_pattern.vertices.len(), 2);
         assert_eq!(tail_plans[0].crease_pattern.edges.len(), 1);
+        let mut composite = tail.clone();
+        composite.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Ear,
+            count: 2,
+        });
+        composite.protrusions.push(bilateral_protrusion(2, 2));
+        let composite_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &composite).unwrap();
+        assert_eq!(
+            composite_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeTailEarBase
+        );
+        assert_eq!(composite_plans[0].crease_pattern.vertices.len(), 6);
+        assert_eq!(composite_plans[0].crease_pattern.edges.len(), 5);
+        assert_eq!(
+            animal_tail_ear_bindings_v1(&composite),
+            Some(BeginnerTailEarBindingV1 {
+                tail_protrusion_id: 1,
+                ear_pair_protrusion_id: 2
+            })
+        );
         tail.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::Bilateral;
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &tail),

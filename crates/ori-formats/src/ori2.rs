@@ -2280,6 +2280,18 @@ mod tests {
                 texture_asset: Some(back_texture),
             },
         };
+        original.texture_assets = vec![
+            crate::ProjectTextureAssetV1 {
+                id: front_texture,
+                media_type: crate::ProjectTextureMediaTypeV1::Png,
+                bytes: b"\x89PNG\r\n\x1a\nfront".to_vec(),
+            },
+            crate::ProjectTextureAssetV1 {
+                id: back_texture,
+                media_type: crate::ProjectTextureMediaTypeV1::Jpeg,
+                bytes: vec![0xff, 0xd8, b'b', b'a', b'c', b'k', 0xff, 0xd9],
+            },
+        ];
 
         let bytes = write_project_ori2(&original).expect("write .ori2 with paper");
         let restored = read_project_ori2(&bytes).expect("read .ori2 with paper");
@@ -2291,6 +2303,7 @@ mod tests {
         );
         assert_eq!(restored.paper.front.texture_asset, Some(front_texture));
         assert_eq!(restored.paper.back.texture_asset, Some(back_texture));
+        assert_eq!(restored.texture_assets, original.texture_assets);
     }
 
     #[test]

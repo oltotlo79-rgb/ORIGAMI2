@@ -89,6 +89,8 @@ struct StaticMeshExportSource {
     project_name: String,
     paper_front_color_rgba: [u8; 4],
     paper_back_color_rgba: [u8; 4],
+    paper_front_texture: Option<ResolvedStaticMeshTexture>,
+    has_back_texture: bool,
     paper_thickness_mm: f64,
     paper_thickness_bits: u64,
     model: MaterialTreeKinematicsModel,
@@ -445,6 +447,30 @@ fn capture_export_source(
             let color = project.editor.paper().back.color;
             [color.red, color.green, color.blue, color.alpha]
         },
+        paper_front_texture: project.editor.paper().front.texture_asset.map(|asset_id| {
+            let asset = project
+                .texture_assets
+                .iter()
+                .find(|asset| asset.id == asset_id)
+                .expect("validated project texture reference");
+            ResolvedStaticMeshTexture {
+                binding: TextureAuthorityBinding {
+                    project_instance_id: project.instance_id,
+                    project_id: project.project_id,
+                    revision: project.editor.revision(),
+                },
+                asset_id,
+                side: PaperTextureSide::Front,
+                media_type: match asset.media_type {
+                    ori_formats::ProjectTextureMediaTypeV1::Png => EmbeddedTextureMediaTypeV1::Png,
+                    ori_formats::ProjectTextureMediaTypeV1::Jpeg => {
+                        EmbeddedTextureMediaTypeV1::Jpeg
+                    }
+                },
+                bytes: asset.bytes.clone(),
+            }
+        }),
+        has_back_texture: project.editor.paper().back.texture_asset.is_some(),
         paper_thickness_mm: canonical_zero(paper_thickness_mm),
         paper_thickness_bits,
         model: view.model().clone(),
@@ -460,8 +486,39 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         .bind_pose(&source.pose)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let face_count = source.pose.face_ids().len();
-    let mid_surface =
-        build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)?;
+    let (mid_surface, material_tex_coords) = build_current_pose_mid_surface_mesh_with_material_uv(
+        &source.project_name,
+        &source.model,
+        &source.pose,
+    )?;
+    let expected_front_asset = source
+        .paper_front_texture
+        .as_ref()
+        .map(|texture| texture.asset_id);
+    if source.format == StaticMeshExportFormatRequest::Glb
+        && (source.has_back_texture
+            || (source.paper_thickness_mm > 0.0 && expected_front_asset.is_some()))
+    {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    let resolved_front = if source.format == StaticMeshExportFormatRequest::Glb {
+        source.paper_front_texture
+    } else {
+        None
+    };
+    let mid_surface = stage_authenticated_texture(
+        source.format,
+        expected_front_asset,
+        PaperTextureSide::Front,
+        TextureAuthorityBinding {
+            project_instance_id: source.expected_project_instance_id,
+            project_id: source.expected_project_id,
+            revision: source.expected_revision,
+        },
+        resolved_front,
+        material_tex_coords,
+        mid_surface,
+    )?;
     let mesh = if source.paper_thickness_mm > 0.0 {
         extrude_closed_face_solids(
             mid_surface,

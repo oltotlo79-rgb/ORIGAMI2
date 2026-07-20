@@ -394,6 +394,7 @@ struct ProjectState {
     /// `project -> pose -> layer order`. It is never persisted.
     applied_pose_authority: CurrentAppliedPoseAuthority,
     numeric_expressions: ProjectNumericExpressions,
+    texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
 }
@@ -414,6 +415,7 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
+            texture_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
         };
@@ -434,6 +436,7 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
+            texture_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
         }
@@ -450,6 +453,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
+        let texture_assets = document.texture_assets;
         let editor = EditorState::with_all_document_parts_and_memo(
             document.crease_pattern,
             document.paper,
@@ -467,6 +471,7 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions,
+            texture_assets,
             saved_document: Some(saved_document),
             editor,
         }
@@ -499,6 +504,7 @@ impl ProjectState {
         saved_document.numeric_expressions.redo_stack.clear();
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
+        let texture_assets = document.texture_assets.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -507,6 +513,7 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
+            texture_assets,
             saved_document: Some(saved_document),
             editor,
         };
@@ -534,6 +541,7 @@ impl ProjectState {
             history_lengths.0,
             history_lengths.1,
         )?;
+        let texture_assets = document.texture_assets.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -542,6 +550,7 @@ impl ProjectState {
             saved_revision: None,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
+            texture_assets,
             saved_document: None,
             editor,
         };
@@ -571,6 +580,7 @@ impl ProjectState {
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
             element_metadata: self.editor.element_metadata().clone(),
+            texture_assets: self.texture_assets.clone(),
         };
         document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
         document
@@ -630,6 +640,7 @@ impl ProjectState {
             || saved.geometric_constraints != *self.editor.geometric_constraints()
             || saved.layers != *self.editor.project_layers()
             || saved.element_metadata != *self.editor.element_metadata()
+            || saved.texture_assets != self.texture_assets
     }
 
     fn record_numeric_expression_edit(&mut self) {

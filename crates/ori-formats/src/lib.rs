@@ -9,8 +9,10 @@ mod ori2;
 mod project_folder;
 mod svg;
 
+use std::collections::BTreeSet;
+
 use ori_domain::{
-    ConstraintId, CreasePattern, EdgeId, GeometricConstraintDocumentV1,
+    AssetId, ConstraintId, CreasePattern, EdgeId, GeometricConstraintDocumentV1,
     GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1, InstructionPose,
     InstructionTimeline, InstructionTimelineValidationError, Paper, ProjectId,
     ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, VertexId,
@@ -103,6 +105,25 @@ pub const PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION: u32 = 1;
 pub const MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES: usize = 4_096;
 /// Non-relaxable byte ceiling for directly supplied `project.json` input.
 pub const MAX_PROJECT_JSON_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_PROJECT_TEXTURE_ASSETS: usize = 64;
+pub const MAX_PROJECT_TEXTURE_ASSET_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectTextureMediaTypeV1 {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTextureAssetV1 {
+    pub id: AssetId,
+    pub media_type: ProjectTextureMediaTypeV1,
+    pub bytes: Vec<u8>,
+}
 
 /// Resource limits applied before parsing a directly supplied `project.json`.
 ///
@@ -278,6 +299,9 @@ pub struct ProjectDocument {
         skip_serializing_if = "ori_domain::ElementMetadataDocumentV1::is_empty"
     )]
     pub element_metadata: ori_domain::ElementMetadataDocumentV1,
+    /// Bounded project-local texture payloads authenticated by `AssetId`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texture_assets: Vec<ProjectTextureAssetV1>,
 }
 
 impl ProjectDocument {
@@ -297,6 +321,7 @@ impl ProjectDocument {
             geometric_constraints: GeometricConstraintDocumentV1::default(),
             layers: ProjectLayerDocumentV1::default(),
             element_metadata: ori_domain::ElementMetadataDocumentV1::default(),
+            texture_assets: Vec::new(),
         }
     }
 }
@@ -311,6 +336,8 @@ pub enum FormatError {
     NilProjectId,
     #[error("project element metadata is invalid")]
     InvalidElementMetadata,
+    #[error("project texture asset registry is invalid")]
+    InvalidTextureAssets,
     #[error("project memo is invalid")]
     InvalidProjectMemo,
     #[error("project thumbnail is invalid")]
@@ -527,6 +554,7 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
     }
     ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
         .map_err(|_| FormatError::InvalidElementMetadata)?;
+    validate_texture_assets(document)?;
     if document.format_version != CURRENT_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion {
             found: document.format_version,
@@ -535,6 +563,46 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
     }
     if document.project_id.canonical_bytes() == [0; 16] {
         return Err(FormatError::NilProjectId);
+    }
+    Ok(())
+}
+
+fn validate_texture_assets(document: &ProjectDocument) -> Result<(), FormatError> {
+    if document.texture_assets.len() > MAX_PROJECT_TEXTURE_ASSETS {
+        return Err(FormatError::InvalidTextureAssets);
+    }
+    let referenced = [
+        document.paper.front.texture_asset,
+        document.paper.back.texture_asset,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|id| id.canonical_bytes())
+    .collect::<BTreeSet<_>>();
+    let mut ids = BTreeSet::new();
+    let mut total = 0usize;
+    for asset in &document.texture_assets {
+        total = total
+            .checked_add(asset.bytes.len())
+            .ok_or(FormatError::InvalidTextureAssets)?;
+        let payload_matches = match asset.media_type {
+            ProjectTextureMediaTypeV1::Png => asset.bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            ProjectTextureMediaTypeV1::Jpeg => {
+                asset.bytes.starts_with(&[0xff, 0xd8]) && asset.bytes.ends_with(&[0xff, 0xd9])
+            }
+        };
+        if asset.id.canonical_bytes() == [0; 16]
+            || !ids.insert(asset.id.canonical_bytes())
+            || asset.bytes.is_empty()
+            || asset.bytes.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES
+            || !payload_matches
+            || !referenced.contains(&asset.id.canonical_bytes())
+        {
+            return Err(FormatError::InvalidTextureAssets);
+        }
+    }
+    if total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES || ids != referenced {
+        return Err(FormatError::InvalidTextureAssets);
     }
     Ok(())
 }
@@ -1943,6 +2011,18 @@ mod tests {
                 texture_asset: Some(back_texture),
             },
         };
+        original.texture_assets = vec![
+            ProjectTextureAssetV1 {
+                id: front_texture,
+                media_type: ProjectTextureMediaTypeV1::Png,
+                bytes: b"\x89PNG\r\n\x1a\nfront".to_vec(),
+            },
+            ProjectTextureAssetV1 {
+                id: back_texture,
+                media_type: ProjectTextureMediaTypeV1::Jpeg,
+                bytes: vec![0xff, 0xd8, b'b', b'a', b'c', b'k', 0xff, 0xd9],
+            },
+        ];
 
         let bytes = write_project_json(&original).expect("write project with paper");
         let restored = read_project_json(&bytes).expect("read project with paper");
@@ -1954,6 +2034,46 @@ mod tests {
         );
         assert_eq!(restored.paper.front.texture_asset, Some(front_texture));
         assert_eq!(restored.paper.back.texture_asset, Some(back_texture));
+        assert_eq!(restored.texture_assets, original.texture_assets);
+    }
+
+    #[test]
+    fn texture_registry_rejects_missing_foreign_duplicate_and_mistyped_payloads() {
+        let asset_id = AssetId::new();
+        let mut document = sample_document();
+        document.paper.front.texture_asset = Some(asset_id);
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidTextureAssets)
+        ));
+
+        document.texture_assets.push(ProjectTextureAssetV1 {
+            id: asset_id,
+            media_type: ProjectTextureMediaTypeV1::Png,
+            bytes: b"\x89PNG\r\n\x1a\nvalid".to_vec(),
+        });
+        assert!(write_project_json(&document).is_ok());
+
+        document.texture_assets[0].media_type = ProjectTextureMediaTypeV1::Jpeg;
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidTextureAssets)
+        ));
+        document.texture_assets[0].media_type = ProjectTextureMediaTypeV1::Png;
+        document
+            .texture_assets
+            .push(document.texture_assets[0].clone());
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidTextureAssets)
+        ));
+
+        document.texture_assets.pop();
+        document.paper.front.texture_asset = None;
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidTextureAssets)
+        ));
     }
 
     #[test]

@@ -29,6 +29,7 @@ const UNAVAILABLE_MESSAGE: &str =
 const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.";
 const ANALYSIS_FAILED_MESSAGE: &str =
     "The stacked-fold proposal is unsupported or could not be certified.";
+const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 
@@ -144,6 +145,9 @@ pub(super) async fn propose_current_stacked_fold_read(
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
+    let worker_permit = app_state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
     let (paper, pattern, pose_capability, layer_capability, binding) = {
         let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
         if project.instance_id != request.expected_project_instance_id
@@ -218,6 +222,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         drop(proposal);
         drop(guard);
         Ok::<_, String>((
+            worker_permit,
             pose_capability,
             layer_capability,
             support,
@@ -228,7 +233,15 @@ pub(super) async fn propose_current_stacked_fold_read(
     })
     .await
     .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())??;
-    let (pose_capability, layer_capability, support, crossed_cells, target_faces, work) = analysis;
+    let (
+        worker_permit,
+        pose_capability,
+        layer_capability,
+        support,
+        crossed_cells,
+        target_faces,
+        work,
+    ) = analysis;
 
     {
         let project = lock_project(&app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
@@ -248,6 +261,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             return Err(STALE_MESSAGE.to_owned());
         }
     }
+    drop(worker_permit);
 
     Ok(StackedFoldReadResponse {
         guard_model_id: ori_collision::STACKED_FOLD_READ_GUARD_MODEL_ID_V1,

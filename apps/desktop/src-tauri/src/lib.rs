@@ -1619,6 +1619,12 @@ fn evaluate_beginner_candidates(
         Err(ori_domain::BeginnerGeneratorErrorV1::MissingRequiredParts) => {
             ("missing_required_parts", Vec::new())
         }
+        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate) => {
+            ("unsupported_animal_template", Vec::new())
+        }
+        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedInsectTemplate) => {
+            ("unsupported_insect_template", Vec::new())
+        }
     };
     generated_plans.truncate(usize::from(requested_candidate_count));
     Ok(BeginnerCandidateResponse {
@@ -1645,8 +1651,13 @@ fn apply_beginner_generated_plan(
     selected_kind: ori_domain::BeginnerGeneratedPlanKindV1,
     expected_candidate_edge_id: EdgeId,
 ) -> Result<ProjectSnapshot, String> {
-    if selected_kind != ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold {
-        return Err("only the validated diagonal plan can currently be applied".to_owned());
+    if !matches!(
+        selected_kind,
+        ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+    ) {
+        return Err("the selected generated plan is preview-only".to_owned());
     }
     let mut project = lock_project(&state)?;
     ensure_expected_project(
@@ -1695,11 +1706,29 @@ fn apply_beginner_generated_plan(
         pattern.edges.push(edge);
     }
     let mut instruction_timeline = project.editor.instruction_timeline().clone();
+    let (title, description, caution) = match selected_kind {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase => (
+            "Symmetric four-leg base",
+            "Create the four bounded base creases around the shared center.",
+            "Confirm that the saved four-leg target and bilateral protrusion still match.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase => (
+            "Symmetric wing base",
+            "Create the four bounded base creases for the bilateral wing layout.",
+            "Confirm that the saved two-wing target and bilateral protrusion still match.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
+            "Diagonal fold",
+            "Fold the rectangular sheet on the generated diagonal.",
+            "Review the crease direction before folding.",
+        ),
+        _ => return Err("the selected generated plan is preview-only".to_owned()),
+    };
     instruction_timeline.steps.push(InstructionStep {
         id: InstructionStepId::new(),
-        title: "Diagonal fold".to_owned(),
-        description: "Fold the rectangular sheet on the generated diagonal.".to_owned(),
-        caution: "Review the crease direction before folding.".to_owned(),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        caution: caution.to_owned(),
         duration_ms: 2_000,
         visual: InstructionVisual::default(),
         pose: InstructionPose {

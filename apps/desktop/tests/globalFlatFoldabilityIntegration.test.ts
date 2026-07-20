@@ -87,7 +87,7 @@ test('the global panel is controlled by coordinator state and exposes start and 
   )
   assert.match(
     appSource,
-    /<GlobalFlatFoldabilityPanel\s+job=\{globalFlatFoldabilityJob\}\s+timeLimitSeconds=\{globalFlatFoldabilityTimeLimit\}/u,
+    /<GlobalFlatFoldabilityPanel\s+job=\{globalFlatFoldabilityJob\}[\s\S]*?timeLimitSeconds=\{globalFlatFoldabilityTimeLimit\}/u,
   )
   assert.match(
     appSource,

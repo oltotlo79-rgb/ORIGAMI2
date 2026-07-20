@@ -1612,6 +1612,52 @@ mod tests {
     }
 
     #[test]
+    fn schedule_binding_rejects_assignment_and_axis_aba() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            fixed,
+            [0.0, 1.0],
+            entries(&edges),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let rebuild = |change_assignment: bool, change_axis: bool| {
+            let hinges = geometry
+                .hinges()
+                .iter()
+                .enumerate()
+                .map(|(index, hinge)| {
+                    TreeHinge::new_for_test(
+                        hinge.edge(),
+                        if change_assignment && index == 0 {
+                            match hinge.assignment() {
+                                FoldAssignment::Mountain => FoldAssignment::Valley,
+                                FoldAssignment::Valley => FoldAssignment::Mountain,
+                            }
+                        } else {
+                            hinge.assignment()
+                        },
+                        hinge.left_face(),
+                        hinge.right_face(),
+                        hinge.start(),
+                        hinge.end(),
+                        if change_axis && index == 0 {
+                            Point3::new(0.0, 1.0, 0.0).unwrap()
+                        } else {
+                            hinge.axis()
+                        },
+                    )
+                })
+                .collect();
+            MaterialHingeGraphGeometry::new_for_test(geometry.face_ids().to_vec(), hinges)
+        };
+        assert!(!schedule.matches_binding(&rebuild(true, false), &audit, fixed));
+        assert!(!schedule.matches_binding(&rebuild(false, true), &audit, fixed));
+    }
+
+    #[test]
     fn malformed_order_coefficients_and_limits_fail_closed() {
         let (geometry, audit, fixed, edges) = fixture();
         let limits = CycleScheduleLimitsV1::default();

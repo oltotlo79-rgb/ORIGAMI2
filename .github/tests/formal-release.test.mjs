@@ -196,12 +196,16 @@ test('legacy Windows release audit dependencies are hash pinned and cache free',
 test('release-gating CI uses exact toolchains and digest-verified external tools', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   assert.doesNotMatch(workflow, /toolchain: stable|node-version: 24\s*$|python-version: "3\.12"\s*$/mu)
-  assert.equal(workflow.match(/toolchain: 1\.90\.0/gu)?.length ?? 0, 4)
-  assert.equal(workflow.match(/node-version: 24\.11\.1/gu)?.length ?? 0, 3)
+  assert.equal(workflow.match(/toolchain: 1\.90\.0/gu)?.length ?? 0, 5)
+  assert.equal(workflow.match(/node-version: 24\.11\.1/gu)?.length ?? 0, 4)
   assert.match(workflow, /python-version: "3\.12\.12"/u)
   assert.match(workflow, /blender-4\.5\.11-linux-x64\.tar\.xz[\s\S]*sha256sum --check --strict/u)
   assert.match(workflow, /PrusaSlicer-2\.9\.6\.zip[\s\S]*Get-FileHash[\s\S]*checksum mismatch/u)
   assert.match(workflow, /--require-hashes --no-deps -r \.github\/release-audit-requirements\.txt/u)
+  assert.match(workflow, /npm audit --package-lock-only --audit-level=low/u)
+  assert.match(workflow, /cargo install cargo-audit --version 0\.21\.2 --locked/u)
+  assert.match(workflow, /checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0/u)
+  assert.match(workflow, /cargo audit --db "\$database" --no-fetch --deny warnings/u)
   assert.doesNotMatch(workflow, /npx (?!--no-install)/u)
   for (const command of workflow.matchAll(/cargo test[^\r\n]*/gu)) {
     assert.match(command[0], /--locked/u)
@@ -466,9 +470,9 @@ test('CI always runs release contracts with read-only short-lived evidence', () 
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const checkoutCount = workflow.match(/actions\/checkout@/gu)?.length ?? 0
   const nonPersistentCount = workflow.match(/persist-credentials: false/gu)?.length ?? 0
-  assert.equal(checkoutCount, 5)
+  assert.equal(checkoutCount, 6)
   assert.equal(nonPersistentCount, checkoutCount)
-  assert.equal(workflow.match(/timeout-minutes:/gu)?.length ?? 0, 5)
+  assert.equal(workflow.match(/timeout-minutes:/gu)?.length ?? 0, 6)
   assert.match(workflow, /cancel-in-progress: true/u)
   assert.match(workflow, /permissions:\s*\n\s+contents: read/u)
   assert.match(workflow, /npm test/u)
@@ -1116,9 +1120,10 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   assert.equal(policy.cargoSources, 'registry-checksum-required;git-forbidden')
   assert.equal(policy.npmIntegrity, 'sha512-required')
   assert.deepEqual(policy.vulnerabilityAssessment, {
-    status: 'not-performed',
-    reason: 'external-vulnerability-database-not-queried',
-    scope: 'this-release-policy-evidence',
+    status: 'ci-gated',
+    npm: 'npm-audit-v2;node-24.11.1;audit-level-low',
+    cargo: 'cargo-audit-0.21.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
+    scope: 'package-lock.json;Cargo.lock',
   })
   assert.ok(policy.cargoRegistryPackages > 0 && policy.cargoRegistryPackages <= 10000)
   assert.ok(policy.npmPackages > 0 && policy.npmPackages <= 10000)

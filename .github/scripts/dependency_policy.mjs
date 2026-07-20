@@ -75,9 +75,10 @@ export function buildDependencyPolicy() {
     npmLicenses: [...new Set(npmPackages.map(([, pkg]) => pkg.license))].sort(),
     cargoSources: 'registry-checksum-required;git-forbidden',
     vulnerabilityAssessment: {
-      status: 'not-performed',
-      reason: 'external-vulnerability-database-not-queried',
-      scope: 'this-release-policy-evidence',
+      status: 'ci-gated',
+      npm: 'npm-audit-v2;node-24.11.1;audit-level-low',
+      cargo: 'cargo-audit-0.21.2;rustsec-db-b5fc89b8be99e96f79194d8a6f11e9b4143b99f0;offline',
+      scope: 'package-lock.json;Cargo.lock',
     },
     result: 'pass',
   }

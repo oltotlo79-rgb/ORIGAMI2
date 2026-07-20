@@ -13,6 +13,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-advisory-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: 1.90.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.11.1
+      - name: Audit npm lockfile against the registry advisory service
+        working-directory: apps/desktop
+        run: npm audit --package-lock-only --audit-level=low
+      - name: Audit Cargo.lock against a commit-pinned RustSec database offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.21.2 --locked
+          database="$RUNNER_TEMP/advisory-db"
+          git clone --filter=blob:none --no-checkout https://github.com/rustsec/advisory-db.git "$database"
+          git -C "$database" checkout --detach b5fc89b8be99e96f79194d8a6f11e9b4143b99f0
+          test "$(git -C "$database" rev-parse HEAD)" = b5fc89b8be99e96f79194d8a6f11e9b4143b99f0
+          cargo audit --db "$database" --no-fetch --deny warnings
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 25

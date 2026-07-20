@@ -134,17 +134,50 @@ test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))
   assert.match(promote, /gh release download "\$RELEASE_TAG"/u)
-  assert.match(promote, /find \. -maxdepth 1 -type f/u)
-  assert.match(promote, /SHA256SUMS-windows-x64\.txt/u)
-  assert.match(promote, /SHA256SUMS-macos-arm64\.txt/u)
+  assert.match(promote, /verify_merged_release_set\.mjs release/u)
   assert.match(promote, /gh attestation verify "\$asset"/u)
-  assert.match(promote, /\.bomFormat == "CycloneDX"/u)
   assert.match(promote, /isPrerelease.*= true/u)
   assert.doesNotMatch(promote, /tauri build|tauri bundle|cargo build|npm run build/u)
   assert.ok(
     promote.indexOf('gh attestation verify') <
       promote.indexOf('gh release edit'),
   )
+})
+
+test('publication and promotion share the exact merged release verifier', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const mergedVerifier = readFileSync(
+    join(root, '.github/scripts/verify_merged_release_set.mjs'),
+    'utf8',
+  )
+  assert.equal(workflow.match(/verify_merged_release_set\.mjs release/gu)?.length, 2)
+  assert.match(mergedVerifier, /merged release asset set mismatch/u)
+  assert.match(mergedVerifier, /verify_formal_release\.mjs/u)
+  assert.match(mergedVerifier, /REQUIRE_SIGNATURE: 'false'/u)
+  assert.match(mergedVerifier, /finally[\s\S]*rmSync/u)
+  assert.ok(
+    workflow.indexOf('verify_merged_release_set.mjs release') <
+      workflow.indexOf('attest-build-provenance'),
+  )
+
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-merged-release-'))
+  try {
+    writeFileSync(join(directory, 'unexpected-asset'), 'unexpected')
+    assert.throws(
+      () => execFileSync(
+        'node',
+        ['.github/scripts/verify_merged_release_set.mjs', directory],
+        {
+          cwd: root,
+          stdio: 'pipe',
+          env: { ...process.env, RELEASE_VERSION: '0.1.0' },
+        },
+      ),
+      /merged release asset set mismatch/u,
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('CI and formal release share the strict macOS bundle contract', () => {

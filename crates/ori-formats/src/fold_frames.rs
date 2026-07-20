@@ -20,6 +20,7 @@ pub struct Fold3dFramePreviewV1 {
     parent: Option<usize>,
     inherits: bool,
     vertex_count: usize,
+    topology_identity_authenticated: bool,
 }
 
 impl Fold3dFramePreviewV1 {
@@ -39,6 +40,10 @@ impl Fold3dFramePreviewV1 {
     pub const fn vertex_count(&self) -> usize {
         self.vertex_count
     }
+    #[must_use]
+    pub const fn topology_identity_authenticated(&self) -> bool {
+        self.topology_identity_authenticated
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -46,6 +51,7 @@ pub struct Fold3dFramesPreviewV1 {
     source_sha256: [u8; 32],
     frames: Vec<Fold3dFramePreviewV1>,
     resolved_vertices: Vec<Vec<[f64; 3]>>,
+    topology_sha256: Vec<Option<[u8; 32]>>,
 }
 
 impl Fold3dFramesPreviewV1 {
@@ -67,6 +73,7 @@ impl Fold3dFramesPreviewV1 {
             source_sha256: self.source_sha256,
             frame_index: index,
             vertices,
+            topology_sha256: self.topology_sha256[index],
             authorizes_project_mutation: false,
             authorizes_applied_pose: false,
             authorizes_instruction_timeline: false,
@@ -79,6 +86,7 @@ pub struct Fold3dFrameSelectionV1 {
     source_sha256: [u8; 32],
     frame_index: usize,
     vertices: Vec<[f64; 3]>,
+    topology_sha256: Option<[u8; 32]>,
     authorizes_project_mutation: bool,
     authorizes_applied_pose: bool,
     authorizes_instruction_timeline: bool,
@@ -96,6 +104,10 @@ impl Fold3dFrameSelectionV1 {
     #[must_use]
     pub fn vertices(&self) -> &[[f64; 3]] {
         &self.vertices
+    }
+    #[must_use]
+    pub const fn topology_sha256(&self) -> Option<[u8; 32]> {
+        self.topology_sha256
     }
     #[must_use]
     pub const fn authorizes_project_mutation(&self) -> bool {
@@ -138,6 +150,12 @@ struct RawDocument {
     file_spec: Option<f64>,
     #[serde(default)]
     vertices_coords: Option<Vec<Vec<f64>>>,
+    #[serde(default)]
+    edges_vertices: Option<Vec<Vec<usize>>>,
+    #[serde(default)]
+    edges_assignment: Option<Vec<String>>,
+    #[serde(default)]
+    faces_vertices: Option<Vec<Vec<usize>>>,
     file_frames: Vec<RawFrame>,
 }
 
@@ -149,6 +167,19 @@ struct RawFrame {
     frame_inherit: bool,
     #[serde(default)]
     vertices_coords: Option<Vec<Vec<f64>>>,
+    #[serde(default)]
+    edges_vertices: Option<Vec<Vec<usize>>>,
+    #[serde(default)]
+    edges_assignment: Option<Vec<String>>,
+    #[serde(default)]
+    faces_vertices: Option<Vec<Vec<usize>>>,
+}
+
+#[derive(Clone, PartialEq, Serialize)]
+struct Topology {
+    edges: Vec<[usize; 2]>,
+    assignments: Vec<String>,
+    faces: Vec<Vec<usize>>,
 }
 
 pub fn read_fold_3d_frames_preview_v1(
@@ -176,6 +207,11 @@ pub fn read_fold_3d_frames_preview_v1(
     }) {
         return Err(Fold3dFramesImportErrorV1::InvalidFrameParent);
     }
+    let root_topology_raw = (
+        raw.edges_vertices.clone(),
+        raw.edges_assignment.clone(),
+        raw.faces_vertices.clone(),
+    );
     let root = raw
         .vertices_coords
         .map(|coords| coordinates(coords, limits.max_vertices))
@@ -193,6 +229,35 @@ pub fn read_fold_3d_frames_preview_v1(
         )?;
     }
     let resolved_vertices = resolved.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    let root_topology = parse_topology(
+        root_topology_raw.0,
+        root_topology_raw.1,
+        root_topology_raw.2,
+        root.as_ref().map_or(0, Vec::len),
+        limits,
+    )?;
+    let mut topologies = vec![None; raw.file_frames.len()];
+    let mut topology_visiting = HashSet::new();
+    for index in 0..raw.file_frames.len() {
+        resolve_topology(
+            index,
+            &raw.file_frames,
+            root_topology.as_ref(),
+            &resolved_vertices,
+            limits,
+            &mut topologies,
+            &mut topology_visiting,
+        )?;
+    }
+    let baseline = topologies.iter().flatten().next();
+    let topology_sha256 = topologies
+        .iter()
+        .map(|topology| {
+            topology.as_ref().map(|value| {
+                Sha256::digest(serde_json::to_vec(value).expect("topology serializes")).into()
+            })
+        })
+        .collect::<Vec<_>>();
     let frames = raw
         .file_frames
         .iter()
@@ -202,13 +267,105 @@ pub fn read_fold_3d_frames_preview_v1(
             parent: frame.frame_parent,
             inherits: frame.frame_inherit,
             vertex_count: resolved_vertices[index].len(),
+            topology_identity_authenticated: topologies[index]
+                .as_ref()
+                .zip(baseline)
+                .is_some_and(|(current, baseline)| current == baseline),
         })
         .collect();
     Ok(Fold3dFramesPreviewV1 {
         source_sha256: Sha256::digest(bytes).into(),
         frames,
         resolved_vertices,
+        topology_sha256,
     })
+}
+
+fn resolve_topology(
+    index: usize,
+    frames: &[RawFrame],
+    root: Option<&Topology>,
+    vertices: &[Vec<[f64; 3]>],
+    limits: FoldImportLimits,
+    resolved: &mut [Option<Topology>],
+    visiting: &mut HashSet<usize>,
+) -> Result<(), Fold3dFramesImportErrorV1> {
+    if resolved[index].is_some() {
+        return Ok(());
+    }
+    if !visiting.insert(index) {
+        return Err(Fold3dFramesImportErrorV1::InvalidFrameParent);
+    }
+    let frame = &frames[index];
+    let own = parse_topology(
+        frame.edges_vertices.clone(),
+        frame.edges_assignment.clone(),
+        frame.faces_vertices.clone(),
+        vertices[index].len(),
+        limits,
+    )?;
+    let inherited = if frame.frame_inherit {
+        if let Some(parent) = frame.frame_parent {
+            resolve_topology(parent, frames, root, vertices, limits, resolved, visiting)?;
+            resolved[parent].clone()
+        } else {
+            root.cloned()
+        }
+    } else {
+        None
+    };
+    resolved[index] = own.or(inherited);
+    visiting.remove(&index);
+    Ok(())
+}
+
+fn parse_topology(
+    edges: Option<Vec<Vec<usize>>>,
+    assignments: Option<Vec<String>>,
+    faces: Option<Vec<Vec<usize>>>,
+    vertex_count: usize,
+    limits: FoldImportLimits,
+) -> Result<Option<Topology>, Fold3dFramesImportErrorV1> {
+    if edges.is_none() && assignments.is_none() && faces.is_none() {
+        return Ok(None);
+    }
+    let (edges, assignments, faces) = (
+        edges.ok_or(Fold3dFramesImportErrorV1::Malformed)?,
+        assignments.ok_or(Fold3dFramesImportErrorV1::Malformed)?,
+        faces.ok_or(Fold3dFramesImportErrorV1::Malformed)?,
+    );
+    if edges.len() > limits.max_edges
+        || edges.len() != assignments.len()
+        || faces.len() > limits.max_vertices
+    {
+        return Err(Fold3dFramesImportErrorV1::TooManyVertices);
+    }
+    let edges = edges
+        .into_iter()
+        .map(|edge| {
+            let [a, b]: [usize; 2] = edge
+                .try_into()
+                .map_err(|_| Fold3dFramesImportErrorV1::Malformed)?;
+            if a == b || a >= vertex_count || b >= vertex_count {
+                return Err(Fold3dFramesImportErrorV1::Malformed);
+            }
+            Ok([a, b])
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if assignments
+        .iter()
+        .any(|a| !matches!(a.as_str(), "B" | "M" | "V" | "F" | "U" | "C" | "J"))
+        || faces
+            .iter()
+            .any(|face| face.len() < 3 || face.iter().any(|i| *i >= vertex_count))
+    {
+        return Err(Fold3dFramesImportErrorV1::Malformed);
+    }
+    Ok(Some(Topology {
+        edges,
+        assignments,
+        faces,
+    }))
 }
 
 fn resolve(
@@ -328,5 +485,33 @@ mod tests {
             read_fold_3d_frames_preview_v1(bounded, limits),
             Err(Fold3dFramesImportErrorV1::TooManyVertices)
         );
+    }
+
+    #[test]
+    fn inherited_fold_topology_gets_stable_identity_but_no_pose_authority() {
+        let bytes = br#"{
+          "vertices_coords":[[0,0,0],[1,0,0],[1,1,0],[0,1,0]],
+          "edges_vertices":[[0,1],[1,2],[2,3],[3,0],[0,2]],
+          "edges_assignment":["B","B","B","B","M"],
+          "faces_vertices":[[0,1,2],[0,2,3]],
+          "file_frames":[
+            {"frame_inherit":true},
+            {"frame_parent":0,"frame_inherit":true,
+             "vertices_coords":[[0,0,0],[1,0,0],[1,1,1],[0,1,0]]}
+          ]
+        }"#;
+        let preview = read_fold_3d_frames_preview_v1(bytes, FoldImportLimits::default()).unwrap();
+        assert!(
+            preview
+                .frames()
+                .iter()
+                .all(Fold3dFramePreviewV1::topology_identity_authenticated)
+        );
+        let first = preview.select_frame(0).unwrap();
+        let second = preview.select_frame(1).unwrap();
+        assert_eq!(first.topology_sha256(), second.topology_sha256());
+        assert!(first.topology_sha256().is_some());
+        assert!(!second.authorizes_applied_pose());
+        assert!(!second.authorizes_instruction_timeline());
     }
 }

@@ -151,6 +151,8 @@ import {
   type ValidationSnapshot,
   validateSvgImportSettings,
   validateProject,
+  proveCurrentAssignedLocalSufficiencyV1,
+  type AssignedLocalSufficiencyResponseV1,
 } from './lib/coreClient'
 import {
   isNativeProjectFolderAvailable,
@@ -572,6 +574,8 @@ function App() {
   }
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
+  const [assignedLocalSufficiency, setAssignedLocalSufficiency] =
+    useState<AssignedLocalSufficiencyResponseV1 | null>(null)
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
   const [mirrorVertexIds, setMirrorVertexIds] = useState<string[]>([])
   const [mirrorEdgeIds, setMirrorEdgeIds] = useState<string[]>([])
@@ -1364,6 +1368,28 @@ function App() {
   const selectedLocalFlatFoldability = selectedVertexId
     ? localFlatFoldabilityPresentation?.verticesById.get(selectedVertexId)
     : undefined
+  useEffect(() => {
+    let current = true
+    if (!selectedVertexId || !nativeSnapshot) {
+      setAssignedLocalSufficiency(null)
+      return () => {
+        current = false
+      }
+    }
+    void proveCurrentAssignedLocalSufficiencyV1({
+      expectedProjectInstanceId: nativeSnapshot.project_instance_id,
+      expectedProjectId: nativeSnapshot.project_id,
+      expectedRevision: nativeSnapshot.revision,
+      vertex: selectedVertexId,
+    }).then((response) => {
+      if (current) setAssignedLocalSufficiency(response)
+    }).catch(() => {
+      if (current) setAssignedLocalSufficiency(null)
+    })
+    return () => {
+      current = false
+    }
+  }, [nativeSnapshot, selectedVertexId])
   const canvasLocalFlatFoldabilityHighlights = !benchmarkRun
     && localFlatFoldabilityPresentation?.kind === 'ready'
     ? localFlatFoldabilityPresentation.highlights
@@ -8272,6 +8298,30 @@ function App() {
                             localFlatFoldabilityPresentation.maxExactFoldDegree,
                             locale,
                           )}
+                        </p>
+                      )}
+                      {assignedLocalSufficiency && (
+                        <p
+                          className="local-flat-foldability-sufficiency"
+                          aria-live="polite"
+                        >
+                          {assignedLocalSufficiency.result.status === 'proven'
+                            ? text({
+                              ja: `指定M/Vの局所十分性をBLB縮約 ${assignedLocalSufficiency.result.reduction_steps} 段で証明しました。`,
+                              en: `Assigned M/V local sufficiency is proven by ${assignedLocalSufficiency.result.reduction_steps} BLB reduction step(s).`,
+                            })
+                            : text({
+                              ja: assignedLocalSufficiency.result.reason === 'resource_limit'
+                                ? '局所十分性は資源上限のため判定不能です。'
+                                : assignedLocalSufficiency.result.reason === 'necessary_conditions_not_satisfied'
+                                  ? '局所必要条件が成立しないため十分性を証明できません。'
+                                  : '適用できる一意なstrict BLB縮約がないため局所十分性は判定不能です。',
+                              en: assignedLocalSufficiency.result.reason === 'resource_limit'
+                                ? 'Local sufficiency is indeterminate because the resource limit was reached.'
+                                : assignedLocalSufficiency.result.reason === 'necessary_conditions_not_satisfied'
+                                  ? 'Local sufficiency cannot be proven because the necessary conditions fail.'
+                                  : 'Local sufficiency is indeterminate because no unique strict BLB reduction applies.',
+                            })}
                         </p>
                       )}
                     </div>

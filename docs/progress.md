@@ -26,6 +26,8 @@
 
 ## 完了
 
+- IO-008のFOLD 3D選択frameをnative PNG preview artifactへ変換した。解決済み3D座標をnative内だけでdeterministic isometric camera-fitし、固定512×384 RGBA point-cloud PNGへrasterizeする。PNGは512 KiB上限、WebViewへは`data:image/png;base64`と寸法・bounded metadataだけを返し、source bytes・座標文字列・project/applied pose/timeline authorityは非公開のまま保つ。determinism、PNG signature、size、coordinate redactionのnative 3件とdesktop全target checkが成功した。frontend UIは未接続なので完成率は変更していない
+- 非共面正厚unionの先行条件として、限定2三角形face・1hingeの正厚境界capabilityを追加した。既存private exact corridor/classifierを全通過して`Allowed`となる場合だけ、BoundMaterialTreePose issuer・pose identity・厚さbits・hinge/face identityへ束縛し、native material-mmの左右表裏hinge offset railを観測できる。ABA・foreign issuer・厚さdriftを拒否し、90/180度や未証明分類では発行しない。clearanceやprintability authorityは付与しない。対象2件とall-target checkが成功した。mesh union consumer未接続なので完成率は変更していない
 - SIM-010のproof-bearing transaction premiseをnative private registryへ保持した。非180 workerのPrepared target pose・continuous diagnostic・target layer orderをserializeやbooleanへ落とさずmoveし、project instance・ID・revision・source fingerprint・pose generation・layer generation全次元へ束縛する。premise内部整合を検査し、live pose/layer capability再認証後だけinstallする。generation token replacement、exact tokenのidempotent cancel、stale/ABA拒否を実装し、UIには公開しない。専用2件とdesktop全target checkがwarningなしで成功した。atomic editor mutationは未実装なので完成率は変更していない
 - IO-008のFOLD 3D複数frameをnative stagingへ接続した。専用picker・token registry・frame選択・cancel commandをproject instance・ID・revisionへ束縛し、新pickerのreentryで旧tokenを失効、cancelはexact tokenだけをidempotentに処理する。WebViewへはframe index・parent・inherit・vertex count・source digestだけを返し、bytes・3D座標とproject/applied pose/timeline authorityは渡さない。日英native picker、cancel/reentry/metadata redaction専用2件、desktop全target checkが成功した。native rendererと利用者UIは未接続なので完成率は変更していない
 

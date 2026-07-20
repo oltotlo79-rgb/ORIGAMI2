@@ -6,6 +6,7 @@ use uuid::Uuid;
 mod annotations;
 mod beginner_candidates;
 mod beginner_design;
+mod beginner_generation;
 mod constraints;
 mod element_metadata;
 mod layers;
@@ -24,6 +25,12 @@ pub use beginner_candidates::{
 pub use beginner_design::{
     BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1, BeginnerDesignPresetV1, BeginnerDesignProfileV1,
     validate_beginner_design_profile_v1,
+};
+pub use beginner_generation::{
+    BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1, BeginnerDetailLevelV1,
+    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, MAX_BEGINNER_ALLOWED_TECHNIQUES_V1,
+    MAX_BEGINNER_GENERATION_STEPS_V1, MIN_BEGINNER_GENERATION_STEPS_V1,
+    validate_beginner_generation_constraints_v1,
 };
 pub use constraints::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,

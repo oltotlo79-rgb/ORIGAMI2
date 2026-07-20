@@ -397,6 +397,12 @@ jobs:
             release/*.cdx.json
             release/*.update.json
             release/SHA256SUMS-*.txt
+      - name: Verify newly generated provenance for the complete release set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: bash .github/scripts/verify_release_provenance.sh release "$RELEASE_VERSION" "$GH_REPO"
       - name: Publish immutable tagged release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -515,21 +521,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          set -euo pipefail
-          for asset in \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64-setup.exe" \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64-portable.zip" \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64.cdx.json" \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-windows-x64.update.json" \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-macos-arm64-app.tar.gz" \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-macos-arm64.cdx.json" \
-            "release/ORIGAMI2-v${RELEASE_VERSION}-macos-arm64.update.json" \
-            "release/SHA256SUMS-windows-x64.txt" \
-            "release/SHA256SUMS-macos-arm64.txt"
-          do
-            gh attestation verify "$asset" --repo "$GH_REPO"
-          done
+        run: bash .github/scripts/verify_release_provenance.sh release "$RELEASE_VERSION" "$GH_REPO"
       - name: Promote the existing prerelease without replacing assets
         env:
           GH_TOKEN: ${{ github.token }}

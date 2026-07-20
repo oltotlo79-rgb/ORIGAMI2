@@ -275,8 +275,12 @@ test('formal manifest remains an attested manual-review artifact, not an updater
     join(root, 'apps/desktop/src/lib/releaseArtifactCompatibility.ts'),
     'utf8',
   )
+  const provenanceVerifier = readFileSync(
+    join(root, '.github/scripts/verify_release_provenance.sh'),
+    'utf8',
+  )
   assert.match(workflow, /release\/\*\.update\.json/u)
-  assert.match(workflow, /\.update\.json" \\/u)
+  assert.match(provenanceVerifier, /\.update\.json"/u)
   assert.doesNotMatch(manifestWriter, /https?:|url|endpoint/iu)
   assert.match(runtimeContract, /delivery: 'release_page_only'/u)
   assert.match(runtimeContract, /runtimeUpdaterAvailable: false/u)
@@ -286,6 +290,10 @@ test('provenance subjects cover the complete verified nine-asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
   const promote = workflow.slice(workflow.indexOf('  promote:'))
+  const provenanceVerifier = readFileSync(
+    join(root, '.github/scripts/verify_release_provenance.sh'),
+    'utf8',
+  )
   for (const pattern of [
     'release/*.exe',
     'release/*.zip',
@@ -307,9 +315,31 @@ test('provenance subjects cover the complete verified nine-asset set', () => {
     'SHA256SUMS-windows-x64.txt',
     'SHA256SUMS-macos-arm64.txt',
   ]) {
-    assert.ok(promote.includes(name), name)
+    assert.ok(provenanceVerifier.includes(name), name)
   }
-  assert.equal(promote.match(/gh attestation verify "\$asset"/gu)?.length, 1)
+  assert.match(promote, /verify_release_provenance\.sh/u)
+  assert.equal(provenanceVerifier.match(/gh attestation verify "\$file"/gu)?.length, 1)
+})
+
+test('publication verifies all newly attested assets before creating a release', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
+  const helper = readFileSync(
+    join(root, '.github/scripts/verify_release_provenance.sh'),
+    'utf8',
+  )
+  assert.ok(
+    publish.indexOf('actions/attest-build-provenance@')
+      < publish.indexOf('verify_release_provenance.sh'),
+  )
+  assert.ok(
+    publish.indexOf('verify_release_provenance.sh')
+      < publish.indexOf('Publish immutable tagged release'),
+  )
+  assert.equal(workflow.match(/verify_release_provenance\.sh/gu)?.length ?? 0, 2)
+  assert.match(helper, /\[\[ "\$\(find "\$directory" -maxdepth 1 -type f \| wc -l \| tr -d ' '\)" -eq "\$\{#assets\[@\]\}" \]\]/u)
+  assert.equal(helper.match(/^  "?ORIGAMI2-v|^  'SHA256SUMS-/gmu)?.length ?? 0, 9)
+  assert.match(helper, /gh attestation verify "\$file" --repo "\$repository"/u)
 })
 
 test('signing secrets are approval-gated masked cleaned and absent from fork CI', () => {
@@ -498,7 +528,7 @@ test('promotion reuses and verifies the complete prerelease asset set', () => {
   const promote = workflow.slice(workflow.indexOf('  promote:'))
   assert.match(promote, /gh release download "\$RELEASE_TAG"/u)
   assert.match(promote, /verify_merged_release_set\.mjs release/u)
-  assert.match(promote, /gh attestation verify "\$asset"/u)
+  assert.match(promote, /verify_release_provenance\.sh/u)
   assert.match(promote, /\.prerelease "\$before"\)" = true/u)
   assert.match(promote, /cmp "\$RUNNER_TEMP\/assets-before\.json"/u)
   assert.match(promote, /releases\/tags\/\$RELEASE_TAG" --jq \.id\)" = "\$release_id"/u)
@@ -507,7 +537,7 @@ test('promotion reuses and verifies the complete prerelease asset set', () => {
   assert.match(promote, /releases\/\$release_id/u)
   assert.doesNotMatch(promote, /tauri build|tauri bundle|cargo build|npm run build/u)
   assert.ok(
-    promote.indexOf('gh attestation verify') <
+    promote.indexOf('verify_release_provenance.sh') <
       promote.indexOf('gh api --method PATCH'),
   )
 })

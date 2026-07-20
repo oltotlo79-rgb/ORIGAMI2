@@ -107,6 +107,11 @@ const isFinitePoint2 = (value: unknown): value is [number, number] =>
 const allCounts = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
   fields.every((field) => isCount(value[field]))
 
+const hasExactKeys = (value: Record<string, unknown>, fields: readonly string[]): boolean => {
+  const keys = Object.keys(value)
+  return keys.length === fields.length && keys.every((key) => fields.includes(key))
+}
+
 export function isStackedFoldReadRequest(value: unknown): value is StackedFoldReadRequest {
   if (!isRecord(value)) return false
   const first = value.first
@@ -163,6 +168,61 @@ export function normalizeStackedFoldReadResponse(
         .reduce((sum, field) => sum + Number(endpointCollision[field]), 0)
     : -1
   if (
+    !hasExactKeys(value, [
+      'guardModelId',
+      'proposalModelId',
+      'materialMapModelId',
+      'binding',
+      'support',
+      'crossedCells',
+      'targetFaces',
+      'materialSegments',
+      'topologyProof',
+      'endpointCollision',
+      'flatEndpointLayerOrder',
+      'work',
+      'authorizesProjectMutation',
+      'authorizesApplyStackedFold',
+    ]) ||
+    !hasExactKeys(binding, [
+      'projectInstanceId',
+      'projectId',
+      'sourceRevision',
+      'poseGeneration',
+      'layerOrderGeneration',
+    ]) ||
+    !hasExactKeys(topologyProof, [
+      'targetFingerprintSha256',
+      'targetVertexCount',
+      'targetEdgeCount',
+      'targetBoundaryVertexCount',
+      'lineageRecordCount',
+      'sourceEdgeSubdivisionCount',
+      'expectedCreaseSubdivisionCount',
+      'targetMaterialFaceCount',
+      'targetHingeCount',
+    ]) ||
+    !hasExactKeys(endpointCollision, [
+      ...endpointCountFields,
+      'hasBlockingHold',
+    ]) ||
+    !hasExactKeys(work, [
+      'scannedCells',
+      'totalBoundaryVertices',
+      'totalLayerRecords',
+      'orientationTests',
+      'exactArithmeticOperations',
+      'maximumExactIntegerBits',
+      'totalExactIntegerBits',
+      'retainedCells',
+      'retainedTargetFaces',
+    ]) ||
+    !hasExactKeys(layerOrder, [
+      'applicable',
+      'certified',
+      'materialFaceCount',
+      'overlapCellCount',
+    ]) ||
     value.guardModelId !== STACKED_FOLD_READ_GUARD_MODEL_ID_V1 ||
     value.proposalModelId !== STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1 ||
     value.materialMapModelId !== STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1 ||
@@ -177,6 +237,7 @@ export function normalizeStackedFoldReadResponse(
     !value.crossedCells.every(
       (cell) =>
         isRecord(cell) &&
+        hasExactKeys(cell, ['cellKeySha256', 'bottomToTopFaces']) &&
         isLowerSha256(cell.cellKeySha256) &&
         Array.isArray(cell.bottomToTopFaces) &&
         cell.bottomToTopFaces.length > 0 &&
@@ -190,6 +251,7 @@ export function normalizeStackedFoldReadResponse(
     !value.materialSegments.every(
       (segment) =>
         isRecord(segment) &&
+        hasExactKeys(segment, ['faceId', 'start', 'end', 'fixedSide', 'assignment']) &&
         isCanonicalNonNilUuid(segment.faceId) &&
         isFinitePoint2(segment.start) &&
         isFinitePoint2(segment.end) &&

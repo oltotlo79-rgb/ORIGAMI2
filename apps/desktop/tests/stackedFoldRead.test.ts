@@ -173,6 +173,20 @@ describe('stacked-fold read boundary', () => {
       null,
     )
     assert.equal(
+      normalizeStackedFoldReadResponse({ ...response, futureAuthority: false }, request),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          binding: { ...response.binding, futureGeneration: 10 },
+        },
+        request,
+      ),
+      null,
+    )
+    assert.equal(
       normalizeStackedFoldReadResponse(
         { ...response, authorizesApplyStackedFold: true },
         request,

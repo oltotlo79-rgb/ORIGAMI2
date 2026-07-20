@@ -503,7 +503,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
         let texture_assets = document.texture_assets;
-        let editor = EditorState::with_all_document_parts_annotations_underlays_and_memo(
+        let mut editor = EditorState::with_all_document_parts_annotations_underlays_and_memo(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
@@ -514,6 +514,9 @@ impl ProjectState {
             document.underlays,
             document.memo,
         );
+        editor
+            .restore_beginner_design_profile(document.beginner_design_profile)
+            .expect("validated project document profile");
         Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -633,6 +636,7 @@ impl ProjectState {
             annotations: self.editor.annotations().clone(),
             underlays: self.editor.underlays().clone(),
             element_metadata: self.editor.element_metadata().clone(),
+            beginner_design_profile: self.editor.beginner_design_profile().clone(),
             texture_assets: self.texture_assets.clone(),
         };
         document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
@@ -693,6 +697,7 @@ impl ProjectState {
             || saved.geometric_constraints != *self.editor.geometric_constraints()
             || saved.layers != *self.editor.project_layers()
             || saved.element_metadata != *self.editor.element_metadata()
+            || saved.beginner_design_profile != *self.editor.beginner_design_profile()
             || saved.texture_assets != self.texture_assets
     }
 
@@ -938,7 +943,7 @@ fn apply_vertex_expression_binding(
 }
 
 fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, ()> {
-    let editor = match &project.editor_history {
+    let mut editor = match &project.editor_history {
         Some(history) => {
             if history.project_id() != project.document.project_id {
                 return Err(());
@@ -971,6 +976,9 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             ),
         ),
     }?;
+    editor
+        .restore_beginner_design_profile(project.document.beginner_design_profile.clone())
+        .map_err(|_| ())?;
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
     Ok(editor)
 }
@@ -1054,6 +1062,7 @@ struct ProjectSnapshot {
     project_id: ProjectId,
     name: String,
     memo: String,
+    beginner_design_profile: ori_domain::BeginnerDesignProfileV1,
     current_path: Option<String>,
     revision: u64,
     saved_revision: Option<u64>,
@@ -1481,6 +1490,27 @@ fn update_project_memo(
         expected_project_id,
         expected_revision,
         Command::UpdateProjectMemo { memo },
+    )
+}
+
+#[tauri::command]
+fn update_beginner_design_profile(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    profile: ori_domain::BeginnerDesignProfileV1,
+) -> Result<ProjectSnapshot, String> {
+    if !ori_domain::validate_beginner_design_profile_v1(&profile) {
+        return Err("invalid beginner design profile".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile { profile },
     )
 }
 
@@ -6038,6 +6068,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         project_id: project.project_id,
         name: project.name.clone(),
         memo: project.editor.project_memo().to_owned(),
+        beginner_design_profile: project.editor.beginner_design_profile().clone(),
         current_path: project
             .current_path
             .as_deref()
@@ -7883,6 +7914,7 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             update_project_memo,
+            update_beginner_design_profile,
             get_history_entry_limit,
             set_history_entry_limit,
             get_recovery_candidate,

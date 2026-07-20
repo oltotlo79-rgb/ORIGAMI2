@@ -7,6 +7,7 @@ import type {
   VertexCoordinateExpressionBinding,
   VertexCoordinateExpressionTransition,
 } from './coreClient.ts'
+import { normalizeBeginnerDesignProfile } from './coreClient.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
 import { parseInstructionVisual } from './instructionTimeline.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
@@ -127,6 +128,7 @@ const PROJECT_SNAPSHOT_KEYS = [
   'project_id',
   'name',
   'memo',
+  'beginner_design_profile',
   'current_path',
   'revision',
   'saved_revision',
@@ -655,6 +657,9 @@ export function parseRestoredRecoverySnapshot(
       || !FINGERPRINT_PATTERN.test(record.fold_model_fingerprint)
     ) return null
 
+    const beginnerDesignProfile = normalizeBeginnerDesignProfile(
+      record.beginner_design_profile,
+    )
     const paper = parsePaper(record.paper)
     const creasePattern = parseCreasePattern(record.crease_pattern)
     const instructionTimeline = parseInstructionTimeline(
@@ -679,7 +684,8 @@ export function parseRestoredRecoverySnapshot(
       'faces',
     ] as const)
     if (
-      !paper
+      !beginnerDesignProfile
+      || !paper
       || !creasePattern
       || !instructionTimeline
       || !numericExpressions
@@ -699,6 +705,7 @@ export function parseRestoredRecoverySnapshot(
       project_id: parsedCandidate.project_id,
       name: record.name,
       memo: record.memo,
+      beginner_design_profile: beginnerDesignProfile,
       current_path: null,
       revision: 0,
       saved_revision: null,
@@ -749,6 +756,9 @@ export function parsePathlessProjectSnapshot(
       || !FINGERPRINT_PATTERN.test(record.fold_model_fingerprint)
     ) return null
 
+    const beginnerDesignProfile = normalizeBeginnerDesignProfile(
+      record.beginner_design_profile,
+    )
     const paper = parsePaper(record.paper)
     const creasePattern = parseCreasePattern(record.crease_pattern)
     const instructionTimeline = parseInstructionTimeline(
@@ -773,7 +783,8 @@ export function parsePathlessProjectSnapshot(
       'faces',
     ] as const)
     if (
-      !paper
+      !beginnerDesignProfile
+      || !paper
       || !creasePattern
       || !instructionTimeline
       || !numericExpressions
@@ -793,6 +804,7 @@ export function parsePathlessProjectSnapshot(
       project_id: record.project_id,
       name: record.name,
       memo: record.memo,
+      beginner_design_profile: beginnerDesignProfile,
       current_path: null,
       revision: record.revision,
       saved_revision: record.saved_revision,

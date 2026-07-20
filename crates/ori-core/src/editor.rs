@@ -17856,4 +17856,39 @@ mod tests {
             Err(CommandError::LayerLocked(locked_layer.id))
         );
     }
+
+    #[test]
+    fn beginner_design_profile_is_validated_and_undoable() {
+        let (mut editor, _, _) = simple_rectangular_editor();
+        let initial = editor.beginner_design_profile().clone();
+        let profile = BeginnerDesignProfileV1 {
+            schema_version: ori_domain::BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1,
+            preset: ori_domain::BeginnerDesignPresetV1::ShapePriority,
+            shape_fidelity_weight: 60,
+            foldability_weight: 20,
+            step_count_weight: 10,
+            paper_efficiency_weight: 10,
+        };
+        editor
+            .execute(
+                0,
+                Command::UpdateBeginnerDesignProfile {
+                    profile: profile.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(editor.beginner_design_profile(), &profile);
+        editor.undo(1).unwrap();
+        assert_eq!(editor.beginner_design_profile(), &initial);
+        editor.redo(2).unwrap();
+        assert_eq!(editor.beginner_design_profile(), &profile);
+
+        let mut invalid = profile.clone();
+        invalid.paper_efficiency_weight = 11;
+        assert_eq!(
+            editor.execute(3, Command::UpdateBeginnerDesignProfile { profile: invalid },),
+            Err(CommandError::InvalidBeginnerDesignProfile)
+        );
+        assert_eq!(editor.beginner_design_profile(), &profile);
+    }
 }

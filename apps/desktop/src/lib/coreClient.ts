@@ -123,6 +123,7 @@ export type ProjectSnapshot = {
   project_id: string
   name: string
   memo: string
+  beginner_design_profile: BeginnerDesignProfileV1
   current_path: string | null
   revision: number
   saved_revision: number | null
@@ -150,6 +151,65 @@ export type ProjectSnapshot = {
     vertex_redo_stack?: Array<VertexCoordinateExpressionTransition | null>
   }
   fold_model_fingerprint: string
+}
+
+export type BeginnerDesignProfileV1 = {
+  schema_version: 1
+  preset: 'balanced' | 'shape_priority' | 'foldability_priority'
+  shape_fidelity_weight: number
+  foldability_weight: number
+  step_count_weight: number
+  paper_efficiency_weight: number
+}
+
+export function normalizeBeginnerDesignProfile(
+  value: unknown,
+): BeginnerDesignProfileV1 | null {
+  const record = exactCoreDataRecord(value, [
+    'schema_version',
+    'preset',
+    'shape_fidelity_weight',
+    'foldability_weight',
+    'step_count_weight',
+    'paper_efficiency_weight',
+  ] as const)
+  if (!record || record.schema_version !== 1 || (
+    record.preset !== 'balanced'
+    && record.preset !== 'shape_priority'
+    && record.preset !== 'foldability_priority'
+  )) return null
+  const weights = [
+    record.shape_fidelity_weight,
+    record.foldability_weight,
+    record.step_count_weight,
+    record.paper_efficiency_weight,
+  ].map(Number)
+  if (
+    weights.some((weight) =>
+      !Number.isInteger(weight) || Number(weight) < 0 || Number(weight) > 100)
+    || weights.reduce((sum, weight) => sum + weight, 0) !== 100
+  ) return null
+  return Object.freeze({
+    schema_version: 1,
+    preset: record.preset,
+    shape_fidelity_weight: weights[0],
+    foldability_weight: weights[1],
+    step_count_weight: weights[2],
+    paper_efficiency_weight: weights[3],
+  }) as BeginnerDesignProfileV1
+}
+
+function sameBeginnerDesignProfile(
+  value: unknown,
+  expected: BeginnerDesignProfileV1,
+) {
+  const profile = normalizeBeginnerDesignProfile(value)
+  return profile !== null
+    && profile.preset === expected.preset
+    && profile.shape_fidelity_weight === expected.shape_fidelity_weight
+    && profile.foldability_weight === expected.foldability_weight
+    && profile.step_count_weight === expected.step_count_weight
+    && profile.paper_efficiency_weight === expected.paper_efficiency_weight
 }
 
 export type AnnotationAnchorV1 =
@@ -645,6 +705,20 @@ export function updateProjectMemo(
     expectedProjectId,
     expectedRevision,
     memo,
+  })
+}
+
+export function updateBeginnerDesignProfile(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  profile: BeginnerDesignProfileV1,
+) {
+  return invoke<ProjectSnapshot>('update_beginner_design_profile', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    profile,
   })
 }
 
@@ -2134,6 +2208,7 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'project_id',
   'name',
   'memo',
+  'beginner_design_profile',
   'current_path',
   'revision',
   'saved_revision',
@@ -2186,12 +2261,16 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || typeof record.cutting_allowed !== 'boolean'
   ) return null
 
+  const beginnerDesignProfile = normalizeBeginnerDesignProfile(
+    record.beginner_design_profile,
+  )
   const creasePattern = exactCoreDataRecord(
     record.crease_pattern,
     ['vertices', 'edges'] as const,
   )
   if (
-    !creasePattern
+    !beginnerDesignProfile
+    || !creasePattern
     || !Array.isArray(creasePattern.vertices)
     || !Array.isArray(creasePattern.edges)
   ) return null
@@ -2206,6 +2285,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     project_id: record.project_id,
     name: record.name,
     memo: record.memo,
+    beginner_design_profile: beginnerDesignProfile,
     current_path: record.current_path,
     revision: record.revision,
     saved_revision: record.saved_revision,
@@ -2250,6 +2330,10 @@ export function normalizeProjectLayerMutationSnapshot(
     || record.project_id !== base.project_id
     || record.name !== base.name
     || record.memo !== base.memo
+    || !sameBeginnerDesignProfile(
+      record.beginner_design_profile,
+      base.beginner_design_profile,
+    )
     || record.current_path !== base.current_path
     || !isProjectRevision(record.revision)
     || record.saved_revision !== base.saved_revision
@@ -2271,6 +2355,7 @@ export function normalizeProjectLayerMutationSnapshot(
     project_id: base.project_id,
     name: base.name,
     memo: base.memo,
+    beginner_design_profile: base.beginner_design_profile,
     current_path: base.current_path,
     revision: record.revision,
     saved_revision: base.saved_revision,

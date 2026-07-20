@@ -127,10 +127,12 @@ import {
   readUnderlayAssetDataUrl,
   updateProjectLayerPresentation,
   updateProjectMemo,
+  updateBeginnerDesignProfile,
   updatePaperProperties,
   importFrontPaperTexture,
   importBackPaperTexture,
   type ProjectSnapshot,
+  type BeginnerDesignProfileV1,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
   type GeometricConstraintKind,
@@ -3430,6 +3432,47 @@ function App() {
     }
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       updateProjectMemo(projectId, revision, projectInstanceId, memo))
+  }
+
+  function submitBeginnerDesignProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const preset = String(new FormData(event.currentTarget).get('design_preset'))
+    const profile: BeginnerDesignProfileV1 | null = preset === 'shape_priority'
+      ? {
+          schema_version: 1,
+          preset,
+          shape_fidelity_weight: 60,
+          foldability_weight: 20,
+          step_count_weight: 10,
+          paper_efficiency_weight: 10,
+        }
+      : preset === 'foldability_priority'
+        ? {
+            schema_version: 1,
+            preset,
+            shape_fidelity_weight: 20,
+            foldability_weight: 60,
+            step_count_weight: 10,
+            paper_efficiency_weight: 10,
+          }
+        : preset === 'balanced'
+          ? {
+              schema_version: 1,
+              preset,
+              shape_fidelity_weight: 35,
+              foldability_weight: 35,
+              step_count_weight: 15,
+              paper_efficiency_weight: 15,
+            }
+          : null
+    if (!profile) return
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      updateBeginnerDesignProfile(
+        projectId,
+        revision,
+        projectInstanceId,
+        profile,
+      ))
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -6983,6 +7026,57 @@ function App() {
                     {text({ ja: 'メモを保存', en: 'Save memo' })}
                   </button>
                 </div>
+              </form>
+            </section>
+          )}
+          {nativeSnapshot && !benchmarkRun && (
+            <section className="property-section" aria-labelledby="beginner-design-heading">
+              <h2 id="beginner-design-heading">
+                {text({ ja: 'かんたん設計の評価方針', en: 'Beginner design priorities' })}
+              </h2>
+              <p className="muted">
+                {text({
+                  ja: '将来の端末内自動設計で候補を評価する方針です。現在の展開図は変更しません。',
+                  en: 'Sets how future on-device design candidates are scored. It does not change the current crease pattern.',
+                })}
+              </p>
+              <form
+                key={`${nativeSnapshot.project_instance_id}:${nativeSnapshot.beginner_design_profile.preset}`}
+                onSubmit={submitBeginnerDesignProfile}
+              >
+                <label className="field">
+                  <span>{text({ ja: '評価プリセット', en: 'Evaluation preset' })}</span>
+                  <select
+                    name="design_preset"
+                    defaultValue={nativeSnapshot.beginner_design_profile.preset}
+                    disabled={coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-design-weights"
+                  >
+                    <option value="balanced">
+                      {text({ ja: 'バランス', en: 'Balanced' })}
+                    </option>
+                    <option value="shape_priority">
+                      {text({ ja: '完成形への近さ優先', en: 'Shape fidelity priority' })}
+                    </option>
+                    <option value="foldability_priority">
+                      {text({ ja: '折りやすさ優先', en: 'Foldability priority' })}
+                    </option>
+                  </select>
+                </label>
+                <p id="beginner-design-weights" className="muted">
+                  {formattedText({
+                    ja: '現在の重み: 完成形 {shape}%・折りやすさ {foldability}%・工程数 {steps}%・紙効率 {paper}%',
+                    en: 'Current weights: shape {shape}% · foldability {foldability}% · steps {steps}% · paper efficiency {paper}%',
+                  }, {
+                    shape: nativeSnapshot.beginner_design_profile.shape_fidelity_weight,
+                    foldability: nativeSnapshot.beginner_design_profile.foldability_weight,
+                    steps: nativeSnapshot.beginner_design_profile.step_count_weight,
+                    paper: nativeSnapshot.beginner_design_profile.paper_efficiency_weight,
+                  })}
+                </p>
+                <button type="submit" disabled={coreBusy || recoveryBlocking}>
+                  {text({ ja: '評価方針を保存', en: 'Save design priorities' })}
+                </button>
               </form>
             </section>
           )}

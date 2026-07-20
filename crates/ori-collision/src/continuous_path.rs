@@ -842,9 +842,6 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
     let Some(requested_residual) = residual(requested_angle_degrees) else {
         return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
     };
-    if requested_residual.to_bits() == 0.0_f64.to_bits() {
-        return UniformCycleClosureRootsV1::Roots(vec![requested_angle_degrees]);
-    }
     let mut scale = 1.0_f64;
     for face in geometry.face_ids() {
         let Some(boundary) = geometry.face_boundary_vertices(*face) else {
@@ -860,6 +857,15 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
                 .max(point.z().abs());
         }
     }
+    // Each spanning composition performs a bounded number of binary64
+    // additions and multiplications per hinge. Gamma(n) with 64 operations
+    // per hinge bounds their accumulated forward error at material scale.
+    let operation_count = geometry.hinges().len().saturating_mul(64) as f64;
+    let roundoff_bound =
+        operation_count * f64::EPSILON / (1.0 - operation_count * f64::EPSILON) * scale.max(1.0);
+    if requested_residual <= roundoff_bound {
+        return UniformCycleClosureRootsV1::Roots(vec![requested_angle_degrees]);
+    }
     let lipschitz = (geometry.hinges().len() as f64 * 2.0 + 1.0) * scale.max(1.0);
     let mut pending = vec![(0.0, requested_angle_degrees, 0_usize)];
     let mut roots = Vec::new();
@@ -872,7 +878,7 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
                 examined_leaves: leaves,
             };
         };
-        if midpoint > 0.0 && value.to_bits() == 0.0_f64.to_bits() {
+        if midpoint > 0.0 && value <= roundoff_bound {
             roots.push(midpoint);
             continue;
         }
@@ -1281,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn split_existing_hinge_cycle_without_bit_exact_nonzero_root_is_permutation_stable() {
+    fn split_existing_hinge_cycle_certifies_roundoff_bounded_flat_root_only() {
         let points = [
             (0.0, 0.0),
             (400.0, 0.0),
@@ -1354,6 +1360,18 @@ mod tests {
             .collect::<Vec<_>>();
         initial.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
         let initial = CanonicalHingeAngles::new(initial).unwrap();
+        assert_eq!(
+            enumerate_uniform_cycle_closure_roots_v1(
+                &geometry,
+                &audit,
+                audit.faces()[0],
+                &initial,
+                &moving,
+                180.0,
+                128,
+            ),
+            UniformCycleClosureRootsV1::Roots(vec![180.0])
+        );
         let roots = enumerate_uniform_cycle_closure_roots_v1(
             &geometry,
             &audit,
@@ -1380,6 +1398,18 @@ mod tests {
                 128,
             ),
             roots
+        );
+        assert_eq!(
+            enumerate_uniform_cycle_closure_roots_v1(
+                &geometry,
+                &audit,
+                audit.faces()[0],
+                &initial,
+                &reversed,
+                90.0,
+                1,
+            ),
+            UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 1 }
         );
     }
 
@@ -2014,27 +2044,12 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        for (offset, (start, end, mountain)) in [
-            (0, 7, true),
-            (0, 2, true),
-            (0, 3, false),
-            (0, 4, true),
-            (0, 5, false),
-            (0, 6, true),
-            (7, 9, true),
-            (7, 10, false),
-            (7, 11, true),
-            (7, 12, false),
-            (7, 13, true),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (offset, end) in (2..=12).enumerate() {
             edges.push(Edge {
                 id: fixed_id("9e00", 20 + offset as u64),
-                start: boundary[start],
+                start: boundary[0],
                 end: boundary[end],
-                kind: if mountain {
+                kind: if offset % 2 == 0 {
                     EdgeKind::Mountain
                 } else {
                     EdgeKind::Valley
@@ -3358,7 +3373,7 @@ mod tests {
             &initial,
             &moving,
             5.0,
-            0.1,
+            0.01,
             StackedFoldPathDiagnosticLimitsV1::default(),
         )
         .unwrap();

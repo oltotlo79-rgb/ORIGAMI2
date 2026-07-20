@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
 const directory = resolve(process.argv[2])
@@ -10,6 +11,9 @@ if (!['windows-x64', 'macos-arm64'].includes(platform)) {
 }
 if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? '')) {
   throw new Error(`invalid release version: ${version ?? '(missing)'}`)
+}
+if (!['true', 'false'].includes(process.env.REQUIRE_SIGNATURE)) {
+  throw new Error('REQUIRE_SIGNATURE must be exactly true or false')
 }
 const prefix = `ORIGAMI2-v${version}-${platform}`
 const payloads = platform === 'windows-x64'
@@ -47,14 +51,47 @@ if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) {
 if (process.env.REQUIRE_SIGNATURE === 'true') {
   const { execFileSync } = await import('node:child_process')
   if (platform === 'windows-x64') {
-    for (const name of payloads.filter((item) => item.endsWith('.exe'))) {
-      const command = `(Get-AuthenticodeSignature -LiteralPath '${join(directory, name).replaceAll("'", "''")}').Status`
-      const status = execFileSync('pwsh', ['-NoProfile', '-Command', command], { encoding: 'utf8' }).trim()
-      if (status !== 'Valid') throw new Error(`${name} Authenticode status is ${status}`)
+    const extracted = mkdtempSync(join(tmpdir(), 'origami2-portable-signature-'))
+    try {
+      execFileSync('pwsh', [
+        '-NoProfile',
+        '-Command',
+        'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1]',
+        join(directory, `${prefix}-portable.zip`),
+        extracted,
+      ])
+      const signedExecutables = [
+        join(directory, `${prefix}-setup.exe`),
+        join(extracted, 'origami2-desktop.exe'),
+      ]
+      if (!statSync(signedExecutables[1]).isFile()) {
+        throw new Error('portable archive executable contract failed')
+      }
+      for (const executable of signedExecutables) {
+        const command = `(Get-AuthenticodeSignature -LiteralPath '${executable.replaceAll("'", "''")}').Status`
+        const status = execFileSync('pwsh', ['-NoProfile', '-Command', command], { encoding: 'utf8' }).trim()
+        if (status !== 'Valid') throw new Error(`${basename(executable)} Authenticode status is ${status}`)
+      }
+    } finally {
+      rmSync(extracted, { recursive: true, force: true })
     }
   } else {
-    execFileSync('codesign', ['--verify', '--deep', '--strict',
-      join('target', 'release', 'bundle', 'macos', 'ORIGAMI2.app')], { stdio: 'inherit' })
+    const extracted = mkdtempSync(join(tmpdir(), 'origami2-macos-signature-'))
+    try {
+      execFileSync('tar', [
+        '-xzf',
+        join(directory, `${prefix}-app.tar.gz`),
+        '-C',
+        extracted,
+      ])
+      const app = join(extracted, 'ORIGAMI2.app')
+      if (!statSync(app).isDirectory()) {
+        throw new Error('macOS archive application contract failed')
+      }
+      execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' })
+    } finally {
+      rmSync(extracted, { recursive: true, force: true })
+    }
   }
 }
 console.log(`verified ${basename(directory)} ${platform} release artifacts`)

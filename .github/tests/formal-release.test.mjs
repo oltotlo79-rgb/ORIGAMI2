@@ -150,3 +150,33 @@ test('local artifact verifier rejects unbounded platform and version input', () 
   assert.throws(verify('windows-x64', '../0.1.0'), /invalid release version/u)
   assert.throws(verify('macos-arm64', '01.0.0'), /invalid release version/u)
 })
+
+test('local artifact verifier requires explicit signature policy and verifies packaged payloads', () => {
+  const verifier = readFileSync(
+    join(root, '.github/scripts/verify_formal_release.mjs'),
+    'utf8',
+  )
+  assert.match(verifier, /origami2-desktop\.exe/u)
+  assert.match(verifier, /origami2-macos-signature-/u)
+  assert.doesNotMatch(
+    verifier,
+    /target['"], ['"]release['"], ['"]bundle['"], ['"]macos/u,
+  )
+  assert.throws(
+    () => execFileSync(
+      'node',
+      ['.github/scripts/verify_formal_release.mjs', root],
+      {
+        cwd: root,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          RELEASE_PLATFORM: 'windows-x64',
+          RELEASE_VERSION: '0.1.0',
+          REQUIRE_SIGNATURE: 'yes',
+        },
+      },
+    ),
+    /REQUIRE_SIGNATURE must be exactly true or false/u,
+  )
+})

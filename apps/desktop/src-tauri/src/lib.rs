@@ -2977,10 +2977,16 @@ fn expand_saved_vertex_references(
             )?;
             let end_y =
                 resolve_saved_coordinate(project, edge.end, true, memo, visiting, work, depth + 1)?;
+            let delta_x = end_x - start_x;
+            let delta_y = end_y - start_y;
+            let edge_length = delta_x.hypot(delta_y);
+            if !edge_length.is_finite() || edge_length <= 0.0 {
+                return Err("edge reference geometry is degenerate".to_owned());
+            }
             let value = if y_axis_angle {
-                (end_y - start_y).atan2(end_x - start_x).to_degrees()
+                delta_y.atan2(delta_x).to_degrees().rem_euclid(360.0)
             } else {
-                (end_x - start_x).hypot(end_y - start_y)
+                edge_length
             };
             if !value.is_finite() {
                 return Err("edge reference result is non-finite".to_owned());
@@ -15752,6 +15758,103 @@ mod tests {
             0.0,
             0.0,
         )];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    }
+
+    #[test]
+    fn edge_angle_reversal_and_zero_boundary_are_canonical() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (project, _, start, _) = solver_stage_fixture();
+        let original = project.editor.pattern().edges[0].clone();
+        let reverse = EdgeId::new();
+        let derived = VertexId::new();
+        let mut pattern = project.editor.pattern().clone();
+        pattern.edges.push(ori_domain::Edge {
+            id: reverse,
+            start: original.end,
+            end: original.start,
+            kind: EdgeKind::Auxiliary,
+        });
+        pattern.vertices.push(ori_domain::Vertex {
+            id: derived,
+            position: Point2::new(0.0, 0.0),
+        });
+        let mut project = ProjectState::new(pattern);
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(start, "0", "0", 0.0, 0.0),
+            VertexCoordinateExpressions::new(original.end, "5", "0", 5.0, 0.0),
+            VertexCoordinateExpressions::new(
+                derived,
+                edge_reference(original.id, "angle"),
+                edge_reference(reverse, "angle"),
+                0.0,
+                180.0,
+            ),
+        ];
+        let values = reevaluate_saved_vertex_expressions(&project).unwrap();
+        let angle = values.iter().find(|(id, _)| *id == derived).unwrap().1;
+        assert_eq!(angle, Point2::new(0.0, 180.0));
+    }
+
+    #[test]
+    fn zero_length_edge_reference_fails_closed() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (project, _, start, _) = solver_stage_fixture();
+        let edge = project.editor.pattern().edges[0].clone();
+        let derived = VertexId::new();
+        let mut pattern = project.editor.pattern().clone();
+        pattern.vertices.push(ori_domain::Vertex {
+            id: derived,
+            position: Point2::new(0.0, 0.0),
+        });
+        let mut project = ProjectState::new(pattern);
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(start, "1", "1", 0.0, 0.0),
+            VertexCoordinateExpressions::new(edge.end, "1", "1", 0.0, 0.0),
+            VertexCoordinateExpressions::new(
+                derived,
+                edge_reference(edge.id, "length"),
+                "0",
+                0.0,
+                0.0,
+            ),
+        ];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    }
+
+    #[test]
+    fn shared_edge_chain_is_memoized_and_indirect_cycle_is_rejected() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (project, _, first, _) = solver_stage_fixture();
+        let first_edge = project.editor.pattern().edges[0].clone();
+        let third = VertexId::new();
+        let second_edge = EdgeId::new();
+        let mut pattern = project.editor.pattern().clone();
+        pattern.vertices.push(ori_domain::Vertex {
+            id: third,
+            position: Point2::new(0.0, 0.0),
+        });
+        pattern.edges.push(ori_domain::Edge {
+            id: second_edge,
+            start: first_edge.end,
+            end: third,
+            kind: EdgeKind::Auxiliary,
+        });
+        let mut project = ProjectState::new(pattern);
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(first, "0", "0", 0.0, 0.0),
+            VertexCoordinateExpressions::new(first_edge.end, "3", "0", 3.0, 0.0),
+            VertexCoordinateExpressions::new(
+                third,
+                format!("{}+4", edge_reference(first_edge.id, "length")),
+                "0",
+                7.0,
+                0.0,
+            ),
+        ];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_ok());
+        project.numeric_expressions.vertex_coordinates[1].x_source =
+            edge_reference(second_edge, "length");
         assert!(reevaluate_saved_vertex_expressions(&project).is_err());
     }
 

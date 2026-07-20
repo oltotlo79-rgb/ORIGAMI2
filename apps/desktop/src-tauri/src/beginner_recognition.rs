@@ -163,15 +163,23 @@ pub(crate) fn recognize_beginner_part_suggestions(
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
     };
-    let bytes = {
+    let (bytes, target_category) = {
         let project = lock_project(&state)?;
         ensure_recognition_binding(&project, binding)?;
-        project
+        let bytes = project
             .texture_assets
             .iter()
             .find(|asset| asset.id == request.asset_id)
             .map(|asset| asset.bytes.clone())
-            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?;
+        (
+            bytes,
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_constraints
+                .target_category,
+        )
     };
     let (width, height, rgba) = decode_general_image(&bytes)?;
     let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
@@ -200,7 +208,11 @@ pub(crate) fn recognize_beginner_part_suggestions(
             {
                 ori_domain::BeginnerTargetPartKindV1::Head
             } else {
-                ori_domain::BeginnerTargetPartKindV1::Leg
+                if target_category == Some(ori_domain::BeginnerTargetCategoryV1::Insect) {
+                    ori_domain::BeginnerTargetPartKindV1::Wing
+                } else {
+                    ori_domain::BeginnerTargetPartKindV1::Leg
+                }
             },
             confidence_reason: if index == 0 {
                 "largest_secondary_outline"
@@ -287,12 +299,13 @@ pub(crate) fn apply_beginner_part_assignments(
     {
         return Err("part_assignment_invalid".to_owned());
     }
-    let mut counts = [0_u8; 3];
+    let mut counts = [0_u8; 4];
     for assignment in request.assignments {
         let index = match assignment.kind {
             ori_domain::BeginnerTargetPartKindV1::Torso => 0,
             ori_domain::BeginnerTargetPartKindV1::Head => 1,
             ori_domain::BeginnerTargetPartKindV1::Leg => 2,
+            ori_domain::BeginnerTargetPartKindV1::Wing => 3,
             _ => return Err("part_assignment_invalid".to_owned()),
         };
         counts[index] += 1;
@@ -301,6 +314,7 @@ pub(crate) fn apply_beginner_part_assignments(
         ori_domain::BeginnerTargetPartKindV1::Torso,
         ori_domain::BeginnerTargetPartKindV1::Head,
         ori_domain::BeginnerTargetPartKindV1::Leg,
+        ori_domain::BeginnerTargetPartKindV1::Wing,
     ]
     .into_iter()
     .zip(counts)

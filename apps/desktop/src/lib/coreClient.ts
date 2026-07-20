@@ -1637,7 +1637,7 @@ export type BeginnerPartSuggestionsResponse = Readonly<{
   underlay_id: string; asset_id: string; selected_outline_id: number
   suggestions: ReadonlyArray<Readonly<{
     candidate_id: number
-    suggested_kind: 'torso' | 'head' | 'leg'
+    suggested_kind: 'torso' | 'head' | 'leg' | 'wing'
     confidence_reason: 'selected_primary_outline' | 'largest_secondary_outline' | 'small_secondary_outline'
   }>>
 }>
@@ -1660,7 +1660,7 @@ export async function recognizeBeginnerPartSuggestions(
   const suggestions = record.suggestions.map((value) => {
     const item = exactCoreDataRecord(value, ['candidate_id', 'suggested_kind', 'confidence_reason'] as const)
     if (!item || !Number.isInteger(item.candidate_id)
-      || !['torso', 'head', 'leg'].includes(String(item.suggested_kind))
+      || !['torso', 'head', 'leg', 'wing'].includes(String(item.suggested_kind))
       || !['selected_primary_outline', 'largest_secondary_outline', 'small_secondary_outline'].includes(String(item.confidence_reason))) {
       throw new BeginnerRecognitionError('native_failure')
     }
@@ -1672,7 +1672,7 @@ export async function recognizeBeginnerPartSuggestions(
 export function applyBeginnerPartAssignments(
   outline: BeginnerOutlineCandidatesResponse,
   selectedOutline: BeginnerOutlineCandidatesResponse['candidates'][number],
-  assignments: ReadonlyArray<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' }>,
+  assignments: ReadonlyArray<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' | 'wing' }>,
 ) {
   return invoke<ProjectSnapshot>('apply_beginner_part_assignments', { request: {
     expectedProjectInstanceId: outline.project_instance_id, expectedProjectId: outline.project_id,

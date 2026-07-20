@@ -718,7 +718,7 @@ function App() {
   const [beginnerPartSuggestions, setBeginnerPartSuggestions] =
     useState<BeginnerPartSuggestionsResponse | null>(null)
   const [beginnerPartAssignments, setBeginnerPartAssignments] =
-    useState<Array<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' }>>([])
+    useState<Array<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' | 'wing' }>>([])
   const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
     useState<BeginnerReferenceModelGeometry | null>(null)
   const beginnerReferenceRequestRef = useRef(0)
@@ -8025,13 +8025,14 @@ function App() {
                             <label key={assignment.candidate_id}>
                               {formattedText({ ja: '候補 {id}', en: 'Candidate {id}' }, { id: assignment.candidate_id + 1 })}
                               <select value={assignment.kind} onChange={(event) => {
-                                const kind = event.currentTarget.value as 'torso' | 'head' | 'leg'
+                                const kind = event.currentTarget.value as 'torso' | 'head' | 'leg' | 'wing'
                                 setBeginnerPartAssignments((items) => items.map((item, itemIndex) =>
                                   itemIndex === index ? { ...item, kind } : item))
                               }}>
                                 <option value="torso">{text({ ja: '胴体', en: 'Torso' })}</option>
                                 <option value="head">{text({ ja: '頭', en: 'Head' })}</option>
                                 <option value="leg">{text({ ja: '脚', en: 'Leg' })}</option>
+                                <option value="wing">{text({ ja: '翼', en: 'Wing' })}</option>
                               </select>
                             </label>
                           ))}

@@ -88,6 +88,15 @@ test('part suggestions require explicit assignment and one confirmed history com
   assert.match(app, /This does not start generation/u)
 })
 
+test('explicit animal or insect parts feed the existing read-only symmetric plan evaluation', () => {
+  assert.match(native, /BeginnerTargetCategoryV1::Insect/u)
+  assert.match(native, /BeginnerTargetPartKindV1::Wing/u)
+  assert.match(app, /<option value="wing">/u)
+  assert.match(app, /evaluateBeginnerCandidates/u)
+  assert.match(app, /Generated crease-pattern and instruction candidates/u)
+  assert.match(app, /confirmAndApplyBeginnerPlan/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

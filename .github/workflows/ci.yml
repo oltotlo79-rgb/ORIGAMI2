@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.11.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
@@ -213,7 +213,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          toolchain: stable
+          toolchain: 1.90.0
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Cache pinned PrusaSlicer
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 (Node.js 24)
@@ -253,7 +253,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          toolchain: stable
+          toolchain: 1.90.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - run: cargo fmt --all -- --check
@@ -318,7 +318,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         if: runner.os == 'Windows'
         with:
-          python-version: "3.12"
+          python-version: "3.12.12"
       - name: Generate instruction PDF and SVG ZIP with outbound network blocked
         if: runner.os == 'Windows'
         shell: pwsh
@@ -331,7 +331,8 @@ jobs:
         env:
           ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY: ${{ runner.temp }}/instruction-export-audit
         run: |
-          python -m pip install --disable-pip-version-check --only-binary=:all: pypdf==6.12.2 PyMuPDF==1.27.2.3
+          python -m pip install --disable-pip-version-check --only-binary=:all: \
+            --require-hashes --no-deps -r .github/release-audit-requirements.txt
           python scripts/audit_instruction_exports.py "$ORIGAMI2_INSTRUCTION_EXPORT_AUDIT_DIRECTORY"
       - name: Upload instruction export audit fixtures
         if: failure() && runner.os == 'Windows'
@@ -365,11 +366,11 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          toolchain: stable
+          toolchain: 1.90.0
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.11.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Install frontend dependencies for bundle checks
@@ -455,11 +456,11 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          toolchain: stable
+          toolchain: 1.90.0
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.11.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Install frontend dependencies for bundle checks

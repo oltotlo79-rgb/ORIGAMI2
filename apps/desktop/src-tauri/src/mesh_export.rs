@@ -84,6 +84,7 @@ struct StaticMeshExportSource {
     pose_capability: CurrentAppliedPoseCapability,
     format: StaticMeshExportFormatRequest,
     project_name: String,
+    paper_front_color_rgba: [u8; 4],
     paper_thickness_mm: f64,
     paper_thickness_bits: u64,
     model: MaterialTreeKinematicsModel,
@@ -147,7 +148,7 @@ impl StaticMeshExportFormatRequest {
 enum StaticMeshExportWarning {
     MidSurfaceOnly,
     NoThicknessSolid,
-    NoMaterialsTexturesAnimation,
+    NoTexturesAnimation,
     NoProjectSemantics,
     StlTriangleSoupFacetNormals,
     StlPrintabilityNotGuaranteed,
@@ -361,6 +362,10 @@ fn capture_export_source(
         pose_generation: view.generation(),
         format: request.format,
         project_name: project.name.clone(),
+        paper_front_color_rgba: {
+            let color = project.editor.paper().front.color;
+            [color.red, color.green, color.blue, color.alpha]
+        },
         paper_thickness_mm: canonical_zero(paper_thickness_mm),
         paper_thickness_bits,
         model: view.model().clone(),
@@ -377,7 +382,8 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let face_count = source.pose.face_ids().len();
     let mesh =
-        build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)?;
+        build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)?
+            .with_base_color_rgba(source.paper_front_color_rgba);
     let validated =
         validate_indexed_triangle_mesh(&mesh).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let artifact = export_static_triangle_mesh(source.format.exporter_format(), &validated)
@@ -428,7 +434,7 @@ fn export_warnings(format: StaticMeshExportFormatRequest) -> Vec<StaticMeshExpor
     let mut warnings = vec![
         StaticMeshExportWarning::MidSurfaceOnly,
         StaticMeshExportWarning::NoThicknessSolid,
-        StaticMeshExportWarning::NoMaterialsTexturesAnimation,
+        StaticMeshExportWarning::NoTexturesAnimation,
         StaticMeshExportWarning::NoProjectSemantics,
     ];
     if format == StaticMeshExportFormatRequest::Stl {
@@ -1286,7 +1292,7 @@ mod tests {
             vec![
                 StaticMeshExportWarning::MidSurfaceOnly,
                 StaticMeshExportWarning::NoThicknessSolid,
-                StaticMeshExportWarning::NoMaterialsTexturesAnimation,
+                StaticMeshExportWarning::NoTexturesAnimation,
                 StaticMeshExportWarning::NoProjectSemantics,
             ]
         );
@@ -1299,7 +1305,7 @@ mod tests {
             vec![
                 StaticMeshExportWarning::MidSurfaceOnly,
                 StaticMeshExportWarning::NoThicknessSolid,
-                StaticMeshExportWarning::NoMaterialsTexturesAnimation,
+                StaticMeshExportWarning::NoTexturesAnimation,
                 StaticMeshExportWarning::NoProjectSemantics,
                 StaticMeshExportWarning::StlTriangleSoupFacetNormals,
                 StaticMeshExportWarning::StlPrintabilityNotGuaranteed,

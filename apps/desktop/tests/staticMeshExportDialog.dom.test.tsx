@@ -37,7 +37,7 @@ const PREVIEW: StaticMeshExportPreview = Object.freeze({
   warnings: Object.freeze([
     'mid_surface_only',
     'no_thickness_solid',
-    'no_materials_textures_animation',
+    'no_textures_animation',
     'no_project_semantics',
     'stl_triangle_soup_facet_normals',
     'stl_printability_not_guaranteed',

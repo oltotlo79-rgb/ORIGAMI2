@@ -65,6 +65,8 @@ pub struct IndexedTriangleMeshV1 {
     pub positions_mm: Vec<[f64; 3]>,
     pub normals: Vec<[f64; 3]>,
     pub triangles: Vec<[u32; 3]>,
+    #[serde(default = "opaque_white")]
+    pub base_color_rgba: [u8; 4],
 }
 
 impl IndexedTriangleMeshV1 {
@@ -82,8 +84,19 @@ impl IndexedTriangleMeshV1 {
             positions_mm,
             normals,
             triangles,
+            base_color_rgba: opaque_white(),
         }
     }
+
+    #[must_use]
+    pub const fn with_base_color_rgba(mut self, color: [u8; 4]) -> Self {
+        self.base_color_rgba = color;
+        self
+    }
+}
+
+const fn opaque_white() -> [u8; 4] {
+    [255, 255, 255, 255]
 }
 
 /// Immutable mesh capability returned only after complete bounded admission.
@@ -97,6 +110,7 @@ pub struct ValidatedIndexedTriangleMesh {
     positions_mm: Vec<[f64; 3]>,
     normals: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
+    base_color_rgba: [u8; 4],
 }
 
 impl ValidatedIndexedTriangleMesh {
@@ -123,6 +137,11 @@ impl ValidatedIndexedTriangleMesh {
     #[must_use]
     pub fn triangles(&self) -> &[[u32; 3]] {
         &self.triangles
+    }
+
+    #[must_use]
+    pub const fn base_color_rgba(&self) -> [u8; 4] {
+        self.base_color_rgba
     }
 }
 
@@ -425,6 +444,7 @@ pub fn validate_indexed_triangle_mesh_with_limits(
         positions_mm,
         normals,
         triangles,
+        base_color_rgba: document.base_color_rgba,
     })
 }
 
@@ -1299,7 +1319,9 @@ fn serialize_glb(
         materials: [GlbMaterial {
             name: "ORIGAMI2 Paper",
             pbr: GlbPbrMaterial {
-                base_color_factor: [1.0, 1.0, 1.0, 1.0],
+                base_color_factor: mesh
+                    .base_color_rgba
+                    .map(|channel| f32::from(channel) / 255.0),
                 metallic_factor: 0.0,
                 roughness_factor: 1.0,
             },
@@ -1542,7 +1564,10 @@ fn verify_glb_structure(
         || root.meshes[0].primitives[0].material != 0
         || root.materials.len() != 1
         || root.materials[0].name != "ORIGAMI2 Paper"
-        || root.materials[0].pbr.base_color_factor != [1.0, 1.0, 1.0, 1.0]
+        || root.materials[0].pbr.base_color_factor
+            != mesh
+                .base_color_rgba
+                .map(|channel| f32::from(channel) / 255.0)
         || root.materials[0].pbr.metallic_factor.to_bits() != 0.0_f32.to_bits()
         || root.materials[0].pbr.roughness_factor.to_bits() != 1.0_f32.to_bits()
         || !root.materials[0].double_sided
@@ -2151,6 +2176,7 @@ mod tests {
             "\"scenes\"",
             "\"nodes\"",
             "\"meshes\"",
+            "\"materials\"",
             "\"buffers\"",
             "\"bufferViews\"",
             "\"accessors\"",
@@ -2161,6 +2187,21 @@ mod tests {
             .collect();
         assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(json.contains("\"POSITION\":0,\"NORMAL\":1"));
+        assert!(json.contains("\"material\":0"));
+
+        let colored = validate_indexed_triangle_mesh(
+            &sample_document().with_base_color_rgba([12, 34, 56, 255]),
+        )
+        .expect("colored mesh");
+        let colored_glb =
+            export_static_triangle_mesh(StaticMeshExportFormat::Glb20, &colored).expect("GLB");
+        let colored_json_length =
+            usize::try_from(read_u32_le_at(&colored_glb.bytes, 12).unwrap()).unwrap();
+        let colored_json =
+            std::str::from_utf8(&colored_glb.bytes[20..20 + colored_json_length]).unwrap();
+        assert!(
+            colored_json.contains("\"baseColorFactor\":[0.047058824,0.13333334,0.21960784,1.0]")
+        );
 
         let binary_header = 20 + json_length;
         assert_eq!(

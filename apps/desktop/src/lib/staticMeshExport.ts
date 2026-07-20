@@ -6,7 +6,7 @@ export type StaticMeshExportFormat = 'obj' | 'stl' | 'glb'
 export type StaticMeshExportWarning =
   | 'mid_surface_only'
   | 'no_thickness_solid'
-  | 'no_materials_textures_animation'
+  | 'no_textures_animation'
   | 'no_project_semantics'
   | 'stl_triangle_soup_facet_normals'
   | 'stl_printability_not_guaranteed'
@@ -78,7 +78,7 @@ const PREVIEW_KEYS = [
 const BASE_WARNINGS: readonly StaticMeshExportWarning[] = Object.freeze([
   'mid_surface_only',
   'no_thickness_solid',
-  'no_materials_textures_animation',
+  'no_textures_animation',
   'no_project_semantics',
 ])
 
@@ -208,7 +208,7 @@ export function staticMeshExportWarningMessage(
         '出力は現在姿勢の紙の中央面だけです。紙の表面・裏面を持つ立体ではありません。',
       no_thickness_solid:
         '設定した紙厚は形状へ反映されません。層ずらし、厚み付きソリッド、閉じた多様体は含みません。',
-      no_materials_textures_animation:
+      no_textures_animation:
         '表裏色、材質、テクスチャ、カメラ、折りアニメーションは含みません。',
       no_project_semantics:
         '折り線、山谷、面ID、編集履歴、折り手順などORIGAMI2固有情報は含みません。',
@@ -222,8 +222,8 @@ export function staticMeshExportWarningMessage(
         'The export contains only the paper mid-surface in the current pose. It is not a solid with front and back surfaces.',
       no_thickness_solid:
         'Configured paper thickness is not applied to geometry. Layer offsets, a thickness solid, and a closed manifold are not included.',
-      no_materials_textures_animation:
-        'Front/back colors, materials, textures, camera, and folding animation are not included.',
+      no_textures_animation:
+        'GLB includes the paper front color as a material. Back color, textures, camera, and folding animation are not included.',
       no_project_semantics:
         'Creases, mountain/valley assignments, face IDs, edit history, folding steps, and other ORIGAMI2 semantics are not included.',
       stl_triangle_soup_facet_normals:

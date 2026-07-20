@@ -45,7 +45,7 @@ function preview(format: 'obj' | 'stl' | 'glb' = 'obj') {
       warnings: [
         'mid_surface_only',
         'no_thickness_solid',
-        'no_materials_textures_animation',
+        'no_textures_animation',
         'no_project_semantics',
         ...(format === 'stl'
           ? [

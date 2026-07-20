@@ -1931,8 +1931,13 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
     }
     if paper_thickness_mm > 0.0
-        && (requested.initial.target.model.face_ids().len() != 2
-            || requested.initial.target.model.hinges().len() != 1)
+        && !matches!(
+            (
+                requested.initial.target.model.face_ids().len(),
+                requested.initial.target.model.hinges().len(),
+            ),
+            (2, 1) | (3, 2)
+        )
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
     }

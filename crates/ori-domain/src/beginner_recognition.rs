@@ -11,6 +11,7 @@ pub const BEGINNER_RECOGNITION_SCHEMA_VERSION_V1: u32 = 1;
 pub const MAX_BEGINNER_RECOGNITION_DIMENSION_V1: u32 = 4_096;
 pub const MAX_BEGINNER_RECOGNITION_PIXELS_V1: usize = 4_000_000;
 pub const MAX_BEGINNER_RECOGNITION_COMPONENTS_V1: usize = 64;
+pub const MAX_BEGINNER_OUTLINE_CANDIDATES_V1: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +42,105 @@ pub struct BeginnerRecognitionProposalV1 {
     pub shape_bounds: BeginnerRecognitionBoundsV1,
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerOutlineCandidateV1 {
+    pub id: u8,
+    pub bounds: BeginnerRecognitionBoundsV1,
+    pub area_pixels: u32,
+    pub confidence_reason: BeginnerOutlineConfidenceReasonV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerOutlineConfidenceReasonV1 {
+    SolidComponent,
+    SmallComponent,
+}
+
+pub fn analyze_outline_candidates_rgba_v1(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<Vec<BeginnerOutlineCandidateV1>, BeginnerRecognitionErrorV1> {
+    validate_dimensions_and_rgba(width, height, rgba)?;
+    let pixels = width as usize * height as usize;
+    let foreground = rgba
+        .chunks_exact(4)
+        .map(|pixel| {
+            pixel[3] >= 128
+                && (u32::from(pixel[0]) * 299
+                    + u32::from(pixel[1]) * 587
+                    + u32::from(pixel[2]) * 114)
+                    / 1000
+                    < 128
+        })
+        .collect::<Vec<_>>();
+    let mut visited = vec![false; pixels];
+    let mut components = Vec::new();
+    for start in 0..pixels {
+        if !foreground[start] || visited[start] {
+            continue;
+        }
+        let mut queue = VecDeque::from([start]);
+        let mut area = 0_u32;
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (width, height, 0, 0);
+        visited[start] = true;
+        while let Some(index) = queue.pop_front() {
+            area = area.saturating_add(1);
+            let x = index % width as usize;
+            let y = index / width as usize;
+            min_x = min_x.min(x as u32);
+            min_y = min_y.min(y as u32);
+            max_x = max_x.max(x as u32);
+            max_y = max_y.max(y as u32);
+            for neighbor in [
+                (x > 0).then(|| index - 1),
+                (x + 1 < width as usize).then(|| index + 1),
+                (y > 0).then(|| index - width as usize),
+                (y + 1 < height as usize).then(|| index + width as usize),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if foreground[neighbor] && !visited[neighbor] {
+                    visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        if area >= 4 {
+            components.push((area, min_x, min_y, max_x, max_y));
+            if components.len() > MAX_BEGINNER_RECOGNITION_COMPONENTS_V1 {
+                return Err(BeginnerRecognitionErrorV1::ComponentLimit);
+            }
+        }
+    }
+    components.sort_unstable_by_key(|&(area, min_x, min_y, max_x, max_y)| {
+        (std::cmp::Reverse(area), min_y, min_x, max_y, max_x)
+    });
+    components.truncate(MAX_BEGINNER_OUTLINE_CANDIDATES_V1);
+    Ok(components
+        .into_iter()
+        .enumerate()
+        .map(|(id, (area_pixels, min_x, min_y, max_x, max_y))| BeginnerOutlineCandidateV1 {
+            id: id as u8,
+            bounds: BeginnerRecognitionBoundsV1 {
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            },
+            area_pixels,
+            confidence_reason: if area_pixels >= 16 {
+                BeginnerOutlineConfidenceReasonV1::SolidComponent
+            } else {
+                BeginnerOutlineConfidenceReasonV1::SmallComponent
+            },
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,5 +652,18 @@ mod tests {
             ),
             Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette)
         );
+    }
+
+    #[test]
+    fn outline_candidates_are_bounded_and_sorted_deterministically() {
+        let mut rgba = vec![255_u8; 8 * 4 * 4];
+        for index in [0, 1, 8, 9, 5, 6, 7, 13, 14, 15] {
+            rgba[index * 4..index * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+        }
+        let candidates = analyze_outline_candidates_rgba_v1(8, 4, &rgba).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].area_pixels, 6);
+        assert_eq!(candidates[0].bounds.min_x, 5);
+        assert_eq!(candidates[1].area_pixels, 4);
     }
 }

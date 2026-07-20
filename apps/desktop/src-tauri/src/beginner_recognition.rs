@@ -4,7 +4,7 @@ use ori_domain::{
     AssetId, BeginnerRecognitionProposalV1, ProjectId, UnderlayId, analyze_marker_png_rgba_v1,
     analyze_silhouette_png_rgba_v1,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::State;
 
@@ -80,6 +80,55 @@ pub(crate) fn recognize_beginner_silhouette(
         }
     }
     Ok(proposal)
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BeginnerOutlineCandidatesResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    underlay_id: UnderlayId,
+    asset_id: AssetId,
+    candidates: Vec<ori_domain::BeginnerOutlineCandidateV1>,
+}
+
+#[tauri::command]
+pub(crate) fn recognize_beginner_outline_candidates(
+    state: State<'_, AppState>,
+    request: RecognizeBeginnerTargetRequest,
+) -> Result<BeginnerOutlineCandidatesResponse, String> {
+    let bytes = {
+        let project = lock_project(&state)?;
+        ensure_recognition_binding(&project, request)?;
+        project
+            .texture_assets
+            .iter()
+            .find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.clone())
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+    };
+    let source_hash: [u8; 32] = Sha256::digest(&bytes).into();
+    let (width, height, rgba) = decode_general_image(&bytes)?;
+    let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
+        .map_err(|_| "recognition_resource_limit".to_owned())?;
+    let project = lock_project(&state)?;
+    ensure_recognition_binding(&project, request)?;
+    let live = project
+        .texture_assets
+        .iter()
+        .find(|asset| asset.id == request.asset_id)
+        .ok_or_else(|| "recognition_asset_unavailable".to_owned())?;
+    if <[u8; 32]>::from(Sha256::digest(&live.bytes)) != source_hash {
+        return Err("recognition_asset_changed".to_owned());
+    }
+    Ok(BeginnerOutlineCandidatesResponse {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        underlay_id: request.underlay_id,
+        asset_id: request.asset_id,
+        candidates,
+    })
 }
 
 #[tauri::command]

@@ -353,6 +353,14 @@ impl MaterialHingeGraphGeometry {
                 .checked_add(1)
                 .filter(|value| *value <= max_work)
                 .ok_or(KinematicsError::ResourceLimitExceeded)?;
+            if spanning.contains(&hinge.edge()) {
+                // Spanning transforms were constructed from this exact
+                // interval hinge. Recomputing them with fresh outward rounding
+                // cannot add a closure premise and can only create a false
+                // mismatch. Only non-spanning hinges constrain closure.
+                checked_hinges.push(hinge.edge());
+                continue;
+            }
             let left = *poses
                 .get(&hinge.left_face())
                 .ok_or(KinematicsError::UnsupportedTopology)?;

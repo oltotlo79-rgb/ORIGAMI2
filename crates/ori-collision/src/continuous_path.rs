@@ -1666,6 +1666,131 @@ mod tests {
     }
 
     #[test]
+    fn genuine_single_hinge_half_angle_schedule_has_closure_and_bounded_ccd() {
+        let points = [
+            (0.0, 0.0),
+            (50.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (50.0, 100.0),
+            (0.0, 100.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("7e00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("7f00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinge = fixed_id("7f00", 20);
+        edges.push(Edge {
+            id: hinge,
+            start: boundary[1],
+            end: boundary[4],
+            kind: EdgeKind::Mountain,
+        });
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("7a00", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("two material faces");
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let fixed = audit.faces()[0];
+        let schedule = ori_kinematics::CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            vec![ori_kinematics::HalfAngleRationalEntryInputV1 {
+                edge: hinge,
+                u_domain: [
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+            }],
+            ori_kinematics::CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let initial = schedule.evaluate(0.0).unwrap();
+        let requested = schedule.evaluate(1.0).unwrap();
+        let candidate = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+            schedule, &initial, &requested,
+        )
+        .unwrap();
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                candidate.schedule(),
+                1.0e-9,
+                ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 16,
+                    max_leaves: 65_536,
+                    max_work: 1_048_576,
+                    schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("single hinge closure");
+        let diagnostic =
+            diagnose_scheduled_cycle_path_v1(&geometry, &audit, fixed, &candidate, &closure, 8);
+        assert_eq!(
+            diagnostic.continuous_certificate_model_id(),
+            Some(STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1),
+        );
+        assert!(
+            crate::certify_scheduled_cycle_transition_v1(
+                &geometry, &audit, fixed, &candidate, &closure, 8, [0x11; 32], [0x22; 32],
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
     fn split_existing_hinge_cycle_certifies_roundoff_bounded_flat_root_only() {
         let points = [
             (0.0, 0.0),

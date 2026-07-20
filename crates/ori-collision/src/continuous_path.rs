@@ -295,9 +295,8 @@ pub fn diagnose_collective_hinge_path_v1(
             let bound = model
                 .bind_pose(&pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
-            all_positive_thickness_outer_shells &=
-                if positive_two_hinge_topology {
-                    prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
+            all_positive_thickness_outer_shells &= if positive_two_hinge_topology {
+                prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
                         .ok()
                         .flatten()
                         .is_some_and(|boundary| {
@@ -309,14 +308,32 @@ pub fn diagnose_collective_hinge_path_v1(
                             .is_some_and(|observations| observations.len() == 2)
                                 && model.face_ids().iter().enumerate().all(|(index, first)| {
                                     model.face_ids().iter().skip(index + 1).all(|second| {
-                                        let adjacent = model.hinges().iter().any(|hinge| {
+                                    let adjacent = model.hinges().iter().any(|hinge| {
                                             (hinge.left_face() == *first
                                                 && hinge.right_face() == *second)
                                                 || (hinge.left_face() == *second
                                                     && hinge.right_face() == *first)
-                                        });
-                                        adjacent
-                                            || prepare_positive_thickness_pair_separation_v1(
+                                    });
+                                    adjacent
+                                        || diagnose_static_collision_geometry(
+                                            model,
+                                            &pose,
+                                            paper_thickness_mm,
+                                            limits.static_collision,
+                                        )
+                                        .is_ok_and(|snapshot| {
+                                            snapshot.pairs().iter().any(|pair| {
+                                                ((pair.first_face() == *first
+                                                    && pair.second_face() == *second)
+                                                    || (pair.first_face() == *second
+                                                        && pair.second_face() == *first))
+                                                    && pair.topology()
+                                                        == crate::TopologyRelation::SharedVertex
+                                                    && pair.disposition()
+                                                        == crate::StaticCollisionPairDisposition::Allowed
+                                            })
+                                        })
+                                        || prepare_positive_thickness_pair_separation_v1(
                                                 bound,
                                                 paper_thickness_mm,
                                                 *first,
@@ -335,19 +352,19 @@ pub fn diagnose_collective_hinge_path_v1(
                                     })
                                 })
                         })
-                } else {
-                    prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|boundary| {
-                            revalidate_single_hinge_thickness_boundary_v1(
-                                &boundary,
-                                bound,
-                                paper_thickness_mm,
-                            )
-                            .is_some()
-                        })
-                };
+            } else {
+                prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|boundary| {
+                        revalidate_single_hinge_thickness_boundary_v1(
+                            &boundary,
+                            bound,
+                            paper_thickness_mm,
+                        )
+                        .is_some()
+                    })
+            };
             if all_positive_thickness_outer_shells {
                 // The opaque boundary capability is issued only after the
                 // complete shared-hinge solid classifier returns Allowed.
@@ -1111,7 +1128,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         edges.extend((1..=hinge_count).map(|column| Edge {
-            id: fixed_id("9400", 100 + column as u64),
+            id: fixed_id("9400", 1_000 + column as u64),
             start: boundary[column],
             end: boundary[2 * column_count - 1 - column],
             kind: EdgeKind::Mountain,
@@ -1624,7 +1641,7 @@ mod tests {
     }
 
     #[test]
-    fn three_triangle_positive_thickness_tree_stays_closed_without_all_pair_proof() {
+    fn three_triangle_positive_thickness_tree_gets_bounded_certificate() {
         let model = two_hinge_triangle_model();
         let moving = model
             .hinges()
@@ -1650,9 +1667,13 @@ mod tests {
                 0.1,
                 StackedFoldPathDiagnosticLimitsV1::default(),
             )
-            .expect("bounded fail-closed diagnosis");
-            assert!(!diagnostic.continuous_clearance_certified());
-            assert_eq!(diagnostic.safe_stop_angle_degrees(), 0.0);
+            .expect("bounded positive-thickness diagnosis");
+            assert!(diagnostic.continuous_clearance_certified());
+            assert_eq!(
+                diagnostic.continuous_certificate_model_id(),
+                Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            );
+            assert_eq!(diagnostic.safe_stop_angle_degrees(), requested);
         }
     }
 }

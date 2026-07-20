@@ -421,16 +421,26 @@ pub(super) async fn propose_current_stacked_fold_read(
             .target()
             .geometry()
             .proof();
-        let positive_thickness_certificate = continuous_path.continuous_certificate_model_id()
-            == Some(
-                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-            );
+        let positive_thickness_certificate = matches!(
+            continuous_path.continuous_certificate_model_id(),
+            Some(
+                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+                    | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+            )
+        );
         let endpoint_collision = if positive_thickness_certificate {
+            let face_count = prepared_requested_pose
+                .initial()
+                .target()
+                .model()
+                .face_ids()
+                .len();
+            let expected_pair_count = face_count * face_count.saturating_sub(1) / 2;
             StackedFoldEndpointCollisionDto {
-                expected_pair_count: 1,
+                expected_pair_count,
                 separated_pair_count: 0,
                 touching_pair_count: 0,
-                allowed_pair_count: 1,
+                allowed_pair_count: expected_pair_count,
                 penetrating_pair_count: 0,
                 indeterminate_pair_count: 0,
                 has_blocking_hold: false,

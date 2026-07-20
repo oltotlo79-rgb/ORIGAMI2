@@ -26,6 +26,37 @@ fn mesh(name: &str, z: f64) -> IndexedTriangleMeshV1 {
     )
 }
 
+fn positive_thickness_mesh() -> IndexedTriangleMeshV1 {
+    IndexedTriangleMeshV1::new(
+        "positive-thickness",
+        vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [0.0, 0.0, 2.0],
+            [10.0, 0.0, 2.0],
+            [10.0, 10.0, 2.0],
+            [0.0, 10.0, 2.0],
+        ],
+        vec![[0.0, 0.0, 1.0]; 8],
+        vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [1, 2, 6],
+            [1, 6, 5],
+            [2, 3, 7],
+            [2, 7, 6],
+            [3, 0, 4],
+            [3, 4, 7],
+        ],
+    )
+}
+
 fn main() {
     let output = env::args_os()
         .nth(1)
@@ -43,6 +74,20 @@ fn main() {
     let static_stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &static_mesh)
         .expect("static STL");
     fs::write(output.join("static.stl"), static_stl.bytes).expect("write static STL");
+    let solid =
+        validate_indexed_triangle_mesh(&positive_thickness_mesh()).expect("positive thickness");
+    let solid_stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &solid)
+        .expect("positive-thickness STL");
+    fs::write(output.join("positive-thickness.stl"), solid_stl.bytes)
+        .expect("write positive-thickness STL");
+    let mut unproven = positive_thickness_mesh();
+    unproven.name = "unproven-nonmanifold".into();
+    unproven.triangles.push([4, 5, 6]);
+    let unproven = validate_indexed_triangle_mesh(&unproven).expect("unproven non-manifold mesh");
+    let unproven_stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &unproven)
+        .expect("unproven non-manifold STL");
+    fs::write(output.join("unproven-nonmanifold.stl"), unproven_stl.bytes)
+        .expect("write unproven non-manifold STL");
 
     let textured = mesh("textured", 0.0).with_base_color_texture(EmbeddedBaseColorTextureV1 {
         media_type: EmbeddedTextureMediaTypeV1::Png,

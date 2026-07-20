@@ -13,6 +13,7 @@
     "test:gltf-validator": "node scripts/validate-generated-glb.mjs",
     "test:gltf-sample-viewer": "node scripts/sample-viewer-runtime-e2e.mjs",
     "test:blender": "node scripts/run-blender-acceptance.mjs",
+    "test:prusaslicer": "node scripts/run-prusaslicer-acceptance.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "bundle:windows:ci": "tauri build --ci --no-sign --bundles nsis",

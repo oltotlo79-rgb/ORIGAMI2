@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   applyStackedFoldTransaction,
+  cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
   proposeCurrentStackedFoldRead,
   readLiveHingeRegistryV1,
@@ -54,6 +55,7 @@ type View =
         | 'cycle_path_unsupported'
         | 'cycle_path_resource_limit'
         | 'cycle_path_no_certified_path'
+        | 'cycle_path_cancelled'
         | 'cycle_path_collision'
     }>
   | Readonly<{ kind: 'refresh_failed' }>
@@ -249,6 +251,7 @@ export function StackedFoldPanel({
               || result.reason === 'cycle_path_unsupported'
               || result.reason === 'cycle_path_resource_limit'
               || result.reason === 'cycle_path_no_certified_path'
+              || result.reason === 'cycle_path_cancelled'
               || result.reason === 'cycle_path_collision'
             ? result.reason
             : 'analysis',
@@ -398,12 +401,22 @@ export function StackedFoldPanel({
                     ? t('有界証明の資源上限に達しました。安全または不可能とは判定せず、適用を無効にします。', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.')
                     : view.reason === 'cycle_path_no_certified_path'
                       ? t('証明済み遷移だけでは目標への経路が見つかりませんでした。不可能とは判定しません。', 'No path to the target was found using certified transitions only. This does not claim impossibility.')
+                      : view.reason === 'cycle_path_cancelled'
+                        ? t('有界経路解析を中止しました。部分的な証明は公開していません。', 'The bounded path analysis was cancelled. No partial certificate was published.')
                     : view.reason === 'cycle_path_collision'
                       ? t('予定された連続経路の衝突なし証明を取得できませんでした。適用は無効です。', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.')
             : view.reason === 'apply'
               ? t('適用できませんでした。プレビューは失効しました。', 'Apply failed; the preview is no longer trusted.')
               : t('この入力ではnative証明を完成できませんでした。', 'A native proof could not be completed for this input.')}
         </p>
+      )}
+      {view.kind === 'reading' && (
+        <button
+          type="button"
+          onClick={() => void cancelCurrentStackedFoldReadV1().catch(() => undefined)}
+        >
+          {t('経路解析を中止', 'Cancel path analysis')}
+        </button>
       )}
       {view.kind === 'refresh_failed' && (
         <div role="alert">

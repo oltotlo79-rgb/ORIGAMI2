@@ -7,6 +7,7 @@ const transport = vi.hoisted(() => ({
   preview: vi.fn(),
   apply: vi.fn(),
   cancel: vi.fn(),
+  cancelRead: vi.fn(),
   registry: vi.fn(),
 }))
 
@@ -15,6 +16,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   proposeCurrentStackedFoldRead: transport.preview,
   applyStackedFoldTransaction: transport.apply,
   cancelStackedFoldTransactionPreview: transport.cancel,
+  cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
 }))
 
@@ -145,6 +147,7 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  transport.cancelRead.mockResolvedValue(undefined)
   transport.registry.mockResolvedValue({
     version: 1,
     projectInstanceId: instance,
@@ -161,6 +164,26 @@ beforeEach(() => {
 })
 
 describe('StackedFoldPanel', () => {
+  it('offers cooperative cancellation while a bounded path read is pending', async () => {
+    transport.preview.mockReturnValue(new Promise(() => undefined))
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Cancel path analysis',
+    }))
+    expect(transport.cancelRead).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
+  })
+
   it('bootstraps canonical linear candidate entries from the read-only live registry', async () => {
     transport.cancel.mockResolvedValue(undefined)
     transport.preview.mockResolvedValue(ready)

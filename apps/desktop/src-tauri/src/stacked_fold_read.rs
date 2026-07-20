@@ -4,6 +4,8 @@
 //! analysis runs over detached immutable capabilities and is revalidated
 //! against both live native slots before its bounded observation is returned.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use ori_collision::{
     FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
     StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
@@ -57,6 +59,18 @@ const CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE: &str = "stacked_fold_cycle_path_no_c
 const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
+const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
+static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[tauri::command]
+pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
+    STACKED_FOLD_READ_GENERATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            generation.checked_add(1)
+        })
+        .map(|_| ())
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+}
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -692,6 +706,13 @@ pub(super) async fn propose_current_stacked_fold_read(
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
+    let analysis_generation = STACKED_FOLD_READ_GENERATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            generation.checked_add(1)
+        })
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?
+        .checked_add(1)
+        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     let worker_permit = app_state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
@@ -855,11 +876,16 @@ pub(super) async fn propose_current_stacked_fold_read(
                         .collect::<std::collections::BTreeMap<_, _>>();
                     let mut resource_exhausted = false;
                     let mut oracle_edges = std::collections::BTreeMap::new();
-                    let searched = ori_collision::search_certified_pose_graph_v1(
+                    let searched =
+                        ori_collision::search_certified_pose_graph_with_checkpoint_v1(
                         &fingerprints,
                         &candidates,
                         fingerprints[graph.source_state],
                         fingerprints[graph.target_state],
+                        || {
+                            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire)
+                                == analysis_generation
+                        },
                         |edge| {
                             let source_index = *index_by_fingerprint.get(&edge.source)?;
                             let target_index = *index_by_fingerprint.get(&edge.target)?;
@@ -934,6 +960,10 @@ pub(super) async fn propose_current_stacked_fold_read(
                             reason: ori_collision::CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
                             ..
                         } => return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned()),
+                        ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
+                            reason: ori_collision::CertifiedPathGraphIndeterminateReasonV1::Cancelled,
+                            ..
+                        } => return Err(CANCELLED_MESSAGE.to_owned()),
                         ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate { .. }
                             if resource_exhausted =>
                         {
@@ -2122,6 +2152,16 @@ mod tests {
         assert_eq!(
             validate_certified_path_graph_v1(&over_limit, &live),
             Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn stacked_fold_read_cancel_advances_the_process_wide_generation() {
+        let before = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
+        cancel_current_stacked_fold_read_v1().expect("generation has capacity");
+        assert_eq!(
+            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
+            before + 1
         );
     }
 

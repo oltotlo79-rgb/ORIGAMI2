@@ -200,6 +200,7 @@ impl CertifiedPoseGraphPathCertificateV1 {
 pub enum CertifiedPathGraphIndeterminateReasonV1 {
     ResourceLimit,
     NoCertifiedPath,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,10 +221,34 @@ pub fn search_certified_pose_graph_v1(
     transitions: &[CertifiedPathTransitionCandidateV1],
     source: PoseFingerprintV1,
     target: PoseFingerprintV1,
+    oracle: impl FnMut(&CertifiedPathTransitionCandidateV1) -> Option<CertifiedPathTransitionEvidenceV1>,
+) -> CertifiedPathGraphSearchResultV1 {
+    search_certified_pose_graph_with_checkpoint_v1(
+        states,
+        transitions,
+        source,
+        target,
+        || true,
+        oracle,
+    )
+}
+
+/// Cancellable form of [`search_certified_pose_graph_v1`]. The checkpoint is
+/// observed before every state, every transition oracle call and certificate
+/// publication. Cancellation never publishes a partial path.
+pub fn search_certified_pose_graph_with_checkpoint_v1(
+    states: &[PoseFingerprintV1],
+    transitions: &[CertifiedPathTransitionCandidateV1],
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
+    mut checkpoint: impl FnMut() -> bool,
     mut oracle: impl FnMut(
         &CertifiedPathTransitionCandidateV1,
     ) -> Option<CertifiedPathTransitionEvidenceV1>,
 ) -> CertifiedPathGraphSearchResultV1 {
+    if !checkpoint() {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::Cancelled, 0, 0);
+    }
     if states.is_empty()
         || states.len() > MAX_CERTIFIED_PATH_GRAPH_STATES_V1
         || transitions.len() > MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
@@ -266,11 +291,25 @@ pub fn search_certified_pose_graph_v1(
     let mut explored = 0usize;
 
     while let Some(current) = queue.pop_front() {
+        if !checkpoint() {
+            return indeterminate(
+                CertifiedPathGraphIndeterminateReasonV1::Cancelled,
+                explored,
+                evaluated,
+            );
+        }
         explored += 1;
         for candidate in canonical_transitions
             .iter()
             .filter(|edge| edge.source == current)
         {
+            if !checkpoint() {
+                return indeterminate(
+                    CertifiedPathGraphIndeterminateReasonV1::Cancelled,
+                    explored,
+                    evaluated,
+                );
+            }
             if canonical_states.binary_search(&candidate.target).is_err() {
                 continue;
             }
@@ -301,6 +340,13 @@ pub fn search_certified_pose_graph_v1(
                     cursor = parent;
                 }
                 edges.reverse();
+                if !checkpoint() {
+                    return indeterminate(
+                        CertifiedPathGraphIndeterminateReasonV1::Cancelled,
+                        explored,
+                        evaluated,
+                    );
+                }
                 return CertifiedPathGraphSearchResultV1::Certified(
                     CertifiedPoseGraphPathCertificateV1 {
                         source,
@@ -471,5 +517,33 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cancellation_is_cooperative_and_never_publishes_a_partial_certificate() {
+        let mut checkpoints = 0;
+        let mut oracle_calls = 0;
+        let result = search_certified_pose_graph_with_checkpoint_v1(
+            &[fingerprint(1), fingerprint(2), fingerprint(3)],
+            &[candidate(1, 2, 1), candidate(2, 3, 1)],
+            fingerprint(1),
+            fingerprint(3),
+            || {
+                checkpoints += 1;
+                checkpoints < 5
+            },
+            |candidate| {
+                oracle_calls += 1;
+                Some(certify(candidate))
+            },
+        );
+        assert!(matches!(
+            result,
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::Cancelled,
+                ..
+            }
+        ));
+        assert_eq!(oracle_calls, 1);
     }
 }

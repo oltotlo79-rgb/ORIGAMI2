@@ -1751,6 +1751,9 @@ export function proposeCurrentStackedFoldRead(
     if (error === 'stacked_fold_cycle_path_no_certified_path') {
       throw new StackedFoldReadNativeError('cycle_path_no_certified_path')
     }
+    if (error === 'stacked_fold_cycle_path_cancelled') {
+      throw new StackedFoldReadNativeError('cycle_path_cancelled')
+    }
     if (error === 'stacked_fold_cycle_path_collision') {
       throw new StackedFoldReadNativeError('cycle_path_collision')
     }
@@ -1775,6 +1778,7 @@ export class StackedFoldReadNativeError extends Error {
     | 'cycle_path_unsupported'
     | 'cycle_path_resource_limit'
     | 'cycle_path_no_certified_path'
+    | 'cycle_path_cancelled'
     | 'cycle_path_collision'
     | 'native_failure'
 
@@ -1789,6 +1793,10 @@ export function cancelStackedFoldTransactionPreview(token: string): Promise<void
     return Promise.reject(new Error('invalid stacked-fold transaction token'))
   }
   return invoke<void>('cancel_stacked_fold_transaction_preview', { token })
+}
+
+export function cancelCurrentStackedFoldReadV1(): Promise<void> {
+  return invoke('cancel_current_stacked_fold_read_v1')
 }
 
 export function applyStackedFoldTransaction(token: string): Promise<number> {

@@ -59,22 +59,22 @@ const ready = {
     lineageRecordCount: 2,
     sourceEdgeSubdivisionCount: 1,
     expectedCreaseSubdivisionCount: 1,
-    targetMaterialFaceCount: 2,
+    targetMaterialFaceCount: 3,
     targetHingeCount: 2,
   },
   endpointCollision: {
-    expectedPairCount: 0,
+    expectedPairCount: 3,
     separatedPairCount: 0,
     touchingPairCount: 0,
-    allowedPairCount: 0,
+    allowedPairCount: 3,
     penetratingPairCount: 0,
     indeterminatePairCount: 0,
     hasBlockingHold: false,
   },
   continuousPath: {
     modelId: 'stacked_fold_bounded_path_diagnostic_v1',
-    continuousCertificateModelId: 'stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1',
-    paperThicknessMm: 0,
+    continuousCertificateModelId: 'stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1',
+    paperThicknessMm: 0.1,
     sampledPoseCount: 2,
     sampledNonblockingPoseCount: 2,
     intervalLeafCount: 8,
@@ -89,7 +89,7 @@ const ready = {
   flatEndpointLayerOrder: {
     applicable: true,
     certified: true,
-    materialFaceCount: 2,
+    materialFaceCount: 3,
     overlapCellCount: 1,
   },
   transactionProposal: {
@@ -107,7 +107,7 @@ const ready = {
     mountainCreaseCount: 1,
     valleyCreaseCount: 0,
     timelineStepCount: 1,
-    timelineCompleteHingeAngleCount: 1,
+    timelineCompleteHingeAngleCount: 2,
     requestedAngleDegrees: 180,
   },
   work: {
@@ -150,7 +150,7 @@ describe('StackedFoldPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     expect((await screen.findAllByText('Certified')).length).toBe(2)
-    expect(screen.getByText('stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1')).toBeTruthy()
+    expect(screen.getByText('stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1')).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Exploded front/back layer stack' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Back \/ bottom/ })).toBeTruthy()
     const front = screen.getByRole('button', { name: /Front \/ top/ })

@@ -11,9 +11,8 @@ export const STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1 =
 export const STACKED_FOLD_PATH_CERTIFICATE_MODEL_IDS = Object.freeze([
   'stacked_fold_single_hinge_zero_thickness_continuous_certificate_v1',
   'stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1',
-  'stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1',
   'stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1',
-  'stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1',
+  'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1',
   'stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1',
   'stacked_fold_tree_interval_zero_thickness_continuous_certificate_v1',
 ] as const)

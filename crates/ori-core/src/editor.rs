@@ -1920,7 +1920,7 @@ impl EditorState {
                 ref instruction_timeline,
                 ref project_layers,
             } => {
-                if paper.thickness_mm.to_bits() != 0.0_f64.to_bits()
+                if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
                     || (*pattern == self.pattern && *paper == self.paper)
                     || instruction_timeline.steps.len()
                         != self.instruction_timeline.steps.len().saturating_add(1)
@@ -14195,7 +14195,7 @@ mod tests {
     fn stacked_fold_document_is_one_atomic_history_entry() {
         let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
         let (source_pattern, mut source_paper) = sheet.into_parts();
-        source_paper.thickness_mm = 0.0;
+        source_paper.thickness_mm = 0.1;
         let mut editor = EditorState::with_paper(source_pattern.clone(), source_paper.clone());
         let mut target_pattern = source_pattern.clone();
         let hinge = EdgeId::new();
@@ -14231,13 +14231,13 @@ mod tests {
         };
         let after_pose = runtime_pose(90.0);
         let before_failure = editor_state_snapshot(&editor);
-        let mut positive_thickness = source_paper.clone();
-        positive_thickness.thickness_mm = 0.1;
+        let mut one_ulp_thickness = source_paper.clone();
+        one_ulp_thickness.thickness_mm = f64::from_bits(source_paper.thickness_mm.to_bits() + 1);
         assert_eq!(
             editor.execute_stacked_fold_document(
                 0,
                 target_pattern.clone(),
-                positive_thickness,
+                one_ulp_thickness,
                 timeline.clone(),
                 ProjectLayerDocumentV1::default(),
                 after_pose.clone(),

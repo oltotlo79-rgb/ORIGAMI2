@@ -16,11 +16,12 @@ use std::{
 };
 
 use num_bigint::{BigInt, Sign};
-use ori_domain::{ProjectId, VertexId};
+use ori_domain::{AssetId, ProjectId, VertexId};
 use ori_formats::{
-    IndexedTriangleMeshV1, MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES,
-    STATIC_MESH_SOURCE_AXIS, STATIC_MESH_SOURCE_UNIT, StaticMeshExportArtifact,
-    StaticMeshExportFormat, export_static_triangle_mesh, validate_indexed_triangle_mesh,
+    EmbeddedBaseColorTextureV1, EmbeddedTextureMediaTypeV1, IndexedTriangleMeshV1,
+    MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES, STATIC_MESH_SOURCE_AXIS,
+    STATIC_MESH_SOURCE_UNIT, StaticMeshExportArtifact, StaticMeshExportFormat,
+    export_static_triangle_mesh, validate_indexed_triangle_mesh,
 };
 use ori_kinematics::{MaterialTreeKinematicsModel, MaterialTreePose, Point3};
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,76 @@ struct StaticMeshExportSource {
     paper_thickness_bits: u64,
     model: MaterialTreeKinematicsModel,
     pose: MaterialTreePose,
+}
+
+/// Native-only result of resolving one project asset. The browser is never
+/// allowed to supply this value: a future asset repository must mint it after
+/// authenticating the requested `AssetId`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Back requires a separate primitive/material before activation.
+enum PaperTextureSide {
+    Front,
+    Back,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TextureAuthorityBinding {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+}
+
+#[allow(dead_code)] // Constructed once a native asset byte repository is connected.
+struct ResolvedStaticMeshTexture {
+    binding: TextureAuthorityBinding,
+    asset_id: AssetId,
+    side: PaperTextureSide,
+    media_type: EmbeddedTextureMediaTypeV1,
+    bytes: Vec<u8>,
+}
+
+/// Fail-closed bridge between an authenticated project texture reference and
+/// the format layer's embedded-image contract.
+#[allow(dead_code)] // Strict seam for the future native asset byte repository.
+fn stage_authenticated_texture(
+    format: StaticMeshExportFormatRequest,
+    expected_asset_id: Option<AssetId>,
+    expected_side: PaperTextureSide,
+    expected_binding: TextureAuthorityBinding,
+    resolved: Option<ResolvedStaticMeshTexture>,
+    material_tex_coords: Vec<[f32; 2]>,
+    mesh: IndexedTriangleMeshV1,
+) -> Result<IndexedTriangleMeshV1, String> {
+    let Some(expected_asset_id) = expected_asset_id else {
+        return if resolved.is_none() {
+            Ok(mesh)
+        } else {
+            Err(PREVIEW_FAILED_MESSAGE.to_owned())
+        };
+    };
+    // The current GLB document has one front-facing material. Back-side UV
+    // semantics require a separate primitive/material and are deliberately not
+    // approximated by reusing the front UVs.
+    if format != StaticMeshExportFormatRequest::Glb || expected_side != PaperTextureSide::Front {
+        return if resolved.is_none() {
+            Ok(mesh)
+        } else {
+            Err(PREVIEW_FAILED_MESSAGE.to_owned())
+        };
+    }
+    let resolved = resolved.ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    if resolved.asset_id != expected_asset_id
+        || resolved.side != expected_side
+        || resolved.binding != expected_binding
+        || material_tex_coords.len() != mesh.positions_mm.len()
+    {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    Ok(mesh.with_base_color_texture(EmbeddedBaseColorTextureV1 {
+        media_type: resolved.media_type,
+        bytes: resolved.bytes,
+        tex_coords: material_tex_coords,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -669,6 +740,14 @@ pub(super) fn build_current_pose_mid_surface_mesh(
     model: &MaterialTreeKinematicsModel,
     pose: &MaterialTreePose,
 ) -> Result<IndexedTriangleMeshV1, String> {
+    build_current_pose_mid_surface_mesh_with_material_uv(name, model, pose).map(|built| built.0)
+}
+
+fn build_current_pose_mid_surface_mesh_with_material_uv(
+    name: &str,
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+) -> Result<(IndexedTriangleMeshV1, Vec<[f32; 2]>), String> {
     model
         .bind_pose(pose)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
@@ -678,6 +757,7 @@ pub(super) fn build_current_pose_mid_surface_mesh(
 
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut material_points = Vec::new();
     let mut triangles = Vec::new();
     let mut budget = ExactPredicateBudget::new(MAX_EXACT_TRIANGULATION_PREDICATES);
 
@@ -734,6 +814,7 @@ pub(super) fn build_current_pose_mid_surface_mesh(
                     .ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?,
             );
             positions.push(face_vertices[source_index].world_export);
+            material_points.push(face_vertices[source_index].rest_2d);
         }
 
         let material_normal = transform
@@ -766,9 +847,45 @@ pub(super) fn build_current_pose_mid_surface_mesh(
             triangles.push(triangle);
         }
     }
-    Ok(IndexedTriangleMeshV1::new(
-        name, positions, normals, triangles,
+    let material_tex_coords = normalized_material_tex_coords(&material_points)?;
+    Ok((
+        IndexedTriangleMeshV1::new(name, positions, normals, triangles),
+        material_tex_coords,
     ))
+}
+
+fn normalized_material_tex_coords(points: &[[f64; 2]]) -> Result<Vec<[f32; 2]>, String> {
+    let first = points
+        .first()
+        .copied()
+        .ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first[0], first[0], first[1], first[1]);
+    for [x, y] in points.iter().copied() {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+        }
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    points
+        .iter()
+        .map(|[x, y]| {
+            let u = ((x - min_x) / width) as f32;
+            let v = ((y - min_y) / height) as f32;
+            if u.is_finite() && v.is_finite() {
+                Ok([u, v])
+            } else {
+                Err(PREVIEW_FAILED_MESSAGE.to_owned())
+            }
+        })
+        .collect()
 }
 
 fn extrude_closed_face_solids(
@@ -1258,6 +1375,112 @@ mod tests {
             rest_2d: [x, y],
             world_export: [x, y, 0.0],
         }
+    }
+
+    fn texture_stage_mesh() -> IndexedTriangleMeshV1 {
+        IndexedTriangleMeshV1::new(
+            "texture-stage",
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0.0, 0.0, 1.0]; 3],
+            vec![[0, 1, 2]],
+        )
+    }
+
+    #[test]
+    fn authenticated_texture_stage_requires_native_asset_identity_and_glb() {
+        let expected = AssetId::new();
+        let foreign = AssetId::new();
+        let binding = TextureAuthorityBinding {
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            revision: 7,
+        };
+        let resolved = |asset_id| ResolvedStaticMeshTexture {
+            binding,
+            asset_id,
+            side: PaperTextureSide::Front,
+            media_type: EmbeddedTextureMediaTypeV1::Png,
+            bytes: b"\x89PNG\r\n\x1a\nnative".to_vec(),
+        };
+        let uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+
+        assert!(
+            stage_authenticated_texture(
+                StaticMeshExportFormatRequest::Glb,
+                Some(expected),
+                PaperTextureSide::Front,
+                binding,
+                Some(resolved(foreign)),
+                uvs.clone(),
+                texture_stage_mesh(),
+            )
+            .is_err()
+        );
+        assert!(
+            stage_authenticated_texture(
+                StaticMeshExportFormatRequest::Obj,
+                Some(expected),
+                PaperTextureSide::Front,
+                binding,
+                Some(resolved(expected)),
+                uvs.clone(),
+                texture_stage_mesh(),
+            )
+            .is_err()
+        );
+        let staged = stage_authenticated_texture(
+            StaticMeshExportFormatRequest::Glb,
+            Some(expected),
+            PaperTextureSide::Front,
+            binding,
+            Some(resolved(expected)),
+            uvs.clone(),
+            texture_stage_mesh(),
+        )
+        .unwrap();
+        let texture = staged.base_color_texture.unwrap();
+        assert_eq!(texture.tex_coords, uvs);
+        assert_eq!(texture.bytes, b"\x89PNG\r\n\x1a\nnative");
+
+        assert!(
+            stage_authenticated_texture(
+                StaticMeshExportFormatRequest::Glb,
+                Some(expected),
+                PaperTextureSide::Back,
+                binding,
+                Some(resolved(expected)),
+                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                texture_stage_mesh(),
+            )
+            .is_err()
+        );
+
+        let stale = TextureAuthorityBinding {
+            revision: 8,
+            ..binding
+        };
+        assert!(
+            stage_authenticated_texture(
+                StaticMeshExportFormatRequest::Glb,
+                Some(expected),
+                PaperTextureSide::Front,
+                stale,
+                Some(resolved(expected)),
+                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                texture_stage_mesh(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn material_texture_coordinates_are_bounded_and_reject_degenerate_bounds() {
+        assert_eq!(
+            normalized_material_tex_coords(&[[2.0, -4.0], [6.0, -4.0], [2.0, 8.0]]).unwrap(),
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+        );
+        assert!(normalized_material_tex_coords(&[[1.0, 1.0], [1.0, 2.0]]).is_err());
+        assert!(normalized_material_tex_coords(&[[0.0, 0.0], [f64::NAN, 1.0]]).is_err());
     }
 
     #[test]

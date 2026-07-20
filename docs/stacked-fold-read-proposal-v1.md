@@ -77,14 +77,14 @@ target face和集合はface IDのcanonical byte順へ正規化する。material 
 
 material map `native_flat_stacked_fold_material_map_v1`は、proposalを同じguard・binding・exact pose・layer snapshotへ再検証してから構築する。成功対象がno-hingeまたはbit-exact 180度だけであることを利用し、world直線とfixed-side probeを各faceのrigid transformの逆変換で材料平面へ戻す。canonical CCW face境界との交差区間はbinary64比較ではなく、入力binary64を正確な有理数へliftした凸polygon clippingで求める。probeのexact orientationでfaceごとのfixed sideを決め、候補軸方向を保った右手回転について`positive + fixed-left`または`negative + fixed-right`をMountain、残りをValleyへ割り当てる。面外drift、接線、境界一致、ゼロ長、欠損transform、非凸・不完全な交差、face・全境界頂点上限超過は推測せず失敗する。
 
+desktop workerはこの層別segmentから、source edgeと全crease carrierの交点を完全列挙した平面配置を構築する。source vertex IDとsource edgeごとの一つのIDを保存し、交点を共有頂点として全carrierを分割し、外周edge上の交点はpaper boundary cycleにも挿入する。共線重複、欠損endpoint、duplicate source座標、非有限・ゼロ長・非Mountain/Valley入力、carrier・pair test・頂点・edge上限超過は候補を返さない。生成後は`face_lineage_v1`と`stacked_fold_geometry_v1`を連続して実行し、source別面積保存、source edge完全被覆、期待crease完全被覆、余分なedgeなしを証明する。応答にはtarget fingerprintと件数だけを写し、候補pattern、paper、proof本体、ID、mutation authorityはWebViewへ渡さない。
+
 proposalが保証しないものは次のとおりである。
 
 - current poseへ到達したcontinuous path
 - staticまたはcontinuous collision safety
 - 紙厚層offset
-- 新しいcrease edge IDと頂点IDを含むtarget topology
-- face segment間の同一直線clusterとtarget topology上の最終Mountain/Valley再認証
-- candidate patternまたはface lineage
+- live authorityへ再結合されたtarget topologyとproof本体のcommit時再認証
 - target pose、target layer order、timeline
 - project mutationまたは`ApplyStackedFold`
 

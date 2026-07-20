@@ -10,6 +10,11 @@ use ori_collision::{
     StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, capture_stacked_fold_read_guard_v1,
     propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
 };
+use ori_core::{
+    ExpectedStackedFoldCreaseV1, FaceLineageInput, FaceLineageLimits, StackedFoldGeometryInputV1,
+    StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1, build_stacked_fold_topology_v1,
+    prepare_face_lineage_v1, prepare_stacked_fold_geometry_v1,
+};
 use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::Point3;
 use serde::{Deserialize, Serialize};
@@ -137,6 +142,18 @@ struct StackedFoldReadWorkDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct StackedFoldTopologyProofDto {
+    target_fingerprint_sha256: String,
+    target_vertex_count: usize,
+    target_edge_count: usize,
+    target_boundary_vertex_count: usize,
+    lineage_record_count: usize,
+    source_edge_subdivision_count: usize,
+    expected_crease_subdivision_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldReadResponse {
     guard_model_id: &'static str,
     proposal_model_id: &'static str,
@@ -146,6 +163,7 @@ pub(super) struct StackedFoldReadResponse {
     crossed_cells: Vec<StackedFoldReadCellDto>,
     target_faces: Vec<FaceId>,
     material_segments: Vec<StackedFoldMaterialSegmentDto>,
+    topology_proof: StackedFoldTopologyProofDto,
     work: StackedFoldReadWorkDto,
     authorizes_project_mutation: bool,
     authorizes_apply_stacked_fold: bool,
@@ -229,6 +247,64 @@ pub(super) async fn propose_current_stacked_fold_read(
             StackedFoldMaterialMapLimitsV1::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let expected_creases = material_map
+            .segments()
+            .iter()
+            .map(|segment| ExpectedStackedFoldCreaseV1 {
+                start: segment.start(),
+                end: segment.end(),
+                kind: segment.assignment(),
+            })
+            .collect::<Vec<_>>();
+        let topology = build_stacked_fold_topology_v1(
+            &pattern,
+            &paper,
+            &expected_creases,
+            StackedFoldTopologyBuildLimitsV1::default(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let target_revision = binding
+            .source_revision()
+            .checked_add(1)
+            .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let lineage = prepare_face_lineage_v1(
+            FaceLineageInput {
+                identity_namespace: binding.project_id(),
+                source_revision: binding.source_revision(),
+                source_paper: &paper,
+                source_pattern: &pattern,
+                source_layer_order: layer_capability.snapshot(),
+                target_revision,
+                target_paper: &topology.paper,
+                target_pattern: &topology.pattern,
+            },
+            FaceLineageLimits::default(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let geometry_proof = prepare_stacked_fold_geometry_v1(
+            StackedFoldGeometryInputV1 {
+                identity_namespace: binding.project_id(),
+                source_revision: binding.source_revision(),
+                source_paper: &paper,
+                source_pattern: &pattern,
+                target_revision,
+                target_paper: &topology.paper,
+                target_pattern: &topology.pattern,
+                face_lineage: &lineage,
+                expected_creases: &expected_creases,
+            },
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let topology_proof = StackedFoldTopologyProofDto {
+            target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
+            target_vertex_count: topology.pattern.vertices.len(),
+            target_edge_count: topology.pattern.edges.len(),
+            target_boundary_vertex_count: topology.paper.boundary_vertices.len(),
+            lineage_record_count: lineage.records().len(),
+            source_edge_subdivision_count: geometry_proof.source_edges().len(),
+            expected_crease_subdivision_count: geometry_proof.expected_creases().len(),
+        };
         let crossed_cells = proposal
             .crossed_cells()
             .iter()
@@ -269,6 +345,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             crossed_cells,
             target_faces,
             material_segments,
+            topology_proof,
             work,
         ))
     })
@@ -282,6 +359,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         crossed_cells,
         target_faces,
         material_segments,
+        topology_proof,
         work,
     ) = analysis;
 
@@ -320,6 +398,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         crossed_cells,
         target_faces,
         material_segments,
+        topology_proof,
         work: StackedFoldReadWorkDto {
             scanned_cells: work.scanned_cells,
             total_boundary_vertices: work.total_boundary_vertices,

@@ -91,6 +91,26 @@ impl RigidTransform {
         self.rotate_vector(vector)
     }
 
+    /// Applies the inverse rigid transform to a finite world-space point.
+    ///
+    /// Prepared transforms are orthonormal, so the inverse rotation is the
+    /// transpose. This observer is used by authenticated native workflows that
+    /// must map a certified world-space feature back to material coordinates.
+    pub fn inverse_apply_point(self, point: Point3) -> Result<Point3, KinematicsError> {
+        let shifted = subtract(point, self.translation)?;
+        Point3::new(
+            self.rotation[0][0] * shifted.x
+                + self.rotation[1][0] * shifted.y
+                + self.rotation[2][0] * shifted.z,
+            self.rotation[0][1] * shifted.x
+                + self.rotation[1][1] * shifted.y
+                + self.rotation[2][1] * shifted.z,
+            self.rotation[0][2] * shifted.x
+                + self.rotation[1][2] * shifted.y
+                + self.rotation[2][2] * shifted.z,
+        )
+    }
+
     pub(crate) fn around_axis(
         point: Point3,
         axis: Point3,
@@ -217,4 +237,37 @@ fn finite_transform(value: RigidTransform) -> Result<RigidTransform, KinematicsE
         .all(f64::is_finite)
         .then_some(value)
         .ok_or(KinematicsError::UnrepresentableGeometry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inverse_apply_point_round_trips_cardinal_rigid_transforms_bit_exactly() {
+        let axis_origin = Point3::new(2.0, 3.0, 4.0).unwrap();
+        let axis = Point3::new(0.0, 0.0, 1.0).unwrap();
+        let transform = RigidTransform::around_axis(axis_origin, axis, 90.0).unwrap();
+        for source in [
+            axis_origin,
+            Point3::new(7.0, -5.0, 11.0).unwrap(),
+            Point3::new(-13.0, 17.0, -19.0).unwrap(),
+        ] {
+            let world = transform.apply_point(source).unwrap();
+            let restored = transform.inverse_apply_point(world).unwrap();
+            assert_eq!(restored, source);
+        }
+    }
+
+    #[test]
+    fn inverse_apply_point_rejects_non_finite_results() {
+        let transform = RigidTransform {
+            rotation: [[f64::MAX, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: Point3::ORIGIN,
+        };
+        assert_eq!(
+            transform.inverse_apply_point(Point3::new(f64::MAX, 0.0, 0.0).unwrap()),
+            Err(KinematicsError::UnrepresentableGeometry)
+        );
+    }
 }

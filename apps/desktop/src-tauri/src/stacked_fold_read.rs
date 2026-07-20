@@ -1686,4 +1686,50 @@ mod tests {
         };
         assert!(validate_linear_candidate_angles_v1(&wrong_version, &live).is_err());
     }
+
+    #[test]
+    fn live_registry_round_trips_into_the_same_bit_exact_linear_request() {
+        let first = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
+            "018f47a2-4b7a-7cc1-8abc-665544332211"
+        ))
+        .unwrap();
+        let second = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
+            "018f47a2-4b7a-7cc1-8abc-778899aabbcc"
+        ))
+        .unwrap();
+        let live = ori_kinematics::CanonicalHingeAngles::new(vec![
+            ori_kinematics::HingeAngle::new(first, 10.0).unwrap(),
+            ori_kinematics::HingeAngle::new(second, 20.0).unwrap(),
+        ])
+        .unwrap();
+        let registry = live_hinge_registry(live.as_slice());
+        assert_eq!(
+            registry.iter().map(|entry| entry.edge).collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        let request = LinearCandidateRequestV1 {
+            version: 1,
+            entries: registry
+                .iter()
+                .map(|entry| LinearCandidateEntryRequestV1 {
+                    edge: entry.edge,
+                    initial_angle_degrees: entry.initial_angle_degrees,
+                    requested_angle_degrees: entry.initial_angle_degrees + 5.0,
+                })
+                .collect(),
+        };
+        let (round_tripped, requested) =
+            validate_linear_candidate_angles_v1(&request, &live).unwrap();
+        assert_eq!(round_tripped, live);
+        assert!(
+            requested
+                .as_slice()
+                .iter()
+                .zip(live.as_slice())
+                .all(|(next, initial)| {
+                    next.edge() == initial.edge()
+                        && next.angle_degrees() == initial.angle_degrees() + 5.0
+                })
+        );
+    }
 }

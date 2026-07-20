@@ -13,7 +13,10 @@ use ori_geometry::{
     GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, SegmentIntersection,
     exact_orientation, point_polygon_relation, point_segment_relation, segment_intersection,
 };
-use ori_kinematics::{KinematicsError, MaterialTreeKinematicsModel, TreeKinematicsLimits};
+use ori_kinematics::{
+    CanonicalHingeAngles, HingeAngle, KinematicsError, MaterialTreeKinematicsModel,
+    MaterialTreePose, TreeKinematicsLimits,
+};
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
 };
@@ -219,6 +222,23 @@ pub struct PreparedStackedFoldTargetModelV1 {
     model: MaterialTreeKinematicsModel,
 }
 
+pub struct PreparedStackedFoldInitialPoseV1 {
+    target: PreparedStackedFoldTargetModelV1,
+    pose: MaterialTreePose,
+}
+
+impl PreparedStackedFoldInitialPoseV1 {
+    #[must_use]
+    pub const fn target(&self) -> &PreparedStackedFoldTargetModelV1 {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn pose(&self) -> &MaterialTreePose {
+        &self.pose
+    }
+}
+
 impl PreparedStackedFoldTargetModelV1 {
     #[must_use]
     pub const fn geometry(&self) -> &PreparedStackedFoldGeometryV1 {
@@ -296,6 +316,24 @@ pub enum PrepareStackedFoldTargetModelErrorV1 {
     #[error("proved target topology could not be reconstructed: {0}")]
     Topology(#[from] FaceLineageError),
     #[error("proved target topology is not supported by material tree kinematics: {0}")]
+    Kinematics(#[from] KinematicsError),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum PrepareStackedFoldInitialPoseErrorV1 {
+    #[error("source pose was not issued by the supplied source model")]
+    SourcePoseIssuerMismatch,
+    #[error("source pose is missing lineage face {face:?}")]
+    SourcePoseFaceMissing { face: FaceId },
+    #[error("source pose is missing hinge angle for source edge {edge:?}")]
+    SourceHingeAngleMissing { edge: EdgeId },
+    #[error("target hinge {edge:?} is not covered by the proved geometry delta")]
+    TargetHingeWithoutCarrier { edge: EdgeId },
+    #[error("source fixed face is absent from proved lineage")]
+    SourceFixedFaceMissing,
+    #[error("target descendant transform does not preserve source face {face:?}")]
+    DescendantTransformMismatch { face: FaceId },
+    #[error("target pose preparation failed: {0}")]
     Kinematics(#[from] KinematicsError),
 }
 
@@ -1254,6 +1292,93 @@ pub fn prepare_stacked_fold_target_model_v1(
         limits,
     )?;
     Ok(PreparedStackedFoldTargetModelV1 { geometry, model })
+}
+
+/// Lifts the current source pose onto the proved target topology before the
+/// new collective hinge moves. Source hinge subdivisions inherit their source
+/// angles and every newly expected crease starts at zero.
+pub fn prepare_stacked_fold_initial_pose_v1(
+    target: PreparedStackedFoldTargetModelV1,
+    source_model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+) -> Result<PreparedStackedFoldInitialPoseV1, PrepareStackedFoldInitialPoseErrorV1> {
+    if !source_model.owns_pose(source_pose) {
+        return Err(PrepareStackedFoldInitialPoseErrorV1::SourcePoseIssuerMismatch);
+    }
+    let source_angles = source_pose
+        .hinge_angles()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect::<HashMap<_, _>>();
+    let proof = target.geometry.proof();
+    let mut target_angle_values = HashMap::<EdgeId, f64>::new();
+    for subdivision in proof.source_edges() {
+        let source_edge = subdivision.source_edge();
+        if let Some(angle) = source_angles.get(&source_edge).copied() {
+            for edge in subdivision.target_edges() {
+                target_angle_values.insert(*edge, angle);
+            }
+        }
+    }
+    for subdivision in proof.expected_creases() {
+        for edge in subdivision.target_edges() {
+            target_angle_values.insert(*edge, 0.0);
+        }
+    }
+    let mut angles = target
+        .model
+        .hinges()
+        .iter()
+        .map(|hinge| {
+            let edge = hinge.edge();
+            let angle = target_angle_values
+                .get(&edge)
+                .copied()
+                .ok_or(PrepareStackedFoldInitialPoseErrorV1::TargetHingeWithoutCarrier { edge })?;
+            HingeAngle::new(edge, angle).map_err(PrepareStackedFoldInitialPoseErrorV1::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+    let angles = CanonicalHingeAngles::new(angles)?;
+
+    let lineage = proof.lineage();
+    let fixed_face = match source_pose.fixed_face() {
+        None if target.model.hinges().is_empty() => None,
+        None => Some(
+            lineage
+                .records()
+                .first()
+                .and_then(|record| record.descendants().first())
+                .ok_or(PrepareStackedFoldInitialPoseErrorV1::SourceFixedFaceMissing)?
+                .face_id,
+        ),
+        Some(source_fixed) => Some(
+            lineage
+                .records()
+                .iter()
+                .find(|record| record.source().face_id == source_fixed)
+                .and_then(|record| record.descendants().first())
+                .ok_or(PrepareStackedFoldInitialPoseErrorV1::SourceFixedFaceMissing)?
+                .face_id,
+        ),
+    };
+    let pose = target.model.solve(fixed_face, &angles)?;
+    for record in lineage.records() {
+        let source_face = record.source().face_id;
+        let source_transform = source_pose.face_transform(source_face).ok_or(
+            PrepareStackedFoldInitialPoseErrorV1::SourcePoseFaceMissing { face: source_face },
+        )?;
+        for descendant in record.descendants() {
+            if pose.face_transform(descendant.face_id) != Some(source_transform) {
+                return Err(
+                    PrepareStackedFoldInitialPoseErrorV1::DescendantTransformMismatch {
+                        face: source_face,
+                    },
+                );
+            }
+        }
+    }
+    Ok(PreparedStackedFoldInitialPoseV1 { target, pose })
 }
 
 fn compare_expected_crease(
@@ -2457,6 +2582,32 @@ mod tests {
         assert_eq!(target.model().face_ids().len(), 2);
         assert_eq!(target.model().hinges().len(), 1);
         assert_eq!(target.geometry().proof().expected_creases().len(), 1);
+        let source_topology = simulation_snapshot(
+            fixture.identity,
+            fixture.source_revision,
+            &fixture.source_paper,
+            &fixture.source_pattern,
+            FaceLineageTopology::Source,
+        )
+        .expect("source topology");
+        let source_model = MaterialTreeKinematicsModel::prepare(
+            &fixture.source_pattern,
+            &fixture.source_paper,
+            &source_topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("source model");
+        let source_pose = source_model
+            .solve(
+                None,
+                &CanonicalHingeAngles::new(Vec::new()).expect("empty angles"),
+            )
+            .expect("source pose");
+        let initial = prepare_stacked_fold_initial_pose_v1(target, &source_model, &source_pose)
+            .expect("lift source pose");
+        assert!(initial.target().model().owns_pose(initial.pose()));
+        assert_eq!(initial.pose().hinge_angles().len(), 1);
+        assert_eq!(initial.pose().hinge_angles()[0].angle_degrees(), 0.0);
     }
 
     #[test]

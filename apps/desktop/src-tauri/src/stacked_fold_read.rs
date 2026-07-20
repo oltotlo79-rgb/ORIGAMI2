@@ -13,7 +13,7 @@ use ori_collision::{
 use ori_core::{
     ExpectedStackedFoldCreaseV1, FaceLineageLimits, StackedFoldGeometryLimitsV1,
     StackedFoldTopologyBuildLimitsV1, prepare_stacked_fold_geometry_candidate_v1,
-    prepare_stacked_fold_target_model_v1,
+    prepare_stacked_fold_initial_pose_v1, prepare_stacked_fold_target_model_v1,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::{Point3, TreeKinematicsLimits};
@@ -275,8 +275,14 @@ pub(super) async fn propose_current_stacked_fold_read(
             TreeKinematicsLimits::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        let topology = prepared_target.geometry().candidate();
-        let geometry_proof = prepared_target.geometry().proof();
+        let prepared_initial_pose = prepare_stacked_fold_initial_pose_v1(
+            prepared_target,
+            pose_capability.model(),
+            pose_capability.pose(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let topology = prepared_initial_pose.target().geometry().candidate();
+        let geometry_proof = prepared_initial_pose.target().geometry().proof();
         let lineage = geometry_proof.lineage();
         let topology_proof = StackedFoldTopologyProofDto {
             target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
@@ -286,8 +292,8 @@ pub(super) async fn propose_current_stacked_fold_read(
             lineage_record_count: lineage.records().len(),
             source_edge_subdivision_count: geometry_proof.source_edges().len(),
             expected_crease_subdivision_count: geometry_proof.expected_creases().len(),
-            target_material_face_count: prepared_target.model().face_ids().len(),
-            target_hinge_count: prepared_target.model().hinges().len(),
+            target_material_face_count: prepared_initial_pose.target().model().face_ids().len(),
+            target_hinge_count: prepared_initial_pose.target().model().hinges().len(),
         };
         let crossed_cells = proposal
             .crossed_cells()

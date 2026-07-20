@@ -7,6 +7,7 @@ mod annotations;
 mod beginner_candidates;
 mod beginner_design;
 mod beginner_generation;
+mod beginner_generator;
 mod constraints;
 mod element_metadata;
 mod layers;
@@ -32,6 +33,11 @@ pub use beginner_generation::{
     BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, MAX_BEGINNER_ALLOWED_TECHNIQUES_V1,
     MAX_BEGINNER_GENERATION_STEPS_V1, MIN_BEGINNER_GENERATION_STEPS_V1,
     validate_beginner_generation_constraints_v1,
+};
+pub use beginner_generator::{
+    BEGINNER_GENERATOR_SCHEMA_VERSION_V1, BeginnerGeneratedPlanKindV1, BeginnerGeneratedPlanV1,
+    BeginnerGeneratorErrorV1, MAX_BEGINNER_GENERATED_CANDIDATES_V1,
+    MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1, generate_beginner_plans_v1,
 };
 pub use constraints::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,

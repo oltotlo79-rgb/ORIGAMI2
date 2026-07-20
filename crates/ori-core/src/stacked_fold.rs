@@ -269,12 +269,53 @@ pub struct PreparedStackedFoldRequestedGraphPoseV1 {
 ///
 /// This is read-only transport evidence. It grants no collision, timeline, or
 /// mutation authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StackedFoldNonFlatLayerOrderV1 {
     target_revision: Revision,
     material_faces: Vec<LayerFace>,
     tested_face_pairs: usize,
     source_overlap_cells_authenticated: usize,
+    overlap_cells: Vec<StackedFoldNonFlatOverlapCellV1>,
+    face_pair_orders: Vec<StackedFoldNonFlatFacePairOrderV1>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackedFoldNonFlatOverlapCellV1 {
+    boundary: Vec<Point2>,
+    lower_face: FaceId,
+    upper_face: FaceId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackedFoldNonFlatFacePairOrderV1 {
+    lower_face: FaceId,
+    upper_face: FaceId,
+}
+
+impl StackedFoldNonFlatOverlapCellV1 {
+    #[must_use]
+    pub fn boundary(&self) -> &[Point2] {
+        &self.boundary
+    }
+    #[must_use]
+    pub const fn lower_face(&self) -> FaceId {
+        self.lower_face
+    }
+    #[must_use]
+    pub const fn upper_face(&self) -> FaceId {
+        self.upper_face
+    }
+}
+
+impl StackedFoldNonFlatFacePairOrderV1 {
+    #[must_use]
+    pub const fn lower_face(self) -> FaceId {
+        self.lower_face
+    }
+    #[must_use]
+    pub const fn upper_face(self) -> FaceId {
+        self.upper_face
+    }
 }
 
 impl StackedFoldNonFlatLayerOrderV1 {
@@ -300,12 +341,22 @@ impl StackedFoldNonFlatLayerOrderV1 {
 
     #[must_use]
     pub const fn overlap_cell_count(&self) -> usize {
-        0
+        self.overlap_cells.len()
     }
 
     #[must_use]
     pub const fn face_pair_order_count(&self) -> usize {
-        0
+        self.face_pair_orders.len()
+    }
+
+    #[must_use]
+    pub fn overlap_cells(&self) -> &[StackedFoldNonFlatOverlapCellV1] {
+        &self.overlap_cells
+    }
+
+    #[must_use]
+    pub fn face_pair_orders(&self) -> &[StackedFoldNonFlatFacePairOrderV1] {
+        &self.face_pair_orders
     }
 
     #[must_use]
@@ -333,8 +384,14 @@ pub enum PrepareStackedFoldNonFlatLayerOrderErrorV1 {
     UnrepresentableFacePlane,
     #[error("target faces {first:?} and {second:?} may share one planar support")]
     CoincidentPlanarSupports { first: FaceId, second: FaceId },
+    #[error("positive paper thickness is unsupported for non-flat layer order")]
+    PositiveThicknessUnsupported,
+    #[error("a projected overlap is non-convex, ambiguous, or cannot be ordered")]
+    AmbiguousProjectedOverlap,
     #[error("target pose geometry failed: {0}")]
     Kinematics(#[from] KinematicsError),
+    #[error("exact projected-overlap predicate failed: {0}")]
+    Geometry(#[from] GeometryError),
 }
 
 impl PreparedStackedFoldInitialGraphPoseV1 {
@@ -1852,9 +1909,29 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
     source_layer_order: &LayerOrderSnapshot,
     max_face_pairs: usize,
 ) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
+        requested,
+        source_layer_order,
+        0.0,
+        max_face_pairs,
+    )
+}
+
+pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    source_layer_order: &LayerOrderSnapshot,
+    paper_thickness_mm: f64,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
     let angle = requested.requested_angle_degrees();
     if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
+    }
+    if paper_thickness_mm > 0.0 {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
+    }
+    if !paper_thickness_mm.is_finite() || paper_thickness_mm < 0.0 {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
     }
     let lineage = requested.initial.target.geometry.proof.lineage();
     let provenance = &source_layer_order.provenance.source;
@@ -1918,16 +1995,67 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
         .iter()
         .map(|face| target_face_plane(pose, face.face_id))
         .collect::<Result<Vec<_>, _>>()?;
+    let source_by_target = lineage
+        .records()
+        .iter()
+        .flat_map(|record| {
+            record
+                .descendants()
+                .iter()
+                .map(move |target| (target.face_id, record.source().face_id))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut overlap_cells = Vec::new();
+    let mut face_pair_orders = Vec::new();
     for first in 0..planes.len() {
         for second in (first + 1)..planes.len() {
-            if planar_supports_may_coincide(planes[first], planes[second])? {
-                return Err(
-                    PrepareStackedFoldNonFlatLayerOrderErrorV1::CoincidentPlanarSupports {
-                        first: material_faces[first].face_id,
-                        second: material_faces[second].face_id,
-                    },
-                );
+            let normal_cross = point_length(point_cross(
+                point_values(planes[first].1),
+                point_values(planes[second].1),
+            ));
+            if !normal_cross.is_finite() {
+                return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
             }
+            if normal_cross > 1.0e-9 {
+                continue;
+            }
+            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+                continue;
+            }
+            let separation = point_dot(
+                point_delta(planes[second].0, planes[first].0),
+                planes[first].1,
+            );
+            let (lower_face, upper_face) = if separation.abs() > 1.0e-9 {
+                if separation > 0.0 {
+                    (
+                        material_faces[first].face_id,
+                        material_faces[second].face_id,
+                    )
+                } else {
+                    (
+                        material_faces[second].face_id,
+                        material_faces[first].face_id,
+                    )
+                }
+            } else {
+                inherited_source_order(
+                    material_faces[first].face_id,
+                    material_faces[second].face_id,
+                    &source_by_target,
+                    source_layer_order,
+                )?
+            };
+            overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
+                boundary: overlap,
+                lower_face,
+                upper_face,
+            });
+            face_pair_orders.push(StackedFoldNonFlatFacePairOrderV1 {
+                lower_face,
+                upper_face,
+            });
         }
     }
     Ok(StackedFoldNonFlatLayerOrderV1 {
@@ -1935,13 +2063,15 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
         material_faces,
         tested_face_pairs,
         source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
+        overlap_cells,
+        face_pair_orders,
     })
 }
 
 fn target_face_plane(
     pose: &MaterialTreePose,
     face: FaceId,
-) -> Result<(Point3, Point3), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+) -> Result<(Point3, Point3, Vec<Point3>), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
     let boundary = pose
         .face_boundary(face)
         .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
@@ -1966,22 +2096,160 @@ fn target_face_plane(
         let cross = point_cross(first, second);
         let length = point_length(cross);
         if length.is_finite() && length > 1.0e-12 {
-            return Ok((origin, point_scale(cross, 1.0 / length)?));
+            return Ok((origin, point_scale(cross, 1.0 / length)?, points));
         }
     }
     Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane)
 }
 
-fn planar_supports_may_coincide(
-    first: (Point3, Point3),
-    second: (Point3, Point3),
-) -> Result<bool, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
-    let normal_cross = point_length(point_cross(point_values(first.1), point_values(second.1)));
-    let separation = point_dot(point_delta(second.0, first.0), first.1).abs();
-    if !normal_cross.is_finite() || !separation.is_finite() {
-        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
+fn inherited_source_order(
+    first: FaceId,
+    second: FaceId,
+    source_by_target: &HashMap<FaceId, FaceId>,
+    source: &LayerOrderSnapshot,
+) -> Result<(FaceId, FaceId), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let first_source = source_by_target[&first];
+    let second_source = source_by_target[&second];
+    if first_source == second_source {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
     }
-    Ok(normal_cross <= 1.0e-9 && separation <= 1.0e-9)
+    source
+        .face_pair_orders
+        .iter()
+        .find_map(|order| {
+            (order.lower_face.face_id == first_source && order.upper_face.face_id == second_source)
+                .then_some((first, second))
+                .or_else(|| {
+                    (order.lower_face.face_id == second_source
+                        && order.upper_face.face_id == first_source)
+                        .then_some((second, first))
+                })
+        })
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap)
+}
+
+fn projected_convex_overlap(
+    first: &(Point3, Point3, Vec<Point3>),
+    second: &(Point3, Point3, Vec<Point3>),
+) -> Result<Vec<Point2>, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let normal = point_values(first.1);
+    let drop = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+        0
+    } else if normal[1].abs() >= normal[2].abs() {
+        1
+    } else {
+        2
+    };
+    let project = |points: &[Point3]| {
+        let mut polygon = points
+            .iter()
+            .map(|point| {
+                let value = point_values(*point);
+                match drop {
+                    0 => Point2::new(value[1], value[2]),
+                    1 => Point2::new(value[0], value[2]),
+                    _ => Point2::new(value[0], value[1]),
+                }
+            })
+            .collect::<Vec<_>>();
+        if polygon_double_area(&polygon) < 0.0 {
+            polygon.reverse();
+        }
+        polygon
+    };
+    let subject = project(&first.2);
+    let clip = project(&second.2);
+    if !convex_ccw(&subject) || !convex_ccw(&clip) {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
+    }
+    let mut output = subject;
+    for index in 0..clip.len() {
+        let clip_start = clip[index];
+        let clip_end = clip[(index + 1) % clip.len()];
+        let input = std::mem::take(&mut output);
+        if input.is_empty() {
+            break;
+        }
+        for edge in 0..input.len() {
+            let previous = input[(edge + input.len() - 1) % input.len()];
+            let current = input[edge];
+            let previous_side = planar_side(clip_start, clip_end, previous);
+            let current_side = planar_side(clip_start, clip_end, current);
+            let previous_inside =
+                exact_orientation(clip_start, clip_end, previous)? != Orientation::Clockwise;
+            let current_inside =
+                exact_orientation(clip_start, clip_end, current)? != Orientation::Clockwise;
+            if previous_inside != current_inside {
+                let denominator = previous_side - current_side;
+                if denominator.abs() <= f64::EPSILON {
+                    return Err(
+                        PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
+                    );
+                }
+                let ratio = previous_side / denominator;
+                // Version 1 retains only bit-exact endpoint intersections.
+                // A newly rounded rational vertex would not be auditable.
+                if ratio.to_bits() == 0.0_f64.to_bits() {
+                    output.push(previous);
+                } else if ratio.to_bits() == 1.0_f64.to_bits() {
+                    output.push(current);
+                } else if ratio.is_finite()
+                    && (ratio * denominator).to_bits() == previous_side.to_bits()
+                {
+                    let x_delta = current.x - previous.x;
+                    let y_delta = current.y - previous.y;
+                    let x_step = x_delta * ratio;
+                    let y_step = y_delta * ratio;
+                    let point = Point2::new(previous.x + x_step, previous.y + y_step);
+                    if point.x - previous.x != x_step || point.y - previous.y != y_step {
+                        return Err(
+                            PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
+                        );
+                    }
+                    output.push(point);
+                } else {
+                    return Err(
+                        PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
+                    );
+                }
+            }
+            if current_inside {
+                output.push(current);
+            }
+        }
+    }
+    if output
+        .iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
+    }
+    Ok(output)
+}
+
+fn convex_ccw(polygon: &[Point2]) -> bool {
+    polygon.len() >= 3
+        && (0..polygon.len()).all(|index| {
+            planar_side(
+                polygon[index],
+                polygon[(index + 1) % polygon.len()],
+                polygon[(index + 2) % polygon.len()],
+            ) >= -1.0e-12
+        })
+}
+
+fn planar_side(start: Point2, end: Point2, point: Point2) -> f64 {
+    (end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x)
+}
+
+fn polygon_double_area(polygon: &[Point2]) -> f64 {
+    (0..polygon.len())
+        .map(|index| {
+            let first = polygon[index];
+            let second = polygon[(index + 1) % polygon.len()];
+            first.x * second.y - first.y * second.x
+        })
+        .sum()
 }
 
 fn point_delta(first: Point3, second: Point3) -> [f64; 3] {
@@ -3517,6 +3785,47 @@ mod tests {
             ),
             Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch)
         );
+        let positive_thickness = prepare_stacked_fold_requested_pose_v1(rebuild(), 90.0)
+            .expect("solve positive-thickness endpoint");
+        assert_eq!(
+            prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
+                &positive_thickness,
+                &fixture.source_layer_order,
+                0.1,
+                usize::MAX,
+            ),
+            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported)
+        );
+    }
+
+    #[test]
+    fn projected_parallel_support_overlap_uses_common_bounded_frame() {
+        let point = |x, y, z| Point3::new(x, y, z).expect("finite point");
+        let normal = point(0.0, 1.0, 0.0);
+        let first = (
+            point(0.0, 0.0, 0.0),
+            normal,
+            vec![
+                point(0.0, 0.0, 0.0),
+                point(2.0, 0.0, 0.0),
+                point(2.0, 0.0, -2.0),
+                point(0.0, 0.0, -2.0),
+            ],
+        );
+        let offset = (
+            point(1.0, 3.0, -1.0),
+            normal,
+            vec![
+                point(1.0, 3.0, -1.0),
+                point(3.0, 3.0, -1.0),
+                point(3.0, 3.0, -3.0),
+                point(1.0, 3.0, -3.0),
+            ],
+        );
+        let overlap = projected_convex_overlap(&first, &offset).expect("bounded overlap");
+        assert_eq!(overlap.len(), 4);
+        assert!((polygon_double_area(&overlap).abs() - 2.0).abs() <= 1.0e-12);
+        assert_eq!(point_dot(point_delta(offset.0, first.0), first.1), 3.0);
     }
 
     #[test]

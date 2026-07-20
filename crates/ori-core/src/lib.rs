@@ -94,14 +94,17 @@ pub use stacked_fold::{
     STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1, STACKED_FOLD_TARGET_GRAPH_AUDIT_MODEL_ID_V1,
     SourceEdgeSubdivisionV1, StackedFoldGeometryCarrierV1, StackedFoldGeometryErrorV1,
     StackedFoldGeometryInputV1, StackedFoldGeometryLimitsV1, StackedFoldGeometryProofV1,
-    StackedFoldGeometryResourceV1, StackedFoldNonFlatLayerOrderV1, StackedFoldTopologyBuildErrorV1,
-    StackedFoldTopologyBuildLimitsV1, StackedFoldTopologyBuildResourceV1,
-    StackedFoldTopologyCandidateV1, build_stacked_fold_topology_v1, prepare_face_lineage_v1,
+    StackedFoldGeometryResourceV1, StackedFoldNonFlatFacePairOrderV1,
+    StackedFoldNonFlatLayerOrderV1, StackedFoldNonFlatOverlapCellV1,
+    StackedFoldTopologyBuildErrorV1, StackedFoldTopologyBuildLimitsV1,
+    StackedFoldTopologyBuildResourceV1, StackedFoldTopologyCandidateV1,
+    build_stacked_fold_topology_v1, prepare_face_lineage_v1,
     prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_geometry_v1,
     prepare_stacked_fold_initial_graph_pose_v1, prepare_stacked_fold_initial_pose_v1,
-    prepare_stacked_fold_non_flat_layer_order_v1, prepare_stacked_fold_requested_graph_pose_v1,
-    prepare_stacked_fold_requested_pose_v1, prepare_stacked_fold_target_graph_audit_v1,
-    prepare_stacked_fold_target_model_v1,
+    prepare_stacked_fold_non_flat_layer_order_v1,
+    prepare_stacked_fold_non_flat_layer_order_with_thickness_v1,
+    prepare_stacked_fold_requested_graph_pose_v1, prepare_stacked_fold_requested_pose_v1,
+    prepare_stacked_fold_target_graph_audit_v1, prepare_stacked_fold_target_model_v1,
 };
 pub use topology::{EditorTopology, TopologyAnalysisInput};
 pub use validation::EditorValidation;

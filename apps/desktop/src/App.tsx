@@ -152,11 +152,10 @@ import {
   validateSvgImportSettings,
   validateProject,
   proveCurrentAssignedLocalSufficiencyV1,
-  summarizeCurrentAssignedLocalSufficiencyV1,
-  cancelCurrentAssignedLocalSufficiencySummaryV1,
   type AssignedLocalSufficiencyResponseV1,
   type AssignedLocalSufficiencySummaryResponseV1,
 } from './lib/coreClient'
+import { createAssignedLocalSufficiencySummaryCoordinator } from './lib/assignedLocalSufficiencySummaryCoordinator'
 import {
   isNativeProjectFolderAvailable,
   openProjectFolder,
@@ -582,7 +581,7 @@ function App() {
   const [assignedLocalSummary, setAssignedLocalSummary] =
     useState<AssignedLocalSufficiencySummaryResponseV1 | null>(null)
   const [assignedLocalSummaryStatus, setAssignedLocalSummaryStatus] =
-    useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+    useState<'idle' | 'loading' | 'retrying' | 'ready' | 'failed'>('idle')
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
   const [hoveredLayerFaceId, setHoveredLayerFaceId] = useState<string | null>(null)
   const [mirrorVertexIds, setMirrorVertexIds] = useState<string[]>([])
@@ -1383,34 +1382,36 @@ function App() {
     ? localFlatFoldabilityPresentation?.verticesById.get(selectedVertexId)
     : undefined
   useEffect(() => {
-    let current = true
     setAssignedLocalSummary(null)
     if (!nativeSnapshot) {
       setAssignedLocalSummaryStatus('idle')
-      return () => { current = false }
+      return
     }
-    setAssignedLocalSummaryStatus('loading')
-    void summarizeCurrentAssignedLocalSufficiencyV1({
+    const coordinator = createAssignedLocalSufficiencySummaryCoordinator({
+      onState(state) {
+        if (state.status === 'running' || state.status === 'retrying') {
+          setAssignedLocalSummaryStatus(state.status === 'retrying' ? 'retrying' : 'loading')
+        } else if (state.status === 'ready') {
+          setAssignedLocalSummary(state.response)
+          setAssignedLocalSummaryStatus('ready')
+        } else if (state.status === 'failed') {
+          setAssignedLocalSummaryStatus('failed')
+        }
+      },
+    })
+    coordinator.start({
       expectedProjectInstanceId: nativeSnapshot.project_instance_id,
       expectedProjectId: nativeSnapshot.project_id,
       expectedRevision: nativeSnapshot.revision,
       expectedFoldModelFingerprint: nativeSnapshot.fold_model_fingerprint,
-    }).then((response) => {
-      if (current) {
-        setAssignedLocalSummary(response)
-        setAssignedLocalSummaryStatus('ready')
-      }
-    }).catch(() => {
-      if (current) setAssignedLocalSummaryStatus('failed')
     })
-    return () => {
-      current = false
-      void cancelCurrentAssignedLocalSufficiencySummaryV1().catch(() => undefined)
-    }
+    return () => coordinator.dispose()
   }, [nativeSnapshot])
   useEffect(() => {
     let current = true
-    if (!selectedVertexId || !nativeSnapshot || assignedLocalSummaryStatus === 'loading') {
+    if (!selectedVertexId || !nativeSnapshot
+      || assignedLocalSummaryStatus === 'loading'
+      || assignedLocalSummaryStatus === 'retrying') {
       setAssignedLocalSufficiency(null)
       return () => {
         current = false
@@ -8350,10 +8351,15 @@ function App() {
                       </li>
                     ))}
                   </ul>
-                  {assignedLocalSummaryStatus === 'loading' && (
+                  {(assignedLocalSummaryStatus === 'loading'
+                    || assignedLocalSummaryStatus === 'retrying') && (
                     <p role="status">{text({
-                      ja: '全頂点の指定M/V局所十分性を有界解析しています…',
-                      en: 'Running the bounded assigned M/V local-sufficiency summary…',
+                      ja: assignedLocalSummaryStatus === 'retrying'
+                        ? '旧解析の終了を待って局所十分性summaryを再試行しています…'
+                        : '全頂点の指定M/V局所十分性を有界解析しています…',
+                      en: assignedLocalSummaryStatus === 'retrying'
+                        ? 'Waiting for the previous worker to exit, then retrying the summary…'
+                        : 'Running the bounded assigned M/V local-sufficiency summary…',
                     })}</p>
                   )}
                   {assignedLocalSummaryStatus === 'failed' && (

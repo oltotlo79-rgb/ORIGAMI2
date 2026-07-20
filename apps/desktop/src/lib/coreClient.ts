@@ -1517,11 +1517,28 @@ export function summarizeCurrentAssignedLocalSufficiencyV1(request: Readonly<{
   expectedFoldModelFingerprint: string
 }>): Promise<AssignedLocalSufficiencySummaryResponseV1> {
   return invoke<unknown>('summarize_current_assigned_local_sufficiency_v1', { request })
+    .catch((error) => {
+      throw new AssignedLocalSufficiencySummaryError(
+        String(error).includes('Another native pose analysis is already running.')
+          ? 'busy'
+          : 'native_failure',
+      )
+    })
     .then((value) => {
       const normalized = normalizeAssignedLocalSufficiencySummaryResponseV1(value, request)
       if (!normalized) throw new Error('invalid local sufficiency summary response')
       return normalized
     })
+}
+
+export class AssignedLocalSufficiencySummaryError extends Error {
+  readonly reason: 'busy' | 'native_failure'
+
+  constructor(reason: 'busy' | 'native_failure') {
+    super(reason)
+    this.name = 'AssignedLocalSufficiencySummaryError'
+    this.reason = reason
+  }
 }
 
 export function cancelCurrentAssignedLocalSufficiencySummaryV1(): Promise<void> {

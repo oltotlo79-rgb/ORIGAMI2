@@ -24,6 +24,73 @@ const missingReleaseUiIcons = new Set([
 ])
 const transparentSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"/>'
 
+const assertAnimationContract = (gltf) => {
+  const animation = gltf.animations?.[0]
+  const channel = animation?.channels?.[0]
+  const sampler = animation?.samplers?.[channel?.sampler]
+  const timeAccessor = gltf.accessors?.[sampler?.input]
+  const weightAccessor = gltf.accessors?.[sampler?.output]
+  if (gltf.animations?.length !== 1
+    || animation.channels?.length !== 1
+    || animation.samplers?.length !== 1
+    || channel.target?.path !== 'weights'
+    || sampler.interpolation !== 'STEP'
+    || !Number.isInteger(timeAccessor?.count)
+    || timeAccessor.count < 2
+    || weightAccessor?.count !== timeAccessor.count * timeAccessor.count) {
+    throw new Error('animated.glb: invalid STEP morph animation contract')
+  }
+}
+
+const assertAnimationContractRejectsDrift = () => {
+  const valid = {
+    animations: [{
+      channels: [{ sampler: 0, target: { path: 'weights' } }],
+      samplers: [{ input: 0, output: 1, interpolation: 'STEP' }],
+    }],
+    accessors: [{ count: 3 }, { count: 9 }],
+  }
+  const invalid = [
+    { ...valid, animations: [] },
+    {
+      ...valid,
+      animations: [{
+        ...valid.animations[0],
+        channels: [{ sampler: 0, target: { path: 'translation' } }],
+      }],
+    },
+    { ...valid, accessors: [{ count: 1 }, { count: 1 }] },
+    { ...valid, accessors: [{ count: 3 }, { count: 8 }] },
+  ]
+  for (const candidate of invalid) {
+    let rejected = false
+    try {
+      assertAnimationContract(candidate)
+    } catch {
+      rejected = true
+    }
+    if (!rejected) throw new Error('animation contract admitted a negative fixture')
+  }
+}
+
+const assertAnimatedGlbContract = (file) => {
+  const bytes = readFileSync(file)
+  if (bytes.length < 20
+    || bytes.toString('ascii', 0, 4) !== 'glTF'
+    || bytes.readUInt32LE(4) !== 2
+    || bytes.readUInt32LE(8) !== bytes.length
+    || bytes.toString('ascii', 16, 20) !== 'JSON') {
+    throw new Error('animated.glb: invalid GLB 2.0 envelope')
+  }
+  const jsonLength = bytes.readUInt32LE(12)
+  if (jsonLength > bytes.length - 20) {
+    throw new Error('animated.glb: invalid JSON chunk length')
+  }
+  assertAnimationContract(
+    JSON.parse(bytes.toString('utf8', 20, 20 + jsonLength).trimEnd()),
+  )
+}
+
 const run = (command, args, cwd = workspace) =>
   execFileSync(command, args, {
     cwd,
@@ -33,6 +100,7 @@ const run = (command, args, cwd = workspace) =>
 let server
 let browser
 try {
+  assertAnimationContractRejectsDrift()
   run('git', ['init', '--quiet', viewer])
   run('git', ['remote', 'add', 'origin',
     'https://github.com/KhronosGroup/glTF-Sample-Viewer-Release.git'], viewer)
@@ -42,6 +110,7 @@ try {
     run('cargo', ['run', '--quiet', '--locked', '--release', '-p', 'ori-formats',
       '--example', 'generate_gltf_validator_fixtures', '--', artifacts])
   }
+  assertAnimatedGlbContract(join(artifacts, 'animated.glb'))
 
   const roots = { '/artifacts/': artifacts, '/': join(viewer, 'docs') }
   server = createServer((request, response) => {

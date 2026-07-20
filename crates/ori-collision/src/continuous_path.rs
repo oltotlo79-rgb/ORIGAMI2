@@ -224,6 +224,29 @@ fn positive_tree_max_angle_degrees_v1(hinge_count: usize) -> Option<f64> {
     })
 }
 
+fn positive_endpoint_pair_work_within_limit_v1(pair_count: usize) -> bool {
+    pair_count <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
+}
+
+fn positive_tree_resource_premises_v1(
+    face_count: usize,
+    hinge_count: usize,
+    moving_count: usize,
+) -> bool {
+    let Some(pair_count) = face_count
+        .checked_mul(face_count.saturating_sub(1))
+        .map(|product| product / 2)
+    else {
+        return false;
+    };
+    face_count >= 3
+        && hinge_count >= 2
+        && hinge_count.checked_add(1) == Some(face_count)
+        && moving_count == hinge_count
+        && positive_endpoint_pair_work_within_limit_v1(pair_count)
+        && positive_tree_max_angle_degrees_v1(hinge_count).is_some()
+}
+
 pub fn diagnose_collective_hinge_path_v1(
     model: &MaterialTreeKinematicsModel,
     initial_pose: &MaterialTreePose,
@@ -288,12 +311,11 @@ pub fn diagnose_collective_hinge_path_v1(
             &mut interval_metrics,
         );
     let positive_two_hinge_topology = positive_thickness
-        && model.face_ids().len() >= 3
-        && model.hinges().len() >= 2
-        && model.hinges().len() + 1 == model.face_ids().len()
-        && moving.len() == model.hinges().len()
-        && model.face_ids().len() * model.face_ids().len().saturating_sub(1) / 2
-            <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
+        && positive_tree_resource_premises_v1(
+            model.face_ids().len(),
+            model.hinges().len(),
+            moving.len(),
+        )
         && positive_tree_max_angle_degrees_v1(model.hinges().len())
             .is_some_and(|maximum| requested_angle_degrees <= maximum)
         && initial_pose.hinge_angles().iter().all(|angle| {
@@ -2302,7 +2324,9 @@ mod tests {
         .expect("fourteen-hinge triangular tree")
     }
 
-    fn fifteen_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+    fn fifteen_hinge_triangle_model_with_edge_order(
+        reverse_edges: bool,
+    ) -> MaterialTreeKinematicsModel {
         let points = [
             (0., 0.),
             (4., 0.),
@@ -2352,6 +2376,9 @@ mod tests {
                 },
             });
         }
+        if reverse_edges {
+            edges.reverse();
+        }
         let pattern = CreasePattern { vertices, edges };
         let paper = Paper {
             boundary_vertices: boundary,
@@ -2370,6 +2397,77 @@ mod tests {
             TreeKinematicsLimits::default(),
         )
         .expect("fifteen-hinge triangular tree")
+    }
+
+    fn fifteen_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        fifteen_hinge_triangle_model_with_edge_order(false)
+    }
+
+    fn branched_triangle_model(
+        face_count: usize,
+        reverse_edges: bool,
+    ) -> MaterialTreeKinematicsModel {
+        let vertex_count = face_count + 2;
+        let vertices = (0..vertex_count)
+            .map(|index| Vertex {
+                id: fixed_id("8d10", index as u64 + 1),
+                position: Point2::new(index as f64, (index * index) as f64),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..vertex_count)
+            .map(|index| Edge {
+                id: fixed_id("9d10", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % vertex_count],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let first_branch = vertex_count / 3;
+        let second_branch = vertex_count * 2 / 3;
+        let mut diagonals = vec![
+            (0, first_branch),
+            (first_branch, second_branch),
+            (second_branch, 0),
+        ];
+        diagonals.extend((2..first_branch).map(|end| (0, end)));
+        diagonals.extend((first_branch + 2..second_branch).map(|end| (first_branch, end)));
+        diagonals.extend((second_branch + 2..vertex_count).map(|end| (second_branch, end)));
+        diagonals.sort_unstable();
+        diagonals.dedup();
+        for (offset, (start, end)) in diagonals.into_iter().enumerate() {
+            edges.push(Edge {
+                id: fixed_id("9d10", 30 + offset as u64),
+                start: boundary[start],
+                end: boundary[end],
+                kind: if offset % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        if reverse_edges {
+            edges.reverse();
+        }
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("bd10", face_count as u64),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("branched triangulation"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("branched triangular tree")
     }
 
     fn zero_tree_pose(
@@ -3980,5 +4078,158 @@ mod tests {
         )
         .unwrap();
         assert!(!diagnostic.continuous_clearance_certified());
+    }
+
+    #[test]
+    fn positive_tree_resource_policy_is_branch_independent_and_pair_bounded() {
+        for face_count in 10..=16 {
+            assert!(positive_tree_resource_premises_v1(
+                face_count,
+                face_count - 1,
+                face_count - 1,
+            ));
+            let model = branched_triangle_model(face_count, face_count % 2 == 0);
+            assert_eq!(model.face_ids().len(), face_count);
+            assert_eq!(model.hinges().len(), face_count - 1);
+            let maximum_degree = model
+                .face_ids()
+                .iter()
+                .map(|face| {
+                    model
+                        .hinges()
+                        .iter()
+                        .filter(|hinge| hinge.left_face() == *face || hinge.right_face() == *face)
+                        .count()
+                })
+                .max()
+                .unwrap();
+            assert!(maximum_degree >= 3);
+        }
+        assert!(positive_endpoint_pair_work_within_limit_v1(120));
+        assert!(!positive_endpoint_pair_work_within_limit_v1(121));
+        assert!(!positive_tree_resource_premises_v1(17, 16, 16));
+        assert!(!positive_tree_resource_premises_v1(
+            usize::MAX,
+            usize::MAX - 1,
+            usize::MAX - 1
+        ));
+    }
+
+    #[test]
+    fn positive_tree_angle_policy_is_monotone_with_resource_growth() {
+        let maxima = (2..=15)
+            .map(|hinges| positive_tree_max_angle_degrees_v1(hinges).unwrap())
+            .collect::<Vec<_>>();
+        assert!(maxima.windows(2).all(|pair| pair[1] <= pair[0]));
+        assert!(positive_tree_max_angle_degrees_v1(1).is_none());
+        assert!(positive_tree_max_angle_degrees_v1(16).is_none());
+    }
+
+    #[test]
+    fn endpoint_memo_is_stable_across_hinge_input_and_face_order_permutation() {
+        let canonical = fifteen_hinge_triangle_model_with_edge_order(false);
+        let reversed = fifteen_hinge_triangle_model_with_edge_order(true);
+        for model in [&canonical, &reversed] {
+            let (moving, initial) = zero_tree_pose(model);
+            let diagnostic = diagnose_collective_hinge_path_v1(
+                model,
+                &initial,
+                &moving,
+                1.5,
+                0.001,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            )
+            .unwrap();
+            assert!(diagnostic.continuous_clearance_certified());
+            assert_eq!(diagnostic.positive_endpoint_memo_pair_entries(), 120);
+            assert_eq!(diagnostic.positive_endpoint_exact_pair_calls(), 0);
+        }
+    }
+
+    #[test]
+    fn degenerate_tree_geometry_never_reaches_positive_resource_authority() {
+        let vertices = (0..4)
+            .map(|index| Vertex {
+                id: fixed_id("8e10", index + 1),
+                position: Point2::new(index as f64, 0.0),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let pattern = CreasePattern {
+            vertices,
+            edges: vec![
+                Edge {
+                    id: fixed_id("9e10", 1),
+                    start: boundary[0],
+                    end: boundary[1],
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: fixed_id("9e10", 2),
+                    start: boundary[1],
+                    end: boundary[2],
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: fixed_id("9e10", 3),
+                    start: boundary[2],
+                    end: boundary[3],
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: fixed_id("9e10", 4),
+                    start: boundary[3],
+                    end: boundary[0],
+                    kind: EdgeKind::Boundary,
+                },
+                Edge {
+                    id: fixed_id("9e10", 5),
+                    start: boundary[0],
+                    end: boundary[2],
+                    kind: EdgeKind::Mountain,
+                },
+            ],
+        };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("be10", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.snapshot.is_none());
+
+        let vertices = [(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("8e20", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let edges = (0..4)
+            .map(|index| Edge {
+                id: fixed_id("9e20", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("be20", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.snapshot.is_none());
     }
 }

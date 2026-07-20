@@ -54,8 +54,8 @@ describe('GeometricConstraintPanel', () => {
       localeStore: localeFixture('en'),
     })
 
-    fireEvent.change(screen.getByLabelText('Solver X'), { target: { value: '12' } })
-    fireEvent.change(screen.getByLabelText('Solver Y'), { target: { value: '8' } })
+    fireEvent.change(screen.getByLabelText('Constraint solver X coordinate'), { target: { value: '12' } })
+    fireEvent.change(screen.getByLabelText('Constraint solver Y coordinate'), { target: { value: '8' } })
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
     await screen.findByText(/Changed vertices: 1/u)
     expect(onApplySolve).not.toHaveBeenCalled()

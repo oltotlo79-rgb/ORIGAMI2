@@ -597,7 +597,7 @@ export function StackedFoldPanel({
                       <div><dt>{t('衝突証明', 'Collision certificate')}</dt><dd>{edge.collisionCertificateSha256}</dd></div>
                       <div><dt>{t('閉路証明', 'Closure certificate')}</dt><dd>{edge.closureCertificateSha256}</dd></div>
                     </dl>
-                    {edge.hinges.map((hinge) => (
+                    {edge.hinges.map((hinge, hingeIndex) => (
                       <button
                         key={hinge}
                         type="button"
@@ -605,7 +605,7 @@ export function StackedFoldPanel({
                           `stacked-fold-proof-hinge-${hinge}`,
                         )?.focus()}
                       >
-                        {t('関連hingeを選択', 'Select related hinge')} {hinge.slice(0, 8)}
+                        {t('関連ヒンジを選択', 'Select related hinge')} {hingeIndex + 1}
                       </button>
                     ))}
                   </li>
@@ -715,7 +715,7 @@ export function LayerOrderViewer({
           {index === 0 ? t('裏面 / 最下層', 'Back / bottom')
             : index === active.bottomToTopFaces.length - 1
               ? t('表面 / 最上層', 'Front / top')
-              : t('中間層', 'Middle')} · {face.slice(0, 8)}
+              : t('中間層', 'Middle')} · {t('面', 'Face')} {index + 1}
         </button>
       </li>)}
     </ol>

@@ -65,6 +65,19 @@ jobs:
           path: ${{ runner.temp }}/diagnostics-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Verify live locale switching for major features in Chromium
+        id: locale-browser
+        env:
+          ORIGAMI2_LOCALE_BROWSER_ARTIFACT_DIRECTORY: ${{ runner.temp }}/locale-browser
+        run: npm run test:locale-browser
+      - name: Upload locale browser failure evidence
+        if: failure() && steps.locale-browser.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: locale-browser-failure
+          path: ${{ runner.temp }}/locale-browser
+          if-no-files-found: error
+          retention-days: 7
       - name: Run project save recovery and close browser E2E with mock native boundaries
         id: project-lifecycle-browser
         working-directory: apps/desktop

@@ -18,6 +18,7 @@
     "test:fold-preview-browser": "node scripts/fold-preview-browser-e2e.mjs",
     "test:render-performance-browser": "node scripts/render-performance-browser-e2e.mjs",
     "test:large-project-io-browser": "node scripts/large-project-io-browser-e2e.mjs",
+    "test:locale-browser": "node scripts/locale-browser-e2e.mjs",
     "test:blender": "node scripts/run-blender-acceptance.mjs",
     "test:prusaslicer": "node scripts/run-prusaslicer-acceptance.mjs",
     "preview": "vite preview",

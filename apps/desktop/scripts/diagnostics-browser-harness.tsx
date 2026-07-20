@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { DiagnosticsDialog } from '../src/components/DiagnosticsDialog.tsx'
+import { LanguageControl } from '../src/components/LanguageControl.tsx'
 import { DIAGNOSTIC_SCOPES } from '../src/lib/diagnostics.ts'
-import { localeStore } from '../src/lib/i18n.ts'
+import { localeStore, selectLocalizedText, useLocale } from '../src/lib/i18n.ts'
 import '../src/App.css'
 
 declare global {
@@ -47,13 +48,17 @@ localeStore.initialize()
 localeStore.setLocale('en')
 
 function Harness() {
+  const locale = useLocale(localeStore)
   const [open, setOpen] = useState(false)
   const opener = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!open) opener.current?.focus()
   }, [open])
   return <main>
-    <button ref={opener} type="button" onClick={() => setOpen(true)}>Open diagnostics</button>
+    <LanguageControl store={localeStore} />
+    <button ref={opener} type="button" onClick={() => setOpen(true)}>
+      {selectLocalizedText(locale, { ja: '診断情報を開く', en: 'Open diagnostics' })}
+    </button>
     <DiagnosticsDialog open={open} onClose={() => setOpen(false)} />
   </main>
 }

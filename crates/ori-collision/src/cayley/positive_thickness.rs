@@ -891,10 +891,6 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     else {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     };
-    validate_exact_pose_rational_inputs(exact, indexes, limits, work, meter)?;
-
-    let rest_start = exact_point_at_stage(point3_array(source_hinge.start()), meter)?;
-    let rest_end = exact_point_at_stage(point3_array(source_hinge.end()), meter)?;
     let left_face = &exact.faces[indexes.left_face_index];
     let right_face = &exact.faces[indexes.right_face_index];
     if left_face.boundary.len() != 3
@@ -908,6 +904,10 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     }
+    validate_exact_pose_rational_inputs(exact, indexes, limits, work, meter)?;
+
+    let rest_start = exact_point_at_stage(point3_array(source_hinge.start()), meter)?;
+    let rest_end = exact_point_at_stage(point3_array(source_hinge.end()), meter)?;
     let left_rest = reauthenticate_exact_face_rest(bound, left_face, meter)?;
     let right_rest = reauthenticate_exact_face_rest(bound, right_face, meter)?;
     let start_vertex = exact_hinge.endpoint_vertices[0];

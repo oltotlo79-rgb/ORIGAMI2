@@ -1111,7 +1111,7 @@ export type AssignedLocalSufficiencySummaryResponseV1 = Readonly<{
     | Readonly<{
       status: 'indeterminate'
       vertex: string
-      reason: 'vertex_unavailable' | 'reduction_theorem_not_applicable' | 'resource_limit'
+      reason: 'vertex_unavailable' | 'reduction_theorem_not_applicable' | 'resource_limit' | 'cancelled'
     }>
   )[]
   totalReductionSteps: number
@@ -1524,6 +1524,10 @@ export function summarizeCurrentAssignedLocalSufficiencyV1(request: Readonly<{
     })
 }
 
+export function cancelCurrentAssignedLocalSufficiencySummaryV1(): Promise<void> {
+  return invoke('cancel_current_assigned_local_sufficiency_summary_v1')
+}
+
 export function normalizeAssignedLocalSufficiencySummaryResponseV1(
   value: unknown,
   request: Readonly<{
@@ -1568,7 +1572,7 @@ export function normalizeAssignedLocalSufficiencySummaryResponseV1(
       reductions += Number(item.reduction_steps)
     } else if (item.status === 'indeterminate') {
       if (Object.keys(item).sort().join(',') !== 'reason,status,vertex'
-        || !['vertex_unavailable', 'reduction_theorem_not_applicable', 'resource_limit']
+        || !['vertex_unavailable', 'reduction_theorem_not_applicable', 'resource_limit', 'cancelled']
           .includes(String(item.reason))) return null
     } else return null
   }

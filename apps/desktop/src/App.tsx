@@ -153,6 +153,7 @@ import {
   validateProject,
   proveCurrentAssignedLocalSufficiencyV1,
   summarizeCurrentAssignedLocalSufficiencyV1,
+  cancelCurrentAssignedLocalSufficiencySummaryV1,
   type AssignedLocalSufficiencyResponseV1,
   type AssignedLocalSufficiencySummaryResponseV1,
 } from './lib/coreClient'
@@ -1402,7 +1403,10 @@ function App() {
     }).catch(() => {
       if (current) setAssignedLocalSummaryStatus('failed')
     })
-    return () => { current = false }
+    return () => {
+      current = false
+      void cancelCurrentAssignedLocalSufficiencySummaryV1().catch(() => undefined)
+    }
   }, [nativeSnapshot])
   useEffect(() => {
     let current = true

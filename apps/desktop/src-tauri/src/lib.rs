@@ -28,7 +28,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -1359,6 +1359,7 @@ struct AssignedLocalSufficiencyResponseV1 {
 
 const MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1: usize = 4096;
 const MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1: usize = 16_384;
+static ASSIGNED_LOCAL_SUMMARY_GENERATION_V1: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1915,10 +1916,26 @@ async fn prove_current_assigned_local_sufficiency_v1(
 }
 
 #[tauri::command]
+fn cancel_current_assigned_local_sufficiency_summary_v1() -> Result<(), String> {
+    ASSIGNED_LOCAL_SUMMARY_GENERATION_V1
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+            value.checked_add(1)
+        })
+        .map(|_| ())
+        .map_err(|_| "The local sufficiency summary generation is exhausted.".to_owned())
+}
+
+#[tauri::command]
 async fn summarize_current_assigned_local_sufficiency_v1(
     state: State<'_, AppState>,
     request: AssignedLocalSufficiencySummaryRequestV1,
 ) -> Result<AssignedLocalSufficiencySummaryResponseV1, String> {
+    let generation = ASSIGNED_LOCAL_SUMMARY_GENERATION_V1
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+            value.checked_add(1)
+        })
+        .map(|previous| previous + 1)
+        .map_err(|_| "The local sufficiency summary generation is exhausted.".to_owned())?;
     let permit = state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| "Another native pose analysis is already running.".to_owned())?;
@@ -1941,41 +1958,38 @@ async fn summarize_current_assigned_local_sufficiency_v1(
     };
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        let mut vertices = Vec::with_capacity(pattern.vertices.len());
-        let mut total_reduction_steps = 0usize;
-        for source_vertex in &pattern.vertices {
-            let remaining =
-                MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1.saturating_sub(total_reduction_steps);
-            let proof = ori_topology::prove_assigned_local_sufficiency_v1(
-                &paper,
-                &pattern,
-                source_vertex.id,
-                ori_topology::AssignedLocalSufficiencyLimitsV1 {
-                    max_vertices: MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1,
-                    max_reductions: remaining.min(
-                        ori_topology::AssignedLocalSufficiencyLimitsV1::default().max_reductions,
-                    ),
-                },
-            );
-            vertices.push(match proof {
+        let mut checkpoint = || {
+            if ASSIGNED_LOCAL_SUMMARY_GENERATION_V1.load(Ordering::SeqCst) == generation {
+                ori_topology::CooperativeAnalysisCheckpoint::Continue
+            } else {
+                ori_topology::CooperativeAnalysisCheckpoint::Cancelled
+            }
+        };
+        let batch = ori_topology::prove_all_assigned_local_sufficiency_v1(
+            &paper,
+            &pattern,
+            ori_topology::AssignedLocalSufficiencyLimitsV1 {
+                max_vertices: MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1,
+                max_reductions:
+                    ori_topology::AssignedLocalSufficiencyLimitsV1::default().max_reductions,
+            },
+            MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1,
+            &mut checkpoint,
+        );
+        let vertices = batch
+            .vertices
+            .into_iter()
+            .map(|proof| match proof {
                 ori_topology::AssignedLocalSufficiencyV1::Proven {
                     vertex,
                     model_id,
                     reduction_steps,
                     ..
-                } => {
-                    total_reduction_steps = total_reduction_steps
-                        .checked_add(reduction_steps)
-                        .filter(|total| *total <= MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1)
-                        .ok_or_else(|| {
-                            "The local sufficiency summary work limit was reached.".to_owned()
-                        })?;
-                    AssignedLocalSufficiencySummaryVertexV1::SufficientProven {
-                        vertex,
-                        model_id,
-                        reduction_steps,
-                    }
-                }
+                } => AssignedLocalSufficiencySummaryVertexV1::SufficientProven {
+                    vertex,
+                    model_id,
+                    reduction_steps,
+                },
                 ori_topology::AssignedLocalSufficiencyV1::Indeterminate {
                     vertex,
                     reason:
@@ -1984,12 +1998,12 @@ async fn summarize_current_assigned_local_sufficiency_v1(
                 ori_topology::AssignedLocalSufficiencyV1::Indeterminate { vertex, reason } => {
                     AssignedLocalSufficiencySummaryVertexV1::Indeterminate { vertex, reason }
                 }
-            });
-        }
-        Ok::<_, String>((vertices, total_reduction_steps))
+            })
+            .collect();
+        (vertices, batch.total_reduction_steps)
     })
     .await
-    .map_err(|_| "Local sufficiency summary analysis failed.".to_owned())??;
+    .map_err(|_| "Local sufficiency summary analysis failed.".to_owned())?;
     {
         let project = lock_project(&state)?;
         if project.instance_id != request.expected_project_instance_id
@@ -8404,6 +8418,7 @@ pub fn run() {
             new_project,
             validate_project,
             prove_current_assigned_local_sufficiency_v1,
+            cancel_current_assigned_local_sufficiency_summary_v1,
             summarize_current_assigned_local_sufficiency_v1,
             apply_current_native_pose,
             inspect_current_static_collision,

@@ -427,7 +427,7 @@ function normalizeBeginnerGenerationConstraints(
   if (bulgeTargets.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
   if (record.target_asset !== null) {
-    const candidate = coreDataRecord(record.target_asset)
+    const candidate = isCoreDataRecord(record.target_asset) ? record.target_asset : null
     if (candidate?.kind === 'reference_image') {
       const asset = exactCoreDataRecord(candidate, ['kind', 'underlay_id', 'asset_id'] as const)
       if (!asset || !isCanonicalNonNilUuid(asset.underlay_id)

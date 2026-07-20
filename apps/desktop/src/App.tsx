@@ -7758,7 +7758,10 @@ function App() {
                     name="target_reference_underlay"
                     defaultValue={
                       nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
-                        ?.underlay_id ?? ''
+                        ?.kind === 'reference_image'
+                        ? nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
+                            .underlay_id
+                        : ''
                     }
                     disabled={coreBusy || recoveryBlocking}
                     aria-describedby="beginner-target-asset-help"

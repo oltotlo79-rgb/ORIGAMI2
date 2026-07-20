@@ -201,6 +201,21 @@ struct StackedFoldContinuousPathDto {
     paper_thickness_mm: f64,
 }
 
+#[allow(dead_code)]
+enum StackedFoldPathAnalysis {
+    Tree(ori_collision::StackedFoldBoundedPathDiagnosticV1),
+    Graph {
+        diagnostic: ori_collision::StackedFoldCyclePathDiagnosticV1,
+        requested_angle_degrees: f64,
+    },
+}
+
+#[allow(dead_code)]
+enum NativeStackedFoldPremises {
+    Tree(super::stacked_fold_transaction::PendingStackedFoldPremises),
+    Graph(super::stacked_fold_transaction::PendingStackedFoldGraphPremises),
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StackedFoldFlatEndpointLayerOrderDto {
@@ -614,7 +629,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         };
         let source_fingerprint_bytes = geometry_proof.lineage().source_fingerprint().0;
         let native_transaction = transaction_layer_order.map(|layer_order| {
-            super::stacked_fold_transaction::PendingStackedFoldPremises {
+            NativeStackedFoldPremises::Tree(super::stacked_fold_transaction::PendingStackedFoldPremises {
                 expected_instance_id: binding.project_instance_id(),
                 expected_project_id: binding.project_id(),
                 expected_revision: binding.source_revision(),
@@ -624,7 +639,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                 requested: prepared_requested_pose,
                 continuous: continuous_path,
                 layer_order,
-            }
+            })
         });
         let crossed_cells = proposal
             .crossed_cells()
@@ -670,7 +685,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             topology_proof,
             work,
             endpoint_collision,
-            continuous_path,
+            StackedFoldPathAnalysis::Tree(continuous_path),
             flat_endpoint_layer_order,
             transaction_proposal,
             native_transaction,
@@ -714,12 +729,24 @@ pub(super) async fn propose_current_stacked_fold_read(
         }
     }
     if let Some(native_transaction) = native_transaction {
-        let token = super::stacked_fold_transaction::install_pending_stacked_fold(
-            &transaction_state,
-            native_transaction,
-            pose_capability,
-            layer_capability,
-        )?;
+        let token = match native_transaction {
+            NativeStackedFoldPremises::Tree(premises) => {
+                super::stacked_fold_transaction::install_pending_stacked_fold(
+                    &transaction_state,
+                    premises,
+                    pose_capability,
+                    layer_capability,
+                )?
+            }
+            NativeStackedFoldPremises::Graph(premises) => {
+                super::stacked_fold_transaction::install_pending_stacked_fold_graph(
+                    &transaction_state,
+                    premises,
+                    pose_capability,
+                    layer_capability,
+                )?
+            }
+        };
         transaction_proposal.transaction_token = Some(token);
         transaction_proposal.ready_for_atomic_apply = true;
         transaction_proposal.authorizes_project_mutation = true;
@@ -743,25 +770,62 @@ pub(super) async fn propose_current_stacked_fold_read(
         material_segments,
         topology_proof,
         endpoint_collision,
-        continuous_path: StackedFoldContinuousPathDto {
-            model_id: continuous_path.model_id(),
-            continuous_certificate_model_id: continuous_path.continuous_certificate_model_id(),
-            sampled_pose_count: continuous_path.sampled_pose_count(),
-            sampled_nonblocking_pose_count: continuous_path.sampled_nonblocking_pose_count(),
-            interval_leaf_count: continuous_path.interval_leaf_count(),
-            interval_pair_work: continuous_path.interval_pair_work(),
-            interval_candidate_limit: continuous_path.interval_candidate_limit(),
-            closure_required: false,
-            closure_leaf_count: 0,
-            closure_pair_work: 0,
-            first_closure_failure_angle_degrees: None,
-            first_sampled_blocking_angle_degrees: continuous_path
-                .first_sampled_blocking_angle_degrees(),
-            requested_angle_degrees: continuous_path.requested_angle_degrees(),
-            continuous_clearance_certified: continuous_path.continuous_clearance_certified(),
-            safe_stop_angle_degrees: continuous_path.safe_stop_angle_degrees(),
-            authorizes_project_mutation: continuous_path.authorizes_project_mutation(),
-            paper_thickness_mm,
+        continuous_path: match continuous_path {
+            StackedFoldPathAnalysis::Tree(value) => StackedFoldContinuousPathDto {
+                model_id: value.model_id(),
+                continuous_certificate_model_id: value.continuous_certificate_model_id(),
+                sampled_pose_count: value.sampled_pose_count(),
+                sampled_nonblocking_pose_count: value.sampled_nonblocking_pose_count(),
+                interval_leaf_count: value.interval_leaf_count(),
+                interval_pair_work: value.interval_pair_work(),
+                interval_candidate_limit: value.interval_candidate_limit(),
+                closure_required: false,
+                closure_leaf_count: 0,
+                closure_pair_work: 0,
+                first_closure_failure_angle_degrees: None,
+                first_sampled_blocking_angle_degrees: value.first_sampled_blocking_angle_degrees(),
+                requested_angle_degrees: value.requested_angle_degrees(),
+                continuous_clearance_certified: value.continuous_clearance_certified(),
+                safe_stop_angle_degrees: value.safe_stop_angle_degrees(),
+                authorizes_project_mutation: value.authorizes_project_mutation(),
+                paper_thickness_mm,
+            },
+            StackedFoldPathAnalysis::Graph {
+                diagnostic,
+                requested_angle_degrees,
+            } => StackedFoldContinuousPathDto {
+                model_id: ori_collision::STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+                continuous_certificate_model_id: diagnostic.continuous_certificate_model_id(),
+                sampled_pose_count: diagnostic.leaf_count().saturating_add(1),
+                sampled_nonblocking_pose_count: if diagnostic
+                    .continuous_certificate_model_id()
+                    .is_some()
+                {
+                    diagnostic.leaf_count().saturating_add(1)
+                } else {
+                    0
+                },
+                interval_leaf_count: 0,
+                interval_pair_work: 0,
+                interval_candidate_limit: 0,
+                closure_required: true,
+                closure_leaf_count: diagnostic.leaf_count(),
+                closure_pair_work: diagnostic.pair_work(),
+                first_closure_failure_angle_degrees: diagnostic
+                    .first_closure_failure_angle_degrees(),
+                first_sampled_blocking_angle_degrees: None,
+                requested_angle_degrees,
+                continuous_clearance_certified: diagnostic
+                    .continuous_certificate_model_id()
+                    .is_some(),
+                safe_stop_angle_degrees: if diagnostic.continuous_certificate_model_id().is_some() {
+                    requested_angle_degrees
+                } else {
+                    0.0
+                },
+                authorizes_project_mutation: false,
+                paper_thickness_mm,
+            },
         },
         flat_endpoint_layer_order,
         transaction_proposal,

@@ -38,7 +38,7 @@ pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
 pub const STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
-const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 91;
+const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 105;
 pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 64;
 const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 2_048;
 const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
@@ -75,6 +75,8 @@ pub struct StackedFoldBoundedPathDiagnosticV1 {
     interval_tree_hinge_count: usize,
     interval_leaf_count: usize,
     interval_pair_work: usize,
+    positive_endpoint_memo_pair_entries: usize,
+    positive_endpoint_exact_pair_calls: usize,
     positive_thickness_outer_shell: bool,
 }
 
@@ -102,6 +104,16 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     #[must_use]
     pub const fn interval_pair_work(&self) -> usize {
         self.interval_pair_work
+    }
+
+    #[must_use]
+    pub const fn positive_endpoint_memo_pair_entries(&self) -> usize {
+        self.positive_endpoint_memo_pair_entries
+    }
+
+    #[must_use]
+    pub const fn positive_endpoint_exact_pair_calls(&self) -> usize {
+        self.positive_endpoint_exact_pair_calls
     }
 
     #[must_use]
@@ -255,14 +267,15 @@ pub fn diagnose_collective_hinge_path_v1(
             &mut interval_metrics,
         );
     let positive_two_hinge_topology = positive_thickness
-        && (3..=14).contains(&model.face_ids().len())
-        && (2..=13).contains(&model.hinges().len())
+        && (3..=15).contains(&model.face_ids().len())
+        && (2..=14).contains(&model.hinges().len())
         && model.hinges().len() + 1 == model.face_ids().len()
         && moving.len() == model.hinges().len()
         && model.face_ids().len() * model.face_ids().len().saturating_sub(1) / 2
             <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
         && requested_angle_degrees
             <= match model.hinges().len() {
+                14 => 2.0,
                 13 => 3.0,
                 12 => 4.0,
                 11 => 5.0,
@@ -283,6 +296,8 @@ pub fn diagnose_collective_hinge_path_v1(
 
     let mut sampled_nonblocking_pose_count = 0;
     let mut first_sampled_blocking_angle_degrees = None;
+    let mut positive_endpoint_memo_pair_entries = 0;
+    let mut positive_endpoint_exact_pair_calls = 0;
     for index in 0..=limits.sample_intervals {
         let angle = requested_angle_degrees * index as f64 / limits.sample_intervals as f64;
         let angles = initial_pose
@@ -341,6 +356,7 @@ pub fn diagnose_collective_hinge_path_v1(
                         .is_some_and(|observations| observations.len() == model.hinges().len())
                             && model.face_ids().iter().enumerate().all(|(index, first)| {
                                 model.face_ids().iter().skip(index + 1).all(|second| {
+                                    positive_endpoint_memo_pair_entries += 1;
                                     let adjacent = model.hinges().iter().any(|hinge| {
                                         (hinge.left_face() == *first
                                             && hinge.right_face() == *second)
@@ -360,24 +376,25 @@ pub fn diagnose_collective_hinge_path_v1(
                                                         == crate::StaticCollisionPairDisposition::Allowed
                                             })
                                         })
-                                        || prepare_positive_thickness_pair_separation_v1(
-                                            bound,
-                                            paper_thickness_mm,
-                                            *first,
-                                            *second,
-                                            limits.static_collision,
-                                        )
-                                        .is_ok_and(
-                                            |capability| {
+                                        || {
+                                            positive_endpoint_exact_pair_calls += 1;
+                                            prepare_positive_thickness_pair_separation_v1(
+                                                bound,
+                                                paper_thickness_mm,
+                                                *first,
+                                                *second,
+                                                limits.static_collision,
+                                            )
+                                            .is_ok_and(|capability| {
                                                 capability.is_some_and(|capability| {
-                                                revalidate_positive_thickness_pair_separation_v1(
-                                                    &capability,
-                                                    bound,
-                                                    paper_thickness_mm,
-                                                )
+                                                    revalidate_positive_thickness_pair_separation_v1(
+                                                        &capability,
+                                                        bound,
+                                                        paper_thickness_mm,
+                                                    )
+                                                })
                                             })
-                                            },
-                                        )
+                                        }
                                 })
                             })
                     })
@@ -454,6 +471,7 @@ pub fn diagnose_collective_hinge_path_v1(
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
             && requested_angle_degrees
                 <= match model.hinges().len() {
+                    14 => 2.0,
                     13 => 3.0,
                     12 => 4.0,
                     11 => 5.0,
@@ -480,6 +498,8 @@ pub fn diagnose_collective_hinge_path_v1(
         },
         interval_leaf_count: interval_metrics.0,
         interval_pair_work: interval_metrics.1,
+        positive_endpoint_memo_pair_entries,
+        positive_endpoint_exact_pair_calls,
         positive_thickness_outer_shell: positive_thickness && all_positive_thickness_outer_shells,
     })
 }
@@ -1415,6 +1435,16 @@ mod tests {
             ),
             UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 1 }
         );
+        let path = diagnose_collective_cycle_path_v1(
+            &geometry,
+            &audit,
+            audit.faces()[0],
+            &initial,
+            &moving,
+            180.0,
+            8,
+        );
+        assert_eq!(path.continuous_certificate_model_id(), None);
     }
 
     fn one_hinge_model() -> MaterialTreeKinematicsModel {
@@ -2215,6 +2245,75 @@ mod tests {
         .expect("thirteen-hinge triangular tree")
     }
 
+    fn fourteen_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        let points = [
+            (0., 0.),
+            (4., 0.),
+            (7., 1.),
+            (10., 3.),
+            (12., 6.),
+            (13., 9.),
+            (13., 12.),
+            (12., 15.),
+            (10., 18.),
+            (8., 20.),
+            (5., 22.),
+            (3., 22.),
+            (1., 20.),
+            (0., 18.),
+            (-1., 15.),
+            (-2., 10.),
+            (-1., 4.),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(i, &(x, y))| Vertex {
+                id: fixed_id("8b10", i as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|v| v.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|i| Edge {
+                id: fixed_id("9b10", i as u64 + 1),
+                start: boundary[i],
+                end: boundary[(i + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for (offset, end) in (2..=15).enumerate() {
+            edges.push(Edge {
+                id: fixed_id("9b10", 20 + offset as u64),
+                start: boundary[0],
+                end: boundary[end],
+                kind: if offset % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("bb10", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("fifteen triangles"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("fourteen-hinge triangular tree")
+    }
+
     fn zero_tree_pose(
         model: &MaterialTreeKinematicsModel,
     ) -> (Vec<EdgeId>, ori_kinematics::MaterialTreePose) {
@@ -2428,6 +2527,8 @@ mod tests {
                 interval_tree_hinge_count: 0,
                 interval_leaf_count: 0,
                 interval_pair_work: 0,
+                positive_endpoint_memo_pair_entries: 0,
+                positive_endpoint_exact_pair_calls: 0,
                 positive_thickness_outer_shell: false,
             }
             .safe_stop_angle_degrees()
@@ -3235,7 +3336,6 @@ mod tests {
 
     #[test]
     fn positive_endpoint_memo_cap_rejects_ten_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 55);
         let model = deep_strip_model(9);
         let moving = model
             .hinges()
@@ -3348,7 +3448,6 @@ mod tests {
 
     #[test]
     fn positive_endpoint_memo_cap_rejects_eleven_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 55);
         let model = deep_strip_model(10);
         let moving = model
             .hinges()
@@ -3441,7 +3540,6 @@ mod tests {
 
     #[test]
     fn positive_endpoint_memo_cap_rejects_twelve_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 55);
         let model = deep_strip_model(11);
         let (moving, initial) = zero_tree_pose(&model);
         let diagnostic = diagnose_collective_hinge_path_v1(
@@ -3522,7 +3620,6 @@ mod tests {
 
     #[test]
     fn positive_endpoint_memo_cap_rejects_thirteen_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 66);
         let model = deep_strip_model(12);
         let (moving, initial) = zero_tree_pose(&model);
         let diagnostic = diagnose_collective_hinge_path_v1(
@@ -3679,9 +3776,75 @@ mod tests {
     }
 
     #[test]
-    fn positive_endpoint_memo_cap_rejects_fifteen_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 91);
-        let model = deep_strip_model(14);
+    fn fifteen_triangle_positive_thickness_bounds_and_work_meter() {
+        let model = fourteen_hinge_triangle_model();
+        let (moving, initial) = zero_tree_pose(&model);
+        let accepted = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            2.0,
+            0.001,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(accepted.continuous_clearance_certified());
+        assert_eq!(accepted.positive_endpoint_memo_pair_entries(), 105);
+        assert_eq!(accepted.positive_endpoint_exact_pair_calls(), 0);
+        assert!(
+            accepted.positive_endpoint_memo_pair_entries()
+                + accepted.positive_endpoint_exact_pair_calls()
+                <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
+        );
+        let over = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            2.000_000_1,
+            0.001,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(!over.continuous_clearance_certified());
+        assert_eq!(over.positive_endpoint_memo_pair_entries(), 0);
+        assert_eq!(over.positive_endpoint_exact_pair_calls(), 0);
+    }
+
+    #[test]
+    fn fifteen_triangle_boundary_rejects_aba_and_thickness_drift() {
+        let model = fourteen_hinge_triangle_model();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 2.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let aba = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let bound = model.bind_pose(&pose).unwrap();
+        let capability = prepare_tree_hinge_thickness_boundaries_v1(bound, 0.001)
+            .unwrap()
+            .expect("fifteen-face boundary");
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(
+                &capability,
+                model.bind_pose(&aba).unwrap(),
+                0.001,
+            )
+            .is_none()
+        );
+        assert!(
+            revalidate_tree_hinge_thickness_boundaries_v1(&capability, bound, 0.001_000_000_1,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn positive_endpoint_memo_cap_rejects_sixteen_face_tree() {
+        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 105);
+        let model = deep_strip_model(15);
         let (moving, initial) = zero_tree_pose(&model);
         let diagnostic = diagnose_collective_hinge_path_v1(
             &model,

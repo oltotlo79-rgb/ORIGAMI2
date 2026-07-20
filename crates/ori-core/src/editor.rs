@@ -59,6 +59,12 @@ pub struct IntersectionEdgeTarget {
     pub new_edge: Option<EdgeId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VertexPositionUpdate {
+    pub vertex: VertexId,
+    pub position: Point2,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     AddVertex {
@@ -73,6 +79,9 @@ pub enum Command {
         id: EdgeId,
         start_position: Point2,
         end_position: Point2,
+    },
+    MoveVertices {
+        updates: Vec<VertexPositionUpdate>,
     },
     RemoveVertex {
         id: VertexId,
@@ -237,6 +246,10 @@ pub enum CommandError {
     EdgeAlreadyExists(EdgeId),
     #[error("edge {0:?} was not found")]
     EdgeNotFound(EdgeId),
+    #[error("the vertex move batch must contain a bounded set of unique vertices")]
+    InvalidVertexMoveBatch,
+    #[error("the requested position for vertex {vertex:?} must be finite")]
+    VertexMovePositionNotFinite { vertex: VertexId },
     #[error("an edge cannot connect vertex {0:?} to itself")]
     DegenerateEdge(VertexId),
     #[error("vertex {vertex:?} is still used by edge {edge:?}")]
@@ -1804,6 +1817,12 @@ impl EditorState {
                 let end_index = self
                     .vertex_index(edge.end)
                     .ok_or(CommandError::VertexNotFound(edge.end))?;
+                if !start_position.x.is_finite() || !start_position.y.is_finite() {
+                    return Err(CommandError::VertexMovePositionNotFinite { vertex: edge.start });
+                }
+                if !end_position.x.is_finite() || !end_position.y.is_finite() {
+                    return Err(CommandError::VertexMovePositionNotFinite { vertex: edge.end });
+                }
                 self.ensure_length_display_reference_survives_vertex_move(
                     edge.start,
                     start_position,
@@ -1817,6 +1836,43 @@ impl EditorState {
                     id,
                     start_position: previous_start,
                     end_position: previous_end,
+                }))
+            }
+            Command::MoveVertices { ref updates } => {
+                if updates.is_empty() || updates.len() > DEFAULT_MAX_CONSTRAINT_VERTICES {
+                    return Err(CommandError::InvalidVertexMoveBatch);
+                }
+                let mut seen = std::collections::HashSet::with_capacity(updates.len());
+                let mut planned = Vec::with_capacity(updates.len());
+                for update in updates {
+                    if !seen.insert(update.vertex) {
+                        return Err(CommandError::InvalidVertexMoveBatch);
+                    }
+                    if !update.position.x.is_finite() || !update.position.y.is_finite() {
+                        return Err(CommandError::VertexMovePositionNotFinite {
+                            vertex: update.vertex,
+                        });
+                    }
+                    let index = self
+                        .vertex_index(update.vertex)
+                        .ok_or(CommandError::VertexNotFound(update.vertex))?;
+                    self.ensure_length_display_reference_survives_vertex_move(
+                        update.vertex,
+                        update.position,
+                    )?;
+                    planned.push((index, self.pattern.vertices[index].position, *update));
+                }
+                for (index, _, update) in &planned {
+                    self.pattern.vertices[*index].position = update.position;
+                }
+                Ok(Inverse::Command(Command::MoveVertices {
+                    updates: planned
+                        .into_iter()
+                        .map(|(_, previous, update)| VertexPositionUpdate {
+                            vertex: update.vertex,
+                            position: previous,
+                        })
+                        .collect(),
                 }))
             }
             Command::RemoveVertex { id } => {
@@ -2447,6 +2503,27 @@ impl EditorState {
                 }
                 Ok(())
             }
+            Command::MoveVertices { updates } => {
+                for update in updates {
+                    if self.vertex_index(update.vertex).is_none() {
+                        continue;
+                    }
+                    let mut has_incident_edge = false;
+                    for edge in self
+                        .pattern
+                        .edges
+                        .iter()
+                        .filter(|edge| edge.start == update.vertex || edge.end == update.vertex)
+                    {
+                        has_incident_edge = true;
+                        self.ensure_edge_layer_unlocked(edge.id)?;
+                    }
+                    if !has_incident_edge {
+                        self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID)?;
+                    }
+                }
+                Ok(())
+            }
             Command::RemoveEdge { id }
             | Command::RemoveConnectedVertex { edge_id: id, .. }
             | Command::SplitEdge { edge: id, .. }
@@ -2726,6 +2803,20 @@ impl EditorState {
                         collect_incident_constraint_edges(
                             &self.pattern,
                             edge.end,
+                            &mut targets.edges,
+                        );
+                    }
+                }
+            }
+            Command::MoveVertices { updates } => {
+                for update in updates {
+                    if self.vertex_index(update.vertex).is_some_and(|index| {
+                        !point_bits_equal(self.pattern.vertices[index].position, update.position)
+                    }) {
+                        targets.vertices.insert(update.vertex);
+                        collect_incident_constraint_edges(
+                            &self.pattern,
+                            update.vertex,
                             &mut targets.edges,
                         );
                     }
@@ -4686,6 +4777,7 @@ impl Command {
             }
             Self::MoveVertex { .. }
             | Self::MoveEdge { .. }
+            | Self::MoveVertices { .. }
             | Self::RemoveVertex { .. }
             | Self::RemoveConnectedVertex { .. }
             | Self::RemoveEdge { .. }
@@ -4723,6 +4815,7 @@ impl Command {
             Self::AddVertex { .. }
             | Self::MoveVertex { .. }
             | Self::MoveEdge { .. }
+            | Self::MoveVertices { .. }
             | Self::RemoveVertex { .. }
             | Self::AddEdge { .. }
             | Self::AddConnectedVertex { .. }
@@ -4781,6 +4874,22 @@ impl Command {
                     constraints: false,
                 }
             }
+            Self::MoveVertices { ref updates } => Changes {
+                vertices: updates.iter().map(|update| update.vertex).collect(),
+                edges: pattern
+                    .edges
+                    .iter()
+                    .filter(|edge| {
+                        updates
+                            .iter()
+                            .any(|update| edge.start == update.vertex || edge.end == update.vertex)
+                    })
+                    .map(|edge| edge.id)
+                    .collect(),
+                settings: false,
+                instructions: false,
+                constraints: false,
+            },
             Self::AddEdge { id, start, end, .. } => Changes {
                 vertices: vec![start, end],
                 edges: vec![id],
@@ -6407,6 +6516,78 @@ mod tests {
         editor.redo(2).expect("redo the whole edge move");
         assert_eq!(editor.pattern.vertices[0].position, Point2::new(11.0, -3.0));
         assert_eq!(editor.pattern.vertices[1].position, Point2::new(14.0, 1.0));
+    }
+
+    #[test]
+    fn move_vertices_is_atomic_bounded_unique_and_undoable() {
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: first,
+                    position: Point2::new(1.0, 2.0),
+                },
+                Vertex {
+                    id: second,
+                    position: Point2::new(3.0, 4.0),
+                },
+            ],
+            edges: Vec::new(),
+        });
+        let duplicate = Command::MoveVertices {
+            updates: vec![
+                VertexPositionUpdate {
+                    vertex: first,
+                    position: Point2::new(5.0, 6.0),
+                },
+                VertexPositionUpdate {
+                    vertex: first,
+                    position: Point2::new(7.0, 8.0),
+                },
+            ],
+        };
+        assert_eq!(
+            editor.execute(0, duplicate),
+            Err(CommandError::InvalidVertexMoveBatch)
+        );
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(1.0, 2.0));
+        assert_eq!(
+            editor.execute(
+                0,
+                Command::MoveVertices {
+                    updates: vec![VertexPositionUpdate {
+                        vertex: first,
+                        position: Point2::new(f64::NAN, 2.0),
+                    }],
+                },
+            ),
+            Err(CommandError::VertexMovePositionNotFinite { vertex: first })
+        );
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(1.0, 2.0));
+
+        editor
+            .execute(
+                0,
+                Command::MoveVertices {
+                    updates: vec![
+                        VertexPositionUpdate {
+                            vertex: first,
+                            position: Point2::new(11.0, 12.0),
+                        },
+                        VertexPositionUpdate {
+                            vertex: second,
+                            position: Point2::new(13.0, 14.0),
+                        },
+                    ],
+                },
+            )
+            .expect("move a face vertex batch");
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(11.0, 12.0));
+        assert_eq!(editor.pattern.vertices[1].position, Point2::new(13.0, 14.0));
+        editor.undo(1).expect("undo the entire vertex batch");
+        assert_eq!(editor.pattern.vertices[0].position, Point2::new(1.0, 2.0));
+        assert_eq!(editor.pattern.vertices[1].position, Point2::new(3.0, 4.0));
     }
 
     #[test]

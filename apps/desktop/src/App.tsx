@@ -72,6 +72,7 @@ import {
   isNativeCoreAvailable,
   moveEdge,
   moveProjectLayer,
+  moveVertices,
   moveVertex,
   newProject,
   openProject,
@@ -1291,11 +1292,26 @@ function App() {
       }
       if (valid) faces.push(Object.freeze({
         id: face.id,
+        vertexIds: Object.freeze(
+          face.outer.half_edges.map((halfEdge) => halfEdge.origin),
+        ),
+        edgeIds: Object.freeze(
+          face.outer.half_edges.map((halfEdge) => halfEdge.edge),
+        ),
         polygon: Object.freeze(polygon),
       }))
     }
     return Object.freeze(faces)
   }, [nativeSnapshot, topologyResponse])
+  const selectedFace = selectedFaceId
+    ? canvasFaces.find((face) => face.id === selectedFaceId)
+    : undefined
+  const selectedFaceLocked = selectedFace?.edgeIds.some((edgeId) =>
+    nativeLines.find((line) => line.id === edgeId)?.locked ?? true) ?? false
+  const selectedFaceRemovableEdges = selectedFace?.edgeIds.flatMap((edgeId) => {
+    const line = nativeLines.find((candidate) => candidate.id === edgeId)
+    return line && line.kind !== 'boundary' && !line.locked ? [line] : []
+  }) ?? []
   const fixedFaceOptions = useMemo(() => (
     foldPreviewModel?.kind === 'single_fold'
       ? foldPreviewModel.faces
@@ -2696,6 +2712,105 @@ function App() {
         deltaX,
         deltaY,
       ))
+  }
+
+  async function submitMoveSelectedFace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedFace || benchmarkRun || selectedFaceLocked) return
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const form = new FormData(event.currentTarget)
+    const deltaXDisplayExpression = String(form.get('face_delta_x_display') ?? '')
+    const deltaYDisplayExpression = String(form.get('face_delta_y_display') ?? '')
+    let deltaX: number | null = null
+    let deltaY: number | null = null
+    try {
+      deltaX = await evaluateDisplayLengthExpression(deltaXDisplayExpression, currentUnit)
+      deltaY = await evaluateDisplayLengthExpression(deltaYDisplayExpression, currentUnit)
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+      return
+    }
+    if (deltaX === null || deltaY === null) {
+      setCoreStatus(appMessage({
+        ja: '面の移動量には有限な数式を入力してください。',
+        en: 'Enter finite expressions for the face translation.',
+      }))
+      return
+    }
+    await runNativeEdit((projectId, revision, projectInstanceId) =>
+      moveVertices(
+        projectId,
+        revision,
+        projectInstanceId,
+        [...selectedFace.vertexIds],
+        millimetreExpressionSource(
+          deltaXDisplayExpression,
+          currentUnit.millimetresPerUnit,
+        ),
+        millimetreExpressionSource(
+          deltaYDisplayExpression,
+          currentUnit.millimetresPerUnit,
+        ),
+        deltaX,
+        deltaY,
+      ))
+  }
+
+  async function submitSplitSelectedFace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedFace || selectedFaceLocked) return
+    const form = new FormData(event.currentTarget)
+    const start = String(form.get('face_split_start') ?? '')
+    const end = String(form.get('face_split_end') ?? '')
+    const kind = form.get('face_split_kind')
+    const startIndex = selectedFace.vertexIds.indexOf(start)
+    const endIndex = selectedFace.vertexIds.indexOf(end)
+    const boundaryCount = selectedFace.vertexIds.length
+    const adjacent = startIndex >= 0 && endIndex >= 0 && (
+      Math.abs(startIndex - endIndex) === 1
+      || Math.abs(startIndex - endIndex) === boundaryCount - 1
+    )
+    if (
+      startIndex < 0
+      || endIndex < 0
+      || start === end
+      || adjacent
+      || current.crease_pattern.edges.some((edge) =>
+        (edge.start === start && edge.end === end)
+        || (edge.start === end && edge.end === start))
+      || (
+        kind !== 'mountain'
+        && kind !== 'valley'
+        && kind !== 'auxiliary'
+        && kind !== 'cut'
+      )
+      || (kind === 'cut' && !current.cutting_allowed)
+    ) {
+      setCoreStatus(appMessage({
+        ja: '面を分割する非隣接の2頂点と利用可能な線種を選択してください。',
+        en: 'Choose two non-adjacent face vertices and an available line type.',
+      }))
+      return
+    }
+    await runNativeEdit((projectId, revision, projectInstanceId) =>
+      addEdge(projectId, revision, projectInstanceId, start, end, kind))
+    setSelectedFaceId(null)
+  }
+
+  async function submitMergeSelectedFace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const edgeId = String(form.get('face_merge_edge') ?? '')
+    const edge = nativeLines.find((line) =>
+      line.id === edgeId
+      && selectedFace?.edgeIds.includes(line.id)
+      && line.kind !== 'boundary')
+    if (!edge || edge.locked) return
+    await runNativeEdit((projectId, revision, projectInstanceId) =>
+      removeEdge(projectId, revision, projectInstanceId, edge.id))
+    setSelectedFaceId(null)
   }
 
   function submitPaperProperties(event: FormEvent<HTMLFormElement>) {
@@ -5337,6 +5452,158 @@ function App() {
                     {text({
                       ja: '分割後に選択される新しい頂点を移動して、紙の輪郭を編集できます。',
                       en: 'Move the newly selected vertex after splitting to edit the paper boundary.',
+                    })}
+                  </p>
+                )}
+              </>
+            ) : selectedFace ? (
+              <>
+                <dl>
+                  <div><dt>ID</dt><dd>{selectedFace.id}</dd></div>
+                  <div>
+                    <dt>{text({ ja: '境界頂点', en: 'Boundary vertices' })}</dt>
+                    <dd>{selectedFace.vertexIds.length}</dd>
+                  </div>
+                  <div>
+                    <dt>{text({ ja: '境界線', en: 'Boundary lines' })}</dt>
+                    <dd>{selectedFace.edgeIds.length}</dd>
+                  </div>
+                </dl>
+                <form onSubmit={(event) => void submitMoveSelectedFace(event)}>
+                  <fieldset disabled={coreBusy || selectedFaceLocked}>
+                    <legend>{text({ ja: '面全体を移動', en: 'Move entire face' })}</legend>
+                    <label className="field">
+                      {formattedText({
+                        ja: '横移動量 ({unit})',
+                        en: 'Horizontal offset ({unit})',
+                      }, { unit: lengthDisplayUnitLabelText })}
+                      <input
+                        name="face_delta_x_display"
+                        type="text"
+                        inputMode="text"
+                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                        defaultValue="0"
+                      />
+                    </label>
+                    <label className="field">
+                      {formattedText({
+                        ja: '縦移動量 ({unit})',
+                        en: 'Vertical offset ({unit})',
+                      }, { unit: lengthDisplayUnitLabelText })}
+                      <input
+                        name="face_delta_y_display"
+                        type="text"
+                        inputMode="text"
+                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                        defaultValue="0"
+                      />
+                    </label>
+                    <div className="property-actions">
+                      <button type="submit">
+                        {text({ ja: '面全体を移動', en: 'Move entire face' })}
+                      </button>
+                    </div>
+                  </fieldset>
+                </form>
+                <form onSubmit={(event) => void submitSplitSelectedFace(event)}>
+                  <fieldset disabled={
+                    coreBusy || selectedFaceLocked || selectedFace.vertexIds.length < 4
+                  }>
+                    <legend>{text({
+                      ja: '面を追加・分割',
+                      en: 'Add or split a face',
+                    })}</legend>
+                    <label className="field">
+                      {text({ ja: '始点', en: 'Start vertex' })}
+                      <select
+                        name="face_split_start"
+                        defaultValue={selectedFace.vertexIds[0]}
+                      >
+                        {selectedFace.vertexIds.map((vertexId, index) => (
+                          <option value={vertexId} key={vertexId}>
+                            {formattedText({
+                              ja: '頂点 {index}: {id}',
+                              en: 'Vertex {index}: {id}',
+                            }, { index: index + 1, id: vertexId })}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      {text({ ja: '終点', en: 'End vertex' })}
+                      <select
+                        name="face_split_end"
+                        defaultValue={selectedFace.vertexIds[2]}
+                      >
+                        {selectedFace.vertexIds.map((vertexId, index) => (
+                          <option value={vertexId} key={vertexId}>
+                            {formattedText({
+                              ja: '頂点 {index}: {id}',
+                              en: 'Vertex {index}: {id}',
+                            }, { index: index + 1, id: vertexId })}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      {text({ ja: '分割線種', en: 'Split line type' })}
+                      <select name="face_split_kind" defaultValue="mountain">
+                        <option value="mountain">
+                          {text({ ja: '山折り', en: 'Mountain fold' })}
+                        </option>
+                        <option value="valley">
+                          {text({ ja: '谷折り', en: 'Valley fold' })}
+                        </option>
+                        <option value="auxiliary">
+                          {text({ ja: '補助線', en: 'Auxiliary line' })}
+                        </option>
+                        {nativeSnapshot?.cutting_allowed && (
+                          <option value="cut">
+                            {text({ ja: '切断線', en: 'Cut' })}
+                          </option>
+                        )}
+                      </select>
+                    </label>
+                    <div className="property-actions">
+                      <button type="submit">
+                        {text({ ja: '分割して面を追加', en: 'Split and add face' })}
+                      </button>
+                    </div>
+                  </fieldset>
+                </form>
+                <form onSubmit={(event) => void submitMergeSelectedFace(event)}>
+                  <fieldset disabled={
+                    coreBusy || selectedFaceLocked || selectedFaceRemovableEdges.length === 0
+                  }>
+                    <legend>{text({
+                      ja: '面を削除・統合',
+                      en: 'Delete or merge face',
+                    })}</legend>
+                    <label className="field">
+                      {text({ ja: '削除する共有線', en: 'Shared line to remove' })}
+                      <select name="face_merge_edge">
+                        {selectedFaceRemovableEdges.map((line) => (
+                          <option value={line.id} key={line.id}>
+                            {lineKindLabel(line.kind, locale)}: {line.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="property-actions">
+                      <button type="submit" className="danger">
+                        {text({
+                          ja: '共有線を削除して面を統合',
+                          en: 'Remove line and merge face',
+                        })}
+                      </button>
+                    </div>
+                  </fieldset>
+                </form>
+                {selectedFaceLocked && (
+                  <p className="muted">
+                    {text({
+                      ja: '面の境界にロック中のレイヤーが含まれるため移動できません。',
+                      en: 'This face cannot move because its boundary includes a locked layer.',
                     })}
                   </p>
                 )}

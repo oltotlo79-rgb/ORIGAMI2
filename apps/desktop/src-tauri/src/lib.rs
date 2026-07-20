@@ -63,9 +63,9 @@ use ori_core::{
     EditorTopology, GeometricConstraintLimitsV1, GeometricConstraintUnknownReasonV1,
     IntersectionEdgeTarget, JunctionVertexIntent, LocalFlatFoldabilityReport,
     MAX_EDITOR_HISTORY_ENTRIES, PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput,
-    TopologyIssue, TopologySnapshot, ValidationIssue, analyze_local_flat_foldability,
-    create_rectangular_sheet, prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
-    validate_paper,
+    TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
+    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
+    segment_midpoint_polygon_relation, validate_paper,
 };
 use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
@@ -2207,6 +2207,75 @@ fn move_edge(
         (edge.start, start, start_position),
         (edge.end, end, end_position),
     ] {
+        project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
+            vertex,
+            format!("({})+({delta_x_expression})", previous.x),
+            format!("({})+({delta_y_expression})", previous.y),
+            adopted.x,
+            adopted.y,
+        ));
+    }
+    Ok(snapshot(&project))
+}
+
+#[tauri::command]
+fn move_vertices(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    vertices: Vec<VertexId>,
+    delta_x_expression: String,
+    delta_y_expression: String,
+    delta_x_mm: f64,
+    delta_y_mm: f64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    validate_coordinate_expression_pair(
+        &delta_x_expression,
+        &delta_y_expression,
+        delta_x_mm,
+        delta_y_mm,
+    )?;
+    if vertices.is_empty() || vertices.len() > ori_domain::DEFAULT_MAX_CONSTRAINT_VERTICES {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    let mut unique = HashSet::with_capacity(vertices.len());
+    let mut planned = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        if !unique.insert(vertex) {
+            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+        }
+        let previous = project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|candidate| candidate.id == vertex)
+            .map(|candidate| candidate.position)
+            .ok_or_else(|| "vertex not found".to_owned())?;
+        let position = Point2::new(previous.x + delta_x_mm, previous.y + delta_y_mm);
+        if !position.x.is_finite() || !position.y.is_finite() {
+            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+        }
+        planned.push((vertex, previous, position));
+    }
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::MoveVertices {
+            updates: planned
+                .iter()
+                .map(|(vertex, _, position)| VertexPositionUpdate {
+                    vertex: *vertex,
+                    position: *position,
+                })
+                .collect(),
+        },
+    )?;
+    for (vertex, previous, adopted) in planned {
         project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
             vertex,
             format!("({})+({delta_x_expression})", previous.x),
@@ -6161,6 +6230,7 @@ pub fn run() {
             add_vertex,
             move_vertex,
             move_edge,
+            move_vertices,
             remove_vertex,
             add_edge,
             add_connected_vertex,
@@ -10659,6 +10729,91 @@ mod tests {
         );
         assert!(response.can_undo);
         assert!(response.is_dirty);
+    }
+
+    #[test]
+    fn face_vertex_batch_is_one_persisted_undo_redo_entry() {
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let edge = EdgeId::new();
+        let mut project = ProjectState::new_unsaved(
+            "face batch".to_owned(),
+            CreasePattern {
+                vertices: vec![
+                    ori_domain::Vertex {
+                        id: first,
+                        position: Point2::new(1.0, 2.0),
+                    },
+                    ori_domain::Vertex {
+                        id: second,
+                        position: Point2::new(3.0, 4.0),
+                    },
+                ],
+                edges: vec![ori_domain::Edge {
+                    id: edge,
+                    start: first,
+                    end: second,
+                    kind: EdgeKind::Mountain,
+                }],
+            },
+            Paper::default(),
+        );
+        let project_id = project.project_id;
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::MoveVertices {
+                updates: vec![
+                    VertexPositionUpdate {
+                        vertex: first,
+                        position: Point2::new(11.0, 12.0),
+                    },
+                    VertexPositionUpdate {
+                        vertex: second,
+                        position: Point2::new(13.0, 14.0),
+                    },
+                ],
+            },
+        )
+        .expect("move face vertices");
+        let archive = project
+            .project_archive()
+            .expect("persist face move history");
+        let mut reopened =
+            ProjectState::from_project_archive(archive, PathBuf::from("face-batch.ori2"))
+                .expect("restore face move history");
+        assert_eq!(
+            reopened.editor.pattern().vertices[0].position,
+            Point2::new(11.0, 12.0)
+        );
+        assert_eq!(
+            reopened.editor.pattern().vertices[1].position,
+            Point2::new(13.0, 14.0)
+        );
+        let reopened_project_id = reopened.project_id;
+        let undo_revision = reopened.editor.revision();
+        execute_undo(&mut reopened, reopened_project_id, undo_revision)
+            .expect("undo the face move as one entry");
+        assert_eq!(
+            reopened.editor.pattern().vertices[0].position,
+            Point2::new(1.0, 2.0)
+        );
+        assert_eq!(
+            reopened.editor.pattern().vertices[1].position,
+            Point2::new(3.0, 4.0)
+        );
+        let redo_revision = reopened.editor.revision();
+        execute_redo(&mut reopened, reopened_project_id, redo_revision)
+            .expect("redo the face move as one entry");
+        assert_eq!(
+            reopened.editor.pattern().vertices[0].position,
+            Point2::new(11.0, 12.0)
+        );
+        assert_eq!(
+            reopened.editor.pattern().vertices[1].position,
+            Point2::new(13.0, 14.0)
+        );
     }
 
     #[test]

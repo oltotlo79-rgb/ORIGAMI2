@@ -237,3 +237,26 @@ test('whole-line translation is one native edit with expression-backed endpoint 
     /format!\("\(\{\}\)\+\(\{delta_x_expression\}\)"/u,
   )
 })
+
+test('selected-face translation moves its complete bounded vertex set in one native edit', () => {
+  assert.match(
+    app,
+    /vertexIds: Object\.freeze\([\s\S]*?face\.outer\.half_edges\.map/u,
+  )
+  assert.match(
+    app,
+    /submitMoveSelectedFace[\s\S]*?moveVertices\([\s\S]*?\[\.\.\.selectedFace\.vertexIds\]/u,
+  )
+  assert.match(
+    nativeLib,
+    /fn move_vertices\([\s\S]*?HashSet::with_capacity[\s\S]*?Command::MoveVertices[\s\S]*?adopt_vertex_coordinate_expression/u,
+  )
+  assert.match(
+    app,
+    /submitSplitSelectedFace[\s\S]*?non-adjacent face vertices[\s\S]*?addEdge\(/u,
+  )
+  assert.match(
+    app,
+    /submitMergeSelectedFace[\s\S]*?line\.kind !== 'boundary'[\s\S]*?removeEdge\(/u,
+  )
+})

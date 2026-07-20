@@ -127,6 +127,13 @@ struct IntersectionEdgeTargetV1 {
     new_edge: Option<EdgeId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VertexPositionUpdateV1 {
+    vertex: VertexId,
+    position: Point2,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum CommandV1 {
@@ -142,6 +149,9 @@ enum CommandV1 {
         id: EdgeId,
         start_position: Point2,
         end_position: Point2,
+    },
+    MoveVertices {
+        updates: Vec<VertexPositionUpdateV1>,
     },
     RemoveVertex {
         id: VertexId,
@@ -472,6 +482,15 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             start_position: *start_position,
             end_position: *end_position,
         },
+        Command::MoveVertices { updates } => CommandV1::MoveVertices {
+            updates: updates
+                .iter()
+                .map(|update| VertexPositionUpdateV1 {
+                    vertex: update.vertex,
+                    position: update.position,
+                })
+                .collect(),
+        },
         Command::RemoveVertex { id } => CommandV1::RemoveVertex { id: *id },
         Command::AddEdge {
             id,
@@ -667,6 +686,15 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             id,
             start_position,
             end_position,
+        },
+        CommandV1::MoveVertices { updates } => Command::MoveVertices {
+            updates: updates
+                .into_iter()
+                .map(|update| VertexPositionUpdate {
+                    vertex: update.vertex,
+                    position: update.position,
+                })
+                .collect(),
         },
         CommandV1::RemoveVertex { id } => Command::RemoveVertex { id },
         CommandV1::AddEdge {
@@ -1396,6 +1424,18 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         } => {
             if !finite_point(*start_position) || !finite_point(*end_position) {
                 return Err(EditorHistoryErrorV1::NonFiniteNumber);
+            }
+        }
+        Command::MoveVertices { updates } => {
+            if updates.is_empty() || updates.len() > DEFAULT_MAX_CONSTRAINT_VERTICES {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
+            if updates.iter().any(|update| !finite_point(update.position)) {
+                return Err(EditorHistoryErrorV1::NonFiniteNumber);
+            }
+            let mut vertices = std::collections::HashSet::with_capacity(updates.len());
+            if updates.iter().any(|update| !vertices.insert(update.vertex)) {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
             }
         }
         Command::UpdatePaperProperties { thickness_mm, .. } => {

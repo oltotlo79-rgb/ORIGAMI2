@@ -91,6 +91,8 @@ export type ValidationVertexHighlight = 'violated' | 'indeterminate'
 
 export type CreaseCanvasFace = Readonly<{
   id: string
+  vertexIds: readonly string[]
+  edgeIds: readonly string[]
   polygon: readonly Readonly<{ x: number; y: number }>[]
 }>
 

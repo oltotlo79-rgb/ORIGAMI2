@@ -1037,6 +1037,28 @@ export function moveEdge(
   })
 }
 
+export function moveVertices(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  vertices: string[],
+  deltaXExpression: string,
+  deltaYExpression: string,
+  deltaXMm: number,
+  deltaYMm: number,
+) {
+  return invoke<ProjectSnapshot>('move_vertices', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    vertices,
+    deltaXExpression,
+    deltaYExpression,
+    deltaXMm,
+    deltaYMm,
+  })
+}
+
 export function removeVertex(
   expectedProjectId: string,
   expectedRevision: number,

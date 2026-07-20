@@ -770,8 +770,8 @@ fn validate_instruction_visual(
     let finite = |point: InstructionPoint3| {
         point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
     };
-    if let Some(camera) = visual.camera {
-        if !finite(camera.position)
+    if let Some(camera) = visual.camera
+        && (!finite(camera.position)
             || !finite(camera.target)
             || !finite(camera.up)
             || camera.position == camera.target
@@ -780,10 +780,9 @@ fn validate_instruction_visual(
                     x: 0.0,
                     y: 0.0,
                     z: 0.0,
-                })
-        {
-            return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
-        }
+                }))
+    {
+        return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
     }
     for arrow in &visual.arrows {
         if !finite(arrow.start)

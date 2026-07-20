@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bundle="${1:-target/release/bundle/macos/ORIGAMI2.app}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repository_root="$(cd -- "$script_dir/../.." && pwd -P)"
+bundle="${1:-$repository_root/target/release/bundle/macos/ORIGAMI2.app}"
 expected_version="${2:-}"
 
 if [[ ! -d "$bundle" ]]; then

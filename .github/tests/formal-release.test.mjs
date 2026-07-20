@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -9,6 +9,85 @@ import { validateReleaseArchiveEntries } from '../scripts/release_archive_contra
 import { buildDependencyPolicy } from '../scripts/dependency_policy.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
+
+test('PowerShell and bash release helpers anchor repository paths to their script', () => {
+  const packageScript = readFileSync(
+    join(root, '.github/scripts/package_formal_release.ps1'),
+    'utf8',
+  )
+  const macosVerifier = readFileSync(
+    join(root, '.github/scripts/verify_macos_bundle.sh'),
+    'utf8',
+  )
+  assert.match(packageScript, /Join-Path \$PSScriptRoot '\.\.\\\.\.'/u)
+  assert.doesNotMatch(packageScript, /\$env:GITHUB_WORKSPACE|node \.github/u)
+  assert.match(macosVerifier, /BASH_SOURCE\[0\]/u)
+  assert.match(macosVerifier, /repository_root\/target\/release\/bundle\/macos/u)
+
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'origami2-release-cwd-'))
+  try {
+    const results = ['root', 'apps', 'external'].map((caller) => {
+      const fixtureRoot = join(temporaryRoot, `fixture-${caller}`)
+      const scripts = join(fixtureRoot, '.github', 'scripts')
+      const release = join(fixtureRoot, 'target', 'release')
+      const output = join(fixtureRoot, 'target', 'formal-release')
+      mkdirSync(join(release, 'bundle', 'nsis'), { recursive: true })
+      mkdirSync(join(release, 'fonts'), { recursive: true })
+      mkdirSync(join(release, 'licenses'), { recursive: true })
+      mkdirSync(scripts, { recursive: true })
+      mkdirSync(output, { recursive: true })
+      copyFileSync(
+        join(root, '.github/scripts/package_formal_release.ps1'),
+        join(scripts, 'package_formal_release.ps1'),
+      )
+      copyFileSync(
+        join(root, '.github/scripts/write_update_manifest.mjs'),
+        join(scripts, 'write_update_manifest.mjs'),
+      )
+      writeFileSync(join(release, 'bundle', 'nsis', 'installer.exe'), 'installer')
+      writeFileSync(join(release, 'origami2-desktop.exe'), 'desktop')
+      writeFileSync(join(release, 'fonts', 'font.ttf'), 'font')
+      writeFileSync(join(release, 'licenses', 'license.txt'), 'license')
+      writeFileSync(
+        join(output, 'ORIGAMI2-v1.2.3-windows-x64.cdx.json'),
+        '{"bomFormat":"CycloneDX"}\n',
+      )
+      const cwd = caller === 'root'
+        ? fixtureRoot
+        : caller === 'apps'
+          ? join(fixtureRoot, 'apps', 'desktop')
+          : join(temporaryRoot, 'unrelated-caller')
+      mkdirSync(cwd, { recursive: true })
+      execFileSync(
+        process.platform === 'win32' ? 'powershell.exe' : 'pwsh',
+        ['-NoProfile', '-File', join(scripts, 'package_formal_release.ps1')],
+        {
+          cwd,
+          env: {
+            ...process.env,
+            GITHUB_WORKSPACE: join(temporaryRoot, 'wrong-workspace'),
+            PLATFORM: 'windows-x64',
+            VERSION: '1.2.3',
+            SIGNATURE_POLICY: 'unsigned-dry-run',
+          },
+          stdio: 'pipe',
+        },
+      )
+      const manifest = JSON.parse(readFileSync(
+        join(output, 'ORIGAMI2-v1.2.3-windows-x64.update.json'),
+        'utf8',
+      ))
+      return {
+        files: readdirSync(output).sort(),
+        assets: manifest.assets.map(({ name }) => name),
+      }
+    })
+    assert.deepEqual(results[1], results[0])
+    assert.deepEqual(results[2], results[0])
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true })
+  }
+})
 
 test('release workflow keeps publication permissions out of build jobs', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')

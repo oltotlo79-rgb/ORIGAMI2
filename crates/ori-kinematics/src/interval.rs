@@ -148,6 +148,96 @@ pub fn atan_interval_v1(
     Ok(result)
 }
 
+pub fn sin_cos_degrees_interval_v1(
+    degrees: OutwardIntervalV1,
+    max_work: usize,
+) -> Result<(OutwardIntervalV1, OutwardIntervalV1), OutwardIntervalErrorV1> {
+    if degrees.lower < 0.0 || degrees.upper > 180.0 || degrees.lower > degrees.upper {
+        return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+    }
+    let work = 96usize
+        .checked_add(degrees.work)
+        .ok_or(OutwardIntervalErrorV1::ResourceLimit)?;
+    if work > max_work {
+        return Err(OutwardIntervalErrorV1::ResourceLimit);
+    }
+    let radians = |value: f64| value * core::f64::consts::PI / 180.0;
+    let sin_endpoint = |value: f64| taylor_sin(radians(value));
+    let cos_endpoint = |value: f64| taylor_cos(radians(value));
+    let (sin_lower, sin_upper) = if degrees.lower == degrees.upper
+        && (degrees.lower == 0.0 || degrees.lower == 90.0 || degrees.lower == 180.0)
+    {
+        let exact = if degrees.lower == 90.0 { 1.0 } else { 0.0 };
+        (exact, exact)
+    } else {
+        let left = sin_endpoint(degrees.lower);
+        let right = sin_endpoint(degrees.upper);
+        let upper = if degrees.lower <= 90.0 && degrees.upper >= 90.0 {
+            1.0
+        } else {
+            left.1.max(right.1)
+        };
+        (left.0.min(right.0).max(0.0), upper.min(1.0))
+    };
+    let exact_cos = |value: f64| match value {
+        0.0 => (1.0, 1.0),
+        90.0 => (0.0, 0.0),
+        180.0 => (-1.0, -1.0),
+        _ => cos_endpoint(value),
+    };
+    let left = exact_cos(degrees.lower);
+    let right = exact_cos(degrees.upper);
+    Ok((
+        OutwardIntervalV1 {
+            lower: sin_lower,
+            upper: sin_upper,
+            work,
+        },
+        OutwardIntervalV1 {
+            lower: right.0.max(-1.0),
+            upper: left.1.min(1.0),
+            work,
+        },
+    ))
+}
+
+fn taylor_sin(mut x: f64) -> (f64, f64) {
+    if x > core::f64::consts::FRAC_PI_2 {
+        x = core::f64::consts::PI - x;
+    }
+    let square = x * x;
+    let mut term = x;
+    let mut sum = x;
+    for k in 1..=12 {
+        term *= -square / ((2 * k) * (2 * k + 1)) as f64;
+        sum += term;
+    }
+    let remainder = term.abs() * square / (26.0 * 27.0);
+    (next_down(sum - remainder), next_up(sum + remainder))
+}
+
+fn taylor_cos(x: f64) -> (f64, f64) {
+    if x == core::f64::consts::FRAC_PI_2 {
+        return (0.0, 0.0);
+    }
+    let negate = x > core::f64::consts::FRAC_PI_2;
+    let x = if negate { core::f64::consts::PI - x } else { x };
+    let square = x * x;
+    let mut term = 1.0;
+    let mut sum = 1.0;
+    for k in 1..=12 {
+        term *= -square / ((2 * k - 1) * (2 * k)) as f64;
+        sum += term;
+    }
+    let remainder = term.abs() * square / (25.0 * 26.0);
+    let (lower, upper) = (next_down(sum - remainder), next_up(sum + remainder));
+    if negate {
+        (-upper, -lower)
+    } else {
+        (lower, upper)
+    }
+}
+
 fn binary(
     lhs: OutwardIntervalV1,
     rhs: OutwardIntervalV1,

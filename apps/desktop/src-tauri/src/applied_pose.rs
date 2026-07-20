@@ -1350,7 +1350,7 @@ pub(super) mod tests {
         (authority, capability)
     }
 
-    pub(super) fn install_flat_pose_authority(
+    pub(crate) fn install_flat_pose_authority(
         project: &mut ProjectState,
     ) -> (CurrentAppliedPoseAuthority, CurrentAppliedPoseCapability) {
         let topology = project

@@ -2251,7 +2251,7 @@ pub(super) mod tests {
         source
     }
 
-    pub(super) fn install_possible_layer_order(
+    pub(crate) fn install_possible_layer_order(
         state: &GlobalFlatFoldabilityState,
         project: &ProjectState,
     ) {

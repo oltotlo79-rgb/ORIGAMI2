@@ -2092,6 +2092,80 @@ fn transaction_failure_classes(
 mod tests {
     use super::*;
 
+    fn two_hinge_tree_project() -> super::super::ProjectState {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let points = [
+            (0.0, 0.0),
+            (33.0, 0.0),
+            (66.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (66.0, 100.0),
+            (33.0, 100.0),
+            (0.0, 100.0),
+        ];
+        let vertices = points
+            .into_iter()
+            .map(|(x, y)| Vertex {
+                id: VertexId::new(),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: ori_domain::EdgeId::new(),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend([
+            Edge {
+                id: ori_domain::EdgeId::new(),
+                start: boundary[1],
+                end: boundary[6],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: ori_domain::EdgeId::new(),
+                start: boundary[2],
+                end: boundary[5],
+                kind: EdgeKind::Valley,
+            },
+        ]);
+        super::super::ProjectState::new_with_paper(
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
+    #[test]
+    fn two_hinge_e2e_fixture_issues_pose_and_layer_authorities() {
+        let mut project = two_hinge_tree_project();
+        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        assert!(
+            project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            capture_current_layer_order_capability(&layer_state, &project)
+                .unwrap()
+                .is_some()
+        );
+    }
+
     #[test]
     fn request_schema_is_closed_and_rejects_non_finite_points() {
         let project_instance_id = ProjectId::new();

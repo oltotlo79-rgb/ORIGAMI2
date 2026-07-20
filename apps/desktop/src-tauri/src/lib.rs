@@ -1,6 +1,7 @@
 mod applied_pose;
 mod crease_export;
 mod diagnostics;
+mod fold_3d_frames_import;
 mod fold_technique_file_io;
 mod global_flat_foldability;
 mod history_settings;
@@ -40,6 +41,9 @@ use crease_export::{
 use diagnostics::{
     DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
     save_diagnostics_share_preview,
+};
+use fold_3d_frames_import::{
+    Fold3dFramesImportState, cancel_fold_3d_frames, preview_fold_3d_frames, select_fold_3d_frame,
 };
 use fold_technique_file_io::{
     FoldTechniqueFileIoState, open_fold_technique_file, save_fold_technique_file_as,
@@ -6729,6 +6733,7 @@ pub fn run() {
             Ok(())
         })
         .manage(FoldImportState::default())
+        .manage(Fold3dFramesImportState::default())
         .manage(FoldTechniqueFileIoState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
@@ -6783,6 +6788,9 @@ pub fn run() {
             save_instruction_export,
             cancel_instruction_export,
             preview_fold_import,
+            preview_fold_3d_frames,
+            select_fold_3d_frame,
+            cancel_fold_3d_frames,
             apply_fold_import,
             cancel_fold_import,
             preview_svg_import,

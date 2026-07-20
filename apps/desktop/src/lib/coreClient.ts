@@ -1502,6 +1502,59 @@ export async function getBeginnerReferenceModelGeometry(
   })
 }
 
+export type BeginnerReferenceModelSuggestionV1 = Readonly<{
+  asset_id: string
+  bbox_min_tenths_mm: readonly [number, number, number]
+  bbox_max_tenths_mm: readonly [number, number, number]
+  dominant_normal_milli: readonly [number, number, number]
+  surface_area_milli: number
+  protrusion: NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
+  method: 'bounded_bbox_area_normal_v1'
+}>
+
+export async function suggestBeginnerReferenceModelFeatures(
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+): Promise<BeginnerReferenceModelSuggestionV1> {
+  const value = await invoke<unknown>('suggest_beginner_reference_model_features', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+  })
+  const response = exactCoreDataRecord(value, [
+    'project_instance_id', 'project_id', 'revision', 'suggestion',
+  ] as const)
+  const suggestion = exactCoreDataRecord(response?.suggestion, [
+    'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
+    'surface_area_milli', 'protrusion', 'method',
+  ] as const)
+  if (!response || response.project_instance_id !== expectedProjectInstanceId
+    || response.project_id !== expectedProjectId || response.revision !== expectedRevision
+    || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
+    || suggestion.method !== 'bounded_bbox_area_normal_v1'
+    || !isBoundedIntegerTuple(suggestion.bbox_min_tenths_mm, 3, 2_147_483_648)
+    || !isBoundedIntegerTuple(suggestion.bbox_max_tenths_mm, 3, 2_147_483_647)
+    || !isBoundedIntegerTuple(suggestion.dominant_normal_milli, 3, 1000)
+    || !Number.isSafeInteger(suggestion.surface_area_milli)
+    || Number(suggestion.surface_area_milli) < 0) throw new Error('invalid reference model suggestion')
+  const constraints = normalizeBeginnerGenerationConstraints({
+    schema_version: 1, maximum_steps: 1, detail_level: 'simple', target_category: 'animal',
+    target_parts: [], skeleton_segments: [], protrusions: [suggestion.protrusion],
+    bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
+  })
+  if (!constraints || constraints.protrusions?.length !== 1) {
+    throw new Error('invalid reference model suggestion')
+  }
+  return Object.freeze({ ...suggestion, protrusion: constraints.protrusions[0] }) as BeginnerReferenceModelSuggestionV1
+}
+
+export function applyBeginnerReferenceModelFeatures(
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+  expectedSuggestion: BeginnerReferenceModelSuggestionV1,
+) {
+  return invoke<ProjectSnapshot>('apply_beginner_reference_model_features', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+    expectedSuggestion, confirmed: true,
+  })
+}
+
 export function evaluateBeginnerCandidates(
   expectedProjectId: string,
   expectedRevision: number,

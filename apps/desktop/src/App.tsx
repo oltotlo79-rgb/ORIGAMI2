@@ -140,6 +140,8 @@ import {
   recognizeBeginnerPartSuggestions,
   applyBeginnerPartAssignments,
   getBeginnerReferenceModelGeometry,
+  suggestBeginnerReferenceModelFeatures,
+  applyBeginnerReferenceModelFeatures,
   updatePaperProperties,
   importFrontPaperTexture,
   importBackPaperTexture,
@@ -149,6 +151,7 @@ import {
   type BeginnerSymmetricParameterEstimateResponse,
   type BeginnerRecognitionProposalV1,
   type BeginnerReferenceModelGeometry,
+  type BeginnerReferenceModelSuggestionV1,
   type BeginnerOutlineCandidatesResponse,
   type BeginnerPartSuggestionsResponse,
   BeginnerRecognitionError,
@@ -728,6 +731,8 @@ function App() {
     useState<Array<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' | 'wing' }>>([])
   const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
     useState<BeginnerReferenceModelGeometry | null>(null)
+  const [beginnerReferenceSuggestion, setBeginnerReferenceSuggestion] =
+    useState<BeginnerReferenceModelSuggestionV1 | null>(null)
   const beginnerReferenceRequestRef = useRef(0)
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
@@ -741,6 +746,7 @@ function App() {
     setBeginnerPartAssignments([])
     beginnerReferenceRequestRef.current += 1
     setBeginnerReferenceGeometry(null)
+    setBeginnerReferenceSuggestion(null)
     setBeginnerPartTotal(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
         .reduce((sum, part) => sum + part.count, 0) ?? 0,
@@ -3694,6 +3700,29 @@ function App() {
     }).catch(() => {
       if (request === beginnerReferenceRequestRef.current) setBeginnerReferenceGeometry(null)
     })
+  }
+
+  function requestBeginnerReferenceSuggestion() {
+    const current = latestSnapshotRef.current
+    if (!current) return
+    void suggestBeginnerReferenceModelFeatures(
+      current.project_id, current.revision, current.project_instance_id,
+    ).then((suggestion) => {
+      if (latestSnapshotRef.current === current) setBeginnerReferenceSuggestion(suggestion)
+    })
+  }
+
+  function confirmBeginnerReferenceSuggestion() {
+    const current = latestSnapshotRef.current
+    const suggestion = beginnerReferenceSuggestion
+    if (!current || !suggestion || !window.confirm(text({
+      ja: '境界箱・面積・法線だけから算出した範囲候補を適用しますか？',
+      en: 'Apply the range suggested only from bounding box, area, and normals?',
+    }))) return
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      applyBeginnerReferenceModelFeatures(
+        projectId, revision, projectInstanceId, suggestion,
+      )).finally(() => setBeginnerReferenceSuggestion(null))
   }
 
   function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
@@ -8042,6 +8071,29 @@ function App() {
                           ? text({ ja: '3D参照表示を隠す', en: 'Hide 3D reference preview' })
                           : text({ ja: '3D参照表示を開く', en: 'Show 3D reference preview' })}
                       </button>
+                      <button type="button" onClick={requestBeginnerReferenceSuggestion}
+                        disabled={coreBusy || recoveryBlocking}>
+                        {text({ ja: '安全特徴から範囲候補を作成', en: 'Suggest ranges from safe geometry features' })}
+                      </button>
+                      {beginnerReferenceSuggestion && (
+                        <div role="status">
+                          <p>{text({
+                            ja: 'これは3D自動認識ではありません。境界箱・三角形面積・集約法線だけを使う読み取り専用候補です。',
+                            en: 'This is not 3D recognition. It is a read-only suggestion using only the bounding box, triangle area, and aggregate normals.',
+                          })}</p>
+                          <p>{formattedText({
+                            ja: '突起数 {count}、長さ {length} mm、太さ {thickness} mm',
+                            en: '{count} protrusions, length {length} mm, thickness {thickness} mm',
+                          }, {
+                            count: beginnerReferenceSuggestion.protrusion.count,
+                            length: beginnerReferenceSuggestion.protrusion.length_tenths_mm / 10,
+                            thickness: beginnerReferenceSuggestion.protrusion.thickness_tenths_mm / 10,
+                          })}</p>
+                          <button type="button" onClick={confirmBeginnerReferenceSuggestion}>
+                            {text({ ja: '確認して範囲候補を適用', en: 'Confirm and apply suggested ranges' })}
+                          </button>
+                        </div>
+                      )}
                       {beginnerReferenceGeometry && (
                         <svg
                           viewBox="-100 -100 200 200"

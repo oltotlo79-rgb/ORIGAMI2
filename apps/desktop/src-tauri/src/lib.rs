@@ -2296,6 +2296,130 @@ struct BeginnerReferenceModelGeometryResponse {
     material_color: [u8; 4],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginnerReferenceModelSuggestionV1 {
+    asset_id: AssetId,
+    bbox_min_tenths_mm: [i32; 3],
+    bbox_max_tenths_mm: [i32; 3],
+    dominant_normal_milli: [i16; 3],
+    surface_area_milli: u64,
+    protrusion: ori_domain::BeginnerProtrusionTargetV1,
+    method: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BeginnerReferenceModelSuggestionResponseV1 {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    suggestion: BeginnerReferenceModelSuggestionV1,
+}
+
+fn derive_reference_model_suggestion_v1(
+    asset_id: AssetId,
+    geometry: &ori_formats::ReferenceGlbGeometryV1,
+    category: Option<ori_domain::BeginnerTargetCategoryV1>,
+) -> Result<BeginnerReferenceModelSuggestionV1, String> {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for position in &geometry.positions {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(position[axis]);
+            max[axis] = max[axis].max(position[axis]);
+        }
+    }
+    let to_tenths_mm = |value: f32| -> Result<i32, String> {
+        let scaled = f64::from(value) * 10_000.0;
+        if !scaled.is_finite() || scaled < i32::MIN as f64 || scaled > i32::MAX as f64 {
+            return Err("reference_model_feature_range".to_owned());
+        }
+        Ok(scaled.round() as i32)
+    };
+    let bbox_min_tenths_mm = [
+        to_tenths_mm(min[0])?,
+        to_tenths_mm(min[1])?,
+        to_tenths_mm(min[2])?,
+    ];
+    let bbox_max_tenths_mm = [
+        to_tenths_mm(max[0])?,
+        to_tenths_mm(max[1])?,
+        to_tenths_mm(max[2])?,
+    ];
+    let mut normal = [0.0_f64; 3];
+    let mut surface_area = 0.0_f64;
+    for triangle in &geometry.triangle_indices {
+        let a = geometry.positions[triangle[0] as usize];
+        let b = geometry.positions[triangle[1] as usize];
+        let c = geometry.positions[triangle[2] as usize];
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            f64::from(ab[1] * ac[2] - ab[2] * ac[1]),
+            f64::from(ab[2] * ac[0] - ab[0] * ac[2]),
+            f64::from(ab[0] * ac[1] - ab[1] * ac[0]),
+        ];
+        let length = cross.iter().map(|value| value * value).sum::<f64>().sqrt();
+        surface_area += length * 0.5;
+        for axis in 0..3 {
+            normal[axis] += cross[axis];
+        }
+    }
+    let normal_length = normal.iter().map(|value| value * value).sum::<f64>().sqrt();
+    let dominant_normal_milli = if normal_length > 0.0 {
+        normal.map(|value| (value / normal_length * 1000.0).round() as i16)
+    } else {
+        [0, 1000, 0]
+    };
+    let extents = [
+        bbox_max_tenths_mm[0].saturating_sub(bbox_min_tenths_mm[0]),
+        bbox_max_tenths_mm[1].saturating_sub(bbox_min_tenths_mm[1]),
+        bbox_max_tenths_mm[2].saturating_sub(bbox_min_tenths_mm[2]),
+    ];
+    let major_axis = (0..3).max_by_key(|axis| extents[*axis]).unwrap_or(0);
+    let mut direction_milli = [0_i16; 3];
+    direction_milli[major_axis] = 1000;
+    let length_tenths_mm = u32::try_from((extents[major_axis] / 2).max(1))
+        .map_err(|_| "reference_model_feature_range".to_owned())?;
+    let minor = extents
+        .iter()
+        .enumerate()
+        .filter(|(axis, _)| *axis != major_axis)
+        .map(|(_, value)| *value)
+        .min()
+        .unwrap_or(1);
+    let thickness_tenths_mm = u16::try_from((minor / 4).clamp(1, i32::from(u16::MAX)))
+        .map_err(|_| "reference_model_feature_range".to_owned())?;
+    Ok(BeginnerReferenceModelSuggestionV1 {
+        asset_id,
+        bbox_min_tenths_mm,
+        bbox_max_tenths_mm,
+        dominant_normal_milli,
+        surface_area_milli: (surface_area * 1_000.0).round().clamp(0.0, u64::MAX as f64) as u64,
+        protrusion: ori_domain::BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: match category {
+                Some(ori_domain::BeginnerTargetCategoryV1::Animal) => 4,
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect) => 2,
+                None => 1,
+            },
+            length_tenths_mm,
+            thickness_tenths_mm,
+            position_tenths_mm: std::array::from_fn(|axis| {
+                bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
+            }),
+            direction_milli,
+            symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+            curvature_degrees: 0,
+            joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: ori_domain::BeginnerProtrusionSideV1::Either,
+            priority: 50,
+        },
+        method: "bounded_bbox_area_normal_v1".to_owned(),
+    })
+}
+
 #[tauri::command]
 fn get_beginner_reference_model_geometry(
     state: State<'_, AppState>,
@@ -2340,6 +2464,99 @@ fn get_beginner_reference_model_geometry(
         triangle_indices: geometry.triangle_indices,
         material_color: geometry.material_color,
     })
+}
+
+#[tauri::command]
+fn suggest_beginner_reference_model_features(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<BeginnerReferenceModelSuggestionResponseV1, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let profile = project.editor.beginner_design_profile();
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =
+        profile.generation_constraints.target_asset
+    else {
+        return Err("reference_model_suggestion_unavailable".to_owned());
+    };
+    let asset = project
+        .reference_model_assets
+        .iter()
+        .find(|asset| asset.id == asset_id)
+        .ok_or_else(|| "reference_model_suggestion_unavailable".to_owned())?;
+    let geometry = ori_formats::read_reference_glb_geometry_v1(&asset.bytes)
+        .map_err(|_| "reference_model_suggestion_unavailable".to_owned())?;
+    let suggestion = derive_reference_model_suggestion_v1(
+        asset_id,
+        &geometry,
+        profile.generation_constraints.target_category,
+    )?;
+    Ok(BeginnerReferenceModelSuggestionResponseV1 {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        suggestion,
+    })
+}
+
+#[tauri::command]
+fn apply_beginner_reference_model_features(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_suggestion: BeginnerReferenceModelSuggestionV1,
+    confirmed: bool,
+) -> Result<ProjectSnapshot, String> {
+    if !confirmed {
+        return Err("reference_model_suggestion_confirmation_required".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let mut profile = project.editor.beginner_design_profile().clone();
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =
+        profile.generation_constraints.target_asset
+    else {
+        return Err("reference_model_suggestion_stale".to_owned());
+    };
+    let asset = project
+        .reference_model_assets
+        .iter()
+        .find(|asset| asset.id == asset_id)
+        .ok_or_else(|| "reference_model_suggestion_stale".to_owned())?;
+    let geometry = ori_formats::read_reference_glb_geometry_v1(&asset.bytes)
+        .map_err(|_| "reference_model_suggestion_stale".to_owned())?;
+    let live = derive_reference_model_suggestion_v1(
+        asset_id,
+        &geometry,
+        profile.generation_constraints.target_category,
+    )?;
+    if live != expected_suggestion {
+        return Err("reference_model_suggestion_stale".to_owned());
+    }
+    profile.generation_constraints.protrusions = vec![live.protrusion];
+    if !ori_domain::validate_beginner_design_profile_v1(&profile) {
+        return Err("reference_model_suggestion_invalid".to_owned());
+    }
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile { profile },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8946,6 +9163,8 @@ pub fn run() {
             update_beginner_design_profile,
             import_beginner_reference_model,
             get_beginner_reference_model_geometry,
+            suggest_beginner_reference_model_features,
+            apply_beginner_reference_model_features,
             get_history_entry_limit,
             set_history_entry_limit,
             get_recovery_candidate,

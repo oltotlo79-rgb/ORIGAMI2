@@ -103,6 +103,20 @@ test('AUT-004 preview is bounded, project-bound, and stale-safe', () => {
   assert.match(app, /Read-only 3D reference model/u)
 })
 
+test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies atomically', () => {
+  assert.match(native, /derive_reference_model_suggestion_v1/u)
+  assert.match(native, /bounded_bbox_area_normal_v1/u)
+  assert.match(native, /surface_area_milli/u)
+  assert.match(native, /dominant_normal_milli/u)
+  assert.match(native, /if live != expected_suggestion/u)
+  assert.match(native, /Command::UpdateBeginnerDesignProfile \{ profile \}/u)
+  assert.match(client, /suggest_beginner_reference_model_features/u)
+  assert.match(client, /apply_beginner_reference_model_features/u)
+  assert.match(app, /This is not 3D recognition/u)
+  assert.match(app, /Confirm and apply suggested ranges/u)
+  assert.match(app, /window\.confirm/u)
+})
+
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {
   assert.match(generation, /struct BeginnerProtrusionTargetV1/u)
   for (const field of [

@@ -73,7 +73,7 @@ const ready = {
   },
   continuousPath: {
     modelId: 'stacked_fold_bounded_path_diagnostic_v1',
-    continuousCertificateModelId: 'stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1',
+    continuousCertificateModelId: 'stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1',
     paperThicknessMm: 0,
     sampledPoseCount: 2,
     sampledNonblockingPoseCount: 2,
@@ -147,6 +147,7 @@ describe('StackedFoldPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     expect((await screen.findAllByText('Certified')).length).toBe(2)
+    expect(screen.getByText('stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1')).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Exploded front/back layer stack' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Back \/ bottom/ })).toBeTruthy()
     const front = screen.getByRole('button', { name: /Front \/ top/ })

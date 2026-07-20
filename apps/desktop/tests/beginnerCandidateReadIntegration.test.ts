@@ -16,8 +16,11 @@ test('AUT-106 candidate reads bind instance, project, and revision without mutat
 test('candidate admission requires ordered bounded explainable scores', () => {
   assert.match(client, /record\.rank !== index \+ 1/)
   assert.match(client, /Number\(score\) > 100/)
+  assert.match(client, /record\.target_approximation_score/)
   assert.match(client, /admitted\[index - 1\]\.total_score < candidate\.total_score/)
   assert.match(app, /candidate\.shape_score/)
+  assert.match(app, /candidate\.target_approximation_score/)
+  assert.match(app, /Target-shape approximation/)
   assert.match(app, /candidate\.paper_efficiency_score/)
 })
 

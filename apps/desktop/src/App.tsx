@@ -7486,6 +7486,14 @@ function App() {
                             paper: candidate.paper_efficiency_score,
                           })}
                         </span>
+                        <span className="muted">
+                          {formattedText({
+                            ja: '目標形状への近似 {target}/100',
+                            en: 'Target-shape approximation {target}/100',
+                          }, {
+                            target: candidate.target_approximation_score,
+                          })}
+                        </span>
                       </li>
                     ))}
                   </ol>

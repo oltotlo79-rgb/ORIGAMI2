@@ -33,6 +33,7 @@ pub struct BeginnerCandidateScoreV1 {
     pub rank: u8,
     pub total_score: u8,
     pub shape_score: u8,
+    pub target_approximation_score: u8,
     pub foldability_score: u8,
     pub step_count_score: u8,
     pub paper_efficiency_score: u8,
@@ -84,6 +85,7 @@ pub fn score_beginner_candidates_v1(
                 rank: 0,
                 total_score: (weighted / 100).min(100) as u8,
                 shape_score,
+                target_approximation_score: input.target_approximation_score.min(100),
                 foldability_score,
                 step_count_score,
                 paper_efficiency_score,
@@ -153,6 +155,11 @@ mod tests {
                 .all(|pair| pair[0].total_score >= pair[1].total_score)
         );
         assert!(first.iter().all(|candidate| candidate.total_score <= 100));
+        assert!(
+            first
+                .iter()
+                .all(|candidate| candidate.target_approximation_score == 100)
+        );
 
         let mut unmatched = input;
         unmatched.target_approximation_score = 0;

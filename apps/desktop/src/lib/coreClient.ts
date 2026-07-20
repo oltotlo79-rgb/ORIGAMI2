@@ -515,6 +515,7 @@ export type BeginnerCandidateScoreV1 = {
   rank: number
   total_score: number
   shape_score: number
+  target_approximation_score: number
   foldability_score: number
   step_count_score: number
   paper_efficiency_score: number
@@ -604,6 +605,7 @@ function normalizeBeginnerCandidateResponse(
       'rank',
       'total_score',
       'shape_score',
+      'target_approximation_score',
       'foldability_score',
       'step_count_score',
       'paper_efficiency_score',
@@ -611,6 +613,7 @@ function normalizeBeginnerCandidateResponse(
     const scores = record && [
       record.total_score,
       record.shape_score,
+      record.target_approximation_score,
       record.foldability_score,
       record.step_count_score,
       record.paper_efficiency_score,
@@ -633,6 +636,7 @@ function normalizeBeginnerCandidateResponse(
       rank: record.rank,
       total_score: record.total_score,
       shape_score: record.shape_score,
+      target_approximation_score: record.target_approximation_score,
       foldability_score: record.foldability_score,
       step_count_score: record.step_count_score,
       paper_efficiency_score: record.paper_efficiency_score,

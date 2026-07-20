@@ -3243,8 +3243,16 @@ fn derive_reference_model_suggestion_v1(
     let major_axis = (0..3).max_by_key(|axis| extents[*axis]).unwrap_or(0);
     let mut direction_milli = [0_i16; 3];
     direction_milli[major_axis] = 1000;
-    let length_tenths_mm = u32::try_from((extents[major_axis] / 2).max(1))
+    let mut length_tenths_mm = u32::try_from((extents[major_axis] / 2).max(1))
         .map_err(|_| "reference_model_feature_range".to_owned())?;
+    if requested_single_tail {
+        // A single tail is admitted only as a bounded center-axis horizontal
+        // family. A bbox cannot prove left/right intent, so use the stable
+        // positive paper-axis direction and only the horizontal bbox extent.
+        direction_milli = [1000, 0, 0];
+        length_tenths_mm = u32::try_from((extents[0] / 2).max(1))
+            .map_err(|_| "reference_model_feature_range".to_owned())?;
+    }
     let minor = extents
         .iter()
         .enumerate()
@@ -10446,6 +10454,9 @@ mod tests {
             tail.protrusions[0].symmetry,
             ori_domain::BeginnerProtrusionSymmetryV1::None
         );
+        assert_eq!(tail.protrusions[0].direction_milli, [1000, 0, 0]);
+        assert_eq!(tail.protrusions[0].length_tenths_mm, 200);
+        assert_eq!(tail.protrusions[0].position_tenths_mm[1], 0);
         assert!(tail.pair_bindings.is_empty());
     }
 

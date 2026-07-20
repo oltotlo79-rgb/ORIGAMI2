@@ -424,21 +424,44 @@ pub(crate) fn apply_beginner_part_assignments(
             + i64::from(request.selected_outline.bounds.max_x);
         let center_x_twice = i64::from(tail.bounds.min_x) + i64::from(tail.bounds.max_x);
         let center_y_twice = i64::from(tail.bounds.min_y) + i64::from(tail.bounds.max_y);
+        if center_x_twice == axis_twice {
+            return Err("part_assignment_tail_binding_invalid".to_owned());
+        }
         let direction = if center_x_twice < axis_twice {
             -1000
         } else {
             1000
         };
+        let torso_width_tenths = request
+            .selected_outline
+            .bounds
+            .max_x
+            .saturating_sub(request.selected_outline.bounds.min_x)
+            .saturating_add(1)
+            .saturating_mul(10);
+        let inferred_length = u32::try_from(
+            (center_x_twice - axis_twice)
+                .unsigned_abs()
+                .saturating_mul(5)
+                .max(1),
+        )
+        .map_err(|_| "part_assignment_tail_binding_invalid")?;
+        let minimum_length = torso_width_tenths
+            .saturating_mul(2)
+            .checked_div(100)
+            .unwrap_or(1)
+            .max(1);
+        let maximum_length = torso_width_tenths
+            .saturating_mul(45)
+            .checked_div(100)
+            .unwrap_or(1)
+            .max(minimum_length);
+        let torso_min_y_twice = i64::from(request.selected_outline.bounds.min_y).saturating_mul(2);
+        let torso_max_y_twice = i64::from(request.selected_outline.bounds.max_y).saturating_mul(2);
         profile.generation_constraints.protrusions = vec![ori_domain::BeginnerProtrusionTargetV1 {
             id: 1,
             count: 1,
-            length_tenths_mm: u32::try_from(
-                (center_x_twice - axis_twice)
-                    .unsigned_abs()
-                    .saturating_mul(5)
-                    .max(1),
-            )
-            .map_err(|_| "part_assignment_tail_binding_invalid")?,
+            length_tenths_mm: inferred_length.clamp(minimum_length, maximum_length),
             thickness_tenths_mm: u16::try_from(
                 (tail.bounds.max_y - tail.bounds.min_y + 1)
                     .saturating_mul(10)
@@ -448,8 +471,12 @@ pub(crate) fn apply_beginner_part_assignments(
             position_tenths_mm: [
                 i32::try_from(axis_twice.saturating_mul(5))
                     .map_err(|_| "part_assignment_tail_binding_invalid")?,
-                i32::try_from(center_y_twice.saturating_mul(5))
-                    .map_err(|_| "part_assignment_tail_binding_invalid")?,
+                i32::try_from(
+                    center_y_twice
+                        .clamp(torso_min_y_twice, torso_max_y_twice)
+                        .saturating_mul(5),
+                )
+                .map_err(|_| "part_assignment_tail_binding_invalid")?,
                 0,
             ],
             direction_milli: [direction, 0, 0],

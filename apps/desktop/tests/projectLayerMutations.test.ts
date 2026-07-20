@@ -290,6 +290,14 @@ function validSnapshot() {
     instruction_timeline: {},
     numeric_expressions: {},
     geometric_constraints: {},
+    beginner_design_profile: {
+      schema_version: 1,
+      preset: 'balanced',
+      shape_fidelity_weight: 35,
+      foldability_weight: 35,
+      step_count_weight: 15,
+      paper_efficiency_weight: 15,
+    },
     project_layers: {
       schema_version: 1,
       layers: [

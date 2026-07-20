@@ -555,6 +555,9 @@ pub(crate) fn apply_beginner_part_assignments(
             }
         }
     }
+    let recognized_horn = (horn_candidate_ids.len() == 1)
+        .then(|| profile.generation_constraints.protrusions.first().cloned())
+        .flatten();
     if tail_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
@@ -664,6 +667,17 @@ pub(crate) fn apply_beginner_part_assignments(
             profile.generation_constraints.protrusions.push(ear_target);
             if ori_domain::animal_tail_ear_bindings_v1(&profile.generation_constraints).is_none() {
                 return Err("part_assignment_tail_ear_binding_invalid".to_owned());
+            }
+        }
+        if ear_candidate_ids.is_empty() {
+            if let Some(mut horn_target) = recognized_horn {
+                horn_target.id = 2;
+                profile.generation_constraints.protrusions.push(horn_target);
+                if ori_domain::animal_horn_tail_bindings_v1(&profile.generation_constraints)
+                    .is_none()
+                {
+                    return Err("part_assignment_horn_tail_binding_invalid".to_owned());
+                }
             }
         }
     }

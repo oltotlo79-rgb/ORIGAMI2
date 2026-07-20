@@ -1065,6 +1065,7 @@ struct ProjectSnapshot {
     project_layers: ProjectLayerDocumentV1,
     element_metadata: ori_domain::ElementMetadataDocumentV1,
     annotations: ori_domain::AnnotationDocumentV1,
+    underlays: ori_domain::UnderlayDocumentV1,
     fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
@@ -3697,6 +3698,71 @@ fn remove_annotation(
 }
 
 #[tauri::command]
+fn add_underlay(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    record: ori_domain::UnderlayRecordV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_underlay_asset_exists(&project, record.asset)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddUnderlay { record },
+    )
+}
+
+#[tauri::command]
+fn update_underlay(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    record: ori_domain::UnderlayRecordV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_underlay_asset_exists(&project, record.asset)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateUnderlay { record },
+    )
+}
+
+fn ensure_underlay_asset_exists(project: &ProjectState, asset: AssetId) -> Result<(), String> {
+    project
+        .texture_assets
+        .iter()
+        .any(|candidate| candidate.id == asset)
+        .then_some(())
+        .ok_or_else(|| "underlay asset is unavailable".to_owned())
+}
+
+#[tauri::command]
+fn remove_underlay(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    id: ori_domain::UnderlayId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::RemoveUnderlay { id },
+    )
+}
+
+#[tauri::command]
 fn undo(
     state: State<'_, AppState>,
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
@@ -5631,6 +5697,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         project_layers: project.editor.project_layers().clone(),
         element_metadata: project.editor.element_metadata().clone(),
         annotations: project.editor.annotations().clone(),
+        underlays: project.editor.underlays().clone(),
         fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -7544,6 +7611,9 @@ pub fn run() {
             add_annotation,
             update_annotation,
             remove_annotation,
+            add_underlay,
+            update_underlay,
+            remove_underlay,
             undo,
             redo,
             add_instruction_step,

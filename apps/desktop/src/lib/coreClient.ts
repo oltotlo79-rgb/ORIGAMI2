@@ -140,6 +140,7 @@ export type ProjectSnapshot = {
   project_layers: ProjectLayerDocumentV1
   element_metadata: ElementMetadataDocumentV1
   annotations?: AnnotationDocumentV1
+  underlays?: UnderlayDocumentV1
   numeric_expressions?: {
     rectangular_paper_creation?: NumericExpressionBinding
     undo_stack?: Array<NumericExpressionBinding | null>
@@ -166,6 +167,24 @@ export type AnnotationRecordV1 = {
 export type AnnotationDocumentV1 = {
   schema_version: 1
   annotations: AnnotationRecordV1[]
+}
+
+export type UnderlayRecordV1 = {
+  id: string
+  asset: string
+  transform: {
+    position: { x: number; y: number }
+    scale_x: number
+    scale_y: number
+    rotation_degrees: number
+  }
+  opacity: number
+  layer: string
+}
+
+export type UnderlayDocumentV1 = {
+  schema_version: 1
+  underlays: UnderlayRecordV1[]
 }
 
 export type ElementMetadata = {
@@ -1766,6 +1785,48 @@ export function removeAnnotation(
   id: string,
 ) {
   return invoke<ProjectSnapshot>('remove_annotation', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
+  })
+}
+
+export function addUnderlay(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  record: UnderlayRecordV1,
+) {
+  return invoke<ProjectSnapshot>('add_underlay', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    record,
+  })
+}
+
+export function updateUnderlay(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  record: UnderlayRecordV1,
+) {
+  return invoke<ProjectSnapshot>('update_underlay', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    record,
+  })
+}
+
+export function removeUnderlay(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  id: string,
+) {
+  return invoke<ProjectSnapshot>('remove_underlay', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,

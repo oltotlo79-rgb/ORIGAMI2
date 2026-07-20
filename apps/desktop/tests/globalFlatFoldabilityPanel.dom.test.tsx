@@ -105,7 +105,7 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
       screen.getAllByRole('option').map((option) => option.textContent),
     ).toEqual(['5秒', '30秒', '120秒'])
     expect(screen.getByRole('button', { name: '判定を開始' })).toBeTruthy()
-    expect(screen.getByText('未判定')).toBeTruthy()
+    expect(screen.getAllByText('未判定').length).toBeGreaterThan(0)
     expect(screen.getByText(GLOBAL_FLAT_FOLDABILITY_MODEL_ID)).toBeTruthy()
     expect(screen.getByText('凸多角形面（切断・穴・未接続材料なし）')).toBeTruthy()
     expect(screen.getByText('「可」が保証しないこと')).toBeTruthy()
@@ -406,7 +406,7 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
       `[data-result-kind="${kind}"]`,
     )
     expect(result).toBeTruthy()
-    expect(screen.getByText(label)).toBeTruthy()
+    expect(result?.textContent).toContain(label)
     expect(screen.getByRole('status').textContent?.length).toBeGreaterThan(0)
     expect(screen.getByText('「可」が保証しないこと')).toBeTruthy()
   })

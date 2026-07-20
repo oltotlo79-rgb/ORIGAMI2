@@ -5,10 +5,12 @@ import {
   useState,
 } from 'react'
 import { LayerOrderViewer } from './StackedFoldPanel.tsx'
+import { ProofScopeSummary } from './ProofScopeSummary.tsx'
 import {
   getCurrentLayerOrderView,
   type CurrentLayerOrderView,
 } from '../lib/currentLayerOrderView.ts'
+import type { AssignedLocalSufficiencySummaryResponseV1 } from '../lib/coreClient.ts'
 
 import {
   GLOBAL_FLAT_FOLDABILITY_TIME_PRESETS,
@@ -38,6 +40,9 @@ export type GlobalFlatFoldabilityPanelProps = Readonly<{
   selectedFaceId?: string | null
   onSelectFace?(faceId: string | null): void
   onHoverFace?(faceId: string | null): void
+  localSummary?: AssignedLocalSufficiencySummaryResponseV1 | null
+  selectedVertexId?: string | null
+  onSelectVertex?(vertexId: string): void
   loadLayerOrderView?(authority: {
     projectInstanceId: string
     projectId: string
@@ -57,6 +62,9 @@ export function GlobalFlatFoldabilityPanel({
   selectedFaceId = null,
   onSelectFace,
   onHoverFace,
+  localSummary = null,
+  selectedVertexId = null,
+  onSelectVertex,
   loadLayerOrderView = getCurrentLayerOrderView,
 }: GlobalFlatFoldabilityPanelProps) {
   const locale = useLocale(localeStore_)
@@ -259,6 +267,14 @@ export function GlobalFlatFoldabilityPanel({
           ))}
         </dl>
       )}
+
+      <ProofScopeSummary
+        globalJob={job}
+        localSummary={localSummary}
+        localeStore={localeStore_}
+        selectedVertexId={selectedVertexId}
+        onSelectVertex={onSelectVertex}
+      />
 
       {layerView && layerView.cells.length > 0 && (
         <LayerOrderViewer

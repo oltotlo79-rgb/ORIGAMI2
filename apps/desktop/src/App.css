@@ -2531,6 +2531,39 @@ html[data-theme='dark'] .crease-canvas { filter: brightness(.82); }
   line-height: 1.55;
 }
 
+.proof-scope-summary {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.proof-scope-summary h4,
+.proof-scope-summary p { margin: 0; }
+.proof-scope-summary dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.proof-scope-summary dl > div { min-width: 0; }
+.proof-scope-summary dt { color: var(--muted); font-size: 11px; }
+.proof-scope-summary dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.proof-scope-summary ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.proof-scope-summary textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  font: 11px/1.45 ui-monospace, monospace;
+}
+
 @media (max-width: 560px) {
   .global-flat-foldability-controls,
   .global-flat-foldability-summary,

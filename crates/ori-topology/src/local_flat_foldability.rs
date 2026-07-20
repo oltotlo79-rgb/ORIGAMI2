@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use num_bigint::{BigInt, Sign};
-use ori_domain::{CreasePattern, EdgeKind, Paper, Point2, VertexId};
+use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 use serde::Serialize;
 
 use crate::{
@@ -42,11 +42,18 @@ pub enum AssignedLocalSufficiencyV1 {
         model_id: &'static str,
         vertex: VertexId,
         reduction_steps: usize,
+        reductions: Vec<AssignedCrimpReductionV1>,
     },
     Indeterminate {
         vertex: VertexId,
         reason: AssignedLocalSufficiencyReasonV1,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AssignedCrimpReductionV1 {
+    pub first_crease: EdgeId,
+    pub second_crease: EdgeId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -95,6 +102,7 @@ pub fn prove_assigned_local_sufficiency_v1(
             model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
             vertex,
             reduction_steps: 0,
+            reductions: Vec::new(),
         }
     } else {
         AssignedLocalSufficiencyV1::Indeterminate {
@@ -1150,10 +1158,10 @@ mod tests {
                 model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
                 vertex: terminal.center,
                 reduction_steps: 0,
+                reductions: Vec::new(),
             }
         );
-        let invalid_assignment =
-            octagonal_sheet(&[1, 5], &[EdgeKind::Mountain, EdgeKind::Valley]);
+        let invalid_assignment = octagonal_sheet(&[1, 5], &[EdgeKind::Mountain, EdgeKind::Valley]);
         assert_eq!(
             prove_assigned_local_sufficiency_v1(
                 &invalid_assignment.paper,

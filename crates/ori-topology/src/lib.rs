@@ -35,11 +35,11 @@ use fold_graph::{FoldGraphError, extract_fold_graph_snapshot_with_checkpoint};
 use single_fold::{SingleFoldError, extract_single_fold_faces};
 
 pub use local_flat_foldability::{
-    ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1, AssignedLocalSufficiencyLimitsV1,
-    AssignedLocalSufficiencyReasonV1, AssignedLocalSufficiencyV1, LocalFlatFoldabilityModel,
-    LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus, LocalFoldabilityConditionStatus,
-    LocalFoldabilityReason, LocalVertexFoldability, LocalVertexFoldabilityVerdict,
-    MAX_EXACT_FOLD_DEGREE, analyze_local_flat_foldability,
+    ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1, AssignedCrimpReductionV1,
+    AssignedLocalSufficiencyLimitsV1, AssignedLocalSufficiencyReasonV1, AssignedLocalSufficiencyV1,
+    LocalFlatFoldabilityModel, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
+    LocalFoldabilityConditionStatus, LocalFoldabilityReason, LocalVertexFoldability,
+    LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, analyze_local_flat_foldability,
     analyze_local_flat_foldability_with_checkpoint, prove_assigned_local_sufficiency_v1,
 };
 

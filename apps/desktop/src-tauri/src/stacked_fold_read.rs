@@ -1103,6 +1103,17 @@ async fn propose_current_stacked_fold_read_inner(
                                 == analysis_generation
                         },
                         |progress| {
+                            #[cfg(test)]
+                            if progress_request_id
+                                .as_deref()
+                                .and_then(|value| value.strip_prefix("test-cancel-after-"))
+                                .and_then(|value| value.parse::<usize>().ok())
+                                .is_some_and(|limit| {
+                                    progress.evaluated_transition_count >= limit
+                                })
+                            {
+                                let _ = cancel_current_stacked_fold_read_v1();
+                            }
                             if let Some(request_id) = progress_request_id.as_ref() {
                                 if let Some(progress_app) = progress_app.as_ref() { let _ = progress_app.emit(
                                     STACKED_FOLD_READ_PROGRESS_EVENT_V1,
@@ -2190,7 +2201,8 @@ mod tests {
         first: [f64; 3],
         second: [f64; 3],
         certified_path_steps: usize,
-    ) {
+        cancel_after_transition: Option<usize>,
+    ) -> Vec<(String, String, String)> {
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let instance = project.instance_id;
@@ -2207,7 +2219,7 @@ mod tests {
         }
         let certified_path = certified_path_steps > 0;
         let angle = if certified_path {
-            20.0
+            certified_path_steps as f64
         } else {
             2.0 * 1.0_f64.atan2(5.0).to_degrees()
         };
@@ -2318,7 +2330,8 @@ mod tests {
             &layer_state,
             &transaction_state,
             StackedFoldReadRequest {
-                progress_request_id: None,
+                progress_request_id: cancel_after_transition
+                    .map(|step| format!("test-cancel-after-{step}")),
                 expected_project_instance_id: instance,
                 expected_project_id: project_id,
                 expected_revision: revision,
@@ -2331,9 +2344,16 @@ mod tests {
                 linear_candidate_v1: None,
                 certified_path_graph_v1,
             },
-        ))
-        .expect("genuine ready preview");
-        if certified_path {
+        ));
+        if cancel_after_transition.is_some() {
+            assert_eq!(response.unwrap_err(), CANCELLED_MESSAGE);
+            let project = super::super::lock_project(&app_state).unwrap();
+            assert_eq!(project.editor.revision(), revision);
+            assert!(project.editor.instruction_timeline().steps.is_empty());
+            return Vec::new();
+        }
+        let response = response.expect("genuine ready preview");
+        let certificate_hashes = if certified_path {
             let graph = response
                 .certified_path_graph
                 .as_ref()
@@ -2347,9 +2367,21 @@ mod tests {
                     && edge.closure_certificate_sha256.len() == 64
             }));
             assert!(!graph.authorizes_project_mutation);
+            graph
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.schedule_certificate_sha256.clone(),
+                        edge.collision_certificate_sha256.clone(),
+                        edge.closure_certificate_sha256.clone(),
+                    )
+                })
+                .collect()
         } else {
             assert!(response.certified_path_graph.is_none());
-        }
+            Vec::new()
+        };
         assert!(response.transaction_proposal.ready_for_atomic_apply);
         let token = response
             .transaction_proposal
@@ -2391,31 +2423,69 @@ mod tests {
             project.editor.current_applied_pose(),
             after.current_applied_pose()
         );
+        certificate_hashes
     }
 
     #[test]
     fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([50.0, 0.0, 0.0], [50.0, 0.0, -100.0], 0);
+        let _ = assert_two_hinge_projective_schedule_round_trip(
+            [50.0, 0.0, 0.0],
+            [50.0, 0.0, -100.0],
+            0,
+            None,
+        );
     }
 
     #[test]
     fn genuine_common_axis_cycle_previews_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 0);
+        let _ = assert_two_hinge_projective_schedule_round_trip(
+            [0.0, 0.0, -50.0],
+            [100.0, 0.0, -50.0],
+            0,
+            None,
+        );
     }
 
     #[test]
     fn genuine_common_axis_cycle_certified_path_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 2);
+        let _ = assert_two_hinge_projective_schedule_round_trip(
+            [0.0, 0.0, -50.0],
+            [100.0, 0.0, -50.0],
+            2,
+            None,
+        );
     }
 
     #[test]
     fn genuine_common_axis_cycle_four_edge_certified_path_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 4);
+        let _ = assert_two_hinge_projective_schedule_round_trip(
+            [0.0, 0.0, -50.0],
+            [100.0, 0.0, -50.0],
+            4,
+            None,
+        );
     }
 
     #[test]
     fn genuine_common_axis_cycle_sixteen_edge_certified_path_applies_and_round_trips_history() {
-        assert_two_hinge_projective_schedule_round_trip([0.0, 0.0, -50.0], [100.0, 0.0, -50.0], 16);
+        let _ = assert_two_hinge_projective_schedule_round_trip(
+            [0.0, 0.0, -50.0],
+            [100.0, 0.0, -50.0],
+            16,
+            None,
+        );
+    }
+
+    #[test]
+    fn genuine_common_axis_cycle_maximum_atomic_path_cancels_cleanly_and_retries() {
+        let first = [0.0, 0.0, -50.0];
+        let second = [100.0, 0.0, -50.0];
+        assert!(
+            assert_two_hinge_projective_schedule_round_trip(first, second, 31, Some(8)).is_empty()
+        );
+        let first_retry = assert_two_hinge_projective_schedule_round_trip(first, second, 31, None);
+        let second_retry = assert_two_hinge_projective_schedule_round_trip(first, second, 31, None);
+        assert_eq!(first_retry, second_retry);
     }
 
     #[test]

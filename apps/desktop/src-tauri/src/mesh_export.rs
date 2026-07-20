@@ -664,7 +664,7 @@ fn suggested_export_file_name(project_name: &str, extension: &str) -> String {
     format!("{base}-pose.{extension}")
 }
 
-fn build_current_pose_mid_surface_mesh(
+pub(super) fn build_current_pose_mid_surface_mesh(
     name: &str,
     model: &MaterialTreeKinematicsModel,
     pose: &MaterialTreePose,

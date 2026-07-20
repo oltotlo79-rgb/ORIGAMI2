@@ -136,6 +136,7 @@ const PROJECT_SNAPSHOT_KEYS = [
   'numeric_expressions',
   'geometric_constraints',
   'project_layers',
+  'element_metadata',
   'fold_model_fingerprint',
   'can_undo',
   'can_redo',
@@ -593,6 +594,11 @@ export function parseRestoredRecoverySnapshot(
       record.project_layers,
       creasePattern?.edges ?? [],
     )
+    const elementMetadata = exactDataRecord(record.element_metadata, [
+      'vertices',
+      'edges',
+      'faces',
+    ] as const)
     if (
       !paper
       || !creasePattern
@@ -600,6 +606,10 @@ export function parseRestoredRecoverySnapshot(
       || !numericExpressions
       || !geometricConstraints
       || !projectLayers
+      || !elementMetadata
+      || !Array.isArray(elementMetadata.vertices)
+      || !Array.isArray(elementMetadata.edges)
+      || !Array.isArray(elementMetadata.faces)
       || paper.cutting_allowed !== record.cutting_allowed
     ) return null
 
@@ -617,6 +627,7 @@ export function parseRestoredRecoverySnapshot(
       numeric_expressions: numericExpressions,
       geometric_constraints: geometricConstraints,
       project_layers: projectLayers,
+      element_metadata: record.element_metadata as ProjectSnapshot['element_metadata'],
       fold_model_fingerprint: record.fold_model_fingerprint,
       can_undo: false,
       can_redo: false,
@@ -668,6 +679,11 @@ export function parsePathlessProjectSnapshot(
       record.project_layers,
       creasePattern?.edges ?? [],
     )
+    const elementMetadata = exactDataRecord(record.element_metadata, [
+      'vertices',
+      'edges',
+      'faces',
+    ] as const)
     if (
       !paper
       || !creasePattern
@@ -675,6 +691,10 @@ export function parsePathlessProjectSnapshot(
       || !numericExpressions
       || !geometricConstraints
       || !projectLayers
+      || !elementMetadata
+      || !Array.isArray(elementMetadata.vertices)
+      || !Array.isArray(elementMetadata.edges)
+      || !Array.isArray(elementMetadata.faces)
       || paper.cutting_allowed !== record.cutting_allowed
     ) return null
 
@@ -692,6 +712,7 @@ export function parsePathlessProjectSnapshot(
       numeric_expressions: numericExpressions,
       geometric_constraints: geometricConstraints,
       project_layers: projectLayers,
+      element_metadata: record.element_metadata as ProjectSnapshot['element_metadata'],
       fold_model_fingerprint: record.fold_model_fingerprint,
       can_undo: record.can_undo,
       can_redo: record.can_redo,

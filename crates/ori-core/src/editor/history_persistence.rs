@@ -137,6 +137,10 @@ struct VertexPositionUpdateV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum CommandV1 {
+    SetElementMetadata {
+        target: ElementMetadataTargetV1,
+        metadata: Option<ElementMetadataV1>,
+    },
     AddVertex {
         id: VertexId,
         position: Point2,
@@ -317,6 +321,10 @@ struct VertexPositionV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InverseV1 {
+    RestoreElementMetadata {
+        target: ElementMetadataTargetV1,
+        metadata: Option<ElementMetadataV1>,
+    },
     Command {
         command: CommandV1,
     },
@@ -477,6 +485,10 @@ fn target_from_wire(target: IntersectionEdgeTargetV1) -> IntersectionEdgeTarget 
 
 fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1> {
     Ok(match command {
+        Command::SetElementMetadata { target, metadata } => CommandV1::SetElementMetadata {
+            target: *target,
+            metadata: metadata.clone(),
+        },
         Command::AddVertex { id, position } => CommandV1::AddVertex {
             id: *id,
             position: *position,
@@ -694,6 +706,9 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
 
 fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1> {
     Ok(match command {
+        CommandV1::SetElementMetadata { target, metadata } => {
+            Command::SetElementMetadata { target, metadata }
+        }
         CommandV1::AddVertex { id, position } => Command::AddVertex { id, position },
         CommandV1::MoveVertex { id, position } => Command::MoveVertex { id, position },
         CommandV1::MoveEdge {
@@ -924,6 +939,10 @@ fn indexed_layer_assignment_from_wire(
 
 fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1> {
     Ok(match inverse {
+        Inverse::RestoreElementMetadata { target, metadata } => InverseV1::RestoreElementMetadata {
+            target: *target,
+            metadata: metadata.clone(),
+        },
         Inverse::Command(command) => InverseV1::Command {
             command: command_to_wire(command)?,
         },
@@ -1152,6 +1171,9 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
 
 fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1> {
     Ok(match inverse {
+        InverseV1::RestoreElementMetadata { target, metadata } => {
+            Inverse::RestoreElementMetadata { target, metadata }
+        }
         InverseV1::Command { command } => Inverse::Command(command_from_wire(command)?),
         InverseV1::RestoreVertex { index, vertex } => Inverse::RestoreVertex {
             index: index_from_wire(index)?,
@@ -1446,6 +1468,12 @@ fn validate_constraint_finite(
 
 fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1> {
     match command {
+        Command::SetElementMetadata { metadata, .. } => {
+            if let Some(metadata) = metadata {
+                ori_domain::validate_element_metadata_v1(metadata)
+                    .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
+            }
+        }
         Command::AddVertex { position, .. }
         | Command::MoveVertex { position, .. }
         | Command::AddConnectedVertex { position, .. } => {
@@ -1549,6 +1577,12 @@ fn validate_vertex_finite(vertex: &Vertex) -> Result<(), EditorHistoryErrorV1> {
 
 fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1> {
     match inverse {
+        Inverse::RestoreElementMetadata { metadata, .. } => {
+            if let Some(metadata) = metadata {
+                ori_domain::validate_element_metadata_v1(metadata)
+                    .map_err(|_| EditorHistoryErrorV1::InvalidInverse)?;
+            }
+        }
         Inverse::Command(command) => validate_command_finite(command)?,
         Inverse::RestoreVertex { vertex, .. } => validate_vertex_finite(vertex)?,
         Inverse::RestoreEdge { .. } | Inverse::RestoreLengthDisplayUnit { .. } => {}
@@ -1621,6 +1655,7 @@ struct EditorDocumentPartsRef<'a> {
     geometric_constraints: &'a GeometricConstraintDocumentV1,
     instruction_timeline: &'a InstructionTimeline,
     project_layers: &'a ProjectLayerDocumentV1,
+    element_metadata: &'a ElementMetadataDocumentV1,
 }
 
 fn editor_document_parts_bytes(editor: &EditorState) -> Result<Vec<u8>, EditorHistoryErrorV1> {
@@ -1631,6 +1666,7 @@ fn editor_document_parts_bytes(editor: &EditorState) -> Result<Vec<u8>, EditorHi
         geometric_constraints: &editor.geometric_constraints,
         instruction_timeline: &editor.instruction_timeline,
         project_layers: &editor.project_layers,
+        element_metadata: &editor.element_metadata,
     })
     .map_err(|_| EditorHistoryErrorV1::EncodingFailed)
 }
@@ -1681,6 +1717,7 @@ fn validate_inverse_application(
 ) -> Result<(), EditorHistoryErrorV1> {
     let invalid = || EditorHistoryErrorV1::InvalidInverse;
     match inverse {
+        Inverse::RestoreElementMetadata { .. } => {}
         Inverse::Command(_) => {}
         Inverse::RestoreVertex { index, vertex } => {
             if *index > editor.pattern.vertices.len()
@@ -2119,13 +2156,34 @@ impl EditorState {
         project_layers: ProjectLayerDocumentV1,
         history: EditorHistoryV1,
     ) -> Result<Self, EditorHistoryErrorV1> {
-        let limit = history.validate_shape()?;
-        let mut current = Self::with_document_parts_constraints_and_layers(
+        Self::with_all_document_parts_and_history_v1(
             pattern,
             paper,
             instruction_timeline,
             geometric_constraints,
             project_layers,
+            ElementMetadataDocumentV1::default(),
+            history,
+        )
+    }
+
+    pub fn with_all_document_parts_and_history_v1(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        history: EditorHistoryV1,
+    ) -> Result<Self, EditorHistoryErrorV1> {
+        let limit = history.validate_shape()?;
+        let mut current = Self::with_all_document_parts(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
         );
         validate_editor_finite(&current)?;
         let expected_current = editor_document_parts_bytes(&current)?;

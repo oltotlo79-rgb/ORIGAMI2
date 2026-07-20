@@ -1329,6 +1329,8 @@ html[data-theme='dark'] .svg-import-loss-badge {
   border-radius: 4px;
   background: var(--panel-strong);
 }
+.element-metadata-form { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-strong); }
+.element-metadata-form textarea { min-height: 64px; resize: vertical; }
 .paper-properties-form .check, .paper-properties-form .property-actions { margin-top: 0; }
 .paper-properties-form .property-actions button { width: 100%; }
 .paper-properties-form input:disabled, .paper-properties-form button:disabled { opacity: .5; cursor: not-allowed; }

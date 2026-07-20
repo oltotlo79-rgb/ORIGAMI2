@@ -314,6 +314,11 @@ function validSnapshot() {
         layer: LAYER_ID,
       }],
     },
+    element_metadata: {
+      vertices: [],
+      edges: [],
+      faces: [],
+    },
     fold_model_fingerprint: 'a'.repeat(64),
     can_undo: true,
     can_redo: false,

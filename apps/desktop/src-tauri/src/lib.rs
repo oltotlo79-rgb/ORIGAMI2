@@ -438,12 +438,13 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
-        let editor = EditorState::with_document_parts_constraints_and_layers(
+        let editor = EditorState::with_all_document_parts(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
             document.geometric_constraints,
             document.layers,
+            document.element_metadata,
         );
         Self {
             instance_id: ProjectId::new(),
@@ -536,6 +537,7 @@ impl ProjectState {
             numeric_expressions,
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
+            element_metadata: self.editor.element_metadata().clone(),
         }
     }
 
@@ -822,22 +824,24 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             if history.project_id() != project.document.project_id {
                 return Err(());
             }
-            EditorState::with_document_parts_layers_and_history_v1(
+            EditorState::with_all_document_parts_and_history_v1(
                 project.document.crease_pattern.clone(),
                 project.document.paper.clone(),
                 project.document.instruction_timeline.clone(),
                 project.document.geometric_constraints.clone(),
                 project.document.layers.clone(),
+                project.document.element_metadata.clone(),
                 history.clone(),
             )
             .map_err(|_| ())
         }
-        None => Ok(EditorState::with_document_parts_constraints_and_layers(
+        None => Ok(EditorState::with_all_document_parts(
             project.document.crease_pattern.clone(),
             project.document.paper.clone(),
             project.document.instruction_timeline.clone(),
             project.document.geometric_constraints.clone(),
             project.document.layers.clone(),
+            project.document.element_metadata.clone(),
         )),
     }?;
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
@@ -932,6 +936,7 @@ struct ProjectSnapshot {
     numeric_expressions: ProjectNumericExpressions,
     geometric_constraints: GeometricConstraintDocumentV1,
     project_layers: ProjectLayerDocumentV1,
+    element_metadata: ori_domain::ElementMetadataDocumentV1,
     fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
@@ -3416,6 +3421,25 @@ fn update_paper_properties(
 }
 
 #[tauri::command]
+fn set_element_metadata(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    target: ori_core::ElementMetadataTargetV1,
+    metadata: Option<ori_domain::ElementMetadataV1>,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::SetElementMetadata { target, metadata },
+    )
+}
+
+#[tauri::command]
 fn set_length_display_unit(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -4595,6 +4619,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         numeric_expressions: project.numeric_expressions.clone(),
         geometric_constraints: project.editor.geometric_constraints().clone(),
         project_layers: project.editor.project_layers().clone(),
+        element_metadata: project.editor.element_metadata().clone(),
         fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -6460,6 +6485,7 @@ pub fn run() {
             move_instruction_step,
             set_cutting_allowed,
             update_paper_properties,
+            set_element_metadata,
             set_length_display_unit,
             resize_rectangular_paper,
             split_edge,

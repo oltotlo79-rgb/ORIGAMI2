@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 mod constraints;
+mod element_metadata;
 mod layers;
 
 pub use constraints::{
@@ -12,6 +13,12 @@ pub use constraints::{
     GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
     GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
     GeometricConstraintRecordV1, validate_geometric_constraint_document_v1,
+};
+pub use element_metadata::{
+    EdgeMetadataRecordV1, ElementMetadataDocumentV1, ElementMetadataV1,
+    ElementMetadataValidationError, FaceMetadataRecordV1, MAX_ELEMENT_MEMO_CHARS,
+    MAX_ELEMENT_METADATA_RECORDS, MAX_ELEMENT_NAME_CHARS, VertexMetadataRecordV1,
+    validate_element_metadata_document_v1, validate_element_metadata_v1,
 };
 pub use layers::{
     DEFAULT_PROJECT_LAYER_ID, DEFAULT_PROJECT_LAYER_NAME, EdgeLayerAssignmentV1,

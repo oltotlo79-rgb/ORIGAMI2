@@ -180,6 +180,11 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
       }],
       edge_assignments: [],
     },
+    element_metadata: {
+      vertices: [],
+      edges: [],
+      faces: [],
+    },
     fold_model_fingerprint: 'a'.repeat(64),
     can_undo: false,
     can_redo: false,

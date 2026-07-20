@@ -252,6 +252,11 @@ pub struct ProjectDocument {
     /// The exact default is omitted so legacy V1 JSON remains byte-stable.
     #[serde(default, skip_serializing_if = "ProjectLayerDocumentV1::is_default")]
     pub layers: ProjectLayerDocumentV1,
+    #[serde(
+        default,
+        skip_serializing_if = "ori_domain::ElementMetadataDocumentV1::is_empty"
+    )]
+    pub element_metadata: ori_domain::ElementMetadataDocumentV1,
 }
 
 impl ProjectDocument {
@@ -267,6 +272,7 @@ impl ProjectDocument {
             numeric_expressions: ProjectNumericExpressions::default(),
             geometric_constraints: GeometricConstraintDocumentV1::default(),
             layers: ProjectLayerDocumentV1::default(),
+            element_metadata: ori_domain::ElementMetadataDocumentV1::default(),
         }
     }
 }
@@ -279,6 +285,8 @@ pub enum FormatError {
     ProjectJsonTooLarge { actual: usize, limit: usize },
     #[error("project_id must not be the nil UUID")]
     NilProjectId,
+    #[error("project element metadata is invalid")]
+    InvalidElementMetadata,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error(".ori2 editor-history JSON is invalid: {0}")]
@@ -450,6 +458,8 @@ pub fn read_project_json_with_limits(
 }
 
 fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatError> {
+    ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
+        .map_err(|_| FormatError::InvalidElementMetadata)?;
     if document.format_version != CURRENT_FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion {
             found: document.format_version,

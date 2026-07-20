@@ -7,14 +7,15 @@ use crate::{
 };
 use ori_domain::{
     ConstraintId, CreasePattern, DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind,
-    EdgeLayerAssignmentV1, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
+    EdgeLayerAssignmentV1, ElementMetadataDocumentV1, ElementMetadataV1, FaceId,
+    GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
     GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
     GeometricConstraintRecordV1, InstructionPose, InstructionStep, InstructionStepId,
     InstructionTimeline, InstructionTimelineValidationError, InstructionVisual, LayerId,
     LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_PROJECT_LAYER_INDEX_EDGES,
     Paper, Point2, ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, RgbaColor,
-    Vertex, VertexId, validate_geometric_constraint_document_v1, validate_instruction_timeline,
-    validate_project_layer_document_against_pattern_v1,
+    Vertex, VertexId, validate_element_metadata_v1, validate_geometric_constraint_document_v1,
+    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -65,8 +66,20 @@ pub struct VertexPositionUpdate {
     pub position: Point2,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum ElementMetadataTargetV1 {
+    Vertex(VertexId),
+    Edge(EdgeId),
+    Face(FaceId),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    SetElementMetadata {
+        target: ElementMetadataTargetV1,
+        metadata: Option<ElementMetadataV1>,
+    },
     AddVertex {
         id: VertexId,
         position: Point2,
@@ -249,6 +262,8 @@ pub enum CommandError {
     EdgeAlreadyExists(EdgeId),
     #[error("edge {0:?} was not found")]
     EdgeNotFound(EdgeId),
+    #[error("element metadata is invalid")]
+    InvalidElementMetadata,
     #[error("the vertex move batch must contain a bounded set of unique vertices")]
     InvalidVertexMoveBatch,
     #[error("the requested position for vertex {vertex:?} must be finite")]
@@ -621,6 +636,10 @@ fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limi
 
 #[derive(Debug, Clone, PartialEq)]
 enum Inverse {
+    RestoreElementMetadata {
+        target: ElementMetadataTargetV1,
+        metadata: Option<ElementMetadataV1>,
+    },
     Command(Command),
     RestoreVertex {
         index: usize,
@@ -1505,6 +1524,7 @@ pub struct EditorState {
     geometric_constraints: GeometricConstraintDocumentV1,
     instruction_timeline: InstructionTimeline,
     project_layers: ProjectLayerDocumentV1,
+    element_metadata: ElementMetadataDocumentV1,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
     revision: Revision,
@@ -1585,12 +1605,36 @@ impl EditorState {
         geometric_constraints: GeometricConstraintDocumentV1,
         project_layers: ProjectLayerDocumentV1,
     ) -> Self {
+        Self::with_all_document_parts(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            ElementMetadataDocumentV1 {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                faces: Vec::new(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub const fn with_all_document_parts(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+    ) -> Self {
         Self {
             pattern,
             paper,
             geometric_constraints,
             instruction_timeline,
             project_layers,
+            element_metadata,
             current_applied_pose: None,
             revision: 0,
             undo_stack: Vec::new(),
@@ -1612,6 +1656,11 @@ impl EditorState {
     #[must_use]
     pub const fn paper(&self) -> &Paper {
         &self.paper
+    }
+
+    #[must_use]
+    pub const fn element_metadata(&self) -> &ElementMetadataDocumentV1 {
+        &self.element_metadata
     }
 
     #[must_use]
@@ -1786,6 +1835,30 @@ impl EditorState {
         self.ensure_project_layers_allow(command)?;
         self.ensure_geometric_constraints_allow(command)?;
         match *command {
+            Command::SetElementMetadata {
+                target,
+                ref metadata,
+            } => {
+                if let Some(metadata) = metadata {
+                    validate_element_metadata_v1(metadata)
+                        .map_err(|_| CommandError::InvalidElementMetadata)?;
+                }
+                match target {
+                    ElementMetadataTargetV1::Vertex(id) => {
+                        self.vertex_index(id)
+                            .ok_or(CommandError::VertexNotFound(id))?;
+                    }
+                    ElementMetadataTargetV1::Edge(id) => {
+                        self.edge_index(id).ok_or(CommandError::EdgeNotFound(id))?;
+                    }
+                    ElementMetadataTargetV1::Face(_) => {}
+                }
+                let previous = self.replace_element_metadata(target, metadata.clone());
+                Ok(Inverse::RestoreElementMetadata {
+                    target,
+                    metadata: previous,
+                })
+            }
             Command::AddVertex { id, position } => {
                 if self.vertex_index(id).is_some() {
                     return Err(CommandError::VertexAlreadyExists(id));
@@ -2598,7 +2671,8 @@ impl EditorState {
                 self.ensure_edge_layer_unlocked(*edge)?;
                 self.ensure_layer_unlocked(*layer)
             }
-            Command::SetCuttingAllowed { .. }
+            Command::SetElementMetadata { .. }
+            | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
             | Command::SetLengthDisplayUnit { .. }
             | Command::AddGeometricConstraint { .. }
@@ -2892,6 +2966,7 @@ impl EditorState {
             Command::AddVertex { .. }
             | Command::AddEdge { .. }
             | Command::AddConnectedVertex { .. }
+            | Command::SetElementMetadata { .. }
             | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
             | Command::SetLengthDisplayUnit { .. }
@@ -4306,6 +4381,9 @@ impl EditorState {
 
     fn apply_inverse(&mut self, inverse: &Inverse) -> Result<(), CommandError> {
         match inverse {
+            Inverse::RestoreElementMetadata { target, metadata } => {
+                self.replace_element_metadata(*target, metadata.clone());
+            }
             Inverse::Command(command) => {
                 self.apply(command)?;
             }
@@ -4731,6 +4809,36 @@ impl EditorState {
         self.pattern.edges.iter().position(|edge| edge.id == id)
     }
 
+    fn replace_element_metadata(
+        &mut self,
+        target: ElementMetadataTargetV1,
+        metadata: Option<ElementMetadataV1>,
+    ) -> Option<ElementMetadataV1> {
+        match target {
+            ElementMetadataTargetV1::Vertex(vertex) => replace_metadata_record(
+                &mut self.element_metadata.vertices,
+                |record| record.vertex == vertex,
+                |record| &record.metadata,
+                metadata,
+                |metadata| ori_domain::VertexMetadataRecordV1 { vertex, metadata },
+            ),
+            ElementMetadataTargetV1::Edge(edge) => replace_metadata_record(
+                &mut self.element_metadata.edges,
+                |record| record.edge == edge,
+                |record| &record.metadata,
+                metadata,
+                |metadata| ori_domain::EdgeMetadataRecordV1 { edge, metadata },
+            ),
+            ElementMetadataTargetV1::Face(face) => replace_metadata_record(
+                &mut self.element_metadata.faces,
+                |record| record.face == face,
+                |record| &record.metadata,
+                metadata,
+                |metadata| ori_domain::FaceMetadataRecordV1 { face, metadata },
+            ),
+        }
+    }
+
     const fn ensure_revision(&self, expected: Revision) -> Result<(), CommandError> {
         if expected == self.revision {
             Ok(())
@@ -4762,6 +4870,26 @@ impl EditorState {
             constraints_changed: changes.constraints,
         }
     }
+}
+
+fn replace_metadata_record<R>(
+    records: &mut Vec<R>,
+    matches: impl Fn(&R) -> bool,
+    read: impl Fn(&R) -> &ElementMetadataV1,
+    metadata: Option<ElementMetadataV1>,
+    create: impl FnOnce(ElementMetadataV1) -> R,
+) -> Option<ElementMetadataV1> {
+    let index = records.iter().position(matches);
+    let previous = index.map(|index| read(&records[index]).clone());
+    match (index, metadata) {
+        (Some(index), Some(metadata)) => records[index] = create(metadata),
+        (Some(index), None) => {
+            records.remove(index);
+        }
+        (None, Some(metadata)) => records.push(create(metadata)),
+        (None, None) => {}
+    }
+    previous
 }
 
 #[derive(Default)]
@@ -4798,7 +4926,8 @@ impl Command {
                     added_edges,
                 )
             }
-            Self::MoveVertex { .. }
+            Self::SetElementMetadata { .. }
+            | Self::MoveVertex { .. }
             | Self::MoveEdge { .. }
             | Self::MoveVertices { .. }
             | Self::RemoveVertex { .. }
@@ -4851,7 +4980,8 @@ impl Command {
             | Self::ConnectIntersectionCluster { .. }
             | Self::SplitBoundaryEdge { .. }
             | Self::RemoveBoundaryVertex { .. } => true,
-            Self::SetCuttingAllowed { .. }
+            Self::SetElementMetadata { .. }
+            | Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
             | Self::SetLengthDisplayUnit { .. }
             | Self::AddGeometricConstraint { .. }
@@ -4873,6 +5003,18 @@ impl Command {
 
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match *self {
+            Self::SetElementMetadata { target, .. } => Changes {
+                vertices: match target {
+                    ElementMetadataTargetV1::Vertex(id) => vec![id],
+                    _ => Vec::new(),
+                },
+                edges: match target {
+                    ElementMetadataTargetV1::Edge(id) => vec![id],
+                    _ => Vec::new(),
+                },
+                settings: true,
+                ..Changes::default()
+            },
             Self::AddVertex { id, .. }
             | Self::MoveVertex { id, .. }
             | Self::RemoveVertex { id } => Changes {
@@ -5157,6 +5299,18 @@ impl Command {
 impl Inverse {
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match self {
+            Self::RestoreElementMetadata { target, .. } => Changes {
+                vertices: match target {
+                    ElementMetadataTargetV1::Vertex(id) => vec![*id],
+                    _ => Vec::new(),
+                },
+                edges: match target {
+                    ElementMetadataTargetV1::Edge(id) => vec![*id],
+                    _ => Vec::new(),
+                },
+                settings: true,
+                ..Changes::default()
+            },
             Self::Command(command) => command.changes(pattern, paper),
             Self::RestoreVertex { vertex, .. } => Changes {
                 vertices: vec![vertex.id],
@@ -6964,6 +7118,39 @@ mod tests {
         assert_eq!(editor.paper().front.texture_asset, None);
         assert_eq!(editor.paper().back.texture_asset, None);
         assert!(editor.paper().cutting_allowed);
+    }
+
+    #[test]
+    fn vertex_edge_and_face_metadata_are_undoable_and_persistable() {
+        let (mut editor, pattern, _) = simple_rectangular_editor();
+        let metadata = ElementMetadataV1 {
+            name: "基準".to_owned(),
+            color: Some(RgbaColor::opaque(12, 34, 56)),
+            memo: "選択要素".to_owned(),
+        };
+        let targets = [
+            ElementMetadataTargetV1::Vertex(pattern.vertices[0].id),
+            ElementMetadataTargetV1::Edge(pattern.edges[0].id),
+            ElementMetadataTargetV1::Face(FaceId::new()),
+        ];
+        for (revision, target) in targets.into_iter().enumerate() {
+            editor
+                .execute(
+                    revision as u64,
+                    Command::SetElementMetadata {
+                        target,
+                        metadata: Some(metadata.clone()),
+                    },
+                )
+                .expect("set metadata");
+        }
+        assert_eq!(editor.element_metadata().vertices.len(), 1);
+        assert_eq!(editor.element_metadata().edges.len(), 1);
+        assert_eq!(editor.element_metadata().faces.len(), 1);
+        editor.undo(3).expect("undo face metadata");
+        assert!(editor.element_metadata().faces.is_empty());
+        editor.redo(4).expect("redo face metadata");
+        assert_eq!(editor.element_metadata().faces[0].metadata, metadata);
     }
 
     #[test]

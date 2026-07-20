@@ -121,6 +121,7 @@ export type ProjectSnapshot = {
   instruction_timeline: InstructionTimeline
   geometric_constraints?: GeometricConstraintDocument
   project_layers: ProjectLayerDocumentV1
+  element_metadata: ElementMetadataDocumentV1
   numeric_expressions?: {
     rectangular_paper_creation?: NumericExpressionBinding
     undo_stack?: Array<NumericExpressionBinding | null>
@@ -131,6 +132,23 @@ export type ProjectSnapshot = {
   }
   fold_model_fingerprint: string
 }
+
+export type ElementMetadata = {
+  name: string
+  color: RgbaColor | null
+  memo: string
+}
+
+export type ElementMetadataDocumentV1 = {
+  vertices: readonly { vertex: string; metadata: ElementMetadata }[]
+  edges: readonly { edge: string; metadata: ElementMetadata }[]
+  faces: readonly { face: string; metadata: ElementMetadata }[]
+}
+
+export type ElementMetadataTarget =
+  | { kind: 'vertex'; id: string }
+  | { kind: 'edge'; id: string }
+  | { kind: 'face'; id: string }
 
 export interface NumericExpressionBinding {
       schema_version: 1
@@ -1555,6 +1573,22 @@ export function updatePaperProperties(
   })
 }
 
+export function setElementMetadata(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  target: ElementMetadataTarget,
+  metadata: ElementMetadata | null,
+) {
+  return invoke<ProjectSnapshot>('set_element_metadata', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    target,
+    metadata,
+  })
+}
+
 export function setLengthDisplayUnit(
   expectedProjectId: string,
   expectedRevision: number,
@@ -1683,6 +1717,7 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'numeric_expressions',
   'geometric_constraints',
   'project_layers',
+  'element_metadata',
   'fold_model_fingerprint',
   'can_undo',
   'can_redo',
@@ -1715,6 +1750,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !isCoreDataRecord(record.instruction_timeline)
     || !isCoreDataRecord(record.numeric_expressions)
     || !isCoreDataRecord(record.geometric_constraints)
+    || !isCoreDataRecord(record.element_metadata)
     || typeof record.fold_model_fingerprint !== 'string'
     || !/^[0-9a-f]{64}$/u.test(record.fold_model_fingerprint)
     || typeof record.can_undo !== 'boolean'
@@ -1755,6 +1791,8 @@ function normalizeProjectLayerMutationBaseSnapshot(
     geometric_constraints:
       record.geometric_constraints as ProjectSnapshot['geometric_constraints'],
     project_layers: projectLayers,
+    element_metadata:
+      record.element_metadata as ProjectSnapshot['element_metadata'],
     fold_model_fingerprint: record.fold_model_fingerprint,
     can_undo: record.can_undo,
     can_redo: record.can_redo,
@@ -1812,6 +1850,7 @@ export function normalizeProjectLayerMutationSnapshot(
     numeric_expressions: base.numeric_expressions,
     geometric_constraints: base.geometric_constraints,
     project_layers: projectLayers,
+    element_metadata: base.element_metadata,
     fold_model_fingerprint: base.fold_model_fingerprint,
     can_undo: record.can_undo,
     can_redo: record.can_redo,

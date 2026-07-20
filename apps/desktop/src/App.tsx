@@ -98,6 +98,7 @@ import {
   saveInstructionExport,
   saveStaticMeshExport,
   setLengthDisplayUnit,
+  setElementMetadata,
   splitBoundaryEdge,
   splitEdge,
   undo,
@@ -108,6 +109,8 @@ import {
   type ProjectTopologyResponse,
   type InstructionVisual,
   type RgbaColor,
+  type ElementMetadata,
+  type ElementMetadataTarget,
   type ValidationSnapshot,
   validateSvgImportSettings,
   validateProject,
@@ -1334,6 +1337,16 @@ function App() {
     const line = nativeLines.find((candidate) => candidate.id === edgeId)
     return line && line.kind !== 'boundary' && !line.locked ? [line] : []
   }) ?? []
+  const selectedElementTarget: ElementMetadataTarget | null = selectedLine
+    ? { kind: 'edge', id: selectedLine.id }
+    : selectedFace
+      ? { kind: 'face', id: selectedFace.id }
+      : selectedVertex
+        ? { kind: 'vertex', id: selectedVertex.id }
+        : null
+  const selectedElementMetadata = selectedElementTarget && nativeSnapshot
+    ? findElementMetadata(nativeSnapshot.element_metadata, selectedElementTarget)
+    : null
   const fixedFaceOptions = useMemo(() => (
     foldPreviewModel?.kind === 'single_fold'
       ? foldPreviewModel.faces
@@ -2977,6 +2990,36 @@ function App() {
         backTextureAsset,
         cuttingAllowed: form.get('cutting_allowed') === 'on',
       }))
+  }
+
+  function submitElementMetadata(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedElementTarget || coreOperationRef.current) return
+    const form = new FormData(event.currentTarget)
+    const name = String(form.get('element_name') ?? '').trim()
+    const memo = String(form.get('element_memo') ?? '')
+    const parsedColor = parseHexColor(String(form.get('element_color') ?? ''))
+    const color = form.get('element_use_color') === 'on' ? parsedColor : null
+    if (name.length > 120 || memo.length > 4_000 || (color === null
+      && form.get('element_use_color') === 'on')) {
+      setCoreStatus(appMessage({
+        ja: '要素の名前、色、メモを確認してください。',
+        en: 'Review the element name, color, and memo.',
+      }))
+      return
+    }
+    const metadata: ElementMetadata | null = name || memo || color
+      ? { name, memo, color }
+      : null
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      setElementMetadata(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedElementTarget,
+        metadata,
+      ))
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -5484,6 +5527,57 @@ function App() {
           </div>
           <section>
             <h2>{text({ ja: '選択要素', en: 'Selection' })}</h2>
+            {selectedElementTarget && (
+              <form
+                key={`${selectedElementTarget.kind}:${selectedElementTarget.id}:${nativeSnapshot?.revision ?? 0}`}
+                className="element-metadata-form"
+                onSubmit={submitElementMetadata}
+              >
+                <label className="field">
+                  <span>{text({ ja: '名前', en: 'Name' })}</span>
+                  <input
+                    name="element_name"
+                    type="text"
+                    maxLength={120}
+                    defaultValue={selectedElementMetadata?.name ?? ''}
+                    disabled={coreBusy}
+                  />
+                </label>
+                <label className="field">
+                  <span>{text({ ja: 'メモ', en: 'Memo' })}</span>
+                  <textarea
+                    name="element_memo"
+                    maxLength={4_000}
+                    defaultValue={selectedElementMetadata?.memo ?? ''}
+                    disabled={coreBusy}
+                  />
+                </label>
+                <label className="check">
+                  <input
+                    name="element_use_color"
+                    type="checkbox"
+                    defaultChecked={Boolean(selectedElementMetadata?.color)}
+                    disabled={coreBusy}
+                  />{' '}
+                  {text({ ja: '個別色を使用', en: 'Use custom color' })}
+                </label>
+                <label className="paper-color-field">
+                  <span>{text({ ja: '色', en: 'Color' })}</span>
+                  <input
+                    name="element_color"
+                    type="color"
+                    defaultValue={rgbaToHex(
+                      selectedElementMetadata?.color ?? undefined,
+                      '#4b82c3',
+                    )}
+                    disabled={coreBusy}
+                  />
+                </label>
+                <button type="submit" disabled={coreBusy}>
+                  {text({ ja: '要素情報を保存', en: 'Save element details' })}
+                </button>
+              </form>
+            )}
             {selectedLine ? (
               <>
                 <dl>
@@ -8087,6 +8181,19 @@ function parseHexColor(value: string): RgbaColor | null {
     blue: Number.parseInt(value.slice(5, 7), 16),
     alpha: 255,
   }
+}
+
+function findElementMetadata(
+  document: ProjectSnapshot['element_metadata'],
+  target: ElementMetadataTarget,
+): ElementMetadata | null {
+  if (target.kind === 'vertex') {
+    return document.vertices.find((record) => record.vertex === target.id)?.metadata ?? null
+  }
+  if (target.kind === 'edge') {
+    return document.edges.find((record) => record.edge === target.id)?.metadata ?? null
+  }
+  return document.faces.find((record) => record.face === target.id)?.metadata ?? null
 }
 
 function hasControlCharacter(value: string) {

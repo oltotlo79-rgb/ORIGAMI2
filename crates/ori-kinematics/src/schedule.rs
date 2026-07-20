@@ -747,6 +747,40 @@ impl PreparedHalfAngleRationalEntryV1 {
         )?;
         evaluate_half_angle_rational_degrees_interval_v1(&numerator, &denominator, max_work)
     }
+
+    fn endpoint_angle_enclosure(
+        &self,
+        upper: bool,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+        let u = &self.u_domain[usize::from(upper)];
+        let numerator = evaluate_exact_power_horner(
+            &self.numerator_power_coefficients,
+            u,
+            max_coefficient_bits,
+            max_work,
+        )?;
+        let denominator = evaluate_exact_power_horner(
+            &self.denominator_power_coefficients,
+            u,
+            max_coefficient_bits,
+            max_work,
+        )?;
+        if numerator.is_zero() || denominator.is_zero() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let certificate = |value: BigRational| PoleFreeBernsteinCertificateV1 {
+            degree: 0,
+            positive: value.is_positive(),
+            coefficients: vec![value],
+        };
+        evaluate_half_angle_rational_degrees_interval_v1(
+            &certificate(numerator),
+            &certificate(denominator),
+            max_work,
+        )
+    }
 }
 
 fn evaluate_exact_power_horner(
@@ -1012,6 +1046,31 @@ impl CanonicalCycleScheduleV1 {
                         index,
                         limits.max_coefficient_bits,
                         limits.max_degree,
+                        limits.max_work,
+                    )?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Evaluates the exact rational schedule endpoint without replacing it by
+    /// a nearby dyadic leaf.
+    pub fn evaluate_endpoint_angle_box(
+        &self,
+        upper: bool,
+        limits: CycleScheduleLimitsV1,
+    ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
+        if self.half_angle_entries.is_empty() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        self.half_angle_entries
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry.edge(),
+                    entry.endpoint_angle_enclosure(
+                        upper,
+                        limits.max_coefficient_bits,
                         limits.max_work,
                     )?,
                 ))
@@ -1680,6 +1739,16 @@ mod tests {
             .evaluate_angle_box_dyadic(1, 1, CycleScheduleLimitsV1::default())
             .unwrap();
         assert_eq!(left, right);
+        for upper in [false, true] {
+            let endpoint = schedule
+                .evaluate_endpoint_angle_box(upper, CycleScheduleLimitsV1::default())
+                .unwrap();
+            assert!(
+                endpoint
+                    .iter()
+                    .all(|(_, angle)| { angle.lower() <= 90.0 && angle.upper() >= 90.0 })
+            );
+        }
         assert_eq!(
             schedule.evaluate_angle_box_dyadic(1, 2, CycleScheduleLimitsV1::default()),
             Err(CycleSchedulePrepareErrorV1::InvalidInput)

@@ -469,10 +469,10 @@ pub(super) async fn propose_current_stacked_fold_read(
             )
             .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             let initial_box = schedule
-                .evaluate_angle_box_dyadic(32, 0, cycle_limits)
+                .evaluate_endpoint_angle_box(false, cycle_limits)
                 .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             let requested_box = schedule
-                .evaluate_angle_box_dyadic(32, (1u64 << 32) - 1, cycle_limits)
+                .evaluate_endpoint_angle_box(true, cycle_limits)
                 .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             if initial_box.iter().zip(requested_box.iter()).zip(
                 initial

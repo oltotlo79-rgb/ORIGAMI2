@@ -220,7 +220,8 @@ export function DiagnosticsDialog({
   }
 
   const savePreview = async () => {
-    if (state.kind !== 'ready' || state.saving) return
+    if (state.kind !== 'ready' || state.saving || savingRef.current) return
+    savingRef.current = true
     const { requestId, preview } = state
     setState({
       ...state,

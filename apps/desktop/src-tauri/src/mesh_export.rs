@@ -18,10 +18,11 @@ use std::{
 use num_bigint::{BigInt, Sign};
 use ori_domain::{AssetId, ProjectId, VertexId};
 use ori_formats::{
-    EmbeddedBaseColorTextureV1, EmbeddedTextureMediaTypeV1, IndexedTriangleMeshV1,
-    MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES, STATIC_MESH_SOURCE_AXIS,
-    STATIC_MESH_SOURCE_UNIT, StaticMeshExportArtifact, StaticMeshExportFormat,
-    export_dual_sided_triangle_mesh_glb, export_static_triangle_mesh,
+    ClosedSolidTriangleRegionV1, EmbeddedBaseColorTextureV1, EmbeddedTextureMediaTypeV1,
+    IndexedTriangleMeshV1, MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES,
+    STATIC_MESH_SOURCE_AXIS, STATIC_MESH_SOURCE_UNIT, StaticMeshExportArtifact,
+    StaticMeshExportFormat, export_dual_sided_triangle_mesh_glb,
+    export_regioned_closed_solid_triangle_mesh_glb, export_static_triangle_mesh,
     validate_indexed_triangle_mesh,
 };
 use ori_kinematics::{MaterialTreeKinematicsModel, MaterialTreePose, Point3};
@@ -545,7 +546,7 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         .map(|texture| texture.asset_id);
     if source.format == StaticMeshExportFormatRequest::Glb
         && source.paper_thickness_mm > 0.0
-        && (expected_front_asset.is_some() || expected_back_asset.is_some())
+        && expected_front_asset.is_some() != expected_back_asset.is_some()
     {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
     }
@@ -584,22 +585,49 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         material_tex_coords,
         mid_surface,
     )?;
-    let mesh = if source.paper_thickness_mm > 0.0 {
-        extrude_closed_face_solids(
+    let (mesh, solid_regions) = if source.paper_thickness_mm > 0.0 {
+        let solid = extrude_closed_face_solids(
             mid_surface,
             source.paper_thickness_mm,
             source.paper_front_color_rgba,
             source.paper_back_color_rgba,
-        )?
+        )?;
+        (solid.mesh, Some(solid.regions))
     } else {
-        mid_surface.with_base_color_rgba(source.paper_front_color_rgba)
+        (
+            mid_surface.with_base_color_rgba(source.paper_front_color_rgba),
+            None,
+        )
     };
+    let back_texture = back_texture.map(|mut texture| {
+        texture
+            .tex_coords
+            .resize(mesh.positions_mm.len(), [0.0, 0.0]);
+        texture
+    });
     let validated =
         validate_indexed_triangle_mesh(&mesh).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
-    let artifact = if let Some(back_texture) = back_texture {
-        export_dual_sided_triangle_mesh_glb(&validated, back_texture, source.paper_back_color_rgba)
-    } else {
-        export_static_triangle_mesh(source.format.exporter_format(), &validated)
+    let artifact = match (back_texture, solid_regions.as_deref()) {
+        (Some(back_texture), Some(regions)) => {
+            let side_color = std::array::from_fn(|index| {
+                ((u16::from(source.paper_front_color_rgba[index])
+                    + u16::from(source.paper_back_color_rgba[index]))
+                    / 2) as u8
+            });
+            export_regioned_closed_solid_triangle_mesh_glb(
+                &validated,
+                regions,
+                back_texture,
+                source.paper_back_color_rgba,
+                side_color,
+            )
+        }
+        (Some(back_texture), None) => export_dual_sided_triangle_mesh_glb(
+            &validated,
+            back_texture,
+            source.paper_back_color_rgba,
+        ),
+        (None, _) => export_static_triangle_mesh(source.format.exporter_format(), &validated),
     }
     .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     validate_artifact_contract(source.format, &validated, &artifact)?;
@@ -1016,12 +1044,17 @@ fn normalized_material_tex_coords(points: &[[f64; 2]]) -> Result<Vec<[f32; 2]>, 
         .collect()
 }
 
+struct ExtrudedClosedFaceSolids {
+    mesh: IndexedTriangleMeshV1,
+    regions: Vec<ClosedSolidTriangleRegionV1>,
+}
+
 fn extrude_closed_face_solids(
     mesh: IndexedTriangleMeshV1,
     thickness_mm: f64,
     front_color: [u8; 4],
     back_color: [u8; 4],
-) -> Result<IndexedTriangleMeshV1, String> {
+) -> Result<ExtrudedClosedFaceSolids, String> {
     if !thickness_mm.is_finite() || thickness_mm <= 0.0 {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
     }
@@ -1060,14 +1093,17 @@ fn extrude_closed_face_solids(
     let bottom_offset =
         u32::try_from(source_vertex_count).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let mut triangles = Vec::new();
+    let mut regions = Vec::new();
     let mut edges = BTreeMap::<(u32, u32), (usize, u32, u32)>::new();
     for triangle in &mesh.triangles {
         triangles.push(*triangle);
+        regions.push(ClosedSolidTriangleRegionV1::FrontCap);
         triangles.push([
             triangle[2] + bottom_offset,
             triangle[1] + bottom_offset,
             triangle[0] + bottom_offset,
         ]);
+        regions.push(ClosedSolidTriangleRegionV1::BackCap);
         for (start, end) in [
             (triangle[0], triangle[1]),
             (triangle[1], triangle[2]),
@@ -1109,15 +1145,27 @@ fn extrude_closed_face_solids(
         });
         colors.extend([edge_color; 4]);
         triangles.push([base, base + 1, base + 2]);
+        regions.push(ClosedSolidTriangleRegionV1::SideWall);
         triangles.push([base, base + 2, base + 3]);
+        regions.push(ClosedSolidTriangleRegionV1::SideWall);
     }
     if positions.len() > MAX_STATIC_MESH_VERTICES || triangles.len() > MAX_STATIC_MESH_TRIANGLES {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
     }
-    Ok(
-        IndexedTriangleMeshV1::new(mesh.name, positions, normals, triangles)
-            .with_vertex_colors_rgba(colors),
-    )
+    let mut solid = IndexedTriangleMeshV1::new(mesh.name, positions, normals, triangles)
+        .with_vertex_colors_rgba(colors);
+    if let Some(mut texture) = mesh.base_color_texture {
+        let source_uvs = texture.tex_coords.clone();
+        texture.tex_coords.extend(source_uvs);
+        texture
+            .tex_coords
+            .resize(solid.positions_mm.len(), [0.0, 0.0]);
+        solid = solid.with_base_color_texture(texture);
+    }
+    Ok(ExtrudedClosedFaceSolids {
+        mesh: solid,
+        regions,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1725,7 +1773,7 @@ mod tests {
         AppState::new(project)
     }
 
-    fn app_state_with_dual_textures() -> AppState {
+    fn app_state_with_dual_textures(thickness_mm: f64) -> AppState {
         let mut project = crate::initial_project_state();
         let front = AssetId::new();
         let back = AssetId::new();
@@ -1750,7 +1798,7 @@ mod tests {
             project_id,
             0,
             Command::UpdatePaperProperties {
-                thickness_mm: 0.0,
+                thickness_mm,
                 front_color: paper.front.color,
                 back_color: paper.back.color,
                 front_texture_asset: Some(front),
@@ -1781,7 +1829,7 @@ mod tests {
 
     #[test]
     fn zero_thickness_glb_carries_authenticated_front_and_back_assets() {
-        let state = app_state_with_dual_textures();
+        let state = app_state_with_dual_textures(0.0);
         let request = preview_request(&state, StaticMeshExportFormatRequest::Glb);
         let source =
             capture_export_source(&state, ProjectId::new(), request).expect("capture source");
@@ -1795,6 +1843,25 @@ mod tests {
         assert_eq!(json["images"].as_array().unwrap().len(), 2);
         assert_eq!(json["images"][0]["mimeType"], "image/png");
         assert_eq!(json["images"][1]["mimeType"], "image/jpeg");
+    }
+
+    #[test]
+    fn positive_thickness_glb_separates_front_back_and_untextured_side() {
+        let state = app_state_with_dual_textures(0.2);
+        let request = preview_request(&state, StaticMeshExportFormatRequest::Glb);
+        let source =
+            capture_export_source(&state, ProjectId::new(), request).expect("capture source");
+        let pending = build_pending_export(source).expect("regioned solid GLB");
+        let json_length = u32::from_le_bytes(pending.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&pending.bytes[20..20 + json_length]).expect("GLB JSON");
+        let primitives = json["meshes"][0]["primitives"].as_array().unwrap();
+        assert_eq!(primitives.len(), 3);
+        assert!(primitives[0]["attributes"].get("TEXCOORD_0").is_some());
+        assert!(primitives[1]["attributes"].get("TEXCOORD_0").is_some());
+        assert!(primitives[2]["attributes"].get("TEXCOORD_0").is_none());
+        assert_eq!(json["materials"].as_array().unwrap().len(), 3);
+        assert_eq!(json["images"].as_array().unwrap().len(), 2);
     }
 
     fn preview_request(
@@ -1863,6 +1930,24 @@ mod tests {
         let mid_vertex_count = mid.positions_mm.len();
         let solid = extrude_closed_face_solids(mid, 0.1, [255, 0, 0, 255], [0, 0, 255, 255])
             .expect("solid extrusion");
+        assert_eq!(solid.regions.len(), 12);
+        assert_eq!(
+            solid
+                .regions
+                .iter()
+                .filter(|region| **region == ClosedSolidTriangleRegionV1::FrontCap)
+                .count(),
+            2
+        );
+        assert_eq!(
+            solid
+                .regions
+                .iter()
+                .filter(|region| **region == ClosedSolidTriangleRegionV1::BackCap)
+                .count(),
+            2
+        );
+        let solid = solid.mesh;
         assert_eq!(solid.positions_mm.len(), 24);
         assert_eq!(solid.triangles.len(), 12);
         assert_eq!(solid.vertex_colors_rgba.len(), solid.positions_mm.len());

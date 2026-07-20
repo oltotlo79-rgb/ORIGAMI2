@@ -6,8 +6,8 @@ use crate::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 use ori_domain::{
-    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, ConstraintId, CreasePattern,
-    DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
+    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, BeginnerDesignProfileV1, ConstraintId,
+    CreasePattern, DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
     ElementMetadataDocumentV1, ElementMetadataV1, FaceId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
     GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionPose, InstructionStep,
@@ -15,9 +15,10 @@ use ori_domain::{
     LayerId, LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS,
     MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectLayerDocumentV1,
     ProjectLayerDocumentValidationErrorV1, RgbaColor, UnderlayDocumentV1, UnderlayId,
-    UnderlayRecordV1, Vertex, VertexId, validate_element_metadata_v1,
-    validate_geometric_constraint_document_v1, validate_instruction_timeline,
-    validate_project_layer_document_against_pattern_v1, validate_underlay_document_v1,
+    UnderlayRecordV1, Vertex, VertexId, validate_beginner_design_profile_v1,
+    validate_element_metadata_v1, validate_geometric_constraint_document_v1,
+    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
+    validate_underlay_document_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointSegmentRelation, SegmentIntersection, exact_orientation,
@@ -94,6 +95,9 @@ pub enum ElementMetadataTargetV1 {
 pub enum Command {
     UpdateProjectMemo {
         memo: String,
+    },
+    UpdateBeginnerDesignProfile {
+        profile: BeginnerDesignProfileV1,
     },
     SetElementMetadata {
         target: ElementMetadataTargetV1,
@@ -314,6 +318,8 @@ pub enum CommandError {
     InvalidStackedFoldDocument,
     #[error("the mirror-selection request or resulting geometry is invalid")]
     InvalidMirrorSelection,
+    #[error("the beginner-design evaluation profile is invalid")]
+    InvalidBeginnerDesignProfile,
     #[error("expected revision {expected}, but the current revision is {actual}")]
     RevisionConflict {
         expected: Revision,
@@ -903,6 +909,9 @@ enum Inverse {
     },
     RestoreProjectMemo {
         memo: String,
+    },
+    RestoreBeginnerDesignProfile {
+        profile: BeginnerDesignProfileV1,
     },
     RestoreElementMetadata {
         target: ElementMetadataTargetV1,
@@ -1796,6 +1805,7 @@ pub struct EditorState {
     annotations: AnnotationDocumentV1,
     underlays: UnderlayDocumentV1,
     project_memo: String,
+    beginner_design_profile: BeginnerDesignProfileV1,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
     revision: Revision,
@@ -1915,6 +1925,14 @@ impl EditorState {
                 underlays: Vec::new(),
             },
             project_memo: String::new(),
+            beginner_design_profile: BeginnerDesignProfileV1 {
+                schema_version: ori_domain::BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1,
+                preset: ori_domain::BeginnerDesignPresetV1::Balanced,
+                shape_fidelity_weight: 35,
+                foldability_weight: 35,
+                step_count_weight: 15,
+                paper_efficiency_weight: 15,
+            },
             current_applied_pose: None,
             revision: 0,
             undo_stack: Vec::new(),
@@ -2035,6 +2053,22 @@ impl EditorState {
     #[must_use]
     pub fn project_memo(&self) -> &str {
         &self.project_memo
+    }
+
+    #[must_use]
+    pub const fn beginner_design_profile(&self) -> &BeginnerDesignProfileV1 {
+        &self.beginner_design_profile
+    }
+
+    pub fn restore_beginner_design_profile(
+        &mut self,
+        profile: BeginnerDesignProfileV1,
+    ) -> Result<(), CommandError> {
+        if !validate_beginner_design_profile_v1(&profile) {
+            return Err(CommandError::InvalidBeginnerDesignProfile);
+        }
+        self.beginner_design_profile = profile;
+        Ok(())
     }
 
     #[must_use]
@@ -2322,6 +2356,14 @@ impl EditorState {
                 }
                 Ok(Inverse::RestoreProjectMemo {
                     memo: std::mem::replace(&mut self.project_memo, memo.clone()),
+                })
+            }
+            Command::UpdateBeginnerDesignProfile { ref profile } => {
+                if !validate_beginner_design_profile_v1(profile) {
+                    return Err(CommandError::InvalidBeginnerDesignProfile);
+                }
+                Ok(Inverse::RestoreBeginnerDesignProfile {
+                    profile: std::mem::replace(&mut self.beginner_design_profile, profile.clone()),
                 })
             }
             Command::SetElementMetadata {
@@ -3271,6 +3313,7 @@ impl EditorState {
                 self.ensure_layer_unlocked(*layer)
             }
             Command::UpdateProjectMemo { .. }
+            | Command::UpdateBeginnerDesignProfile { .. }
             | Command::SetElementMetadata { .. }
             | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
@@ -3637,6 +3680,7 @@ impl EditorState {
             | Command::AddEdge { .. }
             | Command::AddConnectedVertex { .. }
             | Command::UpdateProjectMemo { .. }
+            | Command::UpdateBeginnerDesignProfile { .. }
             | Command::SetElementMetadata { .. }
             | Command::SetCuttingAllowed { .. }
             | Command::UpdatePaperProperties { .. }
@@ -5081,6 +5125,9 @@ impl EditorState {
             Inverse::RestoreProjectMemo { memo } => {
                 self.project_memo.clone_from(memo);
             }
+            Inverse::RestoreBeginnerDesignProfile { profile } => {
+                self.beginner_design_profile.clone_from(profile);
+            }
             Inverse::RestoreElementMetadata { target, metadata } => {
                 self.replace_element_metadata(*target, metadata.clone());
             }
@@ -5627,6 +5674,7 @@ impl Command {
                 )
             }
             Self::UpdateProjectMemo { .. }
+            | Self::UpdateBeginnerDesignProfile { .. }
             | Self::SetElementMetadata { .. }
             | Self::MoveVertex { .. }
             | Self::MoveEdge { .. }
@@ -5700,6 +5748,7 @@ impl Command {
             | Self::MirrorSelection { .. }
             | Self::ApplyStackedFoldDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
+            | Self::UpdateBeginnerDesignProfile { .. }
             | Self::SetElementMetadata { .. }
             | Self::SetCuttingAllowed { .. }
             | Self::UpdatePaperProperties { .. }
@@ -5729,7 +5778,7 @@ impl Command {
 
     fn changes(&self, pattern: &CreasePattern, paper: &Paper) -> Changes {
         match *self {
-            Self::UpdateProjectMemo { .. } => Changes {
+            Self::UpdateProjectMemo { .. } | Self::UpdateBeginnerDesignProfile { .. } => Changes {
                 settings: true,
                 ..Changes::default()
             },
@@ -6079,10 +6128,12 @@ impl Inverse {
                 instructions: true,
                 constraints: false,
             },
-            Self::RestoreProjectMemo { .. } => Changes {
-                settings: true,
-                ..Changes::default()
-            },
+            Self::RestoreProjectMemo { .. } | Self::RestoreBeginnerDesignProfile { .. } => {
+                Changes {
+                    settings: true,
+                    ..Changes::default()
+                }
+            }
             Self::RestoreElementMetadata { target, .. } => Changes {
                 vertices: match target {
                     ElementMetadataTargetV1::Vertex(id) => vec![*id],

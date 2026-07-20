@@ -314,6 +314,11 @@ pub struct ProjectDocument {
         skip_serializing_if = "ori_domain::ElementMetadataDocumentV1::is_empty"
     )]
     pub element_metadata: ori_domain::ElementMetadataDocumentV1,
+    #[serde(
+        default,
+        skip_serializing_if = "ori_domain::BeginnerDesignProfileV1::is_default"
+    )]
+    pub beginner_design_profile: ori_domain::BeginnerDesignProfileV1,
     /// Bounded project-local texture payloads authenticated by `AssetId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texture_assets: Vec<ProjectTextureAssetV1>,
@@ -338,6 +343,7 @@ impl ProjectDocument {
             annotations: AnnotationDocumentV1::default(),
             underlays: UnderlayDocumentV1::default(),
             element_metadata: ori_domain::ElementMetadataDocumentV1::default(),
+            beginner_design_profile: ori_domain::BeginnerDesignProfileV1::default(),
             texture_assets: Vec::new(),
         }
     }

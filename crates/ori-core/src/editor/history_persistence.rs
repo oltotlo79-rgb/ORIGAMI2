@@ -140,6 +140,9 @@ enum CommandV1 {
     UpdateProjectMemo {
         memo: String,
     },
+    UpdateBeginnerDesignProfile {
+        profile: BeginnerDesignProfileV1,
+    },
     SetElementMetadata {
         target: ElementMetadataTargetV1,
         metadata: Option<ElementMetadataV1>,
@@ -369,6 +372,9 @@ enum InverseV1 {
     RestoreProjectMemo {
         memo: String,
     },
+    RestoreBeginnerDesignProfile {
+        profile: BeginnerDesignProfileV1,
+    },
     RestoreElementMetadata {
         target: ElementMetadataTargetV1,
         metadata: Option<ElementMetadataV1>,
@@ -534,6 +540,11 @@ fn target_from_wire(target: IntersectionEdgeTargetV1) -> IntersectionEdgeTarget 
 fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1> {
     Ok(match command {
         Command::UpdateProjectMemo { memo } => CommandV1::UpdateProjectMemo { memo: memo.clone() },
+        Command::UpdateBeginnerDesignProfile { profile } => {
+            CommandV1::UpdateBeginnerDesignProfile {
+                profile: profile.clone(),
+            }
+        }
         Command::SetElementMetadata { target, metadata } => CommandV1::SetElementMetadata {
             target: *target,
             metadata: metadata.clone(),
@@ -796,6 +807,9 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
 fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1> {
     Ok(match command {
         CommandV1::UpdateProjectMemo { memo } => Command::UpdateProjectMemo { memo },
+        CommandV1::UpdateBeginnerDesignProfile { profile } => {
+            Command::UpdateBeginnerDesignProfile { profile }
+        }
         CommandV1::SetElementMetadata { target, metadata } => {
             Command::SetElementMetadata { target, metadata }
         }
@@ -1082,6 +1096,11 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
         Inverse::RestoreProjectMemo { memo } => {
             InverseV1::RestoreProjectMemo { memo: memo.clone() }
         }
+        Inverse::RestoreBeginnerDesignProfile { profile } => {
+            InverseV1::RestoreBeginnerDesignProfile {
+                profile: profile.clone(),
+            }
+        }
         Inverse::RestoreElementMetadata { target, metadata } => InverseV1::RestoreElementMetadata {
             target: *target,
             metadata: metadata.clone(),
@@ -1333,6 +1352,9 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             project_layers,
         },
         InverseV1::RestoreProjectMemo { memo } => Inverse::RestoreProjectMemo { memo },
+        InverseV1::RestoreBeginnerDesignProfile { profile } => {
+            Inverse::RestoreBeginnerDesignProfile { profile }
+        }
         InverseV1::RestoreElementMetadata { target, metadata } => {
             Inverse::RestoreElementMetadata { target, metadata }
         }
@@ -1681,6 +1703,11 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
                 return Err(EditorHistoryErrorV1::InvalidCommand);
             }
         }
+        Command::UpdateBeginnerDesignProfile { profile } => {
+            if !validate_beginner_design_profile_v1(profile) {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
+        }
         Command::SetElementMetadata { metadata, .. } => {
             if let Some(metadata) = metadata {
                 ori_domain::validate_element_metadata_v1(metadata)
@@ -1829,6 +1856,11 @@ fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1
                     character.is_control() && !matches!(character, '\n' | '\r' | '\t')
                 })
             {
+                return Err(EditorHistoryErrorV1::InvalidInverse);
+            }
+        }
+        Inverse::RestoreBeginnerDesignProfile { profile } => {
+            if !validate_beginner_design_profile_v1(profile) {
                 return Err(EditorHistoryErrorV1::InvalidInverse);
             }
         }
@@ -1983,6 +2015,7 @@ fn validate_inverse_application(
         Inverse::RestoreMirrorSelection { .. } => {}
         Inverse::RestoreStackedFoldDocument { .. } => {}
         Inverse::RestoreProjectMemo { .. } => {}
+        Inverse::RestoreBeginnerDesignProfile { .. } => {}
         Inverse::RestoreElementMetadata { .. } => {}
         Inverse::Command(_) => {}
         Inverse::RestoreVertex { index, vertex } => {

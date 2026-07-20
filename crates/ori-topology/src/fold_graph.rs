@@ -278,8 +278,8 @@ fn classify_participant_components(
                     .filter(|neighbour| !reached.contains(neighbour)),
             );
         }
-        if component_root != root {
-            if let Some(edge) = participant_edges
+        if component_root != root
+            && let Some(edge) = participant_edges
                 .iter()
                 .filter(|edge| {
                     component_vertices.contains(&edge.start)
@@ -287,9 +287,8 @@ fn classify_participant_components(
                 })
                 .map(|edge| edge.id)
                 .min_by_key(EdgeId::canonical_bytes)
-            {
-                return Err(FoldGraphError::DisconnectedParticipantGraph { edge });
-            }
+        {
+            return Err(FoldGraphError::DisconnectedParticipantGraph { edge });
         }
     }
 

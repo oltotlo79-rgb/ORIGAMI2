@@ -15,7 +15,8 @@ use thiserror::Error;
 
 use crate::{
     StaticCollisionLimits, diagnose_static_collision_geometry,
-    prepare_single_hinge_thickness_boundary_v1, revalidate_single_hinge_thickness_boundary_v1,
+    prepare_single_hinge_thickness_boundary_v1, prepare_tree_hinge_thickness_boundaries_v1,
+    revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
 };
 
 pub const STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1: &str =
@@ -26,6 +27,10 @@ pub const STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MO
     "stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1";
 pub const STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
+    "stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
+    "stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +57,8 @@ pub struct StackedFoldBoundedPathDiagnosticV1 {
     requested_angle_degrees: f64,
     analytic_single_hinge_clearance: bool,
     analytic_collinear_tree_clearance: bool,
+    analytic_positive_two_hinge_clearance: bool,
+    interval_two_hinge_chain_clearance: bool,
     positive_thickness_outer_shell: bool,
 }
 
@@ -84,7 +91,10 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     /// Sampling cannot prove an open continuous interval.
     #[must_use]
     pub const fn continuous_clearance_certified(&self) -> bool {
-        self.analytic_single_hinge_clearance || self.analytic_collinear_tree_clearance
+        self.analytic_single_hinge_clearance
+            || self.analytic_collinear_tree_clearance
+            || self.analytic_positive_two_hinge_clearance
+            || self.interval_two_hinge_chain_clearance
     }
 
     /// The only fail-closed recommendation supplied by this diagnostic is to
@@ -100,7 +110,11 @@ impl StackedFoldBoundedPathDiagnosticV1 {
 
     #[must_use]
     pub const fn continuous_certificate_model_id(&self) -> Option<&'static str> {
-        if self.analytic_collinear_tree_clearance {
+        if self.interval_two_hinge_chain_clearance {
+            Some(STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        } else if self.analytic_positive_two_hinge_clearance {
+            Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        } else if self.analytic_collinear_tree_clearance {
             Some(STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
         } else if self.analytic_single_hinge_clearance {
             Some(if self.positive_thickness_outer_shell {
@@ -186,6 +200,21 @@ pub fn diagnose_collective_hinge_path_v1(
             requested_angle_degrees,
         );
     let positive_thickness = paper_thickness_mm.is_finite() && paper_thickness_mm > 0.0;
+    let interval_two_hinge_chain_topology = zero_thickness
+        && two_hinge_interval_clearance_premises(
+            model,
+            initial_pose,
+            &moving,
+            requested_angle_degrees,
+            limits.sample_intervals,
+        );
+    let positive_two_hinge_topology = positive_thickness
+        && model.face_ids().len() == 3
+        && model.hinges().len() == 2
+        && moving.len() == 2
+        && initial_pose.hinge_angles().iter().all(|angle| {
+            moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
+        });
     let mut all_positive_thickness_outer_shells = positive_thickness;
 
     let mut sampled_nonblocking_pose_count = 0;
@@ -224,13 +253,38 @@ pub fn diagnose_collective_hinge_path_v1(
             let bound = model
                 .bind_pose(&pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
-            let boundary = prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
-                .ok()
-                .flatten();
-            all_positive_thickness_outer_shells &= boundary.as_ref().is_some_and(|boundary| {
-                revalidate_single_hinge_thickness_boundary_v1(boundary, bound, paper_thickness_mm)
-                    .is_some()
-            });
+            all_positive_thickness_outer_shells &= if positive_two_hinge_topology {
+                prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|boundary| {
+                        revalidate_tree_hinge_thickness_boundaries_v1(
+                            &boundary,
+                            bound,
+                            paper_thickness_mm,
+                        )
+                        .is_some_and(|observations| observations.len() == 2)
+                            && diagnose_static_collision_geometry(
+                                model,
+                                &pose,
+                                paper_thickness_mm,
+                                limits.static_collision,
+                            )
+                            .is_ok_and(|snapshot| !snapshot.has_prominent_blocking_hold())
+                    })
+            } else {
+                prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|boundary| {
+                        revalidate_single_hinge_thickness_boundary_v1(
+                            &boundary,
+                            bound,
+                            paper_thickness_mm,
+                        )
+                        .is_some()
+                    })
+            };
             if all_positive_thickness_outer_shells {
                 // The opaque boundary capability is issued only after the
                 // complete shared-hinge solid classifier returns Allowed.
@@ -287,8 +341,170 @@ pub fn diagnose_collective_hinge_path_v1(
         analytic_collinear_tree_clearance: analytic_collinear_tree_topology
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
+        analytic_positive_two_hinge_clearance: positive_two_hinge_topology
+            && requested_angle_degrees <= 90.0
+            && all_positive_thickness_outer_shells
+            && first_sampled_blocking_angle_degrees.is_none()
+            && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
+        interval_two_hinge_chain_clearance: interval_two_hinge_chain_topology
+            && first_sampled_blocking_angle_degrees.is_none()
+            && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         positive_thickness_outer_shell: positive_thickness && all_positive_thickness_outer_shells,
     })
+}
+
+fn two_hinge_interval_clearance_premises(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    moving: &HashSet<EdgeId>,
+    requested_angle_degrees: f64,
+    interval_count: usize,
+) -> bool {
+    if model.face_ids().len() != 3
+        || model.hinges().len() != 2
+        || moving.len() != 2
+        || interval_count == 0
+        || initial_pose.fixed_face().is_none()
+        || !initial_pose.hinge_angles().iter().all(|angle| {
+            moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
+        })
+    {
+        return false;
+    }
+    let Some(first_line) = world_hinge_line(initial_pose, &model.hinges()[0]) else {
+        return false;
+    };
+    let Some(second_line) = world_hinge_line(initial_pose, &model.hinges()[1]) else {
+        return false;
+    };
+    if exact_collinear_line(first_line.0, first_line.2, second_line.0, second_line.2)
+        && exact_collinear_line(first_line.0, first_line.2, second_line.1, second_line.2)
+    {
+        return false;
+    }
+
+    let mut material_points = Vec::new();
+    for face in model.face_ids() {
+        let Some(boundary) = model.face_boundary(*face) else {
+            return false;
+        };
+        for vertex in boundary.vertices() {
+            let Some(point) = initial_pose.vertex_position(*vertex) else {
+                return false;
+            };
+            material_points.push(point);
+        }
+    }
+    let hinge_points = model
+        .hinges()
+        .iter()
+        .flat_map(|hinge| [hinge.start(), hinge.end()])
+        .collect::<Vec<_>>();
+    let mut maximum_radius = 0.0_f64;
+    for point in &material_points {
+        for origin in &hinge_points {
+            let distance = ((point.x() - origin.x()).powi(2)
+                + (point.y() - origin.y()).powi(2)
+                + (point.z() - origin.z()).powi(2))
+            .sqrt();
+            if !distance.is_finite() {
+                return false;
+            }
+            maximum_radius = maximum_radius.max(distance);
+        }
+    }
+    if maximum_radius == 0.0 {
+        return false;
+    }
+
+    let adjacent = |first: ori_domain::FaceId, second: ori_domain::FaceId| {
+        model.hinges().iter().any(|hinge| {
+            (hinge.left_face() == first && hinge.right_face() == second)
+                || (hinge.left_face() == second && hinge.right_face() == first)
+        })
+    };
+    for interval in 0..interval_count {
+        let lower = requested_angle_degrees * interval as f64 / interval_count as f64;
+        let upper = requested_angle_degrees * (interval + 1) as f64 / interval_count as f64;
+        let midpoint = (lower + upper) / 2.0;
+        let half_width_radians = (upper - lower) * std::f64::consts::PI / 360.0;
+        // A two-hinge chain composes at most two rotations. For either
+        // rotation, every affected point stays within `maximum_radius` of its
+        // material hinge axis because ancestors move the point and axis by the
+        // same rigid transform. The sum of both angular Lipschitz bounds is a
+        // conservative component expansion for the entire interval.
+        let expansion = 2.0 * maximum_radius * half_width_radians;
+        if !expansion.is_finite() {
+            return false;
+        }
+        let Some(pose) = solve_collective_pose(model, initial_pose, moving, midpoint) else {
+            return false;
+        };
+        let mut bounds = Vec::new();
+        for face in model.face_ids() {
+            let Some(transform) = pose.face_transform(*face) else {
+                return false;
+            };
+            let Some(boundary) = model.face_boundary(*face) else {
+                return false;
+            };
+            let mut minimum = [f64::INFINITY; 3];
+            let mut maximum = [f64::NEG_INFINITY; 3];
+            for vertex in boundary.vertices() {
+                let Some(point) = initial_pose.vertex_position(*vertex) else {
+                    return false;
+                };
+                let Ok(world) = transform.apply_point(point) else {
+                    return false;
+                };
+                for (axis, value) in [world.x(), world.y(), world.z()].into_iter().enumerate() {
+                    minimum[axis] = minimum[axis].min(value - expansion);
+                    maximum[axis] = maximum[axis].max(value + expansion);
+                }
+            }
+            bounds.push((*face, minimum, maximum));
+        }
+        for first in 0..bounds.len() {
+            for second in first + 1..bounds.len() {
+                if adjacent(bounds[first].0, bounds[second].0) {
+                    continue;
+                }
+                let separated = (0..3).any(|axis| {
+                    bounds[first].2[axis] < bounds[second].1[axis]
+                        || bounds[second].2[axis] < bounds[first].1[axis]
+                });
+                if !separated {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn solve_collective_pose(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    moving: &HashSet<EdgeId>,
+    angle: f64,
+) -> Option<MaterialTreePose> {
+    let angles = initial_pose
+        .hinge_angles()
+        .iter()
+        .map(|hinge| {
+            HingeAngle::new(
+                hinge.edge(),
+                if moving.contains(&hinge.edge()) {
+                    angle
+                } else {
+                    hinge.angle_degrees()
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .and_then(|angles| CanonicalHingeAngles::new(angles).ok())?;
+    model.solve(initial_pose.fixed_face(), &angles).ok()
 }
 
 fn collinear_collective_tree_premises(
@@ -499,6 +715,8 @@ mod tests {
                 requested_angle_degrees: 90.0,
                 analytic_single_hinge_clearance: false,
                 analytic_collinear_tree_clearance: false,
+                analytic_positive_two_hinge_clearance: false,
+                interval_two_hinge_chain_clearance: false,
                 positive_thickness_outer_shell: false,
             }
             .safe_stop_angle_degrees()

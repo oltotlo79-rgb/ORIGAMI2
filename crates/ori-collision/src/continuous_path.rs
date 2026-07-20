@@ -1281,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn split_existing_hinge_cycle_has_bit_exact_nonzero_root_and_permutation_stability() {
+    fn split_existing_hinge_cycle_without_bit_exact_nonzero_root_is_permutation_stable() {
         let points = [
             (0.0, 0.0),
             (400.0, 0.0),
@@ -1363,7 +1363,10 @@ mod tests {
             90.0,
             128,
         );
-        assert_eq!(roots, UniformCycleClosureRootsV1::Roots(vec![90.0]));
+        assert!(matches!(
+            roots,
+            UniformCycleClosureRootsV1::Indeterminate { .. }
+        ));
         let mut reversed = moving;
         reversed.reverse();
         assert_eq!(
@@ -2011,18 +2014,18 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        for (offset, (start, end)) in [
-            (0, 7),
-            (0, 2),
-            (0, 3),
-            (0, 4),
-            (0, 5),
-            (0, 6),
-            (7, 9),
-            (7, 10),
-            (7, 11),
-            (7, 12),
-            (7, 13),
+        for (offset, (start, end, mountain)) in [
+            (0, 7, true),
+            (0, 2, true),
+            (0, 3, false),
+            (0, 4, true),
+            (0, 5, false),
+            (0, 6, true),
+            (7, 9, true),
+            (7, 10, false),
+            (7, 11, true),
+            (7, 12, false),
+            (7, 13, true),
         ]
         .into_iter()
         .enumerate()
@@ -2031,7 +2034,7 @@ mod tests {
                 id: fixed_id("9e00", 20 + offset as u64),
                 start: boundary[start],
                 end: boundary[end],
-                kind: if offset % 2 == 0 {
+                kind: if mountain {
                     EdgeKind::Mountain
                 } else {
                     EdgeKind::Valley

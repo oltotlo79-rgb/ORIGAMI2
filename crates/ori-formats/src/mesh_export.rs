@@ -95,6 +95,13 @@ pub enum EmbeddedTextureMediaTypeV1 {
     Jpeg,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosedSolidTriangleRegionV1 {
+    FrontCap,
+    BackCap,
+    SideWall,
+}
+
 impl EmbeddedTextureMediaTypeV1 {
     const fn as_str(self) -> &'static str {
         match self {
@@ -315,6 +322,12 @@ pub enum StaticMeshExportError {
     InvalidTexturePayload,
     #[error("texture coordinate {vertex_index} is non-finite")]
     NonFiniteTextureCoordinate { vertex_index: usize },
+    #[error("closed-solid textured export requires a front texture")]
+    MissingFrontTexture,
+    #[error("triangle-region count must equal triangle count")]
+    TriangleRegionCountMismatch,
+    #[error("closed-solid region classification must contain front, back, and side triangles")]
+    IncompleteTriangleRegionCoverage,
     #[error("mesh vertex {vertex_index} has a non-finite coordinate")]
     NonFinitePosition { vertex_index: usize },
     #[error("mesh vertex {vertex_index} has a non-finite normal")]
@@ -648,6 +661,69 @@ pub fn export_dual_sided_triangle_mesh_glb_with_limits(
         bytes,
         vertex_count: mesh.positions_mm.len(),
         triangle_count: mesh.triangles.len() * 2,
+    })
+}
+
+pub fn export_regioned_closed_solid_triangle_mesh_glb(
+    mesh: &ValidatedIndexedTriangleMesh,
+    triangle_regions: &[ClosedSolidTriangleRegionV1],
+    back_texture: EmbeddedBaseColorTextureV1,
+    back_base_color_rgba: [u8; 4],
+    side_base_color_rgba: [u8; 4],
+) -> Result<StaticMeshExportArtifact, StaticMeshExportError> {
+    export_regioned_closed_solid_triangle_mesh_glb_with_limits(
+        mesh,
+        triangle_regions,
+        back_texture,
+        back_base_color_rgba,
+        side_base_color_rgba,
+        StaticMeshExportLimits::default(),
+    )
+}
+
+pub fn export_regioned_closed_solid_triangle_mesh_glb_with_limits(
+    mesh: &ValidatedIndexedTriangleMesh,
+    triangle_regions: &[ClosedSolidTriangleRegionV1],
+    back_texture: EmbeddedBaseColorTextureV1,
+    back_base_color_rgba: [u8; 4],
+    side_base_color_rgba: [u8; 4],
+    limits: StaticMeshExportLimits,
+) -> Result<StaticMeshExportArtifact, StaticMeshExportError> {
+    if mesh.base_color_texture.is_none() {
+        return Err(StaticMeshExportError::MissingFrontTexture);
+    }
+    if triangle_regions.len() != mesh.triangles.len() {
+        return Err(StaticMeshExportError::TriangleRegionCountMismatch);
+    }
+    if ![
+        ClosedSolidTriangleRegionV1::FrontCap,
+        ClosedSolidTriangleRegionV1::BackCap,
+        ClosedSolidTriangleRegionV1::SideWall,
+    ]
+    .iter()
+    .all(|region| triangle_regions.contains(region))
+    {
+        return Err(StaticMeshExportError::IncompleteTriangleRegionCoverage);
+    }
+    validate_embedded_texture(&back_texture, mesh.positions_mm.len())?;
+    let maximum = limits.max_output_bytes.min(MAX_STATIC_MESH_EXPORT_BYTES);
+    let front = serialize_glb(mesh, maximum)?;
+    let bytes = region_closed_solid_glb(
+        &front,
+        mesh,
+        triangle_regions,
+        &back_texture,
+        back_base_color_rgba,
+        side_base_color_rgba,
+        maximum,
+    )?;
+    Ok(StaticMeshExportArtifact {
+        format: StaticMeshExportFormat::Glb20,
+        media_type: StaticMeshExportFormat::Glb20.media_type(),
+        file_extension: StaticMeshExportFormat::Glb20.file_extension(),
+        bytes,
+        vertex_count: mesh.positions_mm.len(),
+        triangle_count: mesh.triangles.len(),
     })
 }
 
@@ -2006,6 +2082,196 @@ fn append_back_primitive_glb(
     Ok(output)
 }
 
+fn region_closed_solid_glb(
+    front: &[u8],
+    mesh: &ValidatedIndexedTriangleMesh,
+    regions: &[ClosedSolidTriangleRegionV1],
+    back_texture: &EmbeddedBaseColorTextureV1,
+    back_color: [u8; 4],
+    side_color: [u8; 4],
+    maximum: usize,
+) -> Result<Vec<u8>, StaticMeshExportError> {
+    let fail = || StaticMeshExportError::StructureNotRepresentable {
+        format: StaticMeshExportFormat::Glb20,
+    };
+    let json_len = read_u32_le_at(front, 12)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(fail)?;
+    let bin_header = 20usize.checked_add(json_len).ok_or_else(fail)?;
+    let bin_len = read_u32_le_at(front, bin_header)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(fail)?;
+    let bin_start = bin_header.checked_add(8).ok_or_else(fail)?;
+    let mut binary = front
+        .get(bin_start..bin_start.checked_add(bin_len).ok_or_else(fail)?)
+        .ok_or_else(fail)?
+        .to_vec();
+    let mut root: serde_json::Value =
+        serde_json::from_slice(front.get(20..bin_header).ok_or_else(fail)?).map_err(|_| fail())?;
+
+    let mut region_accessors = Vec::new();
+    for region in [
+        ClosedSolidTriangleRegionV1::FrontCap,
+        ClosedSolidTriangleRegionV1::BackCap,
+        ClosedSolidTriangleRegionV1::SideWall,
+    ] {
+        let selected = mesh
+            .triangles
+            .iter()
+            .zip(regions)
+            .filter_map(|(triangle, actual)| (*actual == region).then_some(*triangle))
+            .collect::<Vec<_>>();
+        let view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+        let offset = binary.len();
+        for triangle in &selected {
+            for index in triangle {
+                binary.extend_from_slice(&index.to_le_bytes());
+            }
+        }
+        root["bufferViews"]
+            .as_array_mut()
+            .ok_or_else(fail)?
+            .push(serde_json::json!({
+                "buffer":0, "byteOffset":offset, "byteLength":selected.len() * 12,
+                "target":GLTF_ELEMENT_ARRAY_BUFFER
+            }));
+        let accessor = root["accessors"].as_array().ok_or_else(fail)?.len();
+        root["accessors"]
+            .as_array_mut()
+            .ok_or_else(fail)?
+            .push(serde_json::json!({
+                "bufferView":view, "byteOffset":0, "componentType":GLTF_UNSIGNED_INT,
+                "count":selected.len() * 3, "type":"SCALAR"
+            }));
+        region_accessors.push(accessor);
+    }
+
+    let uv_view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+    let uv_offset = binary.len();
+    for uv in &back_texture.tex_coords {
+        for component in uv {
+            binary.extend_from_slice(&component.to_le_bytes());
+        }
+    }
+    root["bufferViews"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "buffer":0, "byteOffset":uv_offset,
+            "byteLength":back_texture.tex_coords.len() * 8, "target":GLTF_ARRAY_BUFFER
+        }));
+    let uv_accessor = root["accessors"].as_array().ok_or_else(fail)?.len();
+    root["accessors"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "bufferView":uv_view, "byteOffset":0, "componentType":GLTF_FLOAT,
+            "count":back_texture.tex_coords.len(), "type":"VEC2"
+        }));
+    let image_view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+    let image_offset = binary.len();
+    binary.extend_from_slice(&back_texture.bytes);
+    root["bufferViews"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "buffer":0, "byteOffset":image_offset, "byteLength":back_texture.bytes.len()
+        }));
+    while binary.len() % 4 != 0 {
+        binary.push(0);
+    }
+    let image_index = root["images"].as_array().ok_or_else(fail)?.len();
+    root["images"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "bufferView":image_view, "mimeType":back_texture.media_type.as_str()
+        }));
+    let texture_index = root["textures"].as_array().ok_or_else(fail)?.len();
+    root["textures"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({"source":image_index}));
+    let materials = root["materials"].as_array_mut().ok_or_else(fail)?;
+    materials[0]["doubleSided"] = serde_json::json!(false);
+    materials.push(serde_json::json!({
+        "name":"ORIGAMI2 Paper Back",
+        "pbrMetallicRoughness":{
+            "baseColorFactor":back_color.map(|channel| f32::from(channel)/255.0),
+            "metallicFactor":0.0,"roughnessFactor":1.0,
+            "baseColorTexture":{"index":texture_index,"texCoord":0}
+        },"doubleSided":false
+    }));
+    materials.push(serde_json::json!({
+        "name":"ORIGAMI2 Paper Edge",
+        "pbrMetallicRoughness":{
+            "baseColorFactor":side_color.map(|channel| f32::from(channel)/255.0),
+            "metallicFactor":0.0,"roughnessFactor":1.0
+        },"doubleSided":false
+    }));
+    let primitives = root["meshes"][0]["primitives"]
+        .as_array_mut()
+        .ok_or_else(fail)?;
+    let template = primitives.first().cloned().ok_or_else(fail)?;
+    let mut front_primitive = template.clone();
+    front_primitive["indices"] = serde_json::json!(region_accessors[0]);
+    let mut back_primitive = template.clone();
+    back_primitive["indices"] = serde_json::json!(region_accessors[1]);
+    back_primitive["attributes"]["TEXCOORD_0"] = serde_json::json!(uv_accessor);
+    back_primitive["material"] = serde_json::json!(1);
+    let mut side_primitive = template;
+    side_primitive["indices"] = serde_json::json!(region_accessors[2]);
+    side_primitive["material"] = serde_json::json!(2);
+    side_primitive["attributes"]
+        .as_object_mut()
+        .ok_or_else(fail)?
+        .remove("TEXCOORD_0");
+    *primitives = vec![front_primitive, back_primitive, side_primitive];
+    root["buffers"][0]["byteLength"] = serde_json::json!(binary.len());
+    encode_glb_root_and_binary(&root, &binary, maximum)
+}
+
+fn encode_glb_root_and_binary(
+    root: &serde_json::Value,
+    binary: &[u8],
+    maximum: usize,
+) -> Result<Vec<u8>, StaticMeshExportError> {
+    let fail = || StaticMeshExportError::StructureNotRepresentable {
+        format: StaticMeshExportFormat::Glb20,
+    };
+    let json = serde_json::to_vec(root).map_err(|_| fail())?;
+    if json.len() > MAX_GLB_JSON_BYTES || binary.len() % 4 != 0 {
+        return Err(fail());
+    }
+    let padded = align4(json.len()).ok_or_else(fail)?;
+    let total = 28usize
+        .checked_add(padded)
+        .and_then(|value| value.checked_add(binary.len()))
+        .ok_or_else(fail)?;
+    if total > maximum {
+        return Err(StaticMeshExportError::OutputTooLarge {
+            actual: total,
+            maximum,
+        });
+    }
+    let mut output = Vec::with_capacity(total);
+    output.extend_from_slice(b"glTF");
+    output.extend_from_slice(&2_u32.to_le_bytes());
+    output.extend_from_slice(&u32::try_from(total).map_err(|_| fail())?.to_le_bytes());
+    output.extend_from_slice(&u32::try_from(padded).map_err(|_| fail())?.to_le_bytes());
+    output.extend_from_slice(&GLB_JSON_CHUNK_TYPE.to_le_bytes());
+    output.extend_from_slice(&json);
+    output.resize(20 + padded, b' ');
+    output.extend_from_slice(
+        &u32::try_from(binary.len())
+            .map_err(|_| fail())?
+            .to_le_bytes(),
+    );
+    output.extend_from_slice(&GLB_BIN_CHUNK_TYPE.to_le_bytes());
+    output.extend_from_slice(binary);
+    Ok(output)
+}
+
 fn verify_glb(bytes: &[u8], mesh: &ValidatedIndexedTriangleMesh, maximum: usize) -> bool {
     if bytes.len() > maximum || bytes.len() < 28 || bytes.get(..4) != Some(b"glTF") {
         return false;
@@ -2623,6 +2889,137 @@ mod tests {
                 one_short
             ),
             Err(StaticMeshExportError::OutputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn closed_solid_glb_regions_are_complete_and_side_wall_is_untextured() {
+        let png = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let uvs = vec![[0.0, 0.0]; 6];
+        let document = IndexedTriangleMeshV1::new(
+            "closed prism",
+            vec![
+                [0.0, 0.0, 1.0],
+                [10.0, 0.0, 1.0],
+                [0.0, 10.0, 1.0],
+                [0.0, 0.0, -1.0],
+                [10.0, 0.0, -1.0],
+                [0.0, 10.0, -1.0],
+            ],
+            vec![[0.0, 0.0, 1.0]; 6],
+            vec![
+                [0, 1, 2],
+                [3, 5, 4],
+                [0, 3, 4],
+                [0, 4, 1],
+                [1, 4, 5],
+                [1, 5, 2],
+                [2, 5, 3],
+                [2, 3, 0],
+            ],
+        )
+        .with_base_color_texture(EmbeddedBaseColorTextureV1 {
+            media_type: EmbeddedTextureMediaTypeV1::Png,
+            bytes: png.clone(),
+            tex_coords: uvs.clone(),
+        });
+        let mesh = validate_indexed_triangle_mesh(&document).unwrap();
+        let regions = vec![
+            ClosedSolidTriangleRegionV1::FrontCap,
+            ClosedSolidTriangleRegionV1::BackCap,
+            ClosedSolidTriangleRegionV1::SideWall,
+            ClosedSolidTriangleRegionV1::SideWall,
+            ClosedSolidTriangleRegionV1::SideWall,
+            ClosedSolidTriangleRegionV1::SideWall,
+            ClosedSolidTriangleRegionV1::SideWall,
+            ClosedSolidTriangleRegionV1::SideWall,
+        ];
+        let artifact = export_regioned_closed_solid_triangle_mesh_glb(
+            &mesh,
+            &regions,
+            EmbeddedBaseColorTextureV1 {
+                media_type: EmbeddedTextureMediaTypeV1::Png,
+                bytes: png.clone(),
+                tex_coords: uvs,
+            },
+            [10, 20, 30, 255],
+            [80, 70, 60, 255],
+        )
+        .unwrap();
+        let gltf = gltf::Gltf::from_slice(&artifact.bytes).unwrap();
+        let blob = gltf.blob.as_deref().unwrap();
+        let primitives = gltf
+            .meshes()
+            .next()
+            .unwrap()
+            .primitives()
+            .collect::<Vec<_>>();
+        assert_eq!(primitives.len(), 3);
+        assert_eq!(gltf.materials().count(), 3);
+        assert_eq!(gltf.images().count(), 2);
+        assert_eq!(gltf.textures().count(), 2);
+        assert_eq!(
+            primitives
+                .iter()
+                .map(|primitive| primitive
+                    .reader(|_| Some(blob))
+                    .read_indices()
+                    .unwrap()
+                    .into_u32()
+                    .count())
+                .collect::<Vec<_>>(),
+            vec![3, 3, 18]
+        );
+        assert!(
+            primitives[0]
+                .reader(|_| Some(blob))
+                .read_tex_coords(0)
+                .is_some()
+        );
+        assert!(
+            primitives[1]
+                .reader(|_| Some(blob))
+                .read_tex_coords(0)
+                .is_some()
+        );
+        assert!(
+            primitives[2]
+                .reader(|_| Some(blob))
+                .read_tex_coords(0)
+                .is_none()
+        );
+        assert!(
+            primitives[2]
+                .material()
+                .pbr_metallic_roughness()
+                .base_color_texture()
+                .is_none()
+        );
+        for image in gltf.images() {
+            let gltf::image::Source::View { view, .. } = image.source() else {
+                panic!("embedded image")
+            };
+            assert_eq!(&blob[view.offset()..view.offset() + view.length()], png);
+        }
+
+        assert!(matches!(
+            export_regioned_closed_solid_triangle_mesh_glb(
+                &mesh,
+                &regions[..regions.len() - 1],
+                EmbeddedBaseColorTextureV1 {
+                    media_type: EmbeddedTextureMediaTypeV1::Png,
+                    bytes: png,
+                    tex_coords: vec![[0.0, 0.0]; 6],
+                },
+                [0; 4],
+                [0; 4],
+            ),
+            Err(StaticMeshExportError::TriangleRegionCountMismatch)
         ));
     }
 

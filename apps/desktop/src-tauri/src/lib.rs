@@ -1,4 +1,5 @@
 mod applied_pose;
+mod beginner_recognition;
 mod crease_export;
 mod diagnostics;
 mod fold_3d_frames_import;
@@ -16,6 +17,7 @@ mod recovery;
 mod save_path;
 mod stacked_fold_read;
 mod stacked_fold_transaction;
+use beginner_recognition::recognize_beginner_target;
 use stacked_fold_transaction::StackedFoldTransactionState;
 
 use base64::Engine as _;
@@ -8163,6 +8165,7 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             evaluate_beginner_candidates,
+            recognize_beginner_target,
             apply_beginner_generated_plan,
             update_project_memo,
             update_beginner_design_profile,

@@ -38,3 +38,15 @@ test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and 
   assert.match(app, /does not compute paper elasticity/)
   assert.match(app, /role="note"/)
 })
+
+test('AUT-101 exposes bounded generated crease patterns and instructions as read-only previews', () => {
+  assert.match(native, /generate_beginner_plans_v1/)
+  assert.match(client, /response\.generated_plans\.length > 3/)
+  assert.match(client, /pattern\.vertices\.length !== 2/)
+  assert.match(client, /pattern\.edges\.length !== 1/)
+  assert.match(app, /Candidate crease-pattern preview/)
+  assert.match(app, /Candidate folding instructions/)
+  assert.match(app, /read-only candidate/)
+  assert.match(app, /cancelBeginnerCandidates/)
+  assert.match(app, /beginnerCandidateRequestRef\.current !== requestId/)
+})

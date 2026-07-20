@@ -1344,6 +1344,8 @@ struct BeginnerCandidateResponse {
     bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1,
     elasticity_model: ori_domain::BeginnerElasticityModelV1,
     candidates: Vec<ori_domain::BeginnerCandidateScoreV1>,
+    generation_status: &'static str,
+    generated_plans: Vec<ori_domain::BeginnerGeneratedPlanV1>,
 }
 
 struct ValidationAnalysisInput {
@@ -1506,6 +1508,24 @@ fn evaluate_beginner_candidates(
         },
         project.editor.beginner_design_profile(),
     );
+    let (generation_status, generated_plans) = match ori_domain::generate_beginner_plans_v1(
+        project.project_id,
+        pattern,
+        &project.editor.paper().boundary_vertices,
+        &project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints,
+    ) {
+        Ok(plans) => ("ready", plans),
+        Err(ori_domain::BeginnerGeneratorErrorV1::ResourceLimit) => ("resource_limit", Vec::new()),
+        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedPaper) => {
+            ("unsupported_paper", Vec::new())
+        }
+        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedTechniques) => {
+            ("unsupported_techniques", Vec::new())
+        }
+    };
     Ok(BeginnerCandidateResponse {
         schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
         project_instance_id: project.instance_id,
@@ -1514,6 +1534,8 @@ fn evaluate_beginner_candidates(
         bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
         elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
         candidates,
+        generation_status,
+        generated_plans,
     })
 }
 

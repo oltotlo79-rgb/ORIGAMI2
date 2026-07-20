@@ -242,7 +242,19 @@ export type BeginnerCandidateResponseV1 = {
   revision: number
   bulge_treatment: 'target_shape_approximation'
   elasticity_model: 'not_computed'
+  generation_status: 'ready' | 'resource_limit' | 'unsupported_paper' | 'unsupported_techniques'
+  generated_plans: BeginnerGeneratedPlanV1[]
   candidates: BeginnerCandidateScoreV1[]
+}
+
+export type BeginnerGeneratedPlanV1 = {
+  schema_version: 1
+  kind: 'vertical_book_fold' | 'horizontal_book_fold' | 'diagonal_fold'
+  crease_pattern: {
+    vertices: Array<{ id: string; position: { x: number; y: number } }>
+    edges: Array<{ id: string; start: string; end: string; kind: 'mountain' | 'valley' }>
+  }
+  instruction_codes: string[]
 }
 
 function normalizeBeginnerCandidateResponse(
@@ -258,6 +270,8 @@ function normalizeBeginnerCandidateResponse(
     'revision',
     'bulge_treatment',
     'elasticity_model',
+    'generation_status',
+    'generated_plans',
     'candidates',
   ] as const)
   if (
@@ -268,6 +282,10 @@ function normalizeBeginnerCandidateResponse(
     || response.revision !== expectedRevision
     || response.bulge_treatment !== 'target_shape_approximation'
     || response.elasticity_model !== 'not_computed'
+    || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques']
+      .includes(String(response.generation_status))
+    || !Array.isArray(response.generated_plans)
+    || response.generated_plans.length > 3
     || !Array.isArray(response.candidates)
     || response.candidates.length < 1
     || response.candidates.length > 3
@@ -314,6 +332,45 @@ function normalizeBeginnerCandidateResponse(
     }) as BeginnerCandidateScoreV1
   })
   if (candidates.some((candidate) => candidate === null)) return null
+  const generatedPlans = response.generated_plans.map((plan) => {
+    const record = exactCoreDataRecord(plan, [
+      'schema_version', 'kind', 'crease_pattern', 'instruction_codes',
+    ] as const)
+    const pattern = record && exactCoreDataRecord(record.crease_pattern, ['vertices', 'edges'] as const)
+    if (
+      !record
+      || record.schema_version !== 1
+      || !['vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !pattern
+      || !Array.isArray(pattern.vertices)
+      || pattern.vertices.length !== 2
+      || !Array.isArray(pattern.edges)
+      || pattern.edges.length !== 1
+      || !Array.isArray(record.instruction_codes)
+      || record.instruction_codes.length !== 1
+      || !record.instruction_codes.every((code) =>
+        ['book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+    ) return null
+    const vertices = pattern.vertices.map((vertex) => {
+      const item = exactCoreDataRecord(vertex, ['id', 'position'] as const)
+      const position = item && exactCoreDataRecord(item.position, ['x', 'y'] as const)
+      if (!item || !isCanonicalNonNilUuid(item.id) || !position
+        || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null
+      return { id: item.id, position: { x: Number(position.x), y: Number(position.y) } }
+    })
+    const edge = exactCoreDataRecord(pattern.edges[0], ['id', 'start', 'end', 'kind'] as const)
+    if (vertices.some((vertex) => vertex === null) || !edge
+      || !isCanonicalNonNilUuid(edge.id) || !isCanonicalNonNilUuid(edge.start)
+      || !isCanonicalNonNilUuid(edge.end) || !['mountain', 'valley'].includes(String(edge.kind))) return null
+    return {
+      schema_version: 1,
+      kind: record.kind,
+      crease_pattern: { vertices, edges: [edge] },
+      instruction_codes: record.instruction_codes.slice(),
+    } as BeginnerGeneratedPlanV1
+  })
+  if (generatedPlans.some((plan) => plan === null)
+    || (response.generation_status === 'ready') !== (generatedPlans.length > 0)) return null
   const admitted = candidates as BeginnerCandidateScoreV1[]
   if (admitted.some((candidate, index) =>
     index > 0 && admitted[index - 1].total_score < candidate.total_score
@@ -325,6 +382,8 @@ function normalizeBeginnerCandidateResponse(
     revision: expectedRevision,
     bulge_treatment: 'target_shape_approximation',
     elasticity_model: 'not_computed',
+    generation_status: response.generation_status,
+    generated_plans: generatedPlans,
     candidates: Object.freeze(admitted.slice()),
   }) as BeginnerCandidateResponseV1
 }

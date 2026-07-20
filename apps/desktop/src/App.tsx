@@ -675,6 +675,7 @@ function App() {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const beginnerCandidateRequestRef = useRef(0)
   useEffect(() => {
     setBeginnerCandidates(null)
   }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
@@ -3511,19 +3512,29 @@ function App() {
     if (beginnerCandidateBusy) return
     const current = latestSnapshotRef.current
     if (!current) return
+    const requestId = beginnerCandidateRequestRef.current + 1
+    beginnerCandidateRequestRef.current = requestId
     setBeginnerCandidateBusy(true)
     evaluateBeginnerCandidates(
       current.project_id,
       current.revision,
       current.project_instance_id,
     ).then((response) => {
-      if (latestSnapshotRef.current !== current) return
+      if (beginnerCandidateRequestRef.current !== requestId
+        || latestSnapshotRef.current !== current) return
       setBeginnerCandidates(response)
     }).catch(() => {
-      if (latestSnapshotRef.current === current) setBeginnerCandidates(null)
+      if (beginnerCandidateRequestRef.current === requestId
+        && latestSnapshotRef.current === current) setBeginnerCandidates(null)
     }).finally(() => {
-      setBeginnerCandidateBusy(false)
+      if (beginnerCandidateRequestRef.current === requestId) setBeginnerCandidateBusy(false)
     })
+  }
+
+  function cancelBeginnerCandidates() {
+    beginnerCandidateRequestRef.current += 1
+    setBeginnerCandidateBusy(false)
+    setBeginnerCandidates(null)
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -6195,6 +6206,11 @@ function App() {
                 >
                   {text({ ja: '現在の選択を追加', en: 'Add current selection' })}
                 </button>
+                {beginnerCandidateBusy && (
+                  <button type="button" onClick={cancelBeginnerCandidates}>
+                    {text({ ja: '候補生成をキャンセル', en: 'Cancel candidate generation' })}
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={coreBusy || (
@@ -7131,6 +7147,66 @@ function App() {
                       </li>
                     ))}
                   </ol>
+                  {beginnerCandidates.generation_status === 'ready' ? (
+                    <div aria-label={text({ ja: '生成された展開図と手順の候補', en: 'Generated crease-pattern and instruction candidates' })}>
+                      {beginnerCandidates.generated_plans.map((plan, index) => {
+                        const [start, end] = plan.crease_pattern.vertices
+                        const minX = Math.min(start.position.x, end.position.x)
+                        const minY = Math.min(start.position.y, end.position.y)
+                        const width = Math.max(Math.abs(end.position.x - start.position.x), 1)
+                        const height = Math.max(Math.abs(end.position.y - start.position.y), 1)
+                        return (
+                          <article key={plan.kind}>
+                            <h4>
+                              {text({ ja: '候補', en: 'Candidate' })} {index + 1}
+                              {' — '}
+                              {beginnerCandidates.candidates[index]?.total_score ?? 0}/100
+                            </h4>
+                            <svg
+                              viewBox={`${minX - 1} ${minY - 1} ${width + 2} ${height + 2}`}
+                              role="img"
+                              aria-label={text({ ja: '候補の展開図プレビュー', en: 'Candidate crease-pattern preview' })}
+                            >
+                              <line
+                                x1={start.position.x}
+                                y1={start.position.y}
+                                x2={end.position.x}
+                                y2={end.position.y}
+                                stroke="currentColor"
+                                strokeWidth={Math.max(width, height) / 50}
+                                strokeDasharray={plan.crease_pattern.edges[0].kind === 'mountain' ? '4 2' : undefined}
+                              />
+                            </svg>
+                            <ol aria-label={text({ ja: '候補の折り手順', en: 'Candidate folding instructions' })}>
+                              {plan.instruction_codes.map((code) => (
+                                <li key={code}>
+                                  {code === 'book_fold_vertical'
+                                    ? text({ ja: '縦の中心線で二つ折りします。', en: 'Fold in half on the vertical center line.' })
+                                    : code === 'book_fold_horizontal'
+                                      ? text({ ja: '横の中心線で二つ折りします。', en: 'Fold in half on the horizontal center line.' })
+                                      : text({ ja: '対角線で折ります。', en: 'Fold on the diagonal.' })}
+                                </li>
+                              ))}
+                            </ol>
+                            <p className="muted">
+                              {text({
+                                ja: 'これは読取専用の候補です。確認・適用操作を行うまでプロジェクト権限にはなりません。',
+                                en: 'This is a read-only candidate. It does not become project authority without a separate review and apply action.',
+                              })}
+                            </p>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <p role="status">
+                      {beginnerCandidates.generation_status === 'unsupported_techniques'
+                        ? text({ ja: '谷折りまたは山折りを許可してください。', en: 'Allow valley or mountain folds to generate plans.' })
+                        : beginnerCandidates.generation_status === 'resource_limit'
+                          ? text({ ja: '入力が生成処理の上限を超えています。', en: 'The input exceeds the generation work limit.' })
+                          : text({ ja: '初版の生成器は長方形の一枚紙だけに対応します。', en: 'The initial generator supports rectangular single-sheet paper only.' })}
+                    </p>
+                  )}
                   </>
                 )}
               </div>

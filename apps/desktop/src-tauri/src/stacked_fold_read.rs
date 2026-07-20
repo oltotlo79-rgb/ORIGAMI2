@@ -419,6 +419,9 @@ pub(super) async fn propose_current_stacked_fold_read(
             StaticCollisionLimits::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        if endpoint_collision.has_prominent_blocking_hold() {
+            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+        }
         let flat_endpoint_layer_order =
             if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
                 let target_revision = geometry_proof.lineage().target_revision();

@@ -21,6 +21,88 @@ use crate::{
 /// Maximum incident mountain/valley degree evaluated by the exact Kawasaki
 /// product. Maekawa counting remains available above this bound.
 pub const MAX_EXACT_FOLD_DEGREE: usize = 256;
+pub const ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1: &str =
+    "assigned_single_vertex_degree_two_base_v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssignedLocalSufficiencyLimitsV1 {
+    pub max_vertices: usize,
+}
+
+impl Default for AssignedLocalSufficiencyLimitsV1 {
+    fn default() -> Self {
+        Self { max_vertices: 4096 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AssignedLocalSufficiencyV1 {
+    Proven {
+        model_id: &'static str,
+        vertex: VertexId,
+        reduction_steps: usize,
+    },
+    Indeterminate {
+        vertex: VertexId,
+        reason: AssignedLocalSufficiencyReasonV1,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignedLocalSufficiencyReasonV1 {
+    VertexUnavailable,
+    NecessaryConditionsNotSatisfied,
+    ReductionTheoremNotApplicable,
+    ResourceLimit,
+}
+
+/// Proves only the exact degree-two terminal case of assigned single-vertex
+/// local flat foldability. Higher-degree BLB/crimp reductions are deliberately
+/// indeterminate until their exact sector-order witness is implemented.
+#[must_use]
+pub fn prove_assigned_local_sufficiency_v1(
+    paper: &Paper,
+    pattern: &CreasePattern,
+    vertex: VertexId,
+    limits: AssignedLocalSufficiencyLimitsV1,
+) -> AssignedLocalSufficiencyV1 {
+    if pattern.vertices.len() > limits.max_vertices {
+        return AssignedLocalSufficiencyV1::Indeterminate {
+            vertex,
+            reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+        };
+    }
+    let report = analyze_local_flat_foldability(paper, pattern);
+    let Some(local) = report.vertices.iter().find(|item| item.vertex == vertex) else {
+        return AssignedLocalSufficiencyV1::Indeterminate {
+            vertex,
+            reason: AssignedLocalSufficiencyReasonV1::VertexUnavailable,
+        };
+    };
+    if local.verdict != LocalVertexFoldabilityVerdict::Satisfied {
+        return AssignedLocalSufficiencyV1::Indeterminate {
+            vertex,
+            reason: AssignedLocalSufficiencyReasonV1::NecessaryConditionsNotSatisfied,
+        };
+    }
+    if local.fold_degree == 2
+        && (local.mountain_count == 2 || local.valley_count == 2)
+        && local.kawasaki == LocalFoldabilityConditionStatus::Satisfied
+    {
+        AssignedLocalSufficiencyV1::Proven {
+            model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
+            vertex,
+            reduction_steps: 0,
+        }
+    } else {
+        AssignedLocalSufficiencyV1::Indeterminate {
+            vertex,
+            reason: AssignedLocalSufficiencyReasonV1::ReductionTheoremNotApplicable,
+        }
+    }
+}
 
 /// Mathematical model covered by this first local validator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1052,6 +1134,58 @@ mod tests {
             pattern: CreasePattern { vertices, edges },
             center: center_id,
         }
+    }
+
+    #[test]
+    fn assigned_sufficiency_proves_only_the_exact_degree_two_terminal_case() {
+        let terminal = octagonal_sheet(&[1, 5], &[EdgeKind::Mountain, EdgeKind::Mountain]);
+        assert_eq!(
+            prove_assigned_local_sufficiency_v1(
+                &terminal.paper,
+                &terminal.pattern,
+                terminal.center,
+                AssignedLocalSufficiencyLimitsV1::default(),
+            ),
+            AssignedLocalSufficiencyV1::Proven {
+                model_id: ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1,
+                vertex: terminal.center,
+                reduction_steps: 0,
+            }
+        );
+
+        let degree_four = octagonal_sheet(
+            &[0, 2, 4, 6],
+            &[
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+            ],
+        );
+        assert_eq!(
+            prove_assigned_local_sufficiency_v1(
+                &degree_four.paper,
+                &degree_four.pattern,
+                degree_four.center,
+                AssignedLocalSufficiencyLimitsV1::default(),
+            ),
+            AssignedLocalSufficiencyV1::Indeterminate {
+                vertex: degree_four.center,
+                reason: AssignedLocalSufficiencyReasonV1::ReductionTheoremNotApplicable,
+            }
+        );
+        assert_eq!(
+            prove_assigned_local_sufficiency_v1(
+                &terminal.paper,
+                &terminal.pattern,
+                terminal.center,
+                AssignedLocalSufficiencyLimitsV1 { max_vertices: 0 },
+            ),
+            AssignedLocalSufficiencyV1::Indeterminate {
+                vertex: terminal.center,
+                reason: AssignedLocalSufficiencyReasonV1::ResourceLimit,
+            }
+        );
     }
 
     #[test]

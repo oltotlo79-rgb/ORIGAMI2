@@ -36,11 +36,12 @@ test('the read-only proposal is stale-safe, single-flight, and copied before nor
   assert.match(app, /Copy to editable fields/u)
   assert.match(app, /setBeginnerSkeletonSegments/u)
   assert.match(app, /input\[name\^="target_part_"\]/u)
-  assert.match(app, /does not change the project until you save/u)
+  assert.match(app, /read-only outline proposal/u)
+  assert.match(app, /no automatic design authority/u)
   assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
 })
 
-test('single silhouette recognition fails closed with explicit reasons and no inferred parts', () => {
+test('bounded PNG or JPEG silhouette recognition fails closed without inferred parts', () => {
   assert.match(domain, /SilhouettePngV1/u)
   assert.match(domain, /AmbiguousSilhouette/u)
   assert.match(domain, /UnsupportedSilhouette/u)
@@ -49,8 +50,10 @@ test('single silhouette recognition fails closed with explicit reasons and no in
   assert.match(native, /live_hash != source_sha256/u)
   assert.match(client, /recognize_beginner_silhouette/u)
   assert.match(client, /'silhouette_png_v1'/u)
-  assert.match(app, /Recognize silhouette PNG/u)
-  assert.match(app, /does not change the project until you save/u)
+  assert.match(native, /decode_general_jpeg/u)
+  assert.match(native, /MAX_BEGINNER_RECOGNITION_PIXELS_V1/u)
+  assert.match(app, /Recognize outline from image/u)
+  assert.match(app, /read-only outline proposal/u)
   assert.match(app, /proposal\.target_parts\.length > 0/u)
 })
 

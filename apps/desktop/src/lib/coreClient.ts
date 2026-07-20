@@ -1529,7 +1529,8 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   bbox_max_tenths_mm: readonly [number, number, number]
   dominant_normal_milli: readonly [number, number, number]
   surface_area_milli: number
-  protrusion: NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
+  protrusions: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
+  pair_bindings: readonly Readonly<{ pair_index: number; protrusion_id: number; center_y_tenths_mm: number }>[]
   method: 'bounded_bbox_area_normal_v1'
   suggested_part_kind: 'wing' | 'fin' | 'ear' | 'horn' | 'antenna' | 'leg' | null
 }>
@@ -1545,7 +1546,7 @@ export async function suggestBeginnerReferenceModelFeatures(
   ] as const)
   const suggestion = exactCoreDataRecord(response?.suggestion, [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
-    'surface_area_milli', 'protrusion', 'method', 'suggested_part_kind',
+    'surface_area_milli', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
   ] as const)
   if (!response || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
@@ -1559,13 +1560,21 @@ export async function suggestBeginnerReferenceModelFeatures(
     || Number(suggestion.surface_area_milli) < 0) throw new Error('invalid reference model suggestion')
   const constraints = normalizeBeginnerGenerationConstraints({
     schema_version: 1, maximum_steps: 1, detail_level: 'simple', target_category: 'animal',
-    target_parts: [], skeleton_segments: [], protrusions: [suggestion.protrusion],
+    target_parts: [], skeleton_segments: [], protrusions: suggestion.protrusions,
     bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
   })
-  if (!constraints || constraints.protrusions?.length !== 1) {
+  if (!constraints || ![1, 3].includes(constraints.protrusions?.length ?? 0)
+    || !Array.isArray(suggestion.pair_bindings)
+    || suggestion.pair_bindings.length !== constraints.protrusions?.length
+    || suggestion.pair_bindings.some((binding, index) => {
+      const record = exactCoreDataRecord(binding, ['pair_index', 'protrusion_id', 'center_y_tenths_mm'] as const)
+      return !record || record.pair_index !== index
+        || record.protrusion_id !== constraints.protrusions?.[index]?.id
+        || record.center_y_tenths_mm !== constraints.protrusions?.[index]?.position_tenths_mm[1]
+    })) {
     throw new Error('invalid reference model suggestion')
   }
-  return Object.freeze({ ...suggestion, protrusion: constraints.protrusions[0] }) as BeginnerReferenceModelSuggestionV1
+  return Object.freeze({ ...suggestion, protrusions: Object.freeze(constraints.protrusions.slice()), pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
 }
 
 export function applyBeginnerReferenceModelFeatures(

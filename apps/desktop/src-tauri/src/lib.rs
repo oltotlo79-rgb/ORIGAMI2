@@ -3098,7 +3098,8 @@ struct BeginnerReferenceModelSuggestionV1 {
     bbox_max_tenths_mm: [i32; 3],
     dominant_normal_milli: [i16; 3],
     surface_area_milli: u64,
-    protrusion: ori_domain::BeginnerProtrusionTargetV1,
+    protrusions: Vec<ori_domain::BeginnerProtrusionTargetV1>,
+    pair_bindings: Vec<ori_domain::BeginnerBilateralPairBindingV1>,
     method: String,
     suggested_part_kind: Option<ori_domain::BeginnerTargetPartKindV1>,
 }
@@ -3181,6 +3182,9 @@ fn derive_reference_model_suggestion_v1(
     let bilateral = quantized.iter().all(|point| {
         quantized.contains(&[axis_twice.saturating_sub(point[0]), point[1], point[2]])
     });
+    let requested_six_legs = target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
     let requested_pair = target_parts.iter().find(|part| {
         part.count == 2
             && matches!(
@@ -3193,7 +3197,11 @@ fn derive_reference_model_suggestion_v1(
                     | ori_domain::BeginnerTargetPartKindV1::Leg
             )
     });
-    let suggested_part_kind = requested_pair.filter(|_| bilateral).map(|part| part.kind);
+    let suggested_part_kind = if requested_six_legs && bilateral {
+        Some(ori_domain::BeginnerTargetPartKindV1::Leg)
+    } else {
+        requested_pair.filter(|_| bilateral).map(|part| part.kind)
+    };
     let major_axis = (0..3).max_by_key(|axis| extents[*axis]).unwrap_or(0);
     let mut direction_milli = [0_i16; 3];
     direction_milli[major_axis] = 1000;
@@ -3208,36 +3216,62 @@ fn derive_reference_model_suggestion_v1(
         .unwrap_or(1);
     let thickness_tenths_mm = u16::try_from((minor / 4).clamp(1, i32::from(u16::MAX)))
         .map_err(|_| "reference_model_feature_range".to_owned())?;
+    let base = ori_domain::BeginnerProtrusionTargetV1 {
+        id: 1,
+        count: if suggested_part_kind.is_some() {
+            2
+        } else {
+            match category {
+                Some(ori_domain::BeginnerTargetCategoryV1::Animal) => 4,
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect) => 2,
+                None => 1,
+            }
+        },
+        length_tenths_mm,
+        thickness_tenths_mm,
+        position_tenths_mm: std::array::from_fn(|axis| {
+            bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
+        }),
+        direction_milli,
+        symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+        curvature_degrees: 0,
+        joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+        motion_degrees: [0, 0],
+        side: ori_domain::BeginnerProtrusionSideV1::Either,
+        priority: 50,
+    };
+    let protrusions = if requested_six_legs && bilateral {
+        (0..3)
+            .map(|index| {
+                let mut target = base.clone();
+                target.id = index + 1;
+                target.position_tenths_mm[1] = bbox_min_tenths_mm[1]
+                    .saturating_add(extents[1].saturating_mul(i32::from(index) + 1) / 4);
+                target
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![base]
+    };
+    let pair_bindings = protrusions
+        .iter()
+        .enumerate()
+        .map(
+            |(index, target)| ori_domain::BeginnerBilateralPairBindingV1 {
+                pair_index: index as u8,
+                protrusion_id: target.id,
+                center_y_tenths_mm: target.position_tenths_mm[1],
+            },
+        )
+        .collect();
     Ok(BeginnerReferenceModelSuggestionV1 {
         asset_id,
         bbox_min_tenths_mm,
         bbox_max_tenths_mm,
         dominant_normal_milli,
         surface_area_milli: (surface_area * 1_000.0).round().clamp(0.0, u64::MAX as f64) as u64,
-        protrusion: ori_domain::BeginnerProtrusionTargetV1 {
-            id: 1,
-            count: if suggested_part_kind.is_some() {
-                2
-            } else {
-                match category {
-                    Some(ori_domain::BeginnerTargetCategoryV1::Animal) => 4,
-                    Some(ori_domain::BeginnerTargetCategoryV1::Insect) => 2,
-                    None => 1,
-                }
-            },
-            length_tenths_mm,
-            thickness_tenths_mm,
-            position_tenths_mm: std::array::from_fn(|axis| {
-                bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
-            }),
-            direction_milli,
-            symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
-            curvature_degrees: 0,
-            joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
-            motion_degrees: [0, 0],
-            side: ori_domain::BeginnerProtrusionSideV1::Either,
-            priority: 50,
-        },
+        protrusions,
+        pair_bindings,
         method: "bounded_bbox_area_normal_v1".to_owned(),
         suggested_part_kind,
     })
@@ -3395,7 +3429,13 @@ fn apply_beginner_reference_model_features(
     if live != expected_suggestion {
         return Err("reference_model_suggestion_stale".to_owned());
     }
-    profile.generation_constraints.protrusions = vec![live.protrusion];
+    profile.generation_constraints.protrusions = live.protrusions.clone();
+    if live.protrusions.len() == 3
+        && ori_domain::insect_three_pair_bindings_v1(&profile.generation_constraints)
+            .is_none_or(|bindings| bindings.as_slice() != live.pair_bindings.as_slice())
+    {
+        return Err("reference_model_suggestion_invalid".to_owned());
+    }
     if !ori_domain::validate_beginner_design_profile_v1(&profile) {
         return Err("reference_model_suggestion_invalid".to_owned());
     }
@@ -10302,6 +10342,46 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn reference_model_six_legs_are_three_individually_bound_pairs() {
+        let geometry = ori_formats::ReferenceGlbGeometryV1 {
+            positions: vec![
+                [-0.02, -0.03, 0.0],
+                [0.02, -0.03, 0.0],
+                [-0.02, 0.03, 0.0],
+                [0.02, 0.03, 0.0],
+            ],
+            triangle_indices: vec![[0, 1, 2], [1, 3, 2]],
+            material_color: [255, 255, 255, 255],
+        };
+        let suggestion = derive_reference_model_suggestion_v1(
+            AssetId::new(),
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+            &[ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 6,
+            }],
+        )
+        .expect("bounded symmetric GLB suggestion");
+        assert_eq!(suggestion.protrusions.len(), 3);
+        assert_eq!(suggestion.pair_bindings.len(), 3);
+        assert!(
+            suggestion
+                .protrusions
+                .windows(2)
+                .all(|pair| { pair[0].position_tenths_mm[1] < pair[1].position_tenths_mm[1] })
+        );
+        for (index, binding) in suggestion.pair_bindings.iter().enumerate() {
+            assert_eq!(binding.pair_index, index as u8);
+            assert_eq!(binding.protrusion_id, suggestion.protrusions[index].id);
+            assert_eq!(
+                binding.center_y_tenths_mm,
+                suggestion.protrusions[index].position_tenths_mm[1]
+            );
+        }
+    }
 
     #[test]
     fn beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped() {

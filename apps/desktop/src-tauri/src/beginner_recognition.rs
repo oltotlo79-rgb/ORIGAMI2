@@ -364,8 +364,14 @@ pub(crate) fn apply_beginner_part_assignments(
     {
         return Err("part_assignment_invalid".to_owned());
     }
+    let leg_candidate_ids = request
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Leg)
+        .map(|assignment| assignment.candidate_id)
+        .collect::<Vec<_>>();
     let mut counts = [0_u8; 4];
-    for assignment in request.assignments {
+    for assignment in &request.assignments {
         let index = match assignment.kind {
             ori_domain::BeginnerTargetPartKindV1::Torso => 0,
             ori_domain::BeginnerTargetPartKindV1::Head => 1,
@@ -398,6 +404,71 @@ pub(crate) fn apply_beginner_part_assignments(
     }
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_parts = target_parts;
+    if leg_candidate_ids.len() == 6
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+    {
+        let axis_twice = i64::from(request.selected_outline.bounds.min_x)
+            + i64::from(request.selected_outline.bounds.max_x);
+        let mut legs = leg_candidate_ids
+            .iter()
+            .filter_map(|id| candidates.iter().find(|candidate| candidate.id == *id))
+            .collect::<Vec<_>>();
+        legs.sort_by_key(|candidate| {
+            (
+                candidate.bounds.min_y + candidate.bounds.max_y,
+                candidate.bounds.min_x,
+            )
+        });
+        let mut protrusions = Vec::with_capacity(3);
+        for (pair_index, pair) in legs.chunks_exact(2).enumerate() {
+            let left_center_twice =
+                i64::from(pair[0].bounds.min_x) + i64::from(pair[0].bounds.max_x);
+            let right_center_twice =
+                i64::from(pair[1].bounds.min_x) + i64::from(pair[1].bounds.max_x);
+            let left_y_twice = i64::from(pair[0].bounds.min_y) + i64::from(pair[0].bounds.max_y);
+            let right_y_twice = i64::from(pair[1].bounds.min_y) + i64::from(pair[1].bounds.max_y);
+            if (left_center_twice + right_center_twice - axis_twice * 2).abs() > 2
+                || (left_y_twice - right_y_twice).abs() > 2
+            {
+                return Err("part_assignment_six_leg_binding_invalid".to_owned());
+            }
+            let length_tenths_mm = u32::try_from(
+                (right_center_twice - left_center_twice)
+                    .unsigned_abs()
+                    .saturating_mul(5)
+                    .max(1),
+            )
+            .map_err(|_| "part_assignment_six_leg_binding_invalid")?;
+            let thickness_pixels = (pair[0].bounds.max_y - pair[0].bounds.min_y + 1)
+                .min(pair[1].bounds.max_y - pair[1].bounds.min_y + 1);
+            protrusions.push(ori_domain::BeginnerProtrusionTargetV1 {
+                id: pair_index as u16 + 1,
+                count: 2,
+                length_tenths_mm,
+                thickness_tenths_mm: u16::try_from(thickness_pixels.saturating_mul(10).min(10_000))
+                    .map_err(|_| "part_assignment_six_leg_binding_invalid")?,
+                position_tenths_mm: [
+                    i32::try_from(axis_twice.saturating_mul(5))
+                        .map_err(|_| "part_assignment_six_leg_binding_invalid")?,
+                    i32::try_from((left_y_twice + right_y_twice).saturating_mul(5) / 2)
+                        .map_err(|_| "part_assignment_six_leg_binding_invalid")?,
+                    0,
+                ],
+                direction_milli: [1000, 0, 0],
+                symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                curvature_degrees: 0,
+                joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+                motion_degrees: [0, 0],
+                side: ori_domain::BeginnerProtrusionSideV1::Either,
+                priority: 50,
+            });
+        }
+        profile.generation_constraints.protrusions = protrusions;
+        if ori_domain::insect_three_pair_bindings_v1(&profile.generation_constraints).is_none() {
+            return Err("part_assignment_six_leg_binding_invalid".to_owned());
+        }
+    }
     execute_command(
         &mut project,
         request.expected_project_instance_id,
@@ -462,30 +533,48 @@ pub(crate) fn apply_beginner_outline_candidate(
     }
     let bounds = request.candidate.bounds;
     let mut profile = project.editor.beginner_design_profile().clone();
-    profile.generation_constraints.skeleton_segments =
-        vec![ori_domain::BeginnerSkeletonSegmentV1 {
+    let center_x = i32::try_from((bounds.min_x + bounds.max_x) / 2)
+        .map_err(|_| "outline_candidate_stale")?
+        * 10;
+    let center_y = i32::try_from((bounds.min_y + bounds.max_y) / 2)
+        .map_err(|_| "outline_candidate_stale")?
+        * 10;
+    let thickness_tenths_mm = u16::try_from(
+        (bounds.max_y - bounds.min_y + 1)
+            .saturating_mul(10)
+            .min(10_000),
+    )
+    .map_err(|_| "outline_candidate_stale")?;
+    profile.generation_constraints.skeleton_segments = vec![
+        ori_domain::BeginnerSkeletonSegmentV1 {
             id: 0,
             start: ori_domain::BeginnerSkeletonPointV1 {
                 x_tenths_mm: i32::try_from(bounds.min_x).map_err(|_| "outline_candidate_stale")?
                     * 10,
-                y_tenths_mm: i32::try_from((bounds.min_y + bounds.max_y) / 2)
-                    .map_err(|_| "outline_candidate_stale")?
-                    * 10,
+                y_tenths_mm: center_y,
             },
             end: ori_domain::BeginnerSkeletonPointV1 {
                 x_tenths_mm: i32::try_from(bounds.max_x).map_err(|_| "outline_candidate_stale")?
                     * 10,
-                y_tenths_mm: i32::try_from((bounds.min_y + bounds.max_y) / 2)
-                    .map_err(|_| "outline_candidate_stale")?
+                y_tenths_mm: center_y,
+            },
+            thickness_tenths_mm,
+        },
+        ori_domain::BeginnerSkeletonSegmentV1 {
+            id: 1,
+            start: ori_domain::BeginnerSkeletonPointV1 {
+                x_tenths_mm: center_x,
+                y_tenths_mm: i32::try_from(bounds.min_y).map_err(|_| "outline_candidate_stale")?
                     * 10,
             },
-            thickness_tenths_mm: u16::try_from(
-                (bounds.max_y - bounds.min_y + 1)
-                    .saturating_mul(10)
-                    .min(10_000),
-            )
-            .map_err(|_| "outline_candidate_stale")?,
-        }];
+            end: ori_domain::BeginnerSkeletonPointV1 {
+                x_tenths_mm: center_x,
+                y_tenths_mm: i32::try_from(bounds.max_y).map_err(|_| "outline_candidate_stale")?
+                    * 10,
+            },
+            thickness_tenths_mm,
+        },
+    ];
     execute_command(
         &mut project,
         request.expected_project_instance_id,

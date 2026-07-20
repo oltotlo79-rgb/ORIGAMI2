@@ -8265,9 +8265,9 @@ function App() {
                             ja: '突起数 {count}、長さ {length} mm、太さ {thickness} mm',
                             en: '{count} protrusions, length {length} mm, thickness {thickness} mm',
                           }, {
-                            count: beginnerReferenceSuggestion.protrusion.count,
-                            length: beginnerReferenceSuggestion.protrusion.length_tenths_mm / 10,
-                            thickness: beginnerReferenceSuggestion.protrusion.thickness_tenths_mm / 10,
+                            count: beginnerReferenceSuggestion.protrusions.reduce((sum, target) => sum + target.count, 0),
+                            length: beginnerReferenceSuggestion.protrusions[0]?.length_tenths_mm ? beginnerReferenceSuggestion.protrusions[0].length_tenths_mm / 10 : 0,
+                            thickness: beginnerReferenceSuggestion.protrusions[0]?.thickness_tenths_mm ? beginnerReferenceSuggestion.protrusions[0].thickness_tenths_mm / 10 : 0,
                           })}</p>
                           <button type="button" onClick={confirmBeginnerReferenceSuggestion}>
                             {text({ ja: '確認して範囲候補を適用', en: 'Confirm and apply suggested ranges' })}

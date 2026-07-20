@@ -1422,7 +1422,7 @@ export function FoldPreview({
       }
       if (
         model.kind === 'planar'
-        || (model.kind === 'fold_graph' && model.kinematics.kind === 'static_cycle')
+        || (model.kind === 'fold_graph' && model.kinematics.kind !== 'tree')
       ) {
         const flatFaceTransforms = new Map(
           model.faces.map((face) => [face.id, new THREE.Matrix4()]),

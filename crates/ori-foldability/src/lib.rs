@@ -1181,6 +1181,10 @@ fn validate_topology(
                 }
                 incidence_hinges.insert(*edge, (left, right, assignment));
             }
+            EdgeIncidence::Cut { left, right } => {
+                ensure_face_exists(&keys_by_id, *edge, left, false)?;
+                ensure_face_exists(&keys_by_id, *edge, right, false)?;
+            }
             EdgeIncidence::AuxiliaryIgnored => {}
         }
     }

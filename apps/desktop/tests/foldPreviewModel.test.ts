@@ -567,6 +567,36 @@ test('single fold becomes centered world-XZ polygons around the canonical hinge'
   })
 })
 
+test('a cut keeps both pieces visible without becoming a 3D hinge connection', () => {
+  const project = projectFixture()
+  project.cutting_allowed = true
+  project.paper.cutting_allowed = true
+  project.crease_pattern.edges.at(-1)!.kind = 'cut'
+  const topology = topologyFixture()
+  topology.snapshot!.edge_incidence.at(-1)![1] = {
+    kind: 'cut',
+    left: ids.west,
+    right: ids.east,
+  }
+  topology.snapshot!.hinge_adjacency = []
+  topology.snapshot!.material_components = [
+    materialComponent(topology.snapshot!.faces[0]!),
+    {
+      ...materialComponent(topology.snapshot!.faces[1]!),
+      key: [0xa6, ...Array<number>(31).fill(0)],
+    },
+  ]
+
+  const model = buildFoldPreviewModel(project, topology)
+  assert.equal(model?.kind, 'fold_graph')
+  if (model?.kind !== 'fold_graph') return
+  assert.equal(model.hinges.length, 0)
+  assert.deepEqual(model.kinematics, {
+    kind: 'static_components',
+    reason: 'cut_material_components',
+  })
+})
+
 test('a cellular fold graph preserves every face and validated hinge in canonical order', () => {
   const [project, topology] = foldGraphFixtures()
 

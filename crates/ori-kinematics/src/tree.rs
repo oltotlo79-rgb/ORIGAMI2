@@ -1316,6 +1316,21 @@ fn validate_incidences(
                     return Err(KinematicsError::UnsupportedTopology);
                 }
             }
+            EdgeIncidence::Cut { left, right } => {
+                if !faces.contains(&left)
+                    || !faces.contains(&right)
+                    || source.kind != EdgeKind::Cut
+                    || edge_occurrences.len() != 2
+                {
+                    return Err(KinematicsError::UnsupportedTopology);
+                }
+                let (start, end) = canonical_endpoints(source.start, source.end);
+                if !edge_occurrences.contains(&(left, start, end))
+                    || !edge_occurrences.contains(&(right, end, start))
+                {
+                    return Err(KinematicsError::UnsupportedTopology);
+                }
+            }
             EdgeIncidence::AuxiliaryIgnored => {
                 if source.kind != EdgeKind::Auxiliary || !edge_occurrences.is_empty() {
                     return Err(KinematicsError::UnsupportedTopology);

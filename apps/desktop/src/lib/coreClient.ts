@@ -416,6 +416,7 @@ export type TopologyEdgeIncidence =
     right: string
     assignment: FoldAssignment
   }
+  | { kind: 'cut'; left: string; right: string }
   | { kind: 'auxiliary_ignored' }
 
 export type TopologyFaceAdjacency = {

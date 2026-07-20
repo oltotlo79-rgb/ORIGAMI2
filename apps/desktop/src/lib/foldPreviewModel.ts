@@ -52,6 +52,10 @@ export type FoldPreviewGraphKinematics =
       kind: 'static_cycle'
       reason: 'cyclic_hinge_graph'
     }>
+  | Readonly<{
+      kind: 'static_components'
+      reason: 'cut_material_components'
+    }>
 
 type FoldPreviewModelBase = Readonly<{
   projectId: string
@@ -131,6 +135,7 @@ type ParsedIncidence =
       right: string
       assignment: FoldAssignment
     }>
+  | Readonly<{ kind: 'cut'; edge: string; left: string; right: string }>
   | Readonly<{ kind: 'auxiliary_ignored'; edge: string }>
 type ParsedAdjacency = Readonly<{
   edge: string
@@ -242,6 +247,17 @@ export function buildFoldPreviewModel(
     }
   }
 
+  if (validatedHinges.length === 0 && snapshot.material_components.length > 1) {
+    if (!hasCanonicalFaceOrder(faces)) return null
+    return {
+      ...base,
+      kind: 'fold_graph',
+      faces: faces.map((face) => face.worldFace),
+      hinges: [],
+      kinematics: { kind: 'static_components', reason: 'cut_material_components' },
+    }
+  }
+
   if (faces.length < 2 || validatedHinges.length < 2) return null
   if (!hasCanonicalFaceOrder(faces)) return null
   const kinematics = classifyFoldGraphKinematics(validatedHinges, faces)
@@ -312,6 +328,7 @@ function validateHinges(
   project: ParsedProject,
 ): ValidatedHinge[] | null {
   if (incidences.length !== rawAdjacencies.length) return null
+  if (incidences.length === 0) return []
   const incidenceByEdge = new Map(incidences.map((incidence) => [incidence.edge, incidence]))
   if (incidenceByEdge.size !== incidences.length) return null
   const facesById = new Map(faces.map((face) => [face.id, face]))
@@ -726,6 +743,11 @@ function parseIncidences(rawIncidences: readonly unknown[]): ParsedIncidence[] |
       const assignment = foldAssignment(incidence.assignment)
       if (!left || !right || !assignment) return null
       incidences.push({ kind, edge, left, right, assignment })
+    } else if (kind === 'cut') {
+      const left = canonicalEntityId(incidence.left)
+      const right = canonicalEntityId(incidence.right)
+      if (!left || !right) return null
+      incidences.push({ kind, edge, left, right })
     } else if (kind === 'auxiliary_ignored') {
       incidences.push({ kind, edge })
     } else {
@@ -777,6 +799,15 @@ function incidencesMatchProject(
       ) return false
     } else if (incidence.kind === 'auxiliary_ignored') {
       if (source.kind !== 'auxiliary' || materials.length !== 0) return false
+    } else if (incidence.kind === 'cut') {
+      if (
+        source.kind !== 'cut'
+        || !faceIds.has(incidence.left)
+        || !faceIds.has(incidence.right)
+        || materials.length !== 2
+        || !materials.includes(incidence.left)
+        || !materials.includes(incidence.right)
+      ) return false
     } else if (
       source.kind !== incidence.assignment
       || incidence.left === incidence.right

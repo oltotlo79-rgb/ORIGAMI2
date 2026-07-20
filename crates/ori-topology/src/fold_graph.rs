@@ -17,8 +17,8 @@ use ori_geometry::Orientation;
 
 use crate::{
     BoundaryWalk, CooperativeAnalysisCheckpoint, CooperativeOperationError, EdgeIncidence, Face,
-    FaceAdjacency, FaceExtractionInput, FoldAssignment, HalfEdgeRef, TopologyIssueKind,
-    TopologySnapshot,
+    FaceAdjacency, FaceExtractionInput, FoldAssignment, HalfEdgeRef, MaterialComponent,
+    TopologyIssueKind, TopologySnapshot,
     admission::{PaperGraphAdmissionError, build_admitted_paper_walks_with_checkpoint},
     connected_sheet_component,
     dcel::{HalfEdgeIndex, PaperWalkSet, WalkIndex},
@@ -28,7 +28,6 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FoldGraphError {
     Admission(PaperGraphAdmissionError),
-    UnsupportedCut { edge: EdgeId },
     DisconnectedParticipantGraph { edge: EdgeId },
     UnexpectedWalkOrientation { edge: EdgeId },
     NonSeparatingFold { edge: EdgeId },
@@ -51,7 +50,7 @@ struct ParticipantCounts {
     vertices: usize,
     edges: usize,
     boundary_edges: usize,
-    folds: usize,
+    interior_edges: usize,
 }
 
 struct IncidenceResult {
@@ -84,22 +83,6 @@ where
     let walks = build_admitted_paper_walks_with_checkpoint(input.paper, input.pattern, checkpoint)
         .map_err(|error| error.map_operation(FoldGraphError::Admission))?;
 
-    let mut first_cut = None;
-    for (index, edge) in input.pattern.edges.iter().enumerate() {
-        poll_cooperative_checkpoint(checkpoint, index)?;
-        if edge.kind == EdgeKind::Cut
-            && first_cut
-                .is_none_or(|current: EdgeId| edge.id.canonical_bytes() < current.canonical_bytes())
-        {
-            first_cut = Some(edge.id);
-        }
-    }
-    if let Some(edge) = first_cut {
-        return Err(CooperativeOperationError::Operation(
-            FoldGraphError::UnsupportedCut { edge },
-        ));
-    }
-
     run_cooperative_checkpoint(checkpoint)?;
     let counts = ensure_connected_participants(input.paper, input.pattern)
         .map_err(CooperativeOperationError::Operation)?;
@@ -131,15 +114,72 @@ where
     edge_incidence.sort_by_key(|(edge, _)| edge.canonical_bytes());
     sort_hinge_adjacency(&mut hinge_adjacency, &faces)
         .map_err(CooperativeOperationError::Operation)?;
+    let material_components =
+        build_material_components(input.identity_namespace, &faces, &hinge_adjacency)
+            .map_err(CooperativeOperationError::Operation)?;
     run_cooperative_checkpoint(checkpoint)?;
 
     Ok(TopologySnapshot {
         source_revision: input.source_revision,
-        material_components: vec![connected_sheet_component(input.identity_namespace, &faces)],
+        material_components,
         faces,
         edge_incidence,
         hinge_adjacency,
     })
+}
+
+fn build_material_components(
+    sheet_origin: ori_domain::ProjectId,
+    faces: &[Face],
+    hinges: &[FaceAdjacency],
+) -> Result<Vec<MaterialComponent>, FoldGraphError> {
+    let faces_by_id = faces
+        .iter()
+        .map(|face| (face.id, face))
+        .collect::<HashMap<_, _>>();
+    if faces_by_id.len() != faces.len() {
+        return Err(FoldGraphError::InternalInvariant);
+    }
+    let mut neighbours: HashMap<FaceId, Vec<FaceId>> = HashMap::new();
+    for hinge in hinges {
+        if !faces_by_id.contains_key(&hinge.first) || !faces_by_id.contains_key(&hinge.second) {
+            return Err(FoldGraphError::InternalInvariant);
+        }
+        neighbours
+            .entry(hinge.first)
+            .or_default()
+            .push(hinge.second);
+        neighbours
+            .entry(hinge.second)
+            .or_default()
+            .push(hinge.first);
+    }
+    let mut ordered_faces = faces.iter().collect::<Vec<_>>();
+    ordered_faces.sort_by_key(|face| face.key);
+    let mut visited = HashSet::new();
+    let mut components = Vec::new();
+    for root in ordered_faces {
+        if !visited.insert(root.id) {
+            continue;
+        }
+        let mut pending = vec![root.id];
+        let mut component_faces = Vec::new();
+        while let Some(face_id) = pending.pop() {
+            let face = faces_by_id
+                .get(&face_id)
+                .copied()
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            component_faces.push(face.clone());
+            for neighbour in neighbours.get(&face_id).into_iter().flatten() {
+                if visited.insert(*neighbour) {
+                    pending.push(*neighbour);
+                }
+            }
+        }
+        components.push(connected_sheet_component(sheet_origin, &component_faces));
+    }
+    components.sort_by_key(|component| component.key);
+    Ok(components)
 }
 
 fn sort_hinge_adjacency(
@@ -185,7 +225,7 @@ fn ensure_connected_participants(
         .filter(|edge| {
             matches!(
                 edge.kind,
-                EdgeKind::Boundary | EdgeKind::Mountain | EdgeKind::Valley
+                EdgeKind::Boundary | EdgeKind::Mountain | EdgeKind::Valley | EdgeKind::Cut
             )
         })
         .collect::<Vec<_>>();
@@ -238,9 +278,14 @@ fn ensure_connected_participants(
             .iter()
             .filter(|edge| edge.kind == EdgeKind::Boundary)
             .count(),
-        folds: participant_edges
+        interior_edges: participant_edges
             .iter()
-            .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+            .filter(|edge| {
+                matches!(
+                    edge.kind,
+                    EdgeKind::Mountain | EdgeKind::Valley | EdgeKind::Cut
+                )
+            })
             .count(),
     })
 }
@@ -270,7 +315,7 @@ fn ensure_euler_partition(
         .map(|(_, walk)| walk.half_edges.len())
         .sum::<usize>();
     let expected_material_occurrences = counts
-        .folds
+        .interior_edges
         .checked_mul(2)
         .and_then(|fold_occurrences| fold_occurrences.checked_add(counts.boundary_edges))
         .ok_or(FoldGraphError::InternalInvariant)?;
@@ -571,7 +616,40 @@ fn build_incidence(
                 }
             }
             EdgeKind::Auxiliary => EdgeIncidence::AuxiliaryIgnored,
-            EdgeKind::Cut => return Err(FoldGraphError::UnsupportedCut { edge: edge.id }),
+            EdgeKind::Cut => {
+                let halves = halves_by_edge
+                    .get(&edge.id)
+                    .copied()
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                let (canonical_start, canonical_end) = canonical_endpoints(edge.start, edge.end);
+                let left_half = halves
+                    .into_iter()
+                    .find(|index| {
+                        walks.half_edges().get(index.0).is_some_and(|half_edge| {
+                            half_edge.origin == canonical_start
+                                && half_edge.destination == canonical_end
+                        })
+                    })
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                let right_half = walks
+                    .half_edges()
+                    .get(left_half.0)
+                    .map(|half_edge| half_edge.twin)
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                let left_walk = walks
+                    .walk_owner(left_half)
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                let right_walk = walks
+                    .walk_owner(right_half)
+                    .ok_or(FoldGraphError::InternalInvariant)?;
+                if left_walk == walks.exterior() || right_walk == walks.exterior() {
+                    return Err(FoldGraphError::ExteriorFoldIncidence { edge: edge.id });
+                }
+                EdgeIncidence::Cut {
+                    left: face_id(faces_by_walk, left_walk)?,
+                    right: face_id(faces_by_walk, right_walk)?,
+                }
+            }
         };
         edge_incidence.push((edge.id, incidence));
     }
@@ -998,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn allowed_cut_remains_an_explicit_unsupported_case() {
+    fn allowed_cut_splits_material_without_creating_a_hinge() {
         let namespace = fixed_id(1);
         let a = vertex(0x701, 0.0, 0.0);
         let b = vertex(0x702, 4.0, 0.0);
@@ -1014,10 +1092,22 @@ mod tests {
         };
         let source_paper = paper(&boundary, true);
 
-        assert_eq!(
-            extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern)),
-            Err(FoldGraphError::UnsupportedCut { edge: cut.id })
-        );
+        let snapshot = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("allowed cut snapshot");
+        assert_eq!(snapshot.faces.len(), 2);
+        assert!(snapshot.hinge_adjacency.is_empty());
+        assert_eq!(snapshot.material_components.len(), 2);
+        assert!(snapshot.material_components.iter().all(|component| {
+            component.sheet_origin == namespace && component.faces.len() == 1
+        }));
+        assert!(matches!(
+            snapshot
+                .edge_incidence
+                .iter()
+                .find(|(edge, _)| *edge == cut.id)
+                .map(|(_, incidence)| incidence),
+            Some(EdgeIncidence::Cut { left, right }) if left != right
+        ));
 
         let forbidden_paper = paper(&boundary, false);
         assert_eq!(

@@ -205,6 +205,10 @@ pub enum EdgeIncidence {
         right: FaceId,
         assignment: FoldAssignment,
     },
+    Cut {
+        left: FaceId,
+        right: FaceId,
+    },
     AuxiliaryIgnored,
 }
 
@@ -557,13 +561,6 @@ fn map_fold_graph_error(error: FoldGraphError) -> (TopologyIssueSeverity, Topolo
                 TopologyIssueKind::InternalBoundaryResolution,
             ),
         },
-        FoldGraphError::UnsupportedCut { edge } => (
-            TopologyIssueSeverity::BlocksSimulation,
-            TopologyIssueKind::UnsupportedActiveEdge {
-                edge,
-                edge_kind: EdgeKind::Cut,
-            },
-        ),
         FoldGraphError::DisconnectedParticipantGraph { edge } => (
             TopologyIssueSeverity::BlocksSimulation,
             TopologyIssueKind::DisconnectedFoldGraph { edge },

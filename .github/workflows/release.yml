@@ -374,6 +374,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_SIGNATURE_POLICY: platform-signed
         run: node .github/scripts/verify_merged_release_set.mjs release
       - name: Remove temporary artifact transport files
         if: always()
@@ -536,6 +537,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_SIGNATURE_POLICY: platform-signed
         run: node .github/scripts/verify_merged_release_set.mjs release
       - name: Verify build provenance for every published payload
         env:

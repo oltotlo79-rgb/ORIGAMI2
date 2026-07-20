@@ -18,6 +18,11 @@ if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? ''))
 if (!['true', 'false'].includes(process.env.REQUIRE_SIGNATURE)) {
   throw new Error('REQUIRE_SIGNATURE must be exactly true or false')
 }
+const expectedSignaturePolicy = process.env.EXPECTED_SIGNATURE_POLICY
+  ?? (process.env.REQUIRE_SIGNATURE === 'true' ? 'platform-signed' : 'unsigned-dry-run')
+if (!['platform-signed', 'unsigned-dry-run'].includes(expectedSignaturePolicy)) {
+  throw new Error('EXPECTED_SIGNATURE_POLICY is invalid')
+}
 if (
   process.env.RELEASE_MODE !== undefined
   && process.env.RELEASE_MODE !== 'dry-run'
@@ -94,7 +99,7 @@ const expectedBuildIdentity = {
   packageLockSha256: expectedSbomProperties.get('origami2.build.package-lock-sha256'),
   rustcVersion: propertyMap.get('origami2.build.rustc-version'),
   nodeVersion: propertyMap.get('origami2.build.node-version'),
-  buildMode: process.env.REQUIRE_SIGNATURE === 'true'
+  buildMode: expectedSignaturePolicy === 'platform-signed'
     ? 'signed-release'
     : 'unsigned-dry-run',
   targetTriple: platform === 'windows-x64'
@@ -159,9 +164,7 @@ const expectedUpdateManifest = {
   schema: 'origami2.update-manifest.v1',
   version,
   platform,
-  signaturePolicy: process.env.REQUIRE_SIGNATURE === 'true'
-    ? 'platform-signed'
-    : 'unsigned-dry-run',
+  signaturePolicy: expectedSignaturePolicy,
   assets: [...payloads].sort().map((name) => ({
     name,
     sha256: checksums.get(name),

@@ -601,7 +601,11 @@ test('publication and promotion share the exact merged release verifier', () => 
         {
           cwd: root,
           stdio: 'pipe',
-          env: { ...process.env, RELEASE_VERSION: '0.1.0' },
+          env: {
+            ...process.env,
+            RELEASE_VERSION: '0.1.0',
+            EXPECTED_SIGNATURE_POLICY: 'unsigned-dry-run',
+          },
         },
       ),
       /merged release asset set mismatch/u,
@@ -609,6 +613,25 @@ test('publication and promotion share the exact merged release verifier', () => 
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('merged release verification binds update manifests to signed payload policy', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const mergedVerifier = readFileSync(
+    join(root, '.github/scripts/verify_merged_release_set.mjs'),
+    'utf8',
+  )
+  const platformVerifier = readFileSync(
+    join(root, '.github/scripts/verify_formal_release.mjs'),
+    'utf8',
+  )
+  assert.match(mergedVerifier, /REQUIRE_SIGNATURE: 'false'/u)
+  assert.match(mergedVerifier, /EXPECTED_SIGNATURE_POLICY: expectedSignaturePolicy/u)
+  assert.equal(workflow.match(/EXPECTED_SIGNATURE_POLICY: platform-signed/gu)?.length ?? 0, 2)
+  assert.match(platformVerifier, /const expectedSignaturePolicy = process\.env\.EXPECTED_SIGNATURE_POLICY/u)
+  assert.match(platformVerifier, /signaturePolicy: expectedSignaturePolicy/u)
+  assert.match(platformVerifier, /buildMode: expectedSignaturePolicy === 'platform-signed'/u)
+  assert.match(platformVerifier, /EXPECTED_SIGNATURE_POLICY is invalid/u)
 })
 
 test('CI and formal release share the strict macOS bundle contract', () => {
@@ -790,6 +813,7 @@ test('release helpers reject hostile shell inputs without reflecting secret valu
           VERSION: '0.1.0',
           PLATFORM: 'windows-x64',
           RELEASE_COMMIT: 'a'.repeat(40),
+          EXPECTED_SIGNATURE_POLICY: 'unsigned-dry-run',
           RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
           NODE_VERSION: 'v24.0.0',
           BUILD_MODE: 'unsigned-dry-run',
@@ -898,6 +922,7 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
         encoding: 'utf8',
         env: {
           ...process.env,
+          EXPECTED_SIGNATURE_POLICY: 'unsigned-dry-run',
           RELEASE_VERSION: version,
           RELEASE_COMMIT: 'a'.repeat(40),
         },
@@ -912,6 +937,7 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
         encoding: 'utf8',
         env: {
           ...process.env,
+          EXPECTED_SIGNATURE_POLICY: 'unsigned-dry-run',
           RELEASE_VERSION: version,
           RELEASE_COMMIT: 'a'.repeat(40),
         },

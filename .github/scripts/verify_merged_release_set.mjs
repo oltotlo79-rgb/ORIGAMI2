@@ -5,8 +5,12 @@ import { join, resolve } from 'node:path'
 
 const directory = resolve(process.argv[2])
 const version = process.env.RELEASE_VERSION
+const expectedSignaturePolicy = process.env.EXPECTED_SIGNATURE_POLICY
 if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? '')) {
   throw new Error('invalid merged release version')
+}
+if (!['platform-signed', 'unsigned-dry-run'].includes(expectedSignaturePolicy)) {
+  throw new Error('invalid merged release signature policy')
 }
 
 const platformFiles = new Map([
@@ -42,6 +46,7 @@ for (const [platform, names] of platformFiles) {
         RELEASE_PLATFORM: platform,
         RELEASE_VERSION: version,
         REQUIRE_SIGNATURE: 'false',
+        EXPECTED_SIGNATURE_POLICY: expectedSignaturePolicy,
       },
     })
   } finally {

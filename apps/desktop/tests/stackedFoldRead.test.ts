@@ -74,6 +74,35 @@ describe('stacked-fold read boundary', () => {
         indeterminatePairCount: 0,
         hasBlockingHold: false,
       },
+      continuousPath: {
+        modelId: 'stacked_fold_bounded_path_diagnostic_v1',
+        continuousCertificateModelId: null,
+        sampledPoseCount: 2,
+        sampledNonblockingPoseCount: 2,
+        firstSampledBlockingAngleDegrees: null,
+        requestedAngleDegrees: 180,
+        continuousClearanceCertified: false,
+        safeStopAngleDegrees: 180,
+        authorizesProjectMutation: false,
+      },
+      transactionProposal: {
+        transactionToken: null,
+        sourceProjectId: projectId,
+        sourceRevision: 3,
+        targetRevision: 4,
+        sourceFingerprintSha256: 'e'.repeat(64),
+        targetFingerprintSha256: 'a'.repeat(64),
+        addedVertexCount: 1,
+        addedEdgeCount: 1,
+        mountainCreaseCount: 1,
+        valleyCreaseCount: 0,
+        timelineStepCount: 1,
+        timelineCompleteHingeAngleCount: 1,
+        requestedAngleDegrees: 180,
+        readyForAtomicApply: false,
+        failureClasses: ['continuous_path_uncertified'],
+        authorizesProjectMutation: false,
+      },
       work: {
         scannedCells: 1,
         totalBoundaryVertices: 4,
@@ -95,6 +124,28 @@ describe('stacked-fold read boundary', () => {
       },
     }
     assert.deepEqual(normalizeStackedFoldReadResponse(response, request), response)
+    const ready = {
+      ...response,
+      continuousPath: {
+        ...response.continuousPath,
+        continuousClearanceCertified: true,
+      },
+      transactionProposal: {
+        ...response.transactionProposal,
+        transactionToken: faceId,
+        readyForAtomicApply: true,
+        failureClasses: [],
+        authorizesProjectMutation: true,
+      },
+    }
+    assert.deepEqual(normalizeStackedFoldReadResponse(ready, request), ready)
+    assert.equal(
+      normalizeStackedFoldReadResponse({
+        ...ready,
+        transactionProposal: { ...ready.transactionProposal, transactionToken: null },
+      }, request),
+      null,
+    )
   })
 
   it('fails closed on stale authority, mutation authority, and contradictory layer order', () => {

@@ -64,6 +64,38 @@ export type StackedFoldReadResponse = Readonly<{
     indeterminatePairCount: number
     hasBlockingHold: boolean
   }>
+  continuousPath: Readonly<{
+    modelId: string
+    continuousCertificateModelId: string | null
+    sampledPoseCount: number
+    sampledNonblockingPoseCount: number
+    firstSampledBlockingAngleDegrees: number | null
+    requestedAngleDegrees: number
+    continuousClearanceCertified: boolean
+    safeStopAngleDegrees: number
+    authorizesProjectMutation: boolean
+  }>
+  transactionProposal: Readonly<{
+    transactionToken: string | null
+    sourceProjectId: string
+    sourceRevision: number
+    targetRevision: number
+    sourceFingerprintSha256: string
+    targetFingerprintSha256: string
+    addedVertexCount: number
+    addedEdgeCount: number
+    mountainCreaseCount: number
+    valleyCreaseCount: number
+    timelineStepCount: number
+    timelineCompleteHingeAngleCount: number
+    requestedAngleDegrees: number
+    readyForAtomicApply: boolean
+    failureClasses: readonly (
+      | 'continuous_path_uncertified'
+      | 'target_layer_order_unavailable'
+    )[]
+    authorizesProjectMutation: boolean
+  }>
   work: Readonly<{
     scannedCells: number
     totalBoundaryVertices: number
@@ -136,7 +168,10 @@ export function normalizeStackedFoldReadResponse(
   value: unknown,
   expected: Pick<
     StackedFoldReadRequest,
-    'expectedProjectInstanceId' | 'expectedProjectId' | 'expectedRevision'
+    | 'expectedProjectInstanceId'
+    | 'expectedProjectId'
+    | 'expectedRevision'
+    | 'requestedAngleDegrees'
   >,
 ): StackedFoldReadResponse | null {
   if (
@@ -144,6 +179,8 @@ export function normalizeStackedFoldReadResponse(
     !isRecord(value.binding) ||
     !isRecord(value.topologyProof) ||
     !isRecord(value.endpointCollision) ||
+    !isRecord(value.continuousPath) ||
+    !isRecord(value.transactionProposal) ||
     !isRecord(value.work) ||
     !isRecord(value.flatEndpointLayerOrder)
   )
@@ -151,6 +188,8 @@ export function normalizeStackedFoldReadResponse(
   const binding = value.binding
   const topologyProof = value.topologyProof
   const endpointCollision = value.endpointCollision
+  const continuousPath = value.continuousPath
+  const transaction = value.transactionProposal
   const work = value.work
   const layerOrder = value.flatEndpointLayerOrder
   const endpointCountFields = [
@@ -179,7 +218,9 @@ export function normalizeStackedFoldReadResponse(
       'materialSegments',
       'topologyProof',
       'endpointCollision',
+      'continuousPath',
       'flatEndpointLayerOrder',
+      'transactionProposal',
       'work',
       'authorizesProjectMutation',
       'authorizesApplyStackedFold',
@@ -205,6 +246,35 @@ export function normalizeStackedFoldReadResponse(
     !hasExactKeys(endpointCollision, [
       ...endpointCountFields,
       'hasBlockingHold',
+    ]) ||
+    !hasExactKeys(continuousPath, [
+      'modelId',
+      'continuousCertificateModelId',
+      'sampledPoseCount',
+      'sampledNonblockingPoseCount',
+      'firstSampledBlockingAngleDegrees',
+      'requestedAngleDegrees',
+      'continuousClearanceCertified',
+      'safeStopAngleDegrees',
+      'authorizesProjectMutation',
+    ]) ||
+    !hasExactKeys(transaction, [
+      'transactionToken',
+      'sourceProjectId',
+      'sourceRevision',
+      'targetRevision',
+      'sourceFingerprintSha256',
+      'targetFingerprintSha256',
+      'addedVertexCount',
+      'addedEdgeCount',
+      'mountainCreaseCount',
+      'valleyCreaseCount',
+      'timelineStepCount',
+      'timelineCompleteHingeAngleCount',
+      'requestedAngleDegrees',
+      'readyForAtomicApply',
+      'failureClasses',
+      'authorizesProjectMutation',
     ]) ||
     !hasExactKeys(work, [
       'scannedCells',
@@ -275,6 +345,52 @@ export function normalizeStackedFoldReadResponse(
     endpointCollision.hasBlockingHold !==
       (Number(endpointCollision.penetratingPairCount) > 0 ||
         Number(endpointCollision.indeterminatePairCount) > 0) ||
+    typeof continuousPath.modelId !== 'string' ||
+    (continuousPath.continuousCertificateModelId !== null &&
+      typeof continuousPath.continuousCertificateModelId !== 'string') ||
+    !isCount(continuousPath.sampledPoseCount) ||
+    !isCount(continuousPath.sampledNonblockingPoseCount) ||
+    continuousPath.sampledNonblockingPoseCount > continuousPath.sampledPoseCount ||
+    (continuousPath.firstSampledBlockingAngleDegrees !== null &&
+      (typeof continuousPath.firstSampledBlockingAngleDegrees !== 'number' ||
+        !Number.isFinite(continuousPath.firstSampledBlockingAngleDegrees))) ||
+    typeof continuousPath.requestedAngleDegrees !== 'number' ||
+    !Number.isFinite(continuousPath.requestedAngleDegrees) ||
+    continuousPath.requestedAngleDegrees !== expected.requestedAngleDegrees ||
+    typeof continuousPath.safeStopAngleDegrees !== 'number' ||
+    !Number.isFinite(continuousPath.safeStopAngleDegrees) ||
+    typeof continuousPath.continuousClearanceCertified !== 'boolean' ||
+    typeof continuousPath.authorizesProjectMutation !== 'boolean' ||
+    (transaction.transactionToken !== null &&
+      !isCanonicalNonNilUuid(transaction.transactionToken)) ||
+    transaction.sourceProjectId !== expected.expectedProjectId ||
+    transaction.sourceRevision !== expected.expectedRevision ||
+    !isCount(transaction.targetRevision) ||
+    transaction.targetRevision !== transaction.sourceRevision + 1 ||
+    !isLowerSha256(transaction.sourceFingerprintSha256) ||
+    !isLowerSha256(transaction.targetFingerprintSha256) ||
+    transaction.targetFingerprintSha256 !== topologyProof.targetFingerprintSha256 ||
+    !allCounts(transaction, [
+      'addedVertexCount',
+      'addedEdgeCount',
+      'mountainCreaseCount',
+      'valleyCreaseCount',
+      'timelineStepCount',
+      'timelineCompleteHingeAngleCount',
+    ]) ||
+    typeof transaction.requestedAngleDegrees !== 'number' ||
+    !Number.isFinite(transaction.requestedAngleDegrees) ||
+    transaction.requestedAngleDegrees !== expected.requestedAngleDegrees ||
+    typeof transaction.readyForAtomicApply !== 'boolean' ||
+    !Array.isArray(transaction.failureClasses) ||
+    !transaction.failureClasses.every((failure) =>
+      failure === 'continuous_path_uncertified' ||
+      failure === 'target_layer_order_unavailable') ||
+    typeof transaction.authorizesProjectMutation !== 'boolean' ||
+    transaction.readyForAtomicApply !==
+      (transaction.transactionToken !== null &&
+        transaction.failureClasses.length === 0 &&
+        transaction.authorizesProjectMutation) ||
     !allCounts(work, [
       'scannedCells',
       'totalBoundaryVertices',

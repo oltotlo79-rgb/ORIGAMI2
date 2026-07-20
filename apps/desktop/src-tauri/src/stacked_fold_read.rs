@@ -204,12 +204,12 @@ struct StackedFoldFlatEndpointLayerOrderDto {
 enum StackedFoldTransactionFailureClassDto {
     ContinuousPathUncertified,
     TargetLayerOrderUnavailable,
-    AtomicEditorCommandUnavailable,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StackedFoldTransactionProposalDto {
+    transaction_token: Option<ProjectId>,
     source_project_id: ProjectId,
     source_revision: u64,
     target_revision: u64,
@@ -545,6 +545,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             flat_endpoint_layer_order.certified,
         );
         let transaction_proposal = StackedFoldTransactionProposalDto {
+            transaction_token: None,
             source_project_id: binding.project_id(),
             source_revision: binding.source_revision(),
             target_revision: geometry_proof.lineage().target_revision(),
@@ -642,7 +643,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         endpoint_collision,
         continuous_path,
         flat_endpoint_layer_order,
-        transaction_proposal,
+        mut transaction_proposal,
         native_transaction,
     ) = analysis;
 
@@ -665,12 +666,15 @@ pub(super) async fn propose_current_stacked_fold_read(
         }
     }
     if let Some(native_transaction) = native_transaction {
-        super::stacked_fold_transaction::install_pending_stacked_fold(
+        let token = super::stacked_fold_transaction::install_pending_stacked_fold(
             &transaction_state,
             native_transaction,
             pose_capability,
             layer_capability,
         )?;
+        transaction_proposal.transaction_token = Some(token);
+        transaction_proposal.ready_for_atomic_apply = true;
+        transaction_proposal.authorizes_project_mutation = true;
     }
     drop(worker_permit);
 
@@ -750,9 +754,6 @@ fn transaction_failure_classes(
     if !target_layer_order_certified {
         failures.push(StackedFoldTransactionFailureClassDto::TargetLayerOrderUnavailable);
     }
-    // EditorState has no atomic topology+timeline+pose/layer command yet.
-    // Keep this explicit even when every read-only premise succeeds.
-    failures.push(StackedFoldTransactionFailureClassDto::AtomicEditorCommandUnavailable);
     failures
 }
 
@@ -913,15 +914,10 @@ mod tests {
             missing_all,
             serde_json::json!([
                 "continuous_path_uncertified",
-                "target_layer_order_unavailable",
-                "atomic_editor_command_unavailable"
+                "target_layer_order_unavailable"
             ])
         );
-        let final_missing_command =
-            serde_json::to_value(transaction_failure_classes(true, true)).unwrap();
-        assert_eq!(
-            final_missing_command,
-            serde_json::json!(["atomic_editor_command_unavailable"])
-        );
+        let ready = serde_json::to_value(transaction_failure_classes(true, true)).unwrap();
+        assert_eq!(ready, serde_json::json!([]));
     }
 }

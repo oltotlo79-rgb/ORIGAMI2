@@ -41,6 +41,7 @@ import { RecoveryAutosaveStatusBanner } from './components/RecoveryAutosaveStatu
 import { RecoveryDialog } from './components/RecoveryDialog'
 import { RecoveryStartupOverlay } from './components/RecoveryStartupOverlay'
 import { StaticMeshExportDialog } from './components/StaticMeshExportDialog'
+import { StackedFoldPanel } from './components/StackedFoldPanel'
 import { SvgImportDialog } from './components/SvgImportDialog'
 import { ThemeControl } from './components/ThemeControl'
 import { UpdateCheckPopover } from './components/UpdateCheckControl'
@@ -6509,6 +6510,29 @@ function App() {
                 </div>
               </form>
             </section>
+          )}
+          {nativeSnapshot && !benchmarkRun && (
+            <StackedFoldPanel
+              locale={locale}
+              snapshot={nativeSnapshot}
+              selectedLine={selectedLine ? {
+                id: selectedLine.id,
+                start: { x: selectedLine.x1, y: selectedLine.y1 },
+                end: { x: selectedLine.x2, y: selectedLine.y2 },
+              } : null}
+              disabled={coreBusy || recoveryBlocking}
+              refreshSnapshot={requestProjectSnapshot}
+              onApplied={(snapshot) => {
+                applySnapshot(snapshot)
+                setSelectedLineId(null)
+                setSelectedVertexId(null)
+                setSelectedFaceId(null)
+                setCoreStatus(appMessage({
+                  ja: '折り重ねを原子的に適用しました。Undoで全体を戻せます。',
+                  en: 'The stacked fold was applied atomically. Undo restores the whole change.',
+                }))
+              }}
+            />
           )}
           {nativeSnapshot && !benchmarkRun && (
             <ProjectLayerPanel

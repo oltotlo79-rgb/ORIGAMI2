@@ -635,6 +635,25 @@ export function proposeCurrentStackedFoldRead(
   })
 }
 
+export function cancelStackedFoldTransactionPreview(token: string): Promise<void> {
+  if (!isCanonicalNonNilUuid(token)) {
+    return Promise.reject(new Error('invalid stacked-fold transaction token'))
+  }
+  return invoke<void>('cancel_stacked_fold_transaction_preview', { token })
+}
+
+export function applyStackedFoldTransaction(token: string): Promise<number> {
+  if (!isCanonicalNonNilUuid(token)) {
+    return Promise.reject(new Error('invalid stacked-fold transaction token'))
+  }
+  return invoke<unknown>('apply_stacked_fold_transaction', { token }).then((value) => {
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new Error('invalid stacked-fold apply response')
+    }
+    return value as number
+  })
+}
+
 export function previewInstructionMeshAnimation(
   request: MeshAnimationPreviewRequest,
 ): Promise<MeshAnimationPreviewResponse> {

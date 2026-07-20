@@ -2396,7 +2396,7 @@ function App() {
     selectVertexForEdge(vertexId)
   }
 
-  function submitVertexPosition(event: FormEvent<HTMLFormElement>) {
+  async function submitVertexPosition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
     if (!current || !selectedVertex || selectedVertexLocked) return
@@ -2406,6 +2406,70 @@ function App() {
     if (currentVertices.length !== 1) return
     const currentVertex = currentVertices[0]
     const currentUnit = resolveLengthDisplayUnit(current)
+    const form = new FormData(event.currentTarget)
+    if (form.get('vertex_action') === 'polar_endpoint') {
+      const length = readLengthInputMillimetres(
+        event.currentTarget,
+        'polar_length_display',
+        1,
+        currentUnit,
+      )
+      const angleDegrees = Number(form.get('polar_angle_degrees'))
+      if (
+        length === null
+        || length <= 0
+        || !Number.isFinite(angleDegrees)
+        || Math.abs(angleDegrees) > 360_000
+      ) {
+        setCoreStatus(appMessage({
+          ja: '正の有限な長さと有限な角度を入力してください。',
+          en: 'Enter a positive finite length and a finite angle.',
+        }))
+        return
+      }
+      const angleRadians = angleDegrees * Math.PI / 180
+      const x = currentVertex.position.x + length * Math.cos(angleRadians)
+      const y = currentVertex.position.y + length * Math.sin(angleRadians)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        setCoreStatus(appMessage({
+          ja: '指定した長さと角度から有限な座標を作成できません。',
+          en: 'The specified length and angle do not produce finite coordinates.',
+        }))
+        return
+      }
+      const previousVertexIds = new Set(
+        current.crease_pattern.vertices.map(({ id }) => id),
+      )
+      const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
+      const succeeded = await runNativeEdit(async (
+        projectId,
+        revision,
+        projectInstanceId,
+      ) => {
+        const snapshot = await addVertex(
+          projectId,
+          revision,
+          projectInstanceId,
+          x,
+          y,
+        )
+        result.snapshot = snapshot
+        return snapshot
+      })
+      if (!succeeded || !result.snapshot) return
+      const added = result.snapshot.crease_pattern.vertices.find(
+        ({ id }) => !previousVertexIds.has(id),
+      )
+      setSelectedLineId(null)
+      setPendingEdgeStart(null)
+      setSelectedVertexId(added?.id ?? null)
+      setActiveTool('select')
+      setCoreStatus(appMessage({
+        ja: '指定した長さと角度から終点を追加しました。',
+        en: 'Added an endpoint from the specified length and angle.',
+      }))
+      return
+    }
     const x = readLengthInputMillimetres(
       event.currentTarget,
       'x_display',
@@ -2425,7 +2489,7 @@ function App() {
       }))
       return
     }
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
+    await runNativeEdit((projectId, revision, projectInstanceId) =>
       moveVertex(projectId, revision, projectInstanceId, selectedVertex.id, x, y))
   }
 
@@ -5031,6 +5095,8 @@ function App() {
                   <div className="property-actions">
                     <button
                       type="submit"
+                      name="vertex_action"
+                      value="update_coordinates"
                       disabled={coreBusy || selectedVertexLocked}
                     >
                       {text({ ja: '座標を更新', en: 'Update coordinates' })}
@@ -5053,6 +5119,53 @@ function App() {
                         : text({ ja: '頂点を削除', en: 'Delete vertex' })}
                     </button>
                   </div>
+                  <fieldset>
+                    <legend>
+                      {text({ ja: '長さ・角度指定の終点', en: 'Endpoint by length and angle' })}
+                    </legend>
+                    <label className="field">
+                      {`${text({ ja: '長さ', en: 'Length' })} (${lengthDisplayUnitLabelText})`}
+                      <LengthValueInput
+                        name="polar_length_display"
+                        disabled={coreBusy || selectedVertexLocked}
+                        initialMillimetres={10}
+                        unit={lengthDisplayUnit}
+                        ariaLabel={formattedText({
+                          ja: '始点からの長さ ({unit})',
+                          en: 'Length from the start vertex ({unit})',
+                        }, { unit: lengthDisplayUnitLabelText })}
+                      />
+                    </label>
+                    <label className="field">
+                      {text({ ja: '角度 (度)', en: 'Angle (degrees)' })}
+                      <input
+                        name="polar_angle_degrees"
+                        type="number"
+                        defaultValue="0"
+                        step="any"
+                        min="-360000"
+                        max="360000"
+                        disabled={coreBusy || selectedVertexLocked}
+                        aria-label={text({
+                          ja: '始点からの角度 (度)',
+                          en: 'Angle from the start vertex (degrees)',
+                        })}
+                      />
+                    </label>
+                    <div className="property-actions">
+                      <button
+                        type="submit"
+                        name="vertex_action"
+                        value="polar_endpoint"
+                        disabled={coreBusy || selectedVertexLocked}
+                      >
+                        {text({
+                          ja: '長さと角度から終点を追加',
+                          en: 'Add endpoint by length and angle',
+                        })}
+                      </button>
+                    </div>
+                  </fieldset>
                   {selectedVertexLocked && (
                     <p className="muted">
                       {text({

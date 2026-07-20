@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+
+const app = source('../src/App.tsx')
+const client = source('../src/lib/coreClient.ts')
+const native = source('../src-tauri/src/beginner_recognition.rs')
+const domain = source('../../../crates/ori-domain/src/beginner_recognition.rs')
+
+test('AUT-005 recognizes only bounded CRC-checked RGBA marker PNG data', () => {
+  assert.match(native, /png::Decoder/u)
+  assert.match(native, /next_frame/u)
+  assert.match(native, /ColorType::Rgba/u)
+  assert.match(native, /BitDepth::Eight/u)
+  assert.match(native, /MAX_BEGINNER_RECOGNITION_DIMENSION_V1/u)
+  assert.match(native, /MAX_BEGINNER_RECOGNITION_PIXELS_V1/u)
+  assert.match(domain, /BeginnerRecognitionFormatV1[\s\S]*MarkerPngV1/u)
+  assert.match(domain, /collect_component/u)
+})
+
+test('recognition is bound to the project instance, revision, underlay, asset, and bytes', () => {
+  assert.match(native, /ensure_expected_project/u)
+  assert.match(native, /underlay\.id == request\.underlay_id && underlay\.asset == request\.asset_id/u)
+  assert.match(native, /Sha256::digest\(&bytes\)/u)
+  assert.match(native, /live_hash != source_sha256/u)
+  assert.match(client, /exactCoreDataRecord\(value, \[[\s\S]*?'source_sha256'/u)
+  assert.match(client, /record\.source_underlay_id !== expectedUnderlayId/u)
+  assert.match(client, /record\.source_asset_id !== expectedAssetId/u)
+})
+
+test('the read-only proposal is stale-safe, single-flight, and copied before normal save', () => {
+  assert.match(app, /beginnerRecognitionRequestRef/u)
+  assert.match(app, /beginnerRecognitionBusy/u)
+  assert.match(app, /latest\.revision !== binding\.revision/u)
+  assert.match(app, /Recognition proposal preview/u)
+  assert.match(app, /Copy to editable fields/u)
+  assert.match(app, /setBeginnerSkeletonSegments/u)
+  assert.match(app, /input\[name\^="target_part_"\]/u)
+  assert.match(app, /does not change the project until you save/u)
+  assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
+})
+
+function source(relativePath: string) {
+  return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+}

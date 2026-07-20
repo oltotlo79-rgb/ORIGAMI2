@@ -198,6 +198,24 @@ export type BeginnerGenerationConstraintsV1 = {
   >
 }
 
+export type BeginnerRecognitionProposalV1 = {
+  schema_version: 1
+  format: 'marker_png_v1'
+  source_underlay_id: string
+  source_asset_id: string
+  source_sha256: readonly number[]
+  width: number
+  height: number
+  shape_bounds: {
+    min_x: number
+    min_y: number
+    max_x: number
+    max_y: number
+  }
+  target_parts: BeginnerGenerationConstraintsV1['target_parts']
+  skeleton_segments: BeginnerGenerationConstraintsV1['skeleton_segments']
+}
+
 const BEGINNER_TECHNIQUES = [
   'valley_fold',
   'mountain_fold',
@@ -317,6 +335,61 @@ function normalizeBeginnerGenerationConstraints(
     target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
+}
+
+function normalizeBeginnerRecognitionProposal(
+  value: unknown,
+  expectedUnderlayId: string,
+  expectedAssetId: string,
+): BeginnerRecognitionProposalV1 | null {
+  const record = exactCoreDataRecord(value, [
+    'schema_version', 'format', 'source_underlay_id', 'source_asset_id',
+    'source_sha256', 'width', 'height', 'shape_bounds', 'target_parts',
+    'skeleton_segments',
+  ] as const)
+  if (!record || record.schema_version !== 1 || record.format !== 'marker_png_v1'
+    || record.source_underlay_id !== expectedUnderlayId
+    || record.source_asset_id !== expectedAssetId
+    || !Array.isArray(record.source_sha256) || record.source_sha256.length !== 32
+    || record.source_sha256.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    || !Number.isInteger(record.width) || Number(record.width) < 1 || Number(record.width) > 4096
+    || !Number.isInteger(record.height) || Number(record.height) < 1 || Number(record.height) > 4096
+    || Number(record.width) * Number(record.height) > 4_000_000) return null
+  const bounds = exactCoreDataRecord(record.shape_bounds, ['min_x', 'min_y', 'max_x', 'max_y'] as const)
+  if (!bounds) return null
+  const coordinates = [bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y]
+  if (coordinates.some((coordinate) => !Number.isInteger(coordinate))
+    || Number(bounds.min_x) < 0 || Number(bounds.min_y) < 0
+    || Number(bounds.max_x) < Number(bounds.min_x)
+    || Number(bounds.max_y) < Number(bounds.min_y)
+    || Number(bounds.max_x) >= Number(record.width)
+    || Number(bounds.max_y) >= Number(record.height)) return null
+  const constraints = normalizeBeginnerGenerationConstraints({
+    schema_version: 1,
+    maximum_steps: 1,
+    detail_level: 'simple',
+    target_category: 'animal',
+    target_parts: record.target_parts,
+    skeleton_segments: record.skeleton_segments,
+    target_asset: null,
+    allowed_techniques: ['valley_fold'],
+  })
+  if (!constraints) return null
+  return Object.freeze({
+    schema_version: 1,
+    format: 'marker_png_v1',
+    source_underlay_id: expectedUnderlayId,
+    source_asset_id: expectedAssetId,
+    source_sha256: Object.freeze(record.source_sha256.slice()),
+    width: Number(record.width),
+    height: Number(record.height),
+    shape_bounds: Object.freeze({
+      min_x: Number(bounds.min_x), min_y: Number(bounds.min_y),
+      max_x: Number(bounds.max_x), max_y: Number(bounds.max_y),
+    }),
+    target_parts: constraints.target_parts,
+    skeleton_segments: constraints.skeleton_segments,
+  })
 }
 
 export type BeginnerCandidateScoreV1 = {
@@ -1105,6 +1178,34 @@ export function evaluateBeginnerCandidates(
     )
     if (!response) throw new Error('invalid beginner candidate response')
     return response
+  })
+}
+
+export function recognizeBeginnerTarget(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  underlayId: string,
+  assetId: string,
+) {
+  if (!isCanonicalNonNilUuid(expectedProjectId)
+    || !isCanonicalNonNilUuid(expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(underlayId)
+    || !isCanonicalNonNilUuid(assetId)
+    || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    return Promise.reject(new Error('invalid beginner recognition request'))
+  }
+  const request = {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    underlayId,
+    assetId,
+  }
+  return invoke<unknown>('recognize_beginner_target', { request }).then((value) => {
+    const proposal = normalizeBeginnerRecognitionProposal(value, underlayId, assetId)
+    if (!proposal) throw new Error('invalid beginner recognition response')
+    return proposal
   })
 }
 

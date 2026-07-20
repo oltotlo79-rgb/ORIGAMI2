@@ -81,6 +81,7 @@ import {
   createProjectLayer,
   deleteProjectLayer,
   evaluateBeginnerCandidates,
+  recognizeBeginnerTarget,
   generateBenchmarkPattern,
   getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
@@ -136,6 +137,7 @@ import {
   type ProjectSnapshot,
   type BeginnerDesignProfileV1,
   type BeginnerCandidateResponseV1,
+  type BeginnerRecognitionProposalV1,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
   type GeometricConstraintKind,
@@ -680,8 +682,16 @@ function App() {
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
   const beginnerCandidateRequestRef = useRef(0)
+  const [beginnerRecognitionProposal, setBeginnerRecognitionProposal] =
+    useState<BeginnerRecognitionProposalV1 | null>(null)
+  const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
+  const beginnerRecognitionRequestRef = useRef(0)
+  const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
     setBeginnerCandidates(null)
+    beginnerRecognitionRequestRef.current += 1
+    setBeginnerRecognitionBusy(false)
+    setBeginnerRecognitionProposal(null)
     setBeginnerPartTotal(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
         .reduce((sum, part) => sum + part.count, 0) ?? 0,
@@ -3541,6 +3551,77 @@ function App() {
         projectInstanceId,
         profile,
       ))
+  }
+
+  function requestBeginnerRecognition() {
+    const current = latestSnapshotRef.current
+    const form = beginnerDesignFormRef.current
+    if (!current || !form || beginnerRecognitionBusy || coreBusy || recoveryBlocking) return
+    const underlayId = String(new FormData(form).get('target_reference_underlay') ?? '')
+    const underlay = current.underlays?.underlays.find((item) => item.id === underlayId)
+    if (!underlay) {
+      setCoreStatus(appMessage({
+        ja: '認識する参照画像を選択してください。',
+        en: 'Select a reference image to recognize.',
+      }))
+      return
+    }
+    const requestId = ++beginnerRecognitionRequestRef.current
+    const binding = {
+      instanceId: current.project_instance_id,
+      projectId: current.project_id,
+      revision: current.revision,
+    }
+    setBeginnerRecognitionBusy(true)
+    setBeginnerRecognitionProposal(null)
+    void recognizeBeginnerTarget(
+      binding.projectId,
+      binding.revision,
+      binding.instanceId,
+      underlay.id,
+      underlay.asset,
+    ).then((proposal) => {
+      const latest = latestSnapshotRef.current
+      if (requestId !== beginnerRecognitionRequestRef.current
+        || !latest
+        || latest.project_instance_id !== binding.instanceId
+        || latest.project_id !== binding.projectId
+        || latest.revision !== binding.revision) return
+      setBeginnerRecognitionProposal(proposal)
+      setCoreStatus(appMessage({
+        ja: 'マーカーPNGの認識案を作成しました。まだ保存されていません。',
+        en: 'Created a marker PNG proposal. It has not been saved.',
+      }))
+    }).catch(() => {
+      if (requestId !== beginnerRecognitionRequestRef.current) return
+      setCoreStatus(appMessage({
+        ja: 'マーカーPNGを認識できませんでした。',
+        en: 'The marker PNG could not be recognized.',
+      }))
+    }).finally(() => {
+      if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
+    })
+  }
+
+  function copyBeginnerRecognitionProposal() {
+    const proposal = beginnerRecognitionProposal
+    const form = beginnerDesignFormRef.current
+    if (!proposal || !form) return
+    const counts = new Map(proposal.target_parts.map((part) => [part.kind, part.count]))
+    form.querySelectorAll<HTMLInputElement>('input[name^="target_part_"]').forEach((input) => {
+      const kind = input.name.slice('target_part_'.length)
+      input.value = String(counts.get(kind as BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']) ?? 0)
+    })
+    setBeginnerPartTotal(proposal.target_parts.reduce((sum, part) => sum + part.count, 0))
+    setBeginnerSkeletonSegments(proposal.skeleton_segments.map((segment) => ({
+      ...segment,
+      start: { ...segment.start },
+      end: { ...segment.end },
+    })))
+    setCoreStatus(appMessage({
+      ja: '認識案を編集欄へコピーしました。保存すると履歴に追加されます。',
+      en: 'Copied the proposal into the editor. Save it to add it to history.',
+    }))
   }
 
   function addBeginnerSkeletonSegment(form: HTMLFormElement) {
@@ -7387,6 +7468,7 @@ function App() {
                 })}
               </p>
               <form
+                ref={beginnerDesignFormRef}
                 key={[
                   nativeSnapshot.project_instance_id,
                   nativeSnapshot.beginner_design_profile.preset,
@@ -7480,6 +7562,77 @@ function App() {
                     en: 'Only PNG/JPEG images already placed in this project can be referenced. Clear the reference before removing or replacing that image. Image contents are not inferred. 3D model targets are not supported in the initial release.',
                   })}
                 </p>
+                <div aria-live="polite">
+                  <button
+                    type="button"
+                    onClick={requestBeginnerRecognition}
+                    disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-recognition-help"
+                  >
+                    {beginnerRecognitionBusy
+                      ? text({ ja: '認識中…', en: 'Recognizing…' })
+                      : text({ ja: 'マーカーPNGを認識', en: 'Recognize marker PNG' })}
+                  </button>
+                  <p id="beginner-recognition-help" className="muted">
+                    {text({
+                      ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',
+                      en: 'Recognition produces a read-only proposal. Copying it to the editor does not change the project until you save.',
+                    })}
+                  </p>
+                  {beginnerRecognitionProposal && (
+                    <section aria-labelledby="beginner-recognition-heading">
+                      <h3 id="beginner-recognition-heading">
+                        {text({ ja: '認識案のプレビュー', en: 'Recognition proposal preview' })}
+                      </h3>
+                      <p>
+                        {formattedText({
+                          ja: '画像 {width} × {height} px・部品 {parts} 個・骨格 {segments} 本',
+                          en: 'Image {width} × {height} px · {parts} parts · {segments} skeleton bars',
+                        }, {
+                          width: beginnerRecognitionProposal.width,
+                          height: beginnerRecognitionProposal.height,
+                          parts: beginnerRecognitionProposal.target_parts.reduce(
+                            (sum, part) => sum + part.count, 0,
+                          ),
+                          segments: beginnerRecognitionProposal.skeleton_segments.length,
+                        })}
+                      </p>
+                      <svg
+                        viewBox={`0 0 ${beginnerRecognitionProposal.width} ${beginnerRecognitionProposal.height}`}
+                        role="img"
+                        aria-label={text({
+                          ja: '認識された形状範囲と骨格',
+                          en: 'Recognized shape bounds and skeleton',
+                        })}
+                      >
+                        <rect
+                          x={beginnerRecognitionProposal.shape_bounds.min_x}
+                          y={beginnerRecognitionProposal.shape_bounds.min_y}
+                          width={beginnerRecognitionProposal.shape_bounds.max_x
+                            - beginnerRecognitionProposal.shape_bounds.min_x + 1}
+                          height={beginnerRecognitionProposal.shape_bounds.max_y
+                            - beginnerRecognitionProposal.shape_bounds.min_y + 1}
+                          fill="none"
+                          stroke="currentColor"
+                        />
+                        {beginnerRecognitionProposal.skeleton_segments.map((segment) => (
+                          <line
+                            key={segment.id}
+                            x1={segment.start.x_tenths_mm / 10}
+                            y1={segment.start.y_tenths_mm / 10}
+                            x2={segment.end.x_tenths_mm / 10}
+                            y2={segment.end.y_tenths_mm / 10}
+                            stroke="currentColor"
+                            strokeWidth={Math.max(1, segment.thickness_tenths_mm / 10)}
+                          />
+                        ))}
+                      </svg>
+                      <button type="button" onClick={copyBeginnerRecognitionProposal}>
+                        {text({ ja: '編集欄へコピー', en: 'Copy to editable fields' })}
+                      </button>
+                    </section>
+                  )}
+                </div>
                 <fieldset
                   aria-describedby="beginner-target-parts-help beginner-target-parts-total"
                   onInput={(event) => {

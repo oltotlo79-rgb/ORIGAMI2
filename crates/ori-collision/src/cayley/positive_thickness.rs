@@ -2293,13 +2293,13 @@ fn prepare_projected_incident_hinge_boundary_v1(
     let right = left;
     let local_y = Point3::new(0.0, 1.0, 0.0)
         .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
-    let normals = input.world_transforms.clone().map(|transform| {
+    let normals = input.world_transforms.map(|transform| {
         transform
             .apply_vector(local_y)
             .map(point3_array)
             .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)
     });
-    let normals = [normals[0].clone()?, normals[1].clone()?];
+    let normals = [normals[0]?, normals[1]?];
     let half = paper_thickness_mm / 2.0;
     let offset = |points: [[f64; 3]; 2], normal: [f64; 3], sign: f64| {
         points.map(|point| {

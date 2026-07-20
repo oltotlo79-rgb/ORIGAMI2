@@ -4,9 +4,39 @@ use ori_domain::{EdgeId, FaceId};
 use ori_topology::TopologySnapshot;
 
 use crate::{
-    CanonicalHingeAngles, KinematicsError, MaterialHingeGraphGeometry, RigidTransform, TreeHinge,
-    TreeKinematicsLimits,
+    CanonicalHingeAngles, IntervalRigidTransformV1, KinematicsError, MaterialHingeGraphGeometry,
+    OutwardIntervalV1, RigidTransform, TreeHinge, TreeKinematicsLimits,
 };
+
+pub const MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1: u32 = 1;
+
+/// Bounded evidence that every angle in one canonical hinge box preserves all
+/// material loop constraints. The interval face poses are intentionally not
+/// exposed: loss of dependency correlation must reject instead of becoming
+/// reusable pose authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterialHingeIntervalClosureCertificateV1 {
+    version: u32,
+    fixed_face: FaceId,
+    checked_hinges: Vec<EdgeId>,
+}
+
+impl MaterialHingeIntervalClosureCertificateV1 {
+    #[must_use]
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    #[must_use]
+    pub const fn fixed_face(&self) -> FaceId {
+        self.fixed_face
+    }
+
+    #[must_use]
+    pub fn checked_hinges(&self) -> &[EdgeId] {
+        &self.checked_hinges
+    }
+}
 
 /// One caller-supplied face transform used only as closure evidence.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,6 +106,166 @@ impl ClosedMaterialHingeGraphPose {
 }
 
 impl MaterialHingeGraphGeometry {
+    /// Proves closure for every value in a canonical vector of angle boxes.
+    ///
+    /// The fixed material face is exactly identity. Each local material-hinge
+    /// transform is right-composed into its parent's world pose. Traversing a
+    /// hinge backwards reverses the assignment sign.
+    pub fn prove_interval_closure_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        angle_boxes: &[(EdgeId, OutwardIntervalV1)],
+        tolerance: f64,
+        max_work: usize,
+    ) -> Result<MaterialHingeIntervalClosureCertificateV1, KinematicsError> {
+        if !tolerance.is_finite()
+            || tolerance < 0.0
+            || max_work == 0
+            || self.face_ids() != audit.faces()
+            || self.hinges().len() != angle_boxes.len()
+            || self.hinges().len() != audit.spanning_hinges().len() + audit.closure_hinges().len()
+            || !audit.faces().contains(&fixed_face)
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let mut hinges = self.hinges().iter().collect::<Vec<_>>();
+        hinges.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
+        if hinges
+            .iter()
+            .map(|hinge| hinge.edge())
+            .ne(angle_boxes.iter().map(|(edge, _)| *edge))
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let boxes = angle_boxes.iter().copied().collect::<HashMap<_, _>>();
+        if boxes.len() != angle_boxes.len() {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let spanning = audit
+            .spanning_hinges()
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut adjacency = HashMap::<FaceId, Vec<(FaceId, usize, bool)>>::new();
+        for face in audit.faces() {
+            adjacency.insert(*face, Vec::new());
+        }
+        for (index, hinge) in self.hinges().iter().enumerate() {
+            if spanning.contains(&hinge.edge()) {
+                adjacency
+                    .get_mut(&hinge.left_face())
+                    .ok_or(KinematicsError::UnsupportedTopology)?
+                    .push((hinge.right_face(), index, false));
+                adjacency
+                    .get_mut(&hinge.right_face())
+                    .ok_or(KinematicsError::UnsupportedTopology)?
+                    .push((hinge.left_face(), index, true));
+            }
+        }
+        for neighbors in adjacency.values_mut() {
+            neighbors.sort_unstable_by_key(|(_, index, _)| {
+                self.hinges()[*index].edge().canonical_bytes()
+            });
+        }
+        let interval_error = |error| match error {
+            crate::OutwardIntervalErrorV1::ResourceLimit => KinematicsError::ResourceLimitExceeded,
+            crate::OutwardIntervalErrorV1::InvalidEndpoint
+            | crate::OutwardIntervalErrorV1::DivisionByZeroInterval => {
+                KinematicsError::UnrepresentableGeometry
+            }
+        };
+        let mut poses = HashMap::new();
+        poses.insert(
+            fixed_face,
+            IntervalRigidTransformV1::identity().map_err(interval_error)?,
+        );
+        let mut queue = VecDeque::from([fixed_face]);
+        let mut charged = 0usize;
+        while let Some(parent_face) = queue.pop_front() {
+            let parent = *poses
+                .get(&parent_face)
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            for &(child_face, hinge_index, reverse) in adjacency
+                .get(&parent_face)
+                .ok_or(KinematicsError::UnsupportedTopology)?
+            {
+                if poses.contains_key(&child_face) {
+                    continue;
+                }
+                charged = charged
+                    .checked_add(1)
+                    .filter(|value| *value <= max_work)
+                    .ok_or(KinematicsError::ResourceLimitExceeded)?;
+                let hinge = &self.hinges()[hinge_index];
+                let degrees = *boxes
+                    .get(&hinge.edge())
+                    .ok_or(KinematicsError::UnsupportedTopology)?;
+                let mountain = hinge.assignment() == ori_topology::FoldAssignment::Mountain;
+                let sign = if reverse ^ !mountain { -1.0 } else { 1.0 };
+                let local = IntervalRigidTransformV1::about_axis(
+                    [
+                        sign * hinge.axis().x(),
+                        sign * hinge.axis().y(),
+                        sign * hinge.axis().z(),
+                    ],
+                    [hinge.start().x(), hinge.start().y(), hinge.start().z()],
+                    degrees,
+                    max_work,
+                )
+                .map_err(interval_error)?;
+                poses.insert(
+                    child_face,
+                    parent.compose(local, max_work).map_err(interval_error)?,
+                );
+                queue.push_back(child_face);
+            }
+        }
+        if poses.len() != audit.faces().len() {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let mut checked_hinges = Vec::with_capacity(hinges.len());
+        for hinge in hinges {
+            charged = charged
+                .checked_add(1)
+                .filter(|value| *value <= max_work)
+                .ok_or(KinematicsError::ResourceLimitExceeded)?;
+            let left = *poses
+                .get(&hinge.left_face())
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            let right = *poses
+                .get(&hinge.right_face())
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            let degrees = boxes[&hinge.edge()];
+            let sign = if hinge.assignment() == ori_topology::FoldAssignment::Mountain {
+                1.0
+            } else {
+                -1.0
+            };
+            let local = IntervalRigidTransformV1::about_axis(
+                [
+                    sign * hinge.axis().x(),
+                    sign * hinge.axis().y(),
+                    sign * hinge.axis().z(),
+                ],
+                [hinge.start().x(), hinge.start().y(), hinge.start().z()],
+                degrees,
+                max_work,
+            )
+            .map_err(interval_error)?;
+            let expected = left.compose(local, max_work).map_err(interval_error)?;
+            if !expected.universally_matches_within(right, tolerance) {
+                return Err(KinematicsError::UnsupportedTopology);
+            }
+            checked_hinges.push(hinge.edge());
+        }
+        Ok(MaterialHingeIntervalClosureCertificateV1 {
+            version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
+            fixed_face,
+            checked_hinges,
+        })
+    }
+
     /// Measures the canonical spanning candidate against every retained hinge
     /// without promoting it to a closure certificate.
     pub fn measure_spanning_closure(
@@ -773,6 +963,75 @@ mod tests {
                 .unwrap()
                 .maximum_error()
                 > 0.0
+        );
+    }
+
+    #[test]
+    fn interval_closure_accepts_both_assignment_signs_and_checks_version() {
+        let namespace = ProjectId::new();
+        for (label, assignment) in [
+            (b"mountain".as_slice(), FoldAssignment::Mountain),
+            (b"valley".as_slice(), FoldAssignment::Valley),
+        ] {
+            let a = FaceId::derive_v5(namespace, &[label, b"a"].concat());
+            let b = FaceId::derive_v5(namespace, &[label, b"b"].concat());
+            let edge = EdgeId::derive_v5(namespace, label);
+            let mut source = topology(&[a, b], &[(edge, a, b)]);
+            source.hinge_adjacency[0].assignment = assignment;
+            let audit =
+                MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+            let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+            let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+            let hinge = TreeHinge::new_for_test(edge, assignment, a, b, start, end, end);
+            let geometry =
+                MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), vec![hinge]);
+            let angle = OutwardIntervalV1::new(30.0, 30.0).unwrap();
+            let certificate = geometry
+                .prove_interval_closure_v1(&audit, a, &[(edge, angle)], 1.0e-10, 1_000_000)
+                .unwrap();
+            assert_eq!(
+                certificate.version(),
+                MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1
+            );
+            assert_eq!(certificate.fixed_face(), a);
+            assert_eq!(certificate.checked_hinges(), &[edge]);
+        }
+    }
+
+    #[test]
+    fn interval_closure_fails_closed_when_cycle_correlation_is_lost() {
+        let namespace = ProjectId::new();
+        let a = FaceId::derive_v5(namespace, b"interval-a");
+        let b = FaceId::derive_v5(namespace, b"interval-b");
+        let c = FaceId::derive_v5(namespace, b"interval-c");
+        let ab = EdgeId::derive_v5(namespace, b"interval-ab");
+        let bc = EdgeId::derive_v5(namespace, b"interval-bc");
+        let ca = EdgeId::derive_v5(namespace, b"interval-ca");
+        let source = topology(&[a, b, c], &[(ab, a, b), (bc, b, c), (ca, c, a)]);
+        let audit =
+            MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let x = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let y = Point3::new(0.0, 1.0, 0.0).unwrap();
+        let z = Point3::new(0.0, 0.0, 1.0).unwrap();
+        let hinges = vec![
+            TreeHinge::new_for_test(ab, FoldAssignment::Mountain, a, b, origin, x, x),
+            TreeHinge::new_for_test(bc, FoldAssignment::Mountain, b, c, origin, y, y),
+            TreeHinge::new_for_test(ca, FoldAssignment::Mountain, c, a, origin, z, z),
+        ];
+        let geometry = MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges);
+        let mut boxes = [ab, bc, ca]
+            .map(|edge| (edge, OutwardIntervalV1::new(10.0, 20.0).unwrap()))
+            .to_vec();
+        boxes.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        assert!(
+            geometry
+                .prove_interval_closure_v1(&audit, a, &boxes, 1.0e-12, 1_000_000)
+                .is_err()
+        );
+        assert_eq!(
+            geometry.prove_interval_closure_v1(&audit, a, &boxes, 1.0e-12, 1),
+            Err(KinematicsError::ResourceLimitExceeded)
         );
     }
 }

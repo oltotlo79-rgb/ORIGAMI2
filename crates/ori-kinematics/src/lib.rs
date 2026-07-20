@@ -79,8 +79,10 @@ use ori_domain::{EdgeId, FaceId};
 use thiserror::Error;
 
 pub use graph::{
-    CandidateFaceTransform, ClosedMaterialHingeGraphPose, MaterialHingeClosureCertificate,
+    CandidateFaceTransform, ClosedMaterialHingeGraphPose,
+    MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1, MaterialHingeClosureCertificate,
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
+    MaterialHingeIntervalClosureCertificateV1,
 };
 pub use interval::{
     IntervalRigidTransformV1, IntervalRotationMatrixV1, OutwardIntervalErrorV1, OutwardIntervalV1,

@@ -453,9 +453,23 @@ fn binary(
         .checked_add(rhs.work)
         .and_then(|value| value.checked_add(1))
         .ok_or(OutwardIntervalErrorV1::ResourceLimit)?;
-    let lower = canonical_finite(next_down(lower))?;
-    let upper = canonical_finite(next_up(upper))?;
+    let lower = canonical_outward(next_down(lower), false)?;
+    let upper = canonical_outward(next_up(upper), true)?;
     Ok(OutwardIntervalV1 { lower, upper, work })
+}
+
+fn canonical_outward(value: f64, upper: bool) -> Result<f64, OutwardIntervalErrorV1> {
+    if !value.is_finite() {
+        return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+    }
+    if value != 0.0 && !value.is_normal() {
+        return Ok(if upper {
+            f64::MIN_POSITIVE
+        } else {
+            -f64::MIN_POSITIVE
+        });
+    }
+    Ok(if value == 0.0 { 0.0 } else { value })
 }
 
 fn canonical_finite(value: f64) -> Result<f64, OutwardIntervalErrorV1> {

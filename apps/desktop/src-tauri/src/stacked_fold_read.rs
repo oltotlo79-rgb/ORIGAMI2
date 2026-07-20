@@ -668,6 +668,8 @@ pub(super) async fn propose_current_stacked_fold_read(
         super::stacked_fold_transaction::install_pending_stacked_fold(
             &transaction_state,
             native_transaction,
+            pose_capability,
+            layer_capability,
         )?;
     }
     drop(worker_permit);

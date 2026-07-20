@@ -252,6 +252,31 @@ pub(super) struct CurrentAppliedPoseCapability {
     claims: CurrentAppliedPoseClaims,
 }
 
+pub(super) struct CurrentAppliedPoseCommitGuard<'a> {
+    _slot: MutexGuard<'a, CurrentAppliedPoseSlot>,
+}
+
+pub(super) fn lock_revalidated_current_applied_pose_for_commit<'a>(
+    project: &ProjectState,
+    capability: &'a CurrentAppliedPoseCapability,
+) -> Result<Option<CurrentAppliedPoseCommitGuard<'a>>, PoseAuthorityError> {
+    let authority = project.applied_pose_authority.clone();
+    if !Arc::ptr_eq(&authority.0, &capability.slot) {
+        return Ok(None);
+    }
+    let slot = capability
+        .slot
+        .lock()
+        .map_err(|_| PoseAuthorityError::LockUnavailable)?;
+    let Some(current) = slot.current.as_ref() else {
+        return Ok(None);
+    };
+    if !current_applied_pose_capability_matches_locked_slot(&slot, project, capability, current) {
+        return Ok(None);
+    }
+    Ok(Some(CurrentAppliedPoseCommitGuard { _slot: slot }))
+}
+
 impl CurrentAppliedPoseCapability {
     /// Observation-only access for detached native analysis. The caller must
     /// revalidate this capability against the live project before publishing

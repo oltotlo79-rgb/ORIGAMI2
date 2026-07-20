@@ -292,6 +292,28 @@ pub(super) struct CurrentLayerOrderCapability {
     claims: CurrentLayerOrderClaims,
 }
 
+pub(super) struct CurrentLayerOrderCommitGuard<'a> {
+    _slot: MutexGuard<'a, GlobalFlatFoldabilitySlot>,
+}
+
+pub(super) fn lock_revalidated_current_layer_order_for_commit<'a>(
+    state: &'a GlobalFlatFoldabilityState,
+    project: &ProjectState,
+    capability: &'a CurrentLayerOrderCapability,
+) -> Result<Option<CurrentLayerOrderCommitGuard<'a>>, GlobalFlatFoldabilityCommandError> {
+    if !Arc::ptr_eq(&state.0, &capability.slot) {
+        return Ok(None);
+    }
+    let slot = lock_foldability_state(state)?;
+    let Some(current) = slot.current_layer_order.as_ref() else {
+        return Ok(None);
+    };
+    if !current_layer_order_capability_matches_locked_slot(&slot, project, capability, current) {
+        return Ok(None);
+    }
+    Ok(Some(CurrentLayerOrderCommitGuard { _slot: slot }))
+}
+
 impl CurrentLayerOrderCapability {
     /// Observation-only access for detached native analysis. The exact Arc
     /// identity remains sealed in the capability and is rechecked before a

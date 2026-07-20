@@ -1,9 +1,28 @@
 use std::sync::{Mutex, MutexGuard};
 
 use ori_collision::StackedFoldBoundedPathDiagnosticV1;
-use ori_core::{PreparedStackedFoldRequestedPoseV1, StackedFoldNonFlatLayerOrderV1};
-use ori_domain::ProjectId;
+use ori_core::{
+    AppliedPoseLimitsV1, PreparedStackedFoldRequestedPoseV1, StackedFoldNonFlatLayerOrderV1,
+    prepare_applied_pose_v1,
+};
+use ori_domain::{
+    InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
+    InstructionStepId, InstructionVisual, MIN_INSTRUCTION_DURATION_MS, ProjectId,
+};
+use ori_foldability::fold_model_fingerprint_v1;
 use tauri::State;
+
+use super::{
+    AppState,
+    applied_pose::{
+        CurrentAppliedPoseCapability, lock_revalidated_current_applied_pose_for_commit,
+    },
+    global_flat_foldability::{
+        CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
+        lock_revalidated_current_layer_order_for_commit,
+    },
+    lock_project,
+};
 
 #[derive(Default)]
 pub(super) struct StackedFoldTransactionState(Mutex<StackedFoldTransactionSlot>);
@@ -13,6 +32,7 @@ struct StackedFoldTransactionSlot {
     active_generation: Option<ProjectId>,
     pending: Option<PendingStackedFoldTransaction>,
     last_cancelled: Option<ProjectId>,
+    applied_layer_order: Option<StackedFoldNonFlatLayerOrderV1>,
 }
 
 /// Native-only preview premises. None of the proof-bearing values is
@@ -28,6 +48,8 @@ pub(super) struct PendingStackedFoldTransaction {
     requested: PreparedStackedFoldRequestedPoseV1,
     continuous: StackedFoldBoundedPathDiagnosticV1,
     layer_order: StackedFoldNonFlatLayerOrderV1,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
 }
 
 pub(super) struct PendingStackedFoldPremises {
@@ -104,6 +126,8 @@ fn binding_matches(expected: LiveBinding, actual: LiveBinding) -> bool {
 pub(super) fn install_pending_stacked_fold(
     state: &StackedFoldTransactionState,
     premises: PendingStackedFoldPremises,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
 ) -> Result<ProjectId, String> {
     let token = ProjectId::new();
     let mut slot = lock_slot(state)?;
@@ -118,6 +142,8 @@ pub(super) fn install_pending_stacked_fold(
         requested: premises.requested,
         continuous: premises.continuous,
         layer_order: premises.layer_order,
+        pose_capability,
+        layer_capability,
     };
     if !pending.matches_live_binding(
         premises.expected_instance_id,
@@ -163,6 +189,119 @@ pub(super) fn cancel_stacked_fold_transaction_preview(
     token: ProjectId,
 ) -> Result<(), String> {
     cancel_pending_stacked_fold(&state, token)
+}
+
+#[tauri::command]
+pub(super) fn apply_stacked_fold_transaction(
+    app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, StackedFoldTransactionState>,
+    token: ProjectId,
+) -> Result<u64, String> {
+    let mut transaction_slot = lock_slot(&transaction_state)?;
+    let pending = transaction_slot
+        .pending
+        .as_ref()
+        .filter(|pending| pending.token() == token)
+        .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
+    let mut project =
+        lock_project(&app_state).map_err(|_| "The project is unavailable.".to_owned())?;
+    let fingerprint = fold_model_fingerprint_v1(project.editor.pattern(), project.editor.paper()).0;
+    if !pending.matches_live_binding(
+        project.instance_id,
+        project.project_id,
+        project.editor.revision(),
+        fingerprint,
+        pending.expected_pose_generation,
+        pending.expected_layer_generation,
+    ) {
+        return Err("The stacked-fold transaction preview is stale.".to_owned());
+    }
+    let _pose_guard =
+        lock_revalidated_current_applied_pose_for_commit(&project, &pending.pose_capability)
+            .map_err(|_| "The current pose authority is unavailable.".to_owned())?
+            .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
+    let _layer_guard = lock_revalidated_current_layer_order_for_commit(
+        &foldability_state,
+        &project,
+        &pending.layer_capability,
+    )
+    .map_err(|_| "The current layer-order authority is unavailable.".to_owned())?
+    .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
+
+    let requested = &pending.requested;
+    let target = requested.initial().target();
+    let target_pose = requested.pose();
+    let applied_pose = prepare_applied_pose_v1(
+        target_pose.face_ids(),
+        &target_pose
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>(),
+        target_pose.fixed_face(),
+        &target_pose
+            .hinge_angles()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees()))
+            .collect::<Vec<_>>(),
+        AppliedPoseLimitsV1::default(),
+    )
+    .map_err(|_| "The target pose is inconsistent.".to_owned())?;
+    let candidate = target.geometry().candidate();
+    let mut timeline = project.editor.instruction_timeline().clone();
+    timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: "Stacked fold".to_owned(),
+        description: String::new(),
+        caution: String::new(),
+        duration_ms: MIN_INSTRUCTION_DURATION_MS,
+        visual: InstructionVisual::default(),
+        pose: InstructionPose {
+            model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+            source_model_fingerprint: target
+                .geometry()
+                .proof()
+                .lineage()
+                .target_fingerprint()
+                .to_hex(),
+            fixed_face: target_pose.fixed_face(),
+            hinge_angles: target_pose
+                .hinge_angles()
+                .iter()
+                .map(|angle| InstructionHingeAngle {
+                    edge: angle.edge(),
+                    angle_degrees: angle.angle_degrees(),
+                })
+                .collect(),
+        },
+    });
+    let layers = project.editor.project_layers().clone();
+    let applied_layer_order = pending.layer_order.clone();
+    let result = project
+        .editor
+        .execute_stacked_fold_document(
+            pending.expected_revision,
+            candidate.pattern.clone(),
+            candidate.paper.clone(),
+            timeline,
+            layers,
+            applied_pose,
+        )
+        .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
+    drop(_layer_guard);
+    drop(_pose_guard);
+    drop(project);
+    transaction_slot.pending = None;
+    transaction_slot.active_generation = None;
+    transaction_slot.applied_layer_order = Some(applied_layer_order);
+    debug_assert!(
+        transaction_slot
+            .applied_layer_order
+            .as_ref()
+            .is_some_and(|order| order.target_revision() == result.revision)
+    );
+    Ok(result.revision)
 }
 
 fn lock_slot(

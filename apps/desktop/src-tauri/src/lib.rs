@@ -45,7 +45,8 @@ use diagnostics::{
     save_diagnostics_share_preview,
 };
 use fold_3d_frames_import::{
-    Fold3dFramesImportState, cancel_fold_3d_frames, preview_fold_3d_frames, select_fold_3d_frame,
+    Fold3dFramesImportState, apply_fold_3d_applied_pose, cancel_fold_3d_frames,
+    prepare_fold_3d_applied_pose, preview_fold_3d_frames, select_fold_3d_frame,
 };
 use fold_technique_file_io::{
     FoldTechniqueFileIoState, open_fold_technique_file, save_fold_technique_file_as,
@@ -123,7 +124,9 @@ use recovery::{
 };
 use serde::{Deserialize, Serialize};
 use stacked_fold_read::propose_current_stacked_fold_read;
-use stacked_fold_transaction::cancel_stacked_fold_transaction_preview;
+use stacked_fold_transaction::{
+    apply_stacked_fold_transaction, cancel_stacked_fold_transaction_preview,
+};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -3561,8 +3564,7 @@ fn import_front_paper_texture(
 
     let metadata = std::fs::metadata(&selected)
         .map_err(|_| "テクスチャ画像を読み込めませんでした。".to_owned())?;
-    if !metadata.is_file()
-        || metadata.len() == 0
+    if !metadata.is_file() || metadata.len() == 0
         || metadata.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES as u64
     {
         return Err("テクスチャ画像は16 MiB以下のPNG/JPEGを選択してください。".to_owned());
@@ -3674,7 +3676,8 @@ fn import_back_paper_texture(
         .map_err(|_| "ローカルのテクスチャ画像を選択してください。".to_owned())?;
     let metadata = std::fs::metadata(&selected)
         .map_err(|_| "テクスチャ画像を読み込めませんでした。".to_owned())?;
-    if !metadata.is_file() || metadata.len() == 0
+    if !metadata.is_file()
+        || metadata.len() == 0
         || metadata.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES as u64
     {
         return Err("テクスチャ画像は16 MiB以下のPNG/JPEGを選択してください。".to_owned());
@@ -6771,6 +6774,7 @@ pub fn run() {
             cancel_global_flat_foldability,
             propose_current_stacked_fold_read,
             cancel_stacked_fold_transaction_preview,
+            apply_stacked_fold_transaction,
             open_project,
             save_project,
             save_project_as,
@@ -6795,6 +6799,8 @@ pub fn run() {
             preview_fold_import,
             preview_fold_3d_frames,
             select_fold_3d_frame,
+            prepare_fold_3d_applied_pose,
+            apply_fold_3d_applied_pose,
             cancel_fold_3d_frames,
             apply_fold_import,
             cancel_fold_import,
@@ -14699,8 +14705,4 @@ mod tests {
             "the cut line must split at the X intersection"
         );
         assert!(
-            replacement.editor.paper().boundary_vertices.len() > 4,
-            "cut contacts must split the paper boundary at both T junctions"
-        );
-    }
-}
+            replacem

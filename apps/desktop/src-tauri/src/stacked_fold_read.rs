@@ -27,7 +27,10 @@ use ori_domain::{FaceId, ProjectId};
 use ori_foldability::{
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityOutcome,
 };
-use ori_kinematics::{Point3, TreeKinematicsLimits};
+use ori_kinematics::{
+    CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
+    HalfAngleRationalEntryInputV1, Point3, RationalCoefficientV1, TreeKinematicsLimits,
+};
 use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -95,6 +98,31 @@ pub(super) struct StackedFoldReadRequest {
     fixed_side: FixedSideRequest,
     rotation_direction: RotationDirectionRequest,
     requested_angle_degrees: f64,
+    #[serde(default)]
+    cycle_schedule_v1: Option<CycleScheduleRequestV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CycleScheduleRequestV1 {
+    version: u32,
+    entries: Vec<CycleScheduleEntryRequestV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CycleScheduleEntryRequestV1 {
+    edge: ori_domain::EdgeId,
+    u_domain: [RationalCoefficientRequestV1; 2],
+    numerator_power_coefficients: Vec<RationalCoefficientRequestV1>,
+    denominator_power_coefficients: Vec<RationalCoefficientRequestV1>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RationalCoefficientRequestV1 {
+    numerator: i64,
+    denominator: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -384,6 +412,11 @@ pub(super) async fn propose_current_stacked_fold_read(
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         if audited_target.requires_closure_certificate() {
+            let schedule_request = request
+                .cycle_schedule_v1
+                .as_ref()
+                .filter(|schedule| schedule.version == 1)
+                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             let initial = prepare_stacked_fold_initial_graph_pose_v1(
                 audited_target,
                 pose_capability.model(),
@@ -403,6 +436,81 @@ pub(super) async fn propose_current_stacked_fold_read(
                 candidate.requested_angle_degrees(),
             )
             .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
+            let schedule_entries = schedule_request
+                .entries
+                .iter()
+                .map(|entry| HalfAngleRationalEntryInputV1 {
+                    edge: entry.edge,
+                    u_domain: entry.u_domain.map(|value| RationalCoefficientV1 {
+                        numerator: value.numerator,
+                        denominator: value.denominator,
+                    }),
+                    numerator_power_coefficients: entry
+                        .numerator_power_coefficients
+                        .iter()
+                        .map(|value| RationalCoefficientV1 {
+                            numerator: value.numerator,
+                            denominator: value.denominator,
+                        })
+                        .collect(),
+                    denominator_power_coefficients: entry
+                        .denominator_power_coefficients
+                        .iter()
+                        .map(|value| RationalCoefficientV1 {
+                            numerator: value.numerator,
+                            denominator: value.denominator,
+                        })
+                        .collect(),
+                })
+                .collect();
+            let cycle_limits = CycleScheduleLimitsV1::default();
+            let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                closed_endpoint.initial().target().hinge_geometry(),
+                closed_endpoint.initial().target().audit(),
+                closed_endpoint.pose().fixed_face(),
+                schedule_entries,
+                cycle_limits,
+            )
+            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let schedule_box = schedule
+                .evaluate_angle_box(cycle_limits.max_work)
+                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            if schedule_box.iter().zip(
+                closed_endpoint
+                    .initial()
+                    .pose()
+                    .hinge_angles()
+                    .as_slice()
+                    .iter()
+                    .zip(closed_endpoint.pose().hinge_angles().as_slice()),
+            )
+            .any(|((edge, interval), (initial_angle, requested_angle))| {
+                *edge != initial_angle.edge()
+                    || *edge != requested_angle.edge()
+                    || initial_angle.angle_degrees() < interval.lower()
+                    || initial_angle.angle_degrees() > interval.upper()
+                    || requested_angle.angle_degrees() < interval.lower()
+                    || requested_angle.angle_degrees() > interval.upper()
+            }) {
+                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+            }
+            let interval_closure = closed_endpoint
+                .initial()
+                .target()
+                .hinge_geometry()
+                .prove_dyadic_schedule_closure_v1(
+                    closed_endpoint.initial().target().audit(),
+                    closed_endpoint.pose().fixed_face(),
+                    &schedule,
+                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 8,
+                        max_leaves: 256,
+                        max_work: cycle_limits.max_work,
+                        schedule_limits: cycle_limits,
+                    },
+                )
+                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             match enumerate_uniform_cycle_closure_roots_v1(
                 closed_endpoint.initial().target().hinge_geometry(),
                 closed_endpoint.initial().target().audit(),
@@ -598,6 +706,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                     expected_layer_generation: binding.layer_order_generation(),
                     requested: closed_endpoint,
                     continuous,
+                    interval_closure,
                     layer_order: layer_proof,
                 },
             ));

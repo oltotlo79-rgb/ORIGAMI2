@@ -60,6 +60,7 @@ pub(super) enum PendingStackedFoldRequestedPose {
     Graph {
         requested: PreparedStackedFoldRequestedGraphPoseV1,
         continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
+        interval_closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     },
 }
 
@@ -73,8 +74,13 @@ impl PendingStackedFoldRequestedPose {
     fn continuous_certified(&self) -> bool {
         match self {
             Self::Tree { continuous, .. } => continuous.continuous_clearance_certified(),
-            Self::Graph { continuous, .. } => {
+            Self::Graph {
+                continuous,
+                interval_closure,
+                ..
+            } => {
                 continuous.continuous_certificate_model_id().is_some()
+                    && !interval_closure.leaves().is_empty()
             }
         }
     }
@@ -149,6 +155,7 @@ pub(super) struct PendingStackedFoldGraphPremises {
     pub expected_layer_generation: u64,
     pub requested: PreparedStackedFoldRequestedGraphPoseV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
+    pub interval_closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     pub layer_order: PendingStackedFoldLayerProof,
 }
 
@@ -280,6 +287,7 @@ pub(super) fn install_pending_stacked_fold_graph(
         requested: PendingStackedFoldRequestedPose::Graph {
             requested: premises.requested,
             continuous: premises.continuous,
+            interval_closure: premises.interval_closure,
         },
         layer_order: premises.layer_order,
         pose_capability,

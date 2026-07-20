@@ -27,6 +27,22 @@ export type StackedFoldReadRequest = Readonly<{
   fixedSide: StackedFoldFixedSide
   rotationDirection: StackedFoldRotationDirection
   requestedAngleDegrees: number
+  cycleScheduleV1?: CycleScheduleRequestV1
+}>
+
+export type CycleScheduleRequestV1 = Readonly<{
+  version: 1
+  entries: readonly Readonly<{
+    edge: string
+    uDomain: readonly [RationalCoefficientRequestV1, RationalCoefficientRequestV1]
+    numeratorPowerCoefficients: readonly RationalCoefficientRequestV1[]
+    denominatorPowerCoefficients: readonly RationalCoefficientRequestV1[]
+  }>[]
+}>
+
+export type RationalCoefficientRequestV1 = Readonly<{
+  numerator: number
+  denominator: number
 }>
 
 export type StackedFoldReadResponse = Readonly<{
@@ -169,6 +185,43 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
   if (!isRecord(value)) return false
   const first = value.first
   const second = value.second
+  const rational = (candidate: unknown): candidate is RationalCoefficientRequestV1 =>
+    isRecord(candidate) &&
+    hasExactKeys(candidate, ['numerator', 'denominator']) &&
+    Number.isSafeInteger(candidate.numerator) &&
+    Number.isSafeInteger(candidate.denominator) &&
+    Number(candidate.denominator) > 0
+  const schedule = value.cycleScheduleV1
+  const scheduleValid =
+    schedule === undefined ||
+    (isRecord(schedule) &&
+      hasExactKeys(schedule, ['version', 'entries']) &&
+      schedule.version === 1 &&
+      Array.isArray(schedule.entries) &&
+      schedule.entries.length > 0 &&
+      schedule.entries.length <= 64 &&
+      schedule.entries.every(
+        (entry) =>
+          isRecord(entry) &&
+          hasExactKeys(entry, [
+            'edge',
+            'uDomain',
+            'numeratorPowerCoefficients',
+            'denominatorPowerCoefficients',
+          ]) &&
+          isCanonicalNonNilUuid(entry.edge) &&
+          Array.isArray(entry.uDomain) &&
+          entry.uDomain.length === 2 &&
+          entry.uDomain.every(rational) &&
+          Array.isArray(entry.numeratorPowerCoefficients) &&
+          entry.numeratorPowerCoefficients.length > 0 &&
+          entry.numeratorPowerCoefficients.length <= 9 &&
+          entry.numeratorPowerCoefficients.every(rational) &&
+          Array.isArray(entry.denominatorPowerCoefficients) &&
+          entry.denominatorPowerCoefficients.length > 0 &&
+          entry.denominatorPowerCoefficients.length <= 9 &&
+          entry.denominatorPowerCoefficients.every(rational),
+      ))
   return (
     isCanonicalNonNilUuid(value.expectedProjectInstanceId) &&
     isCanonicalNonNilUuid(value.expectedProjectId) &&
@@ -181,7 +234,8 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
     typeof value.requestedAngleDegrees === 'number' &&
     Number.isFinite(value.requestedAngleDegrees) &&
     value.requestedAngleDegrees > 0 &&
-    value.requestedAngleDegrees <= 180
+    value.requestedAngleDegrees <= 180 &&
+    scheduleValid
   )
 }
 

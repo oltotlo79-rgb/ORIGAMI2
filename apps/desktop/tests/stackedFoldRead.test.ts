@@ -28,6 +28,30 @@ describe('stacked-fold read boundary', () => {
     assert.equal(isStackedFoldReadRequest({ ...request, second: [0, 0, 0] }), false)
     assert.equal(isStackedFoldReadRequest({ ...request, requestedAngleDegrees: Number.NaN }), false)
     assert.equal(isStackedFoldReadRequest({ ...request, fixedSide: 'center' }), false)
+    const schedule = {
+      version: 1,
+      entries: [{
+        edge: faceId,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+      }],
+    } as const
+    assert.equal(isStackedFoldReadRequest({ ...request, cycleScheduleV1: schedule }), true)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      cycleScheduleV1: { ...schedule, version: 2 },
+    }), false)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      cycleScheduleV1: {
+        ...schedule,
+        entries: [{
+          ...schedule.entries[0],
+          denominatorPowerCoefficients: [{ numerator: 1, denominator: 0 }],
+        }],
+      },
+    }), false)
   })
 
   it('accepts a read-only response bound to the requested project revision', () => {

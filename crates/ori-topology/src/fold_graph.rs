@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, VertexId};
-use ori_geometry::Orientation;
+use ori_geometry::{Orientation, PointPolygonRelation, point_polygon_relation};
 
 use crate::{
     BoundaryWalk, CooperativeAnalysisCheckpoint, CooperativeOperationError, EdgeIncidence, Face,
@@ -49,6 +49,7 @@ struct FoldSides {
 struct ParticipantCounts {
     vertices: usize,
     edges: usize,
+    components: usize,
     boundary_edges: usize,
     interior_edges: usize,
 }
@@ -84,7 +85,7 @@ where
         .map_err(|error| error.map_operation(FoldGraphError::Admission))?;
 
     run_cooperative_checkpoint(checkpoint)?;
-    let counts = ensure_connected_participants(input.paper, input.pattern)
+    let counts = classify_participant_components(input.paper, input.pattern)
         .map_err(CooperativeOperationError::Operation)?;
     run_cooperative_checkpoint(checkpoint)?;
     ensure_euler_partition(&walks, counts).map_err(CooperativeOperationError::Operation)?;
@@ -93,7 +94,7 @@ where
     let fold_sides = resolve_fold_sides(input.pattern.edges.as_slice(), &walks, &halves_by_edge)
         .map_err(CooperativeOperationError::Operation)?;
     run_cooperative_checkpoint(checkpoint)?;
-    ensure_single_ccw_component_per_face(&walks).map_err(CooperativeOperationError::Operation)?;
+    ensure_supported_walk_orientations(&walks).map_err(CooperativeOperationError::Operation)?;
     ensure_simple_material_walks(&walks).map_err(CooperativeOperationError::Operation)?;
 
     let (mut faces, faces_by_walk) = build_faces(input.identity_namespace, &walks, checkpoint)?;
@@ -215,7 +216,7 @@ fn sort_hinge_adjacency(
     Ok(())
 }
 
-fn ensure_connected_participants(
+fn classify_participant_components(
     paper: &Paper,
     pattern: &CreasePattern,
 ) -> Result<ParticipantCounts, FoldGraphError> {
@@ -243,37 +244,59 @@ fn ensure_connected_participants(
         .copied()
         .ok_or(FoldGraphError::InternalInvariant)?;
     let mut reached = HashSet::with_capacity(participant_vertices.len());
-    let mut queue = VecDeque::from([root]);
-    while let Some(vertex) = queue.pop_front() {
-        if !reached.insert(vertex) {
+    let mut components = 0usize;
+    let mut roots = Vec::with_capacity(participant_vertices.len());
+    roots.push(root);
+    roots.extend(
+        participant_vertices
+            .iter()
+            .copied()
+            .filter(|vertex| *vertex != root),
+    );
+    roots[1..].sort_by_key(VertexId::canonical_bytes);
+    for component_root in roots {
+        if reached.contains(&component_root) {
             continue;
         }
-        let neighbours = adjacency
-            .get(&vertex)
+        components = components
+            .checked_add(1)
             .ok_or(FoldGraphError::InternalInvariant)?;
-        queue.extend(
-            neighbours
+        let mut component_vertices = HashSet::new();
+        let mut queue = VecDeque::from([component_root]);
+        while let Some(vertex) = queue.pop_front() {
+            if !reached.insert(vertex) {
+                continue;
+            }
+            component_vertices.insert(vertex);
+            let neighbours = adjacency
+                .get(&vertex)
+                .ok_or(FoldGraphError::InternalInvariant)?;
+            queue.extend(
+                neighbours
+                    .iter()
+                    .copied()
+                    .filter(|neighbour| !reached.contains(neighbour)),
+            );
+        }
+        if component_root != root {
+            if let Some(edge) = participant_edges
                 .iter()
-                .copied()
-                .filter(|neighbour| !reached.contains(neighbour)),
-        );
-    }
-
-    if let Some(edge) = participant_edges
-        .iter()
-        .filter(|edge| !reached.contains(&edge.start) || !reached.contains(&edge.end))
-        .map(|edge| edge.id)
-        .min_by_key(EdgeId::canonical_bytes)
-    {
-        return Err(FoldGraphError::DisconnectedParticipantGraph { edge });
-    }
-    if reached.len() != participant_vertices.len() {
-        return Err(FoldGraphError::InternalInvariant);
+                .filter(|edge| {
+                    component_vertices.contains(&edge.start)
+                        && matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
+                })
+                .map(|edge| edge.id)
+                .min_by_key(EdgeId::canonical_bytes)
+            {
+                return Err(FoldGraphError::DisconnectedParticipantGraph { edge });
+            }
+        }
     }
 
     Ok(ParticipantCounts {
         vertices: participant_vertices.len(),
         edges: participant_edges.len(),
+        components,
         boundary_edges: participant_edges
             .iter()
             .filter(|edge| edge.kind == EdgeKind::Boundary)
@@ -296,7 +319,12 @@ fn ensure_euler_partition(
 ) -> Result<(), FoldGraphError> {
     let expected_walks = counts
         .edges
-        .checked_add(2)
+        .checked_add(
+            counts
+                .components
+                .checked_mul(2)
+                .ok_or(FoldGraphError::InternalInvariant)?,
+        )
         .and_then(|sum| sum.checked_sub(counts.vertices))
         .ok_or(FoldGraphError::InternalInvariant)?;
     let expected_half_edges = counts
@@ -414,11 +442,14 @@ fn resolve_fold_sides(
         .collect()
 }
 
-fn ensure_single_ccw_component_per_face(walks: &PaperWalkSet) -> Result<(), FoldGraphError> {
+fn ensure_supported_walk_orientations(walks: &PaperWalkSet) -> Result<(), FoldGraphError> {
     let mut unsupported = None;
     for (walk_index, walk) in walks.walks().iter().enumerate() {
         if WalkIndex(walk_index) == walks.exterior()
-            || walk.orientation == Orientation::CounterClockwise
+            || matches!(
+                walk.orientation,
+                Orientation::CounterClockwise | Orientation::Clockwise
+            )
         {
             continue;
         }
@@ -430,7 +461,11 @@ fn ensure_single_ccw_component_per_face(walks: &PaperWalkSet) -> Result<(), Fold
     if let Some(edge) = unsupported {
         Err(FoldGraphError::UnexpectedWalkOrientation { edge })
     } else if walks.walks().iter().enumerate().any(|(index, walk)| {
-        WalkIndex(index) != walks.exterior() && walk.orientation != Orientation::CounterClockwise
+        WalkIndex(index) != walks.exterior()
+            && !matches!(
+                walk.orientation,
+                Orientation::CounterClockwise | Orientation::Clockwise
+            )
     }) {
         Err(FoldGraphError::InternalInvariant)
     } else {
@@ -500,14 +535,14 @@ where
     F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
 {
     let mut faces = Vec::with_capacity(walks.walks().len().saturating_sub(1));
-    let mut by_walk = HashMap::with_capacity(faces.capacity());
+    let mut owners = HashMap::with_capacity(faces.capacity());
     let mut keys = HashSet::with_capacity(faces.capacity());
     let mut ids = HashSet::with_capacity(faces.capacity());
 
     for (walk_index, walk) in walks.walks().iter().enumerate() {
         poll_cooperative_checkpoint(checkpoint, walk_index)?;
         let walk_index = WalkIndex(walk_index);
-        if walk_index == walks.exterior() {
+        if walk_index == walks.exterior() || walk.orientation != Orientation::CounterClockwise {
             continue;
         }
         let half_edges = walk
@@ -540,15 +575,91 @@ where
                 FoldGraphError::InternalInvariant,
             ));
         }
-        if by_walk.insert(walk_index, face.clone()).is_some() {
+        if owners.insert(walk_index, faces.len()).is_some() {
             return Err(CooperativeOperationError::Operation(
                 FoldGraphError::InternalInvariant,
             ));
         }
         faces.push(face);
     }
+    for (walk_index, walk) in walks.walks().iter().enumerate() {
+        let walk_index = WalkIndex(walk_index);
+        if walk_index == walks.exterior() || walk.orientation != Orientation::Clockwise {
+            continue;
+        }
+        let boundary =
+            boundary_walk(walks, walk_index).map_err(CooperativeOperationError::Operation)?;
+        let sample = boundary
+            .half_edges
+            .first()
+            .and_then(|half_edge| walks.vertex_position(half_edge.origin))
+            .ok_or(CooperativeOperationError::Operation(
+                FoldGraphError::InternalInvariant,
+            ))?;
+        let mut owner = None;
+        for (candidate_index, candidate) in faces.iter().enumerate() {
+            let polygon = candidate
+                .outer
+                .half_edges
+                .iter()
+                .map(|half_edge| {
+                    walks
+                        .vertex_position(half_edge.origin)
+                        .ok_or(FoldGraphError::InternalInvariant)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CooperativeOperationError::Operation)?;
+            if point_polygon_relation(sample, &polygon).map_err(|_| {
+                CooperativeOperationError::Operation(FoldGraphError::InternalInvariant)
+            })? == PointPolygonRelation::Inside
+                && owner.is_none_or(|current: usize| faces[current].area > candidate.area)
+            {
+                owner = Some(candidate_index);
+            }
+        }
+        let owner = owner.ok_or(CooperativeOperationError::Operation(
+            FoldGraphError::InternalInvariant,
+        ))?;
+        faces[owner].area -= boundary.signed_double_area.abs() * 0.5;
+        faces[owner].holes.push(boundary);
+        owners.insert(walk_index, owner);
+    }
+    let by_walk = owners
+        .into_iter()
+        .map(|(walk, owner)| {
+            faces.get(owner).cloned().map(|face| (walk, face)).ok_or(
+                CooperativeOperationError::Operation(FoldGraphError::InternalInvariant),
+            )
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
     run_cooperative_checkpoint(checkpoint)?;
     Ok((faces, by_walk))
+}
+
+fn boundary_walk(walks: &PaperWalkSet, walk: WalkIndex) -> Result<BoundaryWalk, FoldGraphError> {
+    let source = walks
+        .walks()
+        .get(walk.0)
+        .ok_or(FoldGraphError::InternalInvariant)?;
+    let half_edges = source
+        .half_edges
+        .iter()
+        .map(|index| {
+            walks
+                .half_edges()
+                .get(index.0)
+                .map(|half_edge| HalfEdgeRef {
+                    edge: half_edge.edge,
+                    origin: half_edge.origin,
+                    destination: half_edge.destination,
+                })
+                .ok_or(FoldGraphError::InternalInvariant)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(BoundaryWalk {
+        half_edges,
+        signed_double_area: source.signed_double_area,
+    })
 }
 
 fn build_incidence(
@@ -1116,6 +1227,56 @@ mod tests {
                 PaperGraphAdmissionError::CutNotAllowed { edge: cut.id }
             ))
         );
+    }
+
+    #[test]
+    fn closed_cut_loop_creates_an_inner_piece_and_an_outer_face_with_a_hole() {
+        let namespace = fixed_id(1);
+        let a = vertex(0x801, 0.0, 0.0);
+        let b = vertex(0x802, 8.0, 0.0);
+        let c = vertex(0x803, 8.0, 8.0);
+        let d = vertex(0x804, 0.0, 8.0);
+        let p = vertex(0x805, 2.0, 2.0);
+        let q = vertex(0x806, 6.0, 2.0);
+        let r = vertex(0x807, 4.0, 6.0);
+        let boundary = [&a, &b, &c, &d];
+        let cuts = [
+            edge(0x820, &p, &q, EdgeKind::Cut),
+            edge(0x821, &q, &r, EdgeKind::Cut),
+            edge(0x822, &r, &p, EdgeKind::Cut),
+        ];
+        let mut edges = boundary_edges(&boundary, 0x810);
+        edges.extend(cuts.iter().cloned());
+        let pattern = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone(), p, q, r],
+            edges,
+        };
+        let source_paper = paper(&boundary, true);
+
+        let snapshot = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("closed cut loop");
+        assert_eq!(snapshot.faces.len(), 2);
+        assert_eq!(snapshot.material_components.len(), 2);
+        assert!(snapshot.hinge_adjacency.is_empty());
+        assert_eq!(
+            snapshot
+                .faces
+                .iter()
+                .filter(|face| face.holes.len() == 1)
+                .count(),
+            1
+        );
+        assert!(snapshot.faces.iter().all(|face| face.seams.is_empty()));
+        assert!(cuts.iter().all(|cut| {
+            matches!(
+                snapshot
+                    .edge_incidence
+                    .iter()
+                    .find(|(edge, _)| *edge == cut.id)
+                    .map(|(_, incidence)| incidence),
+                Some(EdgeIncidence::Cut { left, right }) if left != right
+            )
+        }));
     }
 
     fn hinge_faces(snapshot: &TopologySnapshot, edge: EdgeId) -> [FaceId; 2] {

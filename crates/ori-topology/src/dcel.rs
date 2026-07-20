@@ -113,6 +113,18 @@ impl PaperWalkSet {
     pub(crate) fn walk_owner(&self, half_edge: HalfEdgeIndex) -> Option<WalkIndex> {
         self.half_edge_to_walk.get(half_edge.0).copied()
     }
+
+    pub(crate) fn vertex_position(&self, vertex: VertexId) -> Option<Point2> {
+        self.embedding
+            .participant_vertices
+            .binary_search_by_key(&vertex.canonical_bytes(), |entry| {
+                entry.vertex.canonical_bytes()
+            })
+            .ok()
+            .and_then(|index| self.embedding.participant_vertices.get(index))
+            .copied()
+            .map(EmbeddedVertexPosition::position)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

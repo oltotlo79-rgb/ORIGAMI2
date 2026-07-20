@@ -177,6 +177,12 @@ pub struct Face {
     pub id: FaceId,
     pub key: FaceKey,
     pub outer: BoundaryWalk,
+    /// Clockwise material exclusions owned by this face.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<BoundaryWalk>,
+    /// Zero-area open or branched cut walks embedded in this face.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seams: Vec<BoundaryWalk>,
     /// Independently rounded binary64 measurement. Topology never relies on
     /// this value, and sums of several face measurements may differ from the
     /// independently rounded paper area by a final-rounding unit.
@@ -820,6 +826,8 @@ fn face_from_walk(
         id: FaceId::derive_v5(identity_namespace, &key.0),
         key,
         outer,
+        holes: Vec::new(),
+        seams: Vec::new(),
         area,
     })
 }
@@ -956,6 +964,8 @@ fn extract_boundary_face(
             half_edges,
             signed_double_area: signed_double_area.abs(),
         },
+        holes: Vec::new(),
+        seams: Vec::new(),
         area,
     };
 

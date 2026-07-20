@@ -1472,6 +1472,8 @@ mod tests {
                 half_edges: Vec::new(),
                 signed_double_area: 2.0,
             },
+            holes: Vec::new(),
+            seams: Vec::new(),
             area: 1.0,
         }
     }

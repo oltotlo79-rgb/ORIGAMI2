@@ -195,6 +195,8 @@ fn unchecked_single_face_fixture(points: &[(f64, f64)]) -> FoldFixture {
             half_edges,
             signed_double_area,
         },
+        holes: Vec::new(),
+        seams: Vec::new(),
         area: signed_double_area * 0.5,
     };
     let topology = TopologySnapshot {

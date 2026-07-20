@@ -84,7 +84,8 @@ use ori_formats::{
     SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
     SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
     VertexCoordinateExpressionChange, VertexCoordinateExpressionTransition,
-    VertexCoordinateExpressions, read_fold_preview, read_svg_preview,
+    VertexCoordinateExpressions, generate_project_thumbnail_svg, read_fold_preview,
+    read_svg_preview,
 };
 use project_folder_io::{ProjectFolderIoState, open_project_folder, save_project_folder_as};
 #[cfg(test)]
@@ -431,7 +432,10 @@ impl ProjectState {
     }
 
     #[cfg(test)]
-    fn from_document(document: ProjectDocument, current_path: PathBuf) -> Self {
+    fn from_document(mut document: ProjectDocument, current_path: PathBuf) -> Self {
+        if document.thumbnail_svg.is_none() {
+            document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
+        }
         let mut saved_document = document.clone();
         saved_document.numeric_expressions.undo_stack.clear();
         saved_document.numeric_expressions.redo_stack.clear();
@@ -472,6 +476,9 @@ impl ProjectState {
         let editor = restore_archive_editor(&project)
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
         let mut document = project.document;
+        if document.thumbnail_svg.is_none() {
+            document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
+        }
         normalize_numeric_expression_history(
             &mut document.numeric_expressions,
             history_lengths.0,
@@ -504,6 +511,9 @@ impl ProjectState {
             .unwrap_or_default();
         let editor = restore_archive_editor(&project)?;
         let mut document = project.document;
+        if document.thumbnail_svg.is_none() {
+            document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
+        }
         normalize_numeric_expression_history(
             &mut document.numeric_expressions,
             history_lengths.0,
@@ -528,11 +538,12 @@ impl ProjectState {
             vertex_coordinates: self.numeric_expressions.vertex_coordinates.clone(),
             ..ProjectNumericExpressions::default()
         };
-        ProjectDocument {
+        let mut document = ProjectDocument {
             format_version: CURRENT_FORMAT_VERSION,
             project_id: self.project_id,
             name: self.name.clone(),
             memo: self.editor.project_memo().to_owned(),
+            thumbnail_svg: None,
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
@@ -540,7 +551,9 @@ impl ProjectState {
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
             element_metadata: self.editor.element_metadata().clone(),
-        }
+        };
+        document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
+        document
     }
 
     fn project_archive(&self) -> Result<Ori2ProjectArchive, String> {
@@ -11960,7 +11973,10 @@ mod tests {
 
         assert!(!response.canceled);
         assert_ne!(project.project_id, replaced_project_id);
-        assert_eq!(project.document(), document);
+        let persisted = project.document();
+        assert!(persisted.thumbnail_svg.is_some());
+        document.thumbnail_svg = persisted.thumbnail_svg.clone();
+        assert_eq!(persisted, document);
         assert_eq!(project.current_path.as_deref(), Some(path.as_path()));
         assert_eq!(project.editor.revision(), 0);
         assert!(!project.editor.can_undo());
@@ -12506,7 +12522,10 @@ mod tests {
         assert_eq!(response.paper, document.paper);
         assert!(response.cutting_allowed);
         assert!(!response.can_undo);
-        assert_eq!(project.document(), document);
+        let persisted = project.document();
+        assert!(persisted.thumbnail_svg.is_some());
+        document.thumbnail_svg = persisted.thumbnail_svg.clone();
+        assert_eq!(persisted, document);
     }
 
     #[test]

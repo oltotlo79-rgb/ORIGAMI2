@@ -240,6 +240,9 @@ pub struct ProjectDocument {
     /// Empty notes are omitted to keep legacy project JSON byte-stable.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub memo: String,
+    /// Deterministic, script-free crease-pattern thumbnail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_svg: Option<String>,
     #[serde(default)]
     pub paper: Paper,
     pub crease_pattern: CreasePattern,
@@ -272,6 +275,7 @@ impl ProjectDocument {
             project_id: ProjectId::new(),
             name: name.into(),
             memo: String::new(),
+            thumbnail_svg: None,
             paper: Paper::default(),
             crease_pattern,
             instruction_timeline: InstructionTimeline::default(),
@@ -295,6 +299,8 @@ pub enum FormatError {
     InvalidElementMetadata,
     #[error("project memo is invalid")]
     InvalidProjectMemo,
+    #[error("project thumbnail is invalid")]
+    InvalidProjectThumbnail,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error(".ori2 editor-history JSON is invalid: {0}")]
@@ -475,6 +481,13 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
     {
         return Err(FormatError::InvalidProjectMemo);
     }
+    if let Some(thumbnail) = &document.thumbnail_svg {
+        let expected = project_folder::generate_safe_preview_svg(document, 256 * 1024)
+            .map_err(|_| FormatError::InvalidProjectThumbnail)?;
+        if thumbnail.as_bytes() != expected {
+            return Err(FormatError::InvalidProjectThumbnail);
+        }
+    }
     ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
         .map_err(|_| FormatError::InvalidElementMetadata)?;
     if document.format_version != CURRENT_FORMAT_VERSION {
@@ -487,6 +500,13 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
         return Err(FormatError::NilProjectId);
     }
     Ok(())
+}
+
+/// Produces the canonical bounded thumbnail persisted with a desktop project.
+pub fn generate_project_thumbnail_svg(document: &ProjectDocument) -> Result<String, FormatError> {
+    let bytes = project_folder::generate_safe_preview_svg(document, 256 * 1024)
+        .map_err(|_| FormatError::InvalidProjectThumbnail)?;
+    String::from_utf8(bytes).map_err(|_| FormatError::InvalidProjectThumbnail)
 }
 
 fn ensure_project_json_size(actual: usize, requested_limit: usize) -> Result<(), FormatError> {
@@ -849,6 +869,27 @@ mod tests {
         assert!(matches!(
             write_project_json(&document),
             Err(FormatError::InvalidProjectMemo)
+        ));
+    }
+
+    #[test]
+    fn canonical_project_thumbnail_round_trips_and_forgery_is_rejected() {
+        let mut document = sample_document();
+        let thumbnail = generate_project_thumbnail_svg(&document).unwrap();
+        assert!(thumbnail.contains("data-origami-preview=\"read-only\""));
+        document.thumbnail_svg = Some(thumbnail.clone());
+        let encoded = write_project_json(&document).unwrap();
+        assert_eq!(
+            read_project_json(&encoded).unwrap().thumbnail_svg,
+            Some(thumbnail)
+        );
+
+        document.thumbnail_svg = Some(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_owned(),
+        );
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidProjectThumbnail)
         ));
     }
 

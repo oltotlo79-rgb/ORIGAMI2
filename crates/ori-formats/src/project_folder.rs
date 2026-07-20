@@ -1000,7 +1000,7 @@ impl PreviewFallback {
     }
 }
 
-fn generate_safe_preview_svg(
+pub(crate) fn generate_safe_preview_svg(
     document: &ProjectDocument,
     byte_limit: u64,
 ) -> Result<Vec<u8>, ProjectFolderError> {

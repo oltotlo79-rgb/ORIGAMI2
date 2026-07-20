@@ -13,6 +13,7 @@ pub const MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32;
 pub const MAX_BEGINNER_SKELETON_SEGMENTS_V1: usize = 64;
 pub const MAX_BEGINNER_SKELETON_COORDINATE_TENTHS_MM_V1: i32 = 100_000;
 pub const MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1: u16 = 10_000;
+pub const MAX_BEGINNER_PROTRUSIONS_V1: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +79,45 @@ pub struct BeginnerSkeletonSegmentV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerProtrusionSymmetryV1 {
+    None,
+    Bilateral,
+    Radial,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerProtrusionJointV1 {
+    Fixed,
+    Hinge,
+    Ball,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerProtrusionSideV1 {
+    Front,
+    Back,
+    Either,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerProtrusionTargetV1 {
+    pub id: u16,
+    pub count: u8,
+    pub length_tenths_mm: u32,
+    pub thickness_tenths_mm: u16,
+    pub position_tenths_mm: [i32; 3],
+    pub direction_milli: [i16; 3],
+    pub symmetry: BeginnerProtrusionSymmetryV1,
+    pub curvature_degrees: i16,
+    pub joint: BeginnerProtrusionJointV1,
+    pub motion_degrees: [i16; 2],
+    pub side: BeginnerProtrusionSideV1,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BeginnerTargetAssetReferenceV1 {
     ReferenceImage {
@@ -99,6 +139,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     #[serde(default)]
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
     #[serde(default)]
+    pub protrusions: Vec<BeginnerProtrusionTargetV1>,
+    #[serde(default)]
     pub target_asset: Option<BeginnerTargetAssetReferenceV1>,
     pub allowed_techniques: Vec<BeginnerFoldTechniqueV1>,
 }
@@ -112,6 +154,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             target_category: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
+            protrusions: Vec::new(),
             target_asset: None,
             allowed_techniques: vec![
                 BeginnerFoldTechniqueV1::ValleyFold,
@@ -142,6 +185,7 @@ pub fn validate_beginner_generation_constraints_v1(
         || constraints.allowed_techniques.len() > MAX_BEGINNER_ALLOWED_TECHNIQUES_V1
         || constraints.target_parts.len() > MAX_BEGINNER_TARGET_PART_RECORDS_V1
         || constraints.skeleton_segments.len() > MAX_BEGINNER_SKELETON_SEGMENTS_V1
+        || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
     {
         return false;
     }
@@ -167,7 +211,7 @@ pub fn validate_beginner_generation_constraints_v1(
         return false;
     }
     let mut segment_ids = HashSet::with_capacity(constraints.skeleton_segments.len());
-    constraints.skeleton_segments.iter().all(|segment| {
+    let skeletons_valid = constraints.skeleton_segments.iter().all(|segment| {
         let coordinates = [
             segment.start.x_tenths_mm,
             segment.start.y_tenths_mm,
@@ -180,7 +224,29 @@ pub fn validate_beginner_generation_constraints_v1(
             && (1..=MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1)
                 .contains(&segment.thickness_tenths_mm)
             && segment_ids.insert(segment.id)
-    })
+    });
+    let mut protrusion_ids = HashSet::with_capacity(constraints.protrusions.len());
+    skeletons_valid
+        && constraints.protrusions.iter().all(|target| {
+            (1..=8).contains(&target.count)
+                && (1..=1_000_000).contains(&target.length_tenths_mm)
+                && (1..=10_000).contains(&target.thickness_tenths_mm)
+                && target
+                    .position_tenths_mm
+                    .iter()
+                    .all(|value| value.unsigned_abs() <= 100_000)
+                && target
+                    .direction_milli
+                    .iter()
+                    .all(|value| value.unsigned_abs() <= 1_000)
+                && target.direction_milli != [0, 0, 0]
+                && (-360..=360).contains(&target.curvature_degrees)
+                && (-360..=360).contains(&target.motion_degrees[0])
+                && (-360..=360).contains(&target.motion_degrees[1])
+                && target.motion_degrees[0] <= target.motion_degrees[1]
+                && (1..=100).contains(&target.priority)
+                && protrusion_ids.insert(target.id)
+        })
 }
 
 #[cfg(test)]
@@ -220,5 +286,31 @@ mod tests {
             count: 1,
         });
         assert!(!validate_beginner_generation_constraints_v1(&parts));
+    }
+
+    #[test]
+    fn protrusion_targets_are_versioned_bounded_and_unique() {
+        let target = BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: 2,
+            length_tenths_mm: 100,
+            thickness_tenths_mm: 20,
+            position_tenths_mm: [0, 0, 0],
+            direction_milli: [1000, 0, 0],
+            symmetry: BeginnerProtrusionSymmetryV1::Bilateral,
+            curvature_degrees: 15,
+            joint: BeginnerProtrusionJointV1::Hinge,
+            motion_degrees: [-30, 45],
+            side: BeginnerProtrusionSideV1::Either,
+            priority: 80,
+        };
+        let mut constraints = BeginnerGenerationConstraintsV1::default();
+        constraints.protrusions.push(target);
+        assert!(validate_beginner_generation_constraints_v1(&constraints));
+        constraints.protrusions.push(target);
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+        constraints.protrusions.pop();
+        constraints.protrusions[0].direction_milli = [0, 0, 0];
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
     }
 }

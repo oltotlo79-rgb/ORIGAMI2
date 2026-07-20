@@ -181,6 +181,20 @@ export type BeginnerGenerationConstraintsV1 = {
     end: { x_tenths_mm: number; y_tenths_mm: number }
     thickness_tenths_mm: number
   }>
+  protrusions: Array<{
+    id: number
+    count: number
+    length_tenths_mm: number
+    thickness_tenths_mm: number
+    position_tenths_mm: [number, number, number]
+    direction_milli: [number, number, number]
+    symmetry: 'none' | 'bilateral' | 'radial'
+    curvature_degrees: number
+    joint: 'fixed' | 'hinge' | 'ball'
+    motion_degrees: [number, number]
+    side: 'front' | 'back' | 'either'
+    priority: number
+  }>
   target_asset: {
     kind: 'reference_image'
     underlay_id: string
@@ -227,6 +241,15 @@ const BEGINNER_TECHNIQUES = [
   'crimp_fold',
 ] as const
 
+function isBoundedIntegerTuple(
+  value: unknown,
+  length: number,
+  absoluteMaximum: number,
+): value is number[] {
+  return Array.isArray(value) && value.length === length
+    && value.every((item) => Number.isInteger(item) && Math.abs(item) <= absoluteMaximum)
+}
+
 function normalizeBeginnerGenerationConstraints(
   value: unknown,
 ): BeginnerGenerationConstraintsV1 | null {
@@ -237,6 +260,7 @@ function normalizeBeginnerGenerationConstraints(
     'target_category',
     'target_parts',
     'skeleton_segments',
+    'protrusions',
     'target_asset',
     'allowed_techniques',
   ] as const)
@@ -258,6 +282,8 @@ function normalizeBeginnerGenerationConstraints(
     || record.target_parts.length > 7
     || !Array.isArray(record.skeleton_segments)
     || record.skeleton_segments.length > 64
+    || !Array.isArray(record.protrusions)
+    || record.protrusions.length > 32
     || !Array.isArray(record.allowed_techniques)
     || record.allowed_techniques.length < 1
     || record.allowed_techniques.length > 8
@@ -310,6 +336,35 @@ function normalizeBeginnerGenerationConstraints(
     }
   })
   if (skeletonSegments.some((segment) => segment === null)) return null
+  const protrusionIds = new Set<number>()
+  const protrusions = record.protrusions.map((value) => {
+    const item = exactCoreDataRecord(value, [
+      'id', 'count', 'length_tenths_mm', 'thickness_tenths_mm',
+      'position_tenths_mm', 'direction_milli', 'symmetry', 'curvature_degrees',
+      'joint', 'motion_degrees', 'side', 'priority',
+    ] as const)
+    if (!item || !Number.isInteger(item.id) || Number(item.id) < 0
+      || protrusionIds.has(Number(item.id))
+      || !Number.isInteger(item.count) || Number(item.count) < 1 || Number(item.count) > 8
+      || !Number.isInteger(item.length_tenths_mm) || Number(item.length_tenths_mm) < 1
+      || Number(item.length_tenths_mm) > 1_000_000
+      || !Number.isInteger(item.thickness_tenths_mm) || Number(item.thickness_tenths_mm) < 1
+      || Number(item.thickness_tenths_mm) > 10_000
+      || !isBoundedIntegerTuple(item.position_tenths_mm, 3, 100_000)
+      || !isBoundedIntegerTuple(item.direction_milli, 3, 1_000)
+      || item.direction_milli.every((axis) => axis === 0)
+      || !['none', 'bilateral', 'radial'].includes(String(item.symmetry))
+      || !Number.isInteger(item.curvature_degrees) || Math.abs(Number(item.curvature_degrees)) > 360
+      || !['fixed', 'hinge', 'ball'].includes(String(item.joint))
+      || !isBoundedIntegerTuple(item.motion_degrees, 2, 360)
+      || item.motion_degrees[0] > item.motion_degrees[1]
+      || !['front', 'back', 'either'].includes(String(item.side))
+      || !Number.isInteger(item.priority) || Number(item.priority) < 1 || Number(item.priority) > 100
+    ) return null
+    protrusionIds.add(Number(item.id))
+    return { ...item } as BeginnerGenerationConstraintsV1['protrusions'][number]
+  })
+  if (protrusions.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
   if (record.target_asset !== null) {
     const asset = exactCoreDataRecord(
@@ -332,6 +387,7 @@ function normalizeBeginnerGenerationConstraints(
     target_category: record.target_category,
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
+    protrusions,
     target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
@@ -372,6 +428,7 @@ function normalizeBeginnerRecognitionProposal(
     target_category: 'animal',
     target_parts: record.target_parts,
     skeleton_segments: record.skeleton_segments,
+    protrusions: [],
     target_asset: null,
     allowed_techniques: ['valley_fold'],
   })

@@ -92,6 +92,24 @@ test('AUT-004 binds an existing project image without inferring unsupported 3D t
   assert.match(app, /selected project reference image as target input/u)
 })
 
+test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {
+  assert.match(generation, /struct BeginnerProtrusionTargetV1/u)
+  for (const field of [
+    'count', 'length_tenths_mm', 'thickness_tenths_mm', 'position_tenths_mm',
+    'direction_milli', 'symmetry', 'curvature_degrees', 'joint',
+    'motion_degrees', 'side', 'priority',
+  ]) assert.match(generation, new RegExp(`pub ${field}:`, 'u'))
+  assert.match(generation, /MAX_BEGINNER_PROTRUSIONS_V1/u)
+  assert.match(client, /'protrusions'/u)
+  assert.match(client, /protrusionIds/u)
+  assert.match(app, /Protrusion targets/u)
+  assert.match(app, /Add protrusion target/u)
+  assert.match(app, /The project is unchanged until saved/u)
+  assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
+  assert.match(editor, /Command::UpdateBeginnerDesignProfile/u)
+  assert.match(formats, /beginner_design_profile/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

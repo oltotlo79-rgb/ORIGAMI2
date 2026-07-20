@@ -683,6 +683,8 @@ function App() {
   const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
+  const [beginnerProtrusions, setBeginnerProtrusions] =
+    useState<BeginnerDesignProfileV1['generation_constraints']['protrusions']>([])
   const beginnerCandidateRequestRef = useRef(0)
   const [beginnerRecognitionProposal, setBeginnerRecognitionProposal] =
     useState<BeginnerRecognitionProposalV1 | null>(null)
@@ -700,6 +702,9 @@ function App() {
     )
     setBeginnerSkeletonSegments(
       nativeSnapshot?.beginner_design_profile.generation_constraints.skeleton_segments ?? [],
+    )
+    setBeginnerProtrusions(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.protrusions ?? [],
     )
   }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
@@ -3492,6 +3497,7 @@ function App() {
       target_category: targetCategory as 'animal' | 'insect',
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
+      protrusions: beginnerProtrusions,
       target_asset: targetUnderlay
         ? {
             kind: 'reference_image' as const,
@@ -3680,6 +3686,43 @@ function App() {
       start,
       end,
       thickness_tenths_mm: Math.round(thickness * 10),
+    }])
+  }
+
+  function addBeginnerProtrusion(form: HTMLFormElement) {
+    if (beginnerProtrusions.length >= 32) return
+    const data = new FormData(form)
+    const number = (name: string) => Number(data.get(name))
+    const count = number('protrusion_count')
+    const length = number('protrusion_length_mm')
+    const thickness = number('protrusion_thickness_mm')
+    const position = ['x', 'y', 'z'].map((axis) => Math.round(number(`protrusion_position_${axis}_mm`) * 10))
+    const direction = ['x', 'y', 'z'].map((axis) => Math.round(number(`protrusion_direction_${axis}`) * 1000))
+    const curvature = number('protrusion_curvature_degrees')
+    const motion = [number('protrusion_motion_min'), number('protrusion_motion_max')]
+    const priority = number('protrusion_priority')
+    if (![count, length, thickness, ...position, ...direction, curvature, ...motion, priority]
+      .every(Number.isFinite)
+      || !Number.isInteger(count) || count < 1 || count > 8
+      || length <= 0 || length > 100_000 || thickness <= 0 || thickness > 1_000
+      || position.some((value) => Math.abs(value) > 100_000)
+      || direction.some((value) => Math.abs(value) > 1_000) || direction.every((value) => value === 0)
+      || Math.abs(curvature) > 360 || motion.some((value) => Math.abs(value) > 360)
+      || motion[0] > motion[1] || !Number.isInteger(priority) || priority < 1 || priority > 100) return
+    const used = new Set(beginnerProtrusions.map((target) => target.id))
+    let id = 0
+    while (used.has(id) && id < 65_535) id += 1
+    setBeginnerProtrusions((targets) => [...targets, {
+      id, count, length_tenths_mm: Math.round(length * 10),
+      thickness_tenths_mm: Math.round(thickness * 10),
+      position_tenths_mm: position as [number, number, number],
+      direction_milli: direction as [number, number, number],
+      symmetry: String(data.get('protrusion_symmetry')) as 'none' | 'bilateral' | 'radial',
+      curvature_degrees: Math.round(curvature),
+      joint: String(data.get('protrusion_joint')) as 'fixed' | 'hinge' | 'ball',
+      motion_degrees: motion.map(Math.round) as [number, number],
+      side: String(data.get('protrusion_side')) as 'front' | 'back' | 'either',
+      priority,
     }])
   }
 
@@ -7501,6 +7544,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.protrusions),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_asset),
                   nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
                 ].join(':')}
@@ -7784,6 +7828,78 @@ function App() {
                   {text({
                     ja: '0.1 mm単位で最大64本です。長さと太さを明示した棒だけを生成条件に使います。',
                     en: 'Up to 64 bars are stored at 0.1 mm precision. Only bars with explicit length and thickness are used for generation.',
+                  })}
+                </p>
+                <fieldset aria-describedby="beginner-protrusion-help">
+                  <legend>{text({ ja: '突起目標', en: 'Protrusion targets' })}</legend>
+                  {([
+                    ['protrusion_count', 'Count', 2, 1, 8, 1],
+                    ['protrusion_length_mm', 'Length (mm)', 20, 0.1, 100000, 0.1],
+                    ['protrusion_thickness_mm', 'Thickness (mm)', 2, 0.1, 1000, 0.1],
+                    ['protrusion_position_x_mm', 'Final position X (mm)', 0, -10000, 10000, 0.1],
+                    ['protrusion_position_y_mm', 'Final position Y (mm)', 0, -10000, 10000, 0.1],
+                    ['protrusion_position_z_mm', 'Final position Z (mm)', 0, -10000, 10000, 0.1],
+                    ['protrusion_direction_x', 'Direction X', 1, -1, 1, 0.001],
+                    ['protrusion_direction_y', 'Direction Y', 0, -1, 1, 0.001],
+                    ['protrusion_direction_z', 'Direction Z', 0, -1, 1, 0.001],
+                    ['protrusion_curvature_degrees', 'Curvature (degrees)', 0, -360, 360, 1],
+                    ['protrusion_motion_min', 'Motion minimum (degrees)', 0, -360, 360, 1],
+                    ['protrusion_motion_max', 'Motion maximum (degrees)', 0, -360, 360, 1],
+                    ['protrusion_priority', 'Priority', 50, 1, 100, 1],
+                  ] as const).map(([name, label, initial, min, max, step]) => (
+                    <label className="field" key={name}>
+                      <span>{label}</span>
+                      <input name={name} type="number" defaultValue={initial}
+                        min={min} max={max} step={step} required />
+                    </label>
+                  ))}
+                  <label className="field"><span>{text({ ja: '対称性', en: 'Symmetry' })}</span>
+                    <select name="protrusion_symmetry" defaultValue="none">
+                      <option value="none">{text({ ja: 'なし', en: 'None' })}</option>
+                      <option value="bilateral">{text({ ja: '左右対称', en: 'Bilateral' })}</option>
+                      <option value="radial">{text({ ja: '放射対称', en: 'Radial' })}</option>
+                    </select>
+                  </label>
+                  <label className="field"><span>{text({ ja: '関節', en: 'Joint' })}</span>
+                    <select name="protrusion_joint" defaultValue="fixed">
+                      <option value="fixed">{text({ ja: '固定', en: 'Fixed' })}</option>
+                      <option value="hinge">{text({ ja: 'ヒンジ', en: 'Hinge' })}</option>
+                      <option value="ball">{text({ ja: '球関節', en: 'Ball' })}</option>
+                    </select>
+                  </label>
+                  <label className="field"><span>{text({ ja: '表裏', en: 'Side' })}</span>
+                    <select name="protrusion_side" defaultValue="either">
+                      <option value="front">{text({ ja: '表', en: 'Front' })}</option>
+                      <option value="back">{text({ ja: '裏', en: 'Back' })}</option>
+                      <option value="either">{text({ ja: 'どちらでも', en: 'Either' })}</option>
+                    </select>
+                  </label>
+                  <button type="button" disabled={beginnerProtrusions.length >= 32 || coreBusy}
+                    onClick={(event) => event.currentTarget.form
+                      && addBeginnerProtrusion(event.currentTarget.form)}>
+                    {text({ ja: '突起目標を追加', en: 'Add protrusion target' })}
+                  </button>
+                  <ul aria-label={text({ ja: '突起目標一覧', en: 'Protrusion target list' })}>
+                    {beginnerProtrusions.map((target) => (
+                      <li key={target.id}>
+                        {formattedText({
+                          ja: '{count}本・長さ{length} mm・太さ{thickness} mm・優先度{priority}',
+                          en: '{count} × length {length} mm · thickness {thickness} mm · priority {priority}',
+                        }, {
+                          count: target.count, length: target.length_tenths_mm / 10,
+                          thickness: target.thickness_tenths_mm / 10, priority: target.priority,
+                        })}
+                        <button type="button" onClick={() => setBeginnerProtrusions(
+                          (targets) => targets.filter((item) => item.id !== target.id),
+                        )}>{text({ ja: '削除', en: 'Remove' })}</button>
+                      </li>
+                    ))}
+                  </ul>
+                </fieldset>
+                <p id="beginner-protrusion-help" className="muted">
+                  {text({
+                    ja: '本数、寸法、完成位置、向き、対称性、曲がり、関節、可動範囲、表裏、優先度を明示します。保存するまでプロジェクトは変更されません。',
+                    en: 'Explicitly sets count, dimensions, final position, direction, symmetry, curvature, joint, motion range, side, and priority. The project is unchanged until saved.',
                   })}
                 </p>
                 <label className="field">

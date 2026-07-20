@@ -14,6 +14,7 @@ const INSTANCE_ID = '00000000-0000-4000-8000-000000000001'
 const PROJECT_ID = '00000000-0000-4000-8000-000000000002'
 const FACE_A = '00000000-0000-4000-8000-000000000003'
 const FACE_B = '00000000-0000-4000-8000-000000000004'
+const FACE_C = '00000000-0000-4000-8000-000000000007'
 const EDGE_A = '00000000-0000-4000-8000-000000000005'
 const EDGE_B = '00000000-0000-4000-8000-000000000006'
 const BINDING = {
@@ -32,6 +33,93 @@ const POSE = {
     { edgeId: EDGE_A, angleDegrees: -0 },
   ],
 }
+const EMPTY_PAIR_SNAPSHOT = {
+  pairClassificationCounts: {
+    separated: 0,
+    touching: 0,
+    allowed: 0,
+    penetrating: 0,
+    indeterminate: 0,
+    candidateExcluded: 0,
+  },
+  pairDiagnostics: [],
+} as const
+const NO_PAIR_SNAPSHOT = {
+  pairClassificationCounts: null,
+  pairDiagnostics: null,
+} as const
+const PENETRATING_PAIR_SNAPSHOT = {
+  pairClassificationCounts: {
+    separated: 0,
+    touching: 0,
+    allowed: 0,
+    penetrating: 1,
+    indeterminate: 2,
+    candidateExcluded: 0,
+  },
+  pairDiagnostics: [
+    {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+      topology: 'no_shared_feature',
+      evidence: 'transversal_crossing',
+      policyDecision: 'penetrating',
+      disposition: 'penetrating',
+      strictTransversalDualGateProven: true,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: false,
+      sharedHingeSolidClassified: false,
+    },
+    {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_C,
+      topology: 'shared_hinge_edge',
+      evidence: 'boundary_line_contact',
+      policyDecision: 'indeterminate',
+      disposition: 'indeterminate',
+      strictTransversalDualGateProven: false,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: false,
+      sharedHingeSolidClassified: false,
+    },
+    {
+      firstFaceId: FACE_B,
+      secondFaceId: FACE_C,
+      topology: 'shared_hinge_edge',
+      evidence: 'boundary_line_contact',
+      policyDecision: 'indeterminate',
+      disposition: 'indeterminate',
+      strictTransversalDualGateProven: false,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: false,
+      sharedHingeSolidClassified: false,
+    },
+  ],
+} as const
+const INDETERMINATE_PAIR_SNAPSHOT = {
+  pairClassificationCounts: {
+    separated: 0,
+    touching: 0,
+    allowed: 0,
+    penetrating: 0,
+    indeterminate: 1,
+    candidateExcluded: 0,
+  },
+  pairDiagnostics: [
+    {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+      topology: 'shared_hinge_edge',
+      evidence: 'indeterminate',
+      policyDecision: 'indeterminate',
+      disposition: 'indeterminate',
+      strictTransversalDualGateProven: false,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: false,
+      sharedHingeSolidClassified: true,
+    },
+  ],
+} as const
 
 test('apply uses the exact nested command contract and canonical hinge order', async () => {
   const calls: Array<readonly [string, Readonly<Record<string, unknown>> | undefined]> = []
@@ -113,6 +201,7 @@ test('inspection accepts canonical non-nil UUIDs with arbitrary version and vari
     expectedUnorderedFacePairs: 0,
     provenPenetratingPairs: 0,
     firstProvenPenetratingPair: null,
+    ...EMPTY_PAIR_SNAPSHOT,
   }))
 
   assert.deepEqual((await transport.inspect()).binding, binding)
@@ -126,6 +215,7 @@ test('inspection accepts only a relationally valid certified response', async ()
     expectedUnorderedFacePairs: 0,
     provenPenetratingPairs: 0,
     firstProvenPenetratingPair: null,
+    ...EMPTY_PAIR_SNAPSHOT,
   }))
 
   const result = await transport.inspect()
@@ -144,6 +234,7 @@ test('inspection preserves a canonical proven penetrating pair without raw geome
       firstFaceId: FACE_A,
       secondFaceId: FACE_B,
     },
+    ...PENETRATING_PAIR_SNAPSHOT,
   }))
 
   const result = await transport.inspect()
@@ -165,6 +256,7 @@ test('inspection accepts a strictly bound positive-thickness penetration reason'
       firstFaceId: FACE_A,
       secondFaceId: FACE_B,
     },
+    ...PENETRATING_PAIR_SNAPSHOT,
   }))
 
   const result = await transport.inspect()
@@ -181,6 +273,51 @@ test('inspection accepts a strictly bound positive-thickness penetration reason'
   })
 })
 
+test('positive-volume shared-hinge proof uses the general material-penetration reason', async () => {
+  const transport = createNativeStaticCollisionNativeTransport(() => ({
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'proven_positive_thickness_penetration',
+    expectedUnorderedFacePairs: 1,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+    },
+    pairClassificationCounts: {
+      separated: 0,
+      touching: 0,
+      allowed: 0,
+      penetrating: 1,
+      indeterminate: 0,
+      candidateExcluded: 0,
+    },
+    pairDiagnostics: [{
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+      topology: 'shared_hinge_edge',
+      evidence: 'positive_volume_overlap',
+      policyDecision: 'penetrating',
+      disposition: 'penetrating',
+      strictTransversalDualGateProven: false,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: false,
+      sharedHingeSolidClassified: true,
+    }],
+  }))
+
+  const diagnostic = (await transport.inspect()).diagnostic
+  assert.equal(
+    diagnostic.reason,
+    'proven_positive_thickness_penetration',
+  )
+  assert.equal(diagnostic.pairDiagnostics?.[0]?.evidence, 'positive_volume_overlap')
+  assert.equal(
+    diagnostic.pairDiagnostics?.[0]?.sharedHingeSolidClassified,
+    true,
+  )
+})
+
 test('positive-thickness penetration rejects every malformed relational contract', async () => {
   const valid = {
     binding: BINDING,
@@ -192,6 +329,7 @@ test('positive-thickness penetration rejects every malformed relational contract
       firstFaceId: FACE_A,
       secondFaceId: FACE_B,
     },
+    ...PENETRATING_PAIR_SNAPSHOT,
   }
   const malformed = [
     { ...valid, binding: null },
@@ -233,6 +371,283 @@ test('positive-thickness penetration rejects every malformed relational contract
   }
 })
 
+test('inspection preserves every canonical pair classification and proof marker', async () => {
+  const transport = createNativeStaticCollisionNativeTransport(
+    () => penetratingWireResponse(),
+  )
+
+  const diagnostic = (await transport.inspect()).diagnostic
+  assert.deepEqual(
+    diagnostic.pairClassificationCounts,
+    PENETRATING_PAIR_SNAPSHOT.pairClassificationCounts,
+  )
+  assert.deepEqual(
+    diagnostic.pairDiagnostics,
+    PENETRATING_PAIR_SNAPSHOT.pairDiagnostics,
+  )
+  assert.equal(Object.isFrozen(diagnostic.pairClassificationCounts), true)
+  assert.equal(Object.isFrozen(diagnostic.pairDiagnostics), true)
+  assert.equal(
+    Object.isFrozen(diagnostic.pairDiagnostics?.[0]),
+    true,
+  )
+})
+
+test('independent exact proof rejects unnormalized raw evidence', async () => {
+  const transport = createNativeStaticCollisionNativeTransport(() => ({
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'proven_zero_thickness_penetration',
+    expectedUnorderedFacePairs: 1,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+    },
+    pairClassificationCounts: {
+      separated: 0,
+      touching: 0,
+      allowed: 0,
+      penetrating: 1,
+      indeterminate: 0,
+      candidateExcluded: 0,
+    },
+    pairDiagnostics: [{
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+      topology: 'no_shared_feature',
+      evidence: 'indeterminate',
+      policyDecision: 'indeterminate',
+      disposition: 'penetrating',
+      strictTransversalDualGateProven: true,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: false,
+      sharedHingeSolidClassified: false,
+    }],
+  }))
+
+  await assert.rejects(transport.inspect(), NativeStaticCollisionNativeError)
+})
+
+test('watertight zero-thickness shared-hinge boundary proof is accepted', async () => {
+  const transport = createNativeStaticCollisionNativeTransport(() => ({
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'evidence_unavailable',
+    expectedUnorderedFacePairs: 1,
+    provenPenetratingPairs: null,
+    firstProvenPenetratingPair: null,
+    pairClassificationCounts: {
+      separated: 0,
+      touching: 0,
+      allowed: 1,
+      penetrating: 0,
+      indeterminate: 0,
+      candidateExcluded: 0,
+    },
+    pairDiagnostics: [{
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+      topology: 'shared_hinge_edge',
+      evidence: 'shared_feature_contact',
+      policyDecision: 'requires_hinge_model',
+      disposition: 'allowed',
+      strictTransversalDualGateProven: false,
+      wholeFaceOverlapProven: false,
+      sharedHingeBoundaryContactProven: true,
+      sharedHingeSolidClassified: false,
+    }],
+  }))
+
+  const diagnostic = (await transport.inspect()).diagnostic
+  assert.equal(
+    diagnostic.pairDiagnostics?.[0]?.sharedHingeBoundaryContactProven,
+    true,
+  )
+  assert.equal(diagnostic.pairDiagnostics?.[0]?.disposition, 'allowed')
+})
+
+test('pair snapshot rejects unknown keys, inconsistent counts, and noncanonical coverage', async () => {
+  const base = penetratingWireResponse()
+  const first = base.pairDiagnostics[0]
+  const second = base.pairDiagnostics[1]
+  const third = base.pairDiagnostics[2]
+  const malformed = [
+    {
+      ...base,
+      unexpectedPairPayload: true,
+    },
+    {
+      ...base,
+      pairClassificationCounts: {
+        ...base.pairClassificationCounts,
+        rawTriangleCount: 9,
+      },
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        { ...first, rawGeometry: [0, 1, 2] },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          evidence: 'separated',
+          policyDecision: 'separated',
+        },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairClassificationCounts: {
+        ...base.pairClassificationCounts,
+        penetrating: 0,
+      },
+    },
+    {
+      ...base,
+      pairClassificationCounts: {
+        ...base.pairClassificationCounts,
+        penetrating: 0,
+        indeterminate: 3,
+      },
+    },
+    {
+      ...base,
+      pairClassificationCounts: {
+        ...base.pairClassificationCounts,
+        candidateExcluded: 1,
+      },
+    },
+    {
+      ...base,
+      pairDiagnostics: [first, second],
+    },
+    {
+      ...base,
+      pairDiagnostics: [first, first, third],
+    },
+    {
+      ...base,
+      pairDiagnostics: [second, first, third],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          firstFaceId: FACE_B,
+          secondFaceId: FACE_A,
+        },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          firstFaceId: '00000000-0000-4000-8000-00000000000A',
+          secondFaceId: '00000000-0000-4000-8000-00000000000b',
+        },
+        second,
+        third,
+      ],
+    },
+  ]
+
+  for (const value of malformed) {
+    const transport = createNativeStaticCollisionNativeTransport(() => value)
+    await assert.rejects(transport.inspect(), NativeStaticCollisionNativeError)
+  }
+})
+
+test('pair snapshot rejects policy, disposition, and proof-provenance contradictions', async () => {
+  const base = penetratingWireResponse()
+  const first = base.pairDiagnostics[0]
+  const second = base.pairDiagnostics[1]
+  const third = base.pairDiagnostics[2]
+  const malformed = [
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          policyDecision: 'touching',
+        },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          strictTransversalDualGateProven: false,
+        },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          disposition: 'indeterminate',
+        },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        first,
+        {
+          ...second,
+          sharedHingeSolidClassified: true,
+        },
+        third,
+      ],
+    },
+    {
+      ...base,
+      pairDiagnostics: [
+        {
+          ...first,
+          topology: 'shared_vertex',
+          sharedHingeSolidClassified: true,
+          strictTransversalDualGateProven: false,
+        },
+        second,
+        third,
+      ],
+    },
+    {
+      ...base,
+      firstProvenPenetratingPair: {
+        firstFaceId: FACE_A,
+        secondFaceId: FACE_C,
+      },
+    },
+  ]
+
+  for (const value of malformed) {
+    const transport = createNativeStaticCollisionNativeTransport(() => value)
+    await assert.rejects(transport.inspect(), NativeStaticCollisionNativeError)
+  }
+})
+
 test('inspection rejects the retired transversal-only wire contract', async () => {
   const transport = createNativeStaticCollisionNativeTransport(() => ({
     binding: BINDING,
@@ -261,6 +676,7 @@ test('apply and inspection must bind to the exact same native pose generation', 
       expectedUnorderedFacePairs: 0,
       provenPenetratingPairs: 0,
       firstProvenPenetratingPair: null,
+      ...EMPTY_PAIR_SNAPSHOT,
     }
   })
 
@@ -283,6 +699,7 @@ test('unavailable pose authority is explicit but cannot satisfy apply-and-inspec
       expectedUnorderedFacePairs: null,
       provenPenetratingPairs: null,
       firstProvenPenetratingPair: null,
+      ...NO_PAIR_SNAPSHOT,
     }
   })
 
@@ -302,6 +719,7 @@ test('malformed and contradictory DTOs fail closed', async () => {
       expectedUnorderedFacePairs: null,
       provenPenetratingPairs: 0,
       firstProvenPenetratingPair: null,
+      ...EMPTY_PAIR_SNAPSHOT,
     },
     {
       binding: BINDING,
@@ -313,6 +731,7 @@ test('malformed and contradictory DTOs fail closed', async () => {
         firstFaceId: FACE_A,
         secondFaceId: FACE_B,
       },
+      ...PENETRATING_PAIR_SNAPSHOT,
     },
     {
       binding: BINDING,
@@ -321,6 +740,7 @@ test('malformed and contradictory DTOs fail closed', async () => {
       expectedUnorderedFacePairs: 3,
       provenPenetratingPairs: null,
       firstProvenPenetratingPair: null,
+      ...INDETERMINATE_PAIR_SNAPSHOT,
       rawGeometry: 'private',
     },
     {
@@ -330,6 +750,7 @@ test('malformed and contradictory DTOs fail closed', async () => {
       expectedUnorderedFacePairs: null,
       provenPenetratingPairs: null,
       firstProvenPenetratingPair: null,
+      ...NO_PAIR_SNAPSHOT,
     },
   ]
   for (const value of malformed) {
@@ -633,4 +1054,24 @@ function isCoordinatorCategory(
 
 async function nextMicrotask() {
   await Promise.resolve()
+}
+
+function penetratingWireResponse() {
+  return {
+    binding: BINDING,
+    status: 'blocking',
+    reason: 'proven_positive_thickness_penetration',
+    expectedUnorderedFacePairs: 3,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: FACE_A,
+      secondFaceId: FACE_B,
+    },
+    pairClassificationCounts: {
+      ...PENETRATING_PAIR_SNAPSHOT.pairClassificationCounts,
+    },
+    pairDiagnostics: PENETRATING_PAIR_SNAPSHOT.pairDiagnostics.map(
+      (pair) => ({ ...pair }),
+    ),
+  } as const
 }

@@ -87,5 +87,60 @@ collision-free proofの発行条件を広げない。desktop wire/UIは
 「ゼロ厚み面貫通・重なり」へ一般化し、旧横断専用DTOを受理しない。
 
 これは4×11表の一部の実geometry issuerであり、表そのものを置き換えない。
-正厚の`boundary_area_contact`証拠、有限共有ヒンジcorridor、連続経路certificate
-および場所別層順transportは後続段階である。
+正厚の一般的な共有ヒンジ・非三角面、連続経路certificateおよび場所別層順transportは
+後続段階である。2三角形面・1共有ヒンジの限定production分類は次節のとおり接続済みで
+ある。
+
+## 6. 公開診断の6分類とproduction admission
+
+純粋な4×11表のdecisionと、利用者へ返すpair dispositionは別の層である。公開静的診断は
+全unordered face pairをcanonical順で保持し、次の6分類のいずれかを返す。
+
+| disposition | 公開上の意味 |
+| --- | --- |
+| `separated` | 認証済み幾何が離間を確定した |
+| `touching` | 非貫通の接触を確定した |
+| `allowed` | 共有頂点、または限定された共有ヒンジmodelが接触を説明した |
+| `penetrating` | production admission gateが面横断、共面正面積または正体積を肯定した |
+| `indeterminate` | 交差の可能性を排除できない、または必要なmodelが未対応である |
+| `candidate_excluded` | 候補生成段階の予約分類。全pair診断の現行runtime snapshotでは発行しない |
+
+4×11表が`penetrating`を返しただけでは公開`penetrating`へ昇格させない。厚さ0の
+canonical exact `E`とdirect-lift `F`によるstrict transversal dual gate、認証済み
+whole-face共面正面積、または対応する正厚production gateのいずれも肯定しない場合は、
+公開分類を`indeterminate`へ閉じる。逆に、独立したexact gateが肯定したpairは下位の
+raw証拠が丸め誤差により`indeterminate`でも`penetrating`とし、公開pairの証拠を
+`transversal_crossing`または`coplanar_area_overlap`へ正規化してproof provenanceを
+必須保持する。proof markerと正規化済み証拠・policyが矛盾するwire payloadは拒否する。
+
+紙厚がbit-exactな`+0.0`で、一直線の共有ヒンジを完全な境界辺として持つ2三角形は、
+watertight exact poseで別途分類する。非平行な2平面の交線が共有辺だけである場合、
+または共面で両対頂点が共有辺の反対側にある場合は、共有辺だけの接触として`allowed`に
+する。共面で両対頂点が同じ側にある場合は共有辺近傍に正面積重なりが存在するため
+`coplanar_area_overlap`・`penetrating`とする。binary64上の共有端点driftを許容半径で
+吸収してはならない。対象pairだけを有限資源上限付きでexact theoremへ渡し、上限超過は
+部分結果を返さずfail-closedとする。
+
+有限な正厚では、初版の`centered_mid_surface_v1`に従い、2三角形面・1共有ヒンジだけを
+complete `E/F` solid classifierへ接続している。完全交差集合が有限ヒンジmodelで説明
+できた`boundary_area_contact`または`shared_feature_thickness_overlap`は`allowed`、
+証明済み`positive_volume_overlap`は`penetrating`、層ずらし未再現または証拠不足は
+`indeterminate`とする。`allowed`はこの限定pairの「許容積層」であり、multi-face全体の
+collision-free proofではない。
+
+UIは`penetrating`と`indeterminate`を同じ赤系の最上位警告として表示し、沈黙による
+安全誤認を禁止する。集約件数に加えてcanonical pair行を表示し、表示上限を超える場合も
+blocking pairを先に残して総件数・表示件数・省略件数を明記する。
+nativeとrendererが受理する完全pair snapshotのhard capは同じ50,000件である。callerは
+この上限を縮小できるが拡張できず、50,001件目はnative側でallocation・serialization前に
+`ResourceLimitExceeded`へ閉じる。
+
+wire reason `proven_positive_thickness_penetration`は正厚材料貫通の総称である。pair詳細の
+`strictTransversalDualGateProven=true`と`transversal_crossing`は中央面横断を、
+`sharedHingeSolidClassified=true`と`positive_volume_overlap`はcomplete solid
+classifierによる正体積重なりを表す。総称reasonだけから証明経路を推測してはならない。
+
+正厚2三角形共有ヒンジのexact 90度は、有限回廊のbinary64境界でcanonical vertex IDに
+よる軸反転がdirect-lift `F`の最終bitを変え得るため、初版では常に`indeterminate`へ
+固定する。ID、identity namespace、source格納順、root、hinge端点方向、山谷によって
+`allowed`へ変化させてはならない。

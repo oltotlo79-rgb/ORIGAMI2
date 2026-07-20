@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   presentNativeStaticCollision,
+  presentNativeStaticCollisionPairDiagnostics,
   selectBoundNativeStaticCollisionView,
   type CurrentStaticCollisionDiagnostic,
+  type CurrentStaticCollisionPairDiagnostic,
 } from '../src/lib/nativeStaticCollisionView.ts'
 
 const certified: CurrentStaticCollisionDiagnostic = {
@@ -12,6 +14,15 @@ const certified: CurrentStaticCollisionDiagnostic = {
   expectedUnorderedFacePairs: 0,
   provenPenetratingPairs: 0,
   firstProvenPenetratingPair: null,
+  pairClassificationCounts: {
+    separated: 0,
+    touching: 0,
+    allowed: 0,
+    penetrating: 0,
+    indeterminate: 0,
+    candidateExcluded: 0,
+  },
+  pairDiagnostics: [],
 }
 
 test('only an affirmative native certificate receives the clear presentation', () => {
@@ -25,6 +36,94 @@ test('only an affirmative native certificate receives the clear presentation', (
   assert.equal(view.requiresSafetyReview, false)
   assert.match(view.badgeText, /ゼロ厚み面貫通・重なりなし/)
   assert.match(view.accessibleText, /証明/)
+})
+
+test('pair presentation exposes every classification and makes holds as prominent as penetration', () => {
+  const pairs: readonly CurrentStaticCollisionPairDiagnostic[] = [
+    pairDiagnostic(2, 'separated'),
+    pairDiagnostic(3, 'touching'),
+    pairDiagnostic(4, 'allowed'),
+    pairDiagnostic(5, 'penetrating'),
+    pairDiagnostic(6, 'indeterminate'),
+  ]
+  const details = presentNativeStaticCollisionPairDiagnostics({
+    status: 'blocking',
+    reason: 'proven_zero_thickness_penetration',
+    expectedUnorderedFacePairs: 5,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: pairs[3]!.firstFaceId,
+      secondFaceId: pairs[3]!.secondFaceId,
+    },
+    pairClassificationCounts: {
+      separated: 1,
+      touching: 1,
+      allowed: 1,
+      penetrating: 1,
+      indeterminate: 1,
+      candidateExcluded: 0,
+    },
+    pairDiagnostics: pairs,
+  }, 'en')
+
+  assert.ok(details)
+  assert.equal(details.totalPairCount, 5)
+  assert.equal(details.displayedPairCount, 5)
+  assert.equal(details.omittedPairCount, 0)
+  assert.equal(details.omittedText, null)
+  assert.match(details.countsText, /penetrating 1 \/ indeterminate 1/u)
+  assert.deepEqual(
+    details.pairs.map((pair) => pair.disposition),
+    ['penetrating', 'indeterminate', 'separated', 'touching', 'allowed'],
+    'blocking rows are canonical within their priority group and remain visible',
+  )
+  assert.equal(details.pairs[0]?.risk, 'blocking')
+  assert.equal(details.pairs[1]?.risk, 'blocking')
+  assert.equal(details.pairs[0]?.rowClass, 'is-penetrating')
+  assert.equal(details.pairs[1]?.rowClass, 'is-indeterminate')
+  assert.match(details.pairs[0]?.text ?? '', /dual-gate transversal proof/u)
+  assert.match(
+    details.pairs[1]?.text ?? '',
+    /shared-hinge solid classification/u,
+  )
+})
+
+test('pair presentation caps DOM rows, prioritizes blocking pairs, and states omissions', () => {
+  const pairs = Array.from(
+    { length: 205 },
+    (_, index): CurrentStaticCollisionPairDiagnostic => {
+      const disposition = index >= 203 ? 'indeterminate' : 'separated'
+      return pairDiagnostic(index + 2, disposition)
+    },
+  )
+  const details = presentNativeStaticCollisionPairDiagnostics({
+    status: 'blocking',
+    reason: 'evidence_unavailable',
+    expectedUnorderedFacePairs: 205,
+    provenPenetratingPairs: null,
+    firstProvenPenetratingPair: null,
+    pairClassificationCounts: {
+      separated: 203,
+      touching: 0,
+      allowed: 0,
+      penetrating: 0,
+      indeterminate: 2,
+      candidateExcluded: 0,
+    },
+    pairDiagnostics: pairs,
+  }, 'en')
+
+  assert.ok(details)
+  assert.equal(details.totalPairCount, 205)
+  assert.equal(details.displayedPairCount, 200)
+  assert.equal(details.omittedPairCount, 5)
+  assert.equal(details.pairs.length, 200)
+  assert.deepEqual(
+    details.pairs.slice(0, 2).map((pair) => pair.disposition),
+    ['indeterminate', 'indeterminate'],
+  )
+  assert.match(details.omittedText ?? '', /Showing 200 of 205 pairs; 5 omitted/u)
+  assert.match(details.accessibleCountsText, /same prominence as penetration/u)
 })
 
 test('a result for an older pose is hidden synchronously before effects run', () => {
@@ -73,7 +172,7 @@ test('a proven zero-thickness penetration or overlap is blocking and publishes t
   assert.match(view.accessibleText, /正の面積を持つ重なり/)
 })
 
-test('a proven positive-thickness mid-surface crossing has a distinct material-penetration presentation', () => {
+test('a proven positive-thickness material penetration has a distinct presentation', () => {
   const view = presentNativeStaticCollision({
     kind: 'ready',
     diagnostic: {
@@ -280,3 +379,63 @@ test('English presents every exact-check outcome without changing wire status', 
     'Exact check | Unavailable · safety review required',
   )
 })
+
+function pairDiagnostic(
+  secondFaceNumber: number,
+  disposition: CurrentStaticCollisionPairDiagnostic['disposition'],
+): CurrentStaticCollisionPairDiagnostic {
+  const common = {
+    firstFaceId: '00000000-0000-4000-8000-000000000001',
+    secondFaceId:
+      `00000000-0000-4000-8000-${String(secondFaceNumber).padStart(12, '0')}`,
+    strictTransversalDualGateProven: false,
+    wholeFaceOverlapProven: false,
+    sharedHingeBoundaryContactProven: false,
+    sharedHingeSolidClassified: false,
+  } as const
+  if (disposition === 'separated') {
+    return {
+      ...common,
+      topology: 'no_shared_feature',
+      evidence: 'separated',
+      policyDecision: 'separated',
+      disposition,
+    }
+  }
+  if (disposition === 'touching') {
+    return {
+      ...common,
+      topology: 'no_shared_feature',
+      evidence: 'point_contact',
+      policyDecision: 'touching',
+      disposition,
+    }
+  }
+  if (disposition === 'allowed') {
+    return {
+      ...common,
+      topology: 'shared_vertex',
+      evidence: 'shared_feature_contact',
+      policyDecision: 'allowed_shared_vertex_contact',
+      disposition,
+    }
+  }
+  if (disposition === 'penetrating') {
+    return {
+      ...common,
+      topology: 'no_shared_feature',
+      evidence: 'transversal_crossing',
+      policyDecision: 'penetrating',
+      disposition,
+      strictTransversalDualGateProven: true,
+    }
+  }
+  return {
+    ...common,
+    topology: 'shared_hinge_edge',
+    evidence: 'indeterminate',
+    policyDecision: 'indeterminate',
+    disposition,
+    sharedHingeSolidClassified: true,
+  }
+}

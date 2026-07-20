@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   presentNativeStaticCollision,
+  presentNativeStaticCollisionPairDiagnostics,
   selectBoundNativeStaticCollisionView,
   type NativeStaticCollisionViewState,
 } from '../lib/nativeStaticCollisionView'
@@ -30,6 +31,9 @@ export function NativeStaticCollisionBadge({
 }: NativeStaticCollisionBadgeProps) {
   const locale = useLocale(localeStore_)
   const presentation = presentNativeStaticCollision(state, locale)
+  const pairDetails = state.kind === 'ready'
+    ? presentNativeStaticCollisionPairDiagnostics(state.diagnostic, locale)
+    : null
   const previousStateKindRef = useRef(state.kind)
   const [retryInProgress, setRetryInProgress] = useState(false)
   useEffect(() => {
@@ -59,56 +63,107 @@ export function NativeStaticCollisionBadge({
     }
   }
   return (
-    <span
-      className={[
-        'fold-preview-native-collision',
-        presentation.badgeClass,
-        retryVisible ? 'has-retry' : '',
-      ].filter(Boolean).join(' ')}
-      title={presentation.accessibleText}
-      data-native-collision-status={presentation.dataStatus}
-      data-collision-risk={
-        presentation.requiresSafetyReview ? 'blocking' : 'informational'
-      }
-      role={terminalBlocking ? 'alert' : 'status'}
-      aria-live={terminalBlocking ? 'assertive' : 'polite'}
-      aria-atomic="true"
-      aria-label={formatLocalizedText(
-        locale,
-        NATIVE_COLLISION_BADGE_TEXT.ariaLabel,
-        { description: presentation.accessibleText },
-      )}
-    >
-      <span className="fold-preview-native-collision-text">
-        {presentation.badgeText}
-      </span>
-      {retryVisible ? (
-        <button
-          type="button"
-          className="fold-preview-native-collision-retry"
-          aria-label={
-            retryInProgress
+    <div className="fold-preview-native-collision-group">
+      <span
+        className={[
+          'fold-preview-native-collision',
+          presentation.badgeClass,
+          retryVisible ? 'has-retry' : '',
+        ].filter(Boolean).join(' ')}
+        title={presentation.accessibleText}
+        data-native-collision-status={presentation.dataStatus}
+        data-collision-risk={
+          presentation.requiresSafetyReview ? 'blocking' : 'informational'
+        }
+        role={terminalBlocking ? 'alert' : 'status'}
+        aria-live={terminalBlocking ? 'assertive' : 'polite'}
+        aria-atomic="true"
+        aria-label={formatLocalizedText(
+          locale,
+          NATIVE_COLLISION_BADGE_TEXT.ariaLabel,
+          { description: presentation.accessibleText },
+        )}
+      >
+        <span className="fold-preview-native-collision-text">
+          {presentation.badgeText}
+        </span>
+        {retryVisible ? (
+          <button
+            type="button"
+            className="fold-preview-native-collision-retry"
+            aria-label={
+              retryInProgress
+                ? selectLocalizedText(
+                  locale,
+                  NATIVE_COLLISION_BADGE_TEXT.retryingAriaLabel,
+                )
+                : selectLocalizedText(
+                  locale,
+                  NATIVE_COLLISION_BADGE_TEXT.retryAriaLabel,
+                )
+            }
+            disabled={retryInProgress}
+            onClick={requestRetry}
+          >
+            {retryInProgress
               ? selectLocalizedText(
                 locale,
-                NATIVE_COLLISION_BADGE_TEXT.retryingAriaLabel,
+                NATIVE_COLLISION_BADGE_TEXT.retrying,
               )
-              : selectLocalizedText(
-                locale,
-                NATIVE_COLLISION_BADGE_TEXT.retryAriaLabel,
-              )
+              : selectLocalizedText(locale, NATIVE_COLLISION_BADGE_TEXT.retry)}
+          </button>
+        ) : null}
+      </span>
+      {pairDetails === null ? null : (
+        <section
+          className={[
+            'fold-preview-native-collision-pairs',
+            pairDetails.hasBlockingPair ? 'has-blocking-pair' : '',
+          ].filter(Boolean).join(' ')}
+          data-native-collision-pair-risk={
+            pairDetails.hasBlockingPair ? 'blocking' : 'informational'
           }
-          disabled={retryInProgress}
-          onClick={requestRetry}
+          aria-label={locale === 'ja'
+            ? '面ペアごとの衝突分類'
+            : 'Collision classification for each face pair'}
         >
-          {retryInProgress
-            ? selectLocalizedText(
-              locale,
-              NATIVE_COLLISION_BADGE_TEXT.retrying,
-            )
-            : selectLocalizedText(locale, NATIVE_COLLISION_BADGE_TEXT.retry)}
-        </button>
-      ) : null}
-    </span>
+          <div
+            className="fold-preview-native-collision-pair-counts"
+            title={pairDetails.accessibleCountsText}
+          >
+            {pairDetails.countsText}
+          </div>
+          {pairDetails.omittedText === null ? null : (
+            <div
+              className="fold-preview-native-collision-pair-omission"
+              data-native-collision-omitted-pairs={
+                pairDetails.omittedPairCount
+              }
+            >
+              {pairDetails.omittedText}
+            </div>
+          )}
+          {pairDetails.pairs.length === 0 ? null : (
+            <ol className="fold-preview-native-collision-pair-list">
+              {pairDetails.pairs.map((pair) => (
+                <li
+                  key={pair.key}
+                  className={[
+                    'fold-preview-native-collision-pair',
+                    pair.rowClass,
+                  ].join(' ')}
+                  data-native-collision-pair-disposition={pair.disposition}
+                  data-collision-risk={pair.risk}
+                  title={pair.accessibleText}
+                >
+                  {pair.text}
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      )}
+    </div>
   )
 }
 

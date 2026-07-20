@@ -1,7 +1,10 @@
 use ori_collision::{
-    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-    NativeStaticCollisionGeometryProof, StaticCollisionError, StaticCollisionLimits,
-    TOPOLOGY_CONTACT_POLICY_V2, prove_static_collision_geometry,
+    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, IntersectionEvidenceV2,
+    NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1, NativeStaticCollisionGeometryProof,
+    StaticCollisionError, StaticCollisionLimits, StaticCollisionPairDisposition,
+    TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
+    classify_runtime_topology_contact_v2, classify_static_collision_pair_disposition,
+    diagnose_static_collision_geometry, prove_static_collision_geometry,
 };
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
@@ -35,7 +38,12 @@ fn edge_id(index: u64) -> EdgeId {
 }
 
 fn project_id() -> ProjectId {
-    serde_json::from_str("\"00000000-0000-4000-b000-000000000001\"").expect("fixed project id")
+    project_id_variant(1)
+}
+
+fn project_id_variant(index: u64) -> ProjectId {
+    serde_json::from_str(&format!("\"00000000-0000-4000-b000-{index:012x}\""))
+        .expect("fixed project id")
 }
 
 fn vertex(index: u64, x: f64, y: f64) -> Vertex {
@@ -236,6 +244,113 @@ fn corner_mountain_mountain_quadrilateral_400mm_fixture(
     )
 }
 
+fn triangular_shared_hinge_400mm_fixture(
+    assignment: EdgeKind,
+    reverse_source_collections: bool,
+    reverse_hinge_endpoints: bool,
+) -> (MaterialTreeKinematicsModel, EdgeId) {
+    let mut vertices = vec![
+        vertex(1, 0.0, 0.0),
+        vertex(2, 400.0, 0.0),
+        vertex(3, 400.0, 400.0),
+        vertex(4, 0.0, 400.0),
+    ];
+    let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+    let mut edges = (0..boundary.len())
+        .map(|index| {
+            edge(
+                index as u64 + 1,
+                boundary[index],
+                boundary[(index + 1) % boundary.len()],
+                EdgeKind::Boundary,
+            )
+        })
+        .collect::<Vec<_>>();
+    let (start, end) = if reverse_hinge_endpoints {
+        (boundary[2], boundary[0])
+    } else {
+        (boundary[0], boundary[2])
+    };
+    let hinge = edge(5, start, end, assignment);
+    edges.push(hinge.clone());
+    if reverse_source_collections {
+        vertices.reverse();
+        edges.reverse();
+    }
+    let pattern = CreasePattern { vertices, edges };
+    let paper = Paper {
+        boundary_vertices: boundary,
+        ..Paper::default()
+    };
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace: project_id(),
+        source_revision: 12,
+        paper: &paper,
+        pattern: &pattern,
+    });
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    let topology = report.snapshot.expect("triangular hinge topology");
+    let model = MaterialTreeKinematicsModel::prepare(
+        &pattern,
+        &paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("triangular hinge model");
+    assert_eq!(model.face_ids().len(), 2);
+    assert_eq!(model.hinges().len(), 1);
+    (model, hinge.id)
+}
+
+fn triangular_shared_hinge_40x30_identity_fixture(
+    vertex_identity: [u64; 4],
+    identity_namespace: ProjectId,
+) -> (MaterialTreeKinematicsModel, EdgeId) {
+    let coordinates = [(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)];
+    let vertices = coordinates
+        .into_iter()
+        .zip(vertex_identity)
+        .map(|((x, y), identity)| vertex(identity, x, y))
+        .collect::<Vec<_>>();
+    let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+    let mut edges = (0..boundary.len())
+        .map(|index| {
+            edge(
+                index as u64 + 1,
+                boundary[index],
+                boundary[(index + 1) % boundary.len()],
+                EdgeKind::Boundary,
+            )
+        })
+        .collect::<Vec<_>>();
+    let hinge = edge(5, boundary[0], boundary[2], EdgeKind::Mountain);
+    edges.push(hinge.clone());
+    let pattern = CreasePattern { vertices, edges };
+    let paper = Paper {
+        boundary_vertices: boundary,
+        thickness_mm: 0.1,
+        ..Paper::default()
+    };
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace,
+        source_revision: 12,
+        paper: &paper,
+        pattern: &pattern,
+    });
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    let topology = report.snapshot.expect("identity fixture topology");
+    let model = MaterialTreeKinematicsModel::prepare(
+        &pattern,
+        &paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("identity fixture material model");
+    assert_eq!(model.face_ids().len(), 2);
+    assert_eq!(model.hinges().len(), 1);
+    (model, hinge.id)
+}
+
 fn only_non_hinge_face_pair(model: &MaterialTreeKinematicsModel) -> [FaceId; 2] {
     let mut pairs = model
         .face_ids()
@@ -354,6 +469,8 @@ fn one_material_face_has_a_complete_zero_pair_proof_at_all_thicknesses() {
             max_total_rational_allocation_bits: 0,
             max_rational_output_bits: 0,
             max_total_rational_output_bits: 0,
+            max_shared_hinge_boundary_diagnostics: 0,
+            max_shared_hinge_solid_diagnostics: 0,
         },
     )
     .expect("zero-pair proof does not allocate pair geometry");
@@ -686,6 +803,846 @@ fn positive_thickness_corner_contact_never_becomes_mid_surface_penetration() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn public_diagnostic_freezes_every_topology_by_evidence_policy_cell() {
+    use StaticCollisionPairDisposition::{
+        Allowed, CandidateExcluded, Indeterminate, Penetrating, Separated, Touching,
+    };
+
+    const EXPECTED: [[StaticCollisionPairDisposition; 11]; 4] = [
+        [
+            Separated,
+            Touching,
+            Touching,
+            Touching,
+            Indeterminate,
+            Indeterminate,
+            Indeterminate,
+            Penetrating,
+            Penetrating,
+            Penetrating,
+            Indeterminate,
+        ],
+        [
+            Indeterminate,
+            Touching,
+            Touching,
+            Touching,
+            Allowed,
+            Allowed,
+            Indeterminate,
+            Penetrating,
+            Penetrating,
+            Penetrating,
+            Indeterminate,
+        ],
+        [
+            Indeterminate,
+            Indeterminate,
+            Indeterminate,
+            Indeterminate,
+            Indeterminate,
+            Indeterminate,
+            Indeterminate,
+            Penetrating,
+            Penetrating,
+            Penetrating,
+            Indeterminate,
+        ],
+        [CandidateExcluded; 11],
+    ];
+
+    for (topology_index, topology) in TopologyRelation::ALL.into_iter().enumerate() {
+        for (evidence_index, evidence) in IntersectionEvidenceV2::ALL.into_iter().enumerate() {
+            let decision = classify_runtime_topology_contact_v2(topology, evidence);
+            assert_eq!(
+                classify_static_collision_pair_disposition(topology, decision),
+                EXPECTED[topology_index][evidence_index],
+                "{} × {}",
+                topology.identifier(),
+                evidence.identifier()
+            );
+        }
+    }
+
+    // These five columns are the user-facing separated / point / line /
+    // boundary-area / transversal snapshot requested by the collision audit.
+    let contact_columns = [
+        IntersectionEvidenceV2::Separated,
+        IntersectionEvidenceV2::PointContact,
+        IntersectionEvidenceV2::BoundaryLineContact,
+        IntersectionEvidenceV2::BoundaryAreaContact,
+        IntersectionEvidenceV2::TransversalCrossing,
+    ];
+    let identifiers = TopologyRelation::ALL.map(|topology| {
+        contact_columns.map(|evidence| {
+            classify_static_collision_pair_disposition(
+                topology,
+                classify_runtime_topology_contact_v2(topology, evidence),
+            )
+            .identifier()
+        })
+    });
+    assert_eq!(
+        identifiers,
+        [
+            [
+                "separated",
+                "touching",
+                "touching",
+                "touching",
+                "penetrating",
+            ],
+            [
+                "indeterminate",
+                "touching",
+                "touching",
+                "touching",
+                "penetrating",
+            ],
+            [
+                "indeterminate",
+                "indeterminate",
+                "indeterminate",
+                "indeterminate",
+                "penetrating",
+            ],
+            ["candidate_excluded"; 5],
+        ]
+    );
+}
+
+#[test]
+fn public_diagnostic_connects_shared_hinge_solid_only_for_two_triangular_faces() {
+    const CASES: [(f64, StaticCollisionPairDisposition, IntersectionEvidenceV2); 6] = [
+        (
+            0.0,
+            StaticCollisionPairDisposition::Allowed,
+            IntersectionEvidenceV2::BoundaryAreaContact,
+        ),
+        (
+            10.0,
+            StaticCollisionPairDisposition::Allowed,
+            IntersectionEvidenceV2::SharedFeatureThicknessOverlap,
+        ),
+        (
+            90.0,
+            StaticCollisionPairDisposition::Indeterminate,
+            IntersectionEvidenceV2::Indeterminate,
+        ),
+        (
+            135.0,
+            StaticCollisionPairDisposition::Allowed,
+            IntersectionEvidenceV2::SharedFeatureThicknessOverlap,
+        ),
+        (
+            179.0,
+            StaticCollisionPairDisposition::Allowed,
+            IntersectionEvidenceV2::SharedFeatureThicknessOverlap,
+        ),
+        (
+            180.0,
+            StaticCollisionPairDisposition::Indeterminate,
+            IntersectionEvidenceV2::Indeterminate,
+        ),
+    ];
+
+    for assignment in [EdgeKind::Mountain, EdgeKind::Valley] {
+        for reverse_source_collections in [false, true] {
+            for reverse_hinge_endpoints in [false, true] {
+                let (model, hinge) = triangular_shared_hinge_400mm_fixture(
+                    assignment,
+                    reverse_source_collections,
+                    reverse_hinge_endpoints,
+                );
+                for root in model.face_ids().iter().copied() {
+                    for thickness in [0.1, 1.0, 3.0] {
+                        for (angle, expected_disposition, expected_evidence) in CASES {
+                            let angles = CanonicalHingeAngles::new(vec![
+                                HingeAngle::new(hinge, angle).expect("valid hinge angle"),
+                            ])
+                            .expect("canonical hinge angle");
+                            let pose = model
+                                .solve(Some(root), &angles)
+                                .expect("triangular hinge pose");
+                            let snapshot = diagnose_static_collision_geometry(
+                                &model,
+                                &pose,
+                                thickness,
+                                StaticCollisionLimits::default(),
+                            )
+                            .expect("complete shared-hinge diagnostic");
+                            assert_eq!(snapshot.pairs().len(), 1);
+                            let pair = snapshot.pairs()[0];
+                            assert_eq!(pair.topology(), TopologyRelation::SharedHingeEdge);
+                            assert!(pair.shared_hinge_solid_classified());
+                            assert_eq!(
+                                pair.disposition(),
+                                expected_disposition,
+                                "{assignment:?}, source reversed {reverse_source_collections}, \
+                                 endpoints reversed {reverse_hinge_endpoints}, {root:?}, \
+                                 {thickness} mm, {angle}°"
+                            );
+                            assert_eq!(pair.evidence(), expected_evidence);
+                            assert!(!pair.strict_transversal_dual_gate_proven());
+                            assert!(!pair.whole_face_overlap_proven());
+                            assert!(!pair.shared_hinge_boundary_contact_proven());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn positive_thickness_ninety_degree_hold_is_identity_and_root_invariant() {
+    for namespace_index in 1_u64..=8 {
+        for first in 1_u64..=4 {
+            for second in 1_u64..=4 {
+                for third in 1_u64..=4 {
+                    for fourth in 1_u64..=4 {
+                        let identity = [first, second, third, fourth];
+                        if identity
+                            .iter()
+                            .enumerate()
+                            .any(|(index, value)| identity[..index].contains(value))
+                        {
+                            continue;
+                        }
+                        let (model, hinge) = triangular_shared_hinge_40x30_identity_fixture(
+                            identity,
+                            project_id_variant(namespace_index),
+                        );
+                        let angles = CanonicalHingeAngles::new(vec![
+                            HingeAngle::new(hinge, 90.0).expect("valid right angle"),
+                        ])
+                        .expect("canonical right angle");
+                        for root in model.face_ids().iter().copied() {
+                            let pose = model
+                                .solve(Some(root), &angles)
+                                .expect("identity-permuted pose");
+                            let snapshot = diagnose_static_collision_geometry(
+                                &model,
+                                &pose,
+                                0.1,
+                                StaticCollisionLimits::default(),
+                            )
+                            .expect("identity-permuted diagnostic");
+                            assert_eq!(snapshot.pairs().len(), 1);
+                            let pair = snapshot.pairs()[0];
+                            assert_eq!(pair.topology(), TopologyRelation::SharedHingeEdge);
+                            assert_eq!(pair.evidence(), IntersectionEvidenceV2::Indeterminate);
+                            assert_eq!(
+                                pair.policy_decision(),
+                                TopologyContactDecision::Indeterminate
+                            );
+                            assert_eq!(
+                                pair.disposition(),
+                                StaticCollisionPairDisposition::Indeterminate,
+                                "namespace {namespace_index}, identity {identity:?}, root {root:?}"
+                            );
+                            assert!(!pair.strict_transversal_dual_gate_proven());
+                            assert!(!pair.whole_face_overlap_proven());
+                            assert!(!pair.shared_hinge_boundary_contact_proven());
+                            assert!(pair.shared_hinge_solid_classified());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_thickness_shared_hinge_boundary_contact_is_allowed_until_area_overlap() {
+    const CASES: [(f64, StaticCollisionPairDisposition); 5] = [
+        (0.0, StaticCollisionPairDisposition::Allowed),
+        (10.0, StaticCollisionPairDisposition::Allowed),
+        (90.0, StaticCollisionPairDisposition::Allowed),
+        (179.0, StaticCollisionPairDisposition::Allowed),
+        (180.0, StaticCollisionPairDisposition::Penetrating),
+    ];
+
+    for assignment in [EdgeKind::Mountain, EdgeKind::Valley] {
+        for reverse_source_collections in [false, true] {
+            for reverse_hinge_endpoints in [false, true] {
+                let (model, hinge) = triangular_shared_hinge_400mm_fixture(
+                    assignment,
+                    reverse_source_collections,
+                    reverse_hinge_endpoints,
+                );
+                for root in model.face_ids().iter().copied() {
+                    for (angle, expected_disposition) in CASES {
+                        let angles = CanonicalHingeAngles::new(vec![
+                            HingeAngle::new(hinge, angle).expect("valid hinge angle"),
+                        ])
+                        .expect("canonical hinge angle");
+                        let pose = model
+                            .solve(Some(root), &angles)
+                            .expect("zero-thickness triangular hinge pose");
+                        let snapshot = diagnose_static_collision_geometry(
+                            &model,
+                            &pose,
+                            0.0,
+                            StaticCollisionLimits::default(),
+                        )
+                        .expect("complete zero-thickness shared-hinge diagnostic");
+                        assert_eq!(snapshot.expected_unordered_face_pairs(), 1);
+                        assert_eq!(snapshot.pairs().len(), 1);
+                        let pair = snapshot.pairs()[0];
+                        assert_eq!(pair.topology(), TopologyRelation::SharedHingeEdge);
+                        assert_eq!(
+                            pair.disposition(),
+                            expected_disposition,
+                            "{assignment:?}, source reversed {reverse_source_collections}, \
+                             endpoints reversed {reverse_hinge_endpoints}, {root:?}, {angle}°"
+                        );
+                        assert!(!pair.shared_hinge_solid_classified());
+                        if angle < 180.0 {
+                            assert_eq!(
+                                pair.evidence(),
+                                IntersectionEvidenceV2::SharedFeatureContact
+                            );
+                            assert_eq!(
+                                pair.policy_decision(),
+                                TopologyContactDecision::RequiresHingeModel
+                            );
+                            assert!(pair.shared_hinge_boundary_contact_proven());
+                            assert!(!pair.strict_transversal_dual_gate_proven());
+                            assert!(!pair.whole_face_overlap_proven());
+                            assert_eq!(snapshot.allowed_pairs(), 1);
+                            assert_eq!(snapshot.penetrating_pairs(), 0);
+                            assert_eq!(snapshot.indeterminate_pairs(), 0);
+                        } else {
+                            assert!(!pair.shared_hinge_boundary_contact_proven());
+                            assert!(
+                                pair.whole_face_overlap_proven()
+                                    || pair.strict_transversal_dual_gate_proven(),
+                                "a full-fold area overlap must carry an exact penetration proof"
+                            );
+                            assert_eq!(snapshot.allowed_pairs(), 0);
+                            assert_eq!(snapshot.penetrating_pairs(), 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_hinge_solid_diagnostic_has_an_explicit_public_resource_gate() {
+    let (model, hinge) = triangular_shared_hinge_400mm_fixture(EdgeKind::Mountain, false, false);
+    let angles = CanonicalHingeAngles::new(vec![
+        HingeAngle::new(hinge, 10.0).expect("valid hinge angle"),
+    ])
+    .expect("canonical hinge angle");
+    let pose = model
+        .solve(Some(model.face_ids()[0]), &angles)
+        .expect("triangular hinge pose");
+    assert_eq!(
+        diagnose_static_collision_geometry(
+            &model,
+            &pose,
+            0.1,
+            StaticCollisionLimits {
+                max_shared_hinge_solid_diagnostics: 0,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    );
+}
+
+#[test]
+fn zero_thickness_shared_hinge_boundary_gate_counts_only_submitted_pairs() {
+    let fixture = midpoint_mountain_400mm_fixture(false);
+    let model_hinges = fixture.model.hinges();
+    let root = fixture
+        .model
+        .face_ids()
+        .iter()
+        .copied()
+        .find(|face| {
+            model_hinges
+                .iter()
+                .all(|hinge| hinge.left_face() == *face || hinge.right_face() == *face)
+        })
+        .expect("the fan's center triangle is incident to both hinges");
+    let solve = |degrees: [f64; 2]| {
+        let angles = CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .zip(degrees)
+                .map(|(hinge, angle)| {
+                    HingeAngle::new(hinge, angle).expect("valid resource-gate angle")
+                })
+                .collect(),
+        )
+        .expect("canonical resource-gate angles");
+        fixture
+            .model
+            .solve(Some(root), &angles)
+            .expect("resource-gate pose")
+    };
+
+    // One unfolded hinge is already classified directly by the raw exact
+    // topology scan. Only the nonzero hinge is submitted to the watertight
+    // theorem, so a limit of exactly one succeeds and zero fails.
+    let mixed = solve([0.0, 10.0]);
+    assert_eq!(
+        diagnose_static_collision_geometry(
+            &fixture.model,
+            &mixed,
+            0.0,
+            StaticCollisionLimits {
+                max_shared_hinge_boundary_diagnostics: 0,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    );
+    let mixed_snapshot = diagnose_static_collision_geometry(
+        &fixture.model,
+        &mixed,
+        0.0,
+        StaticCollisionLimits {
+            max_shared_hinge_boundary_diagnostics: 1,
+            ..StaticCollisionLimits::default()
+        },
+    )
+    .expect("one submitted pair fits an exact limit of one");
+    assert_eq!(
+        mixed_snapshot
+            .pairs()
+            .iter()
+            .filter(|pair| matches!(pair.topology(), TopologyRelation::SharedHingeEdge))
+            .count(),
+        2
+    );
+
+    // Both nonzero hinges require the theorem. A one-short limit rejects the
+    // snapshot atomically; the exact submitted-pair limit succeeds.
+    let two_candidates = solve([10.0, 10.0]);
+    assert_eq!(
+        diagnose_static_collision_geometry(
+            &fixture.model,
+            &two_candidates,
+            0.0,
+            StaticCollisionLimits {
+                max_shared_hinge_boundary_diagnostics: 1,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    );
+    let exact_snapshot = diagnose_static_collision_geometry(
+        &fixture.model,
+        &two_candidates,
+        0.0,
+        StaticCollisionLimits {
+            max_shared_hinge_boundary_diagnostics: 2,
+            ..StaticCollisionLimits::default()
+        },
+    )
+    .expect("two submitted pairs fit an exact limit of two");
+    assert_eq!(exact_snapshot.penetrating_pairs(), 0);
+    assert_eq!(
+        exact_snapshot
+            .pairs()
+            .iter()
+            .filter(|pair| {
+                matches!(pair.topology(), TopologyRelation::SharedHingeEdge)
+                    && pair.shared_hinge_boundary_contact_proven()
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn public_diagnostic_corner_mountain_valley_matrix_never_reports_penetration() {
+    const THICKNESSES: [f64; 3] = [0.0, 0.1, 1.0];
+    const CASES: [[f64; 2]; 5] = [
+        [10.0, 0.0],
+        [0.0, 10.0],
+        [45.0, 45.0],
+        [91.0, 91.0],
+        [135.0, 135.0],
+    ];
+
+    for reverse_source_collections in [false, true] {
+        let fixture = corner_mountain_valley_400mm_fixture(reverse_source_collections);
+        let outer_pair = only_non_hinge_face_pair(&fixture.model);
+        for thickness in THICKNESSES {
+            for angle_pair in CASES {
+                let angles = CanonicalHingeAngles::new(
+                    fixture
+                        .hinges
+                        .iter()
+                        .copied()
+                        .zip(angle_pair)
+                        .map(|(hinge, angle)| {
+                            HingeAngle::new(hinge, angle).expect("valid corner angle")
+                        })
+                        .collect(),
+                )
+                .expect("canonical corner angles");
+                for root in fixture.model.face_ids().iter().copied() {
+                    let pose = fixture
+                        .model
+                        .solve(Some(root), &angles)
+                        .expect("folded corner pose");
+                    let diagnostic = diagnose_static_collision_geometry(
+                        &fixture.model,
+                        &pose,
+                        thickness,
+                        StaticCollisionLimits::default(),
+                    )
+                    .expect("complete corner diagnostic");
+                    assert_eq!(
+                        diagnostic.penetrating_pairs(),
+                        0,
+                        "{thickness} mm, {angle_pair:?}, {root:?}, reversed \
+                         {reverse_source_collections}"
+                    );
+                    let outer = diagnostic
+                        .pairs()
+                        .iter()
+                        .find(|pair| [pair.first_face(), pair.second_face()] == outer_pair)
+                        .expect("outer shared-vertex pair");
+                    assert_eq!(outer.topology(), TopologyRelation::SharedVertex);
+                    assert_eq!(
+                        outer.evidence(),
+                        IntersectionEvidenceV2::SharedFeatureContact
+                    );
+                    assert_eq!(
+                        outer.policy_decision(),
+                        TopologyContactDecision::AllowedSharedVertexContact
+                    );
+                    assert_eq!(outer.disposition(), StaticCollisionPairDisposition::Allowed);
+                    assert!(!outer.strict_transversal_dual_gate_proven());
+                    assert!(!outer.whole_face_overlap_proven());
+                    assert!(
+                        !outer.shared_hinge_solid_classified(),
+                        "a three-face V outer pair must never enter the two-face hinge gate"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn public_diagnostic_mountain_mountain_matrix_is_never_silent() {
+    const THICKNESSES: [f64; 3] = [0.0, 0.1, 3.0];
+    const ANGLES: [f64; 3] = [90.0, 135.0, 179.0];
+
+    for reverse_source_collections in [false, true] {
+        let fixture = corner_mountain_mountain_400mm_fixture(reverse_source_collections);
+        let outer_pair = only_non_hinge_face_pair(&fixture.model);
+        for thickness in THICKNESSES {
+            for angle in ANGLES {
+                let angles = CanonicalHingeAngles::new(
+                    fixture
+                        .hinges
+                        .iter()
+                        .copied()
+                        .map(|hinge| HingeAngle::new(hinge, angle).expect("valid mountain angle"))
+                        .collect(),
+                )
+                .expect("canonical mountain angles");
+                for root in fixture.model.face_ids().iter().copied() {
+                    let pose = fixture
+                        .model
+                        .solve(Some(root), &angles)
+                        .expect("folded mountain pose");
+                    let diagnostic = diagnose_static_collision_geometry(
+                        &fixture.model,
+                        &pose,
+                        thickness,
+                        StaticCollisionLimits::default(),
+                    )
+                    .expect("complete mountain diagnostic");
+                    let outer = diagnostic
+                        .pairs()
+                        .iter()
+                        .find(|pair| [pair.first_face(), pair.second_face()] == outer_pair)
+                        .expect("outer mountain pair");
+                    if angle > 90.0 {
+                        assert_eq!(
+                            outer.disposition(),
+                            StaticCollisionPairDisposition::Penetrating,
+                            "{thickness} mm, {angle}°, {root:?}, reversed \
+                             {reverse_source_collections}"
+                        );
+                        assert!(outer.strict_transversal_dual_gate_proven());
+                        assert!(diagnostic.penetrating_pairs() > 0);
+                    } else {
+                        assert!(
+                            matches!(
+                                outer.disposition(),
+                                StaticCollisionPairDisposition::Touching
+                                    | StaticCollisionPairDisposition::Indeterminate
+                                    | StaticCollisionPairDisposition::Penetrating
+                            ),
+                            "90° must be an explicit contact, hold, or penetration: \
+                             {thickness} mm, {root:?}, reversed {reverse_source_collections}: \
+                             {outer:?}"
+                        );
+                        assert!(
+                            diagnostic.has_prominent_blocking_hold()
+                                || diagnostic.touching_pairs() > 0,
+                            "90° cannot be silent"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn public_diagnostic_midpoint_mountain_matrix_matches_the_reported_crossing_layout() {
+    const THICKNESSES: [f64; 3] = [0.0, 0.1, 3.0];
+    const ANGLES: [f64; 3] = [90.0, 135.0, 179.0];
+
+    for reverse_source_collections in [false, true] {
+        let fixture = midpoint_mountain_400mm_fixture(reverse_source_collections);
+        let outer_pair = only_non_hinge_face_pair(&fixture.model);
+        for thickness in THICKNESSES {
+            for angle in ANGLES {
+                let angles = CanonicalHingeAngles::new(
+                    fixture
+                        .hinges
+                        .iter()
+                        .copied()
+                        .map(|hinge| HingeAngle::new(hinge, angle).expect("valid midpoint angle"))
+                        .collect(),
+                )
+                .expect("canonical midpoint angles");
+                for root in fixture.model.face_ids().iter().copied() {
+                    let pose = fixture
+                        .model
+                        .solve(Some(root), &angles)
+                        .expect("folded midpoint pose");
+                    let diagnostic = diagnose_static_collision_geometry(
+                        &fixture.model,
+                        &pose,
+                        thickness,
+                        StaticCollisionLimits::default(),
+                    )
+                    .expect("complete midpoint diagnostic");
+                    let outer = diagnostic
+                        .pairs()
+                        .iter()
+                        .find(|pair| [pair.first_face(), pair.second_face()] == outer_pair)
+                        .expect("reported non-hinge midpoint pair");
+                    if angle > 90.0 {
+                        assert_eq!(
+                            outer.disposition(),
+                            StaticCollisionPairDisposition::Penetrating,
+                            "reported midpoint layout: {thickness} mm, {angle}°, {root:?}, \
+                             reversed {reverse_source_collections}"
+                        );
+                        assert!(outer.strict_transversal_dual_gate_proven());
+                        assert!(diagnostic.penetrating_pairs() > 0);
+                    } else {
+                        assert!(
+                            matches!(
+                                outer.disposition(),
+                                StaticCollisionPairDisposition::Touching
+                                    | StaticCollisionPairDisposition::Indeterminate
+                                    | StaticCollisionPairDisposition::Penetrating
+                            ),
+                            "reported midpoint 90° must be explicit: {thickness} mm, {root:?}, \
+                             reversed {reverse_source_collections}: {outer:?}"
+                        );
+                        assert!(
+                            diagnostic.has_prominent_blocking_hold()
+                                || diagnostic.touching_pairs() > 0,
+                            "reported midpoint 90° cannot be silent"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn corner_mountain_mountain_single_hinge_motion_never_becomes_penetration() {
+    const THICKNESSES: [f64; 3] = [0.0, 0.1, 1.0];
+    const CASES: [[f64; 2]; 4] = [[10.0, 0.0], [0.0, 10.0], [45.0, 0.0], [0.0, 45.0]];
+
+    for reverse_source_collections in [false, true] {
+        let fixture = corner_mountain_mountain_400mm_fixture(reverse_source_collections);
+        let outer_pair = only_non_hinge_face_pair(&fixture.model);
+        for thickness in THICKNESSES {
+            for angle_pair in CASES {
+                let angles = CanonicalHingeAngles::new(
+                    fixture
+                        .hinges
+                        .iter()
+                        .copied()
+                        .zip(angle_pair)
+                        .map(|(hinge, angle)| {
+                            HingeAngle::new(hinge, angle).expect("valid one-sided corner angle")
+                        })
+                        .collect(),
+                )
+                .expect("canonical one-sided corner angles");
+                for root in fixture.model.face_ids().iter().copied() {
+                    let pose = fixture
+                        .model
+                        .solve(Some(root), &angles)
+                        .expect("one-sided corner pose");
+                    let diagnostic = diagnose_static_collision_geometry(
+                        &fixture.model,
+                        &pose,
+                        thickness,
+                        StaticCollisionLimits::default(),
+                    )
+                    .expect("complete one-sided corner diagnostic");
+                    assert_eq!(
+                        diagnostic.penetrating_pairs(),
+                        0,
+                        "{thickness} mm, {angle_pair:?}, {root:?}, reversed \
+                         {reverse_source_collections}"
+                    );
+                    let outer = diagnostic
+                        .pairs()
+                        .iter()
+                        .find(|pair| [pair.first_face(), pair.second_face()] == outer_pair)
+                        .expect("one-sided outer shared-vertex pair");
+                    assert_eq!(outer.topology(), TopologyRelation::SharedVertex);
+                    assert_eq!(
+                        outer.evidence(),
+                        IntersectionEvidenceV2::SharedFeatureContact
+                    );
+                    assert_eq!(
+                        outer.policy_decision(),
+                        TopologyContactDecision::AllowedSharedVertexContact
+                    );
+                    assert_eq!(outer.disposition(), StaticCollisionPairDisposition::Allowed);
+                    assert!(!outer.strict_transversal_dual_gate_proven());
+                    assert!(!outer.whole_face_overlap_proven());
+                    assert!(!outer.shared_hinge_boundary_contact_proven());
+                    assert!(!outer.shared_hinge_solid_classified());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn public_diagnostic_snapshot_is_identical_after_source_collection_reversal() {
+    let source = corner_mountain_valley_400mm_fixture(false);
+    let reversed = corner_mountain_valley_400mm_fixture(true);
+    assert_eq!(source.model.face_ids(), reversed.model.face_ids());
+    assert_eq!(source.hinges, reversed.hinges);
+
+    let angles_for = |fixture: &TwoHingeFixture| {
+        CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .map(|hinge| HingeAngle::new(hinge, 91.0).expect("valid angle"))
+                .collect(),
+        )
+        .expect("canonical angles")
+    };
+    let source_angles = angles_for(&source);
+    let reversed_angles = angles_for(&reversed);
+    for root in source.model.face_ids().iter().copied() {
+        let source_pose = source
+            .model
+            .solve(Some(root), &source_angles)
+            .expect("source pose");
+        let reversed_pose = reversed
+            .model
+            .solve(Some(root), &reversed_angles)
+            .expect("reversed pose");
+        for thickness in [0.0, 0.1, 1.0] {
+            let source_snapshot = diagnose_static_collision_geometry(
+                &source.model,
+                &source_pose,
+                thickness,
+                StaticCollisionLimits::default(),
+            )
+            .expect("source diagnostic");
+            let reversed_snapshot = diagnose_static_collision_geometry(
+                &reversed.model,
+                &reversed_pose,
+                thickness,
+                StaticCollisionLimits::default(),
+            )
+            .expect("reversed diagnostic");
+            assert_eq!(
+                source_snapshot, reversed_snapshot,
+                "{thickness} mm, {root:?}"
+            );
+            assert!(source_snapshot.pairs().windows(2).all(|pairs| {
+                pairs[0].first_face().canonical_bytes() < pairs[1].first_face().canonical_bytes()
+                    || (pairs[0].first_face() == pairs[1].first_face()
+                        && pairs[0].second_face().canonical_bytes()
+                            < pairs[1].second_face().canonical_bytes())
+            }));
+        }
+    }
+}
+
+#[test]
+fn whole_face_penetration_does_not_omit_other_pair_diagnostics() {
+    let fixture = corner_mountain_valley_400mm_fixture(false);
+    let outer_pair = only_non_hinge_face_pair(&fixture.model);
+    let angles = CanonicalHingeAngles::new(
+        fixture
+            .hinges
+            .iter()
+            .copied()
+            .map(|hinge| HingeAngle::new(hinge, 180.0).expect("valid full fold"))
+            .collect(),
+    )
+    .expect("canonical full fold");
+    for root in fixture.model.face_ids().iter().copied() {
+        let pose = fixture
+            .model
+            .solve(Some(root), &angles)
+            .expect("full-fold pose");
+        let snapshot = diagnose_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.0,
+            StaticCollisionLimits::default(),
+        )
+        .expect("complete full-fold diagnostic");
+        assert_eq!(snapshot.pairs().len(), 3);
+        assert_eq!(snapshot.expected_unordered_face_pairs(), 3);
+        assert_eq!(
+            snapshot
+                .pairs()
+                .iter()
+                .filter(|pair| pair.whole_face_overlap_proven())
+                .map(|pair| [pair.first_face(), pair.second_face()])
+                .collect::<Vec<_>>(),
+            vec![outer_pair]
+        );
+        assert!(
+            snapshot
+                .pairs()
+                .iter()
+                .all(|pair| pair.disposition() != StaticCollisionPairDisposition::CandidateExcluded)
+        );
+        assert_eq!(snapshot.penetrating_pairs(), 1);
+        assert_eq!(snapshot.indeterminate_pairs(), 2);
     }
 }
 

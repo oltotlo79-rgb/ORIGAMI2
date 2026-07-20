@@ -37,13 +37,15 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 use ori_domain::{FaceId, VertexId};
+use ori_kinematics::BoundMaterialTreePose;
 use ori_topology::FoldAssignment;
 
 use super::{
     CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactPoint3,
-    ExactRigidTransform, ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1, RationalCayleyTreePose,
-    WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64, point3_array, rational_bits,
-    rational_storage_bits, try_array3, verify_exact_rotation,
+    ExactRigidTransform, ExactTreePoseLimits, ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1,
+    RationalCayleyTreePose, WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64,
+    point3_array, prepare_rational_cayley_tree_pose_v1, rational_bits, rational_storage_bits,
+    try_array3, verify_exact_rotation,
 };
 
 mod direct_f_affine_corridor;
@@ -486,6 +488,41 @@ fn exact_dot(
     })?;
     let first_two = meter.add_rational(&products[0], &products[1], STAGE)?;
     meter.add_rational(&first_two, &products[2], STAGE)
+}
+
+fn exact_cross_vector(
+    left: &ExactVector3,
+    right: &ExactVector3,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactVector3, CayleyError> {
+    let component = |positive_left: usize,
+                     positive_right: usize,
+                     negative_left: usize,
+                     negative_right: usize,
+                     meter: &mut WorkMeter<'_>| {
+        let positive = meter.multiply_rational(
+            &left.coordinates[positive_left],
+            &right.coordinates[positive_right],
+            STAGE,
+        )?;
+        let negative = meter.multiply_rational(
+            &left.coordinates[negative_left],
+            &right.coordinates[negative_right],
+            STAGE,
+        )?;
+        meter.subtract_rational(&positive, &negative, STAGE)
+    };
+    Ok(ExactVector3 {
+        coordinates: [
+            component(1, 2, 2, 1, meter)?,
+            component(2, 0, 0, 2, meter)?,
+            component(0, 1, 1, 0, meter)?,
+        ],
+    })
+}
+
+fn exact_vector_is_zero(vector: &ExactVector3) -> bool {
+    vector.coordinates.iter().all(Zero::is_zero)
 }
 
 /// Hard limits for a private one-hinge/two-triangle prerequisite issuer.
@@ -1365,6 +1402,599 @@ fn all_triangle_vertices_within_axis(
         all_inside &= lower != Ordering::Less && upper != Ordering::Greater;
     }
     Ok(all_inside)
+}
+
+/// Exact zero-thickness proof that one authenticated material-tree hinge is
+/// the complete intersection line of its two triangular incident faces.
+///
+/// `prepare_rational_cayley_tree_pose_v1` first reconstructs one watertight
+/// pose: both incident faces reuse the exact hinge vertices. For a
+/// non-parallel pair of non-degenerate triangle planes, their complete plane
+/// intersection is therefore that hinge line. Because the hinge is a full
+/// boundary edge of both triangles, their surface intersection is exactly the
+/// finite shared edge and cannot extend into either relative interior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1 {
+    boundary_contact_proven_pairs: Vec<(FaceId, FaceId)>,
+    area_overlap_proven_pairs: Vec<(FaceId, FaceId)>,
+}
+
+impl ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1 {
+    pub(crate) fn proves_boundary_contact_pair(&self, first: FaceId, second: FaceId) -> bool {
+        canonical_face_pair_is_present(&self.boundary_contact_proven_pairs, first, second)
+    }
+
+    pub(crate) fn proves_area_overlap_pair(&self, first: FaceId, second: FaceId) -> bool {
+        canonical_face_pair_is_present(&self.area_overlap_proven_pairs, first, second)
+    }
+
+    pub(crate) fn classified_pairs(&self) -> usize {
+        self.boundary_contact_proven_pairs
+            .len()
+            .saturating_add(self.area_overlap_proven_pairs.len())
+    }
+}
+
+fn canonical_face_pair_is_present(
+    proven_pairs: &[(FaceId, FaceId)],
+    first: FaceId,
+    second: FaceId,
+) -> bool {
+    let mut pair = [first, second];
+    pair.sort_unstable_by_key(FaceId::canonical_bytes);
+    if pair[0] == pair[1] {
+        return false;
+    }
+    proven_pairs
+        .binary_search_by(|candidate| {
+            candidate
+                .0
+                .canonical_bytes()
+                .cmp(&pair[0].canonical_bytes())
+                .then_with(|| {
+                    candidate
+                        .1
+                        .canonical_bytes()
+                        .cmp(&pair[1].canonical_bytes())
+                })
+        })
+        .is_ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1 {
+    ResourceLimitExceeded,
+    InconsistentPose,
+}
+
+pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
+    bound: BoundMaterialTreePose<'_>,
+    candidate_pairs: &[(FaceId, FaceId)],
+) -> Result<
+    ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1,
+    ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+> {
+    if candidate_pairs
+        .iter()
+        .any(|(first, second)| first.canonical_bytes() >= second.canonical_bytes())
+        || !candidate_pairs.windows(2).all(|pairs| {
+            pairs[0].0.canonical_bytes() < pairs[1].0.canonical_bytes()
+                || (pairs[0].0 == pairs[1].0
+                    && pairs[0].1.canonical_bytes() < pairs[1].1.canonical_bytes())
+        })
+    {
+        return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+    }
+    if candidate_pairs.is_empty() {
+        return Ok(ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1 {
+            boundary_contact_proven_pairs: Vec::new(),
+            area_overlap_proven_pairs: Vec::new(),
+        });
+    }
+    let exact = match prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default()) {
+        Ok(exact) => exact,
+        Err(CayleyError::ResourceLimitExceeded { .. }) => {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded);
+        }
+        Err(CayleyError::CertificateUnavailable { .. }) => {
+            return Ok(ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1 {
+                boundary_contact_proven_pairs: Vec::new(),
+                area_overlap_proven_pairs: Vec::new(),
+            });
+        }
+        Err(_) => {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+    };
+    if !exact.is_for(bound)
+        || exact.faces.len() != bound.model().face_ids().len()
+        || exact.hinges.len() != bound.model().hinges().len()
+    {
+        return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+    }
+
+    let arithmetic_limits = CayleyLimits::default();
+    let mut meter = WorkMeter::new(&arithmetic_limits);
+    let mut boundary_contact_proven_pairs = Vec::new();
+    boundary_contact_proven_pairs
+        .try_reserve_exact(candidate_pairs.len())
+        .map_err(|_| ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded)?;
+    let mut area_overlap_proven_pairs = Vec::new();
+    area_overlap_proven_pairs
+        .try_reserve_exact(candidate_pairs.len())
+        .map_err(|_| ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded)?;
+    for hinge in &exact.hinges {
+        let mut pair = [hinge.parent, hinge.child];
+        pair.sort_unstable_by_key(FaceId::canonical_bytes);
+        if pair[0] == pair[1] {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+        if candidate_pairs
+            .binary_search_by(|candidate| {
+                candidate
+                    .0
+                    .canonical_bytes()
+                    .cmp(&pair[0].canonical_bytes())
+                    .then_with(|| {
+                        candidate
+                            .1
+                            .canonical_bytes()
+                            .cmp(&pair[1].canonical_bytes())
+                    })
+            })
+            .is_err()
+        {
+            continue;
+        }
+        let first = exact
+            .faces
+            .iter()
+            .find(|face| face.face == hinge.parent)
+            .ok_or(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose)?;
+        let second = exact
+            .faces
+            .iter()
+            .find(|face| face.face == hinge.child)
+            .ok_or(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose)?;
+        if first.boundary.len() != 3 || second.boundary.len() != 3 {
+            continue;
+        }
+        if hinge.endpoint_vertices[0] == hinge.endpoint_vertices[1]
+            || canonical_point_eq(&hinge.world_endpoints[0], &hinge.world_endpoints[1])
+            || !exact_face_contains_hinge_endpoints(first, hinge)
+            || !exact_face_contains_hinge_endpoints(second, hinge)
+        {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+        let first_normal = exact_triangle_normal(first, &mut meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let second_normal = exact_triangle_normal(second, &mut meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if exact_vector_is_zero(&first_normal) || exact_vector_is_zero(&second_normal) {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+        let hinge_direction = exact_between(
+            &hinge.world_endpoints[0],
+            &hinge.world_endpoints[1],
+            &mut meter,
+        )
+        .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if exact_vector_is_zero(&hinge_direction)
+            || !exact_dot(&first_normal, &hinge_direction, &mut meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+                .is_zero()
+            || !exact_dot(&second_normal, &hinge_direction, &mut meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+                .is_zero()
+        {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+        let plane_intersection = exact_cross_vector(&first_normal, &second_normal, &mut meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if !exact_vector_is_zero(&plane_intersection) {
+            boundary_contact_proven_pairs.push((pair[0], pair[1]));
+            continue;
+        }
+
+        // Both non-degenerate triangles contain the same exact hinge line.
+        // In their now-proven common plane, the sign of the dot product
+        // between the two hinge-to-opposite-vertex side normals decides the
+        // complete coplanar case. Opposite sides intersect only on the shared
+        // boundary edge; the same side has a positive-area overlap in an open
+        // strip immediately adjacent to that edge.
+        let first_opposite = exact_triangle_opposite_hinge_vertex(first, hinge)?;
+        let second_opposite = exact_triangle_opposite_hinge_vertex(second, hinge)?;
+        let first_side = exact_cross_vector(
+            &hinge_direction,
+            &exact_between(&hinge.world_endpoints[0], first_opposite, &mut meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?,
+            &mut meter,
+        )
+        .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let second_side = exact_cross_vector(
+            &hinge_direction,
+            &exact_between(&hinge.world_endpoints[0], second_opposite, &mut meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?,
+            &mut meter,
+        )
+        .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if exact_vector_is_zero(&first_side) || exact_vector_is_zero(&second_side) {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+        let side_relation = exact_dot(&first_side, &second_side, &mut meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if side_relation.is_positive() {
+            area_overlap_proven_pairs.push((pair[0], pair[1]));
+        } else if side_relation.is_negative() {
+            boundary_contact_proven_pairs.push((pair[0], pair[1]));
+        } else {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+    }
+    let sort_pairs = |pairs: &mut Vec<(FaceId, FaceId)>| {
+        pairs.sort_unstable_by(|left, right| {
+            left.0
+                .canonical_bytes()
+                .cmp(&right.0.canonical_bytes())
+                .then_with(|| left.1.canonical_bytes().cmp(&right.1.canonical_bytes()))
+        });
+    };
+    sort_pairs(&mut boundary_contact_proven_pairs);
+    sort_pairs(&mut area_overlap_proven_pairs);
+    if boundary_contact_proven_pairs
+        .windows(2)
+        .any(|pairs| pairs[0] == pairs[1])
+        || area_overlap_proven_pairs
+            .windows(2)
+            .any(|pairs| pairs[0] == pairs[1])
+        || boundary_contact_proven_pairs
+            .iter()
+            .any(|pair| canonical_face_pair_is_present(&area_overlap_proven_pairs, pair.0, pair.1))
+        || boundary_contact_proven_pairs
+            .len()
+            .saturating_add(area_overlap_proven_pairs.len())
+            > candidate_pairs.len()
+    {
+        return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+    }
+    Ok(ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1 {
+        boundary_contact_proven_pairs,
+        area_overlap_proven_pairs,
+    })
+}
+
+fn exact_face_contains_hinge_endpoints(
+    face: &ExactFacePose,
+    hinge: &super::ExactHingePose,
+) -> bool {
+    hinge
+        .endpoint_vertices
+        .iter()
+        .zip(&hinge.world_endpoints)
+        .all(|(vertex, endpoint)| {
+            face.boundary.iter().any(|(candidate, point)| {
+                candidate == vertex && canonical_point_eq(point, endpoint)
+            })
+        })
+}
+
+fn exact_triangle_normal(
+    face: &ExactFacePose,
+    meter: &mut WorkMeter<'_>,
+) -> Result<ExactVector3, CayleyError> {
+    let first = exact_between(&face.boundary[0].1, &face.boundary[1].1, meter)?;
+    let second = exact_between(&face.boundary[0].1, &face.boundary[2].1, meter)?;
+    exact_cross_vector(&first, &second, meter)
+}
+
+fn exact_triangle_opposite_hinge_vertex<'a>(
+    face: &'a ExactFacePose,
+    hinge: &super::ExactHingePose,
+) -> Result<&'a ExactPoint3, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    let mut opposite = face.boundary.iter().filter(|(vertex, _)| {
+        *vertex != hinge.endpoint_vertices[0] && *vertex != hinge.endpoint_vertices[1]
+    });
+    let point = &opposite
+        .next()
+        .ok_or(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose)?
+        .1;
+    if opposite.next().is_some() {
+        return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+    }
+    Ok(point)
+}
+
+const fn map_zero_thickness_shared_hinge_boundary_error(
+    error: CayleyError,
+) -> ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1 {
+    match error {
+        CayleyError::ResourceLimitExceeded { .. } => {
+            ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded
+        }
+        _ => ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose,
+    }
+}
+
+/// Sanitized result of the strictly two-face/one-hinge positive-thickness
+/// diagnostic path.
+///
+/// This result is deliberately diagnostic-only. `Allowed` means the complete
+/// E/F solid intersection was explained by the authenticated finite hinge
+/// model; it does not issue a scene-safe certificate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedHingeSolidDiagnosticDispositionV1 {
+    Allowed,
+    Penetrating,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SharedHingeSolidDiagnosticSummaryV1 {
+    pub(crate) first_face: FaceId,
+    pub(crate) second_face: FaceId,
+    pub(crate) evidence: crate::IntersectionEvidenceV2,
+    pub(crate) policy_decision: crate::TopologyContactDecision,
+    pub(crate) disposition: SharedHingeSolidDiagnosticDispositionV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedHingeSolidDiagnosticErrorV1 {
+    ResourceLimitExceeded,
+    InconsistentPose,
+}
+
+/// Runs the complete private solid classifier and exports only its sanitized
+/// semantic cell. The gate is structurally limited to one positive-thickness
+/// pair formed by exactly two triangular faces and their only hinge.
+///
+/// A three-face V-fold therefore cannot route its vertex-sharing outer pair
+/// through this function. Unsupported geometry returns `Ok(None)` and remains
+/// an explicit indeterminate pair at the caller.
+pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1> {
+    use direct_f_corridor::{
+        DirectFFiniteHingeCorridorLimits, analyze_direct_f_finite_hinge_corridor_v1,
+    };
+    use ef_boundary::{AxisAlignedEfBoundaryLimits, analyze_axis_aligned_ef_boundary_v1};
+    use exact_e_corridor::{
+        ExactEFiniteHingeCorridorLimits, analyze_exact_e_finite_hinge_corridor_v1,
+    };
+    use shared_hinge_corridor_admission::{
+        SharedHingeCorridorAdmissionLimitsV1, analyze_shared_hinge_corridor_admission_v1,
+    };
+    use shared_hinge_solid_classification::{
+        SharedHingePositiveThicknessPairClassV1, SharedHingeSolidClassificationLimitsV1,
+        SharedHingeSolidClassificationResultV1, analyze_shared_hinge_solid_classification_v1,
+        revalidate_independent_shared_hinge_solid_classification_v1,
+        revalidate_shared_hinge_solid_classification_v1,
+    };
+    use shared_hinge_topology_margin::{
+        SharedHingeNativeExactTopologyMarginLimitsV1,
+        analyze_shared_hinge_native_exact_topology_margin_v1,
+    };
+
+    if !positive_finite_binary64(paper_thickness_mm)
+        || bound.model().face_ids().len() != 2
+        || bound.model().hinges().len() != 1
+        || bound.pose().face_ids().len() != 2
+        || bound.pose().hinges().len() != 1
+    {
+        return Ok(None);
+    }
+    let face_ids = bound.model().face_ids();
+    let mut face_pair = [face_ids[0], face_ids[1]];
+    face_pair.sort_unstable_by_key(FaceId::canonical_bytes);
+
+    let exact = match prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default()) {
+        Ok(exact) => exact,
+        Err(CayleyError::ResourceLimitExceeded { .. }) => {
+            return Err(SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded);
+        }
+        Err(CayleyError::InvariantFailure { .. } | CayleyError::BoundTreeInconsistent { .. }) => {
+            return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+        }
+        Err(_) => return Ok(None),
+    };
+    if exact.faces.len() == 2
+        && exact.faces.iter().all(|face| face.boundary.len() == 3)
+        && exact.hinges.len() == 1
+        && exact.hinges[0].angle_magnitude_bits == 90.0_f64.to_bits()
+    {
+        // At exactly 90 degrees the centered slabs meet the finite corridor
+        // boundary. Reversing the canonical hinge endpoint can change the
+        // last binary64 bit of direct-F while leaving the physical pose
+        // unchanged, so an `Allowed` result here would make identity labels
+        // observable in collision semantics. Freeze this exact boundary to
+        // the safe, order-independent hold used by the public matrix.
+        return Ok(Some(SharedHingeSolidDiagnosticSummaryV1 {
+            first_face: face_pair[0],
+            second_face: face_pair[1],
+            evidence: crate::IntersectionEvidenceV2::Indeterminate,
+            policy_decision: crate::TopologyContactDecision::Indeterminate,
+            disposition: SharedHingeSolidDiagnosticDispositionV1::Indeterminate,
+        }));
+    }
+    let prerequisite_analysis = analyze_single_triangular_hinge_prerequisites_v1(
+        &exact,
+        paper_thickness_mm,
+        SingleTriangularHingePrerequisiteLimits::default(),
+    )
+    .map_err(
+        |SingleTriangularHingePrerequisiteError::ResourceLimitExceeded| {
+            SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded
+        },
+    )?;
+    let prerequisite = match &prerequisite_analysis.result {
+        SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) => Some(prerequisite),
+        SingleTriangularHingePrerequisiteResult::LayerOffsetUnmodeled
+        | SingleTriangularHingePrerequisiteResult::Unresolved => None,
+    };
+    let ef_analysis = prerequisite
+        .map(|prerequisite| {
+            analyze_axis_aligned_ef_boundary_v1(
+                prerequisite,
+                &exact,
+                bound,
+                paper_thickness_mm,
+                AxisAlignedEfBoundaryLimits::default(),
+            )
+        })
+        .transpose()
+        .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    let ef = ef_analysis
+        .as_ref()
+        .and_then(|analysis| analysis.capability.as_ref());
+    let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
+        &prerequisite_analysis,
+        ef,
+        &exact,
+        bound,
+        paper_thickness_mm,
+        ExactEFiniteHingeCorridorLimits::default(),
+    )
+    .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
+        &prerequisite_analysis,
+        ef,
+        &exact_e_analysis,
+        &exact,
+        bound,
+        paper_thickness_mm,
+        DirectFFiniteHingeCorridorLimits::default(),
+    )
+    .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
+        &prerequisite_analysis,
+        ef,
+        &exact_e_analysis,
+        &direct_f_analysis,
+        &exact,
+        bound,
+        paper_thickness_mm,
+        SharedHingeCorridorAdmissionLimitsV1::default(),
+    )
+    .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
+        &prerequisite_analysis,
+        ef,
+        &exact,
+        bound,
+        paper_thickness_mm,
+        SharedHingeNativeExactTopologyMarginLimitsV1::default(),
+    )
+    .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    let classification = analyze_shared_hinge_solid_classification_v1(
+        &prerequisite_analysis,
+        ef,
+        &exact_e_analysis,
+        &direct_f_analysis,
+        &admission_analysis,
+        &margin_analysis,
+        &exact,
+        bound,
+        paper_thickness_mm,
+        SharedHingeSolidClassificationLimitsV1::default(),
+    )
+    .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+
+    let contract = match &classification.result {
+        SharedHingeSolidClassificationResultV1::Classified(record) => {
+            let (Some(prerequisite), Some(ef), Some((exact_e, _)), Some((direct_f, _))) = (
+                prerequisite,
+                ef,
+                exact_e_analysis.authenticated_contained_capability_and_work(),
+                direct_f_analysis.authenticated_contained_capability_and_work(),
+            ) else {
+                return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+            };
+            let admission = admission_analysis
+                .authenticated_admission_capability_and_work()
+                .map(|(capability, _)| capability);
+            let margin = margin_analysis
+                .authenticated_capability_and_work()
+                .map(|(capability, _)| capability);
+            revalidate_shared_hinge_solid_classification_v1(
+                record,
+                prerequisite,
+                ef,
+                exact_e,
+                direct_f,
+                admission,
+                None,
+                &exact,
+                bound,
+                paper_thickness_mm,
+            )
+            .or_else(|| {
+                revalidate_shared_hinge_solid_classification_v1(
+                    record,
+                    prerequisite,
+                    ef,
+                    exact_e,
+                    direct_f,
+                    None,
+                    margin,
+                    &exact,
+                    bound,
+                    paper_thickness_mm,
+                )
+            })
+            .map(|revalidated| revalidated.diagnostic_contract())
+            .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?
+        }
+        SharedHingeSolidClassificationResultV1::IndependentlyClassified(record) => {
+            let (Some(prerequisite), Some(ef), Some((margin, _))) = (
+                prerequisite,
+                ef,
+                margin_analysis.authenticated_capability_and_work(),
+            ) else {
+                return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+            };
+            revalidate_independent_shared_hinge_solid_classification_v1(
+                record,
+                prerequisite,
+                ef,
+                margin,
+                &exact,
+                bound,
+                paper_thickness_mm,
+            )
+            .map(|revalidated| revalidated.diagnostic_contract())
+            .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?
+        }
+        SharedHingeSolidClassificationResultV1::EvidenceUnavailable(_) => {
+            return Ok(Some(SharedHingeSolidDiagnosticSummaryV1 {
+                first_face: face_pair[0],
+                second_face: face_pair[1],
+                evidence: crate::IntersectionEvidenceV2::Indeterminate,
+                policy_decision: crate::TopologyContactDecision::Indeterminate,
+                disposition: SharedHingeSolidDiagnosticDispositionV1::Indeterminate,
+            }));
+        }
+    };
+    let (class, evidence, policy_decision) = contract;
+    let disposition = match class {
+        SharedHingePositiveThicknessPairClassV1::SharedFeatureOnlyContact
+        | SharedHingePositiveThicknessPairClassV1::AllowedFiniteCorridorOverlap
+        | SharedHingePositiveThicknessPairClassV1::AllowedBoundaryContact => {
+            SharedHingeSolidDiagnosticDispositionV1::Allowed
+        }
+        SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection => {
+            SharedHingeSolidDiagnosticDispositionV1::Penetrating
+        }
+        SharedHingePositiveThicknessPairClassV1::EvidenceUnavailable => {
+            SharedHingeSolidDiagnosticDispositionV1::Indeterminate
+        }
+    };
+    Ok(Some(SharedHingeSolidDiagnosticSummaryV1 {
+        first_face: face_pair[0],
+        second_face: face_pair[1],
+        evidence,
+        policy_decision,
+        disposition,
+    }))
 }
 
 #[cfg(test)]

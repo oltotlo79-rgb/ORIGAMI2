@@ -41,7 +41,10 @@ pub use flat_endpoint_layer_order::{
 };
 pub use static_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-    NativeStaticCollisionGeometryProof, StaticCollisionError, StaticCollisionLimits,
+    NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1, NativeStaticCollisionGeometryProof,
+    StaticCollisionDiagnosticSnapshot, StaticCollisionError, StaticCollisionLimits,
+    StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
+    classify_static_collision_pair_disposition, diagnose_static_collision_geometry,
     prove_static_collision_geometry,
 };
 

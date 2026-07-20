@@ -1020,6 +1020,11 @@ html[data-theme='dark'] .svg-import-loss-badge {
   gap: 4px;
   pointer-events: none;
 }
+.fold-preview-native-collision-group {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
 .fold-preview-collision,
 .fold-preview-native-collision,
 .fold-preview-motion,
@@ -1083,6 +1088,71 @@ html[data-theme='dark'] .svg-import-loss-badge {
 .fold-preview-native-collision-retry:focus-visible {
   outline: 2px solid #0b65a5;
   outline-offset: 1px;
+}
+.fold-preview-native-collision-pairs {
+  min-width: 0;
+  max-height: min(34vh, 190px);
+  overflow: auto;
+  padding: 4px 6px;
+  border: 1px solid rgb(82 97 109 / 38%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 94%);
+  color: #3f4d57;
+  font-size: 9px;
+  line-height: 1.4;
+  pointer-events: auto;
+}
+.fold-preview-native-collision-pairs.has-blocking-pair {
+  border-color: rgb(179 65 65 / 72%);
+  background: rgb(255 239 239 / 96%);
+  box-shadow: 0 0 0 1px rgb(179 65 65 / 16%);
+}
+.fold-preview-native-collision-pair-counts {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.fold-preview-native-collision-pair-omission {
+  margin-top: 3px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgb(255 244 218 / 96%);
+  color: #7d4d14;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.fold-preview-native-collision-pair-list {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.fold-preview-native-collision-pair {
+  padding: 2px 4px;
+  border-inline-start: 3px solid rgb(82 97 109 / 42%);
+  border-radius: 3px;
+  background: rgb(247 249 250 / 92%);
+  overflow-wrap: anywhere;
+}
+.fold-preview-native-collision-pair.is-touching {
+  border-inline-start-color: #bd6428;
+  background: rgb(255 247 238 / 96%);
+  color: #88441c;
+}
+.fold-preview-native-collision-pair.is-penetrating,
+.fold-preview-native-collision-pair.is-indeterminate {
+  border-inline-start-color: #b34141;
+  background: rgb(255 224 224 / 98%);
+  color: #912929;
+  font-weight: 750;
+}
+.fold-preview-native-collision-pair.is-allowed {
+  border-inline-start-color: #1671b8;
+  color: #165f99;
+}
+.fold-preview-native-collision-pair.is-separated {
+  border-inline-start-color: #287249;
+  color: #287249;
 }
 .fold-preview-motion-detail {
   position: absolute;

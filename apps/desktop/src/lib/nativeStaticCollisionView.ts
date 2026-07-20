@@ -20,12 +20,70 @@ export type CurrentStaticCollisionFacePair = Readonly<{
   secondFaceId: string
 }>
 
+export type CurrentStaticCollisionTopology =
+  | 'no_shared_feature'
+  | 'shared_vertex'
+  | 'shared_hinge_edge'
+
+export type CurrentStaticCollisionEvidence =
+  | 'separated'
+  | 'point_contact'
+  | 'boundary_line_contact'
+  | 'boundary_area_contact'
+  | 'shared_feature_contact'
+  | 'shared_feature_thickness_overlap'
+  | 'shared_feature_flat_stack'
+  | 'coplanar_area_overlap'
+  | 'transversal_crossing'
+  | 'positive_volume_overlap'
+  | 'indeterminate'
+
+export type CurrentStaticCollisionPolicyDecision =
+  | 'separated'
+  | 'touching'
+  | 'allowed_shared_vertex_contact'
+  | 'requires_hinge_model'
+  | 'penetrating'
+  | 'indeterminate'
+
+export type CurrentStaticCollisionPairDisposition =
+  | 'separated'
+  | 'touching'
+  | 'allowed'
+  | 'penetrating'
+  | 'indeterminate'
+
+export type CurrentStaticCollisionPairClassificationCounts = Readonly<{
+  separated: number
+  touching: number
+  allowed: number
+  penetrating: number
+  indeterminate: number
+  candidateExcluded: number
+}>
+
+export type CurrentStaticCollisionPairDiagnostic =
+  CurrentStaticCollisionFacePair & Readonly<{
+    topology: CurrentStaticCollisionTopology
+    evidence: CurrentStaticCollisionEvidence
+    policyDecision: CurrentStaticCollisionPolicyDecision
+    disposition: CurrentStaticCollisionPairDisposition
+    strictTransversalDualGateProven: boolean
+    wholeFaceOverlapProven: boolean
+    sharedHingeBoundaryContactProven: boolean
+    sharedHingeSolidClassified: boolean
+  }>
+
 export type CurrentStaticCollisionDiagnostic = Readonly<{
   status: 'certified_nonblocking' | 'blocking' | 'unavailable'
   reason: CurrentStaticCollisionDiagnosticReason | null
   expectedUnorderedFacePairs: number | null
   provenPenetratingPairs: number | null
   firstProvenPenetratingPair: CurrentStaticCollisionFacePair | null
+  pairClassificationCounts:
+    | CurrentStaticCollisionPairClassificationCounts
+    | null
+  pairDiagnostics: readonly CurrentStaticCollisionPairDiagnostic[] | null
 }>
 
 export type NativeStaticCollisionViewState =
@@ -62,6 +120,30 @@ export type NativeStaticCollisionPresentation = Readonly<{
   accessibleText: string
   requiresSafetyReview: boolean
 }>
+
+export type NativeStaticCollisionPairPresentation = Readonly<{
+  key: string
+  firstFaceId: string
+  secondFaceId: string
+  disposition: CurrentStaticCollisionPairDisposition
+  risk: 'informational' | 'warning' | 'blocking'
+  rowClass: string
+  text: string
+  accessibleText: string
+}>
+
+export type NativeStaticCollisionPairDetailsPresentation = Readonly<{
+  countsText: string
+  accessibleCountsText: string
+  pairs: readonly NativeStaticCollisionPairPresentation[]
+  hasBlockingPair: boolean
+  totalPairCount: number
+  displayedPairCount: number
+  omittedPairCount: number
+  omittedText: string | null
+}>
+
+const MAX_RENDERED_STATIC_COLLISION_PAIRS = 200
 
 /**
  * Selects the view synchronously during render. A result bound to any other
@@ -250,6 +332,112 @@ export function presentNativeStaticCollision(
   )
 }
 
+/**
+ * Formats the complete native pair snapshot without dropping safe, touching,
+ * or unresolved rows. `indeterminate` deliberately shares the blocking risk
+ * level used for proven penetration so an undecided pair cannot disappear
+ * behind an aggregate badge.
+ */
+export function presentNativeStaticCollisionPairDiagnostics(
+  diagnostic: CurrentStaticCollisionDiagnostic,
+  locale: Locale = DEFAULT_LOCALE,
+): NativeStaticCollisionPairDetailsPresentation | null {
+  // Treat direct callers that bypass the strict native parser fail-closed.
+  const counts = diagnostic.pairClassificationCounts ?? null
+  const pairs = diagnostic.pairDiagnostics ?? null
+  if (
+    counts === null
+    || pairs === null
+    || !validPairClassificationCounts(counts, pairs)
+  ) return null
+
+  const blockingPairs = pairs.filter((pair) => (
+    pair.disposition === 'penetrating'
+    || pair.disposition === 'indeterminate'
+  ))
+  const nonblockingPairs = pairs.filter((pair) => (
+    pair.disposition !== 'penetrating'
+    && pair.disposition !== 'indeterminate'
+  ))
+  const displayedPairs = blockingPairs
+    .slice(0, MAX_RENDERED_STATIC_COLLISION_PAIRS)
+  const remainingCapacity =
+    MAX_RENDERED_STATIC_COLLISION_PAIRS - displayedPairs.length
+  if (remainingCapacity > 0) {
+    displayedPairs.push(...nonblockingPairs.slice(0, remainingCapacity))
+  }
+  const omittedPairCount = pairs.length - displayedPairs.length
+  const localizedCounts = locale === 'ja'
+    ? `面ペア ${pairs.length}件: 分離 ${counts.separated} / 接触 ${counts.touching} / 許容 ${counts.allowed} / 貫通 ${counts.penetrating} / 判定保留 ${counts.indeterminate}`
+    : `Face pairs ${pairs.length}: separated ${counts.separated} / touching ${counts.touching} / allowed ${counts.allowed} / penetrating ${counts.penetrating} / indeterminate ${counts.indeterminate}`
+  const omittedText = omittedPairCount === 0
+    ? null
+    : locale === 'ja'
+      ? `全${pairs.length}件中${displayedPairs.length}件を表示し、${omittedPairCount}件を省略しています。貫通・判定保留を優先表示しています。`
+      : `Showing ${displayedPairs.length} of ${pairs.length} pairs; ${omittedPairCount} omitted. Penetrating and indeterminate pairs are prioritized.`
+  const rows = displayedPairs.map((pair, index) => {
+    const risk = pair.disposition === 'penetrating'
+      || pair.disposition === 'indeterminate'
+      ? 'blocking'
+      : pair.disposition === 'touching'
+        ? 'warning'
+        : 'informational'
+    const disposition = pairDispositionLabel(pair.disposition, locale)
+    const topology = pairTopologyLabel(pair.topology, locale)
+    const evidence = pairEvidenceLabel(pair.evidence, locale)
+    const policy = pairPolicyLabel(pair.policyDecision, locale)
+    const proofMarkers = [
+      pair.strictTransversalDualGateProven
+        ? locale === 'ja' ? '横断交差の二重証明' : 'dual-gate transversal proof'
+        : null,
+      pair.wholeFaceOverlapProven
+        ? locale === 'ja' ? '面全体の重なり証明' : 'whole-face overlap proof'
+        : null,
+      pair.sharedHingeBoundaryContactProven
+        ? locale === 'ja'
+          ? '共有ヒンジ境界限定接触の証明'
+          : 'shared-hinge boundary-only contact proof'
+        : null,
+      pair.sharedHingeSolidClassified
+        ? locale === 'ja' ? '共有ヒンジ実体分類' : 'shared-hinge solid classification'
+        : null,
+    ].filter((marker): marker is string => marker !== null)
+    const markerText = proofMarkers.length === 0
+      ? ''
+      : locale === 'ja'
+        ? ` / 根拠: ${proofMarkers.join('・')}`
+        : ` / basis: ${proofMarkers.join(', ')}`
+    const pairText = `${pair.firstFaceId} ↔ ${pair.secondFaceId}`
+    return Object.freeze({
+      key: `${pair.firstFaceId}:${pair.secondFaceId}`,
+      firstFaceId: pair.firstFaceId,
+      secondFaceId: pair.secondFaceId,
+      disposition: pair.disposition,
+      risk,
+      rowClass: `is-${pair.disposition.replace('_', '-')}`,
+      text: locale === 'ja'
+        ? `${index + 1}. ${disposition} — ${pairText} — ${topology} / ${evidence} / 方針 ${policy}${markerText}`
+        : `${index + 1}. ${disposition} — ${pairText} — ${topology} / ${evidence} / policy ${policy}${markerText}`,
+      accessibleText: locale === 'ja'
+        ? `面ペア ${index + 1}、${pair.firstFaceId} と ${pair.secondFaceId}。分類 ${disposition}。位相 ${topology}。幾何根拠 ${evidence}。方針判定 ${policy}${markerText}。`
+        : `Face pair ${index + 1}, ${pair.firstFaceId} and ${pair.secondFaceId}. Classification ${disposition}. Topology ${topology}. Geometric evidence ${evidence}. Policy decision ${policy}${markerText}.`,
+    })
+  })
+  return Object.freeze({
+    countsText: localizedCounts,
+    accessibleCountsText: locale === 'ja'
+      ? `${localizedCounts}。判定保留は貫通と同じく安全確認を遮断します。${omittedText ?? '全ペアを表示しています。'}`
+      : `${localizedCounts}. Indeterminate pairs block safety confirmation with the same prominence as penetration. ${omittedText ?? 'All pairs are displayed.'}`,
+    pairs: Object.freeze(rows),
+    hasBlockingPair:
+      counts.penetrating > 0 || counts.indeterminate > 0,
+    totalPairCount: pairs.length,
+    displayedPairCount: displayedPairs.length,
+    omittedPairCount,
+    omittedText,
+  })
+}
+
 function localizedWithSafetyReview(
   locale: Locale,
   prefix: LocalizedText,
@@ -278,6 +466,135 @@ function unavailablePresentation(
 
 function validCount(value: number | null): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+function validPairClassificationCounts(
+  counts: CurrentStaticCollisionPairClassificationCounts,
+  pairs: readonly CurrentStaticCollisionPairDiagnostic[],
+): boolean {
+  const values = [
+    counts.separated,
+    counts.touching,
+    counts.allowed,
+    counts.penetrating,
+    counts.indeterminate,
+    counts.candidateExcluded,
+  ]
+  if (
+    counts.candidateExcluded !== 0
+    || values.some((value) => !validCount(value))
+  ) return false
+  const sum = values.reduce((total, value) => total + value, 0)
+  if (!Number.isSafeInteger(sum) || sum !== pairs.length) return false
+  const actual = {
+    separated: 0,
+    touching: 0,
+    allowed: 0,
+    penetrating: 0,
+    indeterminate: 0,
+  }
+  for (const pair of pairs) actual[pair.disposition] += 1
+  return actual.separated === counts.separated
+    && actual.touching === counts.touching
+    && actual.allowed === counts.allowed
+    && actual.penetrating === counts.penetrating
+    && actual.indeterminate === counts.indeterminate
+}
+
+function pairDispositionLabel(
+  disposition: CurrentStaticCollisionPairDisposition,
+  locale: Locale,
+): string {
+  const labels = locale === 'ja'
+    ? {
+      separated: '分離',
+      touching: '接触',
+      allowed: '許容',
+      penetrating: '貫通',
+      indeterminate: '判定保留',
+    }
+    : {
+      separated: 'separated',
+      touching: 'touching',
+      allowed: 'allowed',
+      penetrating: 'penetrating',
+      indeterminate: 'indeterminate',
+    }
+  return labels[disposition]
+}
+
+function pairTopologyLabel(
+  topology: CurrentStaticCollisionTopology,
+  locale: Locale,
+): string {
+  const labels = locale === 'ja'
+    ? {
+      no_shared_feature: '共有要素なし',
+      shared_vertex: '頂点共有',
+      shared_hinge_edge: 'ヒンジ辺共有',
+    }
+    : {
+      no_shared_feature: 'no shared feature',
+      shared_vertex: 'shared vertex',
+      shared_hinge_edge: 'shared hinge edge',
+    }
+  return labels[topology]
+}
+
+function pairEvidenceLabel(
+  evidence: CurrentStaticCollisionEvidence,
+  locale: Locale,
+): string {
+  const ja = {
+    separated: '離間',
+    point_contact: '点接触',
+    boundary_line_contact: '線接触',
+    boundary_area_contact: '境界面接触',
+    shared_feature_contact: '共有要素上の接触',
+    shared_feature_thickness_overlap: '共有要素の厚み重なり',
+    shared_feature_flat_stack: '共有要素の平坦積層',
+    coplanar_area_overlap: '同一平面の面積重なり',
+    transversal_crossing: '横断交差',
+    positive_volume_overlap: '正体積重なり',
+    indeterminate: '幾何判定保留',
+  } satisfies Record<CurrentStaticCollisionEvidence, string>
+  const en = {
+    separated: 'separated',
+    point_contact: 'point contact',
+    boundary_line_contact: 'boundary line contact',
+    boundary_area_contact: 'boundary area contact',
+    shared_feature_contact: 'shared-feature contact',
+    shared_feature_thickness_overlap: 'shared-feature thickness overlap',
+    shared_feature_flat_stack: 'shared-feature flat stack',
+    coplanar_area_overlap: 'coplanar area overlap',
+    transversal_crossing: 'transversal crossing',
+    positive_volume_overlap: 'positive-volume overlap',
+    indeterminate: 'geometric evidence indeterminate',
+  } satisfies Record<CurrentStaticCollisionEvidence, string>
+  return (locale === 'ja' ? ja : en)[evidence]
+}
+
+function pairPolicyLabel(
+  policy: CurrentStaticCollisionPolicyDecision,
+  locale: Locale,
+): string {
+  const ja = {
+    separated: '分離',
+    touching: '接触',
+    allowed_shared_vertex_contact: '共有頂点接触を許容',
+    requires_hinge_model: 'ヒンジモデル必須',
+    penetrating: '貫通',
+    indeterminate: '判定保留',
+  } satisfies Record<CurrentStaticCollisionPolicyDecision, string>
+  const en = {
+    separated: 'separated',
+    touching: 'touching',
+    allowed_shared_vertex_contact: 'allowed shared-vertex contact',
+    requires_hinge_model: 'hinge model required',
+    penetrating: 'penetrating',
+    indeterminate: 'indeterminate',
+  } satisfies Record<CurrentStaticCollisionPolicyDecision, string>
+  return (locale === 'ja' ? ja : en)[policy]
 }
 
 function validPositiveThicknessPenetration(

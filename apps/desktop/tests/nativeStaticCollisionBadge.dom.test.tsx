@@ -6,6 +6,7 @@ import {
   PoseBoundNativeStaticCollisionBadge,
 } from '../src/components/NativeStaticCollisionBadge'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose'
+import type { CurrentStaticCollisionPairDiagnostic } from '../src/lib/nativeStaticCollisionView.ts'
 import { localeFixture } from './localeTestFixture.ts'
 
 afterEach(cleanup)
@@ -265,6 +266,67 @@ describe('NativeStaticCollisionBadge', () => {
     assert.equal(screen.queryByRole('alert'), null)
   })
 
+  it('renders bounded pair details with blocking rows first and explicit omissions', () => {
+    const pairs = Array.from(
+      { length: 205 },
+      (_, index): CurrentStaticCollisionPairDiagnostic => {
+        const disposition = index >= 203 ? 'indeterminate' : 'separated'
+        return pairDiagnostic(index + 2, disposition)
+      },
+    )
+    const { container } = render(
+      <NativeStaticCollisionBadge
+        localeStore={localeFixture('en')}
+        state={{
+          kind: 'ready',
+          diagnostic: {
+            status: 'blocking',
+            reason: 'evidence_unavailable',
+            expectedUnorderedFacePairs: 205,
+            provenPenetratingPairs: null,
+            firstProvenPenetratingPair: null,
+            pairClassificationCounts: {
+              separated: 203,
+              touching: 0,
+              allowed: 0,
+              penetrating: 0,
+              indeterminate: 2,
+              candidateExcluded: 0,
+            },
+            pairDiagnostics: pairs,
+          },
+        }}
+      />,
+    )
+
+    const details = screen.getByRole('region', {
+      name: 'Collision classification for each face pair',
+    })
+    assert.equal(
+      details.getAttribute('data-native-collision-pair-risk'),
+      'blocking',
+    )
+    assert.match(details.textContent ?? '', /indeterminate 2/u)
+    assert.match(
+      details.textContent ?? '',
+      /Showing 200 of 205 pairs; 5 omitted/u,
+    )
+    const rows = container.querySelectorAll(
+      '[data-native-collision-pair-disposition]',
+    )
+    assert.equal(rows.length, 200)
+    assert.equal(
+      rows[0]?.getAttribute('data-native-collision-pair-disposition'),
+      'indeterminate',
+    )
+    assert.equal(rows[0]?.getAttribute('data-collision-risk'), 'blocking')
+    assert.equal(
+      rows[1]?.getAttribute('data-native-collision-pair-disposition'),
+      'indeterminate',
+    )
+    assert.equal(rows[1]?.getAttribute('data-collision-risk'), 'blocking')
+  })
+
   it('offers a keyboard-accessible explicit retry after an execution failure', () => {
     let retries = 0
     const { rerender } = render(
@@ -357,6 +419,15 @@ function certified() {
       expectedUnorderedFacePairs: 0,
       provenPenetratingPairs: 0,
       firstProvenPenetratingPair: null,
+      pairClassificationCounts: {
+        separated: 0,
+        touching: 0,
+        allowed: 0,
+        penetrating: 0,
+        indeterminate: 0,
+        candidateExcluded: 0,
+      },
+      pairDiagnostics: [],
     },
   } as const
 }
@@ -372,4 +443,35 @@ function pose(
     hingeAngles: [{ edgeId: 'hinge', angleDegrees }],
     state,
   }
+}
+
+function pairDiagnostic(
+  secondFaceNumber: number,
+  disposition: 'separated' | 'indeterminate',
+): CurrentStaticCollisionPairDiagnostic {
+  const common = {
+    firstFaceId: '00000000-0000-4000-8000-000000000001',
+    secondFaceId:
+      `00000000-0000-4000-8000-${String(secondFaceNumber).padStart(12, '0')}`,
+    strictTransversalDualGateProven: false,
+    wholeFaceOverlapProven: false,
+    sharedHingeBoundaryContactProven: false,
+  } as const
+  return disposition === 'separated'
+    ? {
+      ...common,
+      topology: 'no_shared_feature',
+      evidence: 'separated',
+      policyDecision: 'separated',
+      disposition,
+      sharedHingeSolidClassified: false,
+    }
+    : {
+      ...common,
+      topology: 'shared_hinge_edge',
+      evidence: 'indeterminate',
+      policyDecision: 'indeterminate',
+      disposition,
+      sharedHingeSolidClassified: true,
+    }
 }

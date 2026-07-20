@@ -2145,6 +2145,7 @@ struct AuthenticatedTrianglePair {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PairDispatch {
+    topology: TopologyRelation,
     evidence: IntersectionEvidenceV2,
     decision: TopologyContactDecision,
     expected_triangle_pairs: usize,
@@ -2152,6 +2153,10 @@ pub(super) struct PairDispatch {
 }
 
 impl PairDispatch {
+    pub(super) const fn topology(&self) -> TopologyRelation {
+        self.topology
+    }
+
     pub(super) const fn evidence(&self) -> IntersectionEvidenceV2 {
         self.evidence
     }
@@ -2894,6 +2899,7 @@ fn aggregate_authenticated_face_pair_metered(
         }
     };
     Ok(PairDispatch {
+        topology: topology.relation(),
         evidence,
         decision: classify_runtime_topology_contact_v2(topology.relation(), evidence),
         expected_triangle_pairs: expected,
@@ -3055,6 +3061,7 @@ fn dispatch_authenticated_zero_thickness_pair(pair: &AuthenticatedTrianglePair) 
     let topology = pair.topology.relation();
     if matches!(topology, TopologyRelation::SameFace) {
         return PairDispatch {
+            topology,
             evidence: IntersectionEvidenceV2::Indeterminate,
             decision: TopologyContactDecision::Indeterminate,
             expected_triangle_pairs: 1,
@@ -3067,6 +3074,7 @@ fn dispatch_authenticated_zero_thickness_pair(pair: &AuthenticatedTrianglePair) 
     let intersection = classify_triangle_intersection(&first, &second);
     let evidence = evidence_for_authenticated_topology(intersection, &pair.topology);
     PairDispatch {
+        topology,
         evidence,
         decision: classify_runtime_topology_contact_v2(topology, evidence),
         expected_triangle_pairs: 1,
@@ -4337,7 +4345,16 @@ mod tests {
         evidence: IntersectionEvidenceV2,
         decision: TopologyContactDecision,
     ) -> PairDispatch {
+        single_dispatch_for(TopologyRelation::NoSharedFeature, evidence, decision)
+    }
+
+    const fn single_dispatch_for(
+        topology: TopologyRelation,
+        evidence: IntersectionEvidenceV2,
+        decision: TopologyContactDecision,
+    ) -> PairDispatch {
         PairDispatch {
+            topology,
             evidence,
             decision,
             expected_triangle_pairs: 1,
@@ -5615,6 +5632,7 @@ mod tests {
                     AuthenticatedTopology::SharedHingePoseMismatch,
                 ] {
                     let expected = PairDispatch {
+                        topology: topology.relation(),
                         evidence: IntersectionEvidenceV2::Indeterminate,
                         decision: TopologyContactDecision::Indeterminate,
                         expected_triangle_pairs: 4,
@@ -5838,7 +5856,7 @@ mod tests {
                 TopologyContactDecision::Indeterminate,
             ),
         ] {
-            let expected = single_dispatch(evidence, decision);
+            let expected = single_dispatch_for(topology.relation(), evidence, decision);
             let forward =
                 aggregate_authenticated_face_pair(&first, second, topology, 1, usize::MAX, 1)
                     .expect("complete forward shared-topology witness");
@@ -5889,7 +5907,8 @@ mod tests {
                         &[[0, 1, 2]],
                         [second_normal_x, 1.0, 0.0],
                     );
-                    let expected = single_dispatch(evidence, decision);
+                    let expected =
+                        single_dispatch_for(TopologyRelation::SharedVertex, evidence, decision);
                     assert_eq!(
                         aggregate_authenticated_face_pair(
                             &first,
@@ -6081,6 +6100,7 @@ mod tests {
         );
 
         let expected = PairDispatch {
+            topology: TopologyRelation::NoSharedFeature,
             evidence: IntersectionEvidenceV2::TransversalCrossing,
             decision: TopologyContactDecision::Penetrating,
             expected_triangle_pairs: 4,
@@ -6328,7 +6348,8 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&point_pair),
-            single_dispatch(
+            single_dispatch_for(
+                TopologyRelation::SharedVertex,
                 IntersectionEvidenceV2::SharedFeatureContact,
                 TopologyContactDecision::AllowedSharedVertexContact,
             )
@@ -6345,7 +6366,8 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&hinge_pair),
-            single_dispatch(
+            single_dispatch_for(
+                TopologyRelation::SharedHingeEdge,
                 IntersectionEvidenceV2::SharedFeatureContact,
                 TopologyContactDecision::RequiresHingeModel,
             )
@@ -6365,7 +6387,8 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&wrong_vertex),
-            single_dispatch(
+            single_dispatch_for(
+                TopologyRelation::SharedVertex,
                 IntersectionEvidenceV2::PointContact,
                 TopologyContactDecision::Touching,
             )
@@ -6382,7 +6405,8 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&partial_hinge),
-            single_dispatch(
+            single_dispatch_for(
+                TopologyRelation::SharedHingeEdge,
                 IntersectionEvidenceV2::BoundaryLineContact,
                 TopologyContactDecision::Indeterminate,
             )
@@ -6397,7 +6421,8 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&area_overlap),
-            single_dispatch(
+            single_dispatch_for(
+                TopologyRelation::SharedVertex,
                 IntersectionEvidenceV2::CoplanarAreaOverlap,
                 TopologyContactDecision::Penetrating,
             )
@@ -6414,7 +6439,8 @@ mod tests {
         };
         assert_eq!(
             dispatch_authenticated_zero_thickness_pair(&same_face),
-            single_dispatch(
+            single_dispatch_for(
+                TopologyRelation::SameFace,
                 IntersectionEvidenceV2::Indeterminate,
                 TopologyContactDecision::Indeterminate,
             )

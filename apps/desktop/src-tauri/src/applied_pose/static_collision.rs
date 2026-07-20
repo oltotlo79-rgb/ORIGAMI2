@@ -13,8 +13,10 @@ use std::{
 
 use ori_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-    NativeStaticCollisionGeometryProof, StaticCollisionError, StaticCollisionLimits,
-    TOPOLOGY_CONTACT_POLICY_V2, prove_static_collision_geometry,
+    NativeStaticCollisionGeometryProof, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
+    StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
+    TOPOLOGY_CONTACT_POLICY_V2, diagnose_static_collision_geometry,
+    prove_static_collision_geometry,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::{
@@ -88,10 +90,11 @@ pub(super) enum CurrentStaticCollisionDiagnosticReason {
 
 /// Canonically ordered identity of the first proven penetrating face pair.
 ///
-/// For positive paper thickness this is only an issuer-bound exact-E and
-/// direct-lift-F mid-surface transversal. For zero thickness it may also be a
-/// coplanar positive-area overlap. It is never point/line/shared-point
-/// contact.
+/// For positive paper thickness this is either an issuer-bound exact-E and
+/// direct-lift-F mid-surface transversal or a complete connected solid
+/// classifier's positive-volume overlap. For zero thickness it may also be a
+/// coplanar positive-area overlap. Pair diagnostics retain the route. It is
+/// never point/line/shared-point contact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CurrentStaticCollisionFacePair {
@@ -99,8 +102,64 @@ pub(super) struct CurrentStaticCollisionFacePair {
     second_face_id: FaceId,
 }
 
-/// Sanitized static-collision diagnosis for the current native pose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CurrentStaticCollisionPairClassificationCounts {
+    separated: usize,
+    touching: usize,
+    allowed: usize,
+    penetrating: usize,
+    indeterminate: usize,
+    candidate_excluded: usize,
+}
+
+impl From<&StaticCollisionDiagnosticSnapshot> for CurrentStaticCollisionPairClassificationCounts {
+    fn from(snapshot: &StaticCollisionDiagnosticSnapshot) -> Self {
+        Self {
+            separated: snapshot.separated_pairs(),
+            touching: snapshot.touching_pairs(),
+            allowed: snapshot.allowed_pairs(),
+            penetrating: snapshot.penetrating_pairs(),
+            indeterminate: snapshot.indeterminate_pairs(),
+            candidate_excluded: snapshot.candidate_excluded_pairs(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CurrentStaticCollisionPairDiagnostic {
+    first_face_id: FaceId,
+    second_face_id: FaceId,
+    topology: &'static str,
+    evidence: &'static str,
+    policy_decision: &'static str,
+    disposition: &'static str,
+    strict_transversal_dual_gate_proven: bool,
+    whole_face_overlap_proven: bool,
+    shared_hinge_boundary_contact_proven: bool,
+    shared_hinge_solid_classified: bool,
+}
+
+impl From<&StaticCollisionPairDiagnostic> for CurrentStaticCollisionPairDiagnostic {
+    fn from(pair: &StaticCollisionPairDiagnostic) -> Self {
+        Self {
+            first_face_id: pair.first_face(),
+            second_face_id: pair.second_face(),
+            topology: pair.topology().identifier(),
+            evidence: pair.evidence().identifier(),
+            policy_decision: pair.policy_decision().identifier(),
+            disposition: pair.disposition().identifier(),
+            strict_transversal_dual_gate_proven: pair.strict_transversal_dual_gate_proven(),
+            whole_face_overlap_proven: pair.whole_face_overlap_proven(),
+            shared_hinge_boundary_contact_proven: pair.shared_hinge_boundary_contact_proven(),
+            shared_hinge_solid_classified: pair.shared_hinge_solid_classified(),
+        }
+    }
+}
+
+/// Sanitized static-collision diagnosis for the current native pose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CurrentStaticCollisionDiagnosticResponse {
     binding: Option<CurrentAppliedPoseBindingResponse>,
@@ -111,6 +170,8 @@ pub(crate) struct CurrentStaticCollisionDiagnosticResponse {
     proven_transversal_pairs: Option<usize>,
     #[serde(rename = "firstProvenPenetratingPair")]
     first_proven_transversal_pair: Option<CurrentStaticCollisionFacePair>,
+    pair_classification_counts: Option<CurrentStaticCollisionPairClassificationCounts>,
+    pair_diagnostics: Option<Vec<CurrentStaticCollisionPairDiagnostic>>,
 }
 
 const CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE: &str =
@@ -143,6 +204,7 @@ struct PreparedCurrentStaticCollision {
 struct FailedCurrentStaticCollisionPreparation {
     pose_capability: CurrentAppliedPoseCapability,
     error: CurrentStaticCollisionError,
+    diagnostic_snapshot: Option<StaticCollisionDiagnosticSnapshot>,
 }
 
 impl fmt::Debug for FailedCurrentStaticCollisionPreparation {
@@ -150,6 +212,7 @@ impl fmt::Debug for FailedCurrentStaticCollisionPreparation {
         formatter
             .debug_struct("FailedCurrentStaticCollisionPreparation")
             .field("error", &self.error)
+            .field("diagnostic_snapshot", &self.diagnostic_snapshot)
             .finish_non_exhaustive()
     }
 }
@@ -286,7 +349,10 @@ async fn inspect_current_static_collision_with_limits(
     };
     let binding = CurrentAppliedPoseBindingResponse::from_claims(&capability.claims);
     let (permit, prepared) = tauri::async_runtime::spawn_blocking(move || {
-        (permit, prepare_static_collision(capability, limits))
+        (
+            permit,
+            prepare_static_collision_for_diagnostic(capability, limits),
+        )
     })
     .await
     .map_err(|_| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
@@ -329,6 +395,15 @@ impl CurrentStaticCollisionDiagnosticResponse {
             ),
             proven_transversal_pairs: Some(0),
             first_proven_transversal_pair: None,
+            pair_classification_counts: Some(CurrentStaticCollisionPairClassificationCounts {
+                separated: 0,
+                touching: 0,
+                allowed: 0,
+                penetrating: 0,
+                indeterminate: 0,
+                candidate_excluded: 0,
+            }),
+            pair_diagnostics: Some(Vec::new()),
         }
     }
 
@@ -340,6 +415,8 @@ impl CurrentStaticCollisionDiagnosticResponse {
             expected_unordered_face_pairs: None,
             proven_transversal_pairs: None,
             first_proven_transversal_pair: None,
+            pair_classification_counts: None,
+            pair_diagnostics: None,
         }
     }
 
@@ -354,7 +431,21 @@ impl CurrentStaticCollisionDiagnosticResponse {
             expected_unordered_face_pairs: None,
             proven_transversal_pairs: None,
             first_proven_transversal_pair: None,
+            pair_classification_counts: None,
+            pair_diagnostics: None,
         }
+    }
+
+    fn with_snapshot(mut self, snapshot: &StaticCollisionDiagnosticSnapshot) -> Self {
+        self.pair_classification_counts = Some(snapshot.into());
+        self.pair_diagnostics = Some(
+            snapshot
+                .pairs()
+                .iter()
+                .map(CurrentStaticCollisionPairDiagnostic::from)
+                .collect(),
+        );
+        self
     }
 }
 
@@ -362,7 +453,15 @@ fn diagnostic_response_from_error(
     error: CurrentStaticCollisionError,
     binding: Option<CurrentAppliedPoseBindingResponse>,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
-    let response = match error {
+    diagnostic_response_from_error_with_snapshot(error, binding, None)
+}
+
+fn diagnostic_response_from_error_with_snapshot(
+    error: CurrentStaticCollisionError,
+    binding: Option<CurrentAppliedPoseBindingResponse>,
+    snapshot: Option<&StaticCollisionDiagnosticSnapshot>,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let mut response = match error {
         CurrentStaticCollisionError::LockUnavailable => {
             return Err(CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned());
         }
@@ -399,6 +498,8 @@ fn diagnostic_response_from_error(
                 expected_unordered_face_pairs: Some(expected_unordered_face_pairs),
                 proven_transversal_pairs: None,
                 first_proven_transversal_pair: None,
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             },
             StaticCollisionError::ProvenTransversalPenetration {
                 expected_unordered_face_pairs,
@@ -414,6 +515,8 @@ fn diagnostic_response_from_error(
                     first_face_id,
                     second_face_id,
                 }),
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             },
             StaticCollisionError::ProvenPositiveThicknessPenetration {
                 expected_unordered_face_pairs,
@@ -431,9 +534,14 @@ fn diagnostic_response_from_error(
                     first_face_id,
                     second_face_id,
                 }),
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             },
         },
     };
+    if let Some(snapshot) = snapshot {
+        response = response.with_snapshot(snapshot);
+    }
     Ok(response)
 }
 
@@ -444,6 +552,7 @@ fn diagnostic_response_from_revalidated_failure(
     let FailedCurrentStaticCollisionPreparation {
         pose_capability,
         error,
+        diagnostic_snapshot,
     } = failure;
     let binding = CurrentAppliedPoseBindingResponse::from_claims(&pose_capability.claims);
     // Construct the bound blocking DTO inside the exact-B revalidation
@@ -453,7 +562,13 @@ fn diagnostic_response_from_revalidated_failure(
     let revalidated = super::with_revalidated_current_applied_pose_capability(
         app_state,
         &pose_capability,
-        move |_, _| diagnostic_response_from_error(error, Some(binding)),
+        move |_, _| {
+            diagnostic_response_from_error_with_snapshot(
+                error,
+                Some(binding),
+                diagnostic_snapshot.as_ref(),
+            )
+        },
     )
     .map_err(|_| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
     match revalidated {
@@ -522,6 +637,83 @@ fn capture_current_pose_capability(
         .map_err(map_pose_authority_error)
 }
 
+fn prepare_static_collision_for_diagnostic(
+    capability: CurrentAppliedPoseCapability,
+    limits: StaticCollisionLimits,
+) -> Result<PreparedCurrentStaticCollision, Box<FailedCurrentStaticCollisionPreparation>> {
+    if !detached_pose_capability_is_internally_consistent(&capability) {
+        return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+            pose_capability: capability,
+            error: CurrentStaticCollisionError::InternalInconsistency,
+            diagnostic_snapshot: None,
+        }));
+    }
+    let paper_thickness_mm = f64::from_bits(capability.claims.paper_thickness_bits);
+    let snapshot = match diagnose_static_collision_geometry(
+        capability.claims.model.as_ref(),
+        capability.claims.pose.as_ref(),
+        paper_thickness_mm,
+        limits,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+                pose_capability: capability,
+                error: map_static_collision_error(error),
+                diagnostic_snapshot: None,
+            }));
+        }
+    };
+    if snapshot.expected_unordered_face_pairs() == 0 {
+        // The public proof success set is currently exactly this allocation-
+        // free single-face case. Mint through the authoritative proof entry
+        // instead of reconstructing its opaque identity from diagnostics.
+        return prepare_static_collision(capability, limits);
+    }
+    let error = blocking_error_from_diagnostic_snapshot(&snapshot, paper_thickness_mm);
+    Err(Box::new(FailedCurrentStaticCollisionPreparation {
+        pose_capability: capability,
+        error: CurrentStaticCollisionError::GeometryBlocking(error),
+        diagnostic_snapshot: Some(snapshot),
+    }))
+}
+
+fn blocking_error_from_diagnostic_snapshot(
+    snapshot: &StaticCollisionDiagnosticSnapshot,
+    paper_thickness_mm: f64,
+) -> StaticCollisionError {
+    let expected_unordered_face_pairs = snapshot.expected_unordered_face_pairs();
+    let first_penetrating_pair = snapshot
+        .pairs()
+        .iter()
+        .find(|pair| {
+            matches!(
+                pair.disposition(),
+                StaticCollisionPairDisposition::Penetrating
+            )
+        })
+        .map(|pair| [pair.first_face(), pair.second_face()]);
+    if let Some(first_pair) = first_penetrating_pair {
+        if paper_thickness_mm > 0.0 {
+            return StaticCollisionError::ProvenPositiveThicknessPenetration {
+                expected_unordered_face_pairs,
+                proven_positive_thickness_pairs: snapshot.penetrating_pairs(),
+                first_proven_positive_thickness_pair: first_pair,
+            };
+        }
+        if paper_thickness_mm.to_bits() == 0.0_f64.to_bits() {
+            return StaticCollisionError::ProvenTransversalPenetration {
+                expected_unordered_face_pairs,
+                proven_transversal_pairs: snapshot.penetrating_pairs(),
+                first_proven_transversal_pair: first_pair,
+            };
+        }
+    }
+    StaticCollisionError::PairEvidenceUnavailable {
+        expected_unordered_face_pairs,
+    }
+}
+
 fn prepare_static_collision(
     capability: CurrentAppliedPoseCapability,
     limits: StaticCollisionLimits,
@@ -530,6 +722,7 @@ fn prepare_static_collision(
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability: capability,
             error: CurrentStaticCollisionError::InternalInconsistency,
+            diagnostic_snapshot: None,
         }));
     }
     let paper_thickness_mm = f64::from_bits(capability.claims.paper_thickness_bits);
@@ -547,6 +740,7 @@ fn prepare_static_collision(
             return Err(Box::new(FailedCurrentStaticCollisionPreparation {
                 pose_capability: capability,
                 error: map_static_collision_error(error),
+                diagnostic_snapshot: None,
             }));
         }
     };
@@ -576,6 +770,7 @@ fn prepare_static_collision(
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability,
             error: CurrentStaticCollisionError::InternalInconsistency,
+            diagnostic_snapshot: None,
         }));
     }
     Ok(prepared)
@@ -1001,6 +1196,8 @@ mod tests {
                 expected_unordered_face_pairs: None,
                 proven_transversal_pairs: None,
                 first_proven_transversal_pair: None,
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             }
         );
     }
@@ -1432,21 +1629,63 @@ mod tests {
             inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
         )
         .expect("redacted production diagnosis");
+        assert_eq!(diagnosis.binding, Some(expected_binding));
         assert_eq!(
-            diagnosis,
-            CurrentStaticCollisionDiagnosticResponse {
-                binding: Some(expected_binding),
-                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
-                reason: Some(CurrentStaticCollisionDiagnosticReason::ProvenTransversalPenetration,),
-                expected_unordered_face_pairs: Some(3),
-                proven_transversal_pairs: Some(1),
-                first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
-                    first_face_id: expected_pair[0],
-                    second_face_id: expected_pair[1],
-                }),
-            }
+            diagnosis.status,
+            CurrentStaticCollisionDiagnosticStatus::Blocking
         );
-        let encoded = serde_json::to_value(diagnosis).expect("serialize diagnosis");
+        assert_eq!(
+            diagnosis.reason,
+            Some(CurrentStaticCollisionDiagnosticReason::ProvenTransversalPenetration)
+        );
+        assert_eq!(diagnosis.expected_unordered_face_pairs, Some(3));
+        assert_eq!(diagnosis.proven_transversal_pairs, Some(1));
+        assert_eq!(
+            diagnosis.first_proven_transversal_pair,
+            Some(CurrentStaticCollisionFacePair {
+                first_face_id: expected_pair[0],
+                second_face_id: expected_pair[1],
+            })
+        );
+        assert_eq!(
+            diagnosis.pair_classification_counts,
+            Some(CurrentStaticCollisionPairClassificationCounts {
+                separated: 0,
+                touching: 0,
+                allowed: 2,
+                penetrating: 1,
+                indeterminate: 0,
+                candidate_excluded: 0,
+            })
+        );
+        let pair_diagnostics = diagnosis
+            .pair_diagnostics
+            .as_ref()
+            .expect("complete pair diagnostics");
+        assert_eq!(pair_diagnostics.len(), 3);
+        assert_eq!(
+            pair_diagnostics
+                .iter()
+                .filter(|pair| pair.disposition == "penetrating")
+                .map(|pair| [pair.first_face_id, pair.second_face_id])
+                .collect::<Vec<_>>(),
+            vec![expected_pair]
+        );
+        assert_eq!(
+            pair_diagnostics
+                .iter()
+                .filter(|pair| pair.disposition == "allowed")
+                .count(),
+            2
+        );
+        assert_eq!(
+            pair_diagnostics
+                .iter()
+                .filter(|pair| pair.shared_hinge_boundary_contact_proven)
+                .count(),
+            2
+        );
+        let encoded = serde_json::to_value(&diagnosis).expect("serialize diagnosis");
         assert_eq!(encoded["status"], "blocking");
         assert_eq!(encoded["reason"], "proven_zero_thickness_penetration");
         assert_eq!(encoded["expectedUnorderedFacePairs"], 3);
@@ -1461,7 +1700,7 @@ mod tests {
             serde_json::to_value(expected_pair[1]).expect("serialize second face")
         );
         let object = encoded.as_object().expect("diagnosis object");
-        assert_eq!(object.len(), 6, "IPC schema must stay narrow and redacted");
+        assert_eq!(object.len(), 8, "IPC schema must stay narrow and redacted");
         for forbidden in [
             "coordinates",
             "transform",
@@ -1533,23 +1772,56 @@ mod tests {
             inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
         )
         .expect("redacted positive-thickness diagnosis");
+        assert_eq!(diagnosis.binding, Some(applied.binding));
         assert_eq!(
-            diagnosis,
-            CurrentStaticCollisionDiagnosticResponse {
-                binding: Some(applied.binding),
-                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
-                reason: Some(
-                    CurrentStaticCollisionDiagnosticReason::ProvenPositiveThicknessPenetration,
-                ),
-                expected_unordered_face_pairs: Some(3),
-                proven_transversal_pairs: Some(1),
-                first_proven_transversal_pair: Some(CurrentStaticCollisionFacePair {
-                    first_face_id: expected_pair[0],
-                    second_face_id: expected_pair[1],
-                }),
-            }
+            diagnosis.status,
+            CurrentStaticCollisionDiagnosticStatus::Blocking
         );
-        let encoded = serde_json::to_value(diagnosis).expect("serialize diagnosis");
+        assert_eq!(
+            diagnosis.reason,
+            Some(CurrentStaticCollisionDiagnosticReason::ProvenPositiveThicknessPenetration)
+        );
+        assert_eq!(diagnosis.expected_unordered_face_pairs, Some(3));
+        assert_eq!(diagnosis.proven_transversal_pairs, Some(1));
+        assert_eq!(
+            diagnosis.first_proven_transversal_pair,
+            Some(CurrentStaticCollisionFacePair {
+                first_face_id: expected_pair[0],
+                second_face_id: expected_pair[1],
+            })
+        );
+        assert_eq!(
+            diagnosis.pair_classification_counts,
+            Some(CurrentStaticCollisionPairClassificationCounts {
+                separated: 0,
+                touching: 0,
+                allowed: 0,
+                penetrating: 1,
+                indeterminate: 2,
+                candidate_excluded: 0,
+            })
+        );
+        let pair_diagnostics = diagnosis
+            .pair_diagnostics
+            .as_ref()
+            .expect("complete positive-thickness pair diagnostics");
+        assert_eq!(pair_diagnostics.len(), 3);
+        assert_eq!(
+            pair_diagnostics
+                .iter()
+                .filter(|pair| pair.disposition == "penetrating")
+                .map(|pair| [pair.first_face_id, pair.second_face_id])
+                .collect::<Vec<_>>(),
+            vec![expected_pair]
+        );
+        assert_eq!(
+            pair_diagnostics
+                .iter()
+                .filter(|pair| pair.disposition == "indeterminate")
+                .count(),
+            2
+        );
+        let encoded = serde_json::to_value(&diagnosis).expect("serialize diagnosis");
         assert_eq!(encoded["reason"], "proven_positive_thickness_penetration");
         assert_eq!(encoded["provenPenetratingPairs"], 1);
         assert_eq!(
@@ -1603,22 +1875,41 @@ mod tests {
             ))
         ));
 
+        let diagnosis = tauri::async_runtime::block_on(
+            inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
+        )
+        .expect("evidence-unavailable diagnosis");
+        assert_eq!(diagnosis.binding, Some(binding));
         assert_eq!(
-            tauri::async_runtime::block_on(inspect_current_static_collision_with_limits(
-                &state,
-                StaticCollisionLimits::default(),
-            ))
-            .expect("evidence-unavailable diagnosis"),
-            CurrentStaticCollisionDiagnosticResponse {
-                binding: Some(binding),
-                status: CurrentStaticCollisionDiagnosticStatus::Blocking,
-                reason: Some(CurrentStaticCollisionDiagnosticReason::EvidenceUnavailable),
-                expected_unordered_face_pairs: Some(1),
-                proven_transversal_pairs: None,
-                first_proven_transversal_pair: None,
-            },
-            "unresolved pair evidence must never become a safe success"
+            diagnosis.status,
+            CurrentStaticCollisionDiagnosticStatus::Blocking
         );
+        assert_eq!(
+            diagnosis.reason,
+            Some(CurrentStaticCollisionDiagnosticReason::EvidenceUnavailable)
+        );
+        assert_eq!(diagnosis.expected_unordered_face_pairs, Some(1));
+        assert_eq!(diagnosis.proven_transversal_pairs, None);
+        assert_eq!(diagnosis.first_proven_transversal_pair, None);
+        assert_eq!(
+            diagnosis.pair_classification_counts,
+            Some(CurrentStaticCollisionPairClassificationCounts {
+                separated: 0,
+                touching: 0,
+                allowed: 0,
+                penetrating: 0,
+                indeterminate: 1,
+                candidate_excluded: 0,
+            })
+        );
+        let pair_diagnostics = diagnosis
+            .pair_diagnostics
+            .expect("unresolved pair must still be visible");
+        assert_eq!(pair_diagnostics.len(), 1);
+        assert_eq!(pair_diagnostics[0].topology, "shared_hinge_edge");
+        assert_eq!(pair_diagnostics[0].disposition, "indeterminate");
+        assert!(!pair_diagnostics[0].shared_hinge_boundary_contact_proven);
+        assert!(pair_diagnostics[0].shared_hinge_solid_classified);
     }
 
     #[test]
@@ -1640,6 +1931,15 @@ mod tests {
                 expected_unordered_face_pairs: Some(0),
                 proven_transversal_pairs: Some(0),
                 first_proven_transversal_pair: None,
+                pair_classification_counts: Some(CurrentStaticCollisionPairClassificationCounts {
+                    separated: 0,
+                    touching: 0,
+                    allowed: 0,
+                    penetrating: 0,
+                    indeterminate: 0,
+                    candidate_excluded: 0,
+                },),
+                pair_diagnostics: Some(Vec::new()),
             }
         );
 
@@ -1659,6 +1959,8 @@ mod tests {
                 expected_unordered_face_pairs: None,
                 proven_transversal_pairs: None,
                 first_proven_transversal_pair: None,
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             },
             "resource exhaustion must never become a safe success"
         );
@@ -1677,6 +1979,8 @@ mod tests {
                 expected_unordered_face_pairs: None,
                 proven_transversal_pairs: None,
                 first_proven_transversal_pair: None,
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             }
         );
 
@@ -1693,6 +1997,8 @@ mod tests {
                 expected_unordered_face_pairs: None,
                 proven_transversal_pairs: None,
                 first_proven_transversal_pair: None,
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             },
             "internal inconsistency must remain blocking"
         );
@@ -1709,6 +2015,8 @@ mod tests {
                 expected_unordered_face_pairs: None,
                 proven_transversal_pairs: None,
                 first_proven_transversal_pair: None,
+                pair_classification_counts: None,
+                pair_diagnostics: None,
             },
             "an unavailable result must not claim that a stale pose binding is current"
         );

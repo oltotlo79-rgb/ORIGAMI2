@@ -60,15 +60,34 @@ pose instance、紙厚bits、左右面・hinge indexおよび全`F`係数bitsへ
 三角柱交差、共有軸weld、radial marginまたは分類へ用いてはならない。完全交差集合を
 有限ヒンジcorridorへ含める`E`側proofと、direct-lift `F`側の同じproofが完成するまで、
 表3のnative正厚productionは、上記のstrictな三角形中央面横断をblocking肯定する
-限定経路だけが実装済みである。正厚三角柱の`boundary_area_contact`、
-`shared_feature_thickness_overlap`、`positive_volume_overlap`、共面・非三角面、
-finite-hinge admissionおよび安全証明は未実装のままである。
+限定経路に加え、2三角形面・1共有ヒンジだけを完全`E/F` solid classifierへ接続済みで
+ある。この限定形状では`boundary_area_contact`、`shared_feature_thickness_overlap`、
+`positive_volume_overlap`または`indeterminate`を発行する。共有ヒンジ一般、共面・
+非三角面、multi-face safe certificateおよび連続経路の安全証明は未実装のままである。
 
 2026-07-19 checkpointでは、厚さ0幾何のbinary64入力をexact有理数へ持ち上げる処理から、三角形分割、面・線・区間演算、比較、全canonical unordered face pairの証拠集約までを、一つの単調な有限資源meterへ統合した。入力・保持clone・演算・中間bit・GCD fallback・出力に加え、exact kernelが明示的に生成するlogical BigInt payloadの件数・個別bit・累積bitをchecked加算し、資源超過時は保存済みpair表を発行しない。全pairのdispatchは準備時にcanonical順で事前計算し、後続の参照順によって作業量や結果が変わらない。
 
 公開静的衝突境界は、blocking decisionを見つけても走査を短絡せず、全unordered face pairと全triangle-pairの期待数・解析数を照合する。資源超過または証拠取得失敗はその時点で原子的にfail-closedとする。複数面では有限ヒンジmodelが未完成なので、診断結果が非blockingでも`NativeStaticCollisionGeometryProof`を発行せず、`PairEvidenceUnavailable`を返す。安全証明constructorは単一面・0 pairの枝だけに残している。
 
 blocking肯定の集約自体も同じexact pose instanceとcanonical face順へ束縛し、最初のpairをcanonical ID順で保持する。`CoplanarAreaOverlap`または対象を限定した`TransversalCrossing`以外のdecision/evidence不一致、肯定件数と最初のpairの不一致、非canonical registryは内部不整合として原子的に拒否する。
+
+2026-07-20 checkpointでは、公開診断を`separated / touching / allowed / penetrating / indeterminate / candidate_excluded`の6分類へ固定した。4×11表のraw decisionが`penetrating`でも、strict dual gateまたはwhole-face exact overlapのprovenanceがないpairは`indeterminate`へ落とす。`candidate_excluded`は予約値であり、全unordered pairを保持する現行runtime snapshotでは0件でなければならない。desktop wireは全pair、分類別件数、4種のproof markerを厳密検証し、未知key、非canonical UUID/order、重複、件数不一致、policy表と矛盾するprovenanceを拒否する。UIは`penetrating`と`indeterminate`を同じ赤系で優先し、最大200行の表示上限でも総数と省略数を失わない。
+
+完全pair snapshotはnativeとrendererで共通のhard cap 50,000件を使用する。caller指定上限が
+50,000より大きくても拡張せず、checked unordered pair countが50,001以上ならpair Vecの
+確保およびIPC serialization前に`ResourceLimitExceeded`とする。50,000ちょうど、
+50,001、およびcaller one-shortをnative unitで固定し、frontend source contractでも
+同じ定数値を照合する。
+
+紙厚`+0.0`の共有ヒンジは、raw binary64 endpoint一致とは独立に、同じissuer-bound watertight exact poseから対象pairだけを有限資源下で再分類する。非平行面、または共面で対頂点が共有辺の反対側なら境界辺だけの接触を`allowed`、共面で対頂点が同じ側なら正面積重なりを`penetrating`とする。上限は実際にtheoremへ提出する未解決pairをchecked加算し、0、上限ちょうど、one-short、およびraw証明済みpairと未解決pairの混在を回帰する。
+
+正厚productionには、2三角形面・1共有ヒンジ限定のcomplete `E/F` solid classifierを接続した。`boundary_area_contact`と有限回廊内の`shared_feature_thickness_overlap`は限定pairの`allowed`、`positive_volume_overlap`は`penetrating`、層ずらし未再現または証拠不足は`indeterminate`である。これは観測用pair分類であり、複数面のsafe certificateや連続経路authorityを発行しない。
+
+exact 90度はdirect-lift `F`の有限回廊境界なので、初版ではidentityに依存しない
+`indeterminate`へ固定した。40×30長方形対角hingeについて、vertex ID全24置換、
+identity namespace 8種、両rootの384姿勢でevidence、policy、disposition、4 proof
+markerが一致することを回帰する。既存400 mm行列はsource順、hinge端点方向、山谷、
+両root、厚さ`0.1 / 1 / 3 mm`を独立に固定する。
 
 ## 4. 利用者報告回帰
 
@@ -77,6 +96,8 @@ blocking肯定の集約自体も同じexact pose instanceとcanonical face順へ
 | 角起点の山谷V: 厚さ`0 / 0.1 / 1 mm`×`片側10度左右2通り / 両側45 / 91 / 135度`の15姿勢 | 全15姿勢を`allowed_shared_vertex_contact`・貫通0で回帰 | 厚さ`+0.0`では`10/0, 0/10, 45/45, 90/90, 91/91, 135/135, 179/179`を共有頂点接触の誤肯定0件、`180/180`を別のexact共面正面積重なり1件として、通常・逆source collection、全3 rootで固定 | 厚さ`0.1 / 1 / 3 mm`の`10/0, 0/10, 45/45, 90/90, 91/91, 135/135, 179/179, 180/180`を専用中央面横断へ誤肯定しない |
 | 報告A: 厚さ0、片側10度 | 共有頂点許容・貫通0 | exact共有頂点接触を回帰 | 対象外 |
 | 報告B: 厚さ0、両側180度 | 共面正面積・貫通1 | `coplanar_area_overlap`・`penetrating`を回帰 | 対象外 |
+| 共有ヒンジ2三角形: 厚さ`0`×`0 / 10 / 90 / 179 / 180度` | pair詳細と証拠markerを表示 | 山谷、root、source順、hinge端点方向の全組合せで`0 / 10 / 90 / 179`を境界接触`allowed`、`180`を正面積`penetrating`へ固定 | 対象外 |
+| 共有ヒンジ2三角形: 厚さ`0.1 / 1 / 3 mm`×`0 / 10 / 90 / 135 / 179 / 180度` | pair詳細と許容積層／判定保留を表示 | 対象外 | 山谷、root、source順、hinge端点方向の全組合せで`0 / 10 / 135 / 179`を限定`allowed`、`90 / 180`を明示的`indeterminate`へ固定 |
 | 辺中点の山山V: 厚さ`0 / 0.1 / 3 mm`×`90 / 91 / 135 / 179度` | 90/91度は`indeterminate`、135/179度は`penetrating`で全12姿勢を回帰 | 現行binary64 exact経路は共有点不一致により`indeterminate`。private actual-mm scanは通常・逆source collection、全3 rootで90/91/180度を`Unresolved`、135/179度だけを外側1 pairの`ProvenPenetrating`へ固定 | 厚さ`0.1 / 1 / 3 mm`×90/91/135/179/180度を通常・逆source collection、全rootで固定し、135/179度だけを`ProvenPositiveThicknessPenetration`、90/91/180度を証拠不足とする |
 | 共有点外の横断: 厚さ`0 / 0.1 / 1 mm` | 全9姿勢を`penetrating`で回帰 | 厚さ0 exact横断を回帰 | 三角形中央面のdual gateで証明できる範囲だけblocking。正厚三角柱full scanは未実装 |
 | 非三角whole material faceを含む山山V: 厚さ`+0.0`・両側135度 | 対象外 | 全pair認証済みexact集約から横断1件。通常・逆source collection、全rootで同一canonical pair | 正厚は未実装 |
@@ -89,7 +110,7 @@ blocking肯定の集約自体も同じexact pose instanceとcanonical face順へ
 
 1. actual-mm閉有理区間のprivate blocking-only横断primitiveを、`ProvenPenetrating` / `Unresolved`だけのsealed結果、共有関係、strict境界、全資源上限で固定する。このprivate synthetic段階は完了済みだが、production decisionまたはpublic safe proofを発行しない。
 2. exact tree `E`、同じissuer-bound poseのbinary64 affine係数・rest頂点のdirect lift、`E`を測定したenvelope、内部導出topology、canonical face pairだけからactual-mm入力を作るprivate scanと、角起点V・辺中点山山Vの三角material face実姿勢回帰、およびnative公開静的衝突入口へのblocking専用接続は完了した。canonical exact `E`側とdirect-lift実在triangle側の両方が同一pairを肯定した場合だけtriangle横断をblocking errorへ接続し、envelope boxを肯定幾何として使わず、multi-face safe setも広げない。全pair認証済みの180度共面正面積重なりと非三角whole material face横断、desktop current-pose診断およびproduction UIへの接続も完了した。H64既定上限内の完全成功とrenderer有限包含は後続である。
-3. 正厚の有限ヒンジ前提とprivate E/F componentwise境界、および両中央面のstrict transversalを材料貫通の十分条件としてproduction blockingへ接続する限定経路は完了した。次に完全な三角柱交差集合を有限ヒンジcorridorへ含める`E`側proofとdirect-lift `F`側proofを別々に完成させ、両方を再結合してから、正厚`boundary_area_contact` / `shared_feature_thickness_overlap` / `positive_volume_overlap`、有限ヒンジ`shared_feature_flat_stack` / corridorをnative productionへ接続する。
+3. 正厚の有限ヒンジ前提とprivate E/F componentwise境界、および両中央面のstrict transversalを材料貫通の十分条件としてproduction blockingへ接続する限定経路は完了した。完全な三角柱交差集合を有限ヒンジcorridorへ含める`E`側proofとdirect-lift `F`側proofも、2三角形面・1共有ヒンジ限定で再結合し、正厚`boundary_area_contact` / `shared_feature_thickness_overlap` / `positive_volume_overlap` / `indeterminate`のproduction診断へ接続した。次に非三角・multi-faceの共有ヒンジ一般、有限ヒンジ`shared_feature_flat_stack`、safe certificateおよびcontinuous collisionへ拡張する。
 4. current-pose apply・同generation静的診断・blocking表示への結合は完了した。multi-face safe certificate、native continuous collisionおよび全操作経路の停止へ結合し、`indeterminate`を貫通同等のblocking停止へ流す。
 5. 全pair coverageと有限workを維持したままcell-order transportを結合し、atomic `ApplyStackedFold` command、最後に折り重ねUIを接続する。
 

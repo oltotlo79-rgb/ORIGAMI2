@@ -615,6 +615,22 @@ pub(super) struct RevalidatedSharedHingeSolidClassificationRecordV1<
     >,
 }
 
+impl RevalidatedSharedHingeSolidClassificationRecordV1<'_, '_, '_, '_, '_, '_, '_, '_, '_> {
+    pub(super) fn diagnostic_contract(
+        &self,
+    ) -> (
+        SharedHingePositiveThicknessPairClassV1,
+        IntersectionEvidenceV2,
+        TopologyContactDecision,
+    ) {
+        (
+            self.record.snapshot.class,
+            self.record.snapshot.semantic_evidence,
+            self.record.snapshot.baseline_decision,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IndependentCorridorScanV1 {
     vertex_count: usize,
@@ -762,6 +778,22 @@ pub(super) struct RevalidatedIndependentSharedHingeSolidClassificationRecordV1<
         'exact,
         'pose,
     >,
+}
+
+impl RevalidatedIndependentSharedHingeSolidClassificationRecordV1<'_, '_, '_, '_, '_, '_> {
+    pub(super) fn diagnostic_contract(
+        &self,
+    ) -> (
+        SharedHingePositiveThicknessPairClassV1,
+        IntersectionEvidenceV2,
+        TopologyContactDecision,
+    ) {
+        (
+            self.record.snapshot.class,
+            self.record.snapshot.semantic_evidence,
+            self.record.snapshot.baseline_decision,
+        )
+    }
 }
 
 #[derive(Debug)]

@@ -261,11 +261,28 @@ impl AuthenticatedTriangleBlockingScan<'_, '_, '_> {
 /// authority token crosses this boundary. A positive count therefore only
 /// reports the blocking-only dual-gate result; it cannot be reused as a
 /// collision-free proof.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProvenTransversalScanSummary {
     pub(crate) enumerated_pairs: usize,
     pub(crate) proven_transversal_pairs: usize,
     pub(crate) first_proven_transversal_pair: Option<(FaceId, FaceId)>,
+    pub(crate) proven_transversal_pair_ids: Vec<(FaceId, FaceId)>,
+}
+
+impl ProvenTransversalScanSummary {
+    pub(crate) fn proves_pair(&self, first: FaceId, second: FaceId) -> bool {
+        let Some((first, second)) = canonical_face_pair(first, second) else {
+            return false;
+        };
+        self.proven_transversal_pair_ids
+            .binary_search_by(|pair| {
+                pair.0
+                    .canonical_bytes()
+                    .cmp(&first.canonical_bytes())
+                    .then_with(|| pair.1.canonical_bytes().cmp(&second.canonical_bytes()))
+            })
+            .is_ok()
+    }
 }
 
 /// Coarse failure classes for the sealed zero-thickness transversal scan.
@@ -382,15 +399,18 @@ pub(crate) fn scan_bound_pose_for_proven_transversal_penetration(
     )
     .map_err(map_authenticated_scan_error)?;
 
-    let first_proven_transversal_pair = scan
+    let proven_transversal_pair_ids = scan
         .pairs
         .iter()
-        .find(|pair| pair.decision == BlockingOnlyDecision::ProvenPenetrating)
-        .map(|pair| (pair.first, pair.second));
+        .filter(|pair| pair.decision == BlockingOnlyDecision::ProvenPenetrating)
+        .map(|pair| (pair.first, pair.second))
+        .collect::<Vec<_>>();
+    let first_proven_transversal_pair = proven_transversal_pair_ids.first().copied();
     Ok(ProvenTransversalScanSummary {
         enumerated_pairs: scan.pairs.len(),
-        proven_transversal_pairs: scan.proven_penetrating_pairs(),
+        proven_transversal_pairs: proven_transversal_pair_ids.len(),
         first_proven_transversal_pair,
+        proven_transversal_pair_ids,
     })
 }
 
@@ -3270,6 +3290,7 @@ mod tests {
                 enumerated_pairs: 3,
                 proven_transversal_pairs: 1,
                 first_proven_transversal_pair: summary.first_proven_transversal_pair,
+                proven_transversal_pair_ids: summary.proven_transversal_pair_ids.clone(),
             }
         );
         let (first, second) = summary

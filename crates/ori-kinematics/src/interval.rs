@@ -87,6 +87,67 @@ impl OutwardIntervalV1 {
     }
 }
 
+pub fn atan_interval_v1(
+    input: OutwardIntervalV1,
+    max_work: usize,
+) -> Result<OutwardIntervalV1, OutwardIntervalErrorV1> {
+    let threshold = libm::sqrt(2.0) - 1.0;
+    let (reduced, offset, negate) = if input.lower >= 0.0 && input.upper > threshold {
+        let one = OutwardIntervalV1::from_rounded(1.0)?;
+        (
+            input.sub(one)?.div(input.add(one)?)?,
+            Some(OutwardIntervalV1::from_rounded(
+                core::f64::consts::FRAC_PI_4,
+            )?),
+            false,
+        )
+    } else if input.upper <= 0.0 && input.lower < -threshold {
+        let positive = OutwardIntervalV1::new(-input.upper, -input.lower)?;
+        let one = OutwardIntervalV1::from_rounded(1.0)?;
+        (
+            positive.sub(one)?.div(positive.add(one)?)?,
+            Some(OutwardIntervalV1::from_rounded(
+                core::f64::consts::FRAC_PI_4,
+            )?),
+            true,
+        )
+    } else if input.lower >= -threshold && input.upper <= threshold {
+        (input, None, false)
+    } else {
+        return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+    };
+    let square = reduced.mul(reduced)?;
+    let mut polynomial = OutwardIntervalV1::from_rounded(1.0 / 65.0)?;
+    for degree in (0..=31).rev() {
+        let denominator = (2 * degree + 1) as f64;
+        let coefficient = if degree % 2 == 0 {
+            1.0 / denominator
+        } else {
+            -1.0 / denominator
+        };
+        polynomial = polynomial
+            .mul(square)?
+            .add(OutwardIntervalV1::from_rounded(coefficient)?)?;
+    }
+    let mut result = reduced.mul(polynomial)?;
+    let max_abs = reduced.lower.abs().max(reduced.upper.abs());
+    let remainder = OutwardIntervalV1::from_rounded(libm::pow(max_abs, 67.0) / 67.0)?;
+    result = result.add(OutwardIntervalV1::new(
+        -remainder.upper,
+        remainder.upper,
+    )?)?;
+    if let Some(offset) = offset {
+        result = offset.add(result)?;
+    }
+    if negate {
+        result = OutwardIntervalV1::new(-result.upper, -result.lower)?;
+    }
+    if result.work > max_work {
+        return Err(OutwardIntervalErrorV1::ResourceLimit);
+    }
+    Ok(result)
+}
+
 fn binary(
     lhs: OutwardIntervalV1,
     rhs: OutwardIntervalV1,
@@ -186,5 +247,25 @@ mod tests {
             .unwrap()
             .add(OutwardIntervalV1::new(f64::MAX, f64::MAX).unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn fixed_atan_kernel_contains_small_and_reduced_reference_values() {
+        for value in [-1.0, -0.25, 0.0, 0.25, 1.0] {
+            let interval =
+                atan_interval_v1(OutwardIntervalV1::from_rounded(value).unwrap(), 512).unwrap();
+            let reference = value.atan();
+            assert!(interval.lower() <= reference && reference <= interval.upper());
+        }
+        assert_eq!(
+            atan_interval_v1(OutwardIntervalV1::new(-1.0, 1.0).unwrap(), 512),
+            Err(OutwardIntervalErrorV1::InvalidEndpoint)
+        );
+        assert_eq!(
+            atan_interval_v1(OutwardIntervalV1::from_rounded(0.25).unwrap(), 1),
+            Err(OutwardIntervalErrorV1::ResourceLimit)
+        );
+        let rational_quarter = BigRational::new(1.into(), 4.into());
+        assert_eq!(rational_quarter, exact(0.25));
     }
 }

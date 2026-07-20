@@ -82,7 +82,7 @@ pub use graph::{
     CandidateFaceTransform, ClosedMaterialHingeGraphPose, MaterialHingeClosureCertificate,
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
 };
-pub use interval::{OutwardIntervalV1, OutwardIntervalErrorV1};
+pub use interval::{OutwardIntervalErrorV1, OutwardIntervalV1, atan_interval_v1};
 pub use schedule::{
     CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
     CycleSchedulePrepareErrorV1, HalfAngleDomainV1, PoleFreeBernsteinCertificateV1,

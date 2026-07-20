@@ -115,6 +115,17 @@ export type CreaseCanvasAnnotation = Readonly<{
   italic: boolean
 }>
 
+export type CreaseCanvasUnderlay = Readonly<{
+  id: string
+  image: HTMLImageElement
+  x: number
+  y: number
+  scaleX: number
+  scaleY: number
+  rotationDegrees: number
+  opacity: number
+}>
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
@@ -134,6 +145,7 @@ type Props = {
   angleConfig?: AngleSnapConfig
   compassCircles?: readonly CompassConstructionCircle[]
   annotations?: readonly CreaseCanvasAnnotation[]
+  underlays?: readonly CreaseCanvasUnderlay[]
   validationVertexHighlights?: ReadonlyMap<string, ValidationVertexHighlight>
   lockedVertexIds?: ReadonlySet<string>
   ariaDescribedBy?: string
@@ -281,6 +293,7 @@ export function CreaseCanvas({
   angleConfig,
   compassCircles = [],
   annotations = [],
+  underlays = [],
   validationVertexHighlights = EMPTY_VALIDATION_VERTEX_HIGHLIGHTS,
   lockedVertexIds = EMPTY_LOCKED_VERTEX_IDS,
   ariaDescribedBy,
@@ -466,6 +479,20 @@ export function CreaseCanvas({
         context.stroke()
       }
       context.restore()
+
+      for (const underlay of underlays) {
+        const point = mapPaperPoint(transform, underlay.x, underlay.y)
+        const width = underlay.image.naturalWidth
+        const height = underlay.image.naturalHeight
+        if (!point || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) continue
+        context.save()
+        context.globalAlpha = Math.max(0, Math.min(1, underlay.opacity))
+        context.translate(point.x, point.y)
+        context.rotate(underlay.rotationDegrees * Math.PI / 180)
+        context.scale(underlay.scaleX * transform.scale, underlay.scaleY * transform.scale)
+        context.drawImage(underlay.image, 0, 0)
+        context.restore()
+      }
 
       const selectedFace = selectedFaceId
         ? faces.find((face) => face.id === selectedFaceId)
@@ -735,6 +762,7 @@ export function CreaseCanvas({
     selectedVertexId,
     snapGuide,
     tool,
+    underlays,
     useLegacyRectangularPaper,
     validationVertexHighlights,
     vertices,

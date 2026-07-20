@@ -1834,6 +1834,34 @@ export function removeUnderlay(
   })
 }
 
+export function importUnderlayImage(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  draft: Omit<UnderlayRecordV1, 'asset'>,
+) {
+  return invoke<ProjectSnapshot>('import_underlay_image', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    draft,
+  })
+}
+
+export function readUnderlayAssetDataUrl(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  asset: string,
+) {
+  return invoke<string>('read_underlay_asset_data_url', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    asset,
+  })
+}
+
 export function undo(
   expectedProjectId: string,
   expectedRevision: number,

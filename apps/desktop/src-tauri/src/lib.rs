@@ -18,6 +18,7 @@ mod stacked_fold_read;
 mod stacked_fold_transaction;
 use stacked_fold_transaction::StackedFoldTransactionState;
 
+use base64::Engine as _;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -3760,6 +3761,143 @@ fn remove_underlay(
         expected_revision,
         Command::RemoveUnderlay { id },
     )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnderlayImportDraft {
+    id: ori_domain::UnderlayId,
+    transform: ori_domain::UnderlayTransformV1,
+    opacity: f64,
+    layer: ori_domain::LayerId,
+}
+
+#[tauri::command]
+fn import_underlay_image(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    draft: UnderlayImportDraft,
+) -> Result<ProjectSnapshot, String> {
+    {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?;
+    }
+    let selected = app
+        .dialog()
+        .file()
+        .set_title("下絵画像 / Underlay image")
+        .add_filter("PNG or JPEG image", &["png", "jpg", "jpeg"])
+        .blocking_pick_file();
+    let Some(selected) = selected else {
+        return lock_project(&state).map(|project| snapshot(&project));
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| "select a local image".to_owned())?;
+    let metadata = std::fs::metadata(&path).map_err(|_| "could not read image".to_owned())?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES as u64
+    {
+        return Err("image must be a PNG/JPEG no larger than 16 MiB".to_owned());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)
+        .and_then(|file| {
+            file.take((MAX_PROJECT_TEXTURE_ASSET_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "could not read image".to_owned())?;
+    let media_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ProjectTextureMediaTypeV1::Png
+    } else if bytes.starts_with(&[0xff, 0xd8]) && bytes.ends_with(&[0xff, 0xd9]) {
+        ProjectTextureMediaTypeV1::Jpeg
+    } else {
+        return Err("selected file is not a valid PNG/JPEG".to_owned());
+    };
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let retained_total = project
+        .texture_assets
+        .iter()
+        .fold(bytes.len(), |total, asset| {
+            total.saturating_add(asset.bytes.len())
+        });
+    if retained_total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES
+        || project.texture_assets.len() >= ori_formats::MAX_PROJECT_TEXTURE_ASSETS
+    {
+        return Err("project image asset limit exceeded".to_owned());
+    }
+    let asset = AssetId::new();
+    project.texture_assets.push(ProjectTextureAssetV1 {
+        id: asset,
+        media_type,
+        bytes,
+    });
+    let result = execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddUnderlay {
+            record: ori_domain::UnderlayRecordV1 {
+                id: draft.id,
+                asset,
+                transform: draft.transform,
+                opacity: draft.opacity,
+                layer: draft.layer,
+            },
+        },
+    );
+    if result.is_err() {
+        project
+            .texture_assets
+            .retain(|candidate| candidate.id != asset);
+    }
+    result
+}
+
+#[tauri::command]
+fn read_underlay_asset_data_url(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    asset: AssetId,
+) -> Result<String, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let item = project
+        .texture_assets
+        .iter()
+        .find(|item| item.id == asset)
+        .ok_or_else(|| "underlay asset is unavailable".to_owned())?;
+    let media = match item.media_type {
+        ProjectTextureMediaTypeV1::Png => "image/png",
+        ProjectTextureMediaTypeV1::Jpeg => "image/jpeg",
+    };
+    Ok(format!(
+        "data:{media};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&item.bytes)
+    ))
 }
 
 #[tauri::command]
@@ -7614,6 +7752,8 @@ pub fn run() {
             add_underlay,
             update_underlay,
             remove_underlay,
+            import_underlay_image,
+            read_underlay_asset_data_url,
             undo,
             redo,
             add_instruction_step,

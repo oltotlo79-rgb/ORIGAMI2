@@ -1936,7 +1936,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
                 requested.initial.target.model.face_ids().len(),
                 requested.initial.target.model.hinges().len(),
             ),
-            (2, 1) | (3, 2) | (4, 3) | (5, 4)
+            (2, 1) | (3, 2) | (4, 3) | (5, 4) | (6, 5)
         )
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
@@ -2074,6 +2074,203 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
         overlap_cells,
         face_pair_orders,
     })
+}
+
+/// Re-authenticates layer order against one closure-certified cyclic endpoint.
+/// The graph pose is re-solved by its owning geometry so a foreign or stale
+/// closure observation cannot be substituted by matching identifiers.
+pub fn prepare_stacked_fold_graph_non_flat_layer_order_v1(
+    requested: &PreparedStackedFoldRequestedGraphPoseV1,
+    source_layer_order: &LayerOrderSnapshot,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let angle = requested.requested_angle_degrees();
+    if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
+    }
+    let target = requested.initial().target();
+    let lineage = target.geometry.proof.lineage();
+    let provenance = &source_layer_order.provenance.source;
+    if source_layer_order.model_id != LAYER_ORDER_MODEL_ID
+        || provenance.identity_namespace != Some(lineage.identity_namespace())
+        || provenance.source_revision != lineage.source_revision()
+        || provenance.source_fingerprint != Some(lineage.source_fingerprint())
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
+    }
+    let mut source_faces = lineage
+        .records()
+        .iter()
+        .map(FaceLineageRecord::source)
+        .collect::<Vec<_>>();
+    source_faces.sort_unstable_by(|a, b| {
+        a.face_key.cmp(&b.face_key).then_with(|| {
+            a.face_id
+                .canonical_bytes()
+                .cmp(&b.face_id.canonical_bytes())
+        })
+    });
+    if source_layer_order.material_faces != source_faces {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
+    }
+    let pose = requested.pose();
+    let replay = target.hinge_geometry.solve_closed(
+        &target.audit,
+        pose.fixed_face(),
+        pose.hinge_angles(),
+        STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+    )?;
+    if replay != *pose {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    let mut material_faces = lineage
+        .records()
+        .iter()
+        .flat_map(|record| record.descendants().iter().copied())
+        .collect::<Vec<_>>();
+    material_faces.sort_unstable_by(|a, b| {
+        a.face_key.cmp(&b.face_key).then_with(|| {
+            a.face_id
+                .canonical_bytes()
+                .cmp(&b.face_id.canonical_bytes())
+        })
+    });
+    let mut ids = material_faces
+        .iter()
+        .map(|face| face.face_id)
+        .collect::<Vec<_>>();
+    ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    if ids != target.hinge_geometry.face_ids() {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    let tested_face_pairs = material_faces
+        .len()
+        .checked_mul(material_faces.len().saturating_sub(1))
+        .and_then(|v| v.checked_div(2))
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)?;
+    if tested_face_pairs > max_face_pairs {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit);
+    }
+    let planes = material_faces
+        .iter()
+        .map(|face| target_graph_face_plane(&target.hinge_geometry, pose, face.face_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_by_target = lineage
+        .records()
+        .iter()
+        .flat_map(|record| {
+            record
+                .descendants()
+                .iter()
+                .map(move |target| (target.face_id, record.source().face_id))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut overlap_cells = Vec::new();
+    let mut face_pair_orders = Vec::new();
+    for first in 0..planes.len() {
+        for second in first + 1..planes.len() {
+            let normal_cross = point_length(point_cross(
+                point_values(planes[first].1),
+                point_values(planes[second].1),
+            ));
+            if !normal_cross.is_finite() {
+                return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
+            }
+            if normal_cross > 1.0e-9 {
+                continue;
+            }
+            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+                continue;
+            }
+            let separation = point_dot(
+                point_delta(planes[second].0, planes[first].0),
+                planes[first].1,
+            );
+            let (lower_face, upper_face) = if separation.abs() > 1.0e-9 {
+                if separation > 0.0 {
+                    (
+                        material_faces[first].face_id,
+                        material_faces[second].face_id,
+                    )
+                } else {
+                    (
+                        material_faces[second].face_id,
+                        material_faces[first].face_id,
+                    )
+                }
+            } else {
+                inherited_source_order(
+                    material_faces[first].face_id,
+                    material_faces[second].face_id,
+                    &source_by_target,
+                    source_layer_order,
+                )?
+            };
+            overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
+                boundary: overlap,
+                lower_face,
+                upper_face,
+            });
+            face_pair_orders.push(StackedFoldNonFlatFacePairOrderV1 {
+                lower_face,
+                upper_face,
+            });
+        }
+    }
+    Ok(StackedFoldNonFlatLayerOrderV1 {
+        target_revision: lineage.target_revision(),
+        material_faces,
+        tested_face_pairs,
+        source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
+        overlap_cells,
+        face_pair_orders,
+    })
+}
+
+fn target_graph_face_plane(
+    geometry: &MaterialHingeGraphGeometry,
+    pose: &ClosedMaterialHingeGraphPose,
+    face: FaceId,
+) -> Result<(Point3, Point3, Vec<Point3>), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let boundary = geometry
+        .face_boundary_vertices(face)
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+    let transform = pose
+        .face_transform(face)
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+    let points = boundary
+        .iter()
+        .map(|vertex| {
+            transform
+                .apply_point(
+                    geometry
+                        .vertex_position(*vertex)
+                        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?,
+                )
+                .map_err(PrepareStackedFoldNonFlatLayerOrderErrorV1::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    face_plane_from_points(points)
+}
+
+fn face_plane_from_points(
+    points: Vec<Point3>,
+) -> Result<(Point3, Point3, Vec<Point3>), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let origin = *points
+        .first()
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane)?;
+    for index in 1..points.len().saturating_sub(1) {
+        let cross = point_cross(
+            point_delta(points[index], origin),
+            point_delta(points[index + 1], origin),
+        );
+        let length = point_length(cross);
+        if length.is_finite() && length > 1.0e-12 {
+            return Ok((origin, point_scale(cross, 1.0 / length)?, points));
+        }
+    }
+    Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane)
 }
 
 fn target_face_plane(

@@ -559,6 +559,13 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
               : 'aarch64-apple-darwin',
             RELEASE_RUN_ID: '12345',
             EXECUTED_TEST_COUNT: '28',
+            CI_CHECK_EVIDENCE_JSON: JSON.stringify({
+              schema: 'origami2.ci-check-evidence.v1',
+              sourceCommit: 'a'.repeat(40),
+              workflow: '.github/workflows/ci.yml',
+              workflowRunId: '67890',
+              checks: [{ name: 'test', conclusion: 'success' }],
+            }),
           },
         },
       )
@@ -625,6 +632,13 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
         RELEASE_RUN_ID: '12345',
         EXECUTED_TEST_COUNT: '28',
+        CI_CHECK_EVIDENCE_JSON: JSON.stringify({
+          schema: 'origami2.ci-check-evidence.v1',
+          sourceCommit: 'a'.repeat(40),
+          workflow: '.github/workflows/ci.yml',
+          workflowRunId: '67890',
+          checks: [{ name: 'test', conclusion: 'success' }],
+        }),
       },
     })
     writeFileSync(path, JSON.stringify({
@@ -668,6 +682,13 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
       ciRunId: '12345',
       executedTestCount: 28,
       executedSuites: ['formal-release-contract'],
+      ciChecks: {
+        schema: 'origami2.ci-check-evidence.v1',
+        sourceCommit: 'a'.repeat(40),
+        workflow: '.github/workflows/ci.yml',
+        workflowRunId: '67890',
+        checks: [{ name: 'test', conclusion: 'success' }],
+      },
     }))
 
     writeFileSync(path, JSON.stringify({
@@ -701,6 +722,63 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
     workflow.indexOf('Verify locked dependency integrity and license policy')
       < workflow.indexOf('Bind SBOM to source locks, version, commit, and toolchains'),
   )
+})
+
+test('release CI evidence rejects duplicate and incomplete check runs', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-ci-evidence-'))
+  try {
+    const runsPath = join(directory, 'runs.json')
+    const checksPath = join(directory, 'checks.json')
+    const commit = 'b'.repeat(40)
+    writeFileSync(runsPath, JSON.stringify({
+      total_count: 1,
+      workflow_runs: [{ id: 42, head_sha: commit, status: 'completed', conclusion: 'success' }],
+    }))
+    const verify = () => execFileSync('node', ['.github/scripts/verify_release_ci.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELEASE_COMMIT: commit,
+        WORKFLOW_RUNS_FIXTURE: runsPath,
+        CHECK_RUNS_FIXTURE: checksPath,
+      },
+    })
+    const check = (name, status = 'completed', conclusion = 'success') => ({
+      name, status, conclusion, details_url: 'https://github.com/example/repo/actions/runs/42/job/1',
+    })
+    writeFileSync(checksPath, JSON.stringify({
+      total_count: 2, check_runs: [check('lint'), check('test')],
+    }))
+    assert.deepEqual(JSON.parse(verify()), {
+      schema: 'origami2.ci-check-evidence.v1',
+      sourceCommit: commit,
+      workflow: '.github/workflows/ci.yml',
+      workflowRunId: '42',
+      checks: [
+        { name: 'lint', conclusion: 'success' },
+        { name: 'test', conclusion: 'success' },
+      ],
+    })
+    writeFileSync(checksPath, JSON.stringify({
+      total_count: 2, check_runs: [check('test'), check('test')],
+    }))
+    assert.throws(verify, /duplicated/u)
+    writeFileSync(checksPath, JSON.stringify({
+      total_count: 1, check_runs: [check('test', 'in_progress', null)],
+    }))
+    assert.throws(verify, /incomplete or unsuccessful/u)
+    writeFileSync(runsPath, JSON.stringify({
+      total_count: 2,
+      workflow_runs: [
+        { id: 42, head_sha: commit, status: 'completed', conclusion: 'success' },
+        { id: 43, head_sha: commit, status: 'completed', conclusion: 'success' },
+      ],
+    }))
+    assert.throws(verify, /exactly one successful/u)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('local artifact verifier accepts checksummed CycloneDX fixtures', () => {

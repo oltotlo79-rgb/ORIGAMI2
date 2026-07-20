@@ -13,6 +13,12 @@ const buildMode = process.env.BUILD_MODE
 const targetTriple = process.env.TARGET_TRIPLE
 const releaseRunId = process.env.RELEASE_RUN_ID
 const executedTestCount = Number(process.env.EXECUTED_TEST_COUNT)
+let ciChecks
+try {
+  ciChecks = JSON.parse(process.env.CI_CHECK_EVIDENCE_JSON)
+} catch {
+  throw new Error('invalid CI check evidence JSON')
+}
 if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) {
   throw new Error('invalid CycloneDX source SBOM')
 }
@@ -32,6 +38,11 @@ if (!/^[1-9][0-9]*$/u.test(releaseRunId ?? '')) throw new Error('invalid release
 if (!Number.isSafeInteger(executedTestCount) || executedTestCount < 1 || executedTestCount > 100000) {
   throw new Error('invalid executed test count')
 }
+if (
+  process.env.CI_CHECK_EVIDENCE_JSON !== JSON.stringify(ciChecks)
+  || ciChecks.schema !== 'origami2.ci-check-evidence.v1'
+  || ciChecks.sourceCommit !== commit
+) throw new Error('CI check evidence is non-canonical or bound to another commit')
 
 for (const key of ['bom-ref', 'purl']) {
   const values = sbom.components.map((component) => component?.[key]).filter(Boolean)
@@ -66,6 +77,7 @@ properties['origami2.release.evidence-json'] = JSON.stringify({
   ciRunId: releaseRunId,
   executedTestCount,
   executedSuites: ['formal-release-contract'],
+  ciChecks,
 })
 sbom.metadata = {
   ...(sbom.metadata ?? {}),

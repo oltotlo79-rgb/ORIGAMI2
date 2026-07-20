@@ -129,6 +129,24 @@ if (
   || releaseEvidence.executedTestCount < 1
   || releaseEvidence.executedTestCount > 100000
   || JSON.stringify(releaseEvidence.executedSuites) !== '["formal-release-contract"]'
+  || releaseEvidence.ciChecks?.schema !== 'origami2.ci-check-evidence.v1'
+  || releaseEvidence.ciChecks?.sourceCommit !== process.env.RELEASE_COMMIT
+  || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciChecks?.workflowRunId ?? '')
+  || releaseEvidence.ciChecks?.workflow !== '.github/workflows/ci.yml'
+  || !Array.isArray(releaseEvidence.ciChecks?.checks)
+  || releaseEvidence.ciChecks.checks.length < 1
+  || releaseEvidence.ciChecks.checks.length > 100
+  || releaseEvidence.ciChecks.checks.some((check) => (
+    typeof check?.name !== 'string'
+    || check.name.length < 1
+    || check.name.length > 200
+    || JSON.stringify(check) !== JSON.stringify({ name: check.name, conclusion: 'success' })
+  ))
+  || new Set(releaseEvidence.ciChecks.checks.map((check) => check.name)).size
+    !== releaseEvidence.ciChecks.checks.length
+  || JSON.stringify(releaseEvidence.ciChecks.checks)
+    !== JSON.stringify([...releaseEvidence.ciChecks.checks].sort((left, right) =>
+      left.name.localeCompare(right.name)))
   || (process.env.RELEASE_RUN_ID !== undefined && releaseEvidence.ciRunId !== process.env.RELEASE_RUN_ID)
   || (process.env.EXECUTED_TEST_COUNT !== undefined
     && releaseEvidence.executedTestCount !== Number(process.env.EXECUTED_TEST_COUNT))

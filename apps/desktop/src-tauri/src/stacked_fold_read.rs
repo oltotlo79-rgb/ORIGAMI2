@@ -7,7 +7,8 @@
 use ori_collision::{
     FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
     StackedFoldMaterialMapLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
-    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, capture_stacked_fold_read_guard_v1,
+    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
+    capture_stacked_fold_read_guard_v1, diagnose_static_collision_geometry,
     propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
@@ -157,6 +158,18 @@ struct StackedFoldTopologyProofDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct StackedFoldEndpointCollisionDto {
+    expected_pair_count: usize,
+    separated_pair_count: usize,
+    touching_pair_count: usize,
+    allowed_pair_count: usize,
+    penetrating_pair_count: usize,
+    indeterminate_pair_count: usize,
+    has_blocking_hold: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldReadResponse {
     guard_model_id: &'static str,
     proposal_model_id: &'static str,
@@ -167,6 +180,7 @@ pub(super) struct StackedFoldReadResponse {
     target_faces: Vec<FaceId>,
     material_segments: Vec<StackedFoldMaterialSegmentDto>,
     topology_proof: StackedFoldTopologyProofDto,
+    endpoint_collision: StackedFoldEndpointCollisionDto,
     work: StackedFoldReadWorkDto,
     authorizes_project_mutation: bool,
     authorizes_apply_stacked_fold: bool,
@@ -297,6 +311,13 @@ pub(super) async fn propose_current_stacked_fold_read(
             .target()
             .geometry()
             .proof();
+        let endpoint_collision = diagnose_static_collision_geometry(
+            prepared_requested_pose.initial().target().model(),
+            prepared_requested_pose.pose(),
+            paper.thickness_mm,
+            StaticCollisionLimits::default(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let lineage = geometry_proof.lineage();
         let topology_proof = StackedFoldTopologyProofDto {
             target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
@@ -361,6 +382,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             material_segments,
             topology_proof,
             work,
+            endpoint_collision,
         ))
     })
     .await
@@ -375,6 +397,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         material_segments,
         topology_proof,
         work,
+        endpoint_collision,
     ) = analysis;
 
     {
@@ -413,6 +436,15 @@ pub(super) async fn propose_current_stacked_fold_read(
         target_faces,
         material_segments,
         topology_proof,
+        endpoint_collision: StackedFoldEndpointCollisionDto {
+            expected_pair_count: endpoint_collision.expected_unordered_face_pairs(),
+            separated_pair_count: endpoint_collision.separated_pairs(),
+            touching_pair_count: endpoint_collision.touching_pairs(),
+            allowed_pair_count: endpoint_collision.allowed_pairs(),
+            penetrating_pair_count: endpoint_collision.penetrating_pairs(),
+            indeterminate_pair_count: endpoint_collision.indeterminate_pairs(),
+            has_blocking_hold: endpoint_collision.has_prominent_blocking_hold(),
+        },
         work: StackedFoldReadWorkDto {
             scanned_cells: work.scanned_cells,
             total_boundary_vertices: work.total_boundary_vertices,

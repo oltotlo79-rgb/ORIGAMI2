@@ -12,6 +12,32 @@ export type StaticMeshExportWarning =
   | 'stl_triangle_soup_facet_normals'
   | 'stl_printability_not_guaranteed'
 
+export type StaticMeshPrintabilityLimitation =
+  | 'format_not_covered'
+  | 'no_positive_thickness'
+  | 'open_or_nonmanifold_edges'
+  | 'inconsistent_orientation'
+  | 'zero_or_invalid_volume'
+  | 'duplicate_triangles'
+  | 'degenerate_triangles'
+  | 'potential_self_intersection'
+  | 'check_budget_exceeded'
+  | 'manifold_only_not_printability'
+
+export type StaticMeshPrintabilityReport = Readonly<{
+  status: 'manifold_verified' | 'not_verified' | 'not_applicable'
+  watertight: boolean
+  consistentlyOriented: boolean
+  nonzeroVolume: boolean
+  noDuplicateTriangles: boolean
+  noDegenerateTriangles: boolean
+  conservativeSelfIntersectionClear: boolean
+  connectedComponentCount: number
+  checkedEdgeCount: number
+  checkedTrianglePairCount: number
+  limitations: readonly StaticMeshPrintabilityLimitation[]
+}>
+
 export type StaticMeshExportPreview = Readonly<{
   exportId: string
   projectInstanceId: string
@@ -37,6 +63,7 @@ export type StaticMeshExportPreview = Readonly<{
     | 'right-handed X-right Y-forward Z-up'
     | 'glTF 2.0 right-handed -X-right Y-up Z-forward'
   warnings: readonly StaticMeshExportWarning[]
+  printability: StaticMeshPrintabilityReport
 }>
 
 export type StaticMeshExportPreviewResponse = Readonly<{
@@ -76,7 +103,21 @@ const PREVIEW_KEYS = [
   'sourceAxis',
   'encodedAxis',
   'warnings',
+  'printability',
 ] as const
+
+const PRINTABILITY_KEYS = [
+  'status', 'watertight', 'consistentlyOriented', 'nonzeroVolume',
+  'noDuplicateTriangles', 'noDegenerateTriangles',
+  'conservativeSelfIntersectionClear', 'connectedComponentCount',
+  'checkedEdgeCount', 'checkedTrianglePairCount', 'limitations',
+] as const
+const PRINTABILITY_LIMITATIONS: readonly StaticMeshPrintabilityLimitation[] = [
+  'format_not_covered', 'no_positive_thickness', 'open_or_nonmanifold_edges',
+  'inconsistent_orientation', 'zero_or_invalid_volume', 'duplicate_triangles',
+  'degenerate_triangles', 'potential_self_intersection', 'check_budget_exceeded',
+  'manifold_only_not_printability',
+]
 
 const MID_SURFACE_WARNINGS: readonly StaticMeshExportWarning[] = Object.freeze([
   'mid_surface_only',
@@ -164,7 +205,8 @@ export function normalizeStaticMeshExportPreviewResponse(
     format,
     record.paperThicknessMm > 0,
   )
-  if (!warnings) return null
+  const printability = normalizePrintability(record.printability, format, record.paperThicknessMm)
+  if (!warnings || !printability) return null
   return Object.freeze({
     preview: Object.freeze({
       exportId: record.exportId,
@@ -187,7 +229,63 @@ export function normalizeStaticMeshExportPreviewResponse(
       sourceAxis: SOURCE_AXIS,
       encodedAxis: format === 'glb' ? GLTF_AXIS : SOURCE_AXIS,
       warnings,
+      printability,
     }),
+  })
+}
+
+function normalizePrintability(
+  value: unknown,
+  format: StaticMeshExportFormat,
+  thickness: number,
+): StaticMeshPrintabilityReport | null {
+  const record = exactRecord(value, PRINTABILITY_KEYS)
+  if (!record) return null
+  const applicable = (format === 'stl' || format === 'glb') && thickness > 0
+  if (
+    (record.status !== 'manifold_verified'
+      && record.status !== 'not_verified'
+      && record.status !== 'not_applicable')
+    || (applicable ? record.status === 'not_applicable' : record.status !== 'not_applicable')
+    || typeof record.watertight !== 'boolean'
+    || typeof record.consistentlyOriented !== 'boolean'
+    || typeof record.nonzeroVolume !== 'boolean'
+    || typeof record.noDuplicateTriangles !== 'boolean'
+    || typeof record.noDegenerateTriangles !== 'boolean'
+    || typeof record.conservativeSelfIntersectionClear !== 'boolean'
+    || !isSafeNonNegativeInteger(record.connectedComponentCount)
+    || !isSafeNonNegativeInteger(record.checkedEdgeCount)
+    || !isSafeNonNegativeInteger(record.checkedTrianglePairCount)
+  ) return null
+  const rawLimitations = exactArray(record.limitations)
+  if (
+    !rawLimitations
+    || rawLimitations.length === 0
+    || rawLimitations.some((item) => !PRINTABILITY_LIMITATIONS.includes(
+      item as StaticMeshPrintabilityLimitation,
+    ))
+    || new Set(rawLimitations).size !== rawLimitations.length
+    || !rawLimitations.includes('manifold_only_not_printability')
+  ) return null
+  const checksPass = record.watertight
+    && record.consistentlyOriented
+    && record.nonzeroVolume
+    && record.noDuplicateTriangles
+    && record.noDegenerateTriangles
+    && record.conservativeSelfIntersectionClear
+  if ((record.status === 'manifold_verified') !== (applicable && checksPass)) return null
+  return Object.freeze({
+    status: record.status,
+    watertight: record.watertight,
+    consistentlyOriented: record.consistentlyOriented,
+    nonzeroVolume: record.nonzeroVolume,
+    noDuplicateTriangles: record.noDuplicateTriangles,
+    noDegenerateTriangles: record.noDegenerateTriangles,
+    conservativeSelfIntersectionClear: record.conservativeSelfIntersectionClear,
+    connectedComponentCount: record.connectedComponentCount,
+    checkedEdgeCount: record.checkedEdgeCount,
+    checkedTrianglePairCount: record.checkedTrianglePairCount,
+    limitations: Object.freeze([...rawLimitations]) as readonly StaticMeshPrintabilityLimitation[],
   })
 }
 

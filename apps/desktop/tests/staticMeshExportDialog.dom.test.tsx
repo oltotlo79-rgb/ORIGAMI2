@@ -41,6 +41,19 @@ const PREVIEW: StaticMeshExportPreview = Object.freeze({
     'stl_triangle_soup_facet_normals',
     'stl_printability_not_guaranteed',
   ]),
+  printability: Object.freeze({
+    status: 'manifold_verified',
+    watertight: true,
+    consistentlyOriented: true,
+    nonzeroVolume: true,
+    noDuplicateTriangles: true,
+    noDegenerateTriangles: true,
+    conservativeSelfIntersectionClear: true,
+    connectedComponentCount: 3,
+    checkedEdgeCount: 18,
+    checkedTrianglePairCount: 12,
+    limitations: Object.freeze(['manifold_only_not_printability']),
+  }),
 })
 
 afterEach(() => {
@@ -62,6 +75,8 @@ describe('StaticMeshExportDialog DOM interactions', () => {
     expect(screen.getByText(/頂点index.*triangle soup.*facet normal/u)).toBeTruthy()
     expect(screen.getByText(/3Dプリント可能性を保証しません/u)).toBeTruthy()
     expect(screen.getByText(/right-handed X-right Y-forward Z-up/u)).toBeTruthy()
+    expect(screen.getByText('プリント適性・マニフォールド検査')).toBeTruthy()
+    expect(screen.getByText('限定条件内でマニフォールドを確認')).toBeTruthy()
 
     const save = screen.getByRole(
       'button',

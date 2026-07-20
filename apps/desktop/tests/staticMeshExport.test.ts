@@ -53,6 +53,22 @@ function preview(format: 'obj' | 'stl' | 'glb' = 'obj') {
             ]
           : []),
       ],
+      printability: {
+        status: format === 'obj' ? 'not_applicable' : 'manifold_verified',
+        watertight: true,
+        consistentlyOriented: true,
+        nonzeroVolume: true,
+        noDuplicateTriangles: true,
+        noDegenerateTriangles: true,
+        conservativeSelfIntersectionClear: true,
+        connectedComponentCount: 3,
+        checkedEdgeCount: 18,
+        checkedTrianglePairCount: 12,
+        limitations: [
+          ...(format === 'obj' ? ['format_not_covered'] : []),
+          'manifold_only_not_printability',
+        ],
+      },
     },
   }
 }
@@ -177,4 +193,15 @@ test('STL warning allowlist requires the exact loss sequence', () => {
   const unexpectedForObj = preview('obj')
   unexpectedForObj.preview.warnings.push('stl_triangle_soup_facet_normals')
   assert.equal(normalizeStaticMeshExportPreviewResponse(unexpectedForObj), null)
+})
+
+test('printability report is bounded, strict, and fail-closed', () => {
+  const hostile = preview('stl')
+  hostile.preview.printability.status = 'manifold_verified'
+  hostile.preview.printability.conservativeSelfIntersectionClear = false
+  assert.equal(normalizeStaticMeshExportPreviewResponse(hostile), null)
+
+  const unknown = preview('glb')
+  unknown.preview.printability.limitations.push('future_claim')
+  assert.equal(normalizeStaticMeshExportPreviewResponse(unknown), null)
 })

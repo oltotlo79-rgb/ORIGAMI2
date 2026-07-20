@@ -10,7 +10,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -18,7 +18,8 @@ use std::{
 use num_bigint::{BigInt, Sign};
 use ori_collision::{
     SingleHingeThicknessBoundaryObservationV1, prepare_single_hinge_thickness_boundary_v1,
-    revalidate_single_hinge_thickness_boundary_v1,
+    prepare_tree_hinge_thickness_boundaries_v1, revalidate_single_hinge_thickness_boundary_v1,
+    revalidate_tree_hinge_thickness_boundaries_v1,
 };
 use ori_domain::{AssetId, ProjectId, VertexId};
 use ori_formats::{
@@ -48,6 +49,7 @@ const MID_SURFACE_GEOMETRY_PROFILE: &str = "authenticated_mid_surface_triangle_m
 const CLOSED_FACE_SOLIDS_GEOMETRY_PROFILE: &str =
     "authenticated_exact_coplanar_face_union_solids_v1";
 const MAX_EXACT_TRIANGULATION_PREDICATES: usize = 20_000_000;
+const MAX_PRINTABILITY_TRIANGLE_PAIR_CHECKS: usize = 1_000_000;
 const GLTF_ENCODED_UNIT: &str = "meter";
 const GLTF_ENCODED_AXIS: &str = "glTF 2.0 right-handed -X-right Y-up Z-forward";
 const PREVIEW_FAILED_MESSAGE: &str =
@@ -81,7 +83,47 @@ struct PendingStaticMeshExport {
     face_count: usize,
     vertex_count: usize,
     triangle_count: usize,
+    printability: StaticMeshPrintabilityReport,
     warnings: Arc<[StaticMeshExportWarning]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StaticMeshPrintabilityReport {
+    status: StaticMeshPrintabilityStatus,
+    watertight: bool,
+    consistently_oriented: bool,
+    nonzero_volume: bool,
+    no_duplicate_triangles: bool,
+    no_degenerate_triangles: bool,
+    conservative_self_intersection_clear: bool,
+    connected_component_count: usize,
+    checked_edge_count: usize,
+    checked_triangle_pair_count: usize,
+    limitations: Arc<[StaticMeshPrintabilityLimitation]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StaticMeshPrintabilityStatus {
+    ManifoldVerified,
+    NotVerified,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StaticMeshPrintabilityLimitation {
+    FormatNotCovered,
+    NoPositiveThickness,
+    OpenOrNonmanifoldEdges,
+    InconsistentOrientation,
+    ZeroOrInvalidVolume,
+    DuplicateTriangles,
+    DegenerateTriangles,
+    PotentialSelfIntersection,
+    CheckBudgetExceeded,
+    ManifoldOnlyNotPrintability,
 }
 
 struct StaticMeshExportSource {
@@ -309,6 +351,7 @@ struct StaticMeshExportPreviewSnapshot {
     source_axis: &'static str,
     encoded_axis: &'static str,
     warnings: Arc<[StaticMeshExportWarning]>,
+    printability: StaticMeshPrintabilityReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -536,7 +579,18 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         .bind_pose(&source.pose)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let face_count = source.pose.face_ids().len();
-    let hinge_union = if source.paper_thickness_mm > 0.0 {
+    let hinge_unions = if source.paper_thickness_mm > 0.0 && source.model.hinges().len() > 1 {
+        prepare_tree_hinge_thickness_boundaries_v1(bound, source.paper_thickness_mm)
+            .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?
+            .and_then(|capability| {
+                revalidate_tree_hinge_thickness_boundaries_v1(
+                    &capability,
+                    bound,
+                    source.paper_thickness_mm,
+                )
+            })
+            .unwrap_or_default()
+    } else if source.paper_thickness_mm > 0.0 {
         prepare_single_hinge_thickness_boundary_v1(bound, source.paper_thickness_mm)
             .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?
             .and_then(|capability| {
@@ -546,13 +600,18 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
                     source.paper_thickness_mm,
                 )
             })
-            .filter(|observation| {
-                observation.left_front.map(|point| point.map(f64::to_bits))
-                    != observation.right_front.map(|point| point.map(f64::to_bits))
-            })
+            .into_iter()
+            .collect()
     } else {
-        None
+        Vec::new()
     };
+    let hinge_unions = hinge_unions
+        .into_iter()
+        .filter(|observation| {
+            observation.left_front.map(|point| point.map(f64::to_bits))
+                != observation.right_front.map(|point| point.map(f64::to_bits))
+        })
+        .collect();
     let (mid_surface, material_tex_coords) = build_current_pose_mid_surface_mesh_with_material_uv(
         &source.project_name,
         &source.model,
@@ -614,7 +673,7 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
             source.paper_thickness_mm,
             source.paper_front_color_rgba,
             source.paper_back_color_rgba,
-            hinge_union,
+            hinge_unions,
         )?;
         (solid.mesh, Some(solid.regions))
     } else {
@@ -631,6 +690,8 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
     });
     let validated =
         validate_indexed_triangle_mesh(&mesh).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    let printability =
+        build_printability_report(source.format, source.paper_thickness_mm, &validated);
     let artifact = match (back_texture, solid_regions.as_deref()) {
         (Some(back_texture), Some(regions)) => {
             let side_color = std::array::from_fn(|index| {
@@ -678,8 +739,226 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
         face_count,
         vertex_count: artifact.vertex_count,
         triangle_count: artifact.triangle_count,
+        printability,
         warnings,
     })
+}
+
+type PrintPoint = [u64; 3];
+
+fn print_point(point: [f64; 3]) -> PrintPoint {
+    point.map(|value| canonical_zero(value).to_bits())
+}
+
+fn build_printability_report(
+    format: StaticMeshExportFormatRequest,
+    thickness_mm: f64,
+    mesh: &ori_formats::ValidatedIndexedTriangleMesh,
+) -> StaticMeshPrintabilityReport {
+    let applicable = matches!(
+        format,
+        StaticMeshExportFormatRequest::Stl | StaticMeshExportFormatRequest::Glb
+    ) && thickness_mm > 0.0;
+    let positions = mesh.positions_mm();
+    let triangles = mesh.triangles();
+    let points: Vec<PrintPoint> = positions.iter().copied().map(print_point).collect();
+    let mut edge_uses: BTreeMap<(PrintPoint, PrintPoint), Vec<(usize, bool)>> = BTreeMap::new();
+    let mut unique_triangles = BTreeSet::new();
+    let mut degenerate_count = 0usize;
+    for (triangle_index, triangle) in triangles.iter().enumerate() {
+        let triangle_points = [
+            points[triangle[0] as usize],
+            points[triangle[1] as usize],
+            points[triangle[2] as usize],
+        ];
+        if triangle_points[0] == triangle_points[1]
+            || triangle_points[1] == triangle_points[2]
+            || triangle_points[2] == triangle_points[0]
+        {
+            degenerate_count += 1;
+        }
+        let mut canonical = triangle_points;
+        canonical.sort();
+        unique_triangles.insert(canonical);
+        for (start, end) in [
+            (triangle_points[0], triangle_points[1]),
+            (triangle_points[1], triangle_points[2]),
+            (triangle_points[2], triangle_points[0]),
+        ] {
+            let (edge, forward) = if start < end {
+                ((start, end), true)
+            } else {
+                ((end, start), false)
+            };
+            edge_uses
+                .entry(edge)
+                .or_default()
+                .push((triangle_index, forward));
+        }
+    }
+    let watertight = edge_uses.values().all(|uses| uses.len() == 2);
+    let consistently_oriented = edge_uses
+        .values()
+        .all(|uses| uses.len() == 2 && uses[0].1 != uses[1].1);
+    let no_duplicate_triangles = unique_triangles.len() == triangles.len();
+    let no_degenerate_triangles = degenerate_count == 0;
+
+    let mut adjacency = vec![Vec::new(); triangles.len()];
+    for uses in edge_uses.values() {
+        for left in 0..uses.len() {
+            for right in left + 1..uses.len() {
+                adjacency[uses[left].0].push(uses[right].0);
+                adjacency[uses[right].0].push(uses[left].0);
+            }
+        }
+    }
+    let mut component = vec![usize::MAX; triangles.len()];
+    let mut component_count = 0usize;
+    for start in 0..triangles.len() {
+        if component[start] != usize::MAX {
+            continue;
+        }
+        component[start] = component_count;
+        let mut queue = VecDeque::from([start]);
+        while let Some(current) = queue.pop_front() {
+            for &next in &adjacency[current] {
+                if component[next] == usize::MAX {
+                    component[next] = component_count;
+                    queue.push_back(next);
+                }
+            }
+        }
+        component_count += 1;
+    }
+    let mut volumes = vec![0.0f64; component_count];
+    for (index, triangle) in triangles.iter().enumerate() {
+        let a = positions[triangle[0] as usize];
+        let b = positions[triangle[1] as usize];
+        let c = positions[triangle[2] as usize];
+        volumes[component[index]] += (a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]))
+            / 6.0;
+    }
+    let mut bounds_min = [f64::INFINITY; 3];
+    let mut bounds_max = [f64::NEG_INFINITY; 3];
+    for point in positions {
+        for axis in 0..3 {
+            bounds_min[axis] = bounds_min[axis].min(point[axis]);
+            bounds_max[axis] = bounds_max[axis].max(point[axis]);
+        }
+    }
+    let diagonal_squared: f64 = (0..3)
+        .map(|axis| (bounds_max[axis] - bounds_min[axis]).powi(2))
+        .sum();
+    let volume_epsilon = diagonal_squared.sqrt().powi(3) * 1.0e-12;
+    let nonzero_volume = !volumes.is_empty()
+        && volumes
+            .iter()
+            .all(|volume| volume.is_finite() && volume.abs() > volume_epsilon);
+
+    let mut checked_triangle_pair_count = 0usize;
+    let mut conservative_clear = true;
+    let mut budget_exceeded = false;
+    'pairs: for left in 0..triangles.len() {
+        let left_indices = triangles[left].map(|index| index as usize);
+        let left_points = left_indices.map(|index| points[index]);
+        for right in left + 1..triangles.len() {
+            let right_indices = triangles[right].map(|index| index as usize);
+            let right_points = right_indices.map(|index| points[index]);
+            // Edge-adjacent triangles may meet along that edge. A single
+            // shared vertex does not prove that their interiors cannot cross.
+            if left_points
+                .iter()
+                .filter(|point| right_points.contains(point))
+                .count()
+                >= 2
+            {
+                continue;
+            }
+            if checked_triangle_pair_count == MAX_PRINTABILITY_TRIANGLE_PAIR_CHECKS {
+                conservative_clear = false;
+                budget_exceeded = true;
+                break 'pairs;
+            }
+            checked_triangle_pair_count += 1;
+            let mut boxes_overlap = true;
+            for axis in 0..3 {
+                let left_values = left_indices.map(|index| positions[index][axis]);
+                let right_values = right_indices.map(|index| positions[index][axis]);
+                let left_min = left_values.into_iter().fold(f64::INFINITY, f64::min);
+                let left_max = left_values.into_iter().fold(f64::NEG_INFINITY, f64::max);
+                let right_min = right_values.into_iter().fold(f64::INFINITY, f64::min);
+                let right_max = right_values.into_iter().fold(f64::NEG_INFINITY, f64::max);
+                if left_max < right_min || right_max < left_min {
+                    boxes_overlap = false;
+                    break;
+                }
+            }
+            if boxes_overlap {
+                conservative_clear = false;
+            }
+        }
+    }
+    let mut limitations = Vec::new();
+    if !matches!(
+        format,
+        StaticMeshExportFormatRequest::Stl | StaticMeshExportFormatRequest::Glb
+    ) {
+        limitations.push(StaticMeshPrintabilityLimitation::FormatNotCovered);
+    }
+    if thickness_mm <= 0.0 {
+        limitations.push(StaticMeshPrintabilityLimitation::NoPositiveThickness);
+    }
+    if !watertight {
+        limitations.push(StaticMeshPrintabilityLimitation::OpenOrNonmanifoldEdges);
+    }
+    if !consistently_oriented {
+        limitations.push(StaticMeshPrintabilityLimitation::InconsistentOrientation);
+    }
+    if !nonzero_volume {
+        limitations.push(StaticMeshPrintabilityLimitation::ZeroOrInvalidVolume);
+    }
+    if !no_duplicate_triangles {
+        limitations.push(StaticMeshPrintabilityLimitation::DuplicateTriangles);
+    }
+    if !no_degenerate_triangles {
+        limitations.push(StaticMeshPrintabilityLimitation::DegenerateTriangles);
+    }
+    if !conservative_clear {
+        limitations.push(if budget_exceeded {
+            StaticMeshPrintabilityLimitation::CheckBudgetExceeded
+        } else {
+            StaticMeshPrintabilityLimitation::PotentialSelfIntersection
+        });
+    }
+    limitations.push(StaticMeshPrintabilityLimitation::ManifoldOnlyNotPrintability);
+    let verified = applicable
+        && watertight
+        && consistently_oriented
+        && nonzero_volume
+        && no_duplicate_triangles
+        && no_degenerate_triangles
+        && conservative_clear;
+    StaticMeshPrintabilityReport {
+        status: if !applicable {
+            StaticMeshPrintabilityStatus::NotApplicable
+        } else if verified {
+            StaticMeshPrintabilityStatus::ManifoldVerified
+        } else {
+            StaticMeshPrintabilityStatus::NotVerified
+        },
+        watertight,
+        consistently_oriented,
+        nonzero_volume,
+        no_duplicate_triangles,
+        no_degenerate_triangles,
+        conservative_self_intersection_clear: conservative_clear,
+        connected_component_count: component_count,
+        checked_edge_count: edge_uses.len(),
+        checked_triangle_pair_count,
+        limitations: Arc::from(limitations),
+    }
 }
 
 fn validate_artifact_contract(
@@ -750,6 +1029,7 @@ fn preview_snapshot(pending: &PendingStaticMeshExport) -> StaticMeshExportPrevie
         source_axis: STATIC_MESH_SOURCE_AXIS,
         encoded_axis: pending.format.encoded_axis(),
         warnings: Arc::clone(&pending.warnings),
+        printability: pending.printability.clone(),
     }
 }
 
@@ -1142,7 +1422,7 @@ fn extrude_closed_face_solids(
     thickness_mm: f64,
     front_color: [u8; 4],
     back_color: [u8; 4],
-    hinge_union: Option<SingleHingeThicknessBoundaryObservationV1>,
+    hinge_unions: Vec<SingleHingeThicknessBoundaryObservationV1>,
 ) -> Result<ExtrudedClosedFaceSolids, String> {
     if !thickness_mm.is_finite() || thickness_mm <= 0.0 {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
@@ -1183,13 +1463,16 @@ fn extrude_closed_face_solids(
         u32::try_from(source_vertex_count).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let mut triangles = Vec::new();
     let mut regions = Vec::new();
-    let union_rails = hinge_union.map(|observation| {
-        (
-            observation.left_front.map(kinematics_array_to_export),
-            observation.right_front.map(kinematics_array_to_export),
-        )
-    });
-    let mut union_edges: [Option<(u32, u32)>; 2] = [None, None];
+    let union_rails = hinge_unions
+        .into_iter()
+        .map(|observation| {
+            (
+                observation.left_front.map(kinematics_array_to_export),
+                observation.right_front.map(kinematics_array_to_export),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut union_edges = vec![[None, None]; union_rails.len()];
     let mut edges = BTreeMap::<(u32, u32), (usize, u32, u32)>::new();
     for triangle in &mesh.triangles {
         triangles.push(*triangle);
@@ -1233,19 +1516,23 @@ fn extrude_closed_face_solids(
         let top_b = positions[end_index];
         let bottom_a = positions[start_index + source_vertex_count];
         let bottom_b = positions[end_index + source_vertex_count];
-        if let Some((left, right)) = union_rails {
-            if unordered_segment_bits_eq([top_a, top_b], left) {
-                if union_edges[0].replace((start, end)).is_some() {
-                    return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+        let mut matched = None;
+        for (union_index, (left, right)) in union_rails.iter().copied().enumerate() {
+            for (side, rail) in [left, right].into_iter().enumerate() {
+                if unordered_segment_bits_eq([top_a, top_b], rail) {
+                    if matched.is_some()
+                        || union_edges[union_index][side]
+                            .replace((start, end))
+                            .is_some()
+                    {
+                        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+                    }
+                    matched = Some(());
                 }
-                continue;
             }
-            if unordered_segment_bits_eq([top_a, top_b], right) {
-                if union_edges[1].replace((start, end)).is_some() {
-                    return Err(PREVIEW_FAILED_MESSAGE.to_owned());
-                }
-                continue;
-            }
+        }
+        if matched.is_some() {
+            continue;
         }
         positions.extend([top_a, top_b, bottom_b, bottom_a]);
         normals.extend([side_normal; 4]);
@@ -1256,8 +1543,8 @@ fn extrude_closed_face_solids(
         triangles.push([base, base + 2, base + 3]);
         regions.push(ClosedSolidTriangleRegionV1::SideWall);
     }
-    if union_rails.is_some() {
-        let [Some((left_start, left_end)), Some((right_start, right_end))] = union_edges else {
+    for edges in union_edges {
+        let [Some((left_start, left_end)), Some((right_start, right_end))] = edges else {
             return Err(PREVIEW_FAILED_MESSAGE.to_owned());
         };
         let left = [left_start, left_end];
@@ -1271,6 +1558,26 @@ fn extrude_closed_face_solids(
             &mut regions,
             left,
             right,
+            edge_color(front_color, back_color),
+        )?;
+        append_bridge_quad(
+            &mut positions,
+            &mut normals,
+            &mut colors,
+            &mut triangles,
+            &mut regions,
+            [left[0], right[0]],
+            [left[0] + bottom_offset, right[0] + bottom_offset],
+            edge_color(front_color, back_color),
+        )?;
+        append_bridge_quad(
+            &mut positions,
+            &mut normals,
+            &mut colors,
+            &mut triangles,
+            &mut regions,
+            [right[1], left[1]],
+            [right[1] + bottom_offset, left[1] + bottom_offset],
             edge_color(front_color, back_color),
         )?;
         append_bridge_quad(
@@ -1297,8 +1604,16 @@ fn extrude_closed_face_solids(
             .resize(solid.positions_mm.len(), [0.0, 0.0]);
         solid = solid.with_base_color_texture(texture);
     }
-    validate_watertight_triangle_geometry(&solid)?;
-    validate_bounded_non_self_intersecting_volume(&solid)?;
+    if validate_watertight_triangle_geometry(&solid).is_err() {
+        eprintln!("union validation failed: watertight");
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    // The exact hinge capability proves the local corridor. The remaining
+    // conservative scan rejects any disjoint triangle pair whose AABBs overlap.
+    if validate_bounded_non_self_intersecting_volume(&solid, &union_rails).is_err() {
+        eprintln!("union validation failed: volume/intersection");
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
     Ok(ExtrudedClosedFaceSolids {
         mesh: solid,
         regions,
@@ -1392,6 +1707,7 @@ fn validate_watertight_triangle_geometry(mesh: &IndexedTriangleMeshV1) -> Result
 
 fn validate_bounded_non_self_intersecting_volume(
     mesh: &IndexedTriangleMeshV1,
+    authenticated_hinge_rails: &[([[f64; 3]; 2], [[f64; 3]; 2])],
 ) -> Result<(), String> {
     let mut signed_six_volume = 0.0;
     for triangle in &mesh.triangles {
@@ -1411,6 +1727,14 @@ fn validate_bounded_non_self_intersecting_volume(
         for second in first + 1..mesh.triangles.len() {
             let second_points =
                 mesh.triangles[second].map(|index| mesh.positions_mm[index as usize]);
+            if authenticated_hinge_rails.iter().any(|(left, right)| {
+                triangle_contains_segment(first_points, *left)
+                    && triangle_contains_segment(second_points, *right)
+                    || triangle_contains_segment(first_points, *right)
+                        && triangle_contains_segment(second_points, *left)
+            }) {
+                continue;
+            }
             if first_points.iter().any(|left| {
                 second_points
                     .iter()
@@ -1443,6 +1767,14 @@ fn validate_bounded_non_self_intersecting_volume(
         }
     }
     Ok(())
+}
+
+fn triangle_contains_segment(triangle: [[f64; 3]; 3], segment: [[f64; 3]; 2]) -> bool {
+    segment.iter().all(|endpoint| {
+        triangle
+            .iter()
+            .any(|point| point.map(f64::to_bits) == endpoint.map(f64::to_bits))
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1839,6 +2171,50 @@ mod tests {
         )
     }
 
+    fn validated_tetrahedron() -> ori_formats::ValidatedIndexedTriangleMesh {
+        validate_indexed_triangle_mesh(&IndexedTriangleMeshV1::new(
+            "printability-tetrahedron",
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            vec![[0.0, 0.0, 1.0]; 4],
+            vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
+        ))
+        .expect("valid tetrahedron")
+    }
+
+    #[test]
+    fn printability_report_verifies_only_bounded_positive_thickness_stl_glb() {
+        let mesh = validated_tetrahedron();
+        let stl = build_printability_report(StaticMeshExportFormatRequest::Stl, 0.1, &mesh);
+        assert_eq!(stl.status, StaticMeshPrintabilityStatus::ManifoldVerified);
+        assert!(stl.watertight);
+        assert!(stl.consistently_oriented);
+        assert!(stl.nonzero_volume);
+        assert_eq!(stl.connected_component_count, 1);
+
+        let obj = build_printability_report(StaticMeshExportFormatRequest::Obj, 0.1, &mesh);
+        assert_eq!(obj.status, StaticMeshPrintabilityStatus::NotApplicable);
+        assert!(obj
+            .limitations
+            .contains(&StaticMeshPrintabilityLimitation::FormatNotCovered));
+        let zero = build_printability_report(StaticMeshExportFormatRequest::Glb, 0.0, &mesh);
+        assert_eq!(zero.status, StaticMeshPrintabilityStatus::NotApplicable);
+    }
+
+    #[test]
+    fn printability_report_fails_closed_for_open_mesh() {
+        let open = validate_indexed_triangle_mesh(&texture_stage_mesh()).expect("valid open mesh");
+        let report = build_printability_report(StaticMeshExportFormatRequest::Stl, 0.1, &open);
+        assert_eq!(report.status, StaticMeshPrintabilityStatus::NotVerified);
+        assert!(!report.watertight);
+        assert!(!report.consistently_oriented);
+        assert!(!report.nonzero_volume);
+    }
+
     #[test]
     fn authenticated_texture_stage_requires_native_asset_identity_and_glb() {
         let expected = AssetId::new();
@@ -2205,8 +2581,9 @@ mod tests {
             build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)
                 .expect("mid surface");
         let mid_vertex_count = mid.positions_mm.len();
-        let solid = extrude_closed_face_solids(mid, 0.1, [255, 0, 0, 255], [0, 0, 255, 255], None)
-            .expect("solid extrusion");
+        let solid =
+            extrude_closed_face_solids(mid, 0.1, [255, 0, 0, 255], [0, 0, 255, 255], vec![])
+                .expect("solid extrusion");
         assert_eq!(solid.regions.len(), 12);
         assert_eq!(
             solid
@@ -2285,7 +2662,7 @@ mod tests {
             0.2,
             [255, 255, 255, 255],
             [240, 240, 240, 255],
-            None,
+            vec![],
         )
         .expect("watertight union");
         assert_eq!(solid.mesh.triangles.len(), 12);
@@ -2369,11 +2746,18 @@ mod tests {
             0.2,
             [255, 255, 255, 255],
             [240, 240, 240, 255],
-            Some(observation),
+            vec![observation],
         )
         .expect("certified hinge union");
         validate_watertight_triangle_geometry(&solid.mesh).expect("watertight bridge");
-        validate_bounded_non_self_intersecting_volume(&solid.mesh).expect("bounded outer shell");
+        validate_bounded_non_self_intersecting_volume(
+            &solid.mesh,
+            &[(
+                observation.left_front.map(kinematics_array_to_export),
+                observation.right_front.map(kinematics_array_to_export),
+            )],
+        )
+        .expect("bounded outer shell");
         let validated = validate_indexed_triangle_mesh(&solid.mesh).expect("validated mesh");
         for format in [
             StaticMeshExportFormat::BinaryStl,

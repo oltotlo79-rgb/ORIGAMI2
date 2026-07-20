@@ -73,6 +73,16 @@ const COPY = {
     sourceUnit: '生成元',
     encodedUnit: 'ファイル',
     lossTitle: '出力に含まれない情報・保証されない性質',
+    printabilityTitle: 'プリント適性・マニフォールド検査',
+    printabilityStatus: {
+      manifold_verified: '限定条件内でマニフォールドを確認',
+      not_verified: 'マニフォールドを確認できません',
+      not_applicable: '対象外（正厚のSTL/GLBのみ）',
+    },
+    printabilityChecks: '水密・向き・体積・重複・縮退・交差の保守検査',
+    printabilityCounts: '連結成分 / 検査辺 / 検査三角形ペア',
+    printabilityDisclaimer:
+      '限定的な幾何検査です。最小肉厚、支持材、プリンターやスライサーとの互換性は保証しません。',
     acknowledge: '上記の情報損失と制約を確認しました',
     cancel: 'キャンセル',
     processing: '処理中…',
@@ -119,6 +129,17 @@ const COPY = {
     sourceUnit: 'Source',
     encodedUnit: 'File',
     lossTitle: 'Information omitted and properties not guaranteed',
+    printabilityTitle: 'Printability and manifold report',
+    printabilityStatus: {
+      manifold_verified: 'Manifold verified within the bounded checks',
+      not_verified: 'Manifold not verified',
+      not_applicable: 'Not applicable (positive-thickness STL/GLB only)',
+    },
+    printabilityChecks:
+      'Watertightness, orientation, volume, duplicates, degeneracy, conservative intersection',
+    printabilityCounts: 'components / checked edges / checked triangle pairs',
+    printabilityDisclaimer:
+      'This limited geometry report does not guarantee wall thickness, supports, or printer/slicer compatibility.',
     acknowledge: 'I understand the information loss and limitations above',
     cancel: 'Cancel',
     processing: 'Processing…',
@@ -350,6 +371,34 @@ export function StaticMeshExportDialog({
                   </dd>
                 </div>
               </dl>
+
+              <section
+                className="crease-export-warnings"
+                aria-labelledby="static-mesh-printability-title"
+              >
+                <h3 id="static-mesh-printability-title">{copy.printabilityTitle}</h3>
+                <p><strong>{copy.printabilityStatus[preview.printability.status]}</strong></p>
+                <p>
+                  {copy.printabilityChecks}:{' '}
+                  {[
+                    preview.printability.watertight,
+                    preview.printability.consistentlyOriented,
+                    preview.printability.nonzeroVolume,
+                    preview.printability.noDuplicateTriangles,
+                    preview.printability.noDegenerateTriangles,
+                    preview.printability.conservativeSelfIntersectionClear,
+                  ].every(Boolean) ? 'PASS' : 'FAIL / UNKNOWN'}
+                </p>
+                <p>
+                  {copy.printabilityCounts}:{' '}
+                  {preview.printability.connectedComponentCount.toLocaleString(numberLocale)}
+                  {' / '}
+                  {preview.printability.checkedEdgeCount.toLocaleString(numberLocale)}
+                  {' / '}
+                  {preview.printability.checkedTrianglePairCount.toLocaleString(numberLocale)}
+                </p>
+                <p>{copy.printabilityDisclaimer}</p>
+              </section>
 
               <section
                 className="crease-export-warnings"

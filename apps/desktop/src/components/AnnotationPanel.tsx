@@ -15,6 +15,18 @@ type Props = {
 }
 
 const DEFAULT_COLOR = { red: 17, green: 24, blue: 39, alpha: 255 }
+const toHex = (value: number) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, '0')
+const colorHex = (color: AnnotationRecordV1['style']['color']) =>
+  `#${toHex(color.red)}${toHex(color.green)}${toHex(color.blue)}`
+function parseColor(value: string, alpha: number) {
+  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/iu.exec(value)
+  return match ? {
+    red: Number.parseInt(match[1], 16),
+    green: Number.parseInt(match[2], 16),
+    blue: Number.parseInt(match[3], 16),
+    alpha,
+  } : null
+}
 
 export function AnnotationPanel({
   locale, annotations, layers, vertices, disabled, onAdd, onUpdate, onRemove,
@@ -123,6 +135,25 @@ export function AnnotationPanel({
         <input type="number" min="0.1" max="1000" step="0.1" required disabled={disabled || locked}
           value={draft.style.font_size_mm}
           onChange={(event) => setDraft({ ...draft, style: { ...draft.style, font_size_mm: Number(event.target.value) } })} />
+      </label>
+      <label>{text('文字色', 'Text color')}
+        <input type="color" value={colorHex(draft.style.color)} disabled={disabled || locked}
+          onChange={(event) => {
+            const color = parseColor(event.target.value, draft.style.color.alpha)
+            if (color) setDraft({ ...draft, style: { ...draft.style, color } })
+          }} />
+      </label>
+      <label>{text('文字の不透明度', 'Text opacity')} (%)
+        <input type="number" min="0" max="100" step="1" disabled={disabled || locked}
+          value={Math.round(draft.style.color.alpha / 255 * 100)}
+          onChange={(event) => {
+            const percent = Number(event.target.value)
+            if (!Number.isFinite(percent)) return
+            setDraft({ ...draft, style: {
+              ...draft.style,
+              color: { ...draft.style.color, alpha: Math.round(Math.max(0, Math.min(100, percent)) * 2.55) },
+            } })
+          }} />
       </label>
       <label><input type="checkbox" checked={draft.style.bold} disabled={disabled || locked}
         onChange={(event) => setDraft({ ...draft, style: { ...draft.style, bold: event.target.checked } })} />

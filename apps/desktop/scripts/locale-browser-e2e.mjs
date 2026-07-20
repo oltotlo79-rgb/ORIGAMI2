@@ -28,6 +28,23 @@ try {
     'Straight-line stacked fold',
     'Software updates',
   ])
+  if (await page.evaluate(() => window.__ORIGAMI2_UPDATE_CHECK_CALLS__) !== 0) {
+    throw new Error('update check ran without an explicit user action')
+  }
+  const checkNow = page.getByRole('button', { name: 'Check now' })
+  await checkNow.evaluate((button) => { button.click(); button.click() })
+  await page.getByText(
+    'An update is available. Installed 1.0.0; latest release 1.1.0.',
+    { exact: true },
+  ).waitFor()
+  if (await page.evaluate(() => window.__ORIGAMI2_UPDATE_CHECK_CALLS__) !== 1) {
+    throw new Error('duplicate update checks were not suppressed')
+  }
+  const releaseLink = page.getByRole('link', { name: 'Open release 1.1.0 on GitHub' })
+  if (await releaseLink.getAttribute('href') !==
+    'https://github.com/oltotlo79-rgb/ORIGAMI2/releases/tag/v1.1.0') {
+    throw new Error('update release link escaped the canonical repository tag URL')
+  }
   await language.selectOption('ja')
   language = page.getByLabel('表示言語')
   await language.waitFor()
@@ -36,6 +53,7 @@ try {
     'GLB 2.0モデルは読み取り専用の視覚参照です。',
     '一直線の折り重ね',
     'ソフトウェア更新',
+    '更新があります。現在 1.0.0、公開版 1.1.0。',
   ])
   if (await page.getByText('Evaluate top 3 of 27 designs', { exact: true }).count() !== 0) {
     throw new Error('English candidate copy remained after Japanese locale change')

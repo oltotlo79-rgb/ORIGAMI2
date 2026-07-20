@@ -1,11 +1,35 @@
 import { createRoot } from 'react-dom/client'
 import { LanguageControl } from '../src/components/LanguageControl.tsx'
 import { LayerOrderViewer } from '../src/components/StackedFoldPanel.tsx'
+import { UpdateCheckControl } from '../src/components/UpdateCheckControl.tsx'
 import { localeStore, selectLocalizedText, useLocale } from '../src/lib/i18n.ts'
+import { createUpdateCheckSettingsStore } from '../src/lib/updateCheckSettings.ts'
 import '../src/App.css'
 
 localeStore.initialize()
 localeStore.setLocale('en')
+
+declare global {
+  interface Window { __ORIGAMI2_UPDATE_CHECK_CALLS__: number }
+}
+window.__ORIGAMI2_UPDATE_CHECK_CALLS__ = 0
+const updateSettings = createUpdateCheckSettingsStore({
+  readStoredSettings: () => null,
+  writeStoredSettings: () => undefined,
+})
+const updateClient = {
+  async checkNow() {
+    window.__ORIGAMI2_UPDATE_CHECK_CALLS__ += 1
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    return {
+      kind: 'update_available' as const,
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      releasePageUrl: 'https://github.com/oltotlo79-rgb/ORIGAMI2/releases/tag/v1.1.0',
+    }
+  },
+}
+const installedVersionProvider = { getVersion: () => '1.0.0' }
 
 const faces = [
   '018f47a2-4b7a-7cc1-8abc-778899aabbcc',
@@ -36,10 +60,12 @@ function Harness() {
       hoveredFace={null} onSelectCell={() => undefined} onSelectFace={() => undefined}
       onHoverFace={() => undefined}
     />
-    <section aria-label={t('更新状態', 'Release status')}>
-      <h2>{t('ソフトウェア更新', 'Software updates')}</h2>
-      <p>{t('更新確認は無効です。', 'Update checks are disabled.')}</p>
-    </section>
+    <UpdateCheckControl
+      localeStore={localeStore}
+      settingsStore={updateSettings}
+      client={updateClient}
+      versionProvider={installedVersionProvider}
+    />
   </main>
 }
 

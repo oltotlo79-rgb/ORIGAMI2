@@ -455,7 +455,8 @@ jobs:
             > "$notes_json"
           test "$(stat -c '%s' "$notes_json")" -le 1048576
           test "$(jq -r .name "$notes_json")" = "$RELEASE_TAG"
-          jq -er '.body | strings' "$notes_json" > "$notes_file"
+          jq -er '.body | strings | select(length > 0 and length <= 1000000)' "$notes_json" > "$notes_file"
+          test -s "$notes_file"
           created="$RUNNER_TEMP/created-draft-release.json"
           draft_created=true
           timeout 60s gh api --method POST "repos/$GH_REPO/releases" \
@@ -488,6 +489,26 @@ jobs:
           timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
             -f name="ORIGAMI2 $RELEASE_TAG" -F draft=false \
             -F prerelease="$publish_prerelease" >/dev/null
+          published="$RUNNER_TEMP/published-release.json"
+          publish_verified=false
+          for attempt in 1 2 3; do
+            if timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$published" \
+              && test "$(jq -r .id "$published")" = "$created_release_id" \
+              && test "$(jq -r .name "$published")" = "ORIGAMI2 $RELEASE_TAG" \
+              && test "$(jq -r .tag_name "$published")" = "$RELEASE_TAG" \
+              && test "$(jq -r .target_commitish "$published")" = "$RELEASE_COMMIT" \
+              && test "$(jq -r .draft "$published")" = false \
+              && test "$(jq -r .prerelease "$published")" = "$publish_prerelease" \
+              && node .github/scripts/verify_remote_release_assets.mjs release "$published"
+            then
+              publish_verified=true
+              break
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          test "$publish_verified" = true
+          test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$created_release_id"
+          test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
           created_release_id=''
           draft_created=false
 

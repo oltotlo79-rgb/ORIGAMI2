@@ -8,8 +8,9 @@ use ori_collision::{
     FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
     StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
     StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
-    StaticCollisionLimits, capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
-    diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
+    StaticCollisionLimits, UniformCycleClosureRootsV1, capture_stacked_fold_read_guard_v1,
+    diagnose_collective_hinge_path_v1, diagnose_static_collision_geometry,
+    enumerate_uniform_cycle_closure_roots_v1, propose_linear_stacked_fold_read_v1,
     reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
@@ -387,11 +388,30 @@ pub(super) async fn propose_current_stacked_fold_read(
                 pose_capability.pose(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let _closed_endpoint = prepare_stacked_fold_requested_graph_pose_v1(
+            let closed_endpoint = prepare_stacked_fold_requested_graph_pose_v1(
                 initial,
                 candidate.requested_angle_degrees(),
             )
             .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
+            match enumerate_uniform_cycle_closure_roots_v1(
+                closed_endpoint.initial().target().hinge_geometry(),
+                closed_endpoint.initial().target().audit(),
+                closed_endpoint.pose().fixed_face(),
+                candidate.requested_angle_degrees(),
+                128,
+            ) {
+                UniformCycleClosureRootsV1::Roots(roots)
+                    if roots.iter().any(|root| {
+                        root.to_bits() == candidate.requested_angle_degrees().to_bits()
+                    }) => {}
+                UniformCycleClosureRootsV1::Roots(_)
+                | UniformCycleClosureRootsV1::ProvenInfeasible { .. } => {
+                    return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+                }
+                UniformCycleClosureRootsV1::Indeterminate { .. } => {
+                    return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+                }
+            }
             // Collision and safe-stop diagnostics currently accept only an
             // issuer-bound material-tree pose. Never downgrade a proved graph
             // endpoint into that authority.

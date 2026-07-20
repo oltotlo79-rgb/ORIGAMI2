@@ -60,6 +60,8 @@ const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
+const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
+const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
 const STACKED_FOLD_READ_PROGRESS_EVENT_V1: &str = "stacked-fold-read-progress-v1";
 
@@ -216,7 +218,11 @@ fn validate_certified_path_graph_v1(
     if request.version != 1
         || request.states.is_empty()
         || request.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
+        || request.transitions.is_empty()
         || request.transitions.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+        || request.states.iter().any(|state| {
+            state.entries.is_empty() || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+        })
     {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE);
     }
@@ -330,6 +336,48 @@ struct CycleScheduleEntryRequestV1 {
 struct RationalCoefficientRequestV1 {
     numerator: i64,
     denominator: u64,
+}
+
+fn validate_request_resource_shape_v1(
+    request: &StackedFoldReadRequest,
+) -> Result<(), &'static str> {
+    if request
+        .linear_candidate_v1
+        .as_ref()
+        .is_some_and(|candidate| {
+            candidate.entries.is_empty()
+                || candidate.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+        })
+        || request
+            .certified_path_graph_v1
+            .as_ref()
+            .is_some_and(|graph| {
+                graph.states.is_empty()
+                    || graph.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
+                    || graph.transitions.is_empty()
+                    || graph.transitions.len()
+                        > ori_collision::MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+                    || graph.states.iter().any(|state| {
+                        state.entries.is_empty()
+                            || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+                    })
+            })
+        || request.cycle_schedule_v1.as_ref().is_some_and(|schedule| {
+            schedule.entries.is_empty()
+                || schedule.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+                || schedule.entries.iter().any(|entry| {
+                    entry.numerator_power_coefficients.is_empty()
+                        || entry.numerator_power_coefficients.len()
+                            > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+                        || entry.denominator_power_coefficients.is_empty()
+                        || entry.denominator_power_coefficients.len()
+                            > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+                })
+        })
+    {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -722,6 +770,7 @@ pub(super) async fn propose_current_stacked_fold_read(
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
+    validate_request_resource_shape_v1(&request).map_err(str::to_owned)?;
     let worker_permit = app_state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
@@ -2082,7 +2131,8 @@ mod tests {
                 }
             })
         };
-        assert!(serde_json::from_value::<StackedFoldReadRequest>(request()).is_ok());
+        let admitted = serde_json::from_value::<StackedFoldReadRequest>(request()).unwrap();
+        assert_eq!(validate_request_resource_shape_v1(&admitted), Ok(()));
         let mut unknown = request();
         unknown["cycleScheduleV1"]["entries"][0]["authority"] = serde_json::json!(true);
         assert!(serde_json::from_value::<StackedFoldReadRequest>(unknown).is_err());
@@ -2090,6 +2140,19 @@ mod tests {
         overflow["cycleScheduleV1"]["entries"][0]["uDomain"][0]["denominator"] =
             serde_json::json!(-1);
         assert!(serde_json::from_value::<StackedFoldReadRequest>(overflow).is_err());
+
+        let mut coefficient_exhaustion = request();
+        coefficient_exhaustion["cycleScheduleV1"]["entries"][0]["numeratorPowerCoefficients"] = serde_json::json!(
+            (0..=MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1)
+                .map(|_| serde_json::json!({"numerator": 1, "denominator": 1}))
+                .collect::<Vec<_>>()
+        );
+        let coefficient_exhaustion =
+            serde_json::from_value::<StackedFoldReadRequest>(coefficient_exhaustion).unwrap();
+        assert_eq!(
+            validate_request_resource_shape_v1(&coefficient_exhaustion),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
     }
 
     #[test]
@@ -2190,6 +2253,30 @@ mod tests {
         };
         assert_eq!(
             validate_certified_path_graph_v1(&over_limit, &live),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
+        let oversized_state = CertifiedPathGraphRequestV1 {
+            version: 1,
+            states: vec![
+                CertifiedPathGraphStateRequestV1 {
+                    entries: (0..=MAX_STACKED_FOLD_REQUEST_HINGES_V1)
+                        .map(|_| CertifiedPathGraphAngleRequestV1 {
+                            edge: ori_domain::EdgeId::new(),
+                            angle_degrees: 0.0,
+                        })
+                        .collect(),
+                },
+                state(90.0),
+            ],
+            transitions: vec![CertifiedPathGraphTransitionRequestV1 {
+                source_state: 0,
+                target_state: 1,
+            }],
+            source_state: 0,
+            target_state: 1,
+        };
+        assert_eq!(
+            validate_certified_path_graph_v1(&oversized_state, &live),
             Err(CYCLE_PATH_RESOURCE_MESSAGE)
         );
     }

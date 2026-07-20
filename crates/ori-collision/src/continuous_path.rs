@@ -701,6 +701,127 @@ mod tests {
         .unwrap()
     }
 
+    fn two_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        let points = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (450.0, 200.0),
+            (250.0, 450.0),
+            (0.0, 300.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("8200", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("9200", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend([
+            Edge {
+                id: fixed_id("9200", 6),
+                start: boundary[0],
+                end: boundary[2],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: fixed_id("9200", 7),
+                start: boundary[0],
+                end: boundary[3],
+                kind: EdgeKind::Valley,
+            },
+        ]);
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b200", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.expect("three triangles"),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("two-hinge triangle model")
+    }
+
+    fn two_hinge_strip_model() -> MaterialTreeKinematicsModel {
+        let points = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (3.0, 4.0),
+            (1.0, 4.0),
+            (0.0, 4.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("8200", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("9200", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend([
+            Edge {
+                id: fixed_id("9200", 20),
+                start: boundary[1],
+                end: boundary[6],
+                kind: EdgeKind::Mountain,
+            },
+            Edge {
+                id: fixed_id("9200", 21),
+                start: boundary[2],
+                end: boundary[5],
+                kind: EdgeKind::Mountain,
+            },
+        ]);
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b200", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.unwrap(),
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn limits_fail_closed_before_geometry_access() {
         assert_eq!(MAX_STACKED_FOLD_PATH_SAMPLES_V1, 64);
@@ -748,6 +869,55 @@ mod tests {
             origin,
             ori_kinematics::Point3::new(1.0, f64::from_bits(1), 0.0).unwrap(),
         ));
+    }
+
+    #[test]
+    fn separated_two_hinge_strip_gets_interval_clearance_certificate() {
+        let model = two_hinge_strip_model();
+        assert_eq!(model.face_ids().len(), 3);
+        assert_eq!(model.hinges().len(), 2);
+        let middle = model
+            .face_ids()
+            .iter()
+            .copied()
+            .find(|face| {
+                model
+                    .hinges()
+                    .iter()
+                    .filter(|hinge| hinge.left_face() == *face || hinge.right_face() == *face)
+                    .count()
+                    == 2
+            })
+            .unwrap();
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(middle), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let result = diagnose_collective_hinge_path_v1(
+            &model,
+            &pose,
+            &moving,
+            10.0,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(result.continuous_clearance_certified());
+        assert_eq!(
+            result.continuous_certificate_model_id(),
+            Some(STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        );
+        assert_eq!(result.safe_stop_angle_degrees(), 10.0);
     }
 
     #[test]
@@ -819,5 +989,38 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn three_triangle_positive_thickness_tree_stays_closed_without_all_pair_proof() {
+        let model = two_hinge_triangle_model();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let initial_angles = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let initial = model
+            .solve(Some(model.face_ids()[0]), &initial_angles)
+            .expect("initial tree pose");
+        for requested in [10.0, 30.0, 45.0, 60.0] {
+            let diagnostic = diagnose_collective_hinge_path_v1(
+                &model,
+                &initial,
+                &moving,
+                requested,
+                0.1,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            )
+            .expect("bounded fail-closed diagnosis");
+            assert!(!diagnostic.continuous_clearance_certified());
+            assert_eq!(diagnostic.safe_stop_angle_degrees(), 0.0);
+        }
     }
 }

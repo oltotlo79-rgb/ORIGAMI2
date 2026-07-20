@@ -70,6 +70,7 @@
 #![forbid(unsafe_code)]
 
 mod graph;
+mod interval;
 mod schedule;
 mod transform;
 mod tree;
@@ -81,6 +82,7 @@ pub use graph::{
     CandidateFaceTransform, ClosedMaterialHingeGraphPose, MaterialHingeClosureCertificate,
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
 };
+pub use interval::{OutwardIntervalV1, OutwardIntervalErrorV1};
 pub use schedule::{
     CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
     CycleSchedulePrepareErrorV1, PoleFreeBernsteinCertificateV1, RationalCoefficientV1,

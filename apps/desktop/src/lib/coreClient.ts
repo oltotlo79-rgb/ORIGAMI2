@@ -1431,7 +1431,9 @@ export function normalizeAssignedLocalSufficiencyResponseV1(
     vertex: string
   }>,
 ): AssignedLocalSufficiencyResponseV1 | null {
-    if (!isRecord(value) || !isRecord(value.result)) return null
+    const record = (candidate: unknown): candidate is Record<string, unknown> =>
+      typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
+    if (!record(value) || !record(value.result)) return null
     const result = value.result
     const uuid = (candidate: unknown) =>
       typeof candidate === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(candidate)
@@ -1452,7 +1454,7 @@ export function normalizeAssignedLocalSufficiencyResponseV1(
         && result.reductions.length === result.reduction_steps
         && result.reductions.length <= 128
         && result.reductions.every((step) =>
-          isRecord(step)
+          record(step)
           && Object.keys(step).sort().join(',') === 'first_crease,second_crease'
           && uuid(step.first_crease)
           && uuid(step.second_crease)

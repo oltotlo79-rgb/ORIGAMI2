@@ -19,6 +19,19 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   assert.doesNotMatch(workflow, /pull_request:/u)
 })
 
+test('CI and formal release share the strict macOS bundle contract', () => {
+  const ciWorkflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const releaseWorkflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const verifier = readFileSync(join(root, '.github/scripts/verify_macos_bundle.sh'), 'utf8')
+  assert.match(ciWorkflow, /\.\/\.github\/scripts\/verify_macos_bundle\.sh/u)
+  assert.match(ciWorkflow, /ORIGAMI2-macos-app\.tar\.gz/u)
+  assert.match(releaseWorkflow, /verify_macos_bundle\.sh target\/release\/bundle\/macos\/ORIGAMI2\.app/u)
+  assert.match(verifier, /CFBundleIdentifier/u)
+  assert.match(verifier, /CFBundleShortVersionString/u)
+  assert.match(verifier, /\[\[ -x "\$bundle\/Contents\/MacOS\/\$executable_name" \]\]/u)
+  assert.match(verifier, /c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f/u)
+})
+
 test('dry-run validates without a tag or GitHub mutation', () => {
   const output = execFileSync('node', ['.github/scripts/validate_formal_release.mjs'], {
     cwd: root,

@@ -340,8 +340,14 @@ jobs:
         run: npm run bundle:macos:ci
       - name: Verify macOS bundle resources
         shell: bash
-        run: |
-          test -f target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/fonts/NotoSansJP-Variable.ttf
-          test -f target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/licenses/NotoSansJP-OFL.txt
-          echo "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f  target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/fonts/NotoSansJP-Variable.ttf" | shasum -a 256 -c -
-          echo "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9  target/release/bundle/macos/ORIGAMI2.app/Contents/Resources/licenses/NotoSansJP-OFL.txt" | shasum -a 256 -c -
+        run: ./.github/scripts/verify_macos_bundle.sh
+      - name: Archive verified macOS app bundle
+        shell: bash
+        run: tar -C target/release/bundle/macos -czf ORIGAMI2-macos-app.tar.gz ORIGAMI2.app
+      - name: Upload verified macOS app bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ORIGAMI2-macos-app-${{ github.run_id }}
+          path: ORIGAMI2-macos-app.tar.gz
+          if-no-files-found: error
+          retention-days: 7

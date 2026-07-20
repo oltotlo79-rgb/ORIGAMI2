@@ -88,6 +88,7 @@ import {
   previewCreasePatternExport,
   previewFoldImport,
   previewGeometricConstraintSolve,
+  previewGeometricConstraintEdgeSolve,
   previewInstructionExport,
   previewInstructionMeshAnimation,
   previewStaticMeshExport,
@@ -2182,6 +2183,29 @@ function App() {
         projectInstanceId,
         token,
       )), [runNativeEdit])
+
+  const previewConstraintEdgeSolve = useCallback((
+    edgeId: string,
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+  ) => {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current || recoveryBlockingRef.current) {
+      return Promise.reject(new Error('project unavailable'))
+    }
+    return previewGeometricConstraintEdgeSolve(
+      current.project_id,
+      current.revision,
+      current.project_instance_id,
+      edgeId,
+      startX,
+      startY,
+      endX,
+      endY,
+    )
+  }, [])
 
   const startGlobalFlatFoldability = useCallback((
     timeLimitSeconds: GlobalFlatFoldabilityTimePreset,
@@ -6599,6 +6623,7 @@ function App() {
               selectedVertexPosition={
                 nativeVertices.find(({ id }) => id === selectedVertexId) ?? null
               }
+              selectedEdgeGeometry={selectedLine}
               edges={nativeLines}
               vertices={nativeVertices}
               disabled={coreBusy || geometricConstraintDocumentInvalid}
@@ -6612,6 +6637,7 @@ function App() {
               }}
               onRetryAnalysis={retryGeometricConstraintAnalysis}
               onPreviewSolve={previewConstraintSolve}
+              onPreviewEdgeSolve={previewConstraintEdgeSolve}
               onApplySolve={applyConstraintSolve}
             />
           )}

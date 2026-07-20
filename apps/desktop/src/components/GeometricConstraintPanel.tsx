@@ -89,6 +89,7 @@ type GeometricConstraintPanelProps = {
   selectedEdgeId: string | null
   selectedVertexId?: string | null
   selectedVertexPosition?: Readonly<{ x: number; y: number }> | null
+  selectedEdgeGeometry?: Readonly<{ id: string; x1: number; y1: number; x2: number; y2: number }> | null
   edges?: readonly Readonly<{ id: string }>[]
   vertices?: readonly Readonly<{ id: string }>[]
   disabled: boolean
@@ -99,6 +100,9 @@ type GeometricConstraintPanelProps = {
   onRetryAnalysis: () => void
   onPreviewSolve?: (vertexId: string, x: number, y: number) => Promise<GeometricConstraintSolvePreview>
   onApplySolve?: (token: string) => Promise<boolean>
+  onPreviewEdgeSolve?: (
+    edgeId: string, startX: number, startY: number, endX: number, endY: number,
+  ) => Promise<GeometricConstraintSolvePreview>
   localeStore?: LocaleStore
 }
 
@@ -110,6 +114,7 @@ export function GeometricConstraintPanel({
   selectedEdgeId,
   selectedVertexId = null,
   selectedVertexPosition = null,
+  selectedEdgeGeometry = null,
   edges = [],
   vertices = [],
   disabled,
@@ -120,6 +125,7 @@ export function GeometricConstraintPanel({
   onRetryAnalysis,
   onPreviewSolve,
   onApplySolve,
+  onPreviewEdgeSolve,
   localeStore: localeStore_ = localeStore,
 }: GeometricConstraintPanelProps) {
   const locale = useLocale(localeStore_)
@@ -135,6 +141,10 @@ export function GeometricConstraintPanel({
   const [solvePreview, setSolvePreview] = useState<GeometricConstraintSolvePreview | null>(null)
   const [solveError, setSolveError] = useState(false)
   const [solveBusy, setSolveBusy] = useState(false)
+  const [edgeDeltaX, setEdgeDeltaX] = useState('0')
+  const [edgeDeltaY, setEdgeDeltaY] = useState('0')
+  const [edgeRotation, setEdgeRotation] = useState('0')
+  const [edgeScale, setEdgeScale] = useState('1')
   const edgeIds = uniqueIds(edges.map(({ id }) => id), selectedEdgeId)
   const vertexIds = uniqueIds(vertices.map(({ id }) => id), selectedVertexId)
   const creationFields = CONSTRAINT_CREATION_FIELDS[creationKind]
@@ -232,6 +242,24 @@ export function GeometricConstraintPanel({
               {' · '}{localized(locale, '反復', 'Iterations')}: {solvePreview.iterations}
               {' · '}residual: {solvePreview.maximumResidual.toExponential(2)}
             </p>
+            <p>
+              rank {solvePreview.rank}/{solvePreview.equationCount}
+              {' · '}DOF {solvePreview.degreesOfFreedom}
+              {' · '}condition {solvePreview.conditionEstimate.toExponential(2)}
+              {' · '}{localized(
+                locale,
+                solvePreview.systemClassification === 'under_constrained'
+                  ? '拘束不足'
+                  : solvePreview.systemClassification === 'over_constrained'
+                    ? '過剰拘束'
+                    : '完全拘束',
+                solvePreview.systemClassification === 'under_constrained'
+                  ? 'Under-constrained'
+                  : solvePreview.systemClassification === 'over_constrained'
+                    ? 'Over-constrained'
+                    : 'Well-constrained',
+              )}
+            </p>
             <svg viewBox="-2 -2 4 4" aria-label={localized(locale, '移動プレビュー', 'Move preview')}>
               {solvePreview.changedVertices.slice(0, 256).map((vertex) => (
                 <circle
@@ -273,6 +301,52 @@ export function GeometricConstraintPanel({
             )}
           </p>
         )}
+      </fieldset>
+      <fieldset disabled={disabled || solveBusy || selectedEdgeGeometry === null}>
+        <legend>{localized(locale, '拘束を保った辺操作', 'Constraint-preserving edge transform')}</legend>
+        {[
+          ['Edge delta X', edgeDeltaX, setEdgeDeltaX],
+          ['Edge delta Y', edgeDeltaY, setEdgeDeltaY],
+          ['Edge rotation (degrees)', edgeRotation, setEdgeRotation],
+          ['Edge length scale', edgeScale, setEdgeScale],
+        ].map(([label, value, setter]) => (
+          <label className="field" key={label as string}>
+            {label as string}
+            <input
+              aria-label={label as string}
+              value={value as string}
+              onChange={(event) => (setter as (value: string) => void)(event.currentTarget.value)}
+            />
+          </label>
+        ))}
+        <button
+          type="button"
+          disabled={!onPreviewEdgeSolve || !selectedEdgeGeometry}
+          onClick={() => {
+            if (!onPreviewEdgeSolve || !selectedEdgeGeometry) return
+            const values = [edgeDeltaX, edgeDeltaY, edgeRotation, edgeScale].map(Number)
+            if (values.some((value) => !Number.isFinite(value)) || values[3]! <= 0) {
+              setSolveError(true)
+              return
+            }
+            const [dx, dy, degrees, scale] = values as [number, number, number, number]
+            const centerX = (selectedEdgeGeometry.x1 + selectedEdgeGeometry.x2) / 2 + dx
+            const centerY = (selectedEdgeGeometry.y1 + selectedEdgeGeometry.y2) / 2 + dy
+            const radians = degrees * Math.PI / 180
+            const halfX = (selectedEdgeGeometry.x2 - selectedEdgeGeometry.x1) * scale / 2
+            const halfY = (selectedEdgeGeometry.y2 - selectedEdgeGeometry.y1) * scale / 2
+            const rotatedX = halfX * Math.cos(radians) - halfY * Math.sin(radians)
+            const rotatedY = halfX * Math.sin(radians) + halfY * Math.cos(radians)
+            setSolveBusy(true)
+            void onPreviewEdgeSolve(
+              selectedEdgeGeometry.id,
+              centerX - rotatedX, centerY - rotatedY,
+              centerX + rotatedX, centerY + rotatedY,
+            ).then(setSolvePreview).catch(() => setSolveError(true)).finally(() => setSolveBusy(false))
+          }}
+        >
+          {localized(locale, '辺をプレビュー', 'Preview edge transform')}
+        </button>
       </fieldset>
       {selectedEdgeId === null && (
         <p className="muted">

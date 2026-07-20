@@ -38,6 +38,10 @@ pub struct ConstraintSolvePreviewV1 {
     pub positions: Vec<(VertexId, Point2)>,
     pub iterations: usize,
     pub maximum_residual: f64,
+    pub rank: usize,
+    pub degrees_of_freedom: usize,
+    pub equation_count: usize,
+    pub condition_estimate: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -69,8 +73,26 @@ pub fn solve_geometric_constraints_v1(
     driving_position: Point2,
     limits: ConstraintSolveLimitsV1,
 ) -> Result<ConstraintSolvePreviewV1, ConstraintSolveErrorV1> {
+    solve_geometric_constraints_with_drivers_v1(
+        pattern,
+        document,
+        &[(driving_vertex, driving_position)],
+        limits,
+    )
+}
+
+pub fn solve_geometric_constraints_with_drivers_v1(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    driving_positions: &[(VertexId, Point2)],
+    limits: ConstraintSolveLimitsV1,
+) -> Result<ConstraintSolvePreviewV1, ConstraintSolveErrorV1> {
     validate_limits(limits)?;
-    if !driving_position.x.is_finite() || !driving_position.y.is_finite() {
+    if driving_positions.is_empty()
+        || driving_positions
+            .iter()
+            .any(|(_, point)| !point.x.is_finite() || !point.y.is_finite())
+    {
         return Err(ConstraintSolveErrorV1::NonFiniteDrivingPosition);
     }
     prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
@@ -85,16 +107,20 @@ pub fn solve_geometric_constraints_v1(
         .iter()
         .map(|vertex| (vertex.id, vertex.position))
         .collect::<HashMap<_, _>>();
-    if positions.insert(driving_vertex, driving_position).is_none() {
-        return Err(ConstraintSolveErrorV1::DrivingVertexMissing);
+    let original = positions.clone();
+    let mut drivers = HashSet::with_capacity(driving_positions.len());
+    for (vertex, point) in driving_positions {
+        if !drivers.insert(*vertex) || positions.insert(*vertex, *point).is_none() {
+            return Err(ConstraintSolveErrorV1::DrivingVertexMissing);
+        }
     }
     let involved = involved_vertices(pattern, document)?;
-    if !involved.contains(&driving_vertex) {
+    if drivers.iter().any(|vertex| !involved.contains(vertex)) {
         return Err(ConstraintSolveErrorV1::UnderConstrained);
     }
     let mut variables = involved
         .into_iter()
-        .filter(|vertex| *vertex != driving_vertex)
+        .filter(|vertex| !drivers.contains(vertex))
         .collect::<Vec<_>>();
     variables.sort_by_key(VertexId::canonical_bytes);
     if variables.is_empty() {
@@ -102,13 +128,16 @@ pub fn solve_geometric_constraints_v1(
         let maximum_residual = maximum_absolute(&residuals);
         return (maximum_residual <= limits.residual_tolerance)
             .then_some(ConstraintSolvePreviewV1 {
-                positions: vec![(driving_vertex, driving_position)],
+                positions: driving_positions.to_vec(),
                 iterations: 0,
                 maximum_residual,
+                rank: 0,
+                degrees_of_freedom: 0,
+                equation_count: residuals.len(),
+                condition_estimate: 1.0,
             })
             .ok_or(ConstraintSolveErrorV1::NonConvergent);
     }
-    let original = positions.clone();
     let dimension = variables
         .len()
         .checked_mul(2)
@@ -118,6 +147,7 @@ pub fn solve_geometric_constraints_v1(
         let hard = residuals(pattern, document, &positions)?;
         let maximum_residual = maximum_absolute(&hard);
         if maximum_residual <= limits.residual_tolerance {
+            let diagnostics = rank_diagnostics(pattern, document, &positions, &variables)?;
             return Ok(ConstraintSolvePreviewV1 {
                 positions: positions
                     .into_iter()
@@ -125,6 +155,10 @@ pub fn solve_geometric_constraints_v1(
                     .collect(),
                 iterations: iteration,
                 maximum_residual,
+                rank: diagnostics.0,
+                degrees_of_freedom: dimension.saturating_sub(diagnostics.0),
+                equation_count: hard.len(),
+                condition_estimate: diagnostics.1,
             });
         }
         let rows = hard
@@ -188,6 +222,64 @@ pub fn solve_geometric_constraints_v1(
         }
     }
     Err(ConstraintSolveErrorV1::NonConvergent)
+}
+
+fn rank_diagnostics(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    positions: &HashMap<VertexId, Point2>,
+    variables: &[VertexId],
+) -> Result<(usize, f64), ConstraintSolveErrorV1> {
+    let base = residuals(pattern, document, positions)?;
+    let columns = variables.len() * 2;
+    let mut matrix = vec![vec![0.0; columns]; base.len()];
+    for column in 0..columns {
+        let mut shifted_positions = positions.clone();
+        let point = shifted_positions
+            .get_mut(&variables[column / 2])
+            .expect("indexed variable");
+        if column % 2 == 0 {
+            point.x += DERIVATIVE_STEP;
+        } else {
+            point.y += DERIVATIVE_STEP;
+        }
+        for (row, shifted) in residuals(pattern, document, &shifted_positions)?
+            .into_iter()
+            .enumerate()
+        {
+            matrix[row][column] = (shifted - base[row]) / DERIVATIVE_STEP;
+        }
+    }
+    let mut rank = 0;
+    let mut smallest = f64::INFINITY;
+    let mut largest: f64 = 0.0;
+    for column in 0..columns {
+        let Some(pivot) = (rank..matrix.len()).max_by(|left, right| {
+            matrix[*left][column]
+                .abs()
+                .total_cmp(&matrix[*right][column].abs())
+        }) else {
+            break;
+        };
+        let value = matrix[pivot][column].abs();
+        if value <= 1e-10 {
+            continue;
+        }
+        matrix.swap(rank, pivot);
+        smallest = smallest.min(value);
+        largest = largest.max(value);
+        for row in (rank + 1)..matrix.len() {
+            let factor = matrix[row][column] / matrix[rank][column];
+            for index in column..columns {
+                matrix[row][index] -= factor * matrix[rank][index];
+            }
+        }
+        rank += 1;
+        if rank == matrix.len() {
+            break;
+        }
+    }
+    Ok((rank, if rank == 0 { 1.0 } else { largest / smallest }))
 }
 
 /// Verifies a complete candidate pattern against every solver-supported hard constraint.
@@ -554,6 +646,29 @@ mod tests {
             ),
             Err(ConstraintSolveErrorV1::WorkLimitExceeded)
         );
+    }
+
+    #[test]
+    fn two_vertex_driver_supports_edge_rotation_and_length_change() {
+        let (pattern, document, start) = single_edge(
+            Point2 { x: 0.0, y: 0.0 },
+            Point2 { x: 4.0, y: 0.0 },
+            |edge| vec![GeometricConstraintKindV1::Vertical { edge }],
+        );
+        let end = pattern.vertices[1].id;
+        let preview = solve_geometric_constraints_with_drivers_v1(
+            &pattern,
+            &document,
+            &[
+                (start, Point2 { x: 3.0, y: 2.0 }),
+                (end, Point2 { x: 3.0, y: 9.0 }),
+            ],
+            ConstraintSolveLimitsV1::default(),
+        )
+        .expect("vertical translated, rotated, and resized edge");
+        assert_eq!(preview.positions.len(), 2);
+        assert_eq!(preview.maximum_residual, 0.0);
+        assert_eq!(preview.degrees_of_freedom, 0);
     }
 
     fn driving_placeholder() -> VertexId {

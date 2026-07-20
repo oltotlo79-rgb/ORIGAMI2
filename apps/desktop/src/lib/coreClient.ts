@@ -1282,7 +1282,34 @@ export type GeometricConstraintSolvePreview = {
   revision: number
   iterations: number
   maximumResidual: number
+  rank: number
+  degreesOfFreedom: number
+  equationCount: number
+  conditionEstimate: number
+  systemClassification: 'under_constrained' | 'over_constrained' | 'well_constrained'
   changedVertices: Array<{ vertexId: string; x: number; y: number }>
+}
+
+export function previewGeometricConstraintEdgeSolve(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  drivingEdge: string,
+  startXMm: number,
+  startYMm: number,
+  endXMm: number,
+  endYMm: number,
+) {
+  return invoke<GeometricConstraintSolvePreview>('preview_geometric_constraint_edge_solve', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    drivingEdge,
+    startXMm,
+    startYMm,
+    endXMm,
+    endYMm,
+  })
 }
 
 export function previewGeometricConstraintSolve(

@@ -30,6 +30,11 @@ describe('GeometricConstraintPanel', () => {
       revision: 7,
       iterations: 3,
       maximumResidual: 1e-9,
+      rank: 1,
+      degreesOfFreedom: 1,
+      equationCount: 1,
+      conditionEstimate: 1,
+      systemClassification: 'under_constrained',
       changedVertices: [{ vertexId: IDS[6], x: 12, y: 8 }],
     })
     const onApplySolve = vi.fn().mockResolvedValue(true)

@@ -16,7 +16,8 @@ pub use applied_pose::{
 };
 pub use constraint_solver::{
     ConstraintSolveErrorV1, ConstraintSolveLimitsV1, ConstraintSolvePreviewV1,
-    solve_geometric_constraints_v1, verify_geometric_constraint_solution_v1,
+    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1,
+    verify_geometric_constraint_solution_v1,
 };
 pub use constraints::{
     ConstraintEdgeRoleV1, ConstraintId, ConstraintPreflightV1, ConstraintScalarFieldV1,

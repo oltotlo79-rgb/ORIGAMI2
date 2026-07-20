@@ -4685,6 +4685,35 @@ function App() {
     }
   }
 
+  function moveBenchmarkVertex(vertexId: string, x: number, y: number) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+    setBenchmarkRun((current) => {
+      if (!current || !current.vertices.some(({ id }) => id === vertexId)) {
+        return current
+      }
+      return {
+        ...current,
+        vertices: current.vertices.map((vertex) =>
+          vertex.id === vertexId ? { ...vertex, x, y } : vertex),
+        lines: current.lines.map((line) => ({
+          ...line,
+          x1: line.startVertexId === vertexId ? x : line.x1,
+          y1: line.startVertexId === vertexId ? y : line.y1,
+          x2: line.endVertexId === vertexId ? x : line.x2,
+          y2: line.endVertexId === vertexId ? y : line.y2,
+        })),
+      }
+    })
+  }
+
+  function deleteBenchmarkLine(lineId: string) {
+    setBenchmarkRun((current) => {
+      if (!current || !current.lines.some(({ id }) => id === lineId)) return current
+      return { ...current, lines: current.lines.filter(({ id }) => id !== lineId) }
+    })
+    setSelectedLineId(null)
+  }
+
   function recordBenchmarkRenderMetrics(metrics: CreaseCanvasRenderMetrics) {
     const run = benchmarkRun
     if (!run || !Object.is(metrics.requestId, run.requestId)) return
@@ -5070,7 +5099,7 @@ function App() {
                   }
                 : selectCanvasVertex}
               onMoveVertex={benchmarkRun
-                ? undefined
+                ? moveBenchmarkVertex
                 : (vertexId, x, y) => {
                     if (nativeLayerView.lockedVertexIds.has(vertexId)) return
                     void runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -5473,12 +5502,21 @@ function App() {
                   </div>
                 </dl>
                 {benchmarkRun ? (
-                  <p className="muted">
-                    {text({
-                      ja: '性能テストの図は選択・計測のみ可能です。',
-                      en: 'The benchmark pattern supports selection and measurement only.',
-                    })}
-                  </p>
+                  <>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => deleteBenchmarkLine(selectedLine.id)}
+                    >
+                      {text({ ja: '性能データの線を削除', en: 'Delete benchmark line' })}
+                    </button>
+                    <p className="muted">
+                      {text({
+                        ja: '1万本データ上で選択・計測・頂点移動・線削除を検証できます。',
+                        en: 'Selection, measurement, vertex movement, and line deletion are available on the 10,000-edge data.',
+                      })}
+                    </p>
+                  </>
                 ) : (
                   <>
                   <form onSubmit={(event) => void submitMoveSelectedEdge(event)}>
@@ -5810,8 +5848,8 @@ function App() {
                 </dl>
                 <p className="muted">
                   {text({
-                    ja: '性能テストの図は選択・計測のみ可能です。',
-                    en: 'The benchmark pattern supports selection and measurement only.',
+                    ja: '性能データの頂点は2D上でドラッグして移動できます。',
+                    en: 'Drag the benchmark vertex in 2D to move it and its incident lines.',
                   })}
                 </p>
               </>

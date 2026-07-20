@@ -7731,6 +7731,16 @@ function App() {
                         const assessment = beginnerCandidates.plan_assessments[index]
                         const assessmentReason = assessment?.reason === 'geometry_invalid'
                           ? text({ ja: '形状検証に失敗しました。', en: 'Geometry validation failed.' })
+                          : assessment?.reason === 'global_flat_foldability_proven'
+                            ? text({ ja: '大域平坦折り可能性が証明されました。', en: 'Global flat foldability is proven.' })
+                            : assessment?.reason === 'global_flat_foldability_impossible'
+                              ? text({ ja: '大域平坦折りが不可能と証明されました。', en: 'Global flat foldability is proven impossible.' })
+                              : assessment?.reason === 'global_resource_limit'
+                                ? text({ ja: '大域検証は資源上限に達したため未確定です。', en: 'Global validation is indeterminate because its resource limit was reached.' })
+                                : assessment?.reason === 'global_timeout'
+                                  ? text({ ja: '大域検証は時間上限に達したため未確定です。', en: 'Global validation is indeterminate because its time limit was reached.' })
+                                : assessment?.reason === 'global_indeterminate'
+                                  ? text({ ja: '大域平坦折り検証では結論を確定できませんでした。', en: 'Global flat-foldability validation was indeterminate.' })
                           : assessment?.reason === 'necessary_conditions_violated'
                             ? text({ ja: '局所平坦折りの必要条件に違反しています。', en: 'Local flat-foldability necessary conditions are violated.' })
                             : assessment?.reason === 'local_analysis_blocked'

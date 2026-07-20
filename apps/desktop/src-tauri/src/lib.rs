@@ -84,10 +84,13 @@ use numeric_expression::{
 use ori_core::{
     BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
     DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
-    GeometricConstraintUnknownReasonV1, IntersectionEdgeTarget, JunctionVertexIntent,
-    LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus, MAX_EDITOR_HISTORY_ENTRIES,
-    MirrorAxisV1, MirrorSelectionModeV1, PaperValidationIssue, PointPolygonRelation,
-    TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
+    GeometricConstraintUnknownReasonV1, GlobalFlatFoldabilityCheckpoint,
+    GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityObserver,
+    GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityUnknownReason, IntersectionEdgeTarget,
+    JunctionVertexIntent, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
+    MAX_EDITOR_HISTORY_ENTRIES, MirrorAxisV1, MirrorSelectionModeV1, PaperValidationIssue,
+    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
+    VertexPositionUpdate, analyze_global_flat_foldability_with_observer,
     analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
     segment_midpoint_polygon_relation, solve_geometric_constraints_v1,
     solve_geometric_constraints_with_drivers_v1, validate_crease_pattern, validate_paper,
@@ -1443,6 +1446,18 @@ struct BeginnerGeneratedPlanAssessment {
     reason: &'static str,
 }
 
+struct BeginnerGlobalFoldabilityDeadline(std::time::Instant);
+
+impl GlobalFlatFoldabilityObserver for BeginnerGlobalFoldabilityDeadline {
+    fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+        if std::time::Instant::now() >= self.0 {
+            GlobalFlatFoldabilityCheckpoint::DeadlineReached
+        } else {
+            GlobalFlatFoldabilityCheckpoint::Continue
+        }
+    }
+}
+
 fn assess_beginner_generated_plan(
     paper: &Paper,
     current_pattern: &CreasePattern,
@@ -1505,7 +1520,7 @@ fn assess_beginner_generated_plan(
         };
     }
     let local = analyze_local_flat_foldability(paper, &candidate_pattern);
-    let (proof_scope, apply_allowed, reason) = match local.status {
+    let (mut proof_scope, mut apply_allowed, mut reason) = match local.status {
         LocalFlatFoldabilityReportStatus::NecessaryConditionsSatisfied => {
             ("necessary", true, "necessary_conditions_satisfied")
         }
@@ -1520,6 +1535,79 @@ fn assess_beginner_generated_plan(
             ("indeterminate", true, "local_analysis_indeterminate")
         }
     };
+    if apply_allowed {
+        const MAX_CANDIDATE_GLOBAL_RECORDS: usize = 2_048;
+        if candidate_pattern.vertices.len() + candidate_pattern.edges.len()
+            > MAX_CANDIDATE_GLOBAL_RECORDS
+        {
+            proof_scope = "indeterminate";
+            reason = "global_resource_limit";
+        } else {
+            let candidate_editor =
+                EditorState::with_paper(candidate_pattern.clone(), paper.clone());
+            let identity_namespace = ProjectId::new();
+            let topology = candidate_editor
+                .topology_analysis_input(identity_namespace)
+                .analyze();
+            if let Some(snapshot) = topology.simulation_snapshot() {
+                let mut observer = BeginnerGlobalFoldabilityDeadline(
+                    std::time::Instant::now() + std::time::Duration::from_millis(250),
+                );
+                match analyze_global_flat_foldability_with_observer(
+                    GlobalFlatFoldabilityInput::current_with_geometry(
+                        identity_namespace,
+                        paper,
+                        &candidate_pattern,
+                        snapshot,
+                        &local,
+                    ),
+                    GlobalFlatFoldabilityLimits::default(),
+                    &mut observer,
+                ) {
+                    Ok(report) => match report.outcome {
+                        GlobalFlatFoldabilityOutcome::Possible { .. } => {
+                            proof_scope = "sufficient";
+                            reason = "global_flat_foldability_proven";
+                        }
+                        GlobalFlatFoldabilityOutcome::Impossible { .. } => {
+                            proof_scope = "necessary";
+                            apply_allowed = false;
+                            reason = "global_flat_foldability_impossible";
+                        }
+                        GlobalFlatFoldabilityOutcome::Unknown {
+                            reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. },
+                        } => {
+                            proof_scope = "indeterminate";
+                            reason = "global_timeout";
+                        }
+                        GlobalFlatFoldabilityOutcome::Unknown {
+                            reason:
+                                GlobalFlatFoldabilityUnknownReason::ResourceLimitReached { .. }
+                                | GlobalFlatFoldabilityUnknownReason::ExactNumberLimitReached { .. }
+                                | GlobalFlatFoldabilityUnknownReason::OverlapArrangementLimitReached {
+                                    ..
+                                }
+                                | GlobalFlatFoldabilityUnknownReason::ConstraintLimitReached { .. },
+                        } => {
+                            proof_scope = "indeterminate";
+                            reason = "global_resource_limit";
+                        }
+                        GlobalFlatFoldabilityOutcome::Unknown { .. } => {
+                            proof_scope = "indeterminate";
+                            reason = "global_indeterminate";
+                        }
+                    },
+                    Err(_) => {
+                        proof_scope = "indeterminate";
+                        reason = "global_indeterminate";
+                    }
+                }
+            } else {
+                proof_scope = "indeterminate";
+                reason = "global_indeterminate";
+            }
+        }
+    }
     BeginnerGeneratedPlanAssessment {
         kind: plan.kind,
         expected_candidate_edge_id,

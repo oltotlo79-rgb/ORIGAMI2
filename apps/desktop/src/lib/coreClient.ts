@@ -567,6 +567,11 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
     | 'local_analysis_blocked'
     | 'local_theorem_not_applicable'
     | 'local_analysis_indeterminate'
+    | 'global_flat_foldability_proven'
+    | 'global_flat_foldability_impossible'
+    | 'global_resource_limit'
+    | 'global_timeout'
+    | 'global_indeterminate'
 }
 
 export type BeginnerGeneratedPlanV1 = {
@@ -762,11 +767,21 @@ function normalizeBeginnerCandidateResponse(
         'geometry_invalid', 'necessary_conditions_satisfied',
         'necessary_conditions_violated', 'local_analysis_blocked',
         'local_theorem_not_applicable', 'local_analysis_indeterminate',
+        'global_flat_foldability_proven', 'global_flat_foldability_impossible',
+        'global_resource_limit', 'global_timeout', 'global_indeterminate',
       ].includes(String(record.reason))
       || (record.apply_allowed === false
-        && !['geometry_invalid', 'necessary_conditions_violated', 'local_analysis_blocked']
+        && !['geometry_invalid', 'necessary_conditions_violated', 'local_analysis_blocked',
+          'global_flat_foldability_impossible']
           .includes(String(record.reason)))
       || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true)
+      || (record.reason === 'global_flat_foldability_proven'
+        && (record.proof_scope !== 'sufficient' || record.apply_allowed !== true))
+      || (record.reason === 'global_flat_foldability_impossible'
+        && (record.proof_scope !== 'necessary' || record.apply_allowed !== false))
+      || (['global_resource_limit', 'global_timeout', 'global_indeterminate']
+        .includes(String(record.reason))
+        && record.proof_scope !== 'indeterminate')
     ) return null
     return Object.freeze({
       kind: record.kind,

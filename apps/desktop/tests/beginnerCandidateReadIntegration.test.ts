@@ -92,6 +92,18 @@ test('generated candidates are geometry-gated with explicit local proof scope', 
   assert.match(app, /!assessment\.apply_allowed/)
 })
 
+test('generated candidates receive bounded global proof outcomes before apply', () => {
+  assert.match(native, /MAX_CANDIDATE_GLOBAL_RECORDS/)
+  assert.match(native, /analyze_global_flat_foldability/)
+  assert.match(native, /GlobalFlatFoldabilityOutcome::Possible/)
+  assert.match(native, /GlobalFlatFoldabilityOutcome::Impossible/)
+  assert.match(native, /global_flat_foldability_impossible/)
+  assert.match(client, /global_flat_foldability_proven/)
+  assert.match(client, /global_resource_limit/)
+  assert.match(app, /大域平坦折り可能性が証明されました/)
+  assert.match(app, /Global validation is indeterminate because its resource limit was reached/)
+})
+
 test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
   assert.match(native, /fn apply_beginner_generated_plan/)
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)

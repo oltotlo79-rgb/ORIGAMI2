@@ -16,6 +16,10 @@ use std::{
 };
 
 use num_bigint::{BigInt, Sign};
+use ori_collision::{
+    SingleHingeThicknessBoundaryObservationV1, prepare_single_hinge_thickness_boundary_v1,
+    revalidate_single_hinge_thickness_boundary_v1,
+};
 use ori_domain::{AssetId, ProjectId, VertexId};
 use ori_formats::{
     ClosedSolidTriangleRegionV1, EmbeddedBaseColorTextureV1, EmbeddedTextureMediaTypeV1,
@@ -527,11 +531,28 @@ fn capture_export_source(
 }
 
 fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticMeshExport, String> {
-    source
+    let bound = source
         .model
         .bind_pose(&source.pose)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let face_count = source.pose.face_ids().len();
+    let hinge_union = if source.paper_thickness_mm > 0.0 {
+        prepare_single_hinge_thickness_boundary_v1(bound, source.paper_thickness_mm)
+            .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?
+            .and_then(|capability| {
+                revalidate_single_hinge_thickness_boundary_v1(
+                    &capability,
+                    bound,
+                    source.paper_thickness_mm,
+                )
+            })
+            .filter(|observation| {
+                observation.left_front.map(|point| point.map(f64::to_bits))
+                    != observation.right_front.map(|point| point.map(f64::to_bits))
+            })
+    } else {
+        None
+    };
     let (mid_surface, material_tex_coords) = build_current_pose_mid_surface_mesh_with_material_uv(
         &source.project_name,
         &source.model,
@@ -593,6 +614,7 @@ fn build_pending_export(source: StaticMeshExportSource) -> Result<PendingStaticM
             source.paper_thickness_mm,
             source.paper_front_color_rgba,
             source.paper_back_color_rgba,
+            hinge_union,
         )?;
         (solid.mesh, Some(solid.regions))
     } else {
@@ -1120,6 +1142,7 @@ fn extrude_closed_face_solids(
     thickness_mm: f64,
     front_color: [u8; 4],
     back_color: [u8; 4],
+    hinge_union: Option<SingleHingeThicknessBoundaryObservationV1>,
 ) -> Result<ExtrudedClosedFaceSolids, String> {
     if !thickness_mm.is_finite() || thickness_mm <= 0.0 {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
@@ -1160,6 +1183,13 @@ fn extrude_closed_face_solids(
         u32::try_from(source_vertex_count).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
     let mut triangles = Vec::new();
     let mut regions = Vec::new();
+    let union_rails = hinge_union.map(|observation| {
+        (
+            observation.left_front.map(kinematics_array_to_export),
+            observation.right_front.map(kinematics_array_to_export),
+        )
+    });
+    let mut union_edges: [Option<(u32, u32)>; 2] = [None, None];
     let mut edges = BTreeMap::<(u32, u32), (usize, u32, u32)>::new();
     for triangle in &mesh.triangles {
         triangles.push(*triangle);
@@ -1203,17 +1233,56 @@ fn extrude_closed_face_solids(
         let top_b = positions[end_index];
         let bottom_a = positions[start_index + source_vertex_count];
         let bottom_b = positions[end_index + source_vertex_count];
+        if let Some((left, right)) = union_rails {
+            if unordered_segment_bits_eq([top_a, top_b], left) {
+                if union_edges[0].replace((start, end)).is_some() {
+                    return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+                }
+                continue;
+            }
+            if unordered_segment_bits_eq([top_a, top_b], right) {
+                if union_edges[1].replace((start, end)).is_some() {
+                    return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+                }
+                continue;
+            }
+        }
         positions.extend([top_a, top_b, bottom_b, bottom_a]);
         normals.extend([side_normal; 4]);
-        let edge_color = std::array::from_fn(|index| {
-            let total = u16::from(front_color[index]) + u16::from(back_color[index]);
-            u8::try_from(total / 2).expect("the average of two u8 values is a u8")
-        });
+        let edge_color = edge_color(front_color, back_color);
         colors.extend([edge_color; 4]);
         triangles.push([base, base + 1, base + 2]);
         regions.push(ClosedSolidTriangleRegionV1::SideWall);
         triangles.push([base, base + 2, base + 3]);
         regions.push(ClosedSolidTriangleRegionV1::SideWall);
+    }
+    if union_rails.is_some() {
+        let [Some((left_start, left_end)), Some((right_start, right_end))] = union_edges else {
+            return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+        };
+        let left = [left_start, left_end];
+        let right =
+            align_segment_indices(&positions, [right_start, right_end], [left_start, left_end]);
+        append_bridge_quad(
+            &mut positions,
+            &mut normals,
+            &mut colors,
+            &mut triangles,
+            &mut regions,
+            left,
+            right,
+            edge_color(front_color, back_color),
+        )?;
+        append_bridge_quad(
+            &mut positions,
+            &mut normals,
+            &mut colors,
+            &mut triangles,
+            &mut regions,
+            [left[1] + bottom_offset, left[0] + bottom_offset],
+            [right[1] + bottom_offset, right[0] + bottom_offset],
+            edge_color(front_color, back_color),
+        )?;
     }
     if positions.len() > MAX_STATIC_MESH_VERTICES || triangles.len() > MAX_STATIC_MESH_TRIANGLES {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
@@ -1229,10 +1298,76 @@ fn extrude_closed_face_solids(
         solid = solid.with_base_color_texture(texture);
     }
     validate_watertight_triangle_geometry(&solid)?;
+    validate_bounded_non_self_intersecting_volume(&solid)?;
     Ok(ExtrudedClosedFaceSolids {
         mesh: solid,
         regions,
     })
+}
+
+fn kinematics_array_to_export(point: [f64; 3]) -> [f64; 3] {
+    [point[0], -point[2], point[1]]
+}
+
+fn unordered_segment_bits_eq(left: [[f64; 3]; 2], right: [[f64; 3]; 2]) -> bool {
+    let bits = |point: [f64; 3]| point.map(f64::to_bits);
+    (bits(left[0]) == bits(right[0]) && bits(left[1]) == bits(right[1]))
+        || (bits(left[0]) == bits(right[1]) && bits(left[1]) == bits(right[0]))
+}
+
+fn align_segment_indices(
+    positions: &[[f64; 3]],
+    candidate: [u32; 2],
+    reference: [u32; 2],
+) -> [u32; 2] {
+    let distance_squared = |a: u32, b: u32| {
+        positions[a as usize]
+            .iter()
+            .zip(positions[b as usize])
+            .map(|(left, right)| (left - right) * (left - right))
+            .sum::<f64>()
+    };
+    if distance_squared(candidate[0], reference[0]) <= distance_squared(candidate[1], reference[0])
+    {
+        candidate
+    } else {
+        [candidate[1], candidate[0]]
+    }
+}
+
+fn edge_color(front: [u8; 4], back: [u8; 4]) -> [u8; 4] {
+    std::array::from_fn(|index| {
+        let total = u16::from(front[index]) + u16::from(back[index]);
+        u8::try_from(total / 2).expect("the average of two u8 values is a u8")
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_bridge_quad(
+    positions: &mut Vec<[f64; 3]>,
+    normals: &mut Vec<[f64; 3]>,
+    colors: &mut Vec<[u8; 4]>,
+    triangles: &mut Vec<[u32; 3]>,
+    regions: &mut Vec<ClosedSolidTriangleRegionV1>,
+    first: [u32; 2],
+    second: [u32; 2],
+    color: [u8; 4],
+) -> Result<(), String> {
+    let points = [
+        positions[first[0] as usize],
+        positions[first[1] as usize],
+        positions[second[1] as usize],
+        positions[second[0] as usize],
+    ];
+    let normal = triangle_normal([points[0], points[1], points[2]])
+        .ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    let base = u32::try_from(positions.len()).map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?;
+    positions.extend(points);
+    normals.extend([normal; 4]);
+    colors.extend([color; 4]);
+    triangles.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+    regions.extend([ClosedSolidTriangleRegionV1::SideWall; 2]);
+    Ok(())
 }
 
 fn validate_watertight_triangle_geometry(mesh: &IndexedTriangleMeshV1) -> Result<(), String> {
@@ -1251,6 +1386,61 @@ fn validate_watertight_triangle_geometry(mesh: &IndexedTriangleMeshV1) -> Result
     }
     if edges.is_empty() || edges.values().any(|incidence| *incidence != 2) {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_bounded_non_self_intersecting_volume(
+    mesh: &IndexedTriangleMeshV1,
+) -> Result<(), String> {
+    let mut signed_six_volume = 0.0;
+    for triangle in &mesh.triangles {
+        let [a, b, c] = triangle.map(|index| mesh.positions_mm[index as usize]);
+        let cross = [
+            b[1] * c[2] - b[2] * c[1],
+            b[2] * c[0] - b[0] * c[2],
+            b[0] * c[1] - b[1] * c[0],
+        ];
+        signed_six_volume += a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2];
+    }
+    if !signed_six_volume.is_finite() || signed_six_volume == 0.0 {
+        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+    }
+    for first in 0..mesh.triangles.len() {
+        let first_points = mesh.triangles[first].map(|index| mesh.positions_mm[index as usize]);
+        for second in first + 1..mesh.triangles.len() {
+            let second_points =
+                mesh.triangles[second].map(|index| mesh.positions_mm[index as usize]);
+            if first_points.iter().any(|left| {
+                second_points
+                    .iter()
+                    .any(|right| left.map(f64::to_bits) == right.map(f64::to_bits))
+            }) {
+                continue;
+            }
+            let overlaps = (0..3).all(|axis| {
+                let first_min = first_points
+                    .iter()
+                    .map(|point| point[axis])
+                    .fold(f64::INFINITY, f64::min);
+                let first_max = first_points
+                    .iter()
+                    .map(|point| point[axis])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let second_min = second_points
+                    .iter()
+                    .map(|point| point[axis])
+                    .fold(f64::INFINITY, f64::min);
+                let second_max = second_points
+                    .iter()
+                    .map(|point| point[axis])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                first_min <= second_max && second_min <= first_max
+            });
+            if overlaps {
+                return Err(PREVIEW_FAILED_MESSAGE.to_owned());
+            }
+        }
     }
     Ok(())
 }
@@ -2015,7 +2205,7 @@ mod tests {
             build_current_pose_mid_surface_mesh(&source.project_name, &source.model, &source.pose)
                 .expect("mid surface");
         let mid_vertex_count = mid.positions_mm.len();
-        let solid = extrude_closed_face_solids(mid, 0.1, [255, 0, 0, 255], [0, 0, 255, 255])
+        let solid = extrude_closed_face_solids(mid, 0.1, [255, 0, 0, 255], [0, 0, 255, 255], None)
             .expect("solid extrusion");
         assert_eq!(solid.regions.len(), 12);
         assert_eq!(
@@ -2090,9 +2280,14 @@ mod tests {
         );
         let welded = weld_exact_coplanar_mid_surface(duplicated).expect("exact weld");
         assert_eq!(welded.positions_mm.len(), 4);
-        let solid =
-            extrude_closed_face_solids(welded, 0.2, [255, 255, 255, 255], [240, 240, 240, 255])
-                .expect("watertight union");
+        let solid = extrude_closed_face_solids(
+            welded,
+            0.2,
+            [255, 255, 255, 255],
+            [240, 240, 240, 255],
+            None,
+        )
+        .expect("watertight union");
         assert_eq!(solid.mesh.triangles.len(), 12);
         assert_eq!(
             solid
@@ -2125,6 +2320,66 @@ mod tests {
             vec![[0, 1, 2], [3, 4, 5]],
         );
         assert!(weld_exact_coplanar_mid_surface(duplicate).is_err());
+    }
+
+    #[test]
+    fn certified_nonplanar_hinge_replaces_two_internal_walls_with_bridges() {
+        let sine = 0.5_f64;
+        let cosine = (1.0_f64 - sine * sine).sqrt();
+        let mesh = IndexedTriangleMeshV1::new(
+            "certified-single-hinge",
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, cosine, sine],
+            ],
+            vec![
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [0.0, -sine, cosine],
+                [0.0, -sine, cosine],
+                [0.0, -sine, cosine],
+            ],
+            vec![[0, 1, 2], [3, 4, 5]],
+        );
+        let half = 0.1;
+        let to_kinematics = |point: [f64; 3]| [point[0], point[2], -point[1]];
+        let observation = SingleHingeThicknessBoundaryObservationV1 {
+            hinge: ori_domain::EdgeId::new(),
+            left_face: ori_domain::FaceId::new(),
+            right_face: ori_domain::FaceId::new(),
+            left_front: [
+                to_kinematics([0.0, 0.0, half]),
+                to_kinematics([1.0, 0.0, half]),
+            ],
+            left_back: [[0.0; 3]; 2],
+            right_front: [
+                to_kinematics([0.0, -sine * half, cosine * half]),
+                to_kinematics([1.0, -sine * half, cosine * half]),
+            ],
+            right_back: [[0.0; 3]; 2],
+        };
+        let solid = extrude_closed_face_solids(
+            mesh,
+            0.2,
+            [255, 255, 255, 255],
+            [240, 240, 240, 255],
+            Some(observation),
+        )
+        .expect("certified hinge union");
+        validate_watertight_triangle_geometry(&solid.mesh).expect("watertight bridge");
+        validate_bounded_non_self_intersecting_volume(&solid.mesh).expect("bounded outer shell");
+        let validated = validate_indexed_triangle_mesh(&solid.mesh).expect("validated mesh");
+        for format in [
+            StaticMeshExportFormat::BinaryStl,
+            StaticMeshExportFormat::Glb20,
+        ] {
+            export_static_triangle_mesh(format, &validated).expect("independent reader");
+        }
     }
 
     #[test]

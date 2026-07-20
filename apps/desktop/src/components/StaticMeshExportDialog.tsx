@@ -101,7 +101,7 @@ const COPY = {
     midSurface:
       'Important: this exports only the paper mid-surface. It is not a paper-thickness solid, a closed manifold, or a guaranteed printable model.',
     faceSolids:
-      'Important: exactly coplanar adjacent faces are welded and their internal wall is removed. Other face solids remain separate; hinge unions and 3D printability are not guaranteed.',
+      'Important: exactly coplanar adjacent faces are welded. A strictly two-triangle, one-hinge pose is also joined only when the native exact thickness corridor issues and revalidates a boundary capability. Other hinge solids remain separate; general unions and 3D printability are not guaranteed.',
     metadata: {
       format: 'Format',
       specification: 'Specification',

@@ -560,6 +560,8 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   expected_candidate_edge_id: string
   proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
   apply_allowed: boolean
+  shape_approximation_score: number | null
+  shape_difference_reason: 'crease_preview_has_no_surface_mesh' | null
   reason:
     | 'geometry_invalid'
     | 'necessary_conditions_satisfied'
@@ -755,6 +757,7 @@ function normalizeBeginnerCandidateResponse(
   const planAssessments = response.plan_assessments.map((assessment, index) => {
     const record = exactCoreDataRecord(assessment, [
       'kind', 'expected_candidate_edge_id', 'proof_scope', 'apply_allowed', 'reason',
+      'shape_approximation_score', 'shape_difference_reason',
     ] as const)
     const plan = admittedPlans[index]
     if (!record || !plan
@@ -763,6 +766,15 @@ function normalizeBeginnerCandidateResponse(
       || !isCanonicalNonNilUuid(record.expected_candidate_edge_id)
       || !['necessary', 'sufficient', 'indeterminate'].includes(String(record.proof_scope))
       || typeof record.apply_allowed !== 'boolean'
+      || (record.shape_approximation_score !== null
+        && (!Number.isInteger(record.shape_approximation_score)
+          || Number(record.shape_approximation_score) < 0
+          || Number(record.shape_approximation_score) > 100))
+      || ![null, 'crease_preview_has_no_surface_mesh'].includes(
+        record.shape_difference_reason as null | string,
+      )
+      || ((record.shape_approximation_score === null)
+        !== (record.shape_difference_reason === null))
       || ![
         'geometry_invalid', 'necessary_conditions_satisfied',
         'necessary_conditions_violated', 'local_analysis_blocked',
@@ -789,6 +801,8 @@ function normalizeBeginnerCandidateResponse(
       proof_scope: record.proof_scope,
       apply_allowed: record.apply_allowed,
       reason: record.reason,
+      shape_approximation_score: record.shape_approximation_score,
+      shape_difference_reason: record.shape_difference_reason,
     }) as BeginnerGeneratedPlanAssessmentV1
   })
   if (planAssessments.some((assessment) => assessment === null)) return null

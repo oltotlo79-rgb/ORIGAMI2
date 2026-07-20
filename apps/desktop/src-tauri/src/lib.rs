@@ -1444,6 +1444,70 @@ struct BeginnerGeneratedPlanAssessment {
     proof_scope: &'static str,
     apply_allowed: bool,
     reason: &'static str,
+    shape_approximation_score: Option<u8>,
+    shape_difference_reason: Option<&'static str>,
+}
+
+fn compare_plan_to_reference_model_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: &BeginnerReferenceModelSuggestionV1,
+) -> (u8, &'static str) {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for vertex in &plan.crease_pattern.vertices {
+        min[0] = min[0].min(vertex.position.x);
+        min[1] = min[1].min(vertex.position.y);
+        max[0] = max[0].max(vertex.position.x);
+        max[1] = max[1].max(vertex.position.y);
+    }
+    let candidate = [
+        ((max[0] - min[0]).max(0.0) * 10.0).round() as u64,
+        ((max[1] - min[1]).max(0.0) * 10.0).round() as u64,
+        0,
+    ];
+    let target = std::array::from_fn::<_, 3, _>(|axis| {
+        u64::try_from(
+            reference.bbox_max_tenths_mm[axis].saturating_sub(reference.bbox_min_tenths_mm[axis]),
+        )
+        .unwrap_or(0)
+    });
+    let normalize = |extents: [u64; 3]| {
+        let major = *extents.iter().max().unwrap_or(&1).max(&1);
+        extents.map(|extent| extent.saturating_mul(1000) / major)
+    };
+    let candidate_normalized = normalize(candidate);
+    let target_normalized = normalize(target);
+    let bbox_difference = candidate_normalized
+        .iter()
+        .zip(target_normalized)
+        .map(|(left, right)| left.abs_diff(right))
+        .sum::<u64>()
+        / 3;
+    let candidate_major = *candidate.iter().max().unwrap_or(&1).max(&1);
+    let target_major = *target.iter().max().unwrap_or(&1).max(&1);
+    let candidate_area_ratio = candidate[0]
+        .saturating_mul(candidate[1])
+        .saturating_mul(1000)
+        / candidate_major.saturating_mul(candidate_major).max(1);
+    let target_area_ratio = reference.surface_area_milli.saturating_mul(100_000_000)
+        / target_major.saturating_mul(target_major).max(1);
+    let area_difference = candidate_area_ratio.abs_diff(target_area_ratio.min(10_000));
+    let candidate_major_axis = (0..3).max_by_key(|axis| candidate[*axis]).unwrap_or(0);
+    let target_major_axis = (0..3).max_by_key(|axis| target[*axis]).unwrap_or(0);
+    let axis_penalty = if candidate_major_axis == target_major_axis {
+        0
+    } else {
+        20
+    };
+    let score = 100_u64.saturating_sub(
+        (bbox_difference / 10)
+            .saturating_add(area_difference / 100)
+            .saturating_add(axis_penalty),
+    );
+    (
+        u8::try_from(score).unwrap_or(0),
+        "crease_preview_has_no_surface_mesh",
+    )
 }
 
 struct BeginnerGlobalFoldabilityDeadline(std::time::Instant);
@@ -1462,7 +1526,11 @@ fn assess_beginner_generated_plan(
     paper: &Paper,
     current_pattern: &CreasePattern,
     plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: Option<&BeginnerReferenceModelSuggestionV1>,
 ) -> BeginnerGeneratedPlanAssessment {
+    let (shape_approximation_score, shape_difference_reason) = reference
+        .map(|reference| compare_plan_to_reference_model_v1(plan, reference))
+        .map_or((None, None), |(score, reason)| (Some(score), Some(reason)));
     let expected_candidate_edge_id = plan
         .crease_pattern
         .edges
@@ -1483,6 +1551,8 @@ fn assess_beginner_generated_plan(
                     proof_scope: "necessary",
                     apply_allowed: false,
                     reason: "geometry_invalid",
+                    shape_approximation_score,
+                    shape_difference_reason,
                 };
             }
         } else {
@@ -1503,6 +1573,8 @@ fn assess_beginner_generated_plan(
             proof_scope: "necessary",
             apply_allowed: false,
             reason: "geometry_invalid",
+            shape_approximation_score,
+            shape_difference_reason,
         };
     }
     candidate_pattern
@@ -1517,6 +1589,8 @@ fn assess_beginner_generated_plan(
             proof_scope: "necessary",
             apply_allowed: false,
             reason: "geometry_invalid",
+            shape_approximation_score,
+            shape_difference_reason,
         };
     }
     let local = analyze_local_flat_foldability(paper, &candidate_pattern);
@@ -1614,6 +1688,8 @@ fn assess_beginner_generated_plan(
         proof_scope,
         apply_allowed,
         reason,
+        shape_approximation_score,
+        shape_difference_reason,
     }
 }
 
@@ -1834,9 +1910,17 @@ fn evaluate_beginner_candidates(
         }
     };
     generated_plans.truncate(usize::from(requested_candidate_count));
+    let reference_suggestion = live_reference_model_suggestion_v1(&project).ok();
     let plan_assessments = generated_plans
         .iter()
-        .map(|plan| assess_beginner_generated_plan(project.editor.paper(), pattern, plan))
+        .map(|plan| {
+            assess_beginner_generated_plan(
+                project.editor.paper(),
+                pattern,
+                plan,
+                reference_suggestion.as_ref(),
+            )
+        })
         .collect();
     Ok(BeginnerCandidateResponse {
         schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
@@ -2014,8 +2098,13 @@ fn apply_beginner_generated_plan(
     if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
         return Err("the generated candidate identity changed before apply".to_owned());
     }
-    let assessment =
-        assess_beginner_generated_plan(project.editor.paper(), project.editor.pattern(), &plan);
+    let reference_suggestion = live_reference_model_suggestion_v1(&project).ok();
+    let assessment = assess_beginner_generated_plan(
+        project.editor.paper(),
+        project.editor.pattern(),
+        &plan,
+        reference_suggestion.as_ref(),
+    );
     if assessment.expected_candidate_edge_id != expected_candidate_edge_id {
         return Err("the generated candidate identity changed before apply".to_owned());
     }
@@ -2418,6 +2507,29 @@ fn derive_reference_model_suggestion_v1(
         },
         method: "bounded_bbox_area_normal_v1".to_owned(),
     })
+}
+
+fn live_reference_model_suggestion_v1(
+    project: &ProjectState,
+) -> Result<BeginnerReferenceModelSuggestionV1, String> {
+    let profile = project.editor.beginner_design_profile();
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =
+        profile.generation_constraints.target_asset
+    else {
+        return Err("reference_model_suggestion_unavailable".to_owned());
+    };
+    let asset = project
+        .reference_model_assets
+        .iter()
+        .find(|asset| asset.id == asset_id)
+        .ok_or_else(|| "reference_model_suggestion_unavailable".to_owned())?;
+    let geometry = ori_formats::read_reference_glb_geometry_v1(&asset.bytes)
+        .map_err(|_| "reference_model_suggestion_unavailable".to_owned())?;
+    derive_reference_model_suggestion_v1(
+        asset_id,
+        &geometry,
+        profile.generation_constraints.target_category,
+    )
 }
 
 #[tauri::command]

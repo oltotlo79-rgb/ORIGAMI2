@@ -104,6 +104,16 @@ test('generated candidates receive bounded global proof outcomes before apply', 
   assert.match(app, /Global validation is indeterminate because its resource limit was reached/)
 })
 
+test('GLB-backed candidates expose read-only quantized shape comparison', () => {
+  assert.match(native, /compare_plan_to_reference_model_v1/)
+  assert.match(native, /shape_approximation_score/)
+  assert.match(native, /crease_preview_has_no_surface_mesh/)
+  assert.match(client, /record\.shape_approximation_score/)
+  assert.match(client, /record\.shape_difference_reason/)
+  assert.match(app, /Read-only shape approximation to reference GLB/)
+  assert.match(app, /the crease candidate has no surface mesh/)
+})
+
 test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
   assert.match(native, /fn apply_beginner_generated_plan/)
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)

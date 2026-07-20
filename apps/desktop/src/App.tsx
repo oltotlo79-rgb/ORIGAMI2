@@ -7880,6 +7880,19 @@ function App() {
                                 en: 'Warning: applying it does not guarantee flat foldability.',
                               })}`}
                             </p>
+                            {assessment?.shape_approximation_score !== null
+                              && assessment?.shape_approximation_score !== undefined && (
+                              <p className="muted">
+                                {formattedText({
+                                  ja: '参照GLBへの読み取り専用形状近似: {score}/100',
+                                  en: 'Read-only shape approximation to reference GLB: {score}/100',
+                                }, { score: assessment.shape_approximation_score })}
+                                {' '}{text({
+                                  ja: '差分理由: 折り線候補には表面メッシュがないため、同じ量子化bbox・面積比・主軸のうち比較可能な特徴だけを使用しています。',
+                                  en: 'Difference: the crease candidate has no surface mesh, so only comparable features from the same quantized bbox, area ratio, and principal-axis method are used.',
+                                })}
+                              </p>
+                            )}
                             {applicableKind && (
                               <button
                                 type="button"

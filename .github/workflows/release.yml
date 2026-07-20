@@ -313,21 +313,32 @@ jobs:
           set -euo pipefail
           created_release_id=''
           draft_created=false
+          transaction_name="ORIGAMI2 draft transaction $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           cleanup_partial_draft() {
             status=$?
             trap - EXIT
             if [ "$status" -ne 0 ] && [ "$draft_created" = true ]; then
               state="$RUNNER_TEMP/partial-release.json"
               if [ -z "$created_release_id" ]; then
-                created_release_id="$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id || true)"
+                candidate="$RUNNER_TEMP/partial-release-candidate.json"
+                if timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$candidate" \
+                  && test "$(jq -r .name "$candidate")" = "$transaction_name"
+                then
+                  created_release_id="$(jq -r .id "$candidate")"
+                fi
               fi
               if test -n "$created_release_id" \
                 && timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$state" \
+                && test "$(jq -r .name "$state")" = "$transaction_name" \
                 && test "$(jq -r .draft "$state")" = true \
                 && test "$(jq -r .tag_name "$state")" = "$RELEASE_TAG" \
                 && test "$(jq -r .target_commitish "$state")" = "$RELEASE_COMMIT"
               then
-                timeout 60s gh api --method DELETE "repos/$GH_REPO/releases/$created_release_id"
+                if node .github/scripts/verify_remote_release_assets.mjs \
+                  release "$state" --allow-subset
+                then
+                  timeout 60s gh api --method DELETE "repos/$GH_REPO/releases/$created_release_id"
+                fi
               fi
             fi
             exit "$status"
@@ -344,20 +355,38 @@ jobs:
           test "$(stat -c '%s' "$notes_json")" -le 1048576
           test "$(jq -r .name "$notes_json")" = "$RELEASE_TAG"
           jq -er '.body | strings' "$notes_json" > "$notes_file"
-          prerelease=()
-          [ "$RELEASE_MODE" = stable ] || prerelease=(--prerelease)
-          timeout 60s gh release create "$RELEASE_TAG" \
-            --repo "$GH_REPO" --verify-tag --target "$RELEASE_COMMIT" \
-            --notes-file "$notes_file" --title "ORIGAMI2 $RELEASE_TAG" --draft
+          created="$RUNNER_TEMP/created-draft-release.json"
           draft_created=true
-          created_release_id="$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+          timeout 60s gh api --method POST "repos/$GH_REPO/releases" \
+            -f tag_name="$RELEASE_TAG" -f target_commitish="$RELEASE_COMMIT" \
+            -f name="$transaction_name" -F body=@"$notes_file" \
+            -F draft=true -F prerelease=false > "$created"
+          created_release_id="$(jq -r .id "$created")"
           test "$created_release_id" -gt 0
-          timeout 600s gh release upload "$RELEASE_TAG" release/* --repo "$GH_REPO"
+          test "$(jq -r .draft "$created")" = true
+          test "$(jq -r .tag_name "$created")" = "$RELEASE_TAG"
+          test "$(jq -r .target_commitish "$created")" = "$RELEASE_COMMIT"
+          for asset in release/*
+          do
+            state_id="$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+            test "$state_id" = "$created_release_id"
+            timeout 600s gh api --method POST --hostname uploads.github.com \
+              "repos/$GH_REPO/releases/$created_release_id/assets?name=$(basename "$asset")" \
+              --header 'Content-Type: application/octet-stream' --input "$asset" >/dev/null
+          done
           remote_release="$RUNNER_TEMP/remote-draft-release.json"
           timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$remote_release"
           node .github/scripts/verify_remote_release_assets.mjs release "$remote_release"
-          timeout 60s gh release edit "$RELEASE_TAG" --repo "$GH_REPO" \
-            --draft=false "${prerelease[@]}"
+          test "$(jq -r .draft "$remote_release")" = true
+          test "$(jq -r .tag_name "$remote_release")" = "$RELEASE_TAG"
+          test "$(jq -r .target_commitish "$remote_release")" = "$RELEASE_COMMIT"
+          test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$created_release_id"
+          test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          publish_prerelease=false
+          [ "$RELEASE_MODE" = stable ] || publish_prerelease=true
+          timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
+            -f name="ORIGAMI2 $RELEASE_TAG" -F draft=false \
+            -F prerelease="$publish_prerelease" >/dev/null
           created_release_id=''
           draft_created=false
 

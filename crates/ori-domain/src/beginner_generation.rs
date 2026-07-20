@@ -244,26 +244,27 @@ pub fn validate_beginner_generation_constraints_v1(
             && segment_ids.insert(segment.id)
     });
     let mut protrusion_ids = HashSet::with_capacity(constraints.protrusions.len());
-    let protrusions_valid = skeletons_valid && constraints.protrusions.iter().all(|target| {
-        (1..=8).contains(&target.count)
-            && (1..=1_000_000).contains(&target.length_tenths_mm)
-            && (1..=10_000).contains(&target.thickness_tenths_mm)
-            && target
-                .position_tenths_mm
-                .iter()
-                .all(|value| value.unsigned_abs() <= 100_000)
-            && target
-                .direction_milli
-                .iter()
-                .all(|value| value.unsigned_abs() <= 1_000)
-            && target.direction_milli != [0, 0, 0]
-            && (-360..=360).contains(&target.curvature_degrees)
-            && (-360..=360).contains(&target.motion_degrees[0])
-            && (-360..=360).contains(&target.motion_degrees[1])
-            && target.motion_degrees[0] <= target.motion_degrees[1]
-            && (1..=100).contains(&target.priority)
-            && protrusion_ids.insert(target.id)
-    });
+    let protrusions_valid = skeletons_valid
+        && constraints.protrusions.iter().all(|target| {
+            (1..=8).contains(&target.count)
+                && (1..=1_000_000).contains(&target.length_tenths_mm)
+                && (1..=10_000).contains(&target.thickness_tenths_mm)
+                && target
+                    .position_tenths_mm
+                    .iter()
+                    .all(|value| value.unsigned_abs() <= 100_000)
+                && target
+                    .direction_milli
+                    .iter()
+                    .all(|value| value.unsigned_abs() <= 1_000)
+                && target.direction_milli != [0, 0, 0]
+                && (-360..=360).contains(&target.curvature_degrees)
+                && (-360..=360).contains(&target.motion_degrees[0])
+                && (-360..=360).contains(&target.motion_degrees[1])
+                && target.motion_degrees[0] <= target.motion_degrees[1]
+                && (1..=100).contains(&target.priority)
+                && protrusion_ids.insert(target.id)
+        });
     let mut bulge_ids = HashSet::with_capacity(constraints.bulge_targets.len());
     protrusions_valid
         && constraints.bulge_targets.iter().all(|target| {

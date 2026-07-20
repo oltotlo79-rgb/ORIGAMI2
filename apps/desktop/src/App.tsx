@@ -7887,10 +7887,12 @@ function App() {
                                   ja: '参照GLBへの読み取り専用形状近似: {score}/100',
                                   en: 'Read-only shape approximation to reference GLB: {score}/100',
                                 }, { score: assessment.shape_approximation_score })}
-                                {' '}{text({
-                                  ja: '差分理由: 折り線候補には表面メッシュがないため、同じ量子化bbox・面積比・主軸のうち比較可能な特徴だけを使用しています。',
-                                  en: 'Difference: the crease candidate has no surface mesh, so only comparable features from the same quantized bbox, area ratio, and principal-axis method are used.',
-                                })}
+                                {' '}{assessment.shape_difference_reason === 'certified_flat_surface_v1'
+                                  ? text({ ja: '証明済みflat surfaceの実bbox・面積・主軸を使用しています。', en: 'Uses actual bbox, area, and principal axis from the certified flat surface.' })
+                                  : text({
+                                    ja: '差分理由: 折り線候補には表面メッシュがないため、同じ量子化bbox・面積比・主軸のうち比較可能な特徴だけを使用しています。',
+                                    en: 'Difference: the crease candidate has no surface mesh, so only comparable features from the same quantized bbox, area ratio, and principal-axis method are used.',
+                                  })}
                               </p>
                             )}
                             {applicableKind && (

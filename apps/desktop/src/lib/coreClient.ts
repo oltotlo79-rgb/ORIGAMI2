@@ -561,7 +561,7 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
   apply_allowed: boolean
   shape_approximation_score: number | null
-  shape_difference_reason: 'crease_preview_has_no_surface_mesh' | null
+  shape_difference_reason: 'crease_preview_has_no_surface_mesh' | 'certified_flat_surface_v1' | null
   reason:
     | 'geometry_invalid'
     | 'necessary_conditions_satisfied'
@@ -770,7 +770,7 @@ function normalizeBeginnerCandidateResponse(
         && (!Number.isInteger(record.shape_approximation_score)
           || Number(record.shape_approximation_score) < 0
           || Number(record.shape_approximation_score) > 100))
-      || ![null, 'crease_preview_has_no_surface_mesh'].includes(
+      || ![null, 'crease_preview_has_no_surface_mesh', 'certified_flat_surface_v1'].includes(
         record.shape_difference_reason as null | string,
       )
       || ((record.shape_approximation_score === null)

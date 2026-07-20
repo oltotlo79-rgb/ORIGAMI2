@@ -1510,6 +1510,62 @@ fn compare_plan_to_reference_model_v1(
     )
 }
 
+fn compare_flat_surface_to_reference_model_v1(
+    surface: &ori_core::CertifiedFlatSurfaceV1,
+    reference: &BeginnerReferenceModelSuggestionV1,
+) -> u8 {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    let mut area = 0.0_f64;
+    for face in &surface.faces {
+        for point in &face.boundary {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(point[axis]);
+                max[axis] = max[axis].max(point[axis]);
+            }
+        }
+        area += face
+            .boundary
+            .iter()
+            .zip(face.boundary.iter().cycle().skip(1))
+            .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+            .sum::<f64>()
+            .abs()
+            * 0.5;
+    }
+    let candidate = std::array::from_fn::<_, 3, _>(|axis| {
+        ((max[axis] - min[axis]).max(0.0) * 10.0).round() as u64
+    });
+    let target = std::array::from_fn::<_, 3, _>(|axis| {
+        u64::try_from(
+            reference.bbox_max_tenths_mm[axis].saturating_sub(reference.bbox_min_tenths_mm[axis]),
+        )
+        .unwrap_or(0)
+    });
+    let normalize = |v: [u64; 3]| {
+        let major = *v.iter().max().unwrap_or(&1).max(&1);
+        v.map(|x| x.saturating_mul(1000) / major)
+    };
+    let bbox = normalize(candidate)
+        .iter()
+        .zip(normalize(target))
+        .map(|(a, b)| a.abs_diff(b))
+        .sum::<u64>()
+        / 3;
+    let cm = *candidate.iter().max().unwrap_or(&1).max(&1);
+    let tm = *target.iter().max().unwrap_or(&1).max(&1);
+    let ca = ((area * 100.0).round() as u64).saturating_mul(1000) / cm.saturating_mul(cm).max(1);
+    let ta =
+        reference.surface_area_milli.saturating_mul(100_000_000) / tm.saturating_mul(tm).max(1);
+    let axis = if (0..3).max_by_key(|i| candidate[*i]) == (0..3).max_by_key(|i| target[*i]) {
+        0
+    } else {
+        20
+    };
+    u8::try_from(100_u64.saturating_sub(bbox / 10 + ca.abs_diff(ta.min(10_000)) / 100 + axis))
+        .unwrap_or(0)
+}
+
 struct BeginnerGlobalFoldabilityDeadline(std::time::Instant);
 
 impl GlobalFlatFoldabilityObserver for BeginnerGlobalFoldabilityDeadline {
@@ -1528,7 +1584,7 @@ fn assess_beginner_generated_plan(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     reference: Option<&BeginnerReferenceModelSuggestionV1>,
 ) -> BeginnerGeneratedPlanAssessment {
-    let (shape_approximation_score, shape_difference_reason) = reference
+    let (mut shape_approximation_score, mut shape_difference_reason) = reference
         .map(|reference| compare_plan_to_reference_model_v1(plan, reference))
         .map_or((None, None), |(score, reason)| (Some(score), Some(reason)));
     let expected_candidate_edge_id = plan
@@ -1639,9 +1695,22 @@ fn assess_beginner_generated_plan(
                     &mut observer,
                 ) {
                     Ok(report) => match report.outcome {
-                        GlobalFlatFoldabilityOutcome::Possible { .. } => {
+                        GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
                             proof_scope = "sufficient";
                             reason = "global_flat_foldability_proven";
+                            if let (Some(reference), Some(surface)) = (
+                                reference,
+                                ori_core::extract_certified_flat_surface_v1(
+                                    &candidate_pattern,
+                                    snapshot,
+                                    &layer_order,
+                                ),
+                            ) {
+                                shape_approximation_score = Some(
+                                    compare_flat_surface_to_reference_model_v1(&surface, reference),
+                                );
+                                shape_difference_reason = Some("certified_flat_surface_v1");
+                            }
                         }
                         GlobalFlatFoldabilityOutcome::Impossible { .. } => {
                             proof_scope = "necessary";

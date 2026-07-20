@@ -44,6 +44,8 @@ test('rejects incomplete ambiguous and path-bearing release metadata', () => {
   for (const candidate of [
     assets.filter((name) => name !== 'SHA256SUMS-windows-x64.txt'),
     [...assets, assets[0]],
+    [...assets, 'unexpected-debug-symbols.zip'],
+    assets.map((name) => name.replace('v1.2.3', 'v1.2.4')),
     [...assets, '../payload.exe'],
     Array.from({ length: 33 }, (_, index) => `asset-${index}`),
     new Proxy([], {

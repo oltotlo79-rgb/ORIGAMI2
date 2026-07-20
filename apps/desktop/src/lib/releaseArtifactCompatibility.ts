@@ -49,7 +49,20 @@ export function selectReleaseArtifactPlan(
     sbomName,
     ...(supplementalPayloadName ? [supplementalPayloadName] : []),
   ]
-  if (required.some((name) => !admittedNames.has(name))) return null
+  const completeReleaseSet = [
+    `ORIGAMI2-v${version}-windows-x64-setup.exe`,
+    `ORIGAMI2-v${version}-windows-x64-portable.zip`,
+    `ORIGAMI2-v${version}-windows-x64.cdx.json`,
+    `SHA256SUMS-windows-x64.txt`,
+    `ORIGAMI2-v${version}-macos-arm64-app.tar.gz`,
+    `ORIGAMI2-v${version}-macos-arm64.cdx.json`,
+    `SHA256SUMS-macos-arm64.txt`,
+  ]
+  if (
+    admittedNames.size !== completeReleaseSet.length
+    || completeReleaseSet.some((name) => !admittedNames.has(name))
+    || required.some((name) => !admittedNames.has(name))
+  ) return null
 
   return Object.freeze({
     schema: RELEASE_ARTIFACT_CONTRACT_SCHEMA,

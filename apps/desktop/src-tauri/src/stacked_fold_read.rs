@@ -118,6 +118,46 @@ struct LinearCandidateEntryRequestV1 {
     requested_angle_degrees: f64,
 }
 
+fn validate_linear_candidate_angles_v1(
+    request: &LinearCandidateRequestV1,
+    live: &ori_kinematics::CanonicalHingeAngles,
+) -> Result<
+    (
+        ori_kinematics::CanonicalHingeAngles,
+        ori_kinematics::CanonicalHingeAngles,
+    ),
+    (),
+> {
+    if request.version != 1 {
+        return Err(());
+    }
+    let collect = |requested: bool| {
+        ori_kinematics::CanonicalHingeAngles::new(
+            request
+                .entries
+                .iter()
+                .map(|entry| {
+                    ori_kinematics::HingeAngle::new(
+                        entry.edge,
+                        if requested {
+                            entry.requested_angle_degrees
+                        } else {
+                            entry.initial_angle_degrees
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ())?,
+        )
+        .map_err(|_| ())
+    };
+    let initial = collect(false)?;
+    if initial != *live {
+        return Err(());
+    }
+    Ok((initial, collect(true)?))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CycleScheduleRequestV1 {
@@ -441,39 +481,10 @@ pub(super) async fn propose_current_stacked_fold_read(
             let linear = request
                 .linear_candidate_v1
                 .as_ref()
-                .filter(|value| value.version == 1)
                 .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            let initial_angles = ori_kinematics::CanonicalHingeAngles::new(
-                linear
-                    .entries
-                    .iter()
-                    .map(|entry| {
-                        ori_kinematics::HingeAngle::new(
-                            entry.edge,
-                            entry.initial_angle_degrees,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
-            )
-            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            if initial_angles != *initial.pose().hinge_angles() {
-                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-            }
-            let requested_angles = ori_kinematics::CanonicalHingeAngles::new(
-                linear
-                    .entries
-                    .iter()
-                    .map(|entry| {
-                        ori_kinematics::HingeAngle::new(
-                            entry.edge,
-                            entry.requested_angle_degrees,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
-            )
-            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let (initial_angles, requested_angles) =
+                validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
+                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             let generated = generate_linear_multi_hinge_path_candidate_v1(
                 initial.target().hinge_geometry(),
                 initial.target().audit(),
@@ -1425,5 +1436,43 @@ mod tests {
         overflow["cycleScheduleV1"]["entries"][0]["uDomain"][0]["denominator"] =
             serde_json::json!(-1);
         assert!(serde_json::from_value::<StackedFoldReadRequest>(overflow).is_err());
+    }
+
+    #[test]
+    fn linear_candidate_requires_bit_exact_live_initial_angles() {
+        let edge = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
+            "018f47a2-4b7a-7cc1-8abc-778899aabbcc"
+        ))
+        .unwrap();
+        let live = ori_kinematics::CanonicalHingeAngles::new(vec![
+            ori_kinematics::HingeAngle::new(edge, 20.0).unwrap(),
+        ])
+        .unwrap();
+        let request = LinearCandidateRequestV1 {
+            version: 1,
+            entries: vec![LinearCandidateEntryRequestV1 {
+                edge,
+                initial_angle_degrees: 20.0,
+                requested_angle_degrees: 40.0,
+            }],
+        };
+        let (initial, requested) = validate_linear_candidate_angles_v1(&request, &live).unwrap();
+        assert_eq!(initial, live);
+        assert_ne!(requested, live);
+
+        let mismatch = LinearCandidateRequestV1 {
+            version: 1,
+            entries: vec![LinearCandidateEntryRequestV1 {
+                edge,
+                initial_angle_degrees: f64::from_bits(20.0f64.to_bits() + 1),
+                requested_angle_degrees: 40.0,
+            }],
+        };
+        assert!(validate_linear_candidate_angles_v1(&mismatch, &live).is_err());
+        let wrong_version = LinearCandidateRequestV1 {
+            version: 2,
+            entries: request.entries,
+        };
+        assert!(validate_linear_candidate_angles_v1(&wrong_version, &live).is_err());
     }
 }

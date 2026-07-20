@@ -69,11 +69,11 @@ try {
   })
   await new Promise((resolveReady) => server.listen(0, '127.0.0.1', resolveReady))
   const { port } = server.address()
+  browser = await chromium.launch({
+    headless: true,
+    args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'],
+  })
   for (const file of ['static.glb', 'textured.glb', 'animated.glb']) {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'],
-    })
     const page = await browser.newPage({ viewport: { width: 1024, height: 768 } })
     const runtimeErrors = []
     page.on('console', (message) => {
@@ -111,15 +111,23 @@ try {
     if (firstFrame.length < 2_000) {
       throw new Error(`${file}: rendered canvas is unexpectedly empty`)
     }
-    await page.waitForTimeout(file === 'animated.glb' ? 650 : 100)
-    const secondFrame = await capture()
-    if (file === 'animated.glb' && firstFrame.equals(secondFrame)) {
-      throw new Error('animated.glb: rendered frame did not change during playback')
+    let frameChanged = false
+    for (let attempt = 0; attempt < (file === 'animated.glb' ? 6 : 1); attempt += 1) {
+      await page.waitForTimeout(file === 'animated.glb' ? 200 : 100)
+      const nextFrame = await capture()
+      if (!firstFrame.equals(nextFrame)) {
+        frameChanged = true
+        break
+      }
+    }
+    if (file === 'animated.glb' && !frameChanged) {
+      throw new Error('animated.glb: no rendered frame changed during playback')
     }
     console.log(`${file}: Sample Viewer WebGL runtime visible, errors 0`)
-    await browser.close()
-    browser = undefined
+    await page.close()
   }
+  await browser.close()
+  browser = undefined
 } finally {
   if (browser) await browser.close()
   if (server) await new Promise((resolveClosed) => server.close(resolveClosed))

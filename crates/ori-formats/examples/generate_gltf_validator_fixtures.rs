@@ -26,6 +26,20 @@ fn mesh(name: &str, z: f64) -> IndexedTriangleMeshV1 {
     )
 }
 
+fn animated_mesh(deformation: f64) -> IndexedTriangleMeshV1 {
+    IndexedTriangleMeshV1::new(
+        "animated",
+        vec![
+            [0.0, 0.0, 0.0],
+            [10.0 + deformation, 0.0, 0.0],
+            [10.0 + deformation, 10.0, deformation],
+            [0.0, 10.0, 0.0],
+        ],
+        vec![[0.0, 0.0, 1.0]; 4],
+        vec![[0, 1, 2], [0, 2, 3]],
+    )
+}
+
 fn positive_thickness_mesh() -> IndexedTriangleMeshV1 {
     IndexedTriangleMeshV1::new(
         "positive-thickness",
@@ -101,11 +115,7 @@ fn main() {
 
     let animation = IndexedTriangleMeshAnimationV1::new(
         vec![0.0, 0.5, 1.0],
-        vec![
-            mesh("animated", 0.0),
-            mesh("animated", 2.0),
-            mesh("animated", 5.0),
-        ],
+        vec![animated_mesh(0.0), animated_mesh(2.0), animated_mesh(5.0)],
     );
     let animated_glb = export_animated_triangle_mesh_glb(&animation).expect("animated GLB");
     fs::write(output.join("animated.glb"), animated_glb.bytes).expect("write animated GLB");

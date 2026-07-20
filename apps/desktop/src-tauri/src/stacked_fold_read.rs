@@ -2185,7 +2185,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "native stacked-fold proposal does not yet admit a pre-creased tree source"]
     fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);

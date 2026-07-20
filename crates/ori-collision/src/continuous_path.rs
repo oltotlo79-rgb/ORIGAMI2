@@ -1405,6 +1405,14 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
     let Some(derivative_sum) = derivative_sum else {
         return failed();
     };
+    if scheduled_collinear_flat_stack_premises_v1(geometry, audit, fixed_face, schedule) {
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: 0,
+        };
+    }
     let mut maximum_radius = 0.0_f64;
     for face in geometry.face_ids() {
         let Some(boundary) = geometry.face_boundary_vertices(*face) else {
@@ -1515,6 +1523,168 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         leaf_count: leaves,
         pair_work: work,
     }
+}
+
+// Narrow zero-thickness theorem for folding an already flat stack. Exact
+// projective-profile equality prevents sampled schedules from impersonating a
+// collective motion. Constant hinges must remain bit-exact 180 degrees, all
+// moving hinges start at bit-exact zero, and their initial world axes must be
+// one exact infinite line. The tree composition can therefore only rotate
+// each flat layer about that same line; distinct layer planes meet on the fold
+// line, while equal-angle layers preserve their pre-existing flat ordering.
+fn scheduled_collinear_flat_stack_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> bool {
+    if !audit.closure_hinges().is_empty()
+        || geometry.face_ids().len() != geometry.hinges().len().saturating_add(1)
+    {
+        return false;
+    }
+    let Some(moving_edges) = schedule.collective_half_angle_profile_edges_v1() else {
+        return false;
+    };
+    if moving_edges.len() < 2 {
+        return false;
+    }
+    let moving = moving_edges.into_iter().collect::<HashSet<_>>();
+    let (Some(initial_angles), Some(midpoint_angles), Some(requested_angles)) = (
+        schedule.evaluate(0.0),
+        schedule.evaluate(0.5),
+        schedule.evaluate(1.0),
+    ) else {
+        return false;
+    };
+    let requested_moving = requested_angles
+        .as_slice()
+        .iter()
+        .filter(|angle| moving.contains(&angle.edge()))
+        .map(|angle| angle.angle_degrees().to_bits())
+        .collect::<HashSet<_>>();
+    if requested_moving.len() != 1
+        || requested_moving.iter().next().is_none_or(|bits| {
+            let angle = f64::from_bits(*bits);
+            !angle.is_finite() || angle <= 0.0 || angle >= 180.0
+        })
+        || initial_angles.as_slice().iter().any(|angle| {
+            if moving.contains(&angle.edge()) {
+                angle.angle_degrees().to_bits() != 0.0_f64.to_bits()
+            } else {
+                angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
+            }
+        })
+        || requested_angles.as_slice().iter().any(|angle| {
+            !moving.contains(&angle.edge())
+                && angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
+        })
+    {
+        return false;
+    }
+    let Ok(initial_pose) = geometry.solve_closed(audit, fixed_face, &initial_angles, 1.0e-9) else {
+        return false;
+    };
+    let mut moving_hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving.contains(&hinge.edge()));
+    let Some(reference) = moving_hinges.next() else {
+        return false;
+    };
+    let Some(reference_transform) = initial_pose.face_transform(reference.left_face()) else {
+        return false;
+    };
+    let (Ok(reference_start), Ok(reference_end), Ok(reference_axis)) = (
+        reference_transform.apply_point(reference.start()),
+        reference_transform.apply_point(reference.end()),
+        reference_transform.apply_vector(reference.axis()),
+    ) else {
+        return false;
+    };
+    if !moving_hinges.all(|hinge| {
+        let Some(transform) = initial_pose.face_transform(hinge.left_face()) else {
+            return false;
+        };
+        let (Ok(start), Ok(end), Ok(axis)) = (
+            transform.apply_point(hinge.start()),
+            transform.apply_point(hinge.end()),
+            transform.apply_vector(hinge.axis()),
+        ) else {
+            return false;
+        };
+        exact_collinear_line(reference_start, reference_axis, start, axis)
+            && exact_collinear_line(reference_start, reference_axis, end, axis)
+            && exact_collinear_line(reference_start, reference_axis, reference_end, axis)
+    }) {
+        return false;
+    }
+    [midpoint_angles, requested_angles]
+        .into_iter()
+        .all(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, 1.0e-9)
+                .ok()
+                .is_some_and(|pose| {
+                    let result = graph_pose_preserves_common_axis_layers(
+                        geometry,
+                        &initial_pose,
+                        &pose,
+                        reference_start,
+                        reference_end,
+                    );
+                    result
+                })
+        })
+}
+
+fn graph_pose_preserves_common_axis_layers(
+    geometry: &MaterialHingeGraphGeometry,
+    initial_pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
+    pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
+    axis_start: ori_kinematics::Point3,
+    axis_end: ori_kinematics::Point3,
+) -> bool {
+    let tolerance = 1.0e-9
+        * [
+            axis_start.x().abs(),
+            axis_start.y().abs(),
+            axis_start.z().abs(),
+            axis_end.x().abs(),
+            axis_end.y().abs(),
+            axis_end.z().abs(),
+            1.0,
+        ]
+        .into_iter()
+        .fold(1.0_f64, f64::max);
+    let fixes = |actual: ori_kinematics::Point3, expected: ori_kinematics::Point3| {
+        (actual.x() - expected.x()).abs() <= tolerance
+            && (actual.y() - expected.y()).abs() <= tolerance
+            && (actual.z() - expected.z()).abs() <= tolerance
+    };
+    let mut moved = false;
+    for face in geometry.face_ids() {
+        let (Some(initial_transform), Some(transform)) = (
+            initial_pose.face_transform(*face),
+            pose.face_transform(*face),
+        ) else {
+            return false;
+        };
+        let Ok(transform) = transform.relative_to(initial_transform) else {
+            return false;
+        };
+        let (Ok(start), Ok(end)) = (
+            transform.apply_point(axis_start),
+            transform.apply_point(axis_end),
+        ) else {
+            return false;
+        };
+        if !fixes(start, axis_start) || !fixes(end, axis_end) {
+            return false;
+        }
+        moved |= transform != ori_kinematics::RigidTransform::identity();
+    }
+    moved
 }
 
 fn collinear_collective_tree_premises(

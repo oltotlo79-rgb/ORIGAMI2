@@ -629,6 +629,74 @@ pub enum CommandError {
     GeometricConstraintBlocksGeometryMutation { constraint: ConstraintId },
 }
 
+fn source_edges_preserved_by_exact_subdivision(
+    source: &CreasePattern,
+    target: &CreasePattern,
+) -> bool {
+    let source_positions = source
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    let target_positions = target
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    source.edges.iter().all(|source_edge| {
+        if target
+            .edges
+            .iter()
+            .any(|target_edge| target_edge == source_edge)
+        {
+            return true;
+        }
+        let (Some(start), Some(end)) = (
+            source_positions.get(&source_edge.start).copied(),
+            source_positions.get(&source_edge.end).copied(),
+        ) else {
+            return false;
+        };
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let parameter = |point: Point2| {
+            if dx.abs() >= dy.abs() {
+                (point.x - start.x) / dx
+            } else {
+                (point.y - start.y) / dy
+            }
+        };
+        let mut intervals = target
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == source_edge.kind)
+            .filter_map(|edge| {
+                let (first, second) = (
+                    target_positions.get(&edge.start).copied()?,
+                    target_positions.get(&edge.end).copied()?,
+                );
+                if point_segment_relation(first, start, end).ok()? == PointSegmentRelation::Outside
+                    || point_segment_relation(second, start, end).ok()?
+                        == PointSegmentRelation::Outside
+                {
+                    return None;
+                }
+                let mut interval = [parameter(first), parameter(second)];
+                interval.sort_by(f64::total_cmp);
+                Some(interval)
+            })
+            .collect::<Vec<_>>();
+        intervals.sort_by(|left, right| {
+            left[0]
+                .total_cmp(&right[0])
+                .then_with(|| left[1].total_cmp(&right[1]))
+        });
+        intervals.first().is_some_and(|interval| interval[0] == 0.0)
+            && intervals.last().is_some_and(|interval| interval[1] == 1.0)
+            && intervals.windows(2).all(|pair| pair[0][1] == pair[1][0])
+    })
+}
+
 /// Reports an unsupported per-editor undo/redo history entry limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum HistoryEntryLimitError {
@@ -2317,11 +2385,7 @@ impl EditorState {
                         .vertices
                         .iter()
                         .any(|source| !pattern.vertices.iter().any(|target| target == source))
-                    || self
-                        .pattern
-                        .edges
-                        .iter()
-                        .any(|source| !pattern.edges.iter().any(|target| target == source))
+                    || !source_edges_preserved_by_exact_subdivision(&self.pattern, pattern)
                     || !validate_crease_pattern(pattern).is_valid()
                     || !validate_paper(paper, pattern).is_valid()
                 {
@@ -14983,6 +15047,70 @@ mod tests {
         assert_eq!(editor.pattern(), &target_pattern);
         assert_eq!(editor.instruction_timeline(), &timeline);
         assert_eq!(editor.current_applied_pose(), Some(&after_pose));
+    }
+
+    #[test]
+    fn stacked_fold_source_edge_requires_exact_contiguous_subdivision() {
+        let start = VertexId::new();
+        let middle = VertexId::new();
+        let end = VertexId::new();
+        let source_edge = EdgeId::new();
+        let source = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(10.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: source_edge,
+                start,
+                end,
+                kind: EdgeKind::Mountain,
+            }],
+        };
+        let target = CreasePattern {
+            vertices: vec![
+                source.vertices[0].clone(),
+                source.vertices[1].clone(),
+                Vertex {
+                    id: middle,
+                    position: Point2::new(5.0, 0.0),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    id: EdgeId::new(),
+                    start,
+                    end: middle,
+                    kind: EdgeKind::Mountain,
+                },
+                Edge {
+                    id: EdgeId::new(),
+                    start: middle,
+                    end,
+                    kind: EdgeKind::Mountain,
+                },
+            ],
+        };
+        assert!(source_edges_preserved_by_exact_subdivision(
+            &source, &target
+        ));
+
+        let mut off_line = target;
+        off_line
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == middle)
+            .unwrap()
+            .position = Point2::new(5.0, f64::EPSILON);
+        assert!(!source_edges_preserved_by_exact_subdivision(
+            &source, &off_line
+        ));
     }
 
     #[test]

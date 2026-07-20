@@ -1476,6 +1476,35 @@ impl CanonicalCycleScheduleV1 {
             .map(|entry| entry.derivative_bound)
     }
 
+    /// Returns the hinges carrying one bit-identical non-constant projective
+    /// profile when every other hinge is an exact constant profile.
+    /// This is intentionally narrower than comparing sampled angles.
+    #[must_use]
+    pub fn collective_half_angle_profile_edges_v1(&self) -> Option<Vec<EdgeId>> {
+        let mut moving = Vec::new();
+        let mut profile: Option<&PreparedHalfAngleRationalEntryV1> = None;
+        for entry in &self.half_angle_entries {
+            let constant = entry.numerator_power_coefficients.len() == 1
+                && entry.denominator_power_coefficients.len() == 1;
+            if constant {
+                continue;
+            }
+            if let Some(expected) = profile {
+                if entry.u_domain != expected.u_domain
+                    || entry.numerator_power_coefficients != expected.numerator_power_coefficients
+                    || entry.denominator_power_coefficients
+                        != expected.denominator_power_coefficients
+                {
+                    return None;
+                }
+            } else {
+                profile = Some(entry);
+            }
+            moving.push(entry.edge());
+        }
+        (!moving.is_empty()).then_some(moving)
+    }
+
     #[must_use]
     pub fn matches_binding(
         &self,
@@ -2484,6 +2513,53 @@ mod tests {
             root.iter()
                 .all(|(_, angle)| angle.lower() <= 180.0 && angle.upper() >= 180.0)
         );
+    }
+
+    #[test]
+    fn collective_profile_rejects_nonidentical_moving_schedules() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let mut inputs = edges
+            .into_iter()
+            .enumerate()
+            .map(|(index, edge)| HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: index as i64 + 1,
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 5,
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+
+        assert!(schedule.collective_half_angle_profile_edges_v1().is_none());
     }
 
     #[test]

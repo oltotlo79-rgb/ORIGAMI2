@@ -111,6 +111,32 @@ impl RigidTransform {
         )
     }
 
+    /// Returns the world-space rigid motion that maps points transformed by
+    /// `initial` to the same material points transformed by `self`.
+    pub fn relative_to(self, initial: Self) -> Result<Self, KinematicsError> {
+        let rotation = initial.rotation;
+        let inverse_rotation = [
+            [rotation[0][0], rotation[1][0], rotation[2][0]],
+            [rotation[0][1], rotation[1][1], rotation[2][1]],
+            [rotation[0][2], rotation[1][2], rotation[2][2]],
+        ];
+        let inverse_translation = Point3::new(
+            -(inverse_rotation[0][0] * initial.translation.x
+                + inverse_rotation[0][1] * initial.translation.y
+                + inverse_rotation[0][2] * initial.translation.z),
+            -(inverse_rotation[1][0] * initial.translation.x
+                + inverse_rotation[1][1] * initial.translation.y
+                + inverse_rotation[1][2] * initial.translation.z),
+            -(inverse_rotation[2][0] * initial.translation.x
+                + inverse_rotation[2][1] * initial.translation.y
+                + inverse_rotation[2][2] * initial.translation.z),
+        )?;
+        self.compose(finite_transform(Self {
+            rotation: inverse_rotation,
+            translation: inverse_translation,
+        })?)
+    }
+
     pub(crate) fn around_axis(
         point: Point3,
         axis: Point3,
@@ -269,5 +295,22 @@ mod tests {
             transform.inverse_apply_point(Point3::new(f64::MAX, 0.0, 0.0).unwrap()),
             Err(KinematicsError::UnrepresentableGeometry)
         );
+    }
+
+    #[test]
+    fn relative_transform_maps_initial_world_points_to_current_world_points() {
+        let axis = Point3::new(0.0, 0.0, 1.0).unwrap();
+        let initial =
+            RigidTransform::around_axis(Point3::new(3.0, 0.0, 0.0).unwrap(), axis, 180.0).unwrap();
+        let current =
+            RigidTransform::around_axis(Point3::new(5.0, 0.0, 0.0).unwrap(), axis, 90.0).unwrap();
+        let relative = current.relative_to(initial).unwrap();
+        let material = Point3::new(7.0, 11.0, 13.0).unwrap();
+        let initial_world = initial.apply_point(material).unwrap();
+        let current_world = current.apply_point(material).unwrap();
+        let mapped = relative.apply_point(initial_world).unwrap();
+        assert!((mapped.x() - current_world.x()).abs() <= 1.0e-12);
+        assert!((mapped.y() - current_world.y()).abs() <= 1.0e-12);
+        assert!((mapped.z() - current_world.z()).abs() <= 1.0e-12);
     }
 }

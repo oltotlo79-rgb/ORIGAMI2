@@ -237,7 +237,8 @@ test('promotion reuses and verifies the complete prerelease asset set', () => {
   assert.match(promote, /gh release download "\$RELEASE_TAG"/u)
   assert.match(promote, /verify_merged_release_set\.mjs release/u)
   assert.match(promote, /gh attestation verify "\$asset"/u)
-  assert.match(promote, /isPrerelease.*= true/u)
+  assert.match(promote, /\.prerelease "\$before"\)" = true/u)
+  assert.match(promote, /cmp "\$RUNNER_TEMP\/assets-before\.json"/u)
   assert.doesNotMatch(promote, /tauri build|tauri bundle|cargo build|npm run build/u)
   assert.ok(
     promote.indexOf('gh attestation verify') <
@@ -315,6 +316,14 @@ test('dry-run validates without a tag or GitHub mutation', () => {
     env: { ...process.env, REQUESTED_MODE: 'dry-run', REQUESTED_TAG: '' },
   })
   assert.match(output, /mode=dry-run/u)
+  assert.throws(
+    () => execFileSync('node', ['.github/scripts/validate_formal_release.mjs'], {
+      cwd: root,
+      stdio: 'pipe',
+      env: { ...process.env, REQUESTED_MODE: 'dry-run', REQUESTED_TAG: 'v0.1.0' },
+    }),
+    /dry-run must not select a release tag/u,
+  )
 })
 
 test('update manifest generator emits canonical version and digest bindings', () => {

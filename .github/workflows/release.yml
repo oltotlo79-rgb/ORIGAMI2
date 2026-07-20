@@ -365,5 +365,19 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          test "$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json isPrerelease --jq .isPrerelease)" = true
+          before="$RUNNER_TEMP/release-assets-before.json"
+          after="$RUNNER_TEMP/release-assets-after.json"
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" \
+            --jq '{draft,prerelease,assets:[.assets[]|{id,name,size,digest,updated_at}]|sort_by(.name)}' \
+            > "$before"
+          test "$(jq -r .draft "$before")" = false
+          test "$(jq -r .prerelease "$before")" = true
           gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --prerelease=false --latest
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" \
+            --jq '{draft,prerelease,assets:[.assets[]|{id,name,size,digest,updated_at}]|sort_by(.name)}' \
+            > "$after"
+          test "$(jq -r .draft "$after")" = false
+          test "$(jq -r .prerelease "$after")" = false
+          jq -S .assets "$before" > "$RUNNER_TEMP/assets-before.json"
+          jq -S .assets "$after" > "$RUNNER_TEMP/assets-after.json"
+          cmp "$RUNNER_TEMP/assets-before.json" "$RUNNER_TEMP/assets-after.json"

@@ -8,9 +8,21 @@ if (!['dry-run', 'prerelease', 'stable', 'promote'].includes(mode)) {
 }
 const config = JSON.parse(readFileSync('apps/desktop/src-tauri/tauri.conf.json', 'utf8'))
 const version = config.version
-if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error(`invalid application version: ${version}`)
+if (
+  typeof version !== 'string'
+  || !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version)
+) throw new Error(`invalid application version: ${version}`)
+const cargoManifest = readFileSync('Cargo.toml', 'utf8')
+const cargoVersion = /^\[workspace\.package\][\s\S]*?^version = "([^"]+)"$/mu.exec(cargoManifest)?.[1]
+if (cargoVersion !== version) {
+  throw new Error(`Cargo workspace version ${cargoVersion} does not match application ${version}`)
+}
 let tag = ''
-if (mode !== 'dry-run') {
+if (mode === 'dry-run') {
+  if (requestedTag !== undefined && requestedTag !== '') {
+    throw new Error('dry-run must not select a release tag')
+  }
+} else {
   tag = requestedTag
   if (tag !== `v${version}`) throw new Error(`tag ${tag} does not match application v${version}`)
   execFileSync('git', ['verify-tag', tag], { stdio: 'inherit' })

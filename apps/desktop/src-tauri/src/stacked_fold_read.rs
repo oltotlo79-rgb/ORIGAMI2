@@ -9,15 +9,16 @@ use ori_collision::{
     StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
     StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
     StaticCollisionLimits, UniformCycleClosureRootsV1, capture_stacked_fold_read_guard_v1,
-    diagnose_collective_hinge_path_v1, diagnose_static_collision_geometry,
-    enumerate_uniform_cycle_closure_roots_v1, propose_linear_stacked_fold_read_v1,
-    reverse_map_linear_stacked_fold_material_v1,
+    diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,
+    diagnose_static_collision_geometry, enumerate_uniform_cycle_closure_roots_v1,
+    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
     StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
     analyze_local_flat_foldability, prepare_stacked_fold_geometry_candidate_v1,
-    prepare_stacked_fold_initial_graph_pose_v1, prepare_stacked_fold_initial_pose_v1,
+    prepare_stacked_fold_graph_non_flat_layer_order_v1, prepare_stacked_fold_initial_graph_pose_v1,
+    prepare_stacked_fold_initial_pose_v1,
     prepare_stacked_fold_non_flat_layer_order_with_thickness_v1,
     prepare_stacked_fold_requested_graph_pose_v1, prepare_stacked_fold_requested_pose_v1,
     prepare_stacked_fold_target_graph_audit_v1, prepare_stacked_fold_target_model_v1,
@@ -388,6 +389,14 @@ pub(super) async fn propose_current_stacked_fold_read(
                 pose_capability.pose(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            let moving_edges = initial
+                .target()
+                .geometry()
+                .proof()
+                .expected_creases()
+                .iter()
+                .flat_map(|subdivision| subdivision.target_edges().iter().copied())
+                .collect::<Vec<_>>();
             let closed_endpoint = prepare_stacked_fold_requested_graph_pose_v1(
                 initial,
                 candidate.requested_angle_degrees(),
@@ -397,6 +406,8 @@ pub(super) async fn propose_current_stacked_fold_read(
                 closed_endpoint.initial().target().hinge_geometry(),
                 closed_endpoint.initial().target().audit(),
                 closed_endpoint.pose().fixed_face(),
+                closed_endpoint.initial().pose().hinge_angles(),
+                &moving_edges,
                 candidate.requested_angle_degrees(),
                 128,
             ) {
@@ -412,9 +423,27 @@ pub(super) async fn propose_current_stacked_fold_read(
                     return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
                 }
             }
-            // Collision and safe-stop diagnostics currently accept only an
-            // issuer-bound material-tree pose. Never downgrade a proved graph
-            // endpoint into that authority.
+            let continuous = diagnose_collective_cycle_path_v1(
+                closed_endpoint.initial().target().hinge_geometry(),
+                closed_endpoint.initial().target().audit(),
+                closed_endpoint.pose().fixed_face(),
+                closed_endpoint.initial().pose().hinge_angles(),
+                &moving_edges,
+                candidate.requested_angle_degrees(),
+                StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
+            );
+            if continuous.continuous_certificate_model_id().is_none() {
+                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+            }
+            let _layer_order = prepare_stacked_fold_graph_non_flat_layer_order_v1(
+                &closed_endpoint,
+                layer_capability.snapshot(),
+                DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+            )
+            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            // The endpoint, interval, and layer premises are now independently
+            // authenticated. Publication remains fail-closed until the shared
+            // response construction below accepts the graph-owned proof.
             return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
         }
         let prepared_target = prepare_stacked_fold_target_model_v1(

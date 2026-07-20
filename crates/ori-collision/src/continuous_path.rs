@@ -777,6 +777,8 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
+    initial_angles: &CanonicalHingeAngles,
+    moving_edges: &[EdgeId],
     requested_angle_degrees: f64,
     max_leaves: usize,
 ) -> UniformCycleClosureRootsV1 {
@@ -785,14 +787,42 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
         || max_leaves == 0
         || max_leaves > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
         || audit.closure_hinges().is_empty()
+        || moving_edges.is_empty()
+    {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    }
+    let moving = moving_edges.iter().copied().collect::<HashSet<_>>();
+    let initial_by_edge = initial_angles
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect::<HashMap<_, _>>();
+    if moving.len() != moving_edges.len()
+        || initial_angles.as_slice().len() != geometry.hinges().len()
+        || geometry.hinges().iter().any(|hinge| {
+            !initial_by_edge.contains_key(&hinge.edge())
+                || (moving.contains(&hinge.edge())
+                    && initial_by_edge
+                        .get(&hinge.edge())
+                        .is_some_and(|angle| angle.to_bits() != 0.0_f64.to_bits()))
+        })
     {
         return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
     }
     let residual = |angle: f64| -> Option<f64> {
-        let values = geometry
-            .hinges()
+        let values = initial_angles
+            .as_slice()
             .iter()
-            .map(|hinge| HingeAngle::new(hinge.edge(), angle))
+            .map(|hinge| {
+                HingeAngle::new(
+                    hinge.edge(),
+                    if moving.contains(&hinge.edge()) {
+                        angle
+                    } else {
+                        hinge.angle_degrees()
+                    },
+                )
+            })
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let angles = CanonicalHingeAngles::new(values).ok()?;
@@ -890,6 +920,8 @@ pub fn diagnose_collective_cycle_path_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
+    initial_angles: &CanonicalHingeAngles,
+    moving_edges: &[EdgeId],
     requested_angle_degrees: f64,
     interval_count: usize,
 ) -> StackedFoldCyclePathDiagnosticV1 {
@@ -906,15 +938,43 @@ pub fn diagnose_collective_cycle_path_v1(
         || !requested_angle_degrees.is_finite()
         || requested_angle_degrees <= 0.0
         || requested_angle_degrees > 180.0
+        || moving_edges.is_empty()
+    {
+        return failed(None);
+    }
+    let moving = moving_edges.iter().copied().collect::<HashSet<_>>();
+    let initial_by_edge = initial_angles
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect::<HashMap<_, _>>();
+    if moving.len() != moving_edges.len()
+        || initial_angles.as_slice().len() != geometry.hinges().len()
+        || geometry.hinges().iter().any(|hinge| {
+            !initial_by_edge.contains_key(&hinge.edge())
+                || (moving.contains(&hinge.edge())
+                    && initial_by_edge
+                        .get(&hinge.edge())
+                        .is_some_and(|angle| angle.to_bits() != 0.0_f64.to_bits()))
+        })
     {
         return failed(None);
     }
     let angles_at = |angle: f64| {
         CanonicalHingeAngles::new(
-            geometry
-                .hinges()
+            initial_angles
+                .as_slice()
                 .iter()
-                .map(|hinge| HingeAngle::new(hinge.edge(), angle))
+                .map(|hinge| {
+                    HingeAngle::new(
+                        hinge.edge(),
+                        if moving.contains(&hinge.edge()) {
+                            angle
+                        } else {
+                            hinge.angle_degrees()
+                        },
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .ok()?,
         )

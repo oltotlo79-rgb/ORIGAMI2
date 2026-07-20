@@ -265,6 +265,7 @@ describe('StackedFoldPanel', () => {
 
   it('shows every certified graph edge as read-only evidence and focuses its related hinge', async () => {
     transport.cancel.mockResolvedValue(undefined)
+    transport.apply.mockResolvedValue(13)
     transport.preview.mockResolvedValue({
       ...ready,
       certifiedPathGraph: {
@@ -286,9 +287,7 @@ describe('StackedFoldPanel', () => {
       },
       transactionProposal: {
         ...ready.transactionProposal,
-        transactionToken: null,
-        readyForAtomicApply: false,
-        authorizesProjectMutation: false,
+        timelineStepCount: 1,
       },
     })
     render(
@@ -315,6 +314,13 @@ describe('StackedFoldPanel', () => {
     expect(document.activeElement?.getAttribute('id')).toBe(
       `stacked-fold-proof-hinge-${project}`,
     )
+    const apply = screen.getByRole('button', { name: 'Apply stacked fold' })
+    expect((apply as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect((apply as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(apply)
+    await waitFor(() => expect(transport.apply).toHaveBeenCalledWith(token))
+    expect(transport.apply).toHaveBeenCalledTimes(1)
   })
 
   it('uses the selected canvas line and applies only after explicit confirmation', async () => {
@@ -455,6 +461,7 @@ describe('StackedFoldPanel', () => {
     ['cycle_path_uncertified', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.'],
     ['cycle_path_unsupported', 'This input is outside the supported limited linear hinge-path class, so apply is disabled.'],
     ['cycle_path_resource_limit', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.'],
+    ['cycle_path_no_certified_path', 'No path to the target was found using certified transitions only. This does not claim impossibility.'],
     ['cycle_path_collision', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.'],
   ] as const)('shows the bounded cycle failure %s without an apply action', async (reason, copy) => {
     transport.cancel.mockResolvedValue(undefined)

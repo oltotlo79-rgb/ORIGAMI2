@@ -474,6 +474,9 @@ export function normalizeStackedFoldReadResponse(
   const certifiedEdges = isRecord(certifiedGraph) && Array.isArray(certifiedGraph.edges)
     ? certifiedGraph.edges
     : null
+  const liveGraphHingeAngles = Array.isArray(value.liveGraphHingeAngles)
+    ? value.liveGraphHingeAngles
+    : null
   const transaction = value.transactionProposal
   const work = value.work
   const layerOrder = value.flatEndpointLayerOrder
@@ -664,10 +667,10 @@ export function normalizeStackedFoldReadResponse(
     !Array.isArray(value.targetFaces) ||
     value.targetFaces.length === 0 ||
     !value.targetFaces.every(isCanonicalNonNilUuid) ||
-    !Array.isArray(value.liveGraphHingeAngles) ||
-    value.liveGraphHingeAngles.length > 64 ||
-    value.liveGraphHingeAngles.length !== topologyProof.targetHingeCount ||
-    !value.liveGraphHingeAngles.every(
+    liveGraphHingeAngles === null ||
+    liveGraphHingeAngles.length > 64 ||
+    liveGraphHingeAngles.length !== topologyProof.targetHingeCount ||
+    !liveGraphHingeAngles.every(
       (entry, index, entries) =>
         isRecord(entry) &&
         hasExactKeys(entry, ['edge', 'initialAngleDegrees']) &&
@@ -802,5 +805,16 @@ export function normalizeStackedFoldReadResponse(
   ) {
     return null
   }
+  if (certifiedGraph !== null && (
+    !isRecord(certifiedGraph)
+    || certifiedEdges === null
+    || transaction.timelineStepCount !== certifiedEdges.length
+    || certifiedEdges.some((edge) =>
+      !isRecord(edge)
+      || !Array.isArray(edge.hinges)
+      || edge.hinges.some((hinge) =>
+        !liveGraphHingeAngles.some((live) =>
+          isRecord(live) && live.edge === hinge)))
+  )) return null
   return value as StackedFoldReadResponse
 }

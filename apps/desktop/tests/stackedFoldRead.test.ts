@@ -296,6 +296,25 @@ describe('stacked-fold read boundary', () => {
       normalizeStackedFoldReadResponse(graphResponse, request),
       graphResponse,
     )
+    const graphReady = {
+      ...graphResponse,
+      continuousPath: {
+        ...graphResponse.continuousPath,
+        continuousClearanceCertified: true,
+      },
+      transactionProposal: {
+        ...graphResponse.transactionProposal,
+        transactionToken: faceId,
+        timelineStepCount: graphResponse.certifiedPathGraph.edges.length,
+        readyForAtomicApply: true,
+        failureClasses: [],
+        authorizesProjectMutation: true,
+      },
+    } as const
+    assert.deepEqual(
+      normalizeStackedFoldReadResponse(graphReady, request),
+      graphReady,
+    )
     assert.equal(normalizeStackedFoldReadResponse({
       ...graphResponse,
       certifiedPathGraph: {

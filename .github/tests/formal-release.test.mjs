@@ -62,7 +62,10 @@ test('publication verifies current-run artifact archive digests before extractio
   const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
   assert.doesNotMatch(publish, /actions\/download-artifact@/u)
   assert.match(publish, /unzip -Z1/u)
+  assert.match(publish, /unzip -tqq/u)
   assert.match(publish, /entry_count.*-le 16/u)
+  assert.match(publish, /archive_bytes \* 200 \+ 1048576/u)
+  assert.match(publish, /find release -type l/u)
 
   const directory = mkdtempSync(join(tmpdir(), 'origami2-artifact-metadata-'))
   try {
@@ -92,6 +95,11 @@ test('publication verifies current-run artifact archive digests before extractio
         /workflow artifact/u,
       )
     }
+    writeFileSync(path, ' '.repeat(1_048_577))
+    assert.throws(
+      () => execFileSync('node', [verifier, path], { stdio: 'pipe' }),
+      /metadata size is invalid/u,
+    )
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

@@ -1,6 +1,11 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 
-const metadata = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+const metadataPath = process.argv[2]
+const metadataSize = statSync(metadataPath).size
+if (metadataSize <= 0 || metadataSize > 1_048_576) {
+  throw new Error('workflow artifact metadata size is invalid')
+}
+const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'))
 const expectedNames = [
   'formal-release-macos-arm64',
   'formal-release-windows-x64',

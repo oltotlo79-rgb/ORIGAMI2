@@ -233,6 +233,10 @@ jobs:
           mkdir release
           for archive in "$RUNNER_TEMP"/formal-release-*.zip
           do
+            archive_bytes="$(stat -c '%s' "$archive")"
+            test "$archive_bytes" -gt 0
+            test "$archive_bytes" -le 2147483648
+            unzip -tqq "$archive"
             entry_count=0
             while IFS= read -r entry
             do
@@ -244,8 +248,14 @@ jobs:
               esac
             done < <(unzip -Z1 "$archive")
             test "$entry_count" -ge 4
+            expanded_bytes="$(unzip -l "$archive" | awk 'END { print $1 }')"
+            test "$expanded_bytes" -le 3221225472
+            ratio_bound=$((archive_bytes * 200 + 1048576))
+            test "$expanded_bytes" -le "$ratio_bound"
             unzip -q "$archive" -d release
           done
+          test -z "$(find release -type l -print -quit)"
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 9
       - name: Verify the complete merged release set before publication
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}

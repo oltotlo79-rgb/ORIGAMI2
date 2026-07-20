@@ -682,14 +682,15 @@ impl MaterialHingeClosureCertificate {
                     return Err(KinematicsError::UnsupportedTopology);
                 }
             }
-            let sign = match hinge.assignment() {
-                ori_topology::FoldAssignment::Mountain => 1.0,
-                ori_topology::FoldAssignment::Valley => -1.0,
-            };
+            let signed_angle = crate::assignment_signed_angle_degrees_v1(
+                hinge.edge(),
+                hinge.assignment(),
+                *angle,
+            )?;
             let expected = left.compose(RigidTransform::around_axis(
                 hinge.start(),
                 hinge.axis(),
-                angle.angle_degrees() * sign,
+                signed_angle,
             )?)?;
             let error = transform_error(expected, right)?;
             maximum_relative_transform_error = maximum_relative_transform_error.max(error);

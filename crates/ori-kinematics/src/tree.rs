@@ -104,6 +104,26 @@ impl HingeAngle {
     }
 }
 
+/// Converts the public unsigned 0..=180 degree boundary into the signed
+/// internal rotation convention selected by the live hinge assignment.
+/// The edge identity is checked here so stale/foreign angle records cannot be
+/// normalized against another hinge.
+pub fn assignment_signed_angle_degrees_v1(
+    expected_edge: EdgeId,
+    assignment: FoldAssignment,
+    angle: HingeAngle,
+) -> Result<f64, KinematicsError> {
+    if angle.edge() != expected_edge {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let magnitude = angle.angle_degrees();
+    Ok(match assignment {
+        FoldAssignment::Mountain => magnitude,
+        FoldAssignment::Valley if magnitude == 0.0 => 0.0,
+        FoldAssignment::Valley => -magnitude,
+    })
+}
+
 /// A complete angle vector in canonical `EdgeId` byte order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalHingeAngles {
@@ -2053,12 +2073,13 @@ fn checked_double(count: usize, maximum: usize) -> Result<usize, KinematicsError
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{Point2, VertexId};
-    use ori_topology::CanonicalFaceKeyError;
+    use ori_domain::{EdgeId, Point2, VertexId};
+    use ori_topology::{CanonicalFaceKeyError, FoldAssignment};
 
     use super::{
-        SimpleBoundaryValidationBudget, checked_accumulate, checked_double, exact_point_key,
-        map_canonical_face_key_error, validate_simple_boundary,
+        HingeAngle, SimpleBoundaryValidationBudget, assignment_signed_angle_degrees_v1,
+        checked_accumulate, checked_double, exact_point_key, map_canonical_face_key_error,
+        validate_simple_boundary,
     };
     use crate::KinematicsError;
 
@@ -2072,6 +2093,35 @@ mod tests {
             points,
             &mut SimpleBoundaryValidationBudget::production(),
         )
+    }
+
+    #[test]
+    fn assignment_signed_boundary_is_bit_exact_and_live_edge_bound() {
+        let edge = EdgeId::new();
+        for magnitude in [0.0, 30.0, 180.0] {
+            let angle = HingeAngle::new(edge, magnitude).unwrap();
+            assert_eq!(
+                assignment_signed_angle_degrees_v1(edge, FoldAssignment::Mountain, angle)
+                    .unwrap()
+                    .to_bits(),
+                magnitude.to_bits()
+            );
+            let expected = if magnitude == 0.0 { 0.0 } else { -magnitude };
+            assert_eq!(
+                assignment_signed_angle_degrees_v1(edge, FoldAssignment::Valley, angle)
+                    .unwrap()
+                    .to_bits(),
+                expected.to_bits()
+            );
+        }
+        assert_eq!(
+            assignment_signed_angle_degrees_v1(
+                EdgeId::new(),
+                FoldAssignment::Mountain,
+                HingeAngle::new(edge, 30.0).unwrap(),
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        );
     }
 
     #[test]
